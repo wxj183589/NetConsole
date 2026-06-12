@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+
+SITE_DIRS = ("db", "raw", "parsed", "reports", "backups", "tasks", "metrics")
+
+
+@dataclass(frozen=True)
+class PathResolver:
+    app_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "app_root", Path(self.app_root or Path.cwd()).resolve())
+
+    @property
+    def docs_dir(self) -> Path:
+        return self.app_root / "docs"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.app_root / "data"
+
+    @property
+    def tests_dir(self) -> Path:
+        return self.app_root / "tests"
+
+    @property
+    def project_dir(self) -> Path:
+        return self.app_root / "project"
+
+    @property
+    def build_dir(self) -> Path:
+        return self.project_dir / "build"
+
+    @property
+    def dist_dir(self) -> Path:
+        return self.project_dir / "dist"
+
+    @property
+    def scripts_dir(self) -> Path:
+        return self.project_dir / "scripts"
+
+    @property
+    def resources_dir(self) -> Path:
+        return self.project_dir / "resources"
+
+    @property
+    def templates_dir(self) -> Path:
+        return self.resources_dir / "templates"
+
+    @property
+    def icons_dir(self) -> Path:
+        return self.resources_dir / "icons"
+
+    @property
+    def sites_dir(self) -> Path:
+        return self.data_dir / "sites"
+
+    def site_dir(self, site_name: str = "demo") -> Path:
+        return self.sites_dir / site_name
+
+    def site_db_path(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "db" / "devices.db"
+
+    def site_metrics_dir(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "metrics"
+
+    def ensure_site_dirs(self, site_name: str = "demo") -> Path:
+        site_path = self.site_dir(site_name)
+        for dirname in SITE_DIRS:
+            (site_path / dirname).mkdir(parents=True, exist_ok=True)
+        return site_path
+
+    def ensure_project_dirs(self) -> None:
+        for path in (
+            self.docs_dir,
+            self.data_dir,
+            self.tests_dir,
+            self.project_dir,
+            self.sites_dir,
+            self.build_dir,
+            self.dist_dir,
+            self.scripts_dir,
+            self.resources_dir,
+            self.icons_dir,
+            self.templates_dir,
+        ):
+            path.mkdir(parents=True, exist_ok=True)

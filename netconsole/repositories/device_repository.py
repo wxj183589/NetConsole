@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from netconsole.core.database import Database
+from netconsole.models.device import Device
+
+
+SEARCH_COLUMNS = ("name", "sysname", "ip_address", "station", "tags", "remark")
+
+
+class DeviceRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, device: Device) -> Device:
+        now = datetime.now().isoformat(timespec="seconds")
+        device.ensure_device_uuid()
+        record = device.to_record()
+        record["created_at"] = now
+        record["updated_at"] = now
+        record.pop("id", None)
+        columns = list(record.keys())
+        placeholders = ", ".join("?" for _ in columns)
+        sql = f"INSERT INTO devices ({', '.join(columns)}) VALUES ({placeholders})"
+        with self.database.connect() as conn:
+            cursor = conn.execute(sql, [record[column] for column in columns])
+            conn.commit()
+            return self.get(int(cursor.lastrowid))
+
+    def get(self, device_id: int) -> Device:
+        with self.database.connect() as conn:
+            row = conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Device not found: {device_id}")
+        return Device.from_mapping(dict(row))
+
+    def update(self, device: Device) -> Device:
+        if device.id is None:
+            raise ValueError("Device id is required for update")
+        record = device.to_record()
+        record["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        record.pop("created_at", None)
+        record.pop("device_uuid", None)
+        device_id = record.pop("id")
+        assignments = ", ".join(f"{column} = ?" for column in record)
+        with self.database.connect() as conn:
+            conn.execute(
+                f"UPDATE devices SET {assignments} WHERE id = ?",
+                [record[column] for column in record] + [device_id],
+            )
+            conn.commit()
+        return self.get(int(device_id))
+
+    def delete(self, device_id: int) -> None:
+        with self.database.connect() as conn:
+            conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+            conn.commit()
+
+    def exists_by_uuid(self, device_uuid: str) -> bool:
+        with self.database.connect() as conn:
+            row = conn.execute("SELECT 1 FROM devices WHERE device_uuid = ? LIMIT 1", (device_uuid,)).fetchone()
+        return row is not None
+
+    def list(
+        self,
+        search: str | None = None,
+        vendor: str | None = None,
+        device_type: str | None = None,
+    ) -> list[Device]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if search:
+            like = f"%{search}%"
+            clauses.append("(" + " OR ".join(f"{column} LIKE ?" for column in SEARCH_COLUMNS) + ")")
+            params.extend([like] * len(SEARCH_COLUMNS))
+        if vendor:
+            clauses.append("device_vendor = ?")
+            params.append(vendor)
+        if device_type:
+            clauses.append("device_type = ?")
+            params.append(device_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as conn:
+            rows = conn.execute(f"SELECT * FROM devices {where} ORDER BY id DESC", params).fetchall()
+        return [Device.from_mapping(dict(row)) for row in rows]

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+project/build/*
+!project/build/README.md
+project/dist/*
+!project/dist/README.md
+*.spec
+
+# IDE
+.idea/
+.vscode/
+
+# Local NetConsole data
+data/sites/*/db/*.db
+data/sites/*/raw/*
+data/sites/*/parsed/*
+data/sites/*/reports/*
+data/sites/*/backups/*
+data/sites/*/tasks/*
+data/sites/*/metrics/*
+
+# Local config and secrets
+*.local
+*.env
+*.env.*
