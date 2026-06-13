@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.device_credentials import to_bool_int
 from netconsole.repositories.device_repository import DeviceRepository
 
 
@@ -24,15 +25,10 @@ TEMPLATE_FIELDS = [
     "SSH端口",
     "Telnet启用",
     "Telnet端口",
-    "用户名",
-    "密码",
-    "Enable密码",
-    "SNMPv1",
-    "SNMPv2c",
-    "SNMPv3",
-    "SNMP端口",
-    "SNMP只读团体字",
-    "SNMP读写团体字",
+    "SSH用户名",
+    "SSH密码",
+    "Telnet用户名",
+    "Telnet密码",
     "标签",
     "备注",
 ]
@@ -50,11 +46,6 @@ TEMPLATE_EXAMPLE_ROW = [
     "admin",
     "admin123",
     "",
-    "否",
-    "是",
-    "否",
-    "161",
-    "hw_public",
     "",
     "核心",
     "演示设备，可删除",
@@ -70,19 +61,12 @@ TEMPLATE_FIELD_MAP = {
     "SSH端口": "ssh_port",
     "Telnet启用": "telnet_enabled",
     "Telnet端口": "telnet_port",
-    "用户名": "username",
-    "密码": "password",
-    "Enable密码": "auth_mode",
-    "SNMPv1": "snmp_v1_enabled",
-    "SNMPv2c": "snmp_v2c_enabled",
-    "SNMPv3": "snmp_v3_enabled",
-    "SNMP端口": "snmp_port",
-    "SNMP只读团体字": "snmp_ro_community",
-    "SNMP读写团体字": "snmp_rw_community",
+    "SSH用户名": "ssh_username",
+    "SSH密码": "ssh_password",
+    "Telnet用户名": "telnet_username",
+    "Telnet密码": "telnet_password",
     "标签": "tags",
     "备注": "remark",
-    "协议": "legacy_protocol",
-    "端口": "legacy_port",
 }
 
 EXPORT_FIELDS = [
@@ -98,9 +82,10 @@ EXPORT_FIELDS = [
     "ssh_port",
     "telnet_enabled",
     "telnet_port",
-    "auth_mode",
-    "username",
-    "password",
+    "ssh_username",
+    "ssh_password",
+    "telnet_username",
+    "telnet_password",
     "snmp_v1_enabled",
     "snmp_v2c_enabled",
     "snmp_v3_enabled",
@@ -188,18 +173,6 @@ class DeviceImportExportService:
     def _apply_defaults(self, payload: dict[str, object]) -> None:
         payload.setdefault("device_vendor", "H3C")
         payload.setdefault("device_type", "SW")
-        legacy_protocol = str(payload.pop("legacy_protocol", "") or "").lower()
-        legacy_port = payload.pop("legacy_port", None)
-        if legacy_protocol == "telnet":
-            payload.setdefault("ssh_enabled", 0)
-            payload.setdefault("telnet_enabled", 1)
-            if legacy_port is not None:
-                payload.setdefault("telnet_port", legacy_port)
-        elif legacy_protocol == "ssh":
-            payload.setdefault("ssh_enabled", 1)
-            payload.setdefault("telnet_enabled", 0)
-            if legacy_port is not None:
-                payload.setdefault("ssh_port", legacy_port)
         payload.setdefault("ssh_enabled", 1)
         payload.setdefault("ssh_port", 22)
         payload.setdefault("telnet_enabled", 0)
@@ -276,20 +249,18 @@ class DeviceImportExportService:
 
     @staticmethod
     def _detect_mode(headers: list[str]) -> str:
-        if "设备名称" in headers and "IP地址" in headers:
+        if headers == TEMPLATE_FIELDS:
             return "template"
-        if "name" in headers and "ip_address" in headers:
+        if headers == EXPORT_FIELDS:
             return "export"
-        raise ValueError("Unsupported CSV header")
+        raise ValueError("Unsupported CSV header: use the current device template or full export CSV")
 
     @staticmethod
     def _map_row(headers: list[str], values: list[object], mode: str) -> dict[str, object | None]:
         result: dict[str, object | None] = {}
         field_map = TEMPLATE_FIELD_MAP if mode == "template" else {field: field for field in EXPORT_FIELDS}
         for index, header in enumerate(headers):
-            field = field_map.get(header)
-            if field is None:
-                continue
+            field = field_map[header]
             value = values[index] if index < len(values) else None
             result[field] = DeviceImportExportService._clean_value(value)
         return result

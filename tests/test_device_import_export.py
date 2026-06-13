@@ -1,6 +1,8 @@
 import csv
 from datetime import datetime
 
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
@@ -40,7 +42,7 @@ def write_dict_rows(path, rows):
         writer.writerows(rows)
 
 
-def test_export_template_csv_has_connection_and_snmp_fields(tmp_path):
+def test_export_template_csv_has_only_current_template_fields(tmp_path):
     repository, service = make_service(tmp_path)
     path = tmp_path / "template.csv"
 
@@ -50,22 +52,25 @@ def test_export_template_csv_has_connection_and_snmp_fields(tmp_path):
     imported = repository.list()[0]
 
     assert rows == [TEMPLATE_FIELDS, TEMPLATE_EXAMPLE_ROW]
-    for field in ("SSH启用", "SSH端口", "Telnet启用", "Telnet端口", "SNMPv1", "SNMPv2c", "SNMPv3"):
+    for field in ("SSH用户名", "SSH密码", "Telnet用户名", "Telnet密码"):
         assert field in rows[0]
+    for removed in ("共用认证", "用户名", "密码", "Enable密码", "协议", "端口", "认证模式", "SNMPv1", "SNMPv2c", "SNMPv3", "SNMP端口", "SNMP只读团体字", "SNMP读写团体字"):
+        assert removed not in rows[0]
     assert result.created == 1
-    assert imported.ssh_enabled == 1
-    assert imported.telnet_enabled == 0
-    assert imported.snmp_v2c_enabled == 1
+    assert imported.ssh_username == "admin"
+    assert imported.ssh_password == "admin123"
+    assert imported.telnet_username is None
+    assert imported.telnet_password is None
 
 
-def test_simplified_template_import_defaults(tmp_path):
+def test_simplified_template_import_defaults_and_credentials(tmp_path):
     repository, service = make_service(tmp_path)
     csv_path = tmp_path / "devices.csv"
     write_rows(
         csv_path,
         [
             TEMPLATE_FIELDS,
-            ["Core", "192.168.1.1", "", "OCC", "", "", "", "", "", "admin", "pwd", "enable", "", "", "", "", "", "", "core", "remark"],
+            ["Core", "192.168.1.1", "", "OCC", "", "", "", "", "", "ssh", "ssh-pwd", "", "tel-pwd", "core", "remark"],
         ],
     )
 
@@ -79,51 +84,56 @@ def test_simplified_template_import_defaults(tmp_path):
     assert imported.ssh_port == 22
     assert imported.telnet_enabled == 0
     assert imported.telnet_port == 23
-    assert imported.snmp_v1_enabled == 0
-    assert imported.snmp_v2c_enabled == 1
-    assert imported.snmp_v3_enabled == 0
-    assert imported.snmp_port == 161
+    assert imported.ssh_username == "ssh"
+    assert imported.ssh_password == "ssh-pwd"
+    assert imported.telnet_username is None
+    assert imported.telnet_password == "tel-pwd"
 
 
-def test_simplified_template_import_snmpv3_yes_sets_v3_defaults(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "snmpv3_template.csv"
+def test_old_template_fields_raise_clear_error(tmp_path):
+    _repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "old_template.csv"
     write_rows(
         csv_path,
         [
-            TEMPLATE_FIELDS,
-            ["Core", "192.168.1.1", "", "OCC", "", "", "", "", "", "admin", "pwd", "", "", "", "是", "", "", "", "core", "remark"],
+            ["设备名称", "IP地址", "用户名", "密码", "Enable密码"],
+            ["Legacy", "192.168.1.9", "oldadmin", "oldpwd", "enablepwd"],
         ],
     )
 
-    result = service.import_csv(csv_path)
-    imported = repository.list()[0]
-
-    assert result.created == 1
-    assert imported.snmp_v3_enabled == 1
-    assert imported.snmpv3_security_level == "noAuthNoPriv"
-    assert imported.snmpv3_auth_protocol == "SHA"
-    assert imported.snmpv3_priv_protocol == "AES128"
+    with pytest.raises(ValueError, match="Unsupported CSV header"):
+        service.import_csv(csv_path)
 
 
-def test_full_export_contains_new_fields_and_not_removed_fields(tmp_path):
+def test_legacy_protocol_port_template_raises_clear_error(tmp_path):
+    _repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "legacy.csv"
+    write_rows(csv_path, [["设备名称", "IP地址", "协议", "端口"], ["LegacyTelnet", "192.168.1.30", "telnet", "2323"]])
+
+    with pytest.raises(ValueError, match="Unsupported CSV header"):
+        service.import_csv(csv_path)
+
+
+def test_full_export_contains_current_credential_fields_and_not_removed_fields(tmp_path):
     repository, service = make_service(tmp_path)
-    device = repository.create(Device(name="Core", ip_address="192.168.1.1", ssh_enabled=1, telnet_enabled=1))
+    device = repository.create(Device(name="Core", ip_address="192.168.1.1", ssh_enabled=1, telnet_enabled=1, ssh_username="admin"))
     export_path = tmp_path / "export.csv"
 
     service.export_csv(export_path)
     rows = read_csv(export_path)
 
     assert rows[0] == EXPORT_FIELDS
-    for field in ("ssh_enabled", "ssh_port", "telnet_enabled", "telnet_port", "snmp_v1_enabled", "snmp_v2c_enabled", "snmp_v3_enabled"):
+    for field in ("ssh_username", "ssh_password", "telnet_username", "telnet_password"):
         assert field in rows[0]
-    for removed in ("protocol", "port", "serial_port", "baudrate", "data_bits", "parity", "stop_bits", "snmp_version"):
+    for snmp_field in ("snmp_v1_enabled", "snmp_v2c_enabled", "snmp_v3_enabled", "snmp_port", "snmp_ro_community", "snmp_rw_community"):
+        assert snmp_field in rows[0]
+    for removed in ("credential_shared", "auth_mode", "ssh_auth_mode", "telnet_auth_mode", "username", "password", "protocol", "port"):
         assert removed not in rows[0]
     assert rows[1][0] == str(device.id)
     assert rows[1][1] == device.device_uuid
 
 
-def test_full_csv_import_supports_new_fields(tmp_path):
+def test_full_csv_import_supports_current_fields(tmp_path):
     repository, service = make_service(tmp_path)
     csv_path = tmp_path / "full.csv"
     write_dict_rows(
@@ -136,6 +146,10 @@ def test_full_csv_import_supports_new_fields(tmp_path):
                 "ssh_port": "2022",
                 "telnet_enabled": "1",
                 "telnet_port": "2323",
+                "ssh_username": "ssh",
+                "ssh_password": "ssh-pwd",
+                "telnet_username": "",
+                "telnet_password": "tel-pwd",
                 "snmp_v1_enabled": "1",
                 "snmp_v2c_enabled": "1",
                 "snmp_v3_enabled": "1",
@@ -155,6 +169,9 @@ def test_full_csv_import_supports_new_fields(tmp_path):
     assert imported.ssh_port == 2022
     assert imported.telnet_enabled == 1
     assert imported.telnet_port == 2323
+    assert imported.ssh_username == "ssh"
+    assert imported.telnet_username is None
+    assert imported.telnet_password == "tel-pwd"
     assert imported.snmp_v1_enabled == 1
     assert imported.snmp_v2c_enabled == 1
     assert imported.snmp_v3_enabled == 1
@@ -226,20 +243,6 @@ def test_import_maps_legacy_snmpv3_priv_protocol_values(tmp_path):
     assert result.created == 2
     assert devices["OldDES"].snmpv3_priv_protocol == "DES56"
     assert devices["OldAES"].snmpv3_priv_protocol == "AES128"
-
-
-def test_import_legacy_protocol_port_template(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "legacy.csv"
-    write_rows(csv_path, [["设备名称", "IP地址", "协议", "端口"], ["LegacyTelnet", "192.168.1.30", "telnet", "2323"]])
-
-    result = service.import_csv(csv_path)
-    imported = repository.list()[0]
-
-    assert result.created == 1
-    assert imported.ssh_enabled == 0
-    assert imported.telnet_enabled == 1
-    assert imported.telnet_port == 2323
 
 
 def test_import_rejects_duplicate_uuid_and_no_connection(tmp_path):

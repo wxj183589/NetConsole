@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTextEdit,
     QToolButton,
@@ -24,10 +26,21 @@ from netconsole.core.i18n import I18n
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
 from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
+from netconsole.ui.windowing import fit_default_window_size
 
 
 BASIC_FIELDS = ("name", "sysname", "device_vendor", "device_type", "station", "tags", "remark")
-CONNECTION_FIELDS = ("ip_address", "username", "password", "auth_mode", "ssh_enabled", "ssh_port", "telnet_enabled", "telnet_port")
+CONNECTION_FIELDS = (
+    "ip_address",
+    "ssh_enabled",
+    "ssh_port",
+    "telnet_enabled",
+    "telnet_port",
+    "ssh_username",
+    "ssh_password",
+    "telnet_username",
+    "telnet_password",
+)
 SNMP_FIELDS = (
     "snmp_v1_enabled",
     "snmp_v2c_enabled",
@@ -44,15 +57,19 @@ SNMP_FIELDS = (
 
 
 class DeviceDialog(QDialog):
+    saved = Signal(object)
+
     def __init__(self, i18n: I18n, parent=None, device: Device | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(parent, Qt.Window)
         self.i18n = i18n
         self.original = device
         self.inputs: dict[str, object] = {}
         self.labels: dict[str, QLabel] = {}
 
-        self.setMinimumWidth(780)
-        self.resize(840, 560)
+        self.setModal(False)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setMinimumSize(760, 560)
+        self.apply_initial_geometry()
         self.setStyleSheet(
             """
             QCheckBox::indicator {
@@ -83,13 +100,32 @@ class DeviceDialog(QDialog):
         )
 
         root = QVBoxLayout(self)
+        top_layout = QHBoxLayout()
+        self.title_label = QLabel()
+        top_layout.addWidget(self.title_label)
+        top_layout.addStretch(1)
+        self.always_on_top_button = QPushButton()
+        self.always_on_top_button.setCheckable(True)
+        self.always_on_top_button.toggled.connect(self.set_always_on_top)
+        top_layout.addWidget(self.always_on_top_button)
+        root.addLayout(top_layout)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
         columns = QHBoxLayout()
-        root.addLayout(columns)
+        scroll_layout.addLayout(columns)
 
         self.basic_group, basic_form = self._group_with_form()
         self.connection_group, connection_form = self._group_with_form()
+        self.ssh_auth_group, ssh_auth_form = self._group_with_form()
+        self.telnet_auth_group, telnet_auth_form = self._group_with_form()
         columns.addWidget(self.basic_group, 1)
         columns.addWidget(self.connection_group, 1)
+        columns.addWidget(self.ssh_auth_group, 1)
+        columns.addWidget(self.telnet_auth_group, 1)
 
         self._add_line(basic_form, "name")
         self._add_line(basic_form, "sysname")
@@ -99,14 +135,15 @@ class DeviceDialog(QDialog):
         self._add_line(basic_form, "tags")
         self._add_text(basic_form, "remark")
 
-        self._add_line(connection_form, "ip_address")
-        self._add_line(connection_form, "username")
-        self._add_line(connection_form, "password", password=True)
-        self._add_line(connection_form, "auth_mode")
         self._add_checkbox(connection_form, "ssh_enabled")
         self._add_spin(connection_form, "ssh_port", 1, 65535)
         self._add_checkbox(connection_form, "telnet_enabled")
         self._add_spin(connection_form, "telnet_port", 1, 65535)
+        self._add_line(connection_form, "ip_address")
+        self._add_line(ssh_auth_form, "ssh_username")
+        self._add_line(ssh_auth_form, "ssh_password", password=True)
+        self._add_line(telnet_auth_form, "telnet_username")
+        self._add_line(telnet_auth_form, "telnet_password", password=True)
 
         self.snmp_toggle = QToolButton()
         self.snmp_toggle.setCheckable(True)
@@ -114,7 +151,7 @@ class DeviceDialog(QDialog):
         self.snmp_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.snmp_toggle.setArrowType(Qt.RightArrow)
         self.snmp_toggle.clicked.connect(self._toggle_snmp)
-        root.addWidget(self.snmp_toggle)
+        scroll_layout.addWidget(self.snmp_toggle)
 
         self.snmp_panel = QFrame()
         snmp_layout = QHBoxLayout(self.snmp_panel)
@@ -134,7 +171,10 @@ class DeviceDialog(QDialog):
         self._add_combo(right_snmp, "snmpv3_priv_protocol", SNMPV3_PRIV_PROTOCOLS)
         self._add_line(right_snmp, "snmpv3_priv_password", password=True)
         self.snmp_panel.setVisible(False)
-        root.addWidget(self.snmp_panel)
+        scroll_layout.addWidget(self.snmp_panel)
+        scroll_layout.addStretch(1)
+        self.scroll_area.setWidget(scroll_content)
+        root.addWidget(self.scroll_area, 1)
 
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
@@ -154,6 +194,15 @@ class DeviceDialog(QDialog):
         self._load(device)
         self._update_snmpv3_visibility()
         self.retranslate()
+
+    def apply_initial_geometry(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(900, 680)
+            return
+        available = screen.availableGeometry()
+        size = fit_default_window_size(available.width(), available.height(), 900, 680)
+        self.resize(size.width, size.height)
 
     def _group_with_form(self) -> tuple[QGroupBox, QFormLayout]:
         group = QGroupBox()
@@ -229,9 +278,14 @@ class DeviceDialog(QDialog):
                 widget.setChecked(bool(value))
 
     def retranslate(self) -> None:
-        self.setWindowTitle(self.i18n.t("dialog.edit_device" if self.original else "dialog.add_device"))
+        title = self.i18n.t("dialog.edit_device" if self.original else "dialog.add_device")
+        self.setWindowTitle(title)
+        self.title_label.setText(title)
+        self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
         self.basic_group.setTitle(self.i18n.t("dialog.basic_info"))
         self.connection_group.setTitle(self.i18n.t("dialog.connection"))
+        self.ssh_auth_group.setTitle(self.i18n.t("dialog.ssh_authentication"))
+        self.telnet_auth_group.setTitle(self.i18n.t("dialog.telnet_authentication"))
         self.snmp_toggle.setText(self.i18n.t("dialog.snmp_reserved"))
         self.cancel_button.setText(self.i18n.t("dialog.cancel"))
         self.test_button.setText(self.i18n.t("dialog.test_connection"))
@@ -247,7 +301,14 @@ class DeviceDialog(QDialog):
         if error_key:
             QMessageBox.warning(self, self.windowTitle(), self.i18n.t(error_key))
             return
-        super().accept()
+        self.saved.emit(self.device())
+
+    def set_always_on_top(self, enabled: bool) -> None:
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
+        self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def form_data(self) -> dict[str, object | None]:
         data: dict[str, object | None] = {}

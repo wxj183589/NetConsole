@@ -22,9 +22,10 @@ class Device:
     ssh_port: int = 22
     telnet_enabled: int = 0
     telnet_port: int = 23
-    auth_mode: str | None = None
-    username: str | None = None
-    password: str | None = None
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    telnet_username: str | None = None
+    telnet_password: str | None = None
     snmp_v1_enabled: int = 0
     snmp_v2c_enabled: int = 1
     snmp_v3_enabled: int = 0

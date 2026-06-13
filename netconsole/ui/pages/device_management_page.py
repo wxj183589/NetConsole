@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -18,7 +19,17 @@ from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
+from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
+
+
+def choose_devices_for_export(all_devices: list, selected_devices: list) -> list:
+    return selected_devices if selected_devices else all_devices
+
+
+def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
+    for device_id in device_ids:
+        repository.delete(device_id)
 
 
 class DeviceManagementPage(QWidget):
@@ -28,6 +39,7 @@ class DeviceManagementPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
+        self.dialog_registry = DeviceDialogRegistry()
 
         self.search_input = QLineEdit()
         self.vendor_filter = QComboBox()
@@ -35,10 +47,13 @@ class DeviceManagementPage(QWidget):
         self.add_button = QPushButton()
         self.edit_button = QPushButton()
         self.delete_button = QPushButton()
+        self.batch_delete_button = QPushButton()
         self.refresh_button = QPushButton()
         self.import_csv_button = QPushButton()
         self.export_csv_button = QPushButton()
         self.export_template_button = QPushButton()
+        self.clear_selection_button = QPushButton()
+        self.selection_label = QLabel()
         self.table = DeviceTable(i18n)
 
         filters = QHBoxLayout()
@@ -51,12 +66,15 @@ class DeviceManagementPage(QWidget):
             self.add_button,
             self.edit_button,
             self.delete_button,
+            self.batch_delete_button,
             self.refresh_button,
             self.import_csv_button,
             self.export_csv_button,
             self.export_template_button,
+            self.clear_selection_button,
         ):
             actions.addWidget(button)
+        actions.addWidget(self.selection_label)
         actions.addStretch(1)
 
         layout = QVBoxLayout()
@@ -71,11 +89,16 @@ class DeviceManagementPage(QWidget):
         self.add_button.clicked.connect(self.add_device)
         self.edit_button.clicked.connect(self.edit_device)
         self.delete_button.clicked.connect(self.delete_device)
+        self.batch_delete_button.clicked.connect(self.batch_delete_devices)
         self.refresh_button.clicked.connect(self.refresh)
         self.import_csv_button.clicked.connect(self.import_csv)
         self.export_csv_button.clicked.connect(self.export_csv)
         self.export_template_button.clicked.connect(self.export_template)
-        self.table.doubleClicked.connect(self.edit_device)
+        self.clear_selection_button.clicked.connect(self.clear_selection)
+        self.table.selection_changed.connect(self.update_selection_state)
+        self.table.edit_requested.connect(self.edit_device_by_id)
+        self.table.delete_requested.connect(self.delete_device_by_id)
+        self.table.connect_requested.connect(self.connect_device)
         self.retranslate()
         self.refresh()
 
@@ -84,12 +107,16 @@ class DeviceManagementPage(QWidget):
         self.add_button.setText(self.i18n.t("devices.add"))
         self.edit_button.setText(self.i18n.t("devices.edit"))
         self.delete_button.setText(self.i18n.t("devices.delete"))
+        self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
         self.refresh_button.setText(self.i18n.t("devices.refresh"))
         self.import_csv_button.setText(self.i18n.t("devices.import_csv"))
         self.export_csv_button.setText(self.i18n.t("devices.export_csv"))
         self.export_template_button.setText(self.i18n.t("devices.export_template"))
+        self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
+        self.batch_delete_button.setStyleSheet("QPushButton { color: #b91c1c; font-weight: 600; }")
         self._populate_filters()
         self.table.retranslate()
+        self.update_selection_state()
 
     def _populate_filters(self) -> None:
         vendor = self.vendor_filter.currentData()
@@ -121,36 +148,117 @@ class DeviceManagementPage(QWidget):
             device_type=self.type_filter.currentData(),
         )
         self.table.set_devices(devices)
+        self.update_selection_state()
 
     def selected_id(self) -> int | None:
         return self.table.selected_device_id()
 
     def add_device(self) -> None:
+        existing = self.dialog_registry.get_add_window()
+        if isinstance(existing, DeviceDialog):
+            self._activate_window(existing)
+            return
         dialog = DeviceDialog(self.i18n, self)
-        if dialog.exec():
-            self.repository.create(dialog.device())
-            self.refresh()
+        self.dialog_registry.set_add_window(dialog)
+        dialog.saved.connect(self._create_device_from_dialog)
+        dialog.destroyed.connect(lambda _=None, window=dialog: self.dialog_registry.remove_add_window(window))
+        self._show_window(dialog)
 
     def edit_device(self) -> None:
+        if len(self.table.checked_device_ids()) > 1:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_one_for_edit"))
+            return
         device_id = self.selected_id()
         if device_id is None:
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
+        self.edit_device_by_id(device_id)
+
+    def edit_device_by_id(self, device_id: int) -> None:
         device = self.repository.get(device_id)
+        device_uuid = device.device_uuid or str(device.id)
+        existing = self.dialog_registry.get_edit_window(device_uuid)
+        if isinstance(existing, DeviceDialog):
+            self._activate_window(existing)
+            return
         dialog = DeviceDialog(self.i18n, self, device)
-        if dialog.exec():
-            self.repository.update(dialog.device())
-            self.refresh()
+        self.dialog_registry.set_edit_window(device_uuid, dialog)
+        dialog.saved.connect(self._update_device_from_dialog)
+        dialog.destroyed.connect(lambda _=None, uuid=device_uuid, window=dialog: self.dialog_registry.remove_edit_window(uuid, window))
+        self._show_window(dialog)
+
+    def _show_window(self, dialog: DeviceDialog) -> None:
+        dialog.show()
+        self._activate_window(dialog)
+
+    @staticmethod
+    def _activate_window(dialog: DeviceDialog) -> None:
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _create_device_from_dialog(self, device) -> None:
+        try:
+            self.repository.create(device)
+        except Exception as exc:
+            QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+            return
+        self.refresh()
+        self._close_sender_dialog()
+
+    def _update_device_from_dialog(self, device) -> None:
+        try:
+            self.repository.update(device)
+        except Exception as exc:
+            QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+            return
+        self.refresh()
+        self._close_sender_dialog()
+
+    def _close_sender_dialog(self) -> None:
+        sender = self.sender()
+        if isinstance(sender, DeviceDialog):
+            sender.close()
 
     def delete_device(self) -> None:
         device_id = self.selected_id()
         if device_id is None:
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
+        self.delete_device_by_id(device_id)
+
+    def delete_device_by_id(self, device_id: int) -> None:
         answer = QMessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
         if answer == QMessageBox.Yes:
             self.repository.delete(device_id)
             self.refresh()
+
+    def batch_delete_devices(self) -> None:
+        device_ids = self.table.checked_device_ids()
+        if not device_ids:
+            return
+        answer = QMessageBox.question(
+            self,
+            self.i18n.t("devices.title"),
+            self.i18n.t("devices.batch_delete_confirm", count=len(device_ids)),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        delete_device_ids(self.repository, device_ids)
+        self.refresh()
+
+    def clear_selection(self) -> None:
+        self.table.clear_checked()
+        self.update_selection_state()
+
+    def update_selection_state(self) -> None:
+        count = len(self.table.checked_device_ids())
+        self.selection_label.setText(self.i18n.t("devices.selected_count", count=count))
+        self.batch_delete_button.setEnabled(count > 0)
+        self.clear_selection_button.setEnabled(count > 0)
+
+    def connect_device(self, _device_id: int) -> None:
+        QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("dialog.test_connection_tip"))
 
     def import_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("devices.import_csv"), "", "CSV Files (*.csv)")
@@ -167,7 +275,8 @@ class DeviceManagementPage(QWidget):
             "CSV Files (*.csv)",
         )
         if path:
-            self.service.export_csv(Path(path), self.repository.list())
+            selected_devices = self.table.checked_devices()
+            self.service.export_csv(Path(path), choose_devices_for_export(self.repository.list(), selected_devices))
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
 
     def export_template(self) -> None:
