@@ -58,6 +58,22 @@ class PathResolver:
     def sites_dir(self) -> Path:
         return self.data_dir / "sites"
 
+    @property
+    def config_dir(self) -> Path:
+        return self.data_dir / "config"
+
+    @property
+    def app_config_path(self) -> Path:
+        return self.config_dir / "app.json"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.data_dir / "logs"
+
+    @property
+    def app_log_path(self) -> Path:
+        return self.logs_dir / "app.log"
+
     def site_dir(self, site_name: str = "demo") -> Path:
         return self.sites_dir / site_name
 
@@ -71,15 +87,18 @@ class PathResolver:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
             (site_path / dirname).mkdir(parents=True, exist_ok=True)
+        (site_path / "raw" / "collect").mkdir(parents=True, exist_ok=True)
         return site_path
 
     def ensure_project_dirs(self) -> None:
         for path in (
             self.docs_dir,
             self.data_dir,
+            self.config_dir,
             self.tests_dir,
             self.project_dir,
             self.sites_dir,
+            self.logs_dir,
             self.build_dir,
             self.dist_dir,
             self.scripts_dir,

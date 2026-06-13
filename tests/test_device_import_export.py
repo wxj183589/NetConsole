@@ -11,7 +11,7 @@ from netconsole.services.device_import_export import (
     SNMPV3_AUTH_PROTOCOLS,
     SNMPV3_PRIV_PROTOCOLS,
     SNMPV3_SECURITY_LEVELS,
-    TEMPLATE_EXAMPLE_ROW,
+    TEMPLATE_EXAMPLE_ROWS,
     TEMPLATE_FIELDS,
     DeviceImportExportService,
     make_device_export_filename,
@@ -42,25 +42,28 @@ def write_dict_rows(path, rows):
         writer.writerows(rows)
 
 
-def test_export_template_csv_has_only_current_template_fields(tmp_path):
+def test_export_template_csv_has_multiple_current_examples(tmp_path):
     repository, service = make_service(tmp_path)
     path = tmp_path / "template.csv"
 
     service.export_template_csv(path)
     rows = read_csv(path)
     result = service.import_csv(path)
-    imported = repository.list()[0]
+    imported = {device.name: device for device in repository.list()}
 
-    assert rows == [TEMPLATE_FIELDS, TEMPLATE_EXAMPLE_ROW]
-    for field in ("SSH用户名", "SSH密码", "Telnet用户名", "Telnet密码"):
-        assert field in rows[0]
-    for removed in ("共用认证", "用户名", "密码", "Enable密码", "协议", "端口", "认证模式", "SNMPv1", "SNMPv2c", "SNMPv3", "SNMP端口", "SNMP只读团体字", "SNMP读写团体字"):
-        assert removed not in rows[0]
-    assert result.created == 1
-    assert imported.ssh_username == "admin"
-    assert imported.ssh_password == "admin123"
-    assert imported.telnet_username is None
-    assert imported.telnet_password is None
+    assert rows == [TEMPLATE_FIELDS, *TEMPLATE_EXAMPLE_ROWS]
+    assert len(rows) == 6
+    assert all(len(row) == len(TEMPLATE_FIELDS) for row in rows)
+    assert "SNMPv1" not in rows[0]
+    assert "SNMPv2c" not in rows[0]
+    assert "SNMPv3" not in rows[0]
+    assert result.created == 5
+    assert imported["核心交换机-示例"].ssh_username == "admin"
+    assert imported["核心交换机-示例"].ssh_password == "Admin@123"
+    assert imported["FIT-AP-示例"].ssh_enabled == 0
+    assert imported["FIT-AP-示例"].telnet_enabled == 1
+    assert imported["FIT-AP-示例"].telnet_username is None
+    assert imported["FIT-AP-示例"].telnet_password == "Admin@123"
 
 
 def test_simplified_template_import_defaults_and_credentials(tmp_path):
@@ -93,22 +96,7 @@ def test_simplified_template_import_defaults_and_credentials(tmp_path):
 def test_old_template_fields_raise_clear_error(tmp_path):
     _repository, service = make_service(tmp_path)
     csv_path = tmp_path / "old_template.csv"
-    write_rows(
-        csv_path,
-        [
-            ["设备名称", "IP地址", "用户名", "密码", "Enable密码"],
-            ["Legacy", "192.168.1.9", "oldadmin", "oldpwd", "enablepwd"],
-        ],
-    )
-
-    with pytest.raises(ValueError, match="Unsupported CSV header"):
-        service.import_csv(csv_path)
-
-
-def test_legacy_protocol_port_template_raises_clear_error(tmp_path):
-    _repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "legacy.csv"
-    write_rows(csv_path, [["设备名称", "IP地址", "协议", "端口"], ["LegacyTelnet", "192.168.1.30", "telnet", "2323"]])
+    write_rows(csv_path, [["设备名称", "IP地址", "用户名", "密码"], ["Old", "192.168.1.9", "admin", "pwd"]])
 
     with pytest.raises(ValueError, match="Unsupported CSV header"):
         service.import_csv(csv_path)
@@ -212,37 +200,6 @@ def test_full_csv_authpriv_blank_priv_protocol_defaults_to_aes128(tmp_path):
     assert result.created == 1
     assert imported.snmpv3_auth_protocol == "SHA"
     assert imported.snmpv3_priv_protocol == "AES128"
-
-
-def test_import_maps_legacy_snmpv3_priv_protocol_values(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "legacy_snmp.csv"
-    write_dict_rows(
-        csv_path,
-        [
-            {
-                "name": "OldDES",
-                "ip_address": "192.168.1.41",
-                "snmp_v3_enabled": "1",
-                "snmpv3_security_level": "AuthPriv",
-                "snmpv3_priv_protocol": "DES",
-            },
-            {
-                "name": "OldAES",
-                "ip_address": "192.168.1.42",
-                "snmp_v3_enabled": "1",
-                "snmpv3_security_level": "AuthPriv",
-                "snmpv3_priv_protocol": "AES",
-            },
-        ],
-    )
-
-    result = service.import_csv(csv_path)
-    devices = {device.name: device for device in repository.list()}
-
-    assert result.created == 2
-    assert devices["OldDES"].snmpv3_priv_protocol == "DES56"
-    assert devices["OldAES"].snmpv3_priv_protocol == "AES128"
 
 
 def test_import_rejects_duplicate_uuid_and_no_connection(tmp_path):

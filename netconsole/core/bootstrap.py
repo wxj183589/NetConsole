@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from netconsole.core.database import Database
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import Site, SiteManager
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.demo_data import insert_demo_devices
 
 
 @dataclass(frozen=True)
@@ -21,18 +21,17 @@ class AppContext:
 def create_demo_context(paths: PathResolver | None = None) -> AppContext:
     paths = paths or PathResolver()
     paths.ensure_project_dirs()
-    site = SiteManager(paths).ensure_default_site()
+    app_logger.configure_path_resolver(paths)
+    manager = SiteManager(paths)
+    demo_inserted = not paths.site_db_path("demo").exists()
+    manager.ensure_app_config()
+    site = manager.ensure_site(manager.get_current_site())
     database = Database(site.database_path)
-    first_database = not database.exists()
-    if first_database:
-        database.initialize()
     repository = DeviceRepository(database)
-    if first_database:
-        insert_demo_devices(repository)
     return AppContext(
         paths=paths,
         site=site,
         database=database,
         repository=repository,
-        demo_inserted=first_database,
+        demo_inserted=demo_inserted,
     )

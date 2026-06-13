@@ -37,7 +37,6 @@ class Device:
     snmpv3_auth_password: str | None = None
     snmpv3_priv_protocol: str | None = None
     snmpv3_priv_password: str | None = None
-    tags: str | None = None
     remark: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

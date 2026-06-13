@@ -9,6 +9,10 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.app_root == tmp_path
     assert paths.docs_dir == tmp_path / "docs"
     assert paths.data_dir == tmp_path / "data"
+    assert paths.config_dir == tmp_path / "data" / "config"
+    assert paths.app_config_path == tmp_path / "data" / "config" / "app.json"
+    assert paths.logs_dir == tmp_path / "data" / "logs"
+    assert paths.app_log_path == tmp_path / "data" / "logs" / "app.log"
     assert paths.tests_dir == tmp_path / "tests"
     assert paths.project_dir == tmp_path / "project"
     assert paths.build_dir == tmp_path / "project" / "build"
@@ -31,6 +35,8 @@ def test_path_resolver_creates_project_dirs(tmp_path):
 
     assert paths.docs_dir.is_dir()
     assert paths.data_dir.is_dir()
+    assert paths.config_dir.is_dir()
+    assert paths.logs_dir.is_dir()
     assert paths.tests_dir.is_dir()
     assert paths.project_dir.is_dir()
     assert paths.sites_dir.is_dir()

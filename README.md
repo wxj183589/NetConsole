@@ -68,7 +68,9 @@ data/sites/demo/db/devices.db
 
 `demo` is the built-in demonstration site for first startup, UI testing, feature display, and import/export verification.
 
-If `data/sites/demo/db/devices.db` does not exist, the application creates the database, initializes the latest `devices` table, and inserts demo devices. If it already exists, the application uses it directly and does not change the table structure automatically.
+If `data/sites/demo/db/devices.db` does not exist, the application creates the database, initializes the latest tables, and inserts demo devices. Device Facts, Interfaces, and LLDP demo data are generated only during this first database creation.
+
+If `data/sites/demo/db/devices.db` already exists, the application uses it directly. It does not automatically add missing demo facts, interface data, LLDP data, or change the table structure. For development testing, delete `data/sites/demo/db/devices.db` manually and restart the application to regenerate the current demo database.
 
 Demo devices cover:
 
@@ -95,6 +97,7 @@ This stage only implements:
 - Search and filters
 - CSV import/export
 - CSV template export
+- Read-only device details for the latest demo Device Facts, Interfaces, and LLDP neighbor data
 
 Devices can enable SSH and Telnet independently. SNMPv1, SNMPv2c, and SNMPv3 are reserved configuration flags and can also be enabled independently. No real SSH, Telnet, or SNMP collection is implemented yet.
 

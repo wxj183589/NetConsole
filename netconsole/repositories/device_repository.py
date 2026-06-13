@@ -6,7 +6,7 @@ from netconsole.core.database import Database
 from netconsole.models.device import Device
 
 
-SEARCH_COLUMNS = ("name", "sysname", "ip_address", "station", "tags", "remark")
+SEARCH_COLUMNS = ("name", "sysname", "ip_address", "station", "remark")
 
 
 class DeviceRepository:
