@@ -64,3 +64,40 @@ def test_telnet_can_be_enabled_with_ssh(tmp_path):
     assert created.ssh_enabled == 1
     assert created.telnet_enabled == 1
     assert created.telnet_port == 23
+
+
+def test_repository_saves_ssh_and_telnet_credentials_without_shared_flag(tmp_path):
+    repository = make_repository(tmp_path)
+
+    created = repository.create(
+        Device(
+            name="Credentials",
+            ip_address="10.0.0.4",
+            ssh_username="ssh",
+            ssh_password="ssh-pwd",
+            telnet_username="",
+            telnet_password="tel-pwd",
+        )
+    )
+
+    assert not hasattr(created, "credential_shared")
+    assert created.ssh_username == "ssh"
+    assert created.ssh_password == "ssh-pwd"
+    assert created.telnet_username == ""
+    assert created.telnet_password == "tel-pwd"
+
+
+def test_repository_allows_blank_ssh_username_and_password(tmp_path):
+    repository = make_repository(tmp_path)
+
+    created = repository.create(
+        Device(
+            name="Blank SSH Credentials",
+            ip_address="10.0.0.6",
+            ssh_username="",
+            ssh_password="",
+        )
+    )
+
+    assert created.ssh_username == ""
+    assert created.ssh_password == ""

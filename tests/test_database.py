@@ -16,6 +16,10 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "ssh_port",
         "telnet_enabled",
         "telnet_port",
+        "ssh_username",
+        "ssh_password",
+        "telnet_username",
+        "telnet_password",
         "snmp_v1_enabled",
         "snmp_v2c_enabled",
         "snmp_v3_enabled",
@@ -23,7 +27,22 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "snmpv3_priv_password",
     ):
         assert column in columns
-    for removed_column in ("serial_port", "baudrate", "data_bits", "parity", "stop_bits", "protocol", "port", "snmp_version"):
+    for removed_column in (
+        "credential_shared",
+        "auth_mode",
+        "ssh_auth_mode",
+        "telnet_auth_mode",
+        "username",
+        "password",
+        "serial_port",
+        "baudrate",
+        "data_bits",
+        "parity",
+        "stop_bits",
+        "protocol",
+        "port",
+        "snmp_version",
+    ):
         assert removed_column not in columns
 
 
@@ -35,16 +54,19 @@ def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(t
 
     assert context.demo_inserted is True
     assert context.site.name == "demo"
-    assert len(devices) == 6
+    assert len(devices) == 5
     assert len(uuids) == len(devices)
     assert all(Device.is_valid_uuid(device.device_uuid) for device in devices)
     assert ("H3C", "SW") in pairs
-    assert ("H3C", "FIT-AP") in pairs
     assert ("H3C", "AC") in pairs
     assert ("Huawei", "SW") in pairs
     assert ("Ruijie", "SW") in pairs
     assert ("H3C", "FW") in pairs
-    assert any(device.ssh_enabled and device.telnet_enabled and device.snmp_v1_enabled and device.snmp_v2c_enabled and device.snmp_v3_enabled for device in devices)
+    assert all(not hasattr(device, "credential_shared") for device in devices)
+    assert any(device.ssh_enabled and not device.telnet_enabled and device.ssh_username and device.ssh_password for device in devices)
+    assert any(device.telnet_enabled and not device.ssh_enabled and not device.telnet_username and device.telnet_password for device in devices)
+    assert any(device.ssh_enabled and device.telnet_enabled and device.ssh_username == device.telnet_username and device.ssh_password == device.telnet_password for device in devices)
+    assert any(device.ssh_enabled and device.telnet_enabled and device.ssh_username != device.telnet_username for device in devices)
     assert any(
         device.snmp_v3_enabled
         and device.snmpv3_security_level == "AuthPriv"
