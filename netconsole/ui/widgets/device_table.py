@@ -24,7 +24,6 @@ COLUMNS = (
     ("station", "field.station"),
     ("ip_address", "field.ip_address"),
     ("protocols", "field.protocols"),
-    ("tags", "field.tags"),
     ("updated_at", "field.updated_at"),
     ("actions", "field.actions"),
 )
@@ -44,7 +43,6 @@ def protocol_label(ssh_enabled: object, telnet_enabled: object) -> str:
 
 class DeviceTable(QTableWidget):
     selection_changed = Signal()
-    connect_requested = Signal(int)
     edit_requested = Signal(int)
     delete_requested = Signal(int)
 
@@ -69,7 +67,7 @@ class DeviceTable(QTableWidget):
     def retranslate(self) -> None:
         self.setHorizontalHeaderLabels([self.i18n.t(key) if key else "" for _, key in COLUMNS])
         self._set_header_check_state(Qt.Unchecked)
-        widths = [44, 70, 170, 140, 140, 100, 130, 150, 190]
+        widths = [44, 70, 190, 150, 150, 110, 160, 190]
         for index, width in enumerate(widths):
             self.setColumnWidth(index, width)
         self._refresh_action_buttons()
@@ -87,7 +85,6 @@ class DeviceTable(QTableWidget):
                 "station": device.station,
                 "ip_address": device.ip_address,
                 "protocols": protocol_label(device.ssh_enabled, device.telnet_enabled),
-                "tags": device.tags,
                 "updated_at": device.updated_at,
             }
             for column, (field, _) in enumerate(COLUMNS):
@@ -118,6 +115,22 @@ class DeviceTable(QTableWidget):
     def clear_checked(self) -> None:
         self._set_all_checked(False)
 
+    def invert_checked(self) -> None:
+        self._updating_checks = True
+        self.selected_device_ids.clear()
+        for row in range(self.rowCount()):
+            item = self.item(row, CHECK_COLUMN)
+            if item is None:
+                continue
+            checked = item.checkState() != Qt.Checked
+            item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+            device_id = item.data(Qt.UserRole)
+            if checked and device_id is not None:
+                self.selected_device_ids.add(int(device_id))
+        self._updating_checks = False
+        self._sync_header_check_state()
+        self.selection_changed.emit()
+
     def _set_checkbox_item(self, row: int, device: Device) -> None:
         item = QTableWidgetItem()
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
@@ -129,17 +142,13 @@ class DeviceTable(QTableWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        connect_button = QPushButton(self.i18n.t("devices.connect"))
         edit_button = QPushButton(self.i18n.t("devices.edit"))
         delete_button = QPushButton(self.i18n.t("devices.delete"))
-        connect_button.setEnabled(False)
-        connect_button.setToolTip(self.i18n.t("dialog.test_connection_tip"))
         if device.id is not None:
             device_id = int(device.id)
-            connect_button.clicked.connect(lambda _=False, value=device_id: self.connect_requested.emit(value))
             edit_button.clicked.connect(lambda _=False, value=device_id: self.edit_requested.emit(value))
             delete_button.clicked.connect(lambda _=False, value=device_id: self.delete_requested.emit(value))
-        for button in (connect_button, edit_button, delete_button):
+        for button in (edit_button, delete_button):
             layout.addWidget(button)
         return widget
 

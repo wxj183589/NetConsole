@@ -30,7 +30,6 @@ def test_main_table_columns_only_include_core_fields():
         "station",
         "ip_address",
         "protocols",
-        "tags",
         "updated_at",
         "actions",
     ]
@@ -86,11 +85,19 @@ def test_row_edit_button_calls_edit_callback():
     edited = []
     table.edit_requested.connect(lambda device_id: edited.append(device_id))
 
-    action_widget = table.cellWidget(0, 8)
+    action_widget = table.cellWidget(0, 7)
     buttons = action_widget.findChildren(QPushButton)
-    buttons[1].click()
+    buttons[0].click()
 
     assert edited == [1]
+
+
+def test_row_action_buttons_only_include_edit_and_delete():
+    table = make_table()
+    action_widget = table.cellWidget(0, 7)
+    buttons = action_widget.findChildren(QPushButton)
+
+    assert [button.text() for button in buttons] == ["Edit", "Delete"]
 
 
 def test_checkbox_click_adds_and_removes_selected_device_id():

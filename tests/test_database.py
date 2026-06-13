@@ -42,6 +42,7 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "protocol",
         "port",
         "snmp_version",
+        "tags",
     ):
         assert removed_column not in columns
 
@@ -54,7 +55,7 @@ def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(t
 
     assert context.demo_inserted is True
     assert context.site.name == "demo"
-    assert len(devices) == 5
+    assert len(devices) == 8
     assert len(uuids) == len(devices)
     assert all(Device.is_valid_uuid(device.device_uuid) for device in devices)
     assert ("H3C", "SW") in pairs
@@ -76,6 +77,14 @@ def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(t
         and device.snmpv3_priv_password == "priv123456"
         for device in devices
     )
+    simulators = {device.name: device for device in devices if device.name in {"AC", "SW01", "SW02"}}
+    assert set(simulators) == {"AC", "SW01", "SW02"}
+    assert simulators["AC"].ip_address == "10.0.0.51"
+    assert simulators["SW01"].ip_address == "10.0.0.52"
+    assert simulators["SW02"].ip_address == "10.0.0.53"
+    assert all(Device.is_valid_uuid(device.device_uuid) for device in simulators.values())
+    assert all(device.ssh_username == "admin" for device in simulators.values())
+    assert all(device.ssh_password == "Admin@123" for device in simulators.values())
     assert all(getattr(device, "device_type") != "Serial" for device in devices)
 
     second_context = create_demo_context(PathResolver(tmp_path))

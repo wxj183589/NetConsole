@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
-from netconsole.models.device_credentials import to_bool_int
 from netconsole.repositories.device_repository import DeviceRepository
 
 
@@ -29,26 +28,15 @@ TEMPLATE_FIELDS = [
     "SSH密码",
     "Telnet用户名",
     "Telnet密码",
-    "标签",
     "备注",
 ]
 
-TEMPLATE_EXAMPLE_ROW = [
-    "核心交换机-示例",
-    "192.168.1.1",
-    "H3C",
-    "控制中心",
-    "SW",
-    "是",
-    "22",
-    "否",
-    "23",
-    "admin",
-    "admin123",
-    "",
-    "",
-    "核心",
-    "演示设备，可删除",
+TEMPLATE_EXAMPLE_ROWS = [
+    ["核心交换机-示例", "192.168.1.1", "H3C", "控制中心", "SW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "SSH设备示例"],
+    ["接入交换机-示例", "192.168.1.2", "H3C", "车站A", "SW", "是", "22", "是", "23", "admin", "Admin@123", "admin", "Admin@123", "SSH+Telnet示例"],
+    ["无线控制器-示例", "192.168.1.10", "H3C", "控制中心", "AC", "是", "22", "否", "23", "admin", "Admin@123", "", "", "AC设备示例"],
+    ["FIT-AP-示例", "192.168.1.20", "H3C", "站台层", "FIT-AP", "否", "22", "是", "23", "", "Admin@123", " ", "Admin@123", "Telnet设备示例"],
+    ["防火墙-示例", "192.168.1.254", "H3C", "控制中心", "FW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "防火墙示例"],
 ]
 
 TEMPLATE_FIELD_MAP = {
@@ -65,7 +53,6 @@ TEMPLATE_FIELD_MAP = {
     "SSH密码": "ssh_password",
     "Telnet用户名": "telnet_username",
     "Telnet密码": "telnet_password",
-    "标签": "tags",
     "备注": "remark",
 }
 
@@ -97,7 +84,6 @@ EXPORT_FIELDS = [
     "snmpv3_auth_password",
     "snmpv3_priv_protocol",
     "snmpv3_priv_password",
-    "tags",
     "remark",
     "created_at",
     "updated_at",
@@ -148,7 +134,7 @@ class DeviceImportExportService:
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
             writer.writerow(TEMPLATE_FIELDS)
-            writer.writerow(TEMPLATE_EXAMPLE_ROW)
+            writer.writerows(TEMPLATE_EXAMPLE_ROWS)
 
     def _import_rows(self, rows: Iterable[tuple[int, dict[str, object | None]]]) -> ImportResult:
         created = 0

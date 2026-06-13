@@ -11,7 +11,7 @@ def make_repository(tmp_path):
 
 def test_device_repository_crud_search_and_filters(tmp_path):
     repository = make_repository(tmp_path)
-    created = repository.create(Device(name="Core-SW", ip_address="10.0.0.1", station="Room-A", tags="core"))
+    created = repository.create(Device(name="Core-SW", ip_address="10.0.0.1", station="Room-A", remark="core"))
 
     assert created.id is not None
     assert Device.is_valid_uuid(created.device_uuid)

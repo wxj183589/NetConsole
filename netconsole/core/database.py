@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS devices (
     snmpv3_auth_password TEXT,
     snmpv3_priv_protocol TEXT,
     snmpv3_priv_password TEXT,
-    tags TEXT,
     remark TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

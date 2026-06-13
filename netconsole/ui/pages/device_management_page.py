@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core.i18n import I18n
+from netconsole.core import app_logger
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
@@ -53,6 +54,7 @@ class DeviceManagementPage(QWidget):
         self.export_csv_button = QPushButton()
         self.export_template_button = QPushButton()
         self.clear_selection_button = QPushButton()
+        self.invert_selection_button = QPushButton()
         self.selection_label = QLabel()
         self.table = DeviceTable(i18n)
 
@@ -72,6 +74,7 @@ class DeviceManagementPage(QWidget):
             self.export_csv_button,
             self.export_template_button,
             self.clear_selection_button,
+            self.invert_selection_button,
         ):
             actions.addWidget(button)
         actions.addWidget(self.selection_label)
@@ -95,10 +98,10 @@ class DeviceManagementPage(QWidget):
         self.export_csv_button.clicked.connect(self.export_csv)
         self.export_template_button.clicked.connect(self.export_template)
         self.clear_selection_button.clicked.connect(self.clear_selection)
+        self.invert_selection_button.clicked.connect(self.invert_selection)
         self.table.selection_changed.connect(self.update_selection_state)
         self.table.edit_requested.connect(self.edit_device_by_id)
         self.table.delete_requested.connect(self.delete_device_by_id)
-        self.table.connect_requested.connect(self.connect_device)
         self.retranslate()
         self.refresh()
 
@@ -113,6 +116,7 @@ class DeviceManagementPage(QWidget):
         self.export_csv_button.setText(self.i18n.t("devices.export_csv"))
         self.export_template_button.setText(self.i18n.t("devices.export_template"))
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
+        self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.batch_delete_button.setStyleSheet("QPushButton { color: #b91c1c; font-weight: 600; }")
         self._populate_filters()
         self.table.retranslate()
@@ -149,6 +153,16 @@ class DeviceManagementPage(QWidget):
         )
         self.table.set_devices(devices)
         self.update_selection_state()
+
+    def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
+        self.repository = repository
+        self.site_name = site_name
+        self.service = DeviceImportExportService(repository)
+        self.dialog_registry = DeviceDialogRegistry()
+        self.search_input.clear()
+        self.vendor_filter.setCurrentIndex(0)
+        self.type_filter.setCurrentIndex(0)
+        self.refresh()
 
     def selected_id(self) -> int | None:
         return self.table.selected_device_id()
@@ -199,19 +213,23 @@ class DeviceManagementPage(QWidget):
 
     def _create_device_from_dialog(self, device) -> None:
         try:
-            self.repository.create(device)
+            created = self.repository.create(device)
         except Exception as exc:
+            app_logger.log_error("DEVICE_CREATE_FAILED", str(exc))
             QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
             return
+        app_logger.log_info("DEVICE_CREATED", f"设备已新增: {created.name}")
         self.refresh()
         self._close_sender_dialog()
 
     def _update_device_from_dialog(self, device) -> None:
         try:
-            self.repository.update(device)
+            updated = self.repository.update(device)
         except Exception as exc:
+            app_logger.log_error("DEVICE_UPDATE_FAILED", str(exc))
             QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
             return
+        app_logger.log_info("DEVICE_UPDATED", f"设备已编辑: {updated.name}")
         self.refresh()
         self._close_sender_dialog()
 
@@ -230,7 +248,9 @@ class DeviceManagementPage(QWidget):
     def delete_device_by_id(self, device_id: int) -> None:
         answer = QMessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
         if answer == QMessageBox.Yes:
+            device = self.repository.get(device_id)
             self.repository.delete(device_id)
+            app_logger.log_info("DEVICE_DELETED", f"设备已删除: {device.name}")
             self.refresh()
 
     def batch_delete_devices(self) -> None:
@@ -245,10 +265,17 @@ class DeviceManagementPage(QWidget):
         if answer != QMessageBox.Yes:
             return
         delete_device_ids(self.repository, device_ids)
+        app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
         self.refresh()
 
     def clear_selection(self) -> None:
         self.table.clear_checked()
+        app_logger.log_info("DEVICE_SELECTION_CLEARED", "清空选择")
+        self.update_selection_state()
+
+    def invert_selection(self) -> None:
+        self.table.invert_checked()
+        app_logger.log_info("DEVICE_SELECTION_INVERTED", "反选")
         self.update_selection_state()
 
     def update_selection_state(self) -> None:
@@ -256,15 +283,19 @@ class DeviceManagementPage(QWidget):
         self.selection_label.setText(self.i18n.t("devices.selected_count", count=count))
         self.batch_delete_button.setEnabled(count > 0)
         self.clear_selection_button.setEnabled(count > 0)
-
-    def connect_device(self, _device_id: int) -> None:
-        QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("dialog.test_connection_tip"))
+        self.invert_selection_button.setEnabled(self.table.rowCount() > 0)
 
     def import_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("devices.import_csv"), "", "CSV Files (*.csv)")
         if path:
-            result = self.service.import_csv(Path(path))
+            try:
+                result = self.service.import_csv(Path(path))
+            except Exception as exc:
+                app_logger.log_error("CSV_IMPORT_FAILED", f"{Path(path).name}: {exc}")
+                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                return
             self.refresh()
+            app_logger.log_info("CSV_IMPORTED", f"{Path(path).name}: created={result.created}, skipped={result.skipped}")
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
 
     def export_csv(self) -> None:
@@ -276,7 +307,13 @@ class DeviceManagementPage(QWidget):
         )
         if path:
             selected_devices = self.table.checked_devices()
-            self.service.export_csv(Path(path), choose_devices_for_export(self.repository.list(), selected_devices))
+            try:
+                self.service.export_csv(Path(path), choose_devices_for_export(self.repository.list(), selected_devices))
+            except Exception as exc:
+                app_logger.log_error("CSV_EXPORT_FAILED", f"{Path(path).name}: {exc}")
+                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                return
+            app_logger.log_info("CSV_EXPORTED", Path(path).name)
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
 
     def export_template(self) -> None:
@@ -287,5 +324,11 @@ class DeviceManagementPage(QWidget):
             "CSV Files (*.csv)",
         )
         if path:
-            self.service.export_template_csv(Path(path))
+            try:
+                self.service.export_template_csv(Path(path))
+            except Exception as exc:
+                app_logger.log_error("CSV_TEMPLATE_EXPORT_FAILED", f"{Path(path).name}: {exc}")
+                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                return
+            app_logger.log_info("CSV_TEMPLATE_EXPORTED", Path(path).name)
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))

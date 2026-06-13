@@ -29,7 +29,7 @@ from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
 from netconsole.ui.windowing import fit_default_window_size
 
 
-BASIC_FIELDS = ("name", "sysname", "device_vendor", "device_type", "station", "tags", "remark")
+BASIC_FIELDS = ("name", "sysname", "device_vendor", "device_type", "station", "remark")
 CONNECTION_FIELDS = (
     "ip_address",
     "ssh_enabled",
@@ -132,7 +132,6 @@ class DeviceDialog(QDialog):
         self._add_combo(basic_form, "device_vendor", DEVICE_VENDORS)
         self._add_combo(basic_form, "device_type", DEVICE_TYPES)
         self._add_line(basic_form, "station")
-        self._add_line(basic_form, "tags")
         self._add_text(basic_form, "remark")
 
         self._add_checkbox(connection_form, "ssh_enabled")
