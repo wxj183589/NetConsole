@@ -17,8 +17,10 @@ from PySide6.QtWidgets import (
 from netconsole.core.i18n import I18n
 from netconsole.core import app_logger
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
+from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
+from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
@@ -37,6 +39,7 @@ class DeviceManagementPage(QWidget):
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo") -> None:
         super().__init__()
         self.repository = repository
+        self.fact_repository = DeviceFactRepository(repository.database)
         self.i18n = i18n
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
@@ -46,6 +49,7 @@ class DeviceManagementPage(QWidget):
         self.vendor_filter = QComboBox()
         self.type_filter = QComboBox()
         self.add_button = QPushButton()
+        self.detail_button = QPushButton()
         self.edit_button = QPushButton()
         self.delete_button = QPushButton()
         self.batch_delete_button = QPushButton()
@@ -66,6 +70,7 @@ class DeviceManagementPage(QWidget):
         actions = QHBoxLayout()
         for button in (
             self.add_button,
+            self.detail_button,
             self.edit_button,
             self.delete_button,
             self.batch_delete_button,
@@ -90,6 +95,7 @@ class DeviceManagementPage(QWidget):
         self.vendor_filter.currentIndexChanged.connect(self.refresh)
         self.type_filter.currentIndexChanged.connect(self.refresh)
         self.add_button.clicked.connect(self.add_device)
+        self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.edit_button.clicked.connect(self.edit_device)
         self.delete_button.clicked.connect(self.delete_device)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
@@ -100,6 +106,7 @@ class DeviceManagementPage(QWidget):
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.invert_selection_button.clicked.connect(self.invert_selection)
         self.table.selection_changed.connect(self.update_selection_state)
+        self.table.detail_requested.connect(self.show_device_detail)
         self.table.edit_requested.connect(self.edit_device_by_id)
         self.table.delete_requested.connect(self.delete_device_by_id)
         self.retranslate()
@@ -108,6 +115,7 @@ class DeviceManagementPage(QWidget):
     def retranslate(self) -> None:
         self.search_input.setPlaceholderText(self.i18n.t("devices.search"))
         self.add_button.setText(self.i18n.t("devices.add"))
+        self.detail_button.setText(self.i18n.t("details.title"))
         self.edit_button.setText(self.i18n.t("devices.edit"))
         self.delete_button.setText(self.i18n.t("devices.delete"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
@@ -156,6 +164,7 @@ class DeviceManagementPage(QWidget):
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
+        self.fact_repository = DeviceFactRepository(repository.database)
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
         self.dialog_registry = DeviceDialogRegistry()
@@ -200,6 +209,20 @@ class DeviceManagementPage(QWidget):
         dialog.saved.connect(self._update_device_from_dialog)
         dialog.destroyed.connect(lambda _=None, uuid=device_uuid, window=dialog: self.dialog_registry.remove_edit_window(uuid, window))
         self._show_window(dialog)
+
+    def show_device_detail(self, device_id: int) -> None:
+        device = self.repository.get(device_id)
+        dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_selected_device_detail(self) -> None:
+        device_id = self.selected_id()
+        if device_id is None:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            return
+        self.show_device_detail(device_id)
 
     def _show_window(self, dialog: DeviceDialog) -> None:
         dialog.show()

@@ -8,9 +8,19 @@ Main database path:
 data/sites/<site_name>/db/devices.db
 ```
 
-The first stage creates only the `devices` table. The schema in code is the current source of truth for a new database.
+The schema in code is the current source of truth for a new database.
 
-The built-in demonstration site is `demo`. If `data/sites/demo/db/devices.db` does not exist, the application creates the latest `devices` table and inserts demo devices. If the database already exists, the application uses it directly and does not change its table structure automatically.
+The built-in demonstration site is `demo`. If `data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
+
+If the database already exists, the application uses it directly and does not change its table structure or add missing demo fact data automatically. For development testing, delete `data/sites/demo/db/devices.db` manually and restart the application to regenerate the current demo database. No database upgrade or demo backfill logic is used.
+
+Current local tables:
+
+- `devices`
+- `collect_runs`
+- `device_facts`
+- `device_interfaces`
+- `device_lldp_neighbors`
 
 ## Device Identity
 

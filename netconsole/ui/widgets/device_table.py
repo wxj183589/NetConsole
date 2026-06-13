@@ -43,6 +43,7 @@ def protocol_label(ssh_enabled: object, telnet_enabled: object) -> str:
 
 class DeviceTable(QTableWidget):
     selection_changed = Signal()
+    detail_requested = Signal(int)
     edit_requested = Signal(int)
     delete_requested = Signal(int)
 
@@ -67,7 +68,7 @@ class DeviceTable(QTableWidget):
     def retranslate(self) -> None:
         self.setHorizontalHeaderLabels([self.i18n.t(key) if key else "" for _, key in COLUMNS])
         self._set_header_check_state(Qt.Unchecked)
-        widths = [44, 70, 190, 150, 150, 110, 160, 190]
+        widths = [44, 70, 190, 150, 150, 110, 160, 250]
         for index, width in enumerate(widths):
             self.setColumnWidth(index, width)
         self._refresh_action_buttons()
@@ -142,13 +143,15 @@ class DeviceTable(QTableWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        detail_button = QPushButton(self.i18n.t("details.button"))
         edit_button = QPushButton(self.i18n.t("devices.edit"))
         delete_button = QPushButton(self.i18n.t("devices.delete"))
         if device.id is not None:
             device_id = int(device.id)
+            detail_button.clicked.connect(lambda _=False, value=device_id: self.detail_requested.emit(value))
             edit_button.clicked.connect(lambda _=False, value=device_id: self.edit_requested.emit(value))
             delete_button.clicked.connect(lambda _=False, value=device_id: self.delete_requested.emit(value))
-        for button in (edit_button, delete_button):
+        for button in (detail_button, edit_button, delete_button):
             layout.addWidget(button)
         return widget
 

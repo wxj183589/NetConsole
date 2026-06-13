@@ -87,6 +87,7 @@ class PathResolver:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
             (site_path / dirname).mkdir(parents=True, exist_ok=True)
+        (site_path / "raw" / "collect").mkdir(parents=True, exist_ok=True)
         return site_path
 
     def ensure_project_dirs(self) -> None:
