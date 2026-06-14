@@ -141,6 +141,97 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors (
 );
 """
 
+DEVICE_FACTS_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_facts_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_uuid TEXT NOT NULL,
+    sysname TEXT,
+    model TEXT,
+    serial_number TEXT,
+    software_version TEXT,
+    bootrom_version TEXT,
+    vendor TEXT,
+    uptime TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+DEVICE_INTERFACES_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_interfaces_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_uuid TEXT NOT NULL,
+    interface_name TEXT NOT NULL,
+    link_status TEXT,
+    protocol_status TEXT,
+    speed TEXT,
+    duplex TEXT,
+    interface_type TEXT,
+    port_status TEXT,
+    pvid TEXT,
+    description TEXT,
+    ip_address TEXT,
+    mac_address TEXT,
+    vlan TEXT,
+    last_change TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_optical_modules_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_uuid TEXT NOT NULL,
+    interface_name TEXT NOT NULL,
+    rx_power TEXT,
+    tx_power TEXT,
+    temperature TEXT,
+    voltage TEXT,
+    bias_current TEXT,
+    module_model TEXT,
+    module_serial_number TEXT,
+    module_vendor TEXT,
+    wavelength TEXT,
+    transmission_distance TEXT,
+    connector_type TEXT,
+    rx_low_alarm TEXT,
+    rx_high_alarm TEXT,
+    tx_low_alarm TEXT,
+    tx_high_alarm TEXT,
+    status TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_lldp_neighbors_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_uuid TEXT NOT NULL,
+    local_interface TEXT NOT NULL,
+    neighbor_sysname TEXT,
+    neighbor_mac TEXT,
+    neighbor_interface TEXT,
+    neighbor_ip TEXT,
+    neighbor_device_uuid TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -167,6 +258,10 @@ class Database:
                         DEVICE_INTERFACES_SCHEMA,
                         DEVICE_OPTICAL_MODULES_SCHEMA,
                         DEVICE_LLDP_NEIGHBORS_SCHEMA,
+                        DEVICE_FACTS_HISTORY_SCHEMA,
+                        DEVICE_INTERFACES_HISTORY_SCHEMA,
+                        DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
+                        DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
                     )
                 )
             )

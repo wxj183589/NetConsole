@@ -1,0 +1,2 @@
+Slot Type             State    Subslot  Soft Ver                 Patch Ver
+1    S6850            Master   0        S6850-7170               None

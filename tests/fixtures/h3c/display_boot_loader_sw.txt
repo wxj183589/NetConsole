@@ -1,0 +1,9 @@
+Current software images:
+  flash:/s6850-cmw710-boot-t7064p15.bin
+  flash:/s6850-cmw710-system-t7064p15.bin
+Main startup software images:
+  flash:/s6850-cmw710-boot-t7064p15.bin
+  flash:/s6850-cmw710-system-t7064p15.bin
+Backup startup software images:
+  flash:/s6850-cmw710-boot-t7064p15.bin
+  flash:/s6850-cmw710-system-t7064p15.bin

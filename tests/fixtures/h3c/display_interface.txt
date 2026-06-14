@@ -1,0 +1,20 @@
+GigabitEthernet1/0/1 current state: UP
+Line protocol current state: UP
+Description: Uplink to AC
+Internet Address is 10.0.0.52/24 Primary
+IP Packet Frame Type: PKTFMT_ETHNT_2, Hardware Address: 0011-2233-5201
+The Maximum Transmit Unit is 1500
+Speed : 1000Mbps
+Duplex: Full
+PVID: 1
+Port link-type: trunk
+VLAN passing  : 1,10,20
+
+GigabitEthernet1/0/2 current state: DOWN
+Line protocol current state: DOWN
+Description: Access Port
+IP Packet Frame Type: PKTFMT_ETHNT_2, Hardware Address: 0011-2233-5202
+Speed : auto
+Duplex: auto
+PVID: 10
+Port link-type: access

@@ -24,7 +24,9 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
+from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
 from netconsole.ui.windowing import fit_default_window_size
 
@@ -65,6 +67,7 @@ class DeviceDialog(QDialog):
         self.original = device
         self.inputs: dict[str, object] = {}
         self.labels: dict[str, QLabel] = {}
+        self.connection_test_thread: DeviceConnectionTestThread | None = None
 
         self.setModal(False)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -180,8 +183,8 @@ class DeviceDialog(QDialog):
         self.cancel_button = QPushButton()
         self.test_button = QPushButton()
         self.save_button = QPushButton()
-        self.test_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.reject)
+        self.test_button.clicked.connect(self.test_connection)
         self.save_button.clicked.connect(self.accept)
         button_layout.addWidget(self.cancel_button)
         button_layout.addWidget(self.test_button)
@@ -301,6 +304,38 @@ class DeviceDialog(QDialog):
             QMessageBox.warning(self, self.windowTitle(), self.i18n.t(error_key))
             return
         self.saved.emit(self.device())
+
+    def test_connection(self) -> None:
+        device = self.device()
+        if not device.ip_address:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("validation.host_required"))
+            return
+        self.test_button.setEnabled(False)
+        self.test_button.setText(self.i18n.t("devices.testing_connection"))
+        self.connection_test_thread = DeviceConnectionTestThread(device, self)
+        self.connection_test_thread.result_ready.connect(self._show_connection_result)
+        self.connection_test_thread.finished.connect(self.connection_test_thread.deleteLater)
+        self.connection_test_thread.finished.connect(lambda: setattr(self, "connection_test_thread", None))
+        self.connection_test_thread.start()
+
+    def _show_connection_result(self, result: ConnectionTestResult) -> None:
+        self.test_button.setEnabled(True)
+        self.test_button.setText(self.i18n.t("dialog.test_connection"))
+        if result.success:
+            message = self.i18n.t(
+                "connection.success_detail",
+                protocol=result.protocol,
+                host=f"{result.host}:{result.port}",
+                prompt=result.prompt or "-",
+                elapsed=result.elapsed_ms if result.elapsed_ms is not None else "-",
+            )
+            QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
+        else:
+            QMessageBox.warning(
+                self,
+                self.i18n.t("connection.failed_title"),
+                self.i18n.t("connection.failed_detail", reason=result.message),
+            )
 
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)

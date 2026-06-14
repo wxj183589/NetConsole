@@ -34,6 +34,7 @@ def test_upsert_device_fact_creates_and_replaces_old_data(tmp_path):
     assert fact["sysname"] == "NEW"
     assert fact["model"] == "New Model"
     assert len(repository.list_device_facts()) == 1
+    assert [item["sysname"] for item in repository.list_fact_history("device-1")] == ["NEW", "OLD"]
 
 
 def test_replace_device_interfaces_replaces_only_target_device(tmp_path):
@@ -53,6 +54,33 @@ def test_replace_device_interfaces_replaces_only_target_device(tmp_path):
     assert device_1_interfaces[0]["port_status"] == "route"
     assert device_1_interfaces[0]["pvid"] == "1"
     assert [item["interface_name"] for item in repository.list_device_interfaces("device-2")] == ["GE1/0/9"]
+
+
+def test_device_interfaces_use_logical_interface_sort(tmp_path):
+    repository = make_repository(tmp_path)
+
+    repository.replace_device_interfaces(
+        "device-1",
+        [
+            {"interface_name": "GigabitEthernet1/0/10"},
+            {"interface_name": "GigabitEthernet1/0/2"},
+            {"interface_name": "GigabitEthernet1/0/1"},
+        ],
+    )
+
+    assert [item["interface_name"] for item in repository.list_device_interfaces("device-1")] == [
+        "GigabitEthernet1/0/1",
+        "GigabitEthernet1/0/2",
+        "GigabitEthernet1/0/10",
+    ]
+
+
+def test_list_interface_history_orders_by_collected_at_desc(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.append_interface_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "link_status": "OLD"})
+    repository.append_interface_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T11:00:00", "link_status": "NEW"})
+
+    assert [item["link_status"] for item in repository.list_interface_history("device-1", "GE1/0/1")] == ["NEW", "OLD"]
 
 
 def test_replace_and_list_optical_modules(tmp_path):
@@ -89,6 +117,28 @@ def test_replace_and_list_optical_modules(tmp_path):
     assert repository.list_optical_modules("device-2")[0]["interface_name"] == "GE1/0/9"
 
 
+def test_optical_modules_use_logical_interface_sort(tmp_path):
+    repository = make_repository(tmp_path)
+
+    repository.replace_optical_modules(
+        "device-1",
+        [{"interface_name": "GigabitEthernet1/0/10"}, {"interface_name": "GigabitEthernet1/0/2"}],
+    )
+
+    assert [item["interface_name"] for item in repository.list_optical_modules("device-1")] == [
+        "GigabitEthernet1/0/2",
+        "GigabitEthernet1/0/10",
+    ]
+
+
+def test_list_optical_history_orders_by_collected_at_desc(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.append_optical_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "rx_power": "-3.45 dBm"})
+    repository.append_optical_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T11:00:00", "rx_power": "-3.21 dBm"})
+
+    assert [item["rx_power"] for item in repository.list_optical_history("device-1", "GE1/0/1")] == ["-3.21 dBm", "-3.45 dBm"]
+
+
 def test_replace_lldp_neighbors_replaces_only_target_device(tmp_path):
     repository = make_repository(tmp_path)
     repository.replace_lldp_neighbors("device-1", [{"local_interface": "GE1/0/1", "neighbor_sysname": "OLD"}])
@@ -99,6 +149,25 @@ def test_replace_lldp_neighbors_replaces_only_target_device(tmp_path):
     neighbors = repository.list_lldp_neighbors("device-1")
     assert [(item["local_interface"], item["neighbor_sysname"]) for item in neighbors] == [("GE1/0/2", "NEW")]
     assert repository.list_lldp_neighbors("device-2")[0]["neighbor_sysname"] == "OTHER"
+
+
+def test_lldp_neighbors_use_logical_local_interface_sort(tmp_path):
+    repository = make_repository(tmp_path)
+
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [{"local_interface": "GE1/0/10", "neighbor_sysname": "B"}, {"local_interface": "GE1/0/2", "neighbor_sysname": "A"}],
+    )
+
+    assert [item["local_interface"] for item in repository.list_lldp_neighbors("device-1")] == ["GE1/0/2", "GE1/0/10"]
+
+
+def test_list_lldp_history_orders_by_collected_at_desc(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.append_lldp_history({"device_uuid": "device-1", "local_interface": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "neighbor_sysname": "OLD"})
+    repository.append_lldp_history({"device_uuid": "device-1", "local_interface": "GE1/0/1", "collected_at": "2026-06-13T11:00:00", "neighbor_sysname": "NEW"})
+
+    assert [item["neighbor_sysname"] for item in repository.list_lldp_history("device-1", "GE1/0/1")] == ["NEW", "OLD"]
 
 
 def test_create_collect_run_can_be_read(tmp_path):

@@ -1,0 +1,4 @@
+H3C Comware Software, Version 7.1.070, Release 6607P20
+Copyright (c) 2004-2026 New H3C Technologies Co., Ltd. All rights reserved.
+SW01 uptime is 12 weeks, 3 days, 4 hours, 5 minutes
+BootRom Version: 1.23

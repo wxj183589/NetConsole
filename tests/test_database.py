@@ -19,6 +19,10 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "device_interfaces" in table_names
     assert "device_optical_modules" in table_names
     assert "device_lldp_neighbors" in table_names
+    assert "device_facts_history" in table_names
+    assert "device_interfaces_history" in table_names
+    assert "device_optical_modules_history" in table_names
+    assert "device_lldp_neighbors_history" in table_names
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns
 
@@ -143,6 +147,9 @@ def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(t
     assert sw01_optical_modules[0]["rx_power"] == "-3.21 dBm"
     assert sw02_optical_modules[0]["interface_name"] == "GigabitEthernet1/0/1"
     assert sw02_optical_modules[0]["module_serial_number"] == "DEMO-OPT-SW02-0001"
+    assert len(fact_repository.list_interface_history(simulators["SW01"].device_uuid, "GigabitEthernet1/0/2")) >= 3
+    assert len(fact_repository.list_optical_history(simulators["SW01"].device_uuid, "GigabitEthernet1/0/2")) >= 3
+    assert len(fact_repository.list_lldp_history(simulators["SW01"].device_uuid, "GigabitEthernet1/0/2")) >= 3
 
     second_context = create_demo_context(PathResolver(tmp_path))
     assert second_context.demo_inserted is False

@@ -1,0 +1,12 @@
+Current software images:
+  Image                                                 Version
+  flash:/wx5540hhcl-cmw710-boot-a6429.bin               Alpha 7165
+  flash:/wx5540hhcl-cmw710-system-a6429.bin             Alpha 7165
+Main startup software images:
+  Image                                                 Version
+  flash:/wx5540hhcl-cmw710-boot-a6429.bin               Alpha 7165
+  flash:/wx5540hhcl-cmw710-system-a6429.bin             Alpha 7165
+Backup startup software images:
+  Image                                                 Version
+  flash:/wx5540hhcl-cmw710-boot-a6429.bin               Alpha 7165
+  flash:/wx5540hhcl-cmw710-system-a6429.bin             Alpha 7165

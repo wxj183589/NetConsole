@@ -1,0 +1,2 @@
+Local Interface    Neighbor Sysname    Neighbor Interface    Management Address
+GE1/0/1            AC-DEMO             GE1/0/1               10.0.0.51

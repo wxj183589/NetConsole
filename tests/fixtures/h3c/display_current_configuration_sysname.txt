@@ -1,0 +1,2 @@
+<SW01>display current-configuration | in sysname
+ sysname SW01

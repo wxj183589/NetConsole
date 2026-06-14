@@ -9,8 +9,8 @@ from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
-from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS
-from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids
+from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
+from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, select_device_id_for_connection
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DeviceTable, protocol_label
 
 
@@ -64,6 +64,19 @@ def test_choose_devices_for_export_uses_selected_when_available():
     selected = [all_devices[1]]
 
     assert choose_devices_for_export(all_devices, selected) == selected
+
+
+def test_test_connection_selection_requires_a_device():
+    assert select_device_id_for_connection([], None) == (None, "devices.select_first_test")
+
+
+def test_test_connection_selection_rejects_multiple_checked_devices():
+    assert select_device_id_for_connection([1, 2], 1) == (None, "devices.select_one_for_test")
+
+
+def test_test_connection_selection_uses_single_checked_or_current_device():
+    assert select_device_id_for_connection([2], 1) == (2, None)
+    assert select_device_id_for_connection([], 1) == (1, None)
 
 
 def make_table():
@@ -173,6 +186,13 @@ def test_toolbar_contains_device_details_button():
     assert page.detail_button.text() == "Device Details"
 
 
+def test_toolbar_contains_test_connection_button():
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+
+    assert page.test_connection_button.text() == "Test Connection"
+
+
 def test_toolbar_detail_without_selection_shows_select_first(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
@@ -203,6 +223,19 @@ def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path
         "LLDP Neighbors",
     ]
     assert any("Demo data is generated only when the demo database is first created" in text for text in labels)
+
+
+def test_device_detail_dialog_has_refresh_button(tmp_path):
+    app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    dialog = DeviceDetailDialog(
+        I18n("en_US"),
+        DeviceFactRepository(database),
+        Device(name="Core", device_uuid="device-1"),
+    )
+
+    assert dialog.refresh_button.text() == "Refresh"
 
 
 def test_device_detail_overview_fields_are_complete():
@@ -264,6 +297,17 @@ def test_device_detail_lldp_columns_are_complete():
         "neighbor_ip",
         "collected_at",
     ]
+
+
+def test_device_detail_long_interface_columns_have_minimum_widths():
+    interface_widths = _column_min_widths(INTERFACE_COLUMNS)
+    optical_widths = _column_min_widths(OPTICAL_MODULE_COLUMNS)
+    lldp_widths = _column_min_widths(LLDP_COLUMNS)
+
+    assert interface_widths[0] >= 180
+    assert optical_widths[0] >= 180
+    assert lldp_widths[0] >= 180
+    assert lldp_widths[3] >= 180
 
 
 def test_toolbar_edit_without_selection_shows_select_first(monkeypatch):

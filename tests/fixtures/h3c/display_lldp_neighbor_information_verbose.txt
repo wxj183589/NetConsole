@@ -1,0 +1,5 @@
+LLDP neighbor-information of port GigabitEthernet1/0/1
+  Chassis ID          : 0011-2233-5101
+  Port ID             : GigabitEthernet1/0/1
+  System name         : AC-DEMO
+  Management address  : 10.0.0.51

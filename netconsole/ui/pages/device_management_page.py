@@ -20,6 +20,8 @@ from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
+from netconsole.services.netmiko_connection import ConnectionTestResult
+from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.windowing import DeviceDialogRegistry
@@ -33,6 +35,16 @@ def choose_devices_for_export(all_devices: list, selected_devices: list) -> list
 def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
     for device_id in device_ids:
         repository.delete(device_id)
+
+
+def select_device_id_for_connection(checked_ids: list[int], current_id: int | None) -> tuple[int | None, str | None]:
+    if len(checked_ids) > 1:
+        return None, "devices.select_one_for_test"
+    if len(checked_ids) == 1:
+        return checked_ids[0], None
+    if current_id is None:
+        return None, "devices.select_first_test"
+    return current_id, None
 
 
 class DeviceManagementPage(QWidget):
@@ -50,6 +62,7 @@ class DeviceManagementPage(QWidget):
         self.type_filter = QComboBox()
         self.add_button = QPushButton()
         self.detail_button = QPushButton()
+        self.test_connection_button = QPushButton()
         self.edit_button = QPushButton()
         self.delete_button = QPushButton()
         self.batch_delete_button = QPushButton()
@@ -71,6 +84,7 @@ class DeviceManagementPage(QWidget):
         for button in (
             self.add_button,
             self.detail_button,
+            self.test_connection_button,
             self.edit_button,
             self.delete_button,
             self.batch_delete_button,
@@ -96,6 +110,7 @@ class DeviceManagementPage(QWidget):
         self.type_filter.currentIndexChanged.connect(self.refresh)
         self.add_button.clicked.connect(self.add_device)
         self.detail_button.clicked.connect(self.show_selected_device_detail)
+        self.test_connection_button.clicked.connect(self.test_selected_device_connection)
         self.edit_button.clicked.connect(self.edit_device)
         self.delete_button.clicked.connect(self.delete_device)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
@@ -111,11 +126,13 @@ class DeviceManagementPage(QWidget):
         self.table.delete_requested.connect(self.delete_device_by_id)
         self.retranslate()
         self.refresh()
+        self.connection_test_thread: DeviceConnectionTestThread | None = None
 
     def retranslate(self) -> None:
         self.search_input.setPlaceholderText(self.i18n.t("devices.search"))
         self.add_button.setText(self.i18n.t("devices.add"))
         self.detail_button.setText(self.i18n.t("details.title"))
+        self.test_connection_button.setText(self.i18n.t("devices.test_connection"))
         self.edit_button.setText(self.i18n.t("devices.edit"))
         self.delete_button.setText(self.i18n.t("devices.delete"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
@@ -129,6 +146,41 @@ class DeviceManagementPage(QWidget):
         self._populate_filters()
         self.table.retranslate()
         self.update_selection_state()
+
+    def test_selected_device_connection(self) -> None:
+        device_id, error_key = select_device_id_for_connection(self.table.checked_device_ids(), self.selected_id())
+        if error_key:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t(error_key))
+            return
+        if device_id is None:
+            return
+        device = self.repository.get(device_id)
+        self.test_connection_button.setEnabled(False)
+        self.test_connection_button.setText(self.i18n.t("devices.testing_connection"))
+        self.connection_test_thread = DeviceConnectionTestThread(device, self)
+        self.connection_test_thread.result_ready.connect(self._show_connection_result)
+        self.connection_test_thread.finished.connect(self.connection_test_thread.deleteLater)
+        self.connection_test_thread.finished.connect(lambda: setattr(self, "connection_test_thread", None))
+        self.connection_test_thread.start()
+
+    def _show_connection_result(self, result: ConnectionTestResult) -> None:
+        self.test_connection_button.setEnabled(True)
+        self.test_connection_button.setText(self.i18n.t("devices.test_connection"))
+        if result.success:
+            message = self.i18n.t(
+                "connection.success_detail",
+                protocol=result.protocol,
+                host=f"{result.host}:{result.port}",
+                prompt=result.prompt or "-",
+                elapsed=result.elapsed_ms if result.elapsed_ms is not None else "-",
+            )
+            QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
+        else:
+            QMessageBox.warning(
+                self,
+                self.i18n.t("connection.failed_title"),
+                self.i18n.t("connection.failed_detail", reason=result.message),
+            )
 
     def _populate_filters(self) -> None:
         vendor = self.vendor_filter.currentData()
@@ -212,7 +264,7 @@ class DeviceManagementPage(QWidget):
 
     def show_device_detail(self, device_id: int) -> None:
         device = self.repository.get(device_id)
-        dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self)
+        dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()

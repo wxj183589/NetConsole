@@ -261,6 +261,70 @@ def insert_demo_collected_data(repository: DeviceRepository, devices: list[Devic
             _demo_lldp("GigabitEthernet1/0/1", "SW01-DEMO", "GigabitEthernet1/0/1", "10.0.0.52", sw01_uuid, run_uuid, ac_uuid, collected_at),
         ],
     )
+    insert_demo_history(fact_repository, sw01_uuid, sw02_uuid)
+
+
+def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, sw02_uuid: str) -> None:
+    samples = (
+        ("2026-06-13T09:00:00", "-3.45 dBm"),
+        ("2026-06-13T10:00:00", "-3.38 dBm"),
+        ("2026-06-13T11:00:00", "-3.21 dBm"),
+    )
+    for device_uuid, interface_name, neighbor_name, neighbor_ip in (
+        (sw01_uuid, "GigabitEthernet1/0/2", "SW02-DEMO", "10.0.0.53"),
+        (sw02_uuid, "GigabitEthernet1/0/1", "SW01-DEMO", "10.0.0.52"),
+    ):
+        for index, (collected_at, rx_power) in enumerate(samples, start=1):
+            history_run_uuid = f"demo-history-{device_uuid[-4:]}-{index}"
+            raw_log_path = f"raw/collect/{history_run_uuid}/{device_uuid}.log"
+            fact_repository.append_interface_history(
+                _demo_interface(
+                    interface_name,
+                    "UP",
+                    "UP",
+                    "1000M",
+                    "full",
+                    "二层",
+                    "trunk",
+                    "1",
+                    "Demo historical interface",
+                    "",
+                    f"00:11:22:33:{device_uuid[-2:]}:{index:02d}",
+                    "Tagged VLANs: 10,20",
+                    history_run_uuid,
+                    device_uuid,
+                    collected_at,
+                    raw_log_path=raw_log_path,
+                )
+            )
+            fact_repository.append_optical_history(
+                _demo_optical_module(
+                    interface_name,
+                    rx_power,
+                    "-2.85 dBm",
+                    "38.5 C",
+                    "3.31 V",
+                    "6.2 mA",
+                    f"DEMO-HIST-OPT-{index}",
+                    history_run_uuid,
+                    device_uuid,
+                    collected_at,
+                    raw_log_path=raw_log_path,
+                )
+            )
+            fact_repository.append_lldp_history(
+                _demo_lldp(
+                    interface_name,
+                    neighbor_name,
+                    "GigabitEthernet1/0/1",
+                    neighbor_ip,
+                    "",
+                    history_run_uuid,
+                    device_uuid,
+                    collected_at,
+                    raw_log_path=raw_log_path,
+                )
+            )
 
 
 def _demo_interface(
@@ -279,8 +343,10 @@ def _demo_interface(
     run_uuid: str,
     device_uuid: str,
     collected_at: str,
+    raw_log_path: str | None = None,
 ) -> dict[str, object | None]:
     return {
+        "device_uuid": device_uuid,
         "interface_name": interface_name,
         "interface_type": "ethernet",
         "link_status": link_status,
@@ -296,7 +362,7 @@ def _demo_interface(
         "vlan": vlan,
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
         "updated_at": collected_at,
     }
 
@@ -312,8 +378,10 @@ def _demo_optical_module(
     run_uuid: str,
     device_uuid: str,
     collected_at: str,
+    raw_log_path: str | None = None,
 ) -> dict[str, object | None]:
     return {
+        "device_uuid": device_uuid,
         "interface_name": interface_name,
         "rx_power": rx_power,
         "tx_power": tx_power,
@@ -329,7 +397,7 @@ def _demo_optical_module(
         "status": "normal",
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
         "updated_at": collected_at,
     }
 
@@ -343,8 +411,10 @@ def _demo_lldp(
     run_uuid: str,
     device_uuid: str,
     collected_at: str,
+    raw_log_path: str | None = None,
 ) -> dict[str, object | None]:
     return {
+        "device_uuid": device_uuid,
         "local_interface": local_interface,
         "neighbor_sysname": neighbor_sysname,
         "neighbor_interface": neighbor_interface,
@@ -352,6 +422,6 @@ def _demo_lldp(
         "neighbor_device_uuid": neighbor_device_uuid,
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
         "updated_at": collected_at,
     }

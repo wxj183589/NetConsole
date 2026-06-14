@@ -77,6 +77,10 @@ def export_logs(target_path: str | Path) -> None:
     shutil.copyfile(source, target)
 
 
+def sanitize_detail(detail: object) -> str:
+    return _sanitize_detail(detail)
+
+
 def _write_log(level: str, event: str, detail: str = "") -> None:
     path = _log_path()
     path.parent.mkdir(parents=True, exist_ok=True)

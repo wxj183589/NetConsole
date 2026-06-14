@@ -94,12 +94,14 @@ This stage only implements:
 - Demo device data
 - Device list
 - Add/edit/delete
+- Single-device Netmiko SSH/Telnet test connection
+- Single-device H3C detail refresh from the Device Details window
 - Search and filters
 - CSV import/export
 - CSV template export
 - Read-only device details for the latest demo Device Facts, Interfaces, and LLDP neighbor data
 
-Devices can enable SSH and Telnet independently. SNMPv1, SNMPv2c, and SNMPv3 are reserved configuration flags and can also be enabled independently. No real SSH, Telnet, or SNMP collection is implemented yet.
+Devices can enable SSH and Telnet independently. Test Connection and H3C detail refresh use SSH first when SSH is enabled, otherwise Telnet when Telnet is enabled. SNMPv1, SNMPv2c, and SNMPv3 are reserved configuration flags and can also be enabled independently. No terminal session, batch task, backup, SSH/Telnet command workflow, or SNMP collection is implemented yet.
 
 CSV files use `utf-8-sig` encoding. The template export is a simplified Chinese-header CSV for manual entry and includes one example device row. Device export is a complete English-header CSV for backup and re-import.
 
@@ -127,7 +129,62 @@ Invalid filename characters are replaced with `_`.
 
 ## Not Implemented Yet
 
-This stage does not implement SSH, Telnet execution, Netmiko, task center, config backup, config diff, terminal, SNMP collection, optical modules, LLDP, topology, or serial functionality.
+This stage does not implement terminal sessions, batch tasks, config backup, config diff, device collection/parsing, task center, SNMP collection, optical modules, LLDP collection, topology, or serial functionality.
+
+## Manual Test: Netmiko Test Connection
+
+1. Confirm the demo database has been rebuilt. For development testing, delete `data/sites/demo/db/devices.db` and restart the application if you need fresh demo data.
+2. Start NetConsole with `python main.py`.
+3. Open Device Management.
+4. Select one demo device: AC, SW01, or SW02.
+5. Click Test Connection.
+6. Expected result: SSH login succeeds and the result dialog shows protocol, address, prompt, and elapsed time.
+
+Demo devices:
+
+```text
+AC    10.0.0.51    admin / Admin@123
+SW01  10.0.0.52    admin / Admin@123
+SW02  10.0.0.53    admin / Admin@123
+```
+
+Pytest uses mocked Netmiko connections only. It must not connect to `10.0.0.51`, `10.0.0.52`, or `10.0.0.53`.
+
+## Manual Test: H3C Device Detail Refresh
+
+1. Confirm the demo database has been rebuilt if you need fresh demo data.
+2. Start NetConsole with `python main.py`.
+3. Open the demo site and Device Management.
+4. Open Device Details for AC, SW01, or SW02.
+5. Click Refresh.
+6. Wait for the result dialog.
+7. Confirm Overview, Interfaces, Optical Modules, and LLDP Neighbors refresh from the latest collection data.
+8. Confirm raw logs are created under:
+
+```text
+data/sites/<site>/raw/collect/<collect_run_uuid>/<device_uuid>.log
+data/sites/<site>/raw/collect/<collect_run_uuid>/<device_uuid>_commands.jsonl
+```
+
+Detail refresh runs these H3C commands:
+
+```text
+screen-length disable
+display current-configuration | in sysname
+display version
+display device
+display device manuinfo
+display boot-loader
+display interface
+display transceiver interface
+display transceiver diagnosis interface
+display lldp neighbor-information list
+display lldp neighbor-information verbose
+```
+
+Command failures are logged and later commands continue. Pytest uses fixture text and mocked Netmiko connections only.
+
+Device facts prefer `display current-configuration | in sysname` for sysname, `display device` for model, and `display boot-loader` for boot image information. Device detail tables use logical interface sorting so `GigabitEthernet1/0/2` appears before `GigabitEthernet1/0/10`.
 
 ## Follow-Up Plan
 

@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QTabWidget,
@@ -13,11 +12,21 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
 )
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.services.h3c_collect_service import CollectDeviceResult
+from netconsole.ui.collect_worker import DeviceCollectThread
+from netconsole.ui.dialogs.history_data_dialog import (
+    HistoryDataDialog,
+    INTERFACE_HISTORY_COLUMNS,
+    LLDP_HISTORY_COLUMNS,
+    OPTICAL_HISTORY_COLUMNS,
+)
+from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table
 
 
 OVERVIEW_FIELDS = (
@@ -75,11 +84,14 @@ LLDP_COLUMNS = (
 
 
 class DeviceDetailDialog(QDialog):
-    def __init__(self, i18n: I18n, repository: DeviceFactRepository, device: Device, parent=None) -> None:
+    def __init__(self, i18n: I18n, repository: DeviceFactRepository, device: Device, parent=None, site_name: str = "demo") -> None:
         super().__init__(parent, Qt.Window)
         self.i18n = i18n
         self.repository = repository
         self.device = device
+        self.site_name = site_name
+        self.collect_thread: DeviceCollectThread | None = None
+        self.history_dialogs: list[HistoryDataDialog] = []
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(False)
         self.setMinimumSize(720, 480)
@@ -87,13 +99,16 @@ class DeviceDetailDialog(QDialog):
 
         self.title_label = QLabel()
         self.always_on_top_button = QPushButton()
+        self.refresh_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
+        self.refresh_button.clicked.connect(self.refresh_device_details)
         self.tabs = QTabWidget()
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         header.addWidget(self.title_label)
         header.addStretch(1)
+        header.addWidget(self.refresh_button)
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
@@ -104,12 +119,44 @@ class DeviceDetailDialog(QDialog):
         title = self.i18n.t("details.title_with_name", name=self.device.name)
         self.setWindowTitle(title)
         self.title_label.setText(title)
+        self.refresh_button.setText(self.i18n.t("details.refresh"))
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
+        self.reload_tabs()
+
+    def reload_tabs(self) -> None:
         self.tabs.clear()
         self.tabs.addTab(self._overview_tab(), self.i18n.t("details.overview"))
         self.tabs.addTab(self._interfaces_tab(), self.i18n.t("details.interfaces"))
         self.tabs.addTab(self._optical_modules_tab(), self.i18n.t("details.optical_modules"))
         self.tabs.addTab(self._lldp_tab(), self.i18n.t("details.lldp"))
+
+    def refresh_device_details(self) -> None:
+        if self.collect_thread is not None and self.collect_thread.isRunning():
+            return
+        self.refresh_button.setEnabled(False)
+        self.refresh_button.setText(self.i18n.t("details.refreshing"))
+        self.collect_thread = DeviceCollectThread(self.device, self.site_name, self)
+        self.collect_thread.collect_finished.connect(self._collect_finished)
+        self.collect_thread.collect_failed.connect(self._collect_failed)
+        self.collect_thread.finished.connect(self.collect_thread.deleteLater)
+        self.collect_thread.finished.connect(lambda: setattr(self, "collect_thread", None))
+        self.collect_thread.start()
+
+    def _collect_finished(self, result: CollectDeviceResult) -> None:
+        self.refresh_button.setEnabled(True)
+        self.refresh_button.setText(self.i18n.t("details.refresh"))
+        self.reload_tabs()
+        if result.success and result.error_message:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_partial"))
+        elif result.success:
+            QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_done"))
+        else:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=result.error_message or "unknown"))
+
+    def _collect_failed(self, error_message: str) -> None:
+        self.refresh_button.setEnabled(True)
+        self.refresh_button.setText(self.i18n.t("details.refresh"))
+        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=error_message))
 
     def _overview_tab(self) -> QWidget:
         fact = self.repository.get_device_fact(str(self.device.device_uuid or ""))
@@ -124,7 +171,10 @@ class DeviceDetailDialog(QDialog):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addLayout(form)
         for label_key, field in OVERVIEW_FIELDS:
-            form.addRow(self.i18n.t(label_key), QLabel(str(fact.get(field) or "")))
+            value = QLabel(str(fact.get(field) or ""))
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            form.addRow(self.i18n.t(label_key), value)
         layout.addStretch(1)
         return widget
 
@@ -132,37 +182,69 @@ class DeviceDetailDialog(QDialog):
         rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))
         if not rows:
             return self._empty_tab("details.interfaces_note")
-        return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows)
+        return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows, "description", "interface")
 
     def _optical_modules_tab(self) -> QWidget:
         rows = self.repository.list_optical_modules(str(self.device.device_uuid or ""))
         if not rows:
             return self._empty_tab("details.optical_modules_note")
-        return self._table_tab("details.optical_modules_note", OPTICAL_MODULE_COLUMNS, rows)
+        return self._table_tab("details.optical_modules_note", OPTICAL_MODULE_COLUMNS, rows, "module_model", "optical")
 
     def _lldp_tab(self) -> QWidget:
         rows = self.repository.list_lldp_neighbors(str(self.device.device_uuid or ""))
         if not rows:
             return self._empty_tab("details.lldp_note")
-        return self._table_tab("details.lldp_note", LLDP_COLUMNS, rows)
+        return self._table_tab("details.lldp_note", LLDP_COLUMNS, rows, "neighbor_sysname", "lldp")
 
-    def _table_tab(self, note_key: str, columns: tuple[tuple[str, str], ...], rows: list[dict[str, object | None]]) -> QWidget:
+    def _table_tab(self, note_key: str, columns: tuple[tuple[str, str], ...], rows: list[dict[str, object | None]], stretch_field: str, history_kind: str) -> QWidget:
         table = QTableWidget(len(rows), len(columns))
-        table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectRows)
-        table.verticalHeader().setDefaultSectionSize(30)
-        table.verticalHeader().setVisible(False)
+        configure_readonly_table(table)
+        attach_table_context_menu(table, self.i18n.language, history_callback=lambda row, kind=history_kind, data=rows: self.open_history_data(kind, data[row]))
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
         for row_index, row in enumerate(rows):
             for column_index, (_label_key, field) in enumerate(columns):
-                table.setItem(row_index, column_index, QTableWidgetItem(str(row.get(field) or "")))
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.horizontalHeader().setStretchLastSection(True)
+                item = QTableWidgetItem(str(row.get(field) or ""))
+                item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row_index, column_index, item)
+        stretch_index = _column_index(columns, stretch_field)
+        auto_resize_table_columns(
+            table,
+            stretch_columns={stretch_index} if stretch_index is not None else set(),
+            column_min_widths=_column_min_widths(columns),
+        )
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.addWidget(self._note_label(note_key))
         layout.addWidget(table)
         return wrapper
+
+    def open_history_data(self, history_kind: str, row: dict[str, object | None]) -> HistoryDataDialog:
+        device_uuid = str(self.device.device_uuid or "")
+        if history_kind == "interface":
+            object_name = str(row.get("interface_name") or "")
+            rows = self.repository.list_interface_history(device_uuid, object_name)
+            columns = INTERFACE_HISTORY_COLUMNS
+        elif history_kind == "optical":
+            object_name = str(row.get("interface_name") or "")
+            rows = self.repository.list_optical_history(device_uuid, object_name)
+            columns = OPTICAL_HISTORY_COLUMNS
+        elif history_kind == "lldp":
+            object_name = str(row.get("local_interface") or "")
+            rows = self.repository.list_lldp_history(device_uuid, object_name)
+            columns = LLDP_HISTORY_COLUMNS
+        else:
+            raise ValueError(f"Unsupported history kind: {history_kind}")
+        dialog = HistoryDataDialog(self.i18n, self.device.name, object_name, columns, rows, self)
+        self.history_dialogs.append(dialog)
+        dialog.destroyed.connect(lambda _=None, window=dialog: self._remove_history_dialog(window))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _remove_history_dialog(self, dialog: HistoryDataDialog) -> None:
+        if dialog in self.history_dialogs:
+            self.history_dialogs.remove(dialog)
 
     def _empty_tab(self, note_key: str) -> QWidget:
         widget = QWidget()
@@ -196,9 +278,28 @@ class DeviceDetailDialog(QDialog):
             QTabBar::tab { background: #e9eef5; color: #1f2933; border: 1px solid #cbd5df; padding: 8px 16px; min-width: 92px; }
             QTabBar::tab:selected { background: #ffffff; color: #0f3d75; border-bottom: 1px solid #ffffff; font-weight: 600; }
             QTabBar::tab:!selected:hover { background: #f1f5fb; }
-            QTableWidget { background: #ffffff; border: 1px solid #dde3ea; gridline-color: #edf1f5; selection-background-color: #dcecff; }
-            QHeaderView::section { background: #f0f3f7; color: #1f2933; border: 0; border-right: 1px solid #dde3ea; border-bottom: 1px solid #dde3ea; padding: 6px; font-weight: 600; }
             QPushButton { background: #ffffff; border: 1px solid #cbd5df; border-radius: 4px; padding: 6px 10px; }
             QPushButton:hover { background: #eef5ff; border-color: #8bb7ee; }
             """
         )
+
+
+def _column_index(columns: tuple[tuple[str, str], ...], field: str) -> int | None:
+    for index, (_label_key, column_field) in enumerate(columns):
+        if column_field == field:
+            return index
+    return None
+
+
+def _column_min_widths(columns: tuple[tuple[str, str], ...]) -> dict[int, int]:
+    widths = {
+        "interface_name": 180,
+        "local_interface": 180,
+        "neighbor_interface": 180,
+        "neighbor_sysname": 160,
+        "neighbor_mac": 150,
+        "module_model": 180,
+        "module_serial_number": 180,
+        "description": 180,
+    }
+    return {index: widths[field] for index, (_label_key, field) in enumerate(columns) if field in widths}

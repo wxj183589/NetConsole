@@ -1,0 +1,3 @@
+DEVICE_NAME          : H3C S5560X-30C-EI
+DEVICE_SERIAL_NUMBER : SN-SW01-0001
+Vendor Name          : H3C
