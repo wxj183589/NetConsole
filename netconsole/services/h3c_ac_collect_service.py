@@ -19,6 +19,7 @@ from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_w
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.h3c_collect_service import CommandResult
 from netconsole.services.neighbor_matcher import find_neighbor_rx_power, match_neighbor_device
@@ -102,6 +103,7 @@ def collect_h3c_ac_resources(
         }
     )
     app_logger.log_info("AC_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
+    app_logger.log_info("REAL_DEVICE_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     command_results: list[CommandResult] = []
     target = choose_connection_target(ac_device)
     if target is None:
@@ -113,11 +115,12 @@ def collect_h3c_ac_resources(
 
     connection = None
     try:
+        command_guard.validate_command_list(["screen-length disable", *RESOURCE_COMMANDS], "ac_collect")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-        command_results.append(_run_command(connection, "screen-length disable", ac_device, collect_run_uuid))
+        command_results.append(_run_command(connection, "screen-length disable", ac_device, collect_run_uuid, context="ac_collect"))
         outputs: dict[str, str] = {}
         for command in RESOURCE_COMMANDS:
-            result = _run_command(connection, command, ac_device, collect_run_uuid)
+            result = _run_command(connection, command, ac_device, collect_run_uuid, context="ac_collect")
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
@@ -133,14 +136,17 @@ def collect_h3c_ac_resources(
         if status == "success":
             app_logger.log_info("FIT_AP_RESOURCE_UPDATED", _detail(ac_device, collect_run_uuid, count=len(resources)))
             app_logger.log_info("AC_COLLECT_SUCCESS", _detail(ac_device, collect_run_uuid))
+            app_logger.log_info("REAL_DEVICE_COLLECT_SUCCESS", _detail(ac_device, collect_run_uuid))
         else:
             app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
+            app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
         return AcResourceCollectResult(status == "success", str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), summary_updated, len(resources), error_message or None, command_results)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
+        app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, message, command_results)
     finally:
         if connection is not None:
@@ -257,9 +263,10 @@ def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[Com
     connection = None
     results: list[CommandResult] = []
     try:
+        command_guard.validate_command_list(ENABLE_FIT_AP_CONSOLE_COMMANDS, "ac_enable_ap_console")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         for command in ENABLE_FIT_AP_CONSOLE_COMMANDS:
-            results.append(_run_command(connection, command, ac_device, collect_run_uuid, read_timeout=10))
+            results.append(_run_command(connection, command, ac_device, collect_run_uuid, read_timeout=10, context="ac_enable_ap_console"))
         return results
     finally:
         if connection is not None:
@@ -307,9 +314,10 @@ def _collect_single_fit_ap_optical(
         if target is None:
             raise RuntimeError("AP Telnet target unavailable")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        command_guard.validate_command_list(FIT_AP_OPTICAL_COMMANDS, "fit_ap_collect")
         outputs: dict[str, str] = {}
         for command in FIT_AP_OPTICAL_COMMANDS:
-            result = _run_command(connection, command, temp_device, collect_run_uuid, read_timeout=15)
+            result = _run_command(connection, command, temp_device, collect_run_uuid, read_timeout=15, context="fit_ap_collect")
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
@@ -356,7 +364,12 @@ def _collect_single_fit_ap_optical(
             _disconnect(connection)
 
 
-def _run_command(connection, command: str, device: Device, collect_run_uuid: str, read_timeout: int = 30) -> CommandResult:
+def _run_command(connection, command: str, device: Device, collect_run_uuid: str, read_timeout: int = 30, context: str = "ac_collect") -> CommandResult:
+    reason = command_guard.command_reject_reason(command, context)
+    if reason:
+        command_guard.log_command_rejected(command, context, reason)
+        return CommandResult(command=command, success=False, error_message=reason)
+    app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
         output = connection.send_command(command, read_timeout=read_timeout)
     except Exception as exc:

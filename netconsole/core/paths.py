@@ -84,6 +84,9 @@ class PathResolver:
     def site_dir(self, site_name: str = "demo") -> Path:
         return self.sites_dir / site_name
 
+    def get_site_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name)
+
     def site_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "devices.db"
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 
+from netconsole.utils.text_encoding import clean_h3c_device_text
 
-INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet)[\d/.:]+|Vlan-interface\d+|Bridge-Aggregation\d+|LoopBack\d+"
+
+INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet)[\d/.:]+|Vlan-interface\d+|Bridge-Aggregation\d+|LoopBack\d+|NULL\d+"
 INTERFACE_HEADER = re.compile(rf"^({INTERFACE_NAME})\s+current state:\s+(.+)$", re.IGNORECASE)
 INTERFACE_NAME_ONLY = re.compile(rf"^({INTERFACE_NAME})$", re.IGNORECASE)
 
@@ -44,7 +46,7 @@ def parse_interfaces(output: str) -> list[dict[str, object | None]]:
         if stripped.startswith("Line protocol current state:") or stripped.startswith("Line protocol state:"):
             current["protocol_status"] = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("Description:"):
-            current["description"] = stripped.split(":", 1)[1].strip()
+            current["description"] = clean_h3c_device_text(stripped.split(":", 1)[1].strip())
         elif stripped.lower().startswith("internet address"):
             address = _parse_internet_address(stripped)
             if address:
@@ -59,8 +61,8 @@ def parse_interfaces(output: str) -> list[dict[str, object | None]]:
         elif stripped.startswith("Port link-type:"):
             current["_link_type"] = stripped.split(":", 1)[1].strip().lower()
             current["_has_l2"] = True
-        elif _is_vlan_line(stripped):
-            current.setdefault("_vlan_lines", []).append(stripped)
+        elif vlan_value := _parse_vlan_line(stripped):
+            current.setdefault("_vlan_values", {})[vlan_value[0]] = vlan_value[1]
             current["_has_l2"] = True
         elif stripped.startswith("The Maximum Transmit Unit"):
             pass
@@ -90,14 +92,25 @@ def _parse_internet_address(line: str) -> dict[str, object] | None:
     return {"value": match.group(1), "primary": "primary" in suffix.lower()}
 
 
-def _is_vlan_line(line: str) -> bool:
-    lowered = line.lower()
-    return lowered.startswith(("tagged vlans:", "untagged vlans:", "vlan passing", "vlan permitted"))
+def _parse_vlan_line(line: str) -> tuple[str, str] | None:
+    match = re.match(r"(?i)^(tagged vlans|untagged vlans|vlan passing|vlan permitted)\s*:?\s*(.+)$", line)
+    if not match:
+        return None
+    key = match.group(1).strip().lower().replace(" ", "_")
+    if key == "vlan_passing":
+        key = "passing"
+    elif key == "vlan_permitted":
+        key = "permitted"
+    elif key == "tagged_vlans":
+        key = "tagged"
+    elif key == "untagged_vlans":
+        key = "untagged"
+    return key, match.group(2).strip()
 
 
 def _finalize_interface(item: dict[str, object | None]) -> dict[str, object | None]:
     ip_candidates = item.pop("_ip_candidates", []) or []
-    vlan_lines = item.pop("_vlan_lines", []) or []
+    vlan_values = item.pop("_vlan_values", {}) or {}
     has_l2 = bool(item.pop("_has_l2", False))
     link_type = str(item.pop("_link_type", "") or "").strip().lower()
     if ip_candidates:
@@ -106,8 +119,9 @@ def _finalize_interface(item: dict[str, object | None]) -> dict[str, object | No
         item["interface_type"] = "三层"
     elif has_l2:
         item["interface_type"] = "二层"
-    if vlan_lines:
-        item["vlan"] = "\n".join(vlan_lines)
+    vlan = _select_vlan_summary(link_type, vlan_values)
+    if vlan:
+        item["vlan"] = vlan
     link_state = str(item.get("link_status") or "").lower()
     description = str(item.get("description") or "").lower()
     if "administratively down" in link_state or "shutdown" in description:
@@ -117,3 +131,29 @@ def _finalize_interface(item: dict[str, object | None]) -> dict[str, object | No
     elif link_type in {"access", "hybrid", "trunk"}:
         item["port_status"] = link_type
     return item
+
+
+def _select_vlan_summary(link_type: str, values: dict[str, str]) -> str | None:
+    if link_type == "access":
+        return values.get("untagged") or values.get("permitted")
+    if link_type == "trunk":
+        return values.get("passing") or values.get("permitted")
+    if link_type == "hybrid":
+        summary: list[str] = []
+        if values.get("tagged"):
+            summary.append(f"Tagged: {values['tagged']}")
+        if values.get("untagged"):
+            summary.append(f"Untagged: {values['untagged']}")
+        return "; ".join(summary) or values.get("permitted")
+    if values.get("untagged"):
+        return values["untagged"]
+    if values.get("passing"):
+        return values["passing"]
+    if values.get("tagged") or values.get("untagged"):
+        summary = []
+        if values.get("tagged"):
+            summary.append(f"Tagged: {values['tagged']}")
+        if values.get("untagged"):
+            summary.append(f"Untagged: {values['untagged']}")
+        return "; ".join(summary)
+    return values.get("permitted")

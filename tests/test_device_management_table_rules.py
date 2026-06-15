@@ -193,6 +193,88 @@ def test_toolbar_contains_test_connection_button():
     assert page.test_connection_button.text() == "Test Connection"
 
 
+def test_toolbar_test_connection_without_selection_shows_select_first(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+
+    page.test_selected_device_connection()
+
+    assert messages == ["Select a device first."]
+
+
+def test_toolbar_test_connection_with_multiple_devices_uses_batch(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    captured = []
+    monkeypatch.setattr(page, "batch_test_connections", lambda devices: captured.extend(devices))
+
+    page.table._set_all_checked(True)
+    page.test_selected_device_connection()
+
+    assert [device.name for device in captured] == ["A", "B"]
+
+
+def test_top_toolbar_omits_edit_delete_and_contains_batch_refresh_details():
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    top_buttons = [button.text() for button in page.findChildren(QPushButton) if button.parent() is page]
+
+    assert "Edit" not in top_buttons
+    assert "Delete" not in top_buttons
+    assert page.batch_refresh_details_button.text() == "Batch Refresh Details"
+
+
+def test_same_device_detail_window_is_created_once(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    created = []
+
+    class FakeDetail:
+        def __init__(self, *args):
+            created.append(self)
+
+        def show(self):
+            pass
+
+        def raise_(self):
+            pass
+
+        def activateWindow(self):
+            pass
+
+        @property
+        def destroyed(self):
+            class Signal:
+                def connect(self, _callback):
+                    pass
+
+            return Signal()
+
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.DeviceDetailDialog", FakeDetail)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.window_manager.register_child_window", lambda *_args, **_kwargs: None)
+
+    page.show_device_detail(1)
+    page.show_device_detail(1)
+
+    assert len(created) == 1
+
+
+def test_detail_window_removed_after_close_allows_recreate(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    removed = []
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.window_manager.unregister_child_window", lambda window: removed.append(window))
+    dialog = object()
+    page.detail_dialogs["device-1"] = dialog
+
+    page._remove_detail_dialog("device-1", dialog)
+
+    assert page.detail_dialogs == {}
+    assert removed == [dialog]
+
+
 def test_toolbar_detail_without_selection_shows_select_first(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
@@ -200,6 +282,17 @@ def test_toolbar_detail_without_selection_shows_select_first(monkeypatch):
     monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
 
     page.show_selected_device_detail()
+
+    assert messages == ["Select a device first."]
+
+
+def test_batch_refresh_details_without_selection_shows_select_first(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+
+    page.batch_refresh_details()
 
     assert messages == ["Select a device first."]
 
@@ -273,17 +366,26 @@ def test_device_detail_interface_columns_are_complete():
 def test_device_detail_optical_module_columns_are_complete():
     assert [field for _label_key, field in OPTICAL_MODULE_COLUMNS] == [
         "interface_name",
+        "status",
         "rx_power",
         "tx_power",
         "temperature",
         "voltage",
         "bias_current",
+        "rx_low_alarm",
+        "rx_high_alarm",
+        "tx_low_alarm",
+        "tx_high_alarm",
+        "rx_low_warning",
+        "rx_high_warning",
+        "tx_low_warning",
+        "tx_high_warning",
         "module_model",
         "module_serial_number",
         "module_vendor",
         "wavelength",
         "transmission_distance",
-        "status",
+        "connector_type",
         "collected_at",
     ]
 
@@ -294,7 +396,6 @@ def test_device_detail_lldp_columns_are_complete():
         "neighbor_sysname",
         "neighbor_mac",
         "neighbor_interface",
-        "neighbor_ip",
         "collected_at",
     ]
 

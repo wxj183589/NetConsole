@@ -24,6 +24,7 @@ from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.ac_management_page import AcManagementPage
 from netconsole.ui.pages.app_log_page import AppLogPage
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
+from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import fit_default_window_size
 
 
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
         self.apply_initial_geometry()
         self.apply_style()
         self.retranslate()
+        window_manager.set_main_window(self)
         app_logger.log_info("DEVICE_PAGE_OPENED", self.site.name)
 
     def open_current_page(self, row: int) -> None:
@@ -156,9 +158,8 @@ class MainWindow(QMainWindow):
         self.retranslate()
 
     def set_always_on_top(self, enabled: bool) -> None:
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
+        window_manager.apply_main_window_on_top(enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
-        self.show()
 
     def closeEvent(self, event) -> None:
         app_logger.log_info("APP_EXIT", "软件关闭")

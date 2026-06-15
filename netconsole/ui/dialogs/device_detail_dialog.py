@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core.i18n import I18n
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services.h3c_collect_service import CollectDeviceResult
@@ -32,6 +34,8 @@ from netconsole.ui.dialogs.history_data_dialog import (
     OPTICAL_HISTORY_COLUMNS,
 )
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.window_manager import window_manager
+from netconsole.utils.text_encoding import read_text_with_fallback
 
 
 OVERVIEW_FIELDS = (
@@ -66,17 +70,26 @@ INTERFACE_COLUMNS = (
 
 OPTICAL_MODULE_COLUMNS = (
     ("details.interface_name", "interface_name"),
+    ("field.status", "status"),
     ("details.rx_power", "rx_power"),
     ("details.tx_power", "tx_power"),
     ("details.temperature", "temperature"),
     ("details.voltage", "voltage"),
     ("details.bias_current", "bias_current"),
+    ("details.rx_low_alarm", "rx_low_alarm"),
+    ("details.rx_high_alarm", "rx_high_alarm"),
+    ("details.tx_low_alarm", "tx_low_alarm"),
+    ("details.tx_high_alarm", "tx_high_alarm"),
+    ("details.rx_low_warning", "rx_low_warning"),
+    ("details.rx_high_warning", "rx_high_warning"),
+    ("details.tx_low_warning", "tx_low_warning"),
+    ("details.tx_high_warning", "tx_high_warning"),
     ("details.module_model", "module_model"),
     ("details.module_serial_number", "module_serial_number"),
     ("details.vendor", "module_vendor"),
     ("details.wavelength", "wavelength"),
     ("details.transmission_distance", "transmission_distance"),
-    ("field.status", "status"),
+    ("details.connector_type", "connector_type"),
     ("details.collected_at", "collected_at"),
 )
 
@@ -85,7 +98,6 @@ LLDP_COLUMNS = (
     ("details.neighbor_sysname", "neighbor_sysname"),
     ("details.neighbor_mac", "neighbor_mac"),
     ("details.neighbor_interface", "neighbor_interface"),
-    ("details.neighbor_ip", "neighbor_ip"),
     ("details.collected_at", "collected_at"),
 )
 
@@ -233,7 +245,7 @@ class DeviceDetailDialog(QDialog):
 
     def _load_collect_log(self) -> tuple[Path, str]:
         raw_log_path = self.repository.get_latest_raw_log_path(str(self.device.device_uuid or ""))
-        return read_collect_log_text(raw_log_path)
+        return read_collect_log_text(raw_log_path, PathResolver().get_site_root(self.site_name))
 
     def _interfaces_tab(self) -> QWidget:
         rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))
@@ -260,8 +272,9 @@ class DeviceDetailDialog(QDialog):
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
         for row_index, row in enumerate(rows):
             for column_index, (_label_key, field) in enumerate(columns):
-                item = QTableWidgetItem(str(row.get(field) or ""))
+                item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
                 item.setTextAlignment(Qt.AlignCenter)
+                self._apply_optical_status_background(item, history_kind, row.get("status"))
                 table.setItem(row_index, column_index, item)
         stretch_index = _column_index(columns, stretch_field)
         auto_resize_table_columns(
@@ -274,6 +287,25 @@ class DeviceDetailDialog(QDialog):
         layout.addWidget(self._note_label(note_key))
         layout.addWidget(table)
         return wrapper
+
+    def _format_table_value(self, field: str, value: object | None) -> str:
+        if field == "status" and value in {"normal", "warning", "alarm", "skipped", "unknown"}:
+            return self.i18n.t(f"optical.status.{value}")
+        return str(value or "")
+
+    @staticmethod
+    def _apply_optical_status_background(item: QTableWidgetItem, history_kind: str, status: object | None) -> None:
+        if history_kind != "optical":
+            return
+        colors = {
+            "alarm": QColor("#fee2e2"),
+            "warning": QColor("#fef3c7"),
+            "normal": QColor("#ecfdf5"),
+        }
+        color = colors.get(str(status or ""))
+        if color is not None:
+            item.setBackground(color)
+            item.setForeground(QColor("#111827"))
 
     def open_history_data(self, history_kind: str, row: dict[str, object | None]) -> HistoryDataDialog:
         device_uuid = str(self.device.device_uuid or "")
@@ -326,9 +358,8 @@ class DeviceDetailDialog(QDialog):
         return label
 
     def set_always_on_top(self, enabled: bool) -> None:
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
+        window_manager.set_child_on_top(self, enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
-        self.show()
         self.raise_()
         self.activateWindow()
 
@@ -363,13 +394,15 @@ class CollectLogDialog(QDialog):
         layout.addWidget(self.text_edit, 1)
 
 
-def read_collect_log_text(raw_log_path: str | None) -> tuple[Path, str]:
+def read_collect_log_text(raw_log_path: str | None, site_root: Path | None = None) -> tuple[Path, str]:
     if not raw_log_path:
         raise FileNotFoundError(COLLECT_LOG_NOT_FOUND)
     path = Path(raw_log_path)
+    if not path.is_absolute() and site_root is not None:
+        path = site_root / path
     if not path.is_file():
         raise FileNotFoundError(COLLECT_LOG_NOT_FOUND)
-    return path, path.read_text(encoding="utf-8", errors="replace")
+    return path, read_text_with_fallback(path)
 
 
 def _column_index(columns: tuple[tuple[str, str], ...], field: str) -> int | None:

@@ -13,6 +13,8 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         table_names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         columns = [row["name"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()]
         interface_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_interfaces)").fetchall()]
+        optical_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules)").fetchall()]
+        optical_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules_history)").fetchall()]
 
     assert "collect_runs" in table_names
     assert "device_facts" in table_names
@@ -28,6 +30,9 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "ac_fit_ap_optical" in table_names
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns
+    for column in ("rx_low_warning", "rx_high_warning", "tx_low_warning", "tx_high_warning"):
+        assert column in optical_columns
+        assert column in optical_history_columns
 
     for column in (
         "ssh_enabled",

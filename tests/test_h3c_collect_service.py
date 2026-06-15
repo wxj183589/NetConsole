@@ -24,6 +24,12 @@ OUTPUTS = {
     "display boot-loader": fixture("display_boot_loader_sw.txt"),
     "display interface": fixture("display_interface.txt"),
     "display transceiver interface": fixture("display_transceiver_interface.txt"),
+    "display transceiver manuinfo interface": """
+GigabitEthernet1/0/1 transceiver manufacture information:
+  Manu. Serial Number : OPT-MANU-0001
+  Manufacturing Date  : 2025-03-23
+  Vendor Name         : H3C
+""",
     "display transceiver diagnosis interface": fixture("display_transceiver_diagnosis_interface.txt"),
     "display lldp neighbor-information list": fixture("display_lldp_neighbor_information_list.txt"),
     "display lldp neighbor-information verbose": fixture("display_lldp_neighbor_information_verbose.txt"),
@@ -87,7 +93,9 @@ def test_collect_service_writes_raw_log_collect_run_and_repository_data(monkeypa
     assert "主用:" in fact["bootrom_version"]
     assert "备用:" in fact["bootrom_version"]
     assert repository.list_device_interfaces("11111111-1111-4111-8111-111111111111")[0]["interface_name"] == "GigabitEthernet1/0/1"
-    assert repository.list_optical_modules("11111111-1111-4111-8111-111111111111")[0]["rx_power"] == "-3.21 dBm"
+    optical = repository.list_optical_modules("11111111-1111-4111-8111-111111111111")[0]
+    assert optical["rx_power"] == "-3.21 dBm"
+    assert optical["module_serial_number"] == "OPT-MANU-0001"
     assert repository.list_lldp_neighbors("11111111-1111-4111-8111-111111111111")[0]["neighbor_sysname"] == "AC-DEMO"
     assert len(repository.list_fact_history("11111111-1111-4111-8111-111111111111")) == 1
     assert len(repository.list_interface_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
@@ -129,3 +137,15 @@ def test_update_collect_run_status(tmp_path):
 
     assert updated["status"] == "success"
     assert updated["ended_at"]
+
+
+def test_collect_service_validates_commands_before_execution(monkeypatch, tmp_path):
+    calls = []
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(h3c_collect_service.command_guard, "validate_command_list", lambda commands, context: calls.append((list(commands), context)))
+    repository = make_repository(tmp_path)
+
+    collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+
+    assert calls == [(["screen-length disable", *COLLECT_COMMANDS], "device_collect")]

@@ -59,7 +59,6 @@ def test_history_dialog_optical_and_lldp_columns_are_complete():
         "neighbor_sysname",
         "neighbor_mac",
         "neighbor_interface",
-        "neighbor_ip",
         "raw_log_path",
     ]
 

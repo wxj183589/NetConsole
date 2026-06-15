@@ -1,9 +1,0 @@
-$ErrorActionPreference = "Stop"
-$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Set-Location $root
-
-if (Test-Path ".\.venv\Scripts\python.exe") {
-    .\.venv\Scripts\python.exe -m pytest
-} else {
-    python -m pytest
-}

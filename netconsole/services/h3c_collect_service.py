@@ -15,10 +15,12 @@ from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
-from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceivers
+from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status, merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
+from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
 COLLECT_COMMANDS = (
@@ -29,6 +31,7 @@ COLLECT_COMMANDS = (
     "display boot-loader",
     "display interface",
     "display transceiver interface",
+    "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",
     "display lldp neighbor-information list",
     "display lldp neighbor-information verbose",
@@ -41,6 +44,8 @@ class CommandResult:
     success: bool
     output: str = ""
     error_message: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,7 +89,8 @@ def collect_h3c_device_details(
             "created_at": started_at,
         }
     )
-    app_logger.log_info("COLLECT_STARTED", _detail(device, collect_run_uuid))
+    app_logger.log_info("COLLECT_STARTED", _detail(device, collect_run_uuid, raw_log_path=relative_raw_log_path))
+    app_logger.log_info("REAL_DEVICE_COLLECT_STARTED", _detail(device, collect_run_uuid, raw_log_path=relative_raw_log_path))
 
     command_results: list[CommandResult] = []
     connection = None
@@ -92,11 +98,12 @@ def collect_h3c_device_details(
     if target is None:
         message = "未启用连接方式"
         _finalize_failed(repository, collect_run_uuid, message)
-        app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message))
-        _write_raw_files(raw_log_file, commands_file, device, "", collect_run_uuid, command_results, target_protocol="")
+        app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
+        _write_raw_files(raw_log_file, commands_file, device, "", collect_run_uuid, command_results, target_protocol="", disconnected_at=_now())
         return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, 0, 0, message, command_results)
 
     try:
+        command_guard.validate_command_list(["screen-length disable", *COLLECT_COMMANDS], "device_collect")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         screen_result = _run_command(connection, "screen-length disable", device, collect_run_uuid)
         command_results.append(screen_result)
@@ -115,7 +122,11 @@ def collect_h3c_device_details(
         error_message = "; ".join(write_result["parse_errors"]) or _command_error_summary(command_results)
         repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
         event = "COLLECT_SUCCESS" if status == "success" else "COLLECT_PARTIAL_SUCCESS" if status == "partial_success" else "COLLECT_FAILED"
-        (app_logger.log_info if status != "failed" else app_logger.log_error)(event, _detail(device, collect_run_uuid, error=error_message or ""))
+        (app_logger.log_info if status != "failed" else app_logger.log_error)(event, _detail(device, collect_run_uuid, error=error_message or "", raw_log_path=relative_raw_log_path))
+        if status != "failed":
+            app_logger.log_info("REAL_DEVICE_COLLECT_SUCCESS", _detail(device, collect_run_uuid, error=error_message or "", raw_log_path=relative_raw_log_path))
+        else:
+            app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(device, collect_run_uuid, error=error_message or "", raw_log_path=relative_raw_log_path))
         return CollectDeviceResult(
             status != "failed",
             str(device.device_uuid),
@@ -130,9 +141,10 @@ def collect_h3c_device_details(
         )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
-        _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol, fatal_error=message)
+        _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol, fatal_error=message, disconnected_at=_now())
         _finalize_failed(repository, collect_run_uuid, message)
-        app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message))
+        app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
+        app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
         return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, 0, 0, message, command_results)
     finally:
         if connection is not None:
@@ -143,14 +155,23 @@ def collect_h3c_device_details(
 
 
 def _run_command(connection, command: str, device: Device, collect_run_uuid: str) -> CommandResult:
+    started_at = _now()
+    reason = command_guard.command_reject_reason(command, "device_collect")
+    if reason:
+        command_guard.log_command_rejected(command, "device_collect", reason)
+        return CommandResult(command=command, success=False, error_message=reason, started_at=started_at, ended_at=_now())
+    app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
-        output = connection.send_command(command, read_timeout=30)
+        if hasattr(connection, "send_command_timing"):
+            output = connection.send_command_timing(command, read_timeout=120, strip_prompt=False, strip_command=False)
+        else:
+            output = connection.send_command(command, read_timeout=30)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         app_logger.log_error("COLLECT_COMMAND_FAILED", _detail(device, collect_run_uuid, command=command, error=message))
-        return CommandResult(command=command, success=False, error_message=message)
+        return CommandResult(command=command, success=False, error_message=message, started_at=started_at, ended_at=_now())
     app_logger.log_info("COLLECT_COMMAND_SUCCESS", _detail(device, collect_run_uuid, command=command))
-    return CommandResult(command=command, success=True, output=str(output or ""))
+    return CommandResult(command=command, success=True, output=clean_h3c_device_text(str(output or "")), started_at=started_at, ended_at=_now())
 
 
 def _parse_and_write(
@@ -167,6 +188,7 @@ def _parse_and_write(
     interfaces_updated = 0
     optical_modules_updated = 0
     lldp_neighbors_updated = 0
+    interfaces_for_optical: list[dict[str, object | None]] = []
     try:
         facts = parse_device(outputs.get("display version", ""), outputs.get("display device", ""), outputs.get("display device manuinfo", ""))
         facts["sysname"] = (
@@ -178,6 +200,7 @@ def _parse_and_write(
         if any(value for key, value in facts.items() if key != "vendor"):
             repository.upsert_device_fact({"device_uuid": device.device_uuid, **facts, **metadata})
             facts_updated = True
+            app_logger.log_info("COLLECT_SAVE_FACTS", _detail(device, collect_run_uuid, error=f"sysname={facts.get('sysname') or ''}, raw_log_path={raw_log_path}"))
     except Exception as exc:
         message = f"facts parse failed: {sanitize_sensitive_text(str(exc), device)}"
         parse_errors.append(message)
@@ -185,21 +208,29 @@ def _parse_and_write(
     try:
         if "display interface" in outputs:
             interfaces = [_with_metadata(item, metadata) for item in parse_interfaces(outputs.get("display interface", ""))]
+            interfaces_for_optical = interfaces
             repository.replace_device_interfaces(str(device.device_uuid), interfaces)
             interfaces_updated = len(interfaces)
+            app_logger.log_info("COLLECT_SAVE_INTERFACES", _detail(device, collect_run_uuid, error=f"interface_count={interfaces_updated}, raw_log_path={raw_log_path}"))
     except Exception as exc:
         message = f"interfaces parse failed: {sanitize_sensitive_text(str(exc), device)}"
         parse_errors.append(message)
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
-        if "display transceiver interface" in outputs or "display transceiver diagnosis interface" in outputs:
+        if "display transceiver interface" in outputs or "display transceiver manuinfo interface" in outputs or "display transceiver diagnosis interface" in outputs:
             modules = merge_transceiver_data(
                 parse_transceivers(outputs.get("display transceiver interface", "")),
+                parse_transceiver_manuinfo(outputs.get("display transceiver manuinfo interface", "")),
                 parse_transceiver_diagnosis(outputs.get("display transceiver diagnosis interface", "")),
             )
+            interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces_for_optical}
+            for module in modules:
+                status = evaluate_optical_status(module, interfaces_by_name.get(str(module.get("interface_name") or "")))
+                module["status"] = status["status"]
             modules = [_with_metadata(item, metadata) for item in modules]
             repository.replace_optical_modules(str(device.device_uuid), modules)
             optical_modules_updated = len(modules)
+            app_logger.log_info("COLLECT_SAVE_OPTICAL", _detail(device, collect_run_uuid, error=f"optical_count={optical_modules_updated}, raw_log_path={raw_log_path}"))
     except Exception as exc:
         message = f"transceiver parse failed: {sanitize_sensitive_text(str(exc), device)}"
         parse_errors.append(message)
@@ -213,6 +244,7 @@ def _parse_and_write(
             neighbors = [_with_metadata(item, metadata) for item in neighbors]
             repository.replace_lldp_neighbors(str(device.device_uuid), neighbors)
             lldp_neighbors_updated = len(neighbors)
+            app_logger.log_info("COLLECT_SAVE_LLDP", _detail(device, collect_run_uuid, error=f"lldp_count={lldp_neighbors_updated}, raw_log_path={raw_log_path}"))
     except Exception as exc:
         message = f"lldp parse failed: {sanitize_sensitive_text(str(exc), device)}"
         parse_errors.append(message)
@@ -235,6 +267,7 @@ def _write_raw_files(
     command_results: list[CommandResult],
     target_protocol: str,
     fatal_error: str | None = None,
+    disconnected_at: str | None = None,
 ) -> None:
     lines = [
         f"Collect Time: {_now()}",
@@ -249,6 +282,8 @@ def _write_raw_files(
             [
                 f"===== COMMAND: {result.command} =====",
                 f"Success: {result.success}",
+                f"Started At: {result.started_at or ''}",
+                f"Ended At: {result.ended_at or ''}",
                 f"Error: {result.error_message or ''}",
                 result.output or "",
                 "",
@@ -256,10 +291,11 @@ def _write_raw_files(
         )
     if fatal_error:
         lines.extend(["===== FATAL ERROR =====", fatal_error, ""])
+    lines.extend([f"Disconnected At: {disconnected_at or _now()}", ""])
     raw_log_file.write_text("\n".join(lines), encoding="utf-8")
     with commands_file.open("w", encoding="utf-8") as file:
         for result in command_results:
-            file.write(json.dumps({"command": result.command, "success": result.success, "error_message": result.error_message}, ensure_ascii=False) + "\n")
+            file.write(json.dumps({"command": result.command, "success": result.success, "error_message": result.error_message, "started_at": result.started_at, "ended_at": result.ended_at}, ensure_ascii=False) + "\n")
 
 
 def _with_metadata(item: dict[str, object | None], metadata: dict[str, object | None]) -> dict[str, object | None]:
@@ -283,12 +319,14 @@ def _finalize_failed(repository: DeviceFactRepository, collect_run_uuid: str, me
     repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
 
 
-def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str = "") -> str:
+def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str = "", raw_log_path: str = "") -> str:
     parts = [f"device={device.name}", f"ip={device.ip_address}", f"collect_run_uuid={collect_run_uuid}"]
     if command:
         parts.append(f"command={command}")
     if error:
         parts.append(f"error={error}")
+    if raw_log_path:
+        parts.append(f"raw_log_path={raw_log_path}")
     return ", ".join(parts)
 
 

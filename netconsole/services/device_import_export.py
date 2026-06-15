@@ -8,6 +8,7 @@ from typing import Iterable
 
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
 
 
 SNMPV3_SECURITY_LEVELS = ("noAuthNoPriv", "AuthNoPriv", "AuthPriv")
@@ -89,8 +90,8 @@ EXPORT_FIELDS = [
     "updated_at",
 ]
 
-CSV_IMPORT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
-CSV_ENCODING_ERROR = "CSV编码无法识别"
+CSV_IMPORT_ENCODINGS = TEXT_ENCODINGS
+CSV_ENCODING_ERROR = FILE_ENCODING_ERROR
 
 
 def make_device_export_filename(site_name: str, now: datetime | None = None) -> str:
@@ -130,7 +131,7 @@ class DeviceImportExportService:
             try:
                 with path.open("r", newline="", encoding=encoding) as file:
                     return list(csv.reader(file))
-            except UnicodeDecodeError:
+            except UnicodeError:
                 continue
         raise ValueError(CSV_ENCODING_ERROR)
 
@@ -247,8 +248,10 @@ class DeviceImportExportService:
 
     @staticmethod
     def _detect_mode(headers: list[str]) -> str:
-        if headers == TEMPLATE_FIELDS:
-            return "template"
+        if headers and all(header in TEMPLATE_FIELD_MAP for header in headers):
+            fields = {TEMPLATE_FIELD_MAP[header] for header in headers}
+            if {"name", "ip_address"}.issubset(fields):
+                return "template"
         if headers == EXPORT_FIELDS:
             return "export"
         raise ValueError("Unsupported CSV header: use the current device template or full export CSV")

@@ -1,9 +1,12 @@
 import csv
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from netconsole.core.database import Database
+from netconsole.core.bootstrap import create_demo_context
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import (
@@ -119,6 +122,40 @@ def test_template_import_supports_gbk_csv(tmp_path):
     assert imported.ip_address == "192.168.1.10"
 
 
+def test_template_import_supports_gb2312_csv(tmp_path):
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "devices_gb2312.csv"
+    write_rows_with_encoding(
+        csv_path,
+        [
+            TEMPLATE_FIELDS,
+            ["GB2312-Core", "192.168.1.12", "H3C", "OCC", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", "remark"],
+        ],
+        "gb2312",
+    )
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+
+    assert result.created == 1
+    assert imported.name == "GB2312-Core"
+    assert imported.ip_address == "192.168.1.12"
+
+
+def test_docs_ningbo_template_imports_into_demo_context(tmp_path):
+    context = create_demo_context(PathResolver(tmp_path))
+    service = DeviceImportExportService(context.repository)
+    template_path = Path(__file__).resolve().parents[1] / "docs" / "宁波12-设备导入模板.csv"
+
+    result = service.import_csv(template_path)
+    devices = context.repository.list()
+
+    assert result.created > 0
+    assert result.skipped == 0
+    assert any(device.ip_address == "10.122.100.10" and device.device_type == "AC" for device in devices)
+    assert any(device.name == "核心交换机" for device in devices)
+
+
 def test_template_import_still_supports_utf8_sig_csv(tmp_path):
     repository, service = make_service(tmp_path)
     csv_path = tmp_path / "devices_utf8_sig.csv"
@@ -140,7 +177,7 @@ def test_template_import_still_supports_utf8_sig_csv(tmp_path):
 def test_csv_import_encoding_failure_uses_friendly_error(tmp_path):
     _repository, service = make_service(tmp_path)
     csv_path = tmp_path / "bad_encoding.csv"
-    csv_path.write_bytes(b"\x80\x81\x82\x83")
+    csv_path.write_bytes(b"\xff\xff\xff")
 
     with pytest.raises(ValueError) as exc_info:
         service.import_csv(csv_path)

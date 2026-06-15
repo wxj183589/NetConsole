@@ -47,7 +47,6 @@ LLDP_HISTORY_COLUMNS = (
     ("details.neighbor_sysname", "neighbor_sysname"),
     ("details.neighbor_mac", "neighbor_mac"),
     ("details.neighbor_interface", "neighbor_interface"),
-    ("details.neighbor_ip", "neighbor_ip"),
     ("history.raw_log_path", "raw_log_path"),
 )
 

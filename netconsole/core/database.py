@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
@@ -116,6 +116,10 @@ CREATE TABLE IF NOT EXISTS device_optical_modules (
     rx_high_alarm TEXT,
     tx_low_alarm TEXT,
     tx_high_alarm TEXT,
+    rx_low_warning TEXT,
+    rx_high_warning TEXT,
+    tx_low_warning TEXT,
+    tx_high_warning TEXT,
     status TEXT,
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
@@ -205,6 +209,10 @@ CREATE TABLE IF NOT EXISTS device_optical_modules_history (
     rx_high_alarm TEXT,
     tx_low_alarm TEXT,
     tx_high_alarm TEXT,
+    rx_low_warning TEXT,
+    rx_high_warning TEXT,
+    tx_low_warning TEXT,
+    tx_high_warning TEXT,
     status TEXT,
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
@@ -373,3 +381,4 @@ class Database:
                 )
             )
             conn.commit()
+

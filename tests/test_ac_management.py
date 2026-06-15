@@ -250,6 +250,19 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
 
 
+def test_h3c_ac_collect_service_validates_commands_before_execution(monkeypatch, tmp_path):
+    calls = []
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(h3c_ac_collect_service.command_guard, "validate_command_list", lambda commands, context: calls.append((list(commands), context)))
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+
+    collect_h3c_ac_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+
+    assert calls == [(["screen-length disable", *RESOURCE_COMMANDS], "ac_collect")]
+
+
 def test_ac_management_page_column_configuration_exists(tmp_path):
     app()
     context = create_demo_context(PathResolver(tmp_path))

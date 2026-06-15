@@ -26,7 +26,7 @@ def parse_device(version_output: str, device_output: str = "", manuinfo_output: 
     from netconsole.parsers.h3c.version_parser import parse_version
 
     facts = parse_version(version_output, device_output, manuinfo_output)
-    facts["model"] = parse_device_model(device_output) or facts.get("model")
+    facts["model"] = facts.get("model") or parse_device_model(device_output)
     return facts
 
 

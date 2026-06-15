@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from time import monotonic
+from typing import Callable
+
+from PySide6.QtCore import QThread, Signal
+
+from netconsole.core import app_logger
+from netconsole.models.device import Device
+from netconsole.services.netmiko_connection import ConnectionTestResult, test_device_connection
+
+
+Tester = Callable[[Device], ConnectionTestResult]
+
+
+@dataclass(frozen=True)
+class BatchConnectionTestItemResult:
+    device_name: str
+    ip_address: str
+    protocol: str
+    success: bool
+    prompt: str | None
+    elapsed_ms: int | None
+    error_message: str | None
+
+
+def run_batch_connection_tests(
+    devices: list[Device],
+    tester: Tester = test_device_connection,
+    max_workers: int = 20,
+    result_callback: Callable[[BatchConnectionTestItemResult], None] | None = None,
+) -> list[BatchConnectionTestItemResult]:
+    results: list[BatchConnectionTestItemResult] = []
+    worker_count = max(1, min(int(max_workers or 1), 100, len(devices) or 1))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {executor.submit(tester, device): device for device in devices}
+        started_at = {future: monotonic() for future in futures}
+        for future in as_completed(futures):
+            device = futures[future]
+            fallback_elapsed = int((monotonic() - started_at[future]) * 1000)
+            try:
+                result = future.result()
+                item = BatchConnectionTestItemResult(
+                    device_name=str(device.name or ""),
+                    ip_address=str(device.ip_address or ""),
+                    protocol=result.protocol,
+                    success=result.success,
+                    prompt=result.prompt,
+                    elapsed_ms=result.elapsed_ms if result.elapsed_ms is not None else fallback_elapsed,
+                    error_message=None if result.success else result.message,
+                )
+            except Exception as exc:
+                item = BatchConnectionTestItemResult(
+                    device_name=str(device.name or ""),
+                    ip_address=str(device.ip_address or ""),
+                    protocol="",
+                    success=False,
+                    prompt=None,
+                    elapsed_ms=fallback_elapsed,
+                    error_message=str(exc),
+                )
+            results.append(item)
+            if result_callback is not None:
+                result_callback(item)
+    return results
+
+
+class BatchConnectionTestWorker(QThread):
+    device_finished = Signal(object)
+    batch_finished = Signal(int, int)
+
+    def __init__(self, devices: list[Device], parent=None, max_workers: int = 20) -> None:
+        super().__init__(parent)
+        self.devices = list(devices)
+        self.max_workers = max_workers
+
+    def run(self) -> None:
+        app_logger.log_info("BATCH_TEST_CONNECTION_STARTED", f"count={len(self.devices)}")
+        success_count = 0
+        failed_count = 0
+
+        def on_result(item: BatchConnectionTestItemResult) -> None:
+            nonlocal success_count, failed_count
+            if item.success:
+                success_count += 1
+                app_logger.log_info("BATCH_TEST_CONNECTION_DEVICE_SUCCESS", f"device={item.device_name} ip={item.ip_address} protocol={item.protocol}")
+            else:
+                failed_count += 1
+                app_logger.log_error("BATCH_TEST_CONNECTION_DEVICE_FAILED", f"device={item.device_name} ip={item.ip_address} protocol={item.protocol} error={item.error_message or ''}")
+            self.device_finished.emit(item)
+
+        run_batch_connection_tests(self.devices, max_workers=self.max_workers, result_callback=on_result)
+        app_logger.log_info("BATCH_TEST_CONNECTION_FINISHED", f"success={success_count} failed={failed_count}")
+        self.batch_finished.emit(success_count, failed_count)

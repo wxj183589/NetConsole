@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, read_collect_log_text
 from netconsole.ui.table_utils import make_text_selectable
 from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
+from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, clean_device_text, clean_h3c_device_text, decode_text_auto, fix_mojibake_text, read_text_auto
 
 
 def test_main_window_size_uses_default_on_large_screen():
@@ -74,6 +75,44 @@ def test_read_collect_log_text_reads_existing_file(tmp_path):
 
     assert path == raw_log
     assert text == "display version\noutput"
+
+
+def test_read_collect_log_text_resolves_relative_path_from_site_root(tmp_path):
+    raw_log = tmp_path / "raw" / "collect" / "run-1" / "device.log"
+    raw_log.parent.mkdir(parents=True)
+    raw_log.write_text("raw output", encoding="utf-8")
+
+    path, text = read_collect_log_text("raw/collect/run-1/device.log", tmp_path)
+
+    assert path == raw_log
+    assert text == "raw output"
+
+
+def test_read_collect_log_text_supports_gbk_and_gb2312(tmp_path):
+    gbk_log = tmp_path / "gbk.log"
+    gb2312_log = tmp_path / "gb2312.log"
+    gbk_log.write_bytes("中文采集日志".encode("gbk"))
+    gb2312_log.write_bytes("中文日志".encode("gb2312"))
+
+    assert read_collect_log_text(str(gbk_log))[1] == "中文采集日志"
+    assert read_collect_log_text(str(gb2312_log))[1] == "中文日志"
+    assert decode_text_auto("端口描述".encode("gbk")) == "端口描述"
+    assert read_text_auto(gb2312_log) == "中文日志"
+    assert fix_mojibake_text("正常中文端口描述") == "正常中文端口描述"
+    assert "悴" not in clean_device_text("To_悴ハ低?")
+    assert clean_h3c_device_text("正常中文端口描述") == "正常中文端口描述"
+    assert "悴" not in clean_h3c_device_text("To_悴ハ低?")
+
+
+def test_read_collect_log_text_encoding_failure_uses_friendly_error(tmp_path):
+    raw_log = tmp_path / "bad.log"
+    raw_log.write_bytes(b"\xff\xff\xff")
+
+    with pytest.raises(ValueError) as exc_info:
+        read_collect_log_text(str(raw_log))
+
+    assert str(exc_info.value) == FILE_ENCODING_ERROR
+    assert "codec" not in str(exc_info.value).lower()
 
 
 def test_read_collect_log_text_missing_file_uses_friendly_error(tmp_path):

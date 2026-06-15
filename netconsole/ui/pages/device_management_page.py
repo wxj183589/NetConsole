@@ -21,9 +21,14 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.services.netmiko_connection import ConnectionTestResult
+from netconsole.ui.batch_connection_worker import BatchConnectionTestWorker
+from netconsole.ui.batch_collect_worker import BatchCollectWorker
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
+from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
+from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
+from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
 
@@ -56,6 +61,7 @@ class DeviceManagementPage(QWidget):
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
         self.dialog_registry = DeviceDialogRegistry()
+        self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
 
         self.search_input = QLineEdit()
         self.vendor_filter = QComboBox()
@@ -63,8 +69,7 @@ class DeviceManagementPage(QWidget):
         self.add_button = QPushButton()
         self.detail_button = QPushButton()
         self.test_connection_button = QPushButton()
-        self.edit_button = QPushButton()
-        self.delete_button = QPushButton()
+        self.batch_refresh_details_button = QPushButton()
         self.batch_delete_button = QPushButton()
         self.refresh_button = QPushButton()
         self.import_csv_button = QPushButton()
@@ -85,8 +90,7 @@ class DeviceManagementPage(QWidget):
             self.add_button,
             self.detail_button,
             self.test_connection_button,
-            self.edit_button,
-            self.delete_button,
+            self.batch_refresh_details_button,
             self.batch_delete_button,
             self.refresh_button,
             self.import_csv_button,
@@ -111,8 +115,7 @@ class DeviceManagementPage(QWidget):
         self.add_button.clicked.connect(self.add_device)
         self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.test_connection_button.clicked.connect(self.test_selected_device_connection)
-        self.edit_button.clicked.connect(self.edit_device)
-        self.delete_button.clicked.connect(self.delete_device)
+        self.batch_refresh_details_button.clicked.connect(self.batch_refresh_details)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
         self.refresh_button.clicked.connect(self.refresh)
         self.import_csv_button.clicked.connect(self.import_csv)
@@ -127,14 +130,17 @@ class DeviceManagementPage(QWidget):
         self.retranslate()
         self.refresh()
         self.connection_test_thread: DeviceConnectionTestThread | None = None
+        self.batch_connection_test_worker: BatchConnectionTestWorker | None = None
+        self.batch_connection_test_dialog: BatchConnectionTestProgressDialog | None = None
+        self.batch_collect_worker: BatchCollectWorker | None = None
+        self.batch_collect_dialog: BatchCollectProgressDialog | None = None
 
     def retranslate(self) -> None:
         self.search_input.setPlaceholderText(self.i18n.t("devices.search"))
         self.add_button.setText(self.i18n.t("devices.add"))
         self.detail_button.setText(self.i18n.t("details.title"))
         self.test_connection_button.setText(self.i18n.t("devices.test_connection"))
-        self.edit_button.setText(self.i18n.t("devices.edit"))
-        self.delete_button.setText(self.i18n.t("devices.delete"))
+        self.batch_refresh_details_button.setText(self.i18n.t("devices.batch_refresh_details"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
         self.refresh_button.setText(self.i18n.t("devices.refresh"))
         self.import_csv_button.setText(self.i18n.t("devices.import_csv"))
@@ -148,12 +154,14 @@ class DeviceManagementPage(QWidget):
         self.update_selection_state()
 
     def test_selected_device_connection(self) -> None:
-        device_id, error_key = select_device_id_for_connection(self.table.checked_device_ids(), self.selected_id())
-        if error_key:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t(error_key))
+        checked_ids = self.table.checked_device_ids()
+        if not checked_ids:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
-        if device_id is None:
+        if len(checked_ids) > 1:
+            self.batch_test_connections([self.repository.get(device_id) for device_id in checked_ids])
             return
+        device_id = checked_ids[0]
         device = self.repository.get(device_id)
         self.test_connection_button.setEnabled(False)
         self.test_connection_button.setText(self.i18n.t("devices.testing_connection"))
@@ -162,6 +170,32 @@ class DeviceManagementPage(QWidget):
         self.connection_test_thread.finished.connect(self.connection_test_thread.deleteLater)
         self.connection_test_thread.finished.connect(lambda: setattr(self, "connection_test_thread", None))
         self.connection_test_thread.start()
+
+    def batch_test_connections(self, devices) -> None:
+        dialog = BatchConnectionTestProgressDialog(self.i18n, len(devices), self)
+        for row, device in enumerate(devices):
+            dialog.mark_waiting(row, str(device.name or ""), str(device.ip_address or ""))
+        self.batch_connection_test_dialog = dialog
+        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, self, max_workers=int(dialog.concurrency_combo.currentData() or 20))
+
+        def on_device_finished(item) -> None:
+            row = next(
+                (
+                    index
+                    for index in range(dialog.table.rowCount())
+                    if dialog.table.item(index, 0) and dialog.table.item(index, 0).text() == item.device_name
+                ),
+                dialog.completed,
+            )
+            dialog.add_result(row, item)
+
+        self.batch_connection_test_worker.device_finished.connect(on_device_finished)
+        self.batch_connection_test_worker.finished.connect(self.batch_connection_test_worker.deleteLater)
+        self.batch_connection_test_worker.finished.connect(lambda: setattr(self, "batch_connection_test_worker", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.batch_connection_test_worker.start()
 
     def _show_connection_result(self, result: ConnectionTestResult) -> None:
         self.test_connection_button.setEnabled(True)
@@ -220,6 +254,7 @@ class DeviceManagementPage(QWidget):
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
         self.dialog_registry = DeviceDialogRegistry()
+        self.detail_dialogs = {}
         self.search_input.clear()
         self.vendor_filter.setCurrentIndex(0)
         self.type_filter.setCurrentIndex(0)
@@ -264,10 +299,26 @@ class DeviceManagementPage(QWidget):
 
     def show_device_detail(self, device_id: int) -> None:
         device = self.repository.get(device_id)
+        device.ensure_device_uuid()
+        detail_key = str(device.device_uuid or device.id)
+        existing = self.detail_dialogs.get(detail_key)
+        if isinstance(existing, DeviceDetailDialog):
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
         dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
+        self.detail_dialogs[detail_key] = dialog
+        window_manager.register_child_window(dialog)
+        dialog.destroyed.connect(lambda _=None, key=detail_key, window=dialog: self._remove_detail_dialog(key, window))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _remove_detail_dialog(self, detail_key: str, dialog: DeviceDetailDialog) -> None:
+        if self.detail_dialogs.get(detail_key) is dialog:
+            self.detail_dialogs.pop(detail_key, None)
+        window_manager.unregister_child_window(dialog)
 
     def show_selected_device_detail(self) -> None:
         device_id = self.selected_id()
@@ -343,6 +394,50 @@ class DeviceManagementPage(QWidget):
         app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
         self.refresh()
 
+    def batch_refresh_details(self) -> None:
+        device_ids = self.table.checked_device_ids()
+        if not device_ids:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            return
+        devices = [self.repository.get(device_id) for device_id in device_ids]
+        answer = QMessageBox.question(
+            self,
+            self.i18n.t("devices.title"),
+            self.i18n.t("devices.batch_refresh_confirm", count=len(devices)),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        dialog = BatchCollectProgressDialog(self.i18n, len(devices), self)
+        for row, device in enumerate(devices):
+            dialog.mark_running(row, str(device.name or ""), str(device.ip_address or ""))
+            item = dialog.table.item(row, 2)
+            if item:
+                item.setText(self.i18n.t("batch_collect.status.waiting"))
+            dialog.running = max(0, dialog.running - 1)
+        dialog.update_summary()
+        self.batch_collect_dialog = dialog
+        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, self, max_workers=int(dialog.concurrency_combo.currentData() or 20))
+
+        def on_device_finished(item) -> None:
+            row = next(
+                (
+                    index
+                    for index in range(dialog.table.rowCount())
+                    if dialog.table.item(index, 0) and dialog.table.item(index, 0).text() == item.device_name
+                ),
+                dialog.completed,
+            )
+            dialog.add_result(row, item)
+
+        self.batch_collect_worker.device_finished.connect(on_device_finished)
+        self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh())
+        self.batch_collect_worker.finished.connect(self.batch_collect_worker.deleteLater)
+        self.batch_collect_worker.finished.connect(lambda: setattr(self, "batch_collect_worker", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.batch_collect_worker.start()
+
     def clear_selection(self) -> None:
         self.table.clear_checked()
         app_logger.log_info("DEVICE_SELECTION_CLEARED", "清空选择")
@@ -356,6 +451,7 @@ class DeviceManagementPage(QWidget):
     def update_selection_state(self) -> None:
         count = len(self.table.checked_device_ids())
         self.selection_label.setText(self.i18n.t("devices.selected_count", count=count))
+        self.batch_refresh_details_button.setEnabled(count > 0)
         self.batch_delete_button.setEnabled(count > 0)
         self.clear_selection_button.setEnabled(count > 0)
         self.invert_selection_button.setEnabled(self.table.rowCount() > 0)
