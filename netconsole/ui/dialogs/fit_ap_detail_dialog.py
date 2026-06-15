@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table
+from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, make_text_selectable
 
 
 FIT_AP_DETAIL_TABS = ("basic", "metadata", "radio", "lldp", "optical")
@@ -109,7 +109,8 @@ class FitApDetailDialog(QWidget):
         ):
             label = QLabel()
             label.setProperty("translation_key", key)
-            value = QLabel("-")
+            make_text_selectable(label)
+            value = make_text_selectable(QLabel("-"))
             self.basic_labels[field] = value
             form.addRow(label, value)
         self.basic_tab.setLayout(form)

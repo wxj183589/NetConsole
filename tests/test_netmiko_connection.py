@@ -2,7 +2,22 @@ from __future__ import annotations
 
 from netconsole.models.device import Device
 from netconsole.services import netmiko_connection
-from netconsole.services.netmiko_connection import choose_connection_target, sanitize_sensitive_text, test_device_connection
+from netconsole.services.netmiko_connection import choose_connection_target, extract_sysname_from_prompt, sanitize_sensitive_text, test_device_connection
+
+
+def test_extract_sysname_from_angle_prompt():
+    assert extract_sysname_from_prompt("<AC>") == "AC"
+    assert extract_sysname_from_prompt("<SW01>") == "SW01"
+
+
+def test_extract_sysname_from_square_prompt():
+    assert extract_sysname_from_prompt("[AC]") == "AC"
+    assert extract_sysname_from_prompt("[SW01-probe]") == "SW01-probe"
+
+
+def test_extract_sysname_from_invalid_prompt_returns_none():
+    assert extract_sysname_from_prompt("") is None
+    assert extract_sysname_from_prompt("invalid") is None
 
 
 def test_ssh_enabled_prefers_ssh():

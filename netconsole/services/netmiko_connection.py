@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from time import monotonic
 from typing import Any
 
@@ -15,6 +16,7 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
 
 H3C_NETMIKO_DEVICE_TYPE = "h3c_comware"
 H3C_TELNET_NETMIKO_DEVICE_TYPE = "hp_comware_telnet"
+PROMPT_SYSNAME_PATTERN = re.compile(r"^\s*[<\[]([^<>\[\]]+)[>\]]\s*$")
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,14 @@ def build_netmiko_params(target: ConnectionTarget) -> dict[str, object]:
     return _netmiko_params(target)
 
 
+def extract_sysname_from_prompt(prompt: str) -> str | None:
+    match = PROMPT_SYSNAME_PATTERN.match(prompt or "")
+    if not match:
+        return None
+    sysname = match.group(1).strip()
+    return sysname or None
+
+
 def sanitize_sensitive_text(text: str, device: Device | None = None) -> str:
     safe = text
     secrets = []
@@ -158,22 +168,24 @@ def _elapsed_ms(started: float) -> int:
     return int((monotonic() - started) * 1000)
 
 
-def _detail(device: Device, protocol: str, port: int, message: str = "", elapsed_ms: int | None = None) -> str:
+def _detail(device: Device, protocol: str, port: int, message: str = "", elapsed_ms: int | None = None, sysname: str | None = None) -> str:
     parts = [
         f"device={device.name}",
         f"ip={device.ip_address}",
         f"protocol={protocol}",
         f"port={port}",
     ]
+    if sysname:
+        parts.append(f"sysname={sysname}")
     if elapsed_ms is not None:
-        parts.append(f"elapsed_ms={elapsed_ms}")
+        parts.append(f"elapsed={elapsed_ms}ms")
     if message:
         parts.append(f"message={message}")
     return ", ".join(parts)
 
 
 def _log_result(event: str, device: Device, result: ConnectionTestResult) -> None:
-    detail = _detail(device, result.protocol, result.port, result.message, result.elapsed_ms)
+    detail = _detail(device, result.protocol, result.port, result.message, result.elapsed_ms, extract_sysname_from_prompt(result.prompt or ""))
     if result.success:
         app_logger.log_info(event, detail)
     else:

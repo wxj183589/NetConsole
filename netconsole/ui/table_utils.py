@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QMenu, QMessageBox, QTableWidget
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QLabel, QMenu, QMessageBox, QTableWidget
 
 
 READONLY_TABLE_STYLESHEET = """
@@ -45,6 +45,11 @@ def configure_readonly_table(table: QTableWidget) -> None:
     table.horizontalHeader().setMinimumHeight(34)
     table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
     table.horizontalHeader().setStretchLastSection(False)
+
+
+def make_text_selectable(label: QLabel) -> QLabel:
+    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    return label
 
 
 def auto_resize_table_columns(

@@ -37,6 +37,22 @@ def test_upsert_device_fact_creates_and_replaces_old_data(tmp_path):
     assert [item["sysname"] for item in repository.list_fact_history("device-1")] == ["NEW", "OLD"]
 
 
+def test_get_latest_raw_log_path_reads_device_fact_path(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.upsert_device_fact(
+        {
+            "device_uuid": "device-1",
+            "sysname": "SW1",
+            "raw_log_path": str(tmp_path / "raw.log"),
+            "collected_at": "2026-06-13T10:00:00",
+            "updated_at": "2026-06-13T10:00:00",
+        }
+    )
+
+    assert repository.get_latest_raw_log_path("device-1") == str(tmp_path / "raw.log")
+    assert repository.get_latest_raw_log_path("missing") is None
+
+
 def test_replace_device_interfaces_replaces_only_target_device(tmp_path):
     repository = make_repository(tmp_path)
     repository.replace_device_interfaces("device-1", [{"interface_name": "GE1/0/1"}, {"interface_name": "GE1/0/2"}])

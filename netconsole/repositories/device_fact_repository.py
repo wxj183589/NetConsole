@@ -127,6 +127,11 @@ class DeviceFactRepository:
             row = conn.execute("SELECT * FROM device_facts WHERE device_uuid = ?", (device_uuid,)).fetchone()
         return dict(row) if row is not None else None
 
+    def get_latest_raw_log_path(self, device_uuid: str) -> str | None:
+        fact = self.get_device_fact(device_uuid)
+        value = fact.get("raw_log_path") if fact else None
+        return str(value) if value else None
+
     def list_device_facts(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM device_facts ORDER BY sysname, device_uuid").fetchall()

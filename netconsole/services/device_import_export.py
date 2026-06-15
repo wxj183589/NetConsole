@@ -89,6 +89,9 @@ EXPORT_FIELDS = [
     "updated_at",
 ]
 
+CSV_IMPORT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
+CSV_ENCODING_ERROR = "CSV编码无法识别"
+
 
 def make_device_export_filename(site_name: str, now: datetime | None = None) -> str:
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M")
@@ -109,8 +112,7 @@ class DeviceImportExportService:
         self.repository = repository
 
     def import_csv(self, path: Path) -> ImportResult:
-        with Path(path).open("r", newline="", encoding="utf-8-sig") as file:
-            rows = list(csv.reader(file))
+        rows = self._read_csv_rows(Path(path))
         if not rows:
             return ImportResult(created=0, skipped=0, errors=[])
 
@@ -121,6 +123,16 @@ class DeviceImportExportService:
             for line_number, values in enumerate(rows[1:], start=2)
         ]
         return self._import_rows(mapped_rows)
+
+    @staticmethod
+    def _read_csv_rows(path: Path) -> list[list[str]]:
+        for encoding in CSV_IMPORT_ENCODINGS:
+            try:
+                with path.open("r", newline="", encoding=encoding) as file:
+                    return list(csv.reader(file))
+            except UnicodeDecodeError:
+                continue
+        raise ValueError(CSV_ENCODING_ERROR)
 
     def export_csv(self, path: Path, devices: Iterable[Device] | None = None) -> None:
         devices = list(devices if devices is not None else self.repository.list())

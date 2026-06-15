@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
-from netconsole.services.netmiko_connection import ConnectionTestResult
+from netconsole.services.netmiko_connection import ConnectionTestResult, extract_sysname_from_prompt
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
@@ -322,6 +322,7 @@ class DeviceDialog(QDialog):
         self.test_button.setEnabled(True)
         self.test_button.setText(self.i18n.t("dialog.test_connection"))
         if result.success:
+            sysname = self.apply_test_connection_sysname(result)
             message = self.i18n.t(
                 "connection.success_detail",
                 protocol=result.protocol,
@@ -329,6 +330,8 @@ class DeviceDialog(QDialog):
                 prompt=result.prompt or "-",
                 elapsed=result.elapsed_ms if result.elapsed_ms is not None else "-",
             )
+            if sysname:
+                message = f"{message}\n{self.i18n.t('field.sysname')}: {sysname}"
             QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
         else:
             QMessageBox.warning(
@@ -336,6 +339,15 @@ class DeviceDialog(QDialog):
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),
             )
+
+    def apply_test_connection_sysname(self, result: ConnectionTestResult) -> str | None:
+        sysname = extract_sysname_from_prompt(result.prompt or "")
+        if not sysname:
+            return None
+        widget = self.inputs["sysname"]
+        if isinstance(widget, QLineEdit):
+            widget.setText(sysname)
+        return sysname
 
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)

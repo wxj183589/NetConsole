@@ -1,3 +1,11 @@
+from PySide6.QtWidgets import QApplication
+
+from netconsole.core.database import Database
+from netconsole.core.i18n import I18n
+from netconsole.models.device import Device
+from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.netmiko_connection import ConnectionTestResult
+from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.dialogs.device_form_rules import format_auth_user, validate_device_form_data
 
 
@@ -33,3 +41,62 @@ def test_auth_user_display_rules():
     assert format_auth_user("ssh", "") == "SSH:ssh / Telnet:-"
     assert format_auth_user("", "telnet") == "SSH:- / Telnet:telnet"
     assert format_auth_user("", "") == "SSH:- / Telnet:-"
+
+
+def test_successful_connection_result_updates_dialog_sysname():
+    QApplication.instance() or QApplication([])
+    dialog = DeviceDialog(I18n("en_US"))
+
+    sysname = dialog.apply_test_connection_sysname(
+        ConnectionTestResult(True, "SSH", "10.0.0.51", 22, "ok", "<AC>", 1403)
+    )
+
+    assert sysname == "AC"
+    assert dialog.form_data()["sysname"] == "AC"
+    dialog.close()
+
+
+def test_unparseable_connection_prompt_does_not_update_dialog_sysname():
+    QApplication.instance() or QApplication([])
+    dialog = DeviceDialog(I18n("en_US"))
+    dialog.inputs["sysname"].setText("Existing")
+
+    sysname = dialog.apply_test_connection_sysname(
+        ConnectionTestResult(True, "SSH", "10.0.0.51", 22, "ok", "invalid", 1403)
+    )
+
+    assert sysname is None
+    assert dialog.form_data()["sysname"] == "Existing"
+    dialog.close()
+
+
+def test_dialog_sysname_is_saved_to_repository_after_backfill(tmp_path):
+    QApplication.instance() or QApplication([])
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    dialog = DeviceDialog(I18n("en_US"))
+    dialog.inputs["name"].setText("AC")
+    dialog.inputs["ip_address"].setText("10.0.0.51")
+    dialog.apply_test_connection_sysname(ConnectionTestResult(True, "SSH", "10.0.0.51", 22, "ok", "[AC]", 1403))
+
+    created = repository.create(dialog.device())
+
+    assert repository.get(created.id).sysname == "AC"
+    dialog.close()
+
+
+def test_dialog_sysname_overwrite_is_saved_to_repository_when_editing(tmp_path):
+    QApplication.instance() or QApplication([])
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    existing = repository.create(Device(name="SW", ip_address="10.0.0.52", sysname="OLD"))
+    dialog = DeviceDialog(I18n("en_US"), device=existing)
+    dialog.apply_test_connection_sysname(ConnectionTestResult(True, "SSH", "10.0.0.52", 22, "ok", "<SW01>", 1403))
+
+    updated = repository.update(dialog.device())
+
+    assert updated.sysname == "SW01"
+    assert repository.get(existing.id).sysname == "SW01"
+    dialog.close()

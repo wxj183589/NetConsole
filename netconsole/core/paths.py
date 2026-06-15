@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,12 +8,18 @@ from pathlib import Path
 SITE_DIRS = ("db", "raw", "parsed", "reports", "backups", "tasks", "metrics")
 
 
+def _default_app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd().resolve()
+
+
 @dataclass(frozen=True)
 class PathResolver:
     app_root: Path | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "app_root", Path(self.app_root or Path.cwd()).resolve())
+        object.__setattr__(self, "app_root", Path(self.app_root or _default_app_root()).resolve())
 
     @property
     def docs_dir(self) -> Path:

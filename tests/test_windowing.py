@@ -1,5 +1,11 @@
 from pathlib import Path
 
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel
+
+from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, read_collect_log_text
+from netconsole.ui.table_utils import make_text_selectable
 from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
 
 
@@ -51,3 +57,27 @@ def test_device_dialog_and_page_do_not_use_exec_for_add_edit_windows():
         source = (root / relative_path).read_text(encoding="utf-8")
         assert ".exec(" not in source
         assert ".exec()" not in source
+
+
+def test_make_text_selectable_sets_mouse_selection_flag():
+    QApplication.instance() or QApplication([])
+    label = make_text_selectable(QLabel("copy me"))
+
+    assert label.textInteractionFlags() & Qt.TextSelectableByMouse
+
+
+def test_read_collect_log_text_reads_existing_file(tmp_path):
+    raw_log = tmp_path / "collect.log"
+    raw_log.write_text("display version\noutput", encoding="utf-8")
+
+    path, text = read_collect_log_text(str(raw_log))
+
+    assert path == raw_log
+    assert text == "display version\noutput"
+
+
+def test_read_collect_log_text_missing_file_uses_friendly_error(tmp_path):
+    with pytest.raises(FileNotFoundError) as exc_info:
+        read_collect_log_text(str(tmp_path / "missing.log"))
+
+    assert str(exc_info.value) == COLLECT_LOG_NOT_FOUND

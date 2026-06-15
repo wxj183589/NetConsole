@@ -29,7 +29,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_fit_ap_export_filename
 from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
-from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table
+from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
 
 
 CHECK_COLUMN = 0
@@ -95,8 +95,8 @@ class AcManagementPage(QWidget):
         self.device_combo = QComboBox()
         self.open_web_button = QPushButton()
         self.refresh_button = QPushButton()
-        self.status_label = QLabel()
-        self.summary_labels: dict[str, QLabel] = {field: QLabel("-") for _key, field in SUMMARY_FIELDS}
+        self.status_label = make_text_selectable(QLabel())
+        self.summary_labels: dict[str, QLabel] = {field: make_text_selectable(QLabel("-")) for _key, field in SUMMARY_FIELDS}
         self.tabs = QTabWidget()
         self.resources_table = QTableWidget()
         self.batch_delete_button = QPushButton()
@@ -105,10 +105,10 @@ class AcManagementPage(QWidget):
         self.export_button = QPushButton()
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
-        self.selection_label = QLabel()
+        self.selection_label = make_text_selectable(QLabel())
         self.optical_table = QTableWidget()
         self.refresh_optical_button = QPushButton()
-        self.coming_soon_label = QLabel()
+        self.coming_soon_label = make_text_selectable(QLabel())
 
         configure_readonly_table(self.resources_table)
         configure_readonly_table(self.optical_table)
@@ -133,6 +133,7 @@ class AcManagementPage(QWidget):
             label = QLabel()
             label.setObjectName(f"summary_label_{field}")
             label.setProperty("translation_key", key)
+            make_text_selectable(label)
             summary.addWidget(label, index // 4 * 2, index % 4)
             summary.addWidget(self.summary_labels[field], index // 4 * 2 + 1, index % 4)
 

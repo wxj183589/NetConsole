@@ -7,6 +7,7 @@ from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import (
+    CSV_ENCODING_ERROR,
     EXPORT_FIELDS,
     SNMPV3_AUTH_PROTOCOLS,
     SNMPV3_PRIV_PROTOCOLS,
@@ -32,6 +33,11 @@ def read_csv(path):
 
 def write_rows(path, rows):
     with path.open("w", newline="", encoding="utf-8-sig") as file:
+        csv.writer(file).writerows(rows)
+
+
+def write_rows_with_encoding(path, rows, encoding):
+    with path.open("w", newline="", encoding=encoding) as file:
         csv.writer(file).writerows(rows)
 
 
@@ -91,6 +97,56 @@ def test_simplified_template_import_defaults_and_credentials(tmp_path):
     assert imported.ssh_password == "ssh-pwd"
     assert imported.telnet_username is None
     assert imported.telnet_password == "tel-pwd"
+
+
+def test_template_import_supports_gbk_csv(tmp_path):
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "devices_gbk.csv"
+    write_rows_with_encoding(
+        csv_path,
+        [
+            TEMPLATE_FIELDS,
+            ["GBK-Core", "192.168.1.10", "H3C", "OCC", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", "remark"],
+        ],
+        "gbk",
+    )
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+
+    assert result.created == 1
+    assert imported.name == "GBK-Core"
+    assert imported.ip_address == "192.168.1.10"
+
+
+def test_template_import_still_supports_utf8_sig_csv(tmp_path):
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "devices_utf8_sig.csv"
+    write_rows(
+        csv_path,
+        [
+            TEMPLATE_FIELDS,
+            ["UTF8-Core", "192.168.1.11", "H3C", "OCC", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", "remark"],
+        ],
+    )
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+
+    assert result.created == 1
+    assert imported.name == "UTF8-Core"
+
+
+def test_csv_import_encoding_failure_uses_friendly_error(tmp_path):
+    _repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "bad_encoding.csv"
+    csv_path.write_bytes(b"\x80\x81\x82\x83")
+
+    with pytest.raises(ValueError) as exc_info:
+        service.import_csv(csv_path)
+
+    assert str(exc_info.value) == CSV_ENCODING_ERROR
+    assert "codec" not in str(exc_info.value).lower()
 
 
 def test_old_template_fields_raise_clear_error(tmp_path):

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
+from netconsole.ui.table_utils import attach_table_context_menu, configure_readonly_table
 
 
 def make_app_log_export_filename(now: datetime | None = None) -> str:
@@ -35,8 +36,8 @@ class AppLogPage(QWidget):
         self.clear_button = QPushButton()
         self.export_button = QPushButton()
         self.table = QTableWidget(0, 4)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        configure_readonly_table(self.table)
+        attach_table_context_menu(self.table, self.i18n.language, include_history=False)
 
         filters = QHBoxLayout()
         filters.addWidget(self.search_input, 1)

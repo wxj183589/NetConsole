@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -10,6 +14,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
     QMessageBox,
@@ -26,7 +31,7 @@ from netconsole.ui.dialogs.history_data_dialog import (
     LLDP_HISTORY_COLUMNS,
     OPTICAL_HISTORY_COLUMNS,
 )
-from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table
+from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 
 
 OVERVIEW_FIELDS = (
@@ -40,6 +45,8 @@ OVERVIEW_FIELDS = (
     ("details.collected_at", "collected_at"),
     ("details.raw_log_path", "raw_log_path"),
 )
+
+COLLECT_LOG_NOT_FOUND = "未找到采集日志"
 
 INTERFACE_COLUMNS = (
     ("details.interface_name", "interface_name"),
@@ -92,23 +99,33 @@ class DeviceDetailDialog(QDialog):
         self.site_name = site_name
         self.collect_thread: DeviceCollectThread | None = None
         self.history_dialogs: list[HistoryDataDialog] = []
+        self.collect_log_dialogs: list[CollectLogDialog] = []
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(False)
         self.setMinimumSize(720, 480)
         self.resize(800, 520)
 
-        self.title_label = QLabel()
+        self.title_label = make_text_selectable(QLabel())
         self.always_on_top_button = QPushButton()
         self.refresh_button = QPushButton()
+        self.view_collect_log_button = QPushButton()
+        self.copy_collect_log_button = QPushButton()
+        self.export_collect_log_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.refresh_button.clicked.connect(self.refresh_device_details)
+        self.view_collect_log_button.clicked.connect(self.view_collect_log)
+        self.copy_collect_log_button.clicked.connect(self.copy_collect_log)
+        self.export_collect_log_button.clicked.connect(self.export_collect_log)
         self.tabs = QTabWidget()
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         header.addWidget(self.title_label)
         header.addStretch(1)
         header.addWidget(self.refresh_button)
+        header.addWidget(self.view_collect_log_button)
+        header.addWidget(self.copy_collect_log_button)
+        header.addWidget(self.export_collect_log_button)
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
@@ -120,6 +137,9 @@ class DeviceDetailDialog(QDialog):
         self.setWindowTitle(title)
         self.title_label.setText(title)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
+        self.view_collect_log_button.setText(self.i18n.t("details.view_collect_log"))
+        self.copy_collect_log_button.setText(self.i18n.t("details.copy_collect_log"))
+        self.export_collect_log_button.setText(self.i18n.t("details.export_collect_log"))
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
         self.reload_tabs()
 
@@ -177,6 +197,43 @@ class DeviceDetailDialog(QDialog):
             form.addRow(self.i18n.t(label_key), value)
         layout.addStretch(1)
         return widget
+
+    def view_collect_log(self) -> None:
+        try:
+            path, text = self._load_collect_log()
+        except FileNotFoundError:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.collect_log_not_found"))
+            return
+        dialog = CollectLogDialog(self.i18n.t("details.collect_log_title"), str(path), text, self)
+        self.collect_log_dialogs.append(dialog)
+        dialog.destroyed.connect(lambda _=None, window=dialog: self._remove_collect_log_dialog(window))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def copy_collect_log(self) -> None:
+        try:
+            _path, text = self._load_collect_log()
+        except FileNotFoundError:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.collect_log_not_found"))
+            return
+        QApplication.clipboard().setText(text)
+        QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.collect_log_copied"))
+
+    def export_collect_log(self) -> None:
+        try:
+            _path, text = self._load_collect_log()
+        except FileNotFoundError:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.collect_log_not_found"))
+            return
+        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("details.export_collect_log"), f"{self.device.name}_collect_log.txt", "Text Files (*.txt);;All Files (*.*)")
+        if not path:
+            return
+        Path(path).write_text(text, encoding="utf-8")
+
+    def _load_collect_log(self) -> tuple[Path, str]:
+        raw_log_path = self.repository.get_latest_raw_log_path(str(self.device.device_uuid or ""))
+        return read_collect_log_text(raw_log_path)
 
     def _interfaces_tab(self) -> QWidget:
         rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))
@@ -246,6 +303,10 @@ class DeviceDetailDialog(QDialog):
         if dialog in self.history_dialogs:
             self.history_dialogs.remove(dialog)
 
+    def _remove_collect_log_dialog(self, dialog: "CollectLogDialog") -> None:
+        if dialog in self.collect_log_dialogs:
+            self.collect_log_dialogs.remove(dialog)
+
     def _empty_tab(self, note_key: str) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -253,6 +314,7 @@ class DeviceDetailDialog(QDialog):
         label = QLabel(self.i18n.t("details.no_data_demo_hint"))
         label.setAlignment(Qt.AlignCenter)
         label.setWordWrap(True)
+        make_text_selectable(label)
         layout.addWidget(label)
         layout.addStretch(1)
         return widget
@@ -260,6 +322,7 @@ class DeviceDetailDialog(QDialog):
     def _note_label(self, key: str) -> QLabel:
         label = QLabel(self.i18n.t(key))
         label.setWordWrap(True)
+        make_text_selectable(label)
         return label
 
     def set_always_on_top(self, enabled: bool) -> None:
@@ -282,6 +345,31 @@ class DeviceDetailDialog(QDialog):
             QPushButton:hover { background: #eef5ff; border-color: #8bb7ee; }
             """
         )
+
+
+class CollectLogDialog(QDialog):
+    def __init__(self, title: str, raw_log_path: str, text: str, parent=None) -> None:
+        super().__init__(parent, Qt.Window)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setWindowTitle(title)
+        self.resize(900, 640)
+        self.path_label = make_text_selectable(QLabel(raw_log_path))
+        self.path_label.setWordWrap(True)
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setPlainText(text)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.path_label)
+        layout.addWidget(self.text_edit, 1)
+
+
+def read_collect_log_text(raw_log_path: str | None) -> tuple[Path, str]:
+    if not raw_log_path:
+        raise FileNotFoundError(COLLECT_LOG_NOT_FOUND)
+    path = Path(raw_log_path)
+    if not path.is_file():
+        raise FileNotFoundError(COLLECT_LOG_NOT_FOUND)
+    return path, path.read_text(encoding="utf-8", errors="replace")
 
 
 def _column_index(columns: tuple[tuple[str, str], ...], field: str) -> int | None:

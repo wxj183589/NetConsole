@@ -1,3 +1,5 @@
+import sys
+
 from netconsole.core.paths import PathResolver
 
 
@@ -46,3 +48,16 @@ def test_path_resolver_creates_project_dirs(tmp_path):
     assert paths.resources_dir.is_dir()
     assert paths.icons_dir.is_dir()
     assert paths.templates_dir.is_dir()
+
+
+def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):
+    exe_path = tmp_path / "NetConsole.exe"
+    exe_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_path))
+
+    paths = PathResolver()
+
+    assert paths.app_root == tmp_path
+    assert paths.data_dir == tmp_path / "data"
+    assert paths.site_db_path() == tmp_path / "data" / "sites" / "demo" / "db" / "devices.db"
