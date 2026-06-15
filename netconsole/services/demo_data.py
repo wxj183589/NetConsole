@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from netconsole.models.device import Device
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 
@@ -176,6 +177,7 @@ def insert_demo_collected_data(repository: DeviceRepository, devices: list[Devic
         return
 
     fact_repository = DeviceFactRepository(repository.database)
+    ac_repository = AcRepository(repository.database)
     run = fact_repository.create_collect_run(
         {
             "collect_run_uuid": "demo-collect-run-0001",
@@ -261,7 +263,61 @@ def insert_demo_collected_data(repository: DeviceRepository, devices: list[Devic
             _demo_lldp("GigabitEthernet1/0/1", "SW01-DEMO", "GigabitEthernet1/0/1", "10.0.0.52", sw01_uuid, run_uuid, ac_uuid, collected_at),
         ],
     )
+    insert_demo_ac_management(ac_repository, ac_uuid, run_uuid, collected_at)
     insert_demo_history(fact_repository, sw01_uuid, sw02_uuid)
+
+
+def insert_demo_ac_management(ac_repository: AcRepository, ac_uuid: str, run_uuid: str, collected_at: str) -> None:
+    ac_repository.upsert_ac_ap_summary(
+        {
+            "ac_device_uuid": ac_uuid,
+            "total_aps": 2,
+            "online_aps": 2,
+            "offline_aps": 0,
+            "total_ap_licenses": 60000,
+            "local_ap_licenses": 60000,
+            "remaining_local_ap_licenses": 59998,
+            "cpu_usage": "16%",
+            "cpu_5s": 16,
+            "cpu_1m": 18,
+            "cpu_5m": 18,
+            "memory_usage": "47%",
+            "memory_total": 770180,
+            "memory_used": 365804,
+            "memory_free": 404376,
+            "memory_free_ratio": 53.0,
+            "model": "H3C WX3540H",
+            "serial_number": "DEMO-AC-0001",
+            "software_version": "Comware V7 Demo",
+            "collected_at": collected_at,
+            "collect_run_uuid": run_uuid,
+            "raw_log_path": f"raw/ac/{run_uuid}/{ac_uuid}.log",
+            "updated_at": collected_at,
+        }
+    )
+    ap_rows = [
+        _demo_fit_ap_resource("4c6f-d608-0400", "10.0.0.61", "4c6f-d608-0400", "1", run_uuid, ac_uuid, collected_at),
+        _demo_fit_ap_resource("4c6f-de4b-0500", "10.0.0.62", "4c6f-de4b-0500", "6", run_uuid, ac_uuid, collected_at),
+    ]
+    ac_repository.replace_fit_ap_resources(ac_uuid, ap_rows)
+    ac_repository.replace_fit_ap_optical(
+        ac_uuid,
+        [
+            _demo_fit_ap_optical("4c6f-d608-0400", "10.0.0.61", "SW01-DEMO GigabitEthernet1/0/2", "-3.21 dBm", run_uuid, ac_uuid, collected_at),
+            _demo_fit_ap_optical("4c6f-de4b-0500", "10.0.0.62", "SW02-DEMO GigabitEthernet1/0/1", "-3.45 dBm", run_uuid, ac_uuid, collected_at),
+        ],
+    )
+    ac_repository.upsert_fit_ap_metadata(
+        {
+            "ap_name": "4c6f-d608-0400",
+            "site_name": "体育中心站",
+            "mileage": "K12+450",
+            "location_note": "下行区间",
+            "direction": "CW",
+            "created_at": collected_at,
+            "updated_at": collected_at,
+        }
+    )
 
 
 def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, sw02_uuid: str) -> None:
@@ -423,5 +479,80 @@ def _demo_lldp(
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
         "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "updated_at": collected_at,
+    }
+
+
+def _demo_fit_ap_resource(
+    ap_name: str,
+    ap_ip: str,
+    ap_mac: str,
+    rid1_channel: str,
+    run_uuid: str,
+    ac_uuid: str,
+    collected_at: str,
+) -> dict[str, object | None]:
+    return {
+        "ac_device_uuid": ac_uuid,
+        "ap_name": ap_name,
+        "ap_ip": ap_ip,
+        "ap_mac": ap_mac,
+        "model": "WA6320-HCL",
+        "serial_number": f"SN-{ap_name}",
+        "state": "R",
+        "state_raw": "R/M",
+        "state_display": "运行(主)",
+        "group_name": "default-group",
+        "online_time": "12 days",
+        "site": "Demo",
+        "mileage": "",
+        "location_note": "",
+        "direction": "",
+        "rid1_channel": rid1_channel,
+        "rid1_bandwidth": "20",
+        "rid1_tx_power": "15",
+        "rid2_channel": "149",
+        "rid2_bandwidth": "80",
+        "rid2_tx_power": "17",
+        "rid3_channel": "",
+        "rid3_bandwidth": "",
+        "rid3_tx_power": "",
+        "lldp_neighbor": "",
+        "ap_optical_power": "",
+        "collected_at": collected_at,
+        "collect_run_uuid": run_uuid,
+        "raw_log_path": f"raw/ac/{run_uuid}/{ac_uuid}.log",
+        "updated_at": collected_at,
+    }
+
+
+def _demo_fit_ap_optical(
+    ap_name: str,
+    ap_ip: str,
+    lldp_neighbor: str,
+    rx_power: str,
+    run_uuid: str,
+    ac_uuid: str,
+    collected_at: str,
+) -> dict[str, object | None]:
+    return {
+        "ac_device_uuid": ac_uuid,
+        "ap_name": ap_name,
+        "ap_ip": ap_ip,
+        "site": "Demo",
+        "lldp_neighbor": lldp_neighbor,
+        "neighbor_interface": "GigabitEthernet1/0/1",
+        "neighbor_mac": "",
+        "neighbor_device_name": lldp_neighbor.split()[0] if lldp_neighbor else "",
+        "neighbor_rx_power": rx_power,
+        "interface_name": "GigabitEthernet1/0/1",
+        "temperature": "43",
+        "tx_power": "-2.85",
+        "rx_power": rx_power.replace(" dBm", ""),
+        "status": "success",
+        "error_message": "",
+        "collected_at": collected_at,
+        "collect_run_uuid": run_uuid,
+        "raw_log_path": f"raw/ac/{run_uuid}/fit_ap/{ap_name}.log",
         "updated_at": collected_at,
     }

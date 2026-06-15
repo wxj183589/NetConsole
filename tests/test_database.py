@@ -23,6 +23,9 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "device_interfaces_history" in table_names
     assert "device_optical_modules_history" in table_names
     assert "device_lldp_neighbors_history" in table_names
+    assert "ac_ap_summary" in table_names
+    assert "ac_fit_ap_resources" in table_names
+    assert "ac_fit_ap_optical" in table_names
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns
 

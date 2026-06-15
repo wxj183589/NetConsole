@@ -232,6 +232,109 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors_history (
 );
 """
 
+AC_AP_SUMMARY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_ap_summary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL UNIQUE,
+    total_aps INTEGER,
+    online_aps INTEGER,
+    offline_aps INTEGER,
+    total_ap_licenses INTEGER,
+    local_ap_licenses INTEGER,
+    remaining_local_ap_licenses INTEGER,
+    cpu_usage TEXT,
+    cpu_5s INTEGER,
+    cpu_1m INTEGER,
+    cpu_5m INTEGER,
+    memory_usage TEXT,
+    memory_total INTEGER,
+    memory_used INTEGER,
+    memory_free INTEGER,
+    memory_free_ratio REAL,
+    model TEXT,
+    serial_number TEXT,
+    software_version TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT NOT NULL
+);
+"""
+
+AC_FIT_AP_RESOURCES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    ap_ip TEXT,
+    ap_mac TEXT,
+    model TEXT,
+    serial_number TEXT,
+    state TEXT,
+    state_raw TEXT,
+    state_display TEXT,
+    group_name TEXT,
+    online_time TEXT,
+    site TEXT,
+    mileage TEXT,
+    location_note TEXT,
+    direction TEXT,
+    rid1_channel TEXT,
+    rid1_bandwidth TEXT,
+    rid1_tx_power TEXT,
+    rid2_channel TEXT,
+    rid2_bandwidth TEXT,
+    rid2_tx_power TEXT,
+    rid3_channel TEXT,
+    rid3_bandwidth TEXT,
+    rid3_tx_power TEXT,
+    lldp_neighbor TEXT,
+    ap_optical_power TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT NOT NULL
+);
+"""
+
+AC_FIT_AP_METADATA_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ap_name TEXT NOT NULL UNIQUE,
+    site_name TEXT,
+    mileage TEXT,
+    location_note TEXT,
+    direction TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+AC_FIT_AP_OPTICAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_name TEXT NOT NULL,
+    ap_ip TEXT,
+    site TEXT,
+    lldp_neighbor TEXT,
+    neighbor_interface TEXT,
+    neighbor_mac TEXT,
+    neighbor_device_name TEXT,
+    neighbor_rx_power TEXT,
+    interface_name TEXT,
+    temperature TEXT,
+    tx_power TEXT,
+    rx_power TEXT,
+    status TEXT,
+    error_message TEXT,
+    collected_at TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    updated_at TEXT
+);
+"""
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -262,6 +365,10 @@ class Database:
                         DEVICE_INTERFACES_HISTORY_SCHEMA,
                         DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
                         DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
+                        AC_AP_SUMMARY_SCHEMA,
+                        AC_FIT_AP_RESOURCES_SCHEMA,
+                        AC_FIT_AP_METADATA_SCHEMA,
+                        AC_FIT_AP_OPTICAL_SCHEMA,
                     )
                 )
             )

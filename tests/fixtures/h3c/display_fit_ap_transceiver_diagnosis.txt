@@ -1,0 +1,3 @@
+GigabitEthernet1/0/1 transceiver diagnostic information:
+  RX power: -3.21 dBm
+  TX power: -2.85 dBm

@@ -1,0 +1,4 @@
+LLDP neighbor-information of port 1[GigabitEthernet1/0/1]:
+ System name         : SW01-DEMO
+ Port ID             : GigabitEthernet1/0/2
+ Management address  : 10.0.0.52

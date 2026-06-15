@@ -1,0 +1,10 @@
+Total number of APs: 2
+Total number of connected APs: 2
+Total AP licenses: 60000
+Local AP licenses: 60000
+Remaining local AP licenses: 59998
+
+AP name         APID  State  Model       Serial ID       Group name     Online time
+-----------------------------------------------------------------------------------
+4c6f-d608-0400  1     R      WA6320-HCL  SN-AP-0001      default-group  12 days
+4c6f-de4b-0500  2     R      WA6320-HCL  SN-AP-0002      default-group  11 days

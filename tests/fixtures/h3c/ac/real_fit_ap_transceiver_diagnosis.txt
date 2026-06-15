@@ -1,0 +1,9 @@
+display transceiver diagnosis interface 
+GigabitEthernet1/0/2 transceiver diagnostic information:
+  Current diagnostic parameters:
+    Temp.(C)   Voltage(V)  Bias(mA)  RX power(dBm)  TX power(dBm)  
+    43         3.30        15.55     -7.55          -6.09          
+  Alarm thresholds:
+          Temp.(C)   Voltage(V)  Bias(mA)  RX power(dBm)  TX power(dBm)  
+    High  85         3.60        60.00     -3.00          -1.00          
+    Low   -5         3.00        0.00      -19.00         -11.00 
