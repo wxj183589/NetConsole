@@ -10,6 +10,7 @@ from netconsole.core.paths import PathResolver
 class NeighborMatchResult:
     device_uuid: str | None = None
     device_name: str | None = None
+    station: str | None = None
     matched_by: str | None = None
     confidence: float = 0.0
 
@@ -27,23 +28,43 @@ def match_neighbor_device(
         with database.connect() as conn:
             row = conn.execute(
                 """
-                SELECT d.device_uuid, d.name
-                FROM devices d
-                LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
-                WHERE d.sysname = ? OR f.sysname = ?
+                SELECT d.device_uuid, d.name, d.station
+                FROM device_facts f
+                JOIN devices d ON d.device_uuid = f.device_uuid
+                WHERE f.sysname = ?
                 LIMIT 1
                 """,
-                (sysname, sysname),
+                (sysname,),
             ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT d.device_uuid, d.name, d.station
+                    FROM devices d
+                    WHERE d.sysname = ?
+                    LIMIT 1
+                    """,
+                    (sysname,),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT d.device_uuid, d.name, d.station
+                    FROM devices d
+                    WHERE d.name = ?
+                    LIMIT 1
+                    """,
+                    (sysname,),
+                ).fetchone()
         if row:
-            return NeighborMatchResult(str(row["device_uuid"]), str(row["name"]), "sysname", 1.0)
+            return NeighborMatchResult(str(row["device_uuid"]), str(row["name"]), row["station"], "sysname", 1.0)
 
     mac = _normalize_mac(neighbor_mac)
     if mac:
         with database.connect() as conn:
             row = conn.execute(
                 """
-                SELECT d.device_uuid, d.name
+                SELECT d.device_uuid, d.name, d.station
                 FROM device_interfaces i
                 JOIN devices d ON d.device_uuid = i.device_uuid
                 WHERE lower(replace(i.mac_address, ':', '-')) = ?
@@ -52,7 +73,7 @@ def match_neighbor_device(
                 (mac,),
             ).fetchone()
         if row:
-            return NeighborMatchResult(str(row["device_uuid"]), str(row["name"]), "mac", 0.9)
+            return NeighborMatchResult(str(row["device_uuid"]), str(row["name"]), row["station"], "mac", 0.9)
 
     return NeighborMatchResult()
 

@@ -29,7 +29,16 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
 }
 
 SAFE_FIT_AP_COMMANDS = {
+    "screen-length disable",
     "display lldp neighbor-information list",
+    "display transceiver diagnosis interface",
+    "display transceiver interface",
+    "display transceiver manuinfo interface",
+}
+
+SAFE_OPTICAL_REFRESH_COMMANDS = {
+    "screen-length disable",
+    "display interface",
     "display transceiver diagnosis interface",
 }
 
@@ -45,6 +54,7 @@ CONTEXT_COMMANDS = {
     "device_collect": SAFE_DEVICE_COMMANDS,
     "ac_collect": SAFE_AC_COMMANDS,
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
+    "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
 }
 

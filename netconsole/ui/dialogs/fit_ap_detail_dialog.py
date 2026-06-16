@@ -34,6 +34,7 @@ OPTICAL_COLUMNS = (
     ("ap.temperature", "temperature"),
     ("ap.tx_power", "tx_power"),
     ("ap.rx_power", "rx_power"),
+    ("ap.optical_alarm_status", "optical_alarm_status"),
 )
 
 

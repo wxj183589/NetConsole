@@ -4,6 +4,7 @@ import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -74,10 +75,19 @@ FIT_AP_OPTICAL_COLUMNS = (
     ("ap.temperature", "temperature"),
     ("ap.tx_power", "tx_power"),
     ("ap.rx_power", "rx_power"),
+    ("ap.optical_alarm_status", "optical_alarm_status"),
     ("field.updated_at", "updated_at"),
     ("field.status", "status"),
     ("ac.error_message", "error_message"),
 )
+
+OPTICAL_STATUS_COLORS = {
+    "normal": "#dcfce7",
+    "warning": "#fef9c3",
+    "alarm": "#fee2e2",
+    "link_abnormal": "#ffe4e6",
+    "no_light": "#e5e7eb",
+}
 
 
 class AcManagementPage(QWidget):
@@ -109,6 +119,8 @@ class AcManagementPage(QWidget):
         self.selection_label = make_text_selectable(QLabel())
         self.optical_table = QTableWidget()
         self.refresh_optical_button = QPushButton()
+        self.optical_concurrency_combo = QComboBox()
+        self.optical_legend_label = make_text_selectable(QLabel())
         self.coming_soon_label = make_text_selectable(QLabel())
 
         configure_readonly_table(self.resources_table)
@@ -161,8 +173,11 @@ class AcManagementPage(QWidget):
         optical_layout = QVBoxLayout()
         optical_actions = QHBoxLayout()
         optical_actions.addWidget(self.refresh_optical_button)
+        optical_actions.addWidget(self.optical_concurrency_combo)
         optical_actions.addStretch(1)
+        self.optical_legend_label.setWordWrap(True)
         optical_layout.addLayout(optical_actions)
+        optical_layout.addWidget(self.optical_legend_label)
         optical_layout.addWidget(self.optical_table)
         optical_tab.setLayout(optical_layout)
 
@@ -212,6 +227,11 @@ class AcManagementPage(QWidget):
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.refresh_optical_button.setText(self.i18n.t("ac.refresh_optical"))
+        self.optical_concurrency_combo.clear()
+        for value in (20, 50, 100, 200):
+            self.optical_concurrency_combo.addItem(f"{self.i18n.t('batch_collect.concurrency')}: {value}", value)
+        self.optical_concurrency_combo.setCurrentIndex(3)
+        self.optical_legend_label.setText(self.i18n.t("details.optical_color_legend"))
         self.status_label.setText(self.i18n.t("ac.status.not_collected"))
         self.coming_soon_label.setText(self.i18n.t("ac.coming_soon"))
         for index, (key, _field) in enumerate(SUMMARY_FIELDS):
@@ -225,7 +245,7 @@ class AcManagementPage(QWidget):
         self.resources_table.horizontalHeaderItem(CHECK_COLUMN).setText(self.i18n.t("ap.select_all"))
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS])
         auto_resize_table_columns(self.resources_table, column_min_widths={0: 80, 1: 150})
-        auto_resize_table_columns(self.optical_table, column_min_widths={2: 180, 3: 180, 5: 180, 13: 180})
+        auto_resize_table_columns(self.optical_table, column_min_widths={2: 180, 3: 180, 5: 180, 14: 180})
         self.update_selection_state()
 
     def refresh_devices(self) -> None:
@@ -277,7 +297,7 @@ class AcManagementPage(QWidget):
             return
         self.refresh_optical_button.setEnabled(False)
         self.status_label.setText(self.i18n.t("ac.status.updating"))
-        self.optical_thread = FitApOpticalCollectThread(device, self.site_name, self)
+        self.optical_thread = FitApOpticalCollectThread(device, self.site_name, int(self.optical_concurrency_combo.currentData() or 200), self)
         self.optical_thread.collect_finished.connect(self._finish_optical_collect)
         self.optical_thread.collect_failed.connect(self._fail_optical_collect)
         self.optical_thread.finished.connect(self.optical_thread.deleteLater)
@@ -480,6 +500,10 @@ class AcManagementPage(QWidget):
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     if field == "state_display":
                         item.setToolTip(f"{self.i18n.t('ap.state_raw')}: {row.get('state_raw') or row.get('state') or '-'}")
+                    if table is self.optical_table:
+                        color = OPTICAL_STATUS_COLORS.get(str(row.get("optical_alarm_status") or ""))
+                        if color:
+                            item.setBackground(QColor(color))
                 item.setTextAlignment(Qt.AlignCenter if column_index < 2 else Qt.AlignVCenter | Qt.AlignLeft)
                 table.setItem(row_index, column_index, item)
         table.blockSignals(False)

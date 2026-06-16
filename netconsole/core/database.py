@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
     temperature TEXT,
     tx_power TEXT,
     rx_power TEXT,
+    optical_alarm_status TEXT,
     status TEXT,
     error_message TEXT,
     collected_at TEXT,

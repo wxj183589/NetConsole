@@ -38,6 +38,8 @@ RESOURCE_COMMANDS = (
 )
 
 ENABLE_FIT_AP_CONSOLE_COMMANDS = (
+    "screen-length disable",
+    "display wlan ap all address",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",
@@ -46,8 +48,11 @@ ENABLE_FIT_AP_CONSOLE_COMMANDS = (
 )
 
 FIT_AP_OPTICAL_COMMANDS = (
+    "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
+    "display transceiver interface",
+    "display transceiver manuinfo interface",
 )
 
 
@@ -165,7 +170,7 @@ def collect_h3c_fit_ap_optical(
     site_name: str,
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
-    max_workers: int = 5,
+    max_workers: int = 200,
 ) -> FitApOpticalCollectResult:
     paths = paths or PathResolver()
     repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
@@ -188,17 +193,22 @@ def collect_h3c_fit_ap_optical(
     )
     app_logger.log_info("FIT_AP_OPTICAL_STARTED", _detail(ac_device, collect_run_uuid))
     try:
+        app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_STARTED", _detail(ac_device, collect_run_uuid))
         enable_results = _enable_fit_ap_console(ac_device, collect_run_uuid)
         _write_raw_files(run_dir / f"{ac_device.device_uuid}.log", run_dir / f"{ac_device.device_uuid}_commands.jsonl", ac_device, collect_run_uuid, enable_results)
+        if any(not result.success for result in enable_results):
+            raise RuntimeError(_command_error_summary(enable_results) or "AC enable AP console failed")
+        app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_SUCCESS", _detail(ac_device, collect_run_uuid))
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
+        app_logger.log_error("FIT_AP_OPTICAL_AC_ENABLE_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
 
     resources = [row for row in repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid)) if row.get("ap_ip")]
     rows: list[dict[str, object | None]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, min(int(max_workers or 1), 200))) as executor:
         futures = {
             executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
             for row in resources
@@ -206,6 +216,7 @@ def collect_h3c_fit_ap_optical(
         for future in as_completed(futures):
             rows.append(future.result())
     repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows)
+    app_logger.log_info("FIT_AP_OPTICAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
     failed = sum(1 for row in rows if row.get("status") != "success")
     status = "failed" if rows and failed == len(rows) else "partial_success" if failed else "success"
     if not rows:
@@ -316,6 +327,7 @@ def _collect_single_fit_ap_optical(
     )
     command_results: list[CommandResult] = []
     connection = None
+    app_logger.log_info("FIT_AP_OPTICAL_AP_STARTED", _detail(ac_device, collect_run_uuid, ap=ap_name))
     try:
         target = choose_connection_target(temp_device)
         if target is None:
@@ -332,6 +344,8 @@ def _collect_single_fit_ap_optical(
         parsed = parse_fit_ap_optical(
             outputs.get("display lldp neighbor-information list", ""),
             outputs.get("display transceiver diagnosis interface", ""),
+            outputs.get("display transceiver interface", ""),
+            outputs.get("display transceiver manuinfo interface", ""),
         )
         match = match_neighbor_device(
             site_name,
@@ -341,17 +355,21 @@ def _collect_single_fit_ap_optical(
             paths=paths,
         )
         if match.device_uuid:
-            app_logger.log_info("FIT_AP_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
+            app_logger.log_info("FIT_AP_OPTICAL_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
         else:
-            app_logger.log_warning("FIT_AP_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
+            app_logger.log_warning("FIT_AP_OPTICAL_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
+        if match.station:
+            base["site"] = match.station
         parsed["neighbor_device_name"] = match.device_name or parsed.get("lldp_neighbor")
         parsed["neighbor_rx_power"] = find_neighbor_rx_power(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
         success = any(parsed.values()) and all(result.success for result in command_results)
-        return {**base, **parsed, "status": "success" if success else "failed", "error_message": None if success else _command_error_summary(command_results) or "no optical data parsed"}
+        status = "success" if success else "failed"
+        app_logger.log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else _command_error_summary(command_results) or "no optical data parsed"))
+        return {**base, **parsed, "status": status, "error_message": None if success else _command_error_summary(command_results) or "no optical data parsed"}
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), temp_device)
         _write_raw_files(raw_log_file, commands_file, temp_device, collect_run_uuid, command_results, fatal_error=message)
-        app_logger.log_error("FIT_AP_TELNET_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=message))
+        app_logger.log_error("FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=message))
         return {
             **base,
             "lldp_neighbor": None,
@@ -363,6 +381,7 @@ def _collect_single_fit_ap_optical(
             "temperature": None,
             "tx_power": None,
             "rx_power": None,
+            "optical_alarm_status": "unknown",
             "status": "failed",
             "error_message": message,
         }

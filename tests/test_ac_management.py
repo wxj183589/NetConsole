@@ -21,6 +21,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.fit_ap_import_export import FitApImportExportService
 from netconsole.services import h3c_ac_collect_service
+from netconsole.services import command_guard
 from netconsole.services.h3c_ac_collect_service import RESOURCE_COMMANDS, collect_h3c_ac_resources
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_rx_power, match_neighbor_device
@@ -249,6 +250,60 @@ def test_fit_ap_optical_parser_extracts_lldp_and_power_summary():
     assert "SW01-DEMO" in parsed["lldp_neighbor"]
     assert parsed["rx_power"] == "-3.21"
     assert parsed["tx_power"] == "-2.85"
+    assert "optical_alarm_status" in parsed
+
+
+def test_fit_ap_lldp_parser_handles_fit_ap_table_format():
+    parsed = parse_fit_ap_lldp(
+        """
+System Name          Local Interface Chassis ID      Port ID
+HX_1                 GE1/0/2         903f-8645-6e00  GigabitEthernet2/0/19
+"""
+    )
+
+    assert parsed["lldp_neighbor"] == "HX_1"
+    assert parsed["interface_name"] == "GE1/0/2"
+    assert parsed["neighbor_mac"] == "903f-8645-6e00"
+    assert parsed["neighbor_interface"] == "GigabitEthernet2/0/19"
+
+
+def test_fit_ap_transceiver_parser_extracts_diagnosis_interface_and_manuinfo():
+    parsed = parse_fit_ap_transceiver(
+        """
+GigabitEthernet1/0/2 transceiver diagnostic information:
+Current diagnostic parameters:
+Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+43       3.31       6.10     -7.55         -6.09
+Alarm thresholds:
+High     90         3.63      0.00          0.00
+Low      -10        2.97      -20.00        -20.00
+Warning thresholds:
+High     85         3.50      -1.00         -1.00
+Low      -5         3.00      -17.00        -17.00
+""",
+        """
+GigabitEthernet1/0/2 transceiver information:
+Transceiver Type           : 1000_BASE_LX_SFP
+Wavelength(nm)             : 1310
+Transfer Distance(km)      : 10
+Connector Type             : LC
+Vendor Name                : H3C
+""",
+        """
+GigabitEthernet1/0/2 transceiver manufacture information:
+Manu. Serial Number        : SN123456
+Vendor Name                : H3C
+""",
+    )
+
+    assert parsed["interface_name"] == "GigabitEthernet1/0/2"
+    assert parsed["temperature"] == "43"
+    assert parsed["rx_power"] == "-7.55"
+    assert parsed["tx_power"] == "-6.09"
+    assert parsed["module_model"] == "1000_BASE_LX_SFP"
+    assert parsed["wavelength"] == "1310 nm"
+    assert parsed["transmission_distance"] == "10 km"
+    assert parsed["module_serial_number"] == "SN123456"
 
 
 def test_fit_ap_optical_parser_handles_real_machine_lldp_and_transceiver():
@@ -341,11 +396,23 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "temperature",
         "tx_power",
         "rx_power",
+        "optical_alarm_status",
         "updated_at",
         "status",
         "error_message",
     ]
+    assert [page.optical_concurrency_combo.itemData(index) for index in range(page.optical_concurrency_combo.count())] == [20, 50, 100, 200]
+    assert page.optical_legend_label.text()
     assert page.tabs.tabText(2) == "Online Vehicle MR"
+
+
+def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(page.optical_table, FIT_AP_OPTICAL_COLUMNS, [{"ap_name": "ap-a", "optical_alarm_status": "no_light"}])
+
+    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
 
 
 def test_demo_data_contains_ac_management_rows(tmp_path):
@@ -433,9 +500,45 @@ def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
 
     assert by_sysname.device_uuid == device.device_uuid
     assert by_sysname.matched_by == "sysname"
+    assert by_sysname.station is None
     assert by_mac.device_uuid == device.device_uuid
     assert by_mac.matched_by == "mac"
     assert find_neighbor_rx_power("demo", device.device_uuid, "GigabitEthernet2/0/19", paths=paths) == "-6.66 dBm"
+
+
+def test_neighbor_matcher_prefers_fact_sysname_and_returns_station(tmp_path):
+    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    device_repository = DeviceRepository(database)
+    device = device_repository.create(Device(name="HX Device", sysname="HX_DEVICE", station="Station A", ip_address="10.0.0.2"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.upsert_device_fact(
+        {
+            "device_uuid": device.device_uuid,
+            "sysname": "HX_1",
+            "collected_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+        }
+    )
+
+    match = match_neighbor_device("demo", neighbor_sysname="HX_1", paths=PathResolver(tmp_path))
+
+    assert match.device_uuid == device.device_uuid
+    assert match.device_name == "HX Device"
+    assert match.station == "Station A"
+
+
+def test_fit_ap_optical_command_guard_allows_only_expected_commands():
+    allowed = {
+        "screen-length disable",
+        "display lldp neighbor-information list",
+        "display transceiver diagnosis interface",
+        "display transceiver interface",
+        "display transceiver manuinfo interface",
+    }
+
+    assert all(command_guard.is_command_allowed(command, "fit_ap_collect") for command in allowed)
+    assert command_guard.is_command_allowed("display interface", "fit_ap_collect") is False
+    assert command_guard.is_command_allowed("reboot", "fit_ap_collect") is False
 
 
 def test_ac_log_event_names_do_not_contain_password():

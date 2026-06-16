@@ -89,6 +89,7 @@ FIT_AP_OPTICAL_FIELDS = (
     "temperature",
     "tx_power",
     "rx_power",
+    "optical_alarm_status",
     "status",
     "error_message",
     "collected_at",
