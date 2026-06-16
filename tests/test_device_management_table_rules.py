@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QTableWidget
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -329,6 +329,59 @@ def test_device_detail_dialog_has_refresh_button(tmp_path):
     )
 
     assert dialog.refresh_button.text() == "Refresh"
+
+
+def test_optical_status_labels_and_colors_are_mapped():
+    i18n = I18n("zh_CN")
+
+    assert i18n.t("optical.status.link_abnormal") == "链路异常"
+    assert i18n.t("optical.status.no_light") == "无光"
+    assert DeviceDetailDialog.optical_status_color("normal") == "#ecfdf5"
+    assert DeviceDetailDialog.optical_status_color("warning") == "#fef3c7"
+    assert DeviceDetailDialog.optical_status_color("alarm") == "#fee2e2"
+    assert DeviceDetailDialog.optical_status_color("link_abnormal") == "#ffe4e6"
+    assert DeviceDetailDialog.optical_status_color("no_light") == "#e5e7eb"
+    assert DeviceDetailDialog.interface_row_status_color("link_abnormal") == "#ffe4e6"
+    assert DeviceDetailDialog.interface_row_status_color("no_light") == "#e5e7eb"
+
+
+def test_device_detail_tabs_include_color_notes_and_interface_color_follows_optical_status(tmp_path):
+    app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceFactRepository(database)
+    device = Device(name="Core", device_uuid="device-1")
+    repository.replace_device_interfaces(
+        "device-1",
+        [
+            {
+                "interface_name": "GigabitEthernet1/0/1",
+                "link_status": "DOWN",
+                "collected_at": "2026-06-16T00:00:00",
+            }
+        ],
+    )
+    repository.replace_optical_modules(
+        "device-1",
+        [
+            {
+                "interface_name": "GigabitEthernet1/0/1",
+                "rx_power": "-9.71",
+                "status": "link_abnormal",
+                "collected_at": "2026-06-16T00:00:00",
+            }
+        ],
+    )
+    dialog = DeviceDetailDialog(I18n("en_US"), repository, device)
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert any("Interface row color follows optical module status." in text for text in labels)
+    assert any("Legend:" in text and "No light" in text for text in labels)
+    interface_table = dialog.tabs.widget(1).findChild(QTableWidget)
+    optical_table = dialog.tabs.widget(2).findChild(QTableWidget)
+    assert interface_table.item(0, 0).background().color().name() == "#ffe4e6"
+    assert optical_table.item(0, 0).text() == "GigabitEthernet1/0/1"
+    assert optical_table.item(0, 1).text() == "Link Abnormal"
 
 
 def test_device_detail_overview_fields_are_complete():

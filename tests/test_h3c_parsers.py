@@ -377,8 +377,11 @@ def test_evaluate_optical_status_returns_normal_warning_alarm_and_skipped():
     assert evaluate_optical_status({**optical, "rx_power": "-20.00"}, interface)["status"] == "alarm"
     assert evaluate_optical_status({**optical, "rx_power": "-17.00"}, interface)["status"] == "warning"
     assert evaluate_optical_status({**optical, "tx_power": "-12.00"}, interface)["status"] == "alarm"
-    assert evaluate_optical_status(optical, {**interface, "link_status": "DOWN"})["status"] == "skipped"
+    assert evaluate_optical_status({**optical, "rx_power": "-36.96"}, interface)["status"] == "no_light"
+    assert evaluate_optical_status({**optical, "rx_power": "-40.00"}, interface)["status"] == "no_light"
+    assert evaluate_optical_status({**optical, "rx_power": "-9.71"}, {**interface, "link_status": "DOWN"})["status"] == "link_abnormal"
     assert evaluate_optical_status(optical, {**interface, "description": "to OLT uplink"})["status"] == "skipped"
+    assert evaluate_optical_status(optical, {**interface, "port_status": "shutdown"})["status"] == "skipped"
 
 
 def test_lldp_parser_extracts_local_neighbor_and_remote_interface():

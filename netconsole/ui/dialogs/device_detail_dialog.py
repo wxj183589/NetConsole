@@ -93,6 +93,17 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.collected_at", "collected_at"),
 )
 
+OPTICAL_STATUS_COLORS = {
+    "normal": "#ecfdf5",
+    "warning": "#fef3c7",
+    "alarm": "#fee2e2",
+    "link_abnormal": "#ffe4e6",
+    "no_light": "#e5e7eb",
+    "skipped": "#f3f4f6",
+}
+
+OPTICAL_STATUS_VALUES = {"normal", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
+
 LLDP_COLUMNS = (
     ("details.local_interface", "local_interface"),
     ("details.neighbor_sysname", "neighbor_sysname"),
@@ -251,7 +262,11 @@ class DeviceDetailDialog(QDialog):
         rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))
         if not rows:
             return self._empty_tab("details.interfaces_note")
-        return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows, "description", "interface")
+        optical_status_by_interface = {
+            str(item.get("interface_name") or ""): str(item.get("status") or "")
+            for item in self.repository.list_optical_modules(str(self.device.device_uuid or ""))
+        }
+        return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows, "description", "interface", optical_status_by_interface)
 
     def _optical_modules_tab(self) -> QWidget:
         rows = self.repository.list_optical_modules(str(self.device.device_uuid or ""))
@@ -265,16 +280,27 @@ class DeviceDetailDialog(QDialog):
             return self._empty_tab("details.lldp_note")
         return self._table_tab("details.lldp_note", LLDP_COLUMNS, rows, "neighbor_sysname", "lldp")
 
-    def _table_tab(self, note_key: str, columns: tuple[tuple[str, str], ...], rows: list[dict[str, object | None]], stretch_field: str, history_kind: str) -> QWidget:
+    def _table_tab(
+        self,
+        note_key: str,
+        columns: tuple[tuple[str, str], ...],
+        rows: list[dict[str, object | None]],
+        stretch_field: str,
+        history_kind: str,
+        optical_status_by_interface: dict[str, str] | None = None,
+    ) -> QWidget:
         table = QTableWidget(len(rows), len(columns))
         configure_readonly_table(table)
         attach_table_context_menu(table, self.i18n.language, history_callback=lambda row, kind=history_kind, data=rows: self.open_history_data(kind, data[row]))
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
         for row_index, row in enumerate(rows):
+            row_status = str(row.get("status") or "")
+            if history_kind == "interface":
+                row_status = (optical_status_by_interface or {}).get(str(row.get("interface_name") or ""), "")
             for column_index, (_label_key, field) in enumerate(columns):
                 item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
                 item.setTextAlignment(Qt.AlignCenter)
-                self._apply_optical_status_background(item, history_kind, row.get("status"))
+                self._apply_status_background(item, history_kind, row_status)
                 table.setItem(row_index, column_index, item)
         stretch_index = _column_index(columns, stretch_field)
         auto_resize_table_columns(
@@ -285,26 +311,36 @@ class DeviceDetailDialog(QDialog):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.addWidget(self._note_label(note_key))
+        if history_kind == "interface":
+            layout.addWidget(self._note_label("details.interface_color_note"))
+        elif history_kind == "optical":
+            layout.addWidget(self._note_label("details.optical_color_legend"))
         layout.addWidget(table)
         return wrapper
 
     def _format_table_value(self, field: str, value: object | None) -> str:
-        if field == "status" and value in {"normal", "warning", "alarm", "skipped", "unknown"}:
+        if field == "status" and value in OPTICAL_STATUS_VALUES:
             return self.i18n.t(f"optical.status.{value}")
         return str(value or "")
 
     @staticmethod
-    def _apply_optical_status_background(item: QTableWidgetItem, history_kind: str, status: object | None) -> None:
-        if history_kind != "optical":
+    def optical_status_color(status: object | None) -> str | None:
+        return OPTICAL_STATUS_COLORS.get(str(status or ""))
+
+    @staticmethod
+    def interface_row_status_color(status: object | None) -> str | None:
+        return OPTICAL_STATUS_COLORS.get(str(status or "")) if status in {"link_abnormal", "no_light", "alarm", "warning"} else None
+
+    @staticmethod
+    def _apply_status_background(item: QTableWidgetItem, history_kind: str, status: object | None) -> None:
+        if history_kind == "optical":
+            color_value = DeviceDetailDialog.optical_status_color(status)
+        elif history_kind == "interface":
+            color_value = DeviceDetailDialog.interface_row_status_color(status)
+        else:
             return
-        colors = {
-            "alarm": QColor("#fee2e2"),
-            "warning": QColor("#fef3c7"),
-            "normal": QColor("#ecfdf5"),
-        }
-        color = colors.get(str(status or ""))
-        if color is not None:
-            item.setBackground(color)
+        if color_value is not None:
+            item.setBackground(QColor(color_value))
             item.setForeground(QColor("#111827"))
 
     def open_history_data(self, history_kind: str, row: dict[str, object | None]) -> HistoryDataDialog:

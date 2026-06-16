@@ -123,11 +123,13 @@ def evaluate_optical_status(optical: dict[str, object | None], interface: dict[s
         return {"status": "skipped", "reason": "OLT/ONU interface skipped"}
     if interface and str(interface.get("port_status") or "").casefold() == "shutdown":
         return {"status": "skipped", "reason": "interface shutdown"}
-    if interface and str(interface.get("link_status") or "").upper() != "UP":
-        return {"status": "skipped", "reason": "interface is not UP"}
 
     rx_power = _to_float(optical.get("rx_power"))
     tx_power = _to_float(optical.get("tx_power"))
+    if rx_power is not None and rx_power <= -35:
+        return {"status": "no_light", "reason": "RX power is extremely low"}
+    if rx_power is not None and rx_power > -35 and interface and str(interface.get("link_status") or "").upper() != "UP":
+        return {"status": "link_abnormal", "reason": "RX power exists but interface is not UP"}
     rx_low = _to_float(optical.get("rx_low_alarm"))
     rx_high = _to_float(optical.get("rx_high_alarm"))
     tx_low = _to_float(optical.get("tx_low_alarm"))
