@@ -8,8 +8,9 @@ STATE_DISPLAY = {
     "IL": "ImageLoad",
     "C": "Config",
     "DC": "DataCheck",
-    "R/M": "运行(主)",
-    "R/B": "运行(备)",
+    "R": "Run",
+    "R/M": "\u8fd0\u884c(\u4e3b)",
+    "R/B": "\u8fd0\u884c(\u5907)",
 }
 
 
@@ -18,5 +19,5 @@ def map_fit_ap_state(state_raw: object) -> str:
     if text in STATE_DISPLAY:
         return STATE_DISPLAY[text]
     if text.startswith("R/"):
-        return "运行"
+        return "\u8fd0\u884c"
     return text or "-"

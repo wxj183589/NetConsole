@@ -105,6 +105,13 @@ def collect_h3c_ac_resources(
     app_logger.log_info("AC_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     app_logger.log_info("REAL_DEVICE_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     command_results: list[CommandResult] = []
+    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+        message = "AC resource collection only supports H3C AC devices"
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, message, command_results)
+
     target = choose_connection_target(ac_device)
     if target is None:
         message = "未启用连接方式"
@@ -371,7 +378,13 @@ def _run_command(connection, command: str, device: Device, collect_run_uuid: str
         return CommandResult(command=command, success=False, error_message=reason)
     app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
-        output = connection.send_command(command, read_timeout=read_timeout)
+        output = netmiko_connection.safe_send_command(
+            connection,
+            command,
+            read_timeout=read_timeout,
+            use_timing=True,
+            encoding=netmiko_connection.encoding_for_vendor(device.device_vendor),
+        )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         return CommandResult(command=command, success=False, error_message=message)

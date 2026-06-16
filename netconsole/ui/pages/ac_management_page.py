@@ -51,6 +51,7 @@ SUMMARY_FIELDS = (
 FIT_AP_RESOURCE_COLUMNS = (
     ("", "select"),
     ("ac.ap_name", "ap_name"),
+    ("APID", "apid"),
     ("field.ip_address", "ap_ip"),
     ("field.mac_address", "ap_mac"),
     ("details.model", "model"),
@@ -229,7 +230,7 @@ class AcManagementPage(QWidget):
 
     def refresh_devices(self) -> None:
         current_uuid = self.current_device_uuid()
-        self.ac_devices = self.device_repository.list(device_type="AC")
+        self.ac_devices = self.device_repository.list(vendor="H3C", device_type="AC")
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for device in self.ac_devices:
@@ -286,6 +287,8 @@ class AcManagementPage(QWidget):
     def _finish_resource_collect(self, result) -> None:
         self.refresh_button.setEnabled(True)
         self.status_label.setText(self.i18n.t("ac.status.done" if result.success else "ac.status.failed"))
+        if not result.success and result.error_message:
+            QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
         self.refresh_data()
 
     def _fail_resource_collect(self, message: str) -> None:

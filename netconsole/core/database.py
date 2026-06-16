@@ -274,6 +274,7 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ac_device_uuid TEXT NOT NULL,
     ap_name TEXT,
+    apid TEXT,
     ap_ip TEXT,
     ap_mac TEXT,
     model TEXT,

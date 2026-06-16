@@ -22,6 +22,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.fit_ap_import_export import FitApImportExportService
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services.h3c_ac_collect_service import RESOURCE_COMMANDS, collect_h3c_ac_resources
+from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_rx_power, match_neighbor_device
 from netconsole.ui.pages.ac_management_page import AcManagementPage, FIT_AP_OPTICAL_COLUMNS, FIT_AP_RESOURCE_COLUMNS
 from netconsole.ui.dialogs.ap_detail_dialog import ApDetailDialog
@@ -156,6 +157,26 @@ AP name                        APID  State Model           Serial ID
     assert rows[0]["serial_number"] == "H3C_4C-6F-D6-08-04-00"
 
 
+def test_wlan_ap_parser_handles_v9_states_and_chinese_gb2312_output():
+    output = """
+ State : I = Idle,      J  = Join,       JA = JoinAck,    IL = ImageLoad
+         C = Config,    DC = DataCheck,  R  = Run,   M = Master,  B = Backup
+
+AP name                        APID State Model           Serial ID            Group name             Online time   Clients Mode  IP address
+站厅_AP-01                     10   JA   WA6624X         SN-CN-0001           一层无线               0:00:01:02    0       Fit   10.1.1.10
+4c6f-d608-0400                 11   IL   WA6320-HCL      SN-MAC-0002          default-group          12 days       0       Fit   10.1.1.11
+ap_under-score                 12   DC   WA6630          SN-DC-0003           grp-01                 1:02:03:04    0       Fit   10.1.1.12
+"""
+    decoded = normalize_command_output(output.encode("gb2312"), "gb18030")
+    rows = parse_wlan_ap_list(decoded)
+
+    assert [row["ap_name"] for row in rows] == ["站厅_AP-01", "4c6f-d608-0400", "ap_under-score"]
+    assert rows[0]["state_display"] == "JoinAck"
+    assert rows[1]["state_display"] == "ImageLoad"
+    assert rows[2]["state_display"] == "DataCheck"
+    assert rows[0]["group_name"] == "一层无线"
+
+
 def test_wlan_ap_address_and_radio_parsers():
     addresses = parse_wlan_ap_addresses(fixture("display_wlan_ap_all_address.txt"))
     radios = parse_wlan_ap_radios(fixture("display_wlan_ap_all_radio.txt"))
@@ -166,9 +187,38 @@ def test_wlan_ap_address_and_radio_parsers():
     assert radios["4c6f-d608-0400"]["rid2_tx_power"] == "17"
 
 
+def test_address_radio_merge_by_ap_name_with_chinese_names():
+    _summary, resources = h3c_ac_collect_service.parse_ac_resource_outputs(
+        {
+            "display wlan ap all": """
+AP name                        APID State Model           Serial ID            Group name             Online time   Clients Mode  IP address
+站厅_AP-01                     10   R/M  WA6624X         SN-CN-0001           一层无线               1:02:03:04    0       Fit   10.1.1.10
+""",
+            "display wlan ap all address": """
+AP name                          IP address                       MAC address
+站厅_AP-01                       10.1.1.10                        10b6-5e92-d3e0
+""",
+            "display wlan ap all radio": """
+AP name                  RID State Channel          BW    Usage TxPower Clients
+站厅_AP-01               1   Up    149              40    27    24      0
+站厅_AP-01               2   Up    6                20    1     17      0
+""",
+        },
+        "ac-1",
+        "run-1",
+        "raw/ac/run-1/ac.log",
+    )
+
+    assert resources[0]["ap_name"] == "站厅_AP-01"
+    assert resources[0]["apid"] == "10"
+    assert resources[0]["ap_mac"] == "10b6-5e92-d3e0"
+    assert resources[0]["rid1_channel"] == "149"
+    assert resources[0]["rid2_tx_power"] == "17"
+
+
 def test_state_cpu_and_memory_parsers():
-    assert map_fit_ap_state("R/M") == "运行(主)"
-    assert map_fit_ap_state("R/B") == "运行(备)"
+    assert map_fit_ap_state("R/M") == "\u8fd0\u884c(\u4e3b)"
+    assert map_fit_ap_state("R/B") == "\u8fd0\u884c(\u5907)"
     assert map_fit_ap_state("JA") == "JoinAck"
     assert parse_cpu_usage(fixture("display_cpu_usage.txt")) == {"cpu_5s": 16, "cpu_1m": 18, "cpu_5m": 18, "cpu_usage": "16%"}
     memory = parse_memory(fixture("display_memory.txt"))
@@ -179,8 +229,6 @@ def test_state_cpu_and_memory_parsers():
     assert memory_table["memory_total"] == 770180
     assert memory_table["memory_used"] == 366008
     assert memory_table["memory_usage"] == "47%"
-
-
 def test_wlan_ap_radio_parser_handles_state_column():
     radios = parse_wlan_ap_radios(
         """
@@ -271,6 +319,7 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert [field for _key, field in FIT_AP_RESOURCE_COLUMNS] == [
         "select",
         "ap_name",
+        "apid",
         "ap_ip",
         "ap_mac",
         "model",

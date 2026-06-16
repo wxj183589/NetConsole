@@ -11,7 +11,11 @@ def parse_wlan_ap_addresses(output: str) -> dict[str, dict[str, object | None]]:
     rows: dict[str, dict[str, object | None]] = {}
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("-") or stripped.lower().startswith(("ap name", "apname")):
+        if (
+            not stripped
+            or stripped.startswith(("-", "=", "<"))
+            or stripped.lower().startswith(("total ", "ap name", "apname"))
+        ):
             continue
         ip_match = IP_RE.search(stripped)
         mac_match = MAC_RE.search(stripped)

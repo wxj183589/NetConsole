@@ -34,6 +34,7 @@ SUMMARY_FIELDS = (
 FIT_AP_RESOURCE_FIELDS = (
     "ac_device_uuid",
     "ap_name",
+    "apid",
     "ap_ip",
     "ap_mac",
     "model",

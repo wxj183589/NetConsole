@@ -7,23 +7,25 @@ def parse_wlan_ap_radios(output: str) -> dict[str, dict[str, object | None]]:
     rows: dict[str, dict[str, object | None]] = {}
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("-") or stripped.lower().startswith(("ap name", "apname")):
+        if _is_noise_line(stripped):
             continue
         parts = re.split(r"\s{2,}|\t+|\s+", stripped)
-        if len(parts) < 3 or not _is_rid(parts[1]):
+        rid_index = next((index for index, part in enumerate(parts[1:], start=1) if _is_rid(part)), -1)
+        if len(parts) < 3 or rid_index < 1:
             continue
-        ap_name = parts[0]
-        rid = int(re.sub(r"\D", "", parts[1]))
+        ap_name = " ".join(parts[:rid_index]).strip()
+        rid = int(re.sub(r"\D", "", parts[rid_index]))
         if rid not in (1, 2, 3):
             continue
-        has_state_column = len(parts) >= 7 and parts[2].lower() in {"up", "down", "disable", "disabled", "enable", "enabled"}
-        channel_index = 3 if has_state_column else 2
-        bandwidth_index = 4 if has_state_column else 3
-        tx_power_index = 6 if has_state_column and len(parts) > 6 else 4
+        values = parts[rid_index + 1 :]
+        has_state_column = len(values) >= 5 and values[0].lower() in {"up", "down", "disable", "disabled", "enable", "enabled"}
+        channel_index = 1 if has_state_column else 0
+        bandwidth_index = 2 if has_state_column else 1
+        tx_power_index = 4 if has_state_column and len(values) > 4 else 2
         row = rows.setdefault(ap_name, {"ap_name": ap_name})
-        row[f"rid{rid}_channel"] = _first_value(parts, ("channel", "chan"), channel_index)
-        row[f"rid{rid}_bandwidth"] = _first_value(parts, ("bandwidth", "width", "bw"), bandwidth_index)
-        row[f"rid{rid}_tx_power"] = _first_value(parts, ("power", "txpower"), tx_power_index)
+        row[f"rid{rid}_channel"] = _first_value(values, ("channel", "chan"), channel_index)
+        row[f"rid{rid}_bandwidth"] = _first_value(values, ("bandwidth", "width", "bw"), bandwidth_index)
+        row[f"rid{rid}_tx_power"] = _first_value(values, ("power", "txpower"), tx_power_index)
     return rows
 
 
@@ -37,3 +39,13 @@ def _first_value(parts: list[str], names: tuple[str, ...], fallback_index: int) 
         if clean in names and index + 1 < len(parts):
             return parts[index + 1]
     return parts[fallback_index] if len(parts) > fallback_index else None
+
+
+def _is_noise_line(stripped: str) -> bool:
+    lower = stripped.lower()
+    return (
+        not stripped
+        or stripped.startswith(("-", "=", "<"))
+        or lower.startswith(("total ", "maximum ", "remaining ", "server ", "sync ", "ap name", "apname"))
+        or stripped.startswith("(")
+    )
