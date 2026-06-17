@@ -16,6 +16,43 @@ SEVERITY_RANK = {
     "no_light": 5,
 }
 
+STATUS_COLORS = {
+    "normal": "DCFCE7",
+    "warning": "FEF9C3",
+    "alarm": "FEE2E2",
+    "link_abnormal": "FFE4E6",
+    "link_down": "FFE4E6",
+    "no_light": "E5E7EB",
+    "skipped": "F3F4F6",
+    "not_collected": "F3F4F6",
+    "unknown": "F3F4F6",
+}
+
+OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
+    "zh": {
+        "normal": "正常",
+        "warning": "提示告警",
+        "alarm": "一般告警",
+        "link_abnormal": "链路异常",
+        "link_down": "链路断开",
+        "no_light": "无光",
+        "skipped": "未检查",
+        "not_collected": "未采集",
+        "unknown": "未知",
+    },
+    "en": {
+        "normal": "Normal",
+        "warning": "Warning",
+        "alarm": "Alarm",
+        "link_abnormal": "Link Abnormal",
+        "link_down": "Link Down",
+        "no_light": "No Light",
+        "skipped": "Skipped",
+        "not_collected": "Not Collected",
+        "unknown": "Unknown",
+    },
+}
+
 
 @dataclass(frozen=True)
 class OpticalSeverityResult:
@@ -46,6 +83,14 @@ def compute_optical_severity(record: dict) -> OpticalSeverityResult:
 
 def worse_optical_severity(left: str, right: str) -> str:
     return left if SEVERITY_RANK.get(left, 0) >= SEVERITY_RANK.get(right, 0) else right
+
+
+def display_optical_status(status: object, language: str = "zh") -> str:
+    raw = str(status or "unknown").strip()
+    lang = "en" if str(language or "").lower().startswith("en") else "zh"
+    return OPTICAL_STATUS_LABELS.get(lang, OPTICAL_STATUS_LABELS["zh"]).get(
+        raw, raw or OPTICAL_STATUS_LABELS[lang]["unknown"]
+    )
 
 
 def _first_value(record: dict, *keys: str) -> object:

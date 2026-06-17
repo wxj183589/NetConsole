@@ -22,7 +22,8 @@ from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
-from netconsole.utils.optical_status import display_optical_status
+from netconsole.core.sources.ap_source import compute_ap_status
+from netconsole.core.state_engine import display_optical_status
 
 
 FIT_AP_DETAIL_TABS = ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
@@ -293,7 +294,7 @@ class FitApDetailDialog(QWidget):
         source_rows = rows or [{}]
         for row_index, row in enumerate(source_rows):
             for column_index, (_key, field) in enumerate(columns):
-                value = display_optical_status(row.get(field), "zh") if field == "optical_alarm_status" else row.get(field)
+                value = display_optical_status(compute_ap_status(row), "zh") if field == "optical_alarm_status" else row.get(field)
                 item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
                 item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(row_index, column_index, item)

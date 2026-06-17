@@ -11,7 +11,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
-from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status, parse_transceiver_diagnosis
+from netconsole.parsers.h3c.transceiver_parser import parse_transceiver_diagnosis
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.h3c_collect_service import CommandResult
@@ -204,14 +204,8 @@ def merge_existing_optical_modules(
         preserved = {field: merged.get(field) for field in BASE_OPTICAL_FIELDS if merged.get(field)}
         merged.update({key: value for key, value in diagnostic.items() if value is not None})
         merged.update(preserved)
-        status = evaluate_optical_status(merged, interfaces_by_name.get(interface_name))
-        merged["status"] = status["status"]
         merged.update(metadata)
         by_interface[interface_name] = merged
-    for interface_name, module in list(by_interface.items()):
-        if interface_name not in {str(item.get("interface_name") or "") for item in diagnostics}:
-            status = evaluate_optical_status(module, interfaces_by_name.get(interface_name))
-            module["status"] = status["status"]
     return list(by_interface.values())
 
 

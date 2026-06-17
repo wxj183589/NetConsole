@@ -376,7 +376,7 @@ def _collect_single_fit_ap_optical(
             parsed["neighbor_device_name"] = None
         neighbor_optical = find_neighbor_optical_module(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
         parsed["neighbor_rx_power"] = str(neighbor_optical.get("rx_power")) if neighbor_optical and neighbor_optical.get("rx_power") else None
-        parsed["optical_alarm_status"] = _worse_optical_status(str(parsed.get("optical_alarm_status") or "unknown"), _evaluate_neighbor_optical_status(parsed.get("neighbor_rx_power"), neighbor_optical))
+        # optical_alarm_status is no longer stored — computed real-time by optical_severity_engine
         success = any(parsed.values()) and all(result.success for result in command_results)
         status = "success" if success else "failed"
         app_logger.log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else _command_error_summary(command_results) or "no optical data parsed"))
@@ -396,7 +396,6 @@ def _collect_single_fit_ap_optical(
             "temperature": None,
             "tx_power": None,
             "rx_power": None,
-            "optical_alarm_status": "unknown",
             "status": "failed",
             "error_message": message,
         }
@@ -489,12 +488,17 @@ def _safe_filename(value: str) -> str:
 
 def _evaluate_neighbor_optical_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
     from netconsole.core.optical_severity_engine import compute_optical_severity
-    from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status
 
     if neighbor_optical:
-        status = evaluate_optical_status(neighbor_optical, None).get("status")
-        if status:
-            return str(status)
+        return compute_optical_severity(
+            {
+                "switch_rx_power": neighbor_optical.get("rx_power"),
+                "switch_port_status": neighbor_optical.get("port_status"),
+                "alarm_low": neighbor_optical.get("rx_low_alarm"),
+                "alarm_high": neighbor_optical.get("rx_high_alarm"),
+                "warning_low": neighbor_optical.get("rx_low_warning"),
+            }
+        ).severity
     return compute_optical_severity({"switch_rx_power": rx_power}).severity
 
 

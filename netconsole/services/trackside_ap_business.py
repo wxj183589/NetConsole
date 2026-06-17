@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
+from netconsole.core.optical_severity_engine import display_optical_status, worse_optical_severity
+from netconsole.core.sources.ap_source import compute_ap_status
+from netconsole.core.sources.switch_source import (
+    build_switch_data_lookup,
+    compute_switch_status,
+)
 from netconsole.models.device import Device
+from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
-from netconsole.utils.optical_status import display_optical_status
 
 
 TRACKSIDE_AP_BUSINESS_COLUMNS = (
@@ -57,6 +62,14 @@ def description_contains_ap(description: object) -> bool:
     return "ap" in str(description or "").casefold()
 
 
+def build_device_optical_status_lookup(
+    devices: list[Device],
+    optical_by_device: dict[str, list[dict[str, object | None]]],
+) -> dict:
+    """Backward-compatible alias — delegates to ``switch_source.build_switch_data_lookup``."""
+    return build_switch_data_lookup(devices, optical_by_device)
+
+
 def build_trackside_ap_business_rows(
     devices: list[Device],
     interfaces_by_device: dict[str, list[dict[str, object | None]]],
@@ -64,6 +77,7 @@ def build_trackside_ap_business_rows(
     fit_ap_optical_rows: list[dict[str, object | None]],
     lldp_by_device: dict[str, list[dict[str, object | None]]] | None = None,
     fit_ap_resource_rows: list[dict[str, object | None]] | None = None,
+    device_optical_status_lookup: dict[tuple[str, str], str] | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {
         device_uuid: {normalize_interface_name(row.get("interface_name")).casefold(): row for row in rows}
@@ -113,23 +127,17 @@ def build_trackside_ap_business_rows(
                 or fit_ap_optical_by_name_mac.get(neighbor_mac)
                 or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
             )
-            switch_status = compute_optical_severity(
-                {
-                    "switch_rx_power": optical.get("rx_power"),
-                    "port_status": interface.get("link_status"),
-                    "alarm_low": optical.get("rx_low_alarm"),
-                    "warning_low": optical.get("rx_low_warning"),
-                    "source_type": "switch",
-                }
-            ).severity
-            ap_status = compute_optical_severity(
-                {
-                    "ap_rx_power": fit_ap.get("rx_power"),
-                    "alarm_low": fit_ap.get("rx_low_alarm"),
-                    "warning_low": fit_ap.get("rx_low_warning"),
-                    "source_type": "ap",
-                }
-            ).severity
+            switch_status = compute_switch_status(
+                device_name=device.name,
+                interface_name=interface_name,
+                switch_rx_power=optical.get("rx_power"),
+                switch_port_status=optical.get("port_status"),
+                alarm_low=optical.get("rx_low_alarm"),
+                alarm_high=optical.get("rx_high_alarm"),
+                warning_low=optical.get("rx_low_warning"),
+                lookup=device_optical_status_lookup,
+            )
+            ap_status = compute_ap_status(fit_ap)
             result.append(
                 {
                     "site": device.station or fit_ap.get("site") or "",
@@ -217,6 +225,9 @@ def export_trackside_ap_business_xlsx(path: Path, rows: list[dict[str, object | 
     workbook.save(path)
 
 
+# Legacy aliases removed — status is now computed real-time from raw data.
+
+
 def _find_fit_ap_row(fit_ap_index: dict[tuple[str, str], dict[str, object | None]], device_names: set[str], interface_name: object) -> dict[str, object | None]:
     interface_key = normalize_interface_name(interface_name).casefold()
     for device_name in device_names:
@@ -235,21 +246,6 @@ def _merge_resource_with_optical(resource: dict[str, object | None] | None, opti
 
 def _normalize_name(value: object) -> str:
     return str(value or "").strip().casefold()
-
-
-def normalize_interface_name(value: object) -> str:
-    text = str(value or "").strip()
-    lower = text.casefold()
-    replacements = (
-        ("xge", "Ten-GigabitEthernet"),
-        ("ge", "GigabitEthernet"),
-        ("bagg", "Bridge-Aggregation"),
-        ("vlan", "Vlan-interface"),
-    )
-    for prefix, full in replacements:
-        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)].isdigit():
-            return full + text[len(prefix):]
-    return text
 
 
 def normalize_mac(value: object) -> str:

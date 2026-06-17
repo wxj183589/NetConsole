@@ -2,13 +2,7 @@ from __future__ import annotations
 
 import re
 
-from netconsole.parsers.h3c.transceiver_parser import (
-    evaluate_optical_status,
-    merge_transceiver_data,
-    parse_transceiver_diagnosis,
-    parse_transceiver_manuinfo,
-    parse_transceivers,
-)
+from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
 
 
 MAC_RE = re.compile(r"\b[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}\b", re.IGNORECASE)
@@ -21,12 +15,10 @@ def parse_fit_ap_optical(
     transceiver_interface_output: str = "",
     transceiver_manuinfo_output: str = "",
 ) -> dict[str, object | None]:
-    parsed = {
+    return {
         **parse_fit_ap_lldp(lldp_output),
         **parse_fit_ap_transceiver(transceiver_output, transceiver_interface_output, transceiver_manuinfo_output),
     }
-    parsed["optical_alarm_status"] = evaluate_optical_status(parsed, None)["status"]
-    return parsed
 
 
 def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:

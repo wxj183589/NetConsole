@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import re
 
-from netconsole.core.optical_severity_engine import compute_optical_severity
-
 
 INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|XGE|GE)[\d/.:]+"
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:\.\d+)?")
@@ -116,30 +114,6 @@ def merge_transceiver_data(*sources: list[dict[str, object | None]]) -> list[dic
                 continue
             merged.setdefault(name, {"interface_name": name}).update({key: value for key, value in item.items() if value})
     return list(merged.values())
-
-
-def evaluate_optical_status(optical: dict[str, object | None], interface: dict[str, object | None] | None) -> dict[str, str | None]:
-    interface_name = str(optical.get("interface_name") or "")
-    description = str((interface or {}).get("description") or "")
-    if "OLT" in interface_name.upper() or "ONU" in interface_name.upper() or "OLT" in description.upper() or "ONU" in description.upper():
-        return {"status": "skipped", "reason": "OLT/ONU interface skipped"}
-    if interface and str(interface.get("port_status") or "").casefold() == "shutdown":
-        return {"status": "skipped", "reason": "interface shutdown"}
-
-    port_status = "DOWN" if interface and str(interface.get("link_status") or "").upper() != "UP" else "UP"
-    result = compute_optical_severity(
-        {
-            "rx_power": optical.get("rx_power"),
-            "tx_power": optical.get("tx_power"),
-            "port_status": port_status,
-            "alarm_low": optical.get("rx_low_alarm"),
-            "alarm_high": optical.get("rx_high_alarm"),
-            "warning_low": optical.get("rx_low_warning") or optical.get("rx_low_alarm"),
-            "tx_low_alarm": optical.get("tx_low_alarm"),
-            "tx_high_alarm": optical.get("tx_high_alarm"),
-        }
-    )
-    return {"status": result.severity, "reason": result.reason}
 
 
 def _set_if_match(

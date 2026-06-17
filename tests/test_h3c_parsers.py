@@ -6,7 +6,6 @@ from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
 from netconsole.parsers.h3c.transceiver_parser import (
-    evaluate_optical_status,
     merge_transceiver_data,
     parse_transceiver_diagnosis,
     parse_transceiver_manuinfo,
@@ -374,49 +373,33 @@ GigabitEthernet2/0/30 transceiver manufacture information:
     assert parsed[0]["module_vendor"] == "H3C"
 
 
-def test_evaluate_optical_status_returns_normal_warning_alarm_and_skipped():
-    interface = {"interface_name": "GigabitEthernet2/0/1", "link_status": "UP", "port_status": "access", "description": ""}
-    optical = {
-        "interface_name": "GigabitEthernet2/0/1",
-        "rx_power": "-10.00",
-        "tx_power": "-6.00",
-        "rx_low_alarm": "-19.00",
-        "rx_high_alarm": "-3.00",
-        "tx_low_alarm": "-11.00",
-        "tx_high_alarm": "-1.00",
-        "rx_low_warning": "-16.99",
-    }
+def test_compute_optical_severity_returns_normal_warning_alarm_and_no_light():
+    """compute_optical_severity is the unified threshold calculator."""
+    from netconsole.core.optical_severity_engine import compute_optical_severity
 
-    assert evaluate_optical_status(optical, interface)["status"] == "normal"
-    assert evaluate_optical_status({**optical, "rx_power": "-20.00"}, interface)["status"] == "alarm"
-    assert evaluate_optical_status({**optical, "rx_power": "-14.35"}, interface)["status"] == "warning"
-    assert evaluate_optical_status({**optical, "rx_power": "-13.99"}, interface)["status"] == "warning"
-    assert evaluate_optical_status({**optical, "rx_power": "-13.98"}, interface)["status"] == "normal"
-    assert evaluate_optical_status({**optical, "rx_power": "-17.00"}, interface)["status"] == "warning"
-    assert evaluate_optical_status({**optical, "rx_power": "-20.32", "rx_low_alarm": "-20.00"}, interface)["status"] == "alarm"
-    assert evaluate_optical_status({**optical, "tx_power": "-12.00"}, interface)["status"] == "normal"
-    assert evaluate_optical_status({**optical, "rx_power": "-36.96"}, interface)["status"] == "no_light"
-    assert evaluate_optical_status({**optical, "rx_power": "-40.00"}, interface)["status"] == "no_light"
-    assert evaluate_optical_status({**optical, "rx_power": "-9.71"}, {**interface, "link_status": "DOWN"})["status"] == "link_abnormal"
-    assert evaluate_optical_status(optical, {**interface, "description": "to OLT uplink"})["status"] == "skipped"
-    assert evaluate_optical_status(optical, {**interface, "port_status": "shutdown"})["status"] == "skipped"
+    base = {"switch_rx_power": "-10.00", "alarm_low": "-19.00", "warning_low": "-16.99"}
+
+    assert compute_optical_severity(base).severity == "normal"
+    assert compute_optical_severity({**base, "switch_rx_power": "-20.00"}).severity == "alarm"
+    assert compute_optical_severity({**base, "switch_rx_power": "-14.35"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-13.99"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-13.98"}).severity == "normal"
+    assert compute_optical_severity({**base, "switch_rx_power": "-17.00"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-20.32", "alarm_low": "-20.00"}).severity == "alarm"
+    assert compute_optical_severity({**base, "switch_rx_power": "-36.96"}).severity == "no_light"
+    assert compute_optical_severity({**base, "switch_rx_power": "-40.00"}).severity == "no_light"
+    assert compute_optical_severity({**base, "switch_rx_power": "-9.71", "switch_port_status": "DOWN"}).severity == "link_abnormal"
 
 
-def test_evaluate_optical_status_uses_each_module_rx_low_warning():
-    interface = {"interface_name": "GigabitEthernet2/0/1", "link_status": "UP", "port_status": "access", "description": ""}
-    optical = {
-        "interface_name": "GigabitEthernet2/0/1",
-        "tx_power": "-6.00",
-        "rx_low_alarm": "-25.00",
-        "rx_high_alarm": "0.00",
-        "tx_low_alarm": "-11.00",
-        "tx_high_alarm": "-1.00",
-    }
+def test_compute_optical_severity_uses_warning_low_threshold():
+    """compute_optical_severity uses warning_low + 3 as upper boundary."""
+    from netconsole.core.optical_severity_engine import compute_optical_severity
 
-    assert evaluate_optical_status({**optical, "rx_low_warning": "-18.00", "rx_power": "-15.50"}, interface)["status"] == "warning"
-    assert evaluate_optical_status({**optical, "rx_low_warning": "-14.00", "rx_power": "-12.50"}, interface)["status"] == "warning"
-    assert evaluate_optical_status({**optical, "rx_low_warning": "-18.00", "rx_power": "-14.99"}, interface)["status"] == "normal"
-    assert evaluate_optical_status({**optical, "rx_power": "-22.50"}, interface)["status"] == "warning"
+    base = {"switch_rx_power": "-10.00", "alarm_low": "-25.00", "warning_low": "-18.00"}
+
+    assert compute_optical_severity({**base, "switch_rx_power": "-15.50"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-12.50", "warning_low": "-14.00"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-14.99"}).severity == "normal"
 
 
 def test_lldp_parser_extracts_local_neighbor_and_remote_interface():

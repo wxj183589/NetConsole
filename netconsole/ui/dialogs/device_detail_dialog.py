@@ -27,6 +27,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
 from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, trackside_row_status
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
@@ -277,15 +278,36 @@ class DeviceDetailDialog(QDialog):
             return self._empty_tab("details.interfaces_note")
         optical_status_by_interface = {
             str(item.get("interface_name") or ""): str(item.get("status") or "")
-            for item in self.repository.list_optical_modules(str(self.device.device_uuid or ""))
+            for item in self._computed_optical_rows(self.repository.list_optical_modules(str(self.device.device_uuid or "")), rows)
         }
         return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows, "description", "interface", optical_status_by_interface)
 
     def _optical_modules_tab(self) -> QWidget:
-        rows = self.repository.list_optical_modules(str(self.device.device_uuid or ""))
+        device_uuid = str(self.device.device_uuid or "")
+        rows = self._computed_optical_rows(self.repository.list_optical_modules(device_uuid), self.repository.list_device_interfaces(device_uuid))
         if not rows:
             return self._empty_tab("details.optical_modules_note")
         return self._table_tab("details.optical_modules_note", OPTICAL_MODULE_COLUMNS, rows, "module_model", "optical")
+
+    def _computed_optical_rows(
+        self,
+        rows: list[dict[str, object | None]],
+        interfaces: list[dict[str, object | None]] | None = None,
+    ) -> list[dict[str, object | None]]:
+        interfaces_by_name = {str(row.get("interface_name") or ""): row for row in interfaces or []}
+        computed_rows: list[dict[str, object | None]] = []
+        for row in rows:
+            interface = interfaces_by_name.get(str(row.get("interface_name") or ""), {})
+            computed = dict(row)
+            computed["status"] = compute_switch_status(
+                switch_rx_power=row.get("rx_power"),
+                switch_port_status=row.get("port_status") or interface.get("link_status"),
+                alarm_low=row.get("rx_low_alarm"),
+                alarm_high=row.get("rx_high_alarm"),
+                warning_low=row.get("rx_low_warning"),
+            )
+            computed_rows.append(computed)
+        return computed_rows
 
     def _lldp_tab(self) -> QWidget:
         rows = self.repository.list_lldp_neighbors(str(self.device.device_uuid or ""))
@@ -295,13 +317,16 @@ class DeviceDetailDialog(QDialog):
 
     def _trackside_ap_business_tab(self) -> QWidget:
         device_uuid = str(self.device.device_uuid or "")
+        optical_modules = self.repository.list_optical_modules(device_uuid)
+        lookup = build_switch_data_lookup([self.device], {device_uuid: optical_modules})
         rows = build_trackside_ap_business_rows(
             [self.device],
             {device_uuid: self.repository.list_device_interfaces(device_uuid)},
-            {device_uuid: self.repository.list_optical_modules(device_uuid)},
+            {device_uuid: optical_modules},
             AcRepository(self.repository.database).list_all_fit_ap_optical(),
             {device_uuid: self.repository.list_lldp_neighbors(device_uuid)},
             AcRepository(self.repository.database).list_all_fit_ap_resources_with_metadata(),
+            lookup,
         )
         if not rows:
             return self._empty_tab("trackside.note")

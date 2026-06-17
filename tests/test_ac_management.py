@@ -11,6 +11,8 @@ from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.optical_severity_engine import compute_optical_severity
+from netconsole.core.sources.switch_source import build_switch_data_lookup
+from netconsole.core.state_engine import compute_state, STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
@@ -61,7 +63,7 @@ from netconsole.ui.dialogs.ap_detail_dialog import ApDetailDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog, export_ap_history_xlsx
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FIT_AP_DETAIL_TABS, FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import STATION_ONLINE_HISTORY_COLUMNS, StationOnlineHistoryDialog, export_station_online_history_xlsx
-from netconsole.utils.optical_status import display_optical_status
+from netconsole.core.optical_severity_engine import display_optical_status
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
@@ -557,7 +559,7 @@ def test_fit_ap_optical_parser_extracts_lldp_and_power_summary():
     assert "SW01-DEMO" in parsed["lldp_neighbor"]
     assert parsed["rx_power"] == "-3.21"
     assert parsed["tx_power"] == "-2.85"
-    assert "optical_alarm_status" in parsed
+    assert "optical_alarm_status" not in parsed
 
 
 def test_fit_ap_lldp_parser_handles_fit_ap_table_format():
@@ -799,8 +801,8 @@ def test_sort_fit_ap_optical_rows_orders_neighbor_and_interface_logically():
 
 def test_filter_fit_ap_optical_rows_supports_text_and_status_filters():
     rows = [
-        {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "lldp_neighbor": "HX_1", "neighbor_device_name": "Core-A", "rx_power": "-10.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00"},
-        {"ap_name": "AP-B", "ap_mac": "aabb-ccdd-eeff", "site": "S2", "lldp_neighbor": "HX_2", "neighbor_device_name": "Access-B", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00"},
+        {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "lldp_neighbor": "HX_1", "neighbor_device_name": "Core-A", "rx_power": "-10.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "optical_alarm_status": "normal"},
+        {"ap_name": "AP-B", "ap_mac": "aabb-ccdd-eeff", "site": "S2", "lldp_neighbor": "HX_2", "neighbor_device_name": "Access-B", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "optical_alarm_status": "warning"},
     ]
 
     assert [row["ap_name"] for row in filter_fit_ap_optical_rows(rows, {"ap_name": "ap-a"})] == ["AP-A"]
@@ -1025,11 +1027,11 @@ def test_export_fit_ap_optical_xlsx_contains_overview_and_optical_sheets(tmp_pat
     assert [cell.value for cell in overview_sheet[1]] == overview_headers
     assert [cell.value for cell in optical_sheet[1]] == headers
     assert "AP名称MAC" not in [cell.value for cell in optical_sheet[1]]
-    assert optical_sheet["G2"].value == "无光"
+    assert optical_sheet["G2"].value == "未知"
     assert optical_sheet["I2"].value == "一般告警"
     assert optical_sheet["I3"].value == "提示告警"
-    assert optical_sheet["A2"].fill.fgColor.rgb == "00E5E7EB"
-    assert optical_sheet["A3"].fill.fgColor.rgb == "00E5E7EB"
+    assert optical_sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
+    assert optical_sheet["A3"].fill.fgColor.rgb == "00FEF9C3"
     assert overview_sheet["A2"].fill.fgColor.rgb == "00FEF9C3"
     assert overview_sheet["D2"].fill.fgColor.rgb == "00FEE2E2"
     assert overview_sheet["A3"].fill.fgColor.rgb == "00DBEAFE"
@@ -1050,9 +1052,13 @@ def test_fit_ap_optical_warning_row_uses_light_yellow(tmp_path):
     context = create_demo_context(PathResolver(tmp_path))
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
 
-    page._set_rows(page.optical_table, FIT_AP_OPTICAL_COLUMNS, [{"ap_name": "AP-A", "optical_alarm_status": "warning"}])
+    page._set_rows(
+        page.optical_table,
+        FIT_AP_OPTICAL_COLUMNS,
+        [{"ap_name": "AP-A", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-10.00"}],
+    )
 
-    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+    assert page.optical_table.item(0, 0).background().color().name() == "#fef9c3"
 
 
 def test_fit_ap_optical_filters_before_paginating_and_export_uses_all_filtered_rows(tmp_path):
@@ -1474,7 +1480,7 @@ def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
     rows = build_trackside_ap_business_rows(
         [switch],
         {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "description": "AP24"}]},
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "rx_power": "-6.20", "rx_low_alarm": "-20.00", "rx_low_warning": "-8.00"}]},
+            {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "rx_power": "-6.20", "rx_low_alarm": "-20.00", "rx_low_warning": "-8.00"}]},
         [],
         {"sw-1": [{"local_interface": "GE2/0/24", "neighbor_mac": "bc5a-3457-cbe2"}]},
     )
@@ -1605,6 +1611,10 @@ def test_ac_management_trackside_ap_business_tab_filter_and_export(tmp_path):
         switch.device_uuid,
         [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "status": "normal", "collected_at": "2026-01-01T00:00:00"}],
     )
+    fact_repository.replace_optical_modules(
+        other.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/20", "rx_power": "-8.50", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "collected_at": "2026-01-01T00:00:00"}],
+    )
     fact_repository.replace_lldp_neighbors(
         switch.device_uuid,
         [{"local_interface": "GE2/0/10", "neighbor_mac": "bc5a-3457-cbe0", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-01T00:00:00"}],
@@ -1648,7 +1658,7 @@ def test_ac_management_trackside_ap_business_tab_filter_and_export(tmp_path):
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
     assert sheet["A1"].alignment.horizontal == "center"
-    assert sheet["A2"].fill.fgColor.rgb == "00E5E7EB"
+    assert sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
 
 
 def test_station_online_history_dialog_columns_and_filter(tmp_path):
@@ -2108,3 +2118,261 @@ def test_no_database_migration_code():
     assert "ALTER TABLE" not in texts
     assert "schema_version" not in texts
     assert "upgrade_database" not in texts
+
+
+def test_three_module_status_consistency_same_device_same_result(tmp_path):
+    """Verify that the same device shows identical optical status across all three modules:
+    device detail, FIT-AP optical, and trackside AP business."""
+    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    device_repository = DeviceRepository(database)
+    switch = device_repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.replace_device_interfaces(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10", "link_status": "UP", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_optical_modules(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "status": "normal", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_lldp_neighbors(
+        switch.device_uuid,
+        [{"local_interface": "GE2/0/10", "neighbor_mac": "bc5a-3457-cbe0", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    ac = device_repository.create(make_ac_device())
+    ac_repository = AcRepository(database)
+    ac_repository.replace_fit_ap_optical(
+        ac.device_uuid,
+        [{"ap_uuid": "ap-10", "ap_mac": "bc5a-3457-cbe0", "ap_name": "AP10", "neighbor_device_name": "HX_1", "neighbor_interface": "GigabitEthernet2/0/10", "rx_power": "-14.35", "rx_low_alarm": "-19.00", "rx_low_warning": "-16.99", "optical_alarm_status": "warning"}],
+    )
+
+    # Device detail: compute switch status real-time from raw optical module data
+    optical_modules = fact_repository.list_optical_modules(switch.device_uuid)
+    from netconsole.core.sources.switch_source import compute_switch_status
+    device_detail_switch_status = compute_switch_status(
+        switch_rx_power=optical_modules[0].get("rx_power"),
+    )
+    assert device_detail_switch_status == "normal"
+
+    # FIT-AP optical: switch_optical_status must reference device detail
+    devices = device_repository.list()
+    optical_by_device = {str(d.device_uuid or ""): fact_repository.list_optical_modules(str(d.device_uuid or "")) for d in devices}
+    lookup = build_switch_data_lookup(devices, optical_by_device)
+    fit_ap_rows = enrich_fit_ap_optical_rows(
+        ac_repository.list_fit_ap_optical(ac.device_uuid),
+        ac_repository.list_fit_ap_resources_with_metadata(ac.device_uuid),
+        lookup,
+    )
+    fit_ap_switch_status = fit_ap_rows[0]["switch_optical_status"]
+    assert fit_ap_switch_status == device_detail_switch_status, (
+        f"FIT-AP switch_optical_status ({fit_ap_switch_status}) != device detail ({device_detail_switch_status})"
+    )
+
+    # Trackside AP business: switch_optical_status must also reference device detail
+    trackside_rows = build_trackside_ap_business_rows(
+        [switch],
+        {switch.device_uuid: fact_repository.list_device_interfaces(switch.device_uuid)},
+        {switch.device_uuid: optical_modules},
+        ac_repository.list_all_fit_ap_optical(),
+        {switch.device_uuid: fact_repository.list_lldp_neighbors(switch.device_uuid)},
+        ac_repository.list_all_fit_ap_resources_with_metadata(),
+        lookup,
+    )
+    trackside_switch_status = trackside_rows[0]["switch_optical_status"]
+    assert trackside_switch_status == device_detail_switch_status, (
+        f"Trackside switch_optical_status ({trackside_switch_status}) != device detail ({device_detail_switch_status})"
+    )
+
+    # Trackside ap_optical_status must match FIT-AP optical_alarm_status
+    fit_ap_ap_status = evaluate_fit_ap_ap_status(fit_ap_rows[0])
+    trackside_ap_status = trackside_rows[0]["ap_optical_status"]
+    assert trackside_ap_status == fit_ap_ap_status, (
+        f"Trackside ap_optical_status ({trackside_ap_status}) != FIT-AP ({fit_ap_ap_status})"
+    )
+
+
+def test_build_device_optical_status_lookup_indexes_by_name_and_sysname(tmp_path):
+    """The lookup must resolve both device.name and device.sysname."""
+    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    device_repository = DeviceRepository(database)
+    device = device_repository.create(Device(name="HX Switch", sysname="HX_1", ip_address="10.0.0.2"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.replace_optical_modules(
+        device.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "status": "warning", "collected_at": "2026-01-01T00:00:00"}],
+    )
+
+    devices = device_repository.list()
+    optical_by_device = {str(device.device_uuid): fact_repository.list_optical_modules(device.device_uuid)}
+    lookup = build_switch_data_lookup(devices, optical_by_device)
+
+    # Both name and sysname should resolve to the raw optical module row
+    name_result = lookup.get(("hx switch", "gigabitethernet2/0/10"))
+    assert name_result is not None
+    assert name_result.get("collected_at") == "2026-01-01T00:00:00"
+    sysname_result = lookup.get(("hx_1", "gigabitethernet2/0/10"))
+    assert sysname_result is not None
+    # Non-existent name should not resolve
+    assert lookup.get(("nonexistent", "gigabitethernet2/0/10")) is None
+
+
+def test_fit_ap_switch_status_computes_from_raw_data():
+    """evaluate_fit_ap_switch_status must compute from raw data, not read cached fields."""
+    # With raw rx_power data, status is computed real-time
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-10.00"}) == "normal"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-20.00", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "alarm"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.35", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "warning"
+
+
+def test_trackside_ap_optical_status_computes_from_raw_data():
+    """Trackside ap_optical_status must be computed real-time from raw FIT-AP rx_power."""
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10"}]},
+        [
+            {
+                "ap_uuid": "ap-10",
+                "ap_mac": "bc5a-3457-cbe0",
+                "ap_name": "AP10",
+                "neighbor_device_name": "HX_1",
+                "neighbor_interface": "GigabitEthernet2/0/10",
+                "rx_power": "-20.32",
+                "rx_low_alarm": "-20.00",
+                "rx_low_warning": "-17.00",
+            }
+        ],
+    )
+    # ap_optical_status is computed real-time: -20.32 < -20.00 → alarm
+    assert rows[0]["ap_optical_status"] == "alarm"
+    # switch_optical_status is computed real-time: -6.10 → normal
+    assert rows[0]["switch_optical_status"] == "normal"
+
+
+# ── Unified State Architecture tests ──────────────────────────────────────────
+
+
+def test_state_engine_compute_state_returns_unified_result():
+    """compute_state must return a StateResult with all status fields populated."""
+    from netconsole.core.state_engine import StateResult
+
+    result = compute_state({
+        "switch_rx_power": "-14.35",
+        "switch_alarm_low": "-19.00",
+        "switch_warning_low": "-16.99",
+        "fit_ap_row": {"rx_power": "-20.32", "rx_low_alarm": "-20.00", "rx_low_warning": "-17.00"},
+    })
+    assert isinstance(result, StateResult)
+    assert result.switch_status == "warning"
+    assert result.ap_status == "alarm"
+    assert result.optical_status == "alarm"   # worse of warning/alarm
+    assert result.severity > 0
+    assert result.color == STATUS_COLORS["alarm"]
+
+
+def test_state_engine_minus_36_96_no_light_unified():
+    """rx_power = -36.96 must produce no_light with unified gray colour."""
+    from netconsole.core.state_engine import StateResult
+
+    fit_ap_row = {
+        "rx_power": "-36.96",
+        "rx_low_alarm": "-20.00",
+        "rx_low_warning": "-17.00",
+        "optical_alarm_status": "no_light",
+    }
+    result = compute_state({"fit_ap_row": fit_ap_row})
+    assert result.ap_status == "no_light"
+    assert result.color == STATUS_COLORS["no_light"]
+    assert result.color == "E5E7EB"
+
+
+def test_state_engine_minus_20_32_alarm_unified():
+    """rx_power = -20.32 with alarm_low = -20.00 must produce alarm (below threshold)."""
+    fit_ap_row = {
+        "rx_power": "-20.32",
+        "rx_low_alarm": "-20.00",
+        "rx_low_warning": "-17.00",
+    }
+    result = compute_state({"fit_ap_row": fit_ap_row})
+    assert result.ap_status == "alarm"
+    assert result.color == STATUS_COLORS["alarm"]
+    assert result.color == "FEE2E2"
+
+
+def test_state_engine_link_down_unified_pink():
+    """link_down / link_abnormal must produce unified pink colour."""
+    for status in ("link_down", "link_abnormal"):
+        result = compute_state({
+            "switch_rx_power": "-10.00",
+            "switch_port_status": "DOWN",
+            "fit_ap_row": {"rx_power": "-10.00", "ap_port_status": "DOWN"},
+        })
+        assert result.optical_status in ("link_abnormal",)
+        assert result.color == STATUS_COLORS["link_abnormal"]
+
+
+def test_state_engine_three_pages_same_input_same_output():
+    """Given the same input, FIT-AP / Trackside / DeviceDetail must produce identical statuses."""
+    from netconsole.core.view_models import (
+        FITAPViewModel,
+        TracksideViewModel,
+        DeviceDetailViewModel,
+    )
+
+    # Raw optical module data for switch side — computes to "alarm"
+    switch_data_lookup = {
+        ("hx_1", "gigabitethernet2/0/10"): {
+            "rx_power": "-20.00",
+            "rx_low_alarm": "-19.00",
+            "rx_low_warning": "-16.99",
+            "port_status": "access",
+        }
+    }
+
+    fit_ap_vm = FITAPViewModel(switch_data_lookup=switch_data_lookup)
+    trackside_vm = TracksideViewModel(switch_data_lookup=switch_data_lookup)
+    device_vm = DeviceDetailViewModel(switch_data_lookup=switch_data_lookup)
+
+    fit_ap_row = {
+        "device_name": "HX_1",
+        "local_interface": "GigabitEthernet2/0/10",
+        "neighbor_device_name": "HX_1",
+        "neighbor_interface": "GigabitEthernet2/0/10",
+        "rx_power": "-14.35",
+        "rx_low_alarm": "-19.00",
+        "rx_low_warning": "-16.99",
+    }
+
+    # FIT-AP ViewModel
+    fit_ap_result = fit_ap_vm.populate_row(fit_ap_row)
+    assert fit_ap_result.switch_status == "alarm"
+    assert fit_ap_result.ap_status == "warning"
+
+    # Trackside ViewModel (using same FIT-AP row)
+    trackside_row = {
+        "device_name": "HX_1",
+        "interface_name": "GigabitEthernet2/0/10",
+    }
+    trackside_result = trackside_vm.populate_row(trackside_row, fit_ap_row)
+    assert trackside_result.switch_status == fit_ap_result.switch_status
+    assert trackside_result.ap_status == fit_ap_result.ap_status
+    assert trackside_result.color == fit_ap_result.color
+
+    # DeviceDetail ViewModel (switch only)
+    device_color = device_vm.get_color(
+        device_name="HX_1",
+        interface_name="GigabitEthernet2/0/10",
+    )
+    assert device_color == STATUS_COLORS["alarm"]
+
+
+def test_state_engine_no_ui_computes_status():
+    """UI-layer evaluate functions must compute from raw data, not read cached fields."""
+    # evaluate_fit_ap_ap_status must compute from raw rx_power
+    assert evaluate_fit_ap_ap_status({"rx_power": "-36.96"}) == "no_light"
+    # evaluate_fit_ap_switch_status must compute from raw neighbor_rx_power
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.35", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "warning"
+    # evaluate_fit_ap_row_status must go through compute_state with raw data
+    row = {"neighbor_rx_power": "-10.00", "rx_power": "-20.32", "rx_low_alarm": "-20.00", "rx_low_warning": "-17.00"}
+    assert evaluate_fit_ap_row_status(row) == "alarm"

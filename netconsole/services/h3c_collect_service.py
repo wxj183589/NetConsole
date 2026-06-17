@@ -15,7 +15,7 @@ from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
-from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status, merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
+from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
@@ -228,9 +228,6 @@ def _parse_and_write(
                 parse_transceiver_diagnosis(outputs.get("display transceiver diagnosis interface", "")),
             )
             interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces_for_optical}
-            for module in modules:
-                status = evaluate_optical_status(module, interfaces_by_name.get(str(module.get("interface_name") or "")))
-                module["status"] = status["status"]
             modules = [_with_metadata(item, metadata) for item in modules]
             repository.replace_optical_modules(str(device.device_uuid), modules)
             optical_modules_updated = len(modules)

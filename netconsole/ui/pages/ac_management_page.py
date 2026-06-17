@@ -29,6 +29,12 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
+from netconsole.core.sources.ap_source import compute_ap_status
+from netconsole.core.sources.switch_source import (
+    build_switch_data_lookup,
+    compute_switch_status,
+)
+from netconsole.core.state_engine import STATUS_COLORS, compute_state, display_optical_status
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -50,7 +56,7 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginat
 from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.interface_sort import interface_sort_key
-from netconsole.utils.optical_status import display_optical_status
+
 
 
 CHECK_COLUMN = 0
@@ -172,21 +178,42 @@ def sort_fit_ap_optical_rows(rows: list[dict[str, object | None]]) -> list[dict[
     return sorted(rows, key=key)
 
 
-def enrich_fit_ap_optical_rows(rows: list[dict[str, object | None]], resources: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+def enrich_fit_ap_optical_rows(
+    rows: list[dict[str, object | None]],
+    resources: list[dict[str, object | None]],
+    device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] | None = None,
+) -> list[dict[str, object | None]]:
     resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
     resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
+    lookup = device_optical_status_lookup or {}
     result: list[dict[str, object | None]] = []
     for row in rows:
         resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
+        neighbor_name = None if _is_invalid_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name")
+        switch_status = _lookup_switch_status(neighbor_name, row.get("neighbor_interface"), lookup)
         result.append(
             {
                 **row,
                 "ap_mac": row.get("ap_mac") or resource.get("ap_mac"),
                 "site": row.get("site") or resource.get("site_name") or resource.get("site") or "未归属",
-                "neighbor_device_name": None if _is_invalid_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name"),
+                "neighbor_device_name": neighbor_name,
+                "switch_optical_status": switch_status,
             }
         )
     return result
+
+
+def _lookup_switch_status(
+    neighbor_device_name: object,
+    neighbor_interface: object,
+    lookup: dict[tuple[str, str], dict[str, object | None]],
+) -> str:
+    """Compute switch-side status real-time from raw optical module data."""
+    return compute_switch_status(
+        device_name=neighbor_device_name,
+        interface_name=neighbor_interface,
+        lookup=lookup,
+    )
 
 
 def filter_fit_ap_optical_rows(rows: list[dict[str, object | None]], filters: dict[str, object | None]) -> list[dict[str, object | None]]:
@@ -274,35 +301,33 @@ def _write_ap_online_overview_sheet(sheet, rows: list[dict[str, object | None]],
 
 
 def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
-    ap_status = evaluate_fit_ap_ap_status(row)
-    switch_status = evaluate_fit_ap_switch_status(row, neighbor_optical)
-    return worse_optical_severity(switch_status, ap_status)
+    """Return the overall optical status for a FIT-AP row via state_engine."""
+    if neighbor_optical:
+        ap_status = compute_ap_status(row)
+        switch_status = _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
+        return worse_optical_severity(switch_status, ap_status)
+    result = compute_state({
+        "switch_device_name": row.get("neighbor_device_name"),
+        "switch_interface_name": row.get("neighbor_interface"),
+        "fit_ap_row": row,
+    })
+    return result.optical_status
 
 
 def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
-    return compute_optical_severity(
-        {
-            "ap_rx_power": row.get("rx_power") or row.get("ap_rx_power"),
-            "ap_port_status": row.get("ap_port_status"),
-            "alarm_low": row.get("rx_low_alarm"),
-            "alarm_high": row.get("rx_high_alarm"),
-            "warning_low": row.get("rx_low_warning") or row.get("rx_low_alarm"),
-        }
-    ).severity
+    """Evaluate AP side optical alarm status — delegates to ``ap_source.compute_ap_status``."""
+    return compute_ap_status(row)
 
 
 def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
+    """Evaluate switch side optical status real-time from raw data."""
     if neighbor_optical:
         return _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
-    return compute_optical_severity(
-        {
-            "switch_rx_power": row.get("neighbor_rx_power") or row.get("rx_power_switch"),
-            "switch_port_status": row.get("switch_port_status") or row.get("neighbor_port_status") or row.get("port_status"),
-            "alarm_low": row.get("switch_rx_low_alarm") or row.get("neighbor_rx_low_alarm") or row.get("alarm_low_threshold"),
-            "alarm_high": row.get("switch_rx_high_alarm") or row.get("neighbor_rx_high_alarm") or row.get("alarm_high_threshold"),
-            "warning_low": row.get("switch_rx_low_warning") or row.get("neighbor_rx_low_warning") or row.get("warning_low_threshold"),
-        }
-    ).severity
+    return compute_state({
+        "switch_device_name": row.get("neighbor_device_name"),
+        "switch_interface_name": row.get("neighbor_interface"),
+        "fit_ap_row": row,
+    }).switch_status
 
 
 def export_fit_ap_optical_xlsx(
@@ -352,9 +377,13 @@ def make_fit_ap_optical_export_filename(site_name: str, now: datetime | None = N
 
 def _evaluate_neighbor_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
     if neighbor_optical:
-        from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status
-
-        return str(evaluate_optical_status(neighbor_optical, None).get("status") or "unknown")
+        return compute_optical_severity({
+            "switch_rx_power": neighbor_optical.get("rx_power"),
+            "switch_port_status": neighbor_optical.get("port_status"),
+            "alarm_low": neighbor_optical.get("rx_low_alarm"),
+            "alarm_high": neighbor_optical.get("rx_high_alarm"),
+            "warning_low": neighbor_optical.get("rx_low_warning"),
+        }).severity
     value = _to_float(rx_power)
     return compute_optical_severity({"switch_rx_power": value}).severity
 
@@ -473,6 +502,7 @@ class AcManagementPage(QWidget):
         self.optical_rows: list[dict[str, object | None]] = []
         self.trackside_rows: list[dict[str, object | None]] = []
         self.resource_rows: list[dict[str, object | None]] = []
+        self._device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] = {}
         self.resource_page = 1
         self.resource_page_size = DEFAULT_PAGE_SIZE
         self.optical_page = 1
@@ -763,7 +793,8 @@ class AcManagementPage(QWidget):
         resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
         self.resource_rows = resources
         self.apply_resource_pagination()
-        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(self.repository.list_fit_ap_optical(ac_uuid), resources))
+        self._rebuild_device_optical_status_lookup()
+        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(self.repository.list_fit_ap_optical(ac_uuid), resources, self._device_optical_status_lookup))
         self._set_site_filter_items(self.optical_rows)
         self.apply_optical_filters()
         self.refresh_overview_table(resources)
@@ -1082,11 +1113,22 @@ class AcManagementPage(QWidget):
             build_ap_online_overview_rows(source_rows, self.optical_rows, self.repository.list_station_ap_capacity_details()),
         )
 
+    def _rebuild_device_optical_status_lookup(self) -> None:
+        """Rebuild the device optical status lookup from all devices and their optical modules.
+
+        This lookup maps (device_name, interface_name) -> optical module status,
+        which is the single source of truth from device detail.
+        """
+        devices = self.device_repository.list()
+        optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
+        self._device_optical_status_lookup = build_switch_data_lookup(devices, optical_by_device)
+
     def refresh_trackside_table(self) -> None:
         devices = self.device_repository.list()
         interfaces_by_device = {str(device.device_uuid or ""): self.fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
         optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
         lldp_by_device = {str(device.device_uuid or ""): self.fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
+        lookup = self._device_optical_status_lookup or build_switch_data_lookup(devices, optical_by_device)
         self.trackside_rows = build_trackside_ap_business_rows(
             devices,
             interfaces_by_device,
@@ -1094,6 +1136,7 @@ class AcManagementPage(QWidget):
             self.repository.list_all_fit_ap_optical(),
             lldp_by_device,
             self.repository.list_all_fit_ap_resources_with_metadata(),
+            lookup,
         )
         self._set_trackside_site_filter_items(self.trackside_rows)
         self.apply_trackside_filters()
