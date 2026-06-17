@@ -3,8 +3,18 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
+from netconsole.core.bootstrap import create_demo_context
+from netconsole.core.i18n import I18n
+from netconsole.core.paths import PathResolver
+from netconsole.core.resources import changelog_path, icon_path
+from netconsole.core.settings import SettingsStore
+from netconsole.core.version import APP_AUTHOR, APP_VERSION, REPOSITORY_URLS
+from netconsole.ui.dialogs.about_dialog import AboutRepositoryDialog
+from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
+from netconsole.ui.main_window import MainWindow
+from netconsole.ui.theme import stylesheet_for_theme
 from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, CollectLogDialog, collect_search_matches, read_collect_log_text
 from netconsole.ui.table_utils import make_text_selectable
 from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
@@ -66,6 +76,74 @@ def test_make_text_selectable_sets_mouse_selection_flag():
     label = make_text_selectable(QLabel("copy me"))
 
     assert label.textInteractionFlags() & Qt.TextSelectableByMouse
+
+
+def test_settings_store_persists_theme(tmp_path):
+    paths = PathResolver(tmp_path)
+    store = SettingsStore(paths)
+
+    store.set_theme("dark")
+
+    assert paths.settings_path.exists()
+    assert SettingsStore(paths).theme == "dark"
+
+
+def test_stylesheet_for_theme_switches_light_and_dark():
+    assert "#f7f8fa" in stylesheet_for_theme("light")
+    assert "#111827" in stylesheet_for_theme("dark")
+
+
+def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
+    qt_app = QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+
+    window.set_theme("dark")
+
+    assert SettingsStore(context.paths).theme == "dark"
+    assert qt_app.styleSheet() == stylesheet_for_theme("dark")
+    assert window.dark_theme_button.isChecked()
+    assert window.findChild(QPushButton, "aboutRepositoryButton") is window.about_button
+    assert window.findChild(QPushButton, "versionButton") is window.version_button
+    assert APP_VERSION in window.windowTitle()
+    assert window.version_button.text() == APP_VERSION
+    window.show_changelog_dialog()
+    assert isinstance(window.changelog_dialog, ChangelogDialog)
+    assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
+    window.close()
+
+
+def test_about_repository_dialog_copies_and_opens_links(monkeypatch):
+    qt_app = QApplication.instance() or QApplication([])
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    dialog = AboutRepositoryDialog(I18n("en_US"))
+
+    dialog.copy_link(REPOSITORY_URLS[0])
+    open_buttons = [button for button in dialog.findChildren(QPushButton) if button.text() == "Open Browser"]
+    open_buttons[0].click()
+
+    assert qt_app.clipboard().text() == REPOSITORY_URLS[0]
+    assert opened == [REPOSITORY_URLS[0]]
+    assert APP_AUTHOR in " ".join(label.text() for label in dialog.findChildren(QLabel))
+    dialog.close()
+
+
+def test_release_resources_and_build_script_are_configured():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "build_release.bat").read_text(encoding="utf-8")
+
+    assert icon_path("love.ico").exists()
+    assert icon_path("love.png").exists()
+    assert changelog_path().exists()
+    assert "--onedir" in script
+    assert "--windowed" in script
+    assert "--name NetConsole" in script
+    assert '--icon "%ROOT%netconsole\\ui\\icons\\love.ico"' in script
+    assert "--version-file" in script
+    assert '--add-data "%ROOT%netconsole;netconsole"' in script
+    assert "build_output" in script
+    assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in script
 
 
 def test_read_collect_log_text_reads_existing_file(tmp_path):

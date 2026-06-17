@@ -13,6 +13,7 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.data_dir == tmp_path / "data"
     assert paths.config_dir == tmp_path / "data" / "config"
     assert paths.app_config_path == tmp_path / "data" / "config" / "app.json"
+    assert paths.settings_path == tmp_path / "data" / "config" / "settings.json"
     assert paths.logs_dir == tmp_path / "data" / "logs"
     assert paths.app_log_path == tmp_path / "data" / "logs" / "app.log"
     assert paths.tests_dir == tmp_path / "tests"

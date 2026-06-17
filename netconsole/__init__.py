@@ -1,1 +1,4 @@
-__version__ = "0.1.0"
+from netconsole.core.version import APP_VERSION
+
+
+__version__ = APP_VERSION
