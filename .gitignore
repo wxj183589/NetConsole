@@ -13,6 +13,10 @@ htmlcov/
 venv/
 
 # Build artifacts
+build/
+dist/
+build_output/
+release/
 project/build/*
 !project/build/README.md
 project/dist/*

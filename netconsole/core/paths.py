@@ -74,6 +74,10 @@ class PathResolver:
         return self.config_dir / "app.json"
 
     @property
+    def settings_path(self) -> Path:
+        return self.config_dir / "settings.json"
+
+    @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
 
