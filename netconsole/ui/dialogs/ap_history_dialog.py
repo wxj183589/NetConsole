@@ -7,7 +7,9 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.optical_status import display_optical_status
 
 
@@ -113,6 +115,8 @@ class ApHistoryDialog(QWidget):
         self.rows = rows
         self.columns = columns
         self.color_field = color_field
+        self.page = 1
+        self.page_size = DEFAULT_PAGE_SIZE
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(self.i18n.t("history.title_with_object", device=ap_name, object=history_type))
         self.resize(900, 560)
@@ -123,6 +127,7 @@ class ApHistoryDialog(QWidget):
         self.always_on_top_button.setCheckable(True)
         self.export_button = QPushButton()
         self.table = QTableWidget()
+        self.pagination = PaginationWidget(self.i18n)
         configure_readonly_table(self.table)
         self.table.setColumnCount(len(columns))
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -137,12 +142,15 @@ class ApHistoryDialog(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(actions)
         layout.addWidget(self.table)
+        layout.addWidget(self.pagination)
         self.setLayout(layout)
 
         self.back_button.clicked.connect(self.return_to_parent)
         self.close_button.clicked.connect(self.close)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.export_button.clicked.connect(self.export_history)
+        self.pagination.pageChanged.connect(self.set_page)
+        self.pagination.pageSizeChanged.connect(self.set_page_size)
         self.retranslate()
         self.refresh_table()
 
@@ -154,8 +162,13 @@ class ApHistoryDialog(QWidget):
         self.table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in self.columns])
 
     def refresh_table(self) -> None:
-        self.table.setRowCount(len(self.rows))
-        for row_index, row in enumerate(self.rows):
+        rows, state = paginate_rows(self.rows, self.page_size, self.page)
+        self.page = state.current_page
+        self.pagination.set_state(state)
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
             color = OPTICAL_HISTORY_COLORS.get(str(row.get(self.color_field or "") or ""))
             for column_index, (_key, field) in enumerate(self.columns):
                 item = QTableWidgetItem(_history_display_value(row, field, self.color_field, self.i18n.language))
@@ -164,7 +177,18 @@ class ApHistoryDialog(QWidget):
                 if color:
                     item.setBackground(QColor(color))
                 self.table.setItem(row_index, column_index, item)
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(True)
         auto_resize_table_columns(self.table, column_min_widths={0: 170}, max_width=560)
+
+    def set_page(self, page: int) -> None:
+        self.page = page
+        self.refresh_table()
+
+    def set_page_size(self, page_size: int) -> None:
+        self.page_size = page_size
+        self.page = 1
+        self.refresh_table()
 
     def show_context_menu(self, position) -> None:
         index = self.table.indexAt(position)

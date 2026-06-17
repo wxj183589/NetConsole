@@ -314,6 +314,7 @@ def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path
         "Interfaces",
         "Optical Modules",
         "LLDP Neighbors",
+        "Trackside AP Business",
     ]
     assert any("Demo data is generated only when the demo database is first created" in text for text in labels)
 

@@ -4,12 +4,13 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QMessageBox, QMenu
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QMessageBox, QMenu, QTableWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
+from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
@@ -26,6 +27,19 @@ from netconsole.services import command_guard
 from netconsole.services.h3c_ac_collect_service import RESOURCE_COMMANDS, collect_h3c_ac_resources
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
+from netconsole.services.trackside_ap_business import (
+    TRACKSIDE_AP_BUSINESS_COLUMNS,
+    build_trackside_ap_business_rows,
+    description_contains_ap,
+    export_trackside_ap_business_xlsx,
+    filter_trackside_ap_business_rows,
+    normalize_interface_name as normalize_trackside_interface_name,
+    normalize_mac,
+    trackside_row_status,
+)
+from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
+from netconsole.ui.pagination import paginate_rows
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.pages.ac_management_page import (
     AP_ONLINE_OVERVIEW_COLUMNS,
     AcManagementPage,
@@ -34,7 +48,9 @@ from netconsole.ui.pages.ac_management_page import (
     build_ap_online_overview_rows,
     build_site_filter_items,
     enrich_fit_ap_optical_rows,
+    evaluate_fit_ap_ap_status,
     evaluate_fit_ap_row_status,
+    evaluate_fit_ap_switch_status,
     export_ap_online_overview_xlsx,
     export_fit_ap_optical_xlsx,
     filter_fit_ap_optical_rows,
@@ -682,6 +698,7 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "neighbor_device_name",
         "neighbor_interface",
         "neighbor_rx_power",
+        "switch_optical_status",
         "rx_power",
         "optical_alarm_status",
         "updated_at",
@@ -693,6 +710,7 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "ac.indoor_switch",
         "ac.indoor_port",
         "ac.indoor_switch_rx_power",
+        "fit_ap.switch_optical_status",
         "ac.ap_side_rx_power",
         "ap.optical_alarm_status",
         "field.updated_at",
@@ -715,6 +733,52 @@ def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
     assert page.optical_table.item(0, 0).textAlignment() == Qt.AlignCenter
 
 
+def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(
+        page.optical_table,
+        FIT_AP_OPTICAL_COLUMNS,
+        [
+            {
+                "ap_name": "ap-a",
+                "neighbor_rx_power": "-45.00",
+                "rx_power": "-10.00",
+                "rx_low_alarm": "-20.00",
+                "rx_low_warning": "-15.00",
+            }
+        ],
+    )
+
+    assert page.optical_table.item(0, 6).text() == "No Light"
+    assert page.optical_table.item(0, 8).text() == "Normal"
+    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+
+
+def test_fit_ap_optical_table_color_uses_ap_alarm_when_more_severe(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(
+        page.optical_table,
+        FIT_AP_OPTICAL_COLUMNS,
+        [
+            {
+                "ap_name": "ap-a",
+                "neighbor_rx_power": "-8.00",
+                "rx_power": "-20.00",
+                "rx_low_alarm": "-19.00",
+                "rx_low_warning": "-16.99",
+            }
+        ],
+    )
+
+    assert page.optical_table.item(0, 6).text() == "Normal"
+    assert page.optical_table.item(0, 8).text() == "Alarm"
+    assert page.optical_table.item(0, 0).background().color().name() == "#fee2e2"
+
+
 def test_fit_ap_optical_thread_accepts_concurrency():
     thread = FitApOpticalCollectThread(make_ac_device(), "demo", 200, None)
 
@@ -735,8 +799,8 @@ def test_sort_fit_ap_optical_rows_orders_neighbor_and_interface_logically():
 
 def test_filter_fit_ap_optical_rows_supports_text_and_status_filters():
     rows = [
-        {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "lldp_neighbor": "HX_1", "neighbor_device_name": "Core-A", "optical_alarm_status": "normal"},
-        {"ap_name": "AP-B", "ap_mac": "aabb-ccdd-eeff", "site": "S2", "lldp_neighbor": "HX_2", "neighbor_device_name": "Access-B", "optical_alarm_status": "warning"},
+        {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "lldp_neighbor": "HX_1", "neighbor_device_name": "Core-A", "rx_power": "-10.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00"},
+        {"ap_name": "AP-B", "ap_mac": "aabb-ccdd-eeff", "site": "S2", "lldp_neighbor": "HX_2", "neighbor_device_name": "Access-B", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00"},
     ]
 
     assert [row["ap_name"] for row in filter_fit_ap_optical_rows(rows, {"ap_name": "ap-a"})] == ["AP-A"]
@@ -827,15 +891,60 @@ def test_clear_optical_filters_restores_all_rows(tmp_path):
 
 
 def test_evaluate_fit_ap_row_status_includes_neighbor_rx_power():
-    assert evaluate_fit_ap_row_status({"optical_alarm_status": "normal", "neighbor_rx_power": "-36.00"}) == "no_light"
+    assert evaluate_fit_ap_row_status({"optical_alarm_status": "normal", "neighbor_rx_power": "-45.00"}) == "no_light"
     assert (
         evaluate_fit_ap_row_status(
-            {"optical_alarm_status": "normal", "neighbor_rx_power": "-25.00"},
+            {"rx_power": "-10.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-25.00"},
             {"rx_power": "-25.00", "tx_power": "-5.00", "rx_low_alarm": "-20.00", "rx_high_alarm": "0.00", "tx_low_alarm": "-20.00", "tx_high_alarm": "0.00"},
         )
         == "alarm"
     )
-    assert evaluate_fit_ap_row_status({"optical_alarm_status": "warning", "neighbor_rx_power": "-10.00"}) == "warning"
+    assert evaluate_fit_ap_row_status({"rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-10.00"}) == "warning"
+
+
+def test_fit_ap_switch_status_and_ap_alarm_are_independent():
+    row = {
+        "neighbor_rx_power": "-8.00",
+        "switch_rx_low_alarm": "-20.00",
+        "switch_rx_low_warning": "-15.00",
+        "rx_power": "-20.00",
+        "rx_low_alarm": "-19.00",
+        "rx_low_warning": "-16.99",
+    }
+
+    assert evaluate_fit_ap_switch_status(row) == "normal"
+    assert evaluate_fit_ap_ap_status(row) == "alarm"
+    assert evaluate_fit_ap_row_status(row) == "alarm"
+
+
+def test_fit_ap_switch_status_rules_and_missing_data():
+    assert evaluate_fit_ap_switch_status({"switch_port_status": "DOWN", "neighbor_rx_power": "-8.00"}) == "link_abnormal"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": None}) == "no_light"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-45.00"}) == "no_light"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-21.00", "switch_rx_low_alarm": "-20.00"}) == "alarm"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.00", "switch_rx_low_alarm": "-20.00", "switch_rx_low_warning": "-15.00"}) == "warning"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-10.00", "switch_rx_low_alarm": "-20.00", "switch_rx_low_warning": "-15.00"}) == "normal"
+    assert evaluate_fit_ap_ap_status({}) == "no_light"
+
+
+def test_severity_engine_unifies_fit_ap_and_device_detail_inputs():
+    context = {
+        "switch_rx_power": "-36.96",
+        "switch_port_status": "UP",
+        "alarm_low": "-19.00",
+        "warning_low": "-16.99",
+        "alarm_high": "0.00",
+    }
+
+    assert compute_optical_severity(context).severity == "no_light"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-36.96", "switch_rx_low_alarm": "-19.00", "switch_rx_low_warning": "-16.99", "switch_rx_high_alarm": "0.00"}) == "no_light"
+
+
+def test_optical_severity_engine_unifies_minus_20_32_across_modules():
+    record = {"rx_power": "-20.32", "alarm_low": "-20.00", "warning_low": "-16.99", "port_status": "UP", "source_type": "optical"}
+
+    assert compute_optical_severity(record).severity == "alarm"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-20.32", "switch_rx_low_alarm": "-20.00", "switch_rx_low_warning": "-16.99"}) == "alarm"
 
 
 def test_display_optical_status_uses_chinese_labels():
@@ -843,9 +952,36 @@ def test_display_optical_status_uses_chinese_labels():
     assert display_optical_status("warning") == "提示告警"
     assert display_optical_status("alarm") == "一般告警"
     assert display_optical_status("link_abnormal") == "链路异常"
+    assert display_optical_status("link_down") == "链路断开"
     assert display_optical_status("no_light") == "无光"
     assert display_optical_status("skipped") == "未检查"
+    assert display_optical_status("not_collected") == "未采集"
     assert display_optical_status("unknown") == "未知"
+
+
+def test_paginate_rows_page_sizes_and_bounds():
+    rows = [{"id": index} for index in range(1200)]
+
+    visible, state = paginate_rows(rows)
+    assert len(visible) == 200
+    assert visible[0]["id"] == 0
+    assert state.current_page == 1
+    assert state.total_pages == 6
+
+    visible, state = paginate_rows(rows, page_size=500, current_page=1)
+    assert len(visible) == 500
+    assert state.page_size == 500
+
+    visible, state = paginate_rows(rows, page_size=1000, current_page=1)
+    assert len(visible) == 1000
+
+    visible, state = paginate_rows(rows, page_size=500, current_page=99)
+    assert state.current_page == 3
+    assert visible[0]["id"] == 1000
+
+    visible, state = paginate_rows([])
+    assert visible == []
+    assert state.total_pages == 1
 
 
 def test_fit_ap_optical_table_displays_chinese_status(tmp_path):
@@ -853,40 +989,60 @@ def test_fit_ap_optical_table_displays_chinese_status(tmp_path):
     context = create_demo_context(PathResolver(tmp_path))
     page = AcManagementPage(context.repository, I18n("zh_CN"), "demo")
 
-    page._set_rows(page.optical_table, FIT_AP_OPTICAL_COLUMNS, [{"ap_name": "AP-A", "optical_alarm_status": "alarm"}])
+    page._set_rows(
+        page.optical_table,
+        FIT_AP_OPTICAL_COLUMNS,
+        [{"ap_name": "AP-A", "rx_power": "-20.00", "rx_low_alarm": "-19.00", "rx_low_warning": "-16.99"}],
+    )
 
     values = [page.optical_table.item(0, column).text() for column in range(page.optical_table.columnCount())]
     assert "一般告警" in values
     assert "alarm" not in values
 
 
-def test_export_fit_ap_optical_xlsx_contains_headers_colors_and_legend(tmp_path):
+def test_export_fit_ap_optical_xlsx_contains_overview_and_optical_sheets(tmp_path):
     from openpyxl import load_workbook
 
     export_path = tmp_path / "optical.xlsx"
     rows = [
-        {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "optical_alarm_status": "alarm", "updated_at": "2026-01-01"},
-        {"ap_name": "AP-B", "ap_mac": "0011-2233-4456", "site": "S1", "optical_alarm_status": "warning", "updated_at": "2026-01-01"},
+        {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "rx_power": "-20.00", "rx_low_alarm": "-19.00", "rx_low_warning": "-16.99", "updated_at": "2026-01-01"},
+        {"ap_name": "AP-B", "ap_mac": "0011-2233-4456", "site": "S1", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "updated_at": "2026-01-01"},
     ]
-    headers = ["AP名称", "AP_MAC", "车站", "室内交换机", "室内端口号", "室内交换机收光(dBm)", "AP侧收光(dBm)", "光告警", "更新时间"]
+    headers = ["AP名称", "AP_MAC", "车站", "室内交换机", "室内端口号", "室内交换机收光(dBm)", "室内侧状态", "AP侧收光(dBm)", "光告警", "更新时间"]
+    overview_rows = [
+        {"site": "S1", "total": 2, "online": 1, "offline": 1, "online_rate": "50.0%", "remark": "Need check"},
+        {"site": "合计", "total": 2, "online": 1, "offline": 1, "online_rate": "50.0%", "remark": ""},
+    ]
+    overview_headers = ["车站", "AP总数量", "上线", "未上线", "上线率", "备注"]
 
-    export_fit_ap_optical_xlsx(export_path, rows, FIT_AP_OPTICAL_COLUMNS, headers, "Legend text")
+    export_fit_ap_optical_xlsx(export_path, rows, FIT_AP_OPTICAL_COLUMNS, headers, "Legend text", overview_rows, overview_headers)
 
     workbook = load_workbook(export_path)
-    sheet = workbook["FIT-AP Optical"]
     assert export_path.exists()
-    assert [cell.value for cell in sheet[1]] == headers
-    assert "AP名称MAC" not in [cell.value for cell in sheet[1]]
-    assert sheet["H2"].value == "一般告警"
-    assert sheet["H3"].value == "提示告警"
-    assert sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
-    assert sheet["A3"].fill.fgColor.rgb == "00FEF9C3"
-    assert sheet["A1"].alignment.horizontal == "center"
-    assert sheet["A1"].alignment.vertical == "center"
-    assert sheet["A2"].alignment.horizontal == "center"
-    assert sheet.column_dimensions["A"].width > len("AP名称")
-    assert "说明" in workbook.sheetnames
-    assert workbook["说明"]["A1"].value == "Legend text"
+    assert workbook.sheetnames == ["AP上线情况概览", "FIT-AP光衰"]
+    overview_sheet = workbook["AP上线情况概览"]
+    optical_sheet = workbook["FIT-AP光衰"]
+    assert [cell.value for cell in overview_sheet[1]] == overview_headers
+    assert [cell.value for cell in optical_sheet[1]] == headers
+    assert "AP名称MAC" not in [cell.value for cell in optical_sheet[1]]
+    assert optical_sheet["G2"].value == "无光"
+    assert optical_sheet["I2"].value == "一般告警"
+    assert optical_sheet["I3"].value == "提示告警"
+    assert optical_sheet["A2"].fill.fgColor.rgb == "00E5E7EB"
+    assert optical_sheet["A3"].fill.fgColor.rgb == "00E5E7EB"
+    assert overview_sheet["A2"].fill.fgColor.rgb == "00FEF9C3"
+    assert overview_sheet["D2"].fill.fgColor.rgb == "00FEE2E2"
+    assert overview_sheet["A3"].fill.fgColor.rgb == "00DBEAFE"
+    for sheet in (overview_sheet, optical_sheet):
+        assert sheet.freeze_panes == "A2"
+        assert sheet["A1"].font.bold
+        assert sheet["A1"].alignment.horizontal == "center"
+        assert sheet["A1"].alignment.vertical == "center"
+        assert sheet["A2"].alignment.horizontal == "center"
+        assert sheet["A1"].border.left.style == "thin"
+        assert sheet.column_dimensions["A"].width > len(str(sheet["A1"].value))
+        assert sheet.row_dimensions[1].height >= 24
+        assert sheet.row_dimensions[2].height >= 22
 
 
 def test_fit_ap_optical_warning_row_uses_light_yellow(tmp_path):
@@ -896,7 +1052,42 @@ def test_fit_ap_optical_warning_row_uses_light_yellow(tmp_path):
 
     page._set_rows(page.optical_table, FIT_AP_OPTICAL_COLUMNS, [{"ap_name": "AP-A", "optical_alarm_status": "warning"}])
 
-    assert page.optical_table.item(0, 0).background().color().name() == "#fef9c3"
+    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+
+
+def test_fit_ap_optical_filters_before_paginating_and_export_uses_all_filtered_rows(tmp_path):
+    from openpyxl import load_workbook
+
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page.optical_page_size = 200
+    page.optical_rows = [
+        {"ap_name": f"AP-{index:03d}", "site": "S1", "optical_alarm_status": "normal", "updated_at": "2026-01-01"}
+        for index in range(250)
+    ] + [
+        {"ap_name": f"ZZ-{index:03d}", "site": "S2", "optical_alarm_status": "alarm", "updated_at": "2026-01-01"}
+        for index in range(5)
+    ]
+
+    page.optical_ap_filter.setText("ZZ")
+
+    assert page.optical_table.rowCount() == 5
+    assert page.optical_pagination.state.total_items == 5
+    assert page.optical_page == 1
+
+    export_path = tmp_path / "filtered_optical.xlsx"
+    export_fit_ap_optical_xlsx(
+        export_path,
+        page.filtered_optical_rows(),
+        FIT_AP_OPTICAL_COLUMNS,
+        [page.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS],
+        "",
+        [],
+        [page.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+    )
+    workbook = load_workbook(export_path)
+    assert workbook["FIT-AP光衰"].max_row == 6
 
 
 def test_optical_color_legend_mentions_rx_low_warning():
@@ -981,6 +1172,7 @@ def test_ap_online_overview_page_hides_new_online_section(tmp_path):
         "上线率",
         "备注",
     ]
+    assert page.tabs.widget(2).findChild(PaginationWidget) is None
 
 
 def test_ap_online_overview_table_edit_rules_and_save(tmp_path):
@@ -1166,6 +1358,299 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     assert sheet["F3"].value == "Need check"
 
 
+def test_trackside_ap_description_filter_is_case_insensitive():
+    assert description_contains_ap("To_AP01")
+    assert description_contains_ap("ap-001")
+    assert description_contains_ap("Ap uplink")
+    assert description_contains_ap("aP access")
+    assert not description_contains_ap("camera")
+
+
+def test_trackside_ap_normalizes_mac_and_interface_names():
+    assert normalize_mac("bc5a-3457-cbe0") == "bc5a-3457-cbe0"
+    assert normalize_mac("bc:5a:34:57:cb:e0") == "bc5a-3457-cbe0"
+    assert normalize_mac("bc5a.3457.cbe0") == "bc5a-3457-cbe0"
+    assert normalize_mac("BC-5A-34-57-CB-E0") == "bc5a-3457-cbe0"
+    assert normalize_trackside_interface_name("GE2/0/22") == "GigabitEthernet2/0/22"
+    assert normalize_trackside_interface_name("GigabitEthernet2/0/22") == "GigabitEthernet2/0/22"
+    assert normalize_trackside_interface_name("XGE1/0/49") == "Ten-GigabitEthernet1/0/49"
+    assert normalize_trackside_interface_name("BAGG1") == "Bridge-Aggregation1"
+
+
+def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
+    switch = Device(name="HX_1", sysname="HX_SYS", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "link_status": "UP",
+                    "protocol_status": "UP",
+                    "description": "To_AP10",
+                    "port_status": "trunk",
+                    "pvid": "1",
+                    "vlan": "10",
+                    "updated_at": "2026-01-01T00:00:00",
+                },
+                {"interface_name": "GigabitEthernet2/0/2", "description": "camera"},
+                {"interface_name": "GigabitEthernet2/0/1", "description": "ap-001"},
+            ]
+        },
+        {
+            "sw-1": [
+                {"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "status": "normal"},
+                {"interface_name": "GigabitEthernet2/0/1", "rx_power": "-7.20", "status": "warning"},
+            ]
+        },
+        [
+                {
+                    "ac_device_uuid": "ac-1",
+                    "ap_uuid": "ap-10",
+                    "neighbor_device_name": "HX_1",
+                    "neighbor_interface": "GigabitEthernet2/0/10",
+                    "ap_name": "AP10",
+                    "rx_power": "-14.35",
+                    "rx_low_alarm": "-19.00",
+                    "rx_low_warning": "-16.99",
+                    "updated_at": "2026-01-02T00:00:00",
+                }
+        ],
+    )
+
+    assert [row["interface_name"] for row in rows] == ["GigabitEthernet2/0/1", "GigabitEthernet2/0/10"]
+    assert rows[1]["switch_rx_power"] == "-6.10"
+    assert rows[1]["ap_rx_power"] == "-14.35"
+    assert rows[1]["ap_optical_status"] == "warning"
+    assert rows[1]["ap_name"] == "AP10"
+
+
+def test_trackside_ap_business_matches_fit_ap_by_lldp_neighbor_mac():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/22", "description": "To_AP22"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/22", "rx_power": "-6.10", "status": "normal"}]},
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-22",
+                "ap_mac": "bc5a-3457-cbe0",
+                "ap_name": "Business-AP-22",
+                "rx_power": "-14.35",
+                "rx_low_alarm": "-19.00",
+                "rx_low_warning": "-16.99",
+            }
+        ],
+        {"sw-1": [{"local_interface": "GE2/0/22", "neighbor_mac": "BC:5A:34:57:CB:E0", "neighbor_interface": "GigabitEthernet1/0/2"}]},
+    )
+
+    assert rows[0]["ap_mac"] == "bc5a-3457-cbe0"
+    assert rows[0]["ap_name"] == "Business-AP-22"
+    assert rows[0]["ap_rx_power"] == "-14.35"
+    assert rows[0]["ap_optical_status"] == "warning"
+
+
+def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/23", "description": "AP23"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/23", "rx_power": "-6.20", "status": "normal"}]},
+        [],
+        {"sw-1": [{"local_interface": "GE2/0/23", "neighbor_mac": "bc5a.3457.cbe1"}]},
+        [{"ac_device_uuid": "ac-1", "ap_uuid": "ap-23", "ap_mac": "bc5a-3457-cbe1", "ap_name": "Renamed-AP-23"}],
+    )
+
+    assert rows[0]["ap_mac"] == "bc5a-3457-cbe1"
+    assert rows[0]["ap_name"] == "Renamed-AP-23"
+    assert rows[0]["ap_rx_power"] is None
+    assert rows[0]["switch_optical_status"] == "normal"
+    assert rows[0]["ap_optical_status"] == "no_light"
+
+
+def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "description": "AP24"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "rx_power": "-6.20", "rx_low_alarm": "-20.00", "rx_low_warning": "-8.00"}]},
+        [],
+        {"sw-1": [{"local_interface": "GE2/0/24", "neighbor_mac": "bc5a-3457-cbe2"}]},
+    )
+
+    assert rows[0]["ap_mac"] == "bc5a-3457-cbe2"
+    assert rows[0]["ap_name"] is None
+    assert rows[0]["ap_rx_power"] is None
+    assert rows[0]["switch_optical_status"] == "warning"
+    assert rows[0]["ap_optical_status"] == "no_light"
+
+
+def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/25", "description": "AP25"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/25", "rx_power": "-6.20", "status": "normal"}]},
+        [
+            {
+                "ap_uuid": "ap-25",
+                "ap_mac": "bc5a-3457-cbe3",
+                "ap_name": "AP25",
+                "rx_power": "-20.00",
+                "rx_low_alarm": "-19.00",
+                "rx_low_warning": "-16.99",
+            }
+        ],
+        {"sw-1": [{"local_interface": "GE2/0/25", "neighbor_mac": "bc5a-3457-cbe3"}]},
+    )
+
+    assert rows[0]["switch_optical_status"] == "normal"
+    assert rows[0]["ap_optical_status"] == "alarm"
+    assert trackside_row_status(rows[0]) == "alarm"
+
+
+def test_trackside_ap_business_row_status_uses_more_severe_side():
+    assert trackside_row_status({"switch_optical_status": "warning", "ap_optical_status": "normal"}) == "warning"
+    assert trackside_row_status({"switch_optical_status": "normal", "ap_optical_status": "alarm"}) == "alarm"
+
+
+def test_trackside_ap_business_filter_by_site_and_search():
+    rows = [
+        {"site": "Station A", "ap_name": "AP-A", "device_name": "HX_1", "interface_name": "GigabitEthernet1/0/1"},
+        {"site": "Station B", "ap_name": "AP-B", "device_name": "HX_2", "interface_name": "GigabitEthernet1/0/2"},
+    ]
+
+    assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "Station A", "")] == ["AP-A"]
+    assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "", "hx_2")] == ["AP-B"]
+    assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "Station B", "1/0/2")] == ["AP-B"]
+
+
+def test_device_detail_trackside_ap_business_tab_displays_joined_data(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    switch = device_repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.replace_device_interfaces(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10", "link_status": "UP", "protocol_status": "UP", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_optical_modules(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "status": "normal", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_lldp_neighbors(
+        switch.device_uuid,
+        [{"local_interface": "GE2/0/10", "neighbor_mac": "bc5a-3457-cbe0", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    ac = device_repository.create(make_ac_device())
+    AcRepository(database).replace_fit_ap_optical(
+        ac.device_uuid,
+        [{"ap_uuid": "ap-10", "ap_mac": "bc5a-3457-cbe0", "ap_name": "AP10", "neighbor_device_name": "HX_1", "neighbor_interface": "GigabitEthernet2/0/10", "rx_power": "-14.35", "rx_low_alarm": "-19.00", "rx_low_warning": "-16.99"}],
+    )
+
+    dialog = DeviceDetailDialog(I18n("en_US"), fact_repository, switch)
+    table = dialog.tabs.widget(4).findChild(QTableWidget)
+
+    assert dialog.tabs.tabText(4) == "Trackside AP Business"
+    assert table.item(0, 0).text() == "GigabitEthernet2/0/10"
+    assert table.item(0, 7).text() == "-6.10"
+    assert table.item(0, 8).text() == "Normal"
+    assert table.item(0, 9).text() == "bc5a-3457-cbe0"
+    assert table.item(0, 10).text() == "AP10"
+    assert table.item(0, 11).text() == "-14.35"
+    assert table.item(0, 12).text() == "Warning"
+    assert table.item(0, 0).background().color().name() == "#fef9c3"
+
+
+def test_device_detail_interface_table_supports_pagination(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    repository = DeviceFactRepository(database)
+    device = Device(name="HX_1", device_uuid="sw-1", ip_address="10.0.0.2")
+    repository.replace_device_interfaces(
+        "sw-1",
+        [
+            {"interface_name": f"GigabitEthernet1/0/{index}", "description": f"Port {index}", "collected_at": "2026-01-01T00:00:00"}
+            for index in range(1, 251)
+        ],
+    )
+
+    dialog = DeviceDetailDialog(I18n("en_US"), repository, device)
+    table = dialog.tabs.widget(1).findChild(QTableWidget)
+
+    assert table.rowCount() == 200
+    assert dialog.tabs.widget(1).findChild(PaginationWidget).state.total_items == 250
+
+
+def test_ac_management_trackside_ap_business_tab_filter_and_export(tmp_path):
+    from openpyxl import load_workbook
+
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    switch = device_repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    other = device_repository.create(Device(name="HX_2", station="Station B", ip_address="10.0.0.3"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.replace_device_interfaces(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10", "link_status": "UP", "port_status": "trunk", "pvid": "1", "vlan": "10", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_device_interfaces(
+        other.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/20", "description": "To_AP20", "link_status": "DOWN", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_optical_modules(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "status": "normal", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_lldp_neighbors(
+        switch.device_uuid,
+        [{"local_interface": "GE2/0/10", "neighbor_mac": "bc5a-3457-cbe0", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_lldp_neighbors(
+        other.device_uuid,
+        [{"local_interface": "GE2/0/20", "neighbor_mac": "bc5a-3457-cbe1", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    ac = device_repository.create(make_ac_device())
+    repository = AcRepository(database)
+    repository.replace_fit_ap_optical(
+        ac.device_uuid,
+        [
+            {"ap_uuid": "ap-10", "ap_mac": "bc5a-3457-cbe0", "ap_name": "AP10", "neighbor_device_name": "HX_1", "neighbor_interface": "GigabitEthernet2/0/10", "rx_power": "-14.35", "rx_low_alarm": "-19.00", "rx_low_warning": "-16.99"},
+            {"ap_uuid": "ap-20", "ap_mac": "bc5a-3457-cbe1", "ap_name": "AP20", "neighbor_device_name": "HX_2", "neighbor_interface": "GigabitEthernet2/0/20", "rx_power": "-20.00", "rx_low_alarm": "-19.00", "rx_low_warning": "-16.99"},
+        ],
+    )
+
+    page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    assert page.tabs.tabText(4) == "Trackside AP Business"
+    assert page.trackside_table.rowCount() == 2
+    assert page.trackside_table.item(0, 8).text() == "-6.10"
+    assert page.trackside_table.item(0, 9).text() == "Normal"
+    assert page.trackside_table.item(0, 10).text() == "bc5a-3457-cbe0"
+    assert page.trackside_table.item(0, 11).text() == "AP10"
+    assert page.trackside_table.item(0, 12).text() == "-14.35"
+    assert page.trackside_table.item(0, 13).text() == "Warning"
+    assert page.trackside_table.item(0, 0).background().color().name() == "#fef9c3"
+
+    page.trackside_site_filter.setCurrentIndex(page.trackside_site_filter.findData("Station B"))
+    assert page.trackside_table.rowCount() == 1
+    assert page.trackside_table.item(0, 0).text() == "Station B"
+
+    export_path = tmp_path / "trackside.xlsx"
+    export_trackside_ap_business_xlsx(export_path, page.filtered_trackside_rows(), TRACKSIDE_AP_BUSINESS_COLUMNS, [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+    workbook = load_workbook(export_path)
+    sheet = workbook["轨旁AP业务"]
+    assert [cell.value for cell in sheet[1]] == [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS]
+    assert "Switch Optical Status" in [cell.value for cell in sheet[1]]
+    assert "AP Optical Alarm" in [cell.value for cell in sheet[1]]
+    assert sheet["A1"].font.bold
+    assert sheet.freeze_panes == "A2"
+    assert sheet["A1"].alignment.horizontal == "center"
+    assert sheet["A2"].fill.fgColor.rgb == "00E5E7EB"
+
+
 def test_station_online_history_dialog_columns_and_filter(tmp_path):
     app()
     rows = [
@@ -1186,7 +1671,19 @@ def test_station_online_history_dialog_columns_and_filter(tmp_path):
         "Online Rate",
         "Remark",
     ]
-    assert dialog.table.rowCount() == 1
+
+
+def test_history_windows_support_pagination(tmp_path):
+    app()
+    rows = [
+        {"collected_at": f"2026-01-01T00:{index:02d}:00", "site_name": "Station A", "ap_total": 1, "online_count": 1, "offline_count": 0, "online_rate": "100.0%", "remark": ""}
+        for index in range(250)
+    ]
+
+    dialog = StationOnlineHistoryDialog(I18n("en_US"), rows)
+
+    assert dialog.table.rowCount() == 200
+    assert dialog.pagination.state.total_items == 250
     assert dialog.table.item(0, 1).text() == "Station A"
 
 

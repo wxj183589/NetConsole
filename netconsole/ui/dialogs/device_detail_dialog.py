@@ -25,7 +25,9 @@ from PySide6.QtWidgets import (
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, trackside_row_status
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
 from netconsole.ui.collect_worker import DeviceCollectThread
@@ -36,7 +38,9 @@ from netconsole.ui.dialogs.history_data_dialog import (
     OPTICAL_HISTORY_COLUMNS,
 )
 from netconsole.ui.optical_refresh_worker import OpticalRefreshThread
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
 from netconsole.utils.text_encoding import read_text_with_fallback
 
@@ -172,6 +176,7 @@ class DeviceDetailDialog(QDialog):
         self.tabs.addTab(self._interfaces_tab(), self.i18n.t("details.interfaces"))
         self.tabs.addTab(self._optical_modules_tab(), self.i18n.t("details.optical_modules"))
         self.tabs.addTab(self._lldp_tab(), self.i18n.t("details.lldp"))
+        self.tabs.addTab(self._trackside_ap_business_tab(), self.i18n.t("trackside.title"))
 
     def refresh_device_details(self) -> None:
         if self.collect_thread is not None and self.collect_thread.isRunning():
@@ -288,6 +293,20 @@ class DeviceDetailDialog(QDialog):
             return self._empty_tab("details.lldp_note")
         return self._table_tab("details.lldp_note", LLDP_COLUMNS, rows, "neighbor_sysname", "lldp")
 
+    def _trackside_ap_business_tab(self) -> QWidget:
+        device_uuid = str(self.device.device_uuid or "")
+        rows = build_trackside_ap_business_rows(
+            [self.device],
+            {device_uuid: self.repository.list_device_interfaces(device_uuid)},
+            {device_uuid: self.repository.list_optical_modules(device_uuid)},
+            AcRepository(self.repository.database).list_all_fit_ap_optical(),
+            {device_uuid: self.repository.list_lldp_neighbors(device_uuid)},
+            AcRepository(self.repository.database).list_all_fit_ap_resources_with_metadata(),
+        )
+        if not rows:
+            return self._empty_tab("trackside.note")
+        return self._table_tab("trackside.note", TRACKSIDE_AP_DEVICE_COLUMNS, rows, "description", "trackside")
+
     def _table_tab(
         self,
         note_key: str,
@@ -297,25 +316,49 @@ class DeviceDetailDialog(QDialog):
         history_kind: str,
         optical_status_by_interface: dict[str, str] | None = None,
     ) -> QWidget:
-        table = QTableWidget(len(rows), len(columns))
+        table = QTableWidget(0, len(columns))
         configure_readonly_table(table)
-        attach_table_context_menu(table, self.i18n.language, history_callback=lambda row, kind=history_kind, data=rows: self.open_history_data(kind, data[row]))
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
-        for row_index, row in enumerate(rows):
-            row_status = str(row.get("status") or "")
-            if history_kind == "interface":
-                row_status = (optical_status_by_interface or {}).get(str(row.get("interface_name") or ""), "")
-            for column_index, (_label_key, field) in enumerate(columns):
-                item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
-                item.setTextAlignment(Qt.AlignCenter)
-                self._apply_status_background(item, history_kind, row_status)
-                table.setItem(row_index, column_index, item)
+        page_state = {"page": 1, "page_size": DEFAULT_PAGE_SIZE, "visible_rows": []}
+        pagination = PaginationWidget(self.i18n)
+
+        def render() -> None:
+            visible_rows, state = paginate_rows(rows, int(page_state["page_size"]), int(page_state["page"]))
+            page_state["page"] = state.current_page
+            page_state["visible_rows"] = visible_rows
+            pagination.set_state(state)
+            table.setUpdatesEnabled(False)
+            table.setSortingEnabled(False)
+            table.setRowCount(len(visible_rows))
+            for row_index, row in enumerate(visible_rows):
+                row_status = str(row.get("status") or "")
+                if history_kind == "interface":
+                    row_status = (optical_status_by_interface or {}).get(str(row.get("interface_name") or ""), "")
+                elif history_kind == "trackside":
+                    row_status = trackside_row_status(row)
+                for column_index, (_label_key, field) in enumerate(columns):
+                    item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self._apply_status_background(item, history_kind, row_status)
+                    table.setItem(row_index, column_index, item)
+            table.setSortingEnabled(False)
+            table.setUpdatesEnabled(True)
+            auto_resize_table_columns(
+                table,
+                stretch_columns={stretch_index} if stretch_index is not None else set(),
+                column_min_widths=_column_min_widths(columns),
+            )
+
+        def open_paged_history(row: int, kind=history_kind) -> None:
+            visible_rows = page_state["visible_rows"]
+            if 0 <= row < len(visible_rows):
+                self.open_history_data(kind, visible_rows[row])
+
+        attach_table_context_menu(table, self.i18n.language, history_callback=open_paged_history, include_history=history_kind in {"interface", "optical", "lldp"})
+        pagination.pageChanged.connect(lambda page: (page_state.__setitem__("page", page), render()))
+        pagination.pageSizeChanged.connect(lambda size: (page_state.__setitem__("page_size", size), page_state.__setitem__("page", 1), render()))
         stretch_index = _column_index(columns, stretch_field)
-        auto_resize_table_columns(
-            table,
-            stretch_columns={stretch_index} if stretch_index is not None else set(),
-            column_min_widths=_column_min_widths(columns),
-        )
+        render()
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.addWidget(self._note_label(note_key))
@@ -324,10 +367,11 @@ class DeviceDetailDialog(QDialog):
         elif history_kind == "optical":
             layout.addWidget(self._note_label("details.optical_color_legend"))
         layout.addWidget(table)
+        layout.addWidget(pagination)
         return wrapper
 
     def _format_table_value(self, field: str, value: object | None) -> str:
-        if field == "status" and value in OPTICAL_STATUS_VALUES:
+        if field in {"status", "switch_optical_status", "ap_optical_status"} and value in OPTICAL_STATUS_VALUES:
             return self.i18n.t(f"optical.status.{value}")
         return str(value or "")
 
@@ -345,6 +389,8 @@ class DeviceDetailDialog(QDialog):
             color_value = DeviceDetailDialog.optical_status_color(status)
         elif history_kind == "interface":
             color_value = DeviceDetailDialog.interface_row_status_color(status)
+        elif history_kind == "trackside":
+            color_value = DeviceDetailDialog.optical_status_color(status)
         else:
             return
         if color_value is not None:

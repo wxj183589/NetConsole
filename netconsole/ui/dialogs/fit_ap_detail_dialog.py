@@ -19,7 +19,9 @@ from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.optical_status import display_optical_status
 
 
@@ -103,6 +105,10 @@ class FitApDetailDialog(QWidget):
         self.lldp_table = QTableWidget()
         self.optical_table = QTableWidget()
         self.raw_fields_table = QTableWidget()
+        self.raw_fields_pagination = PaginationWidget(self.i18n)
+        self.raw_field_rows: list[dict[str, object | None]] = []
+        self.raw_fields_page = 1
+        self.raw_fields_page_size = DEFAULT_PAGE_SIZE
         self.history_windows: list[ApHistoryDialog] = []
         for table in (self.radio_table, self.lldp_table, self.optical_table, self.raw_fields_table):
             configure_readonly_table(table)
@@ -136,6 +142,8 @@ class FitApDetailDialog(QWidget):
         self.radio_history_button.clicked.connect(lambda: self.open_history("radio"))
         self.lldp_history_button.clicked.connect(lambda: self.open_history("lldp"))
         self.optical_history_button.clicked.connect(lambda: self.open_history("optical"))
+        self.raw_fields_pagination.pageChanged.connect(self.set_raw_fields_page)
+        self.raw_fields_pagination.pageSizeChanged.connect(self.set_raw_fields_page_size)
         self.retranslate()
         self.refresh()
         app_logger.log_info("FIT_AP_DETAIL_OPENED", f"ap_uuid={ap_uuid}, ap={self.ap_name}")
@@ -207,6 +215,7 @@ class FitApDetailDialog(QWidget):
         self.raw_fields_table.setColumnCount(3)
         layout = QVBoxLayout()
         layout.addWidget(self.raw_fields_table)
+        layout.addWidget(self.raw_fields_pagination)
         self.raw_fields_tab.setLayout(layout)
 
     def retranslate(self) -> None:
@@ -228,6 +237,7 @@ class FitApDetailDialog(QWidget):
         self.lldp_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in LLDP_COLUMNS])
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in OPTICAL_COLUMNS])
         self.raw_fields_table.setHorizontalHeaderLabels([self.i18n.t("field.type"), self.i18n.t("field.name"), self.i18n.t("field.value")])
+        self.raw_fields_pagination.retranslate()
 
     def refresh(self) -> None:
         resource = self.repository.get_fit_ap_resource_by_uuid(self.ac_device_uuid, self.ap_uuid) or self.repository.get_fit_ap_resource(self.ac_device_uuid, self.ap_name) or {}
@@ -290,20 +300,41 @@ class FitApDetailDialog(QWidget):
         auto_resize_table_columns(table, column_min_widths={0: 180})
 
     def _set_raw_fields_table(self, resource: dict[str, object | None], metadata: dict[str, object | None], optical: dict[str, object | None]) -> None:
-        rows: list[tuple[str, str, object | None]] = []
+        rows: list[dict[str, object | None]] = []
         for group, fields, source in (
             ("resource", FIT_AP_RESOURCE_FIELDS, resource),
             ("metadata", FIT_AP_METADATA_FIELDS, metadata),
             ("optical", FIT_AP_OPTICAL_FIELDS, optical),
         ):
-            rows.extend((group, field, source.get(field)) for field in fields)
+            rows.extend({"type": group, "name": field, "value": source.get(field)} for field in fields)
+        self.raw_field_rows = rows
+        self.raw_fields_page = 1
+        self.refresh_raw_fields_page()
+
+    def refresh_raw_fields_page(self) -> None:
+        rows, state = paginate_rows(self.raw_field_rows, self.raw_fields_page_size, self.raw_fields_page)
+        self.raw_fields_page = state.current_page
+        self.raw_fields_pagination.set_state(state)
+        self.raw_fields_table.setUpdatesEnabled(False)
+        self.raw_fields_table.setSortingEnabled(False)
         self.raw_fields_table.setRowCount(len(rows))
-        for row_index, (group, field, value) in enumerate(rows):
-            for column_index, item_value in enumerate((group, field, value)):
+        for row_index, row in enumerate(rows):
+            for column_index, item_value in enumerate((row.get("type"), row.get("name"), row.get("value"))):
                 item = QTableWidgetItem(str(item_value) if item_value not in (None, "") else "-")
                 item.setTextAlignment(Qt.AlignCenter)
                 self.raw_fields_table.setItem(row_index, column_index, item)
+        self.raw_fields_table.setSortingEnabled(False)
+        self.raw_fields_table.setUpdatesEnabled(True)
         auto_resize_table_columns(self.raw_fields_table, column_min_widths={0: 100, 1: 180, 2: 260})
+
+    def set_raw_fields_page(self, page: int) -> None:
+        self.raw_fields_page = page
+        self.refresh_raw_fields_page()
+
+    def set_raw_fields_page_size(self, page_size: int) -> None:
+        self.raw_fields_page_size = page_size
+        self.raw_fields_page = 1
+        self.refresh_raw_fields_page()
 
     def show_history_context_menu(self, table: QTableWidget, kind: str, position) -> None:
         index = table.indexAt(position)

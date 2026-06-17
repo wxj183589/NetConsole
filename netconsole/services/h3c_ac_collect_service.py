@@ -488,21 +488,20 @@ def _safe_filename(value: str) -> str:
 
 
 def _evaluate_neighbor_optical_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
+    from netconsole.core.optical_severity_engine import compute_optical_severity
     from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status
 
     if neighbor_optical:
         status = evaluate_optical_status(neighbor_optical, None).get("status")
         if status:
             return str(status)
-    value = _to_float(rx_power)
-    if value is not None and value <= -35:
-        return "no_light"
-    return "unknown"
+    return compute_optical_severity({"switch_rx_power": rx_power}).severity
 
 
 def _worse_optical_status(left: str, right: str) -> str:
-    severity = {"unknown": 0, "skipped": 1, "normal": 2, "no_light": 3, "warning": 4, "link_abnormal": 5, "alarm": 6}
-    return left if severity.get(left, 0) >= severity.get(right, 0) else right
+    from netconsole.core.optical_severity_engine import worse_optical_severity
+
+    return worse_optical_severity(left, right)
 
 
 def _to_float(value: object) -> float | None:

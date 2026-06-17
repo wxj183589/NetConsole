@@ -6,7 +6,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 
 
 STATION_ONLINE_HISTORY_COLUMNS = (
@@ -51,10 +53,13 @@ class StationOnlineHistoryDialog(QWidget):
         self.i18n = i18n
         self.rows = rows
         self.site_name = site_name
+        self.page = 1
+        self.page_size = DEFAULT_PAGE_SIZE
 
         self.station_filter = QComboBox()
         self.export_button = QPushButton()
         self.table = QTableWidget()
+        self.pagination = PaginationWidget(self.i18n)
         configure_readonly_table(self.table)
         self.table.setColumnCount(len(STATION_ONLINE_HISTORY_COLUMNS))
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -67,10 +72,13 @@ class StationOnlineHistoryDialog(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(actions)
         layout.addWidget(self.table)
+        layout.addWidget(self.pagination)
         self.setLayout(layout)
 
-        self.station_filter.currentIndexChanged.connect(self.refresh_table)
+        self.station_filter.currentIndexChanged.connect(self.filter_changed)
         self.export_button.clicked.connect(self.export_history)
+        self.pagination.pageChanged.connect(self.set_page)
+        self.pagination.pageSizeChanged.connect(self.set_page_size)
         self.retranslate()
         self.populate_station_filter()
         self.refresh_table()
@@ -100,7 +108,11 @@ class StationOnlineHistoryDialog(QWidget):
         return [row for row in self.rows if str(row.get("site_name") or "") == site]
 
     def refresh_table(self) -> None:
-        rows = self.filtered_rows()
+        rows, state = paginate_rows(self.filtered_rows(), self.page_size, self.page)
+        self.page = state.current_page
+        self.pagination.set_state(state)
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             for column_index, (_key, field) in enumerate(STATION_ONLINE_HISTORY_COLUMNS):
@@ -108,7 +120,22 @@ class StationOnlineHistoryDialog(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_index, column_index, item)
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(True)
         auto_resize_table_columns(self.table, column_min_widths={0: 170, 1: 160})
+
+    def filter_changed(self) -> None:
+        self.page = 1
+        self.refresh_table()
+
+    def set_page(self, page: int) -> None:
+        self.page = page
+        self.refresh_table()
+
+    def set_page_size(self, page_size: int) -> None:
+        self.page_size = page_size
+        self.page = 1
+        self.refresh_table()
 
     def show_context_menu(self, position) -> None:
         index = self.table.indexAt(position)

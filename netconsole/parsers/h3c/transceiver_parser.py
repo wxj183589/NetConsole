@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from netconsole.core.optical_severity_engine import compute_optical_severity
+
 
 INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|XGE|GE)[\d/.:]+"
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:\.\d+)?")
@@ -124,28 +126,20 @@ def evaluate_optical_status(optical: dict[str, object | None], interface: dict[s
     if interface and str(interface.get("port_status") or "").casefold() == "shutdown":
         return {"status": "skipped", "reason": "interface shutdown"}
 
-    rx_power = _to_float(optical.get("rx_power"))
-    tx_power = _to_float(optical.get("tx_power"))
-    if rx_power is not None and rx_power <= -35:
-        return {"status": "no_light", "reason": "RX power is extremely low"}
-    if rx_power is not None and rx_power > -35 and interface and str(interface.get("link_status") or "").upper() != "UP":
-        return {"status": "link_abnormal", "reason": "RX power exists but interface is not UP"}
-    rx_low = _to_float(optical.get("rx_low_alarm"))
-    rx_high = _to_float(optical.get("rx_high_alarm"))
-    tx_low = _to_float(optical.get("tx_low_alarm"))
-    tx_high = _to_float(optical.get("tx_high_alarm"))
-    if None in {rx_power, tx_power, rx_low, rx_high, tx_low, tx_high}:
-        return {"status": "unknown", "reason": "missing optical power or threshold"}
-
-    if rx_power < rx_low or rx_power > rx_high:
-        return {"status": "alarm", "reason": "RX power out of alarm range"}
-    if tx_power < tx_low or tx_power > tx_high:
-        return {"status": "alarm", "reason": "TX power out of alarm range"}
-    rx_warning_low = _to_float(optical.get("rx_low_warning"))
-    warning_low = rx_warning_low if rx_warning_low is not None else rx_low
-    if warning_low <= rx_power <= warning_low + 3:
-        return {"status": "warning", "reason": "RX power in low warning range"}
-    return {"status": "normal", "reason": None}
+    port_status = "DOWN" if interface and str(interface.get("link_status") or "").upper() != "UP" else "UP"
+    result = compute_optical_severity(
+        {
+            "rx_power": optical.get("rx_power"),
+            "tx_power": optical.get("tx_power"),
+            "port_status": port_status,
+            "alarm_low": optical.get("rx_low_alarm"),
+            "alarm_high": optical.get("rx_high_alarm"),
+            "warning_low": optical.get("rx_low_warning") or optical.get("rx_low_alarm"),
+            "tx_low_alarm": optical.get("tx_low_alarm"),
+            "tx_high_alarm": optical.get("tx_high_alarm"),
+        }
+    )
+    return {"status": result.severity, "reason": result.reason}
 
 
 def _set_if_match(

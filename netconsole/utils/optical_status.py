@@ -7,8 +7,10 @@ OPTICAL_STATUS_LABELS = {
         "warning": "提示告警",
         "alarm": "一般告警",
         "link_abnormal": "链路异常",
+        "link_down": "链路断开",
         "no_light": "无光",
         "skipped": "未检查",
+        "not_collected": "未采集",
         "unknown": "未知",
     },
     "en": {
@@ -16,8 +18,10 @@ OPTICAL_STATUS_LABELS = {
         "warning": "Warning",
         "alarm": "Alarm",
         "link_abnormal": "Link Abnormal",
+        "link_down": "Link Down",
         "no_light": "No Light",
         "skipped": "Skipped",
+        "not_collected": "Not Collected",
         "unknown": "Unknown",
     },
 }

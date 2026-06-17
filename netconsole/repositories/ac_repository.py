@@ -275,6 +275,22 @@ class AcRepository:
     def list_fit_ap_resources_with_metadata(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
         return self._list_fit_ap_resources(ac_device_uuid, include_metadata=True)
 
+    def list_all_fit_ap_resources_with_metadata(self) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.*,
+                       m.site_name,
+                       m.mileage AS metadata_mileage,
+                       m.location_note AS metadata_location_note,
+                       m.direction AS metadata_direction
+                FROM ac_fit_ap_resources r
+                LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid
+                ORDER BY r.ap_name, r.id
+                """
+            ).fetchall()
+        return [self._resource_with_metadata(dict(row)) for row in rows]
+
     def list_fit_ap_resource_history(self, ac_device_uuid: str, limit: int = 10000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute(
@@ -330,6 +346,11 @@ class AcRepository:
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
         return self._list_rows("ac_fit_ap_optical", ac_device_uuid, "ap_name, id")
+
+    def list_all_fit_ap_optical(self) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute("SELECT * FROM ac_fit_ap_optical ORDER BY neighbor_device_name, neighbor_interface, ap_name, id").fetchall()
+        return [dict(row) for row in rows]
 
     def get_fit_ap_optical_by_uuid(self, ac_device_uuid: str, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -716,13 +737,16 @@ class AcRepository:
             ).fetchall()
         result = []
         for row in rows:
-            item = dict(row)
-            item["site"] = item.get("site_name") or item.get("site")
-            item["mileage"] = item.get("metadata_mileage") or item.get("mileage")
-            item["location_note"] = item.get("metadata_location_note") or item.get("location_note")
-            item["direction"] = item.get("metadata_direction") or item.get("direction")
-            result.append(item)
+            result.append(self._resource_with_metadata(dict(row)))
         return result
+
+    @staticmethod
+    def _resource_with_metadata(item: dict[str, object | None]) -> dict[str, object | None]:
+        item["site"] = item.get("site_name") or item.get("site")
+        item["mileage"] = item.get("metadata_mileage") or item.get("mileage")
+        item["location_note"] = item.get("metadata_location_note") or item.get("location_note")
+        item["direction"] = item.get("metadata_direction") or item.get("direction")
+        return item
 
     @classmethod
     def _payload(cls, fields: tuple[str, ...], data: dict[str, object | None]) -> dict[str, object | None]:

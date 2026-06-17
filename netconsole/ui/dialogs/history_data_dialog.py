@@ -4,7 +4,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from netconsole.core.i18n import I18n
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.optical_status import display_optical_status
 
 
@@ -60,6 +62,8 @@ class HistoryDataDialog(QDialog):
         self.object_name = object_name
         self.columns = columns
         self.rows = rows
+        self.page = 1
+        self.page_size = DEFAULT_PAGE_SIZE
         self.setModal(False)
         self.setMinimumSize(900, 560)
         self.resize(900, 560)
@@ -76,7 +80,13 @@ class HistoryDataDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(header)
         if rows:
-            layout.addWidget(self._table())
+            self.table = self._table()
+            self.pagination = PaginationWidget(self.i18n)
+            self.pagination.pageChanged.connect(self.set_page)
+            self.pagination.pageSizeChanged.connect(self.set_page_size)
+            layout.addWidget(self.table)
+            layout.addWidget(self.pagination)
+            self.refresh_table()
         else:
             label = QLabel(self.i18n.t("history.no_data"))
             label.setAlignment(Qt.AlignCenter)
@@ -90,18 +100,37 @@ class HistoryDataDialog(QDialog):
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
 
     def _table(self) -> QTableWidget:
-        table = QTableWidget(len(self.rows), len(self.columns))
+        table = QTableWidget(0, len(self.columns))
         configure_readonly_table(table)
         attach_table_context_menu(table, self.i18n.language, include_history=False)
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in self.columns])
-        for row_index, row in enumerate(self.rows):
+        return table
+
+    def refresh_table(self) -> None:
+        rows, state = paginate_rows(self.rows, self.page_size, self.page)
+        self.page = state.current_page
+        self.pagination.set_state(state)
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
             for column_index, (_label_key, field) in enumerate(self.columns):
                 value = display_optical_status(row.get(field), self.i18n.language) if field == "status" else str(row.get(field) or "")
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignCenter)
-                table.setItem(row_index, column_index, item)
-        auto_resize_table_columns(table, column_min_widths=_history_column_min_widths(self.columns))
-        return table
+                self.table.setItem(row_index, column_index, item)
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(True)
+        auto_resize_table_columns(self.table, column_min_widths=_history_column_min_widths(self.columns))
+
+    def set_page(self, page: int) -> None:
+        self.page = page
+        self.refresh_table()
+
+    def set_page_size(self, page_size: int) -> None:
+        self.page_size = page_size
+        self.page = 1
+        self.refresh_table()
 
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
