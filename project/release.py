@@ -90,7 +90,12 @@ VSVersionInfo(
 
 
 def write_release_files(version: str, build_time: str, git_commit: str) -> None:
-    VERSION_FILE.write_text(render_version_py(version, build_time, git_commit), encoding="utf-8")
+    VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)  # ⭐关键修复
+    VERSION_FILE.write_text(
+        render_version_py(version, build_time, git_commit),
+        encoding="utf-8"
+    )
+
     VERSION_INFO_FILE.parent.mkdir(parents=True, exist_ok=True)
     VERSION_INFO_FILE.write_text(render_version_info(version), encoding="utf-8")
 
