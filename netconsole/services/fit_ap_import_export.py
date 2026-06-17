@@ -8,6 +8,17 @@ from pathlib import Path
 from netconsole.repositories.ac_repository import AcRepository
 
 
+def normalize_ap_direction(value: str) -> str:
+    text = str(value or "").strip()
+    if text.upper() == "CW":
+        return "上行"
+    if text.upper() == "CT":
+        return "下行"
+    if text in {"上行", "下行"}:
+        return text
+    return ""
+
+
 AP_METADATA_IMPORT_FIELDS = ["AP名称", "归属站点", "里程", "点位说明", "上下行"]
 AP_EXPORT_FIELDS = [
     "AP名称",
@@ -67,7 +78,7 @@ class FitApImportExportService:
                     "site_name": payload["归属站点"],
                     "mileage": payload["里程"],
                     "location_note": payload["点位说明"],
-                    "direction": payload["上下行"],
+                    "direction": normalize_ap_direction(payload["上下行"]),
                 }
             )
             updated += 1

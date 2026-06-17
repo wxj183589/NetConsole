@@ -58,3 +58,9 @@ def test_batch_collect_worker_accepts_max_concurrency_100():
     worker = BatchCollectWorker([], "demo", max_workers=100)
 
     assert worker.max_workers == 100
+
+
+def test_batch_collect_worker_accepts_parent_last_concurrency():
+    worker = BatchCollectWorker([], "demo", 50, None)
+
+    assert worker.concurrency == 50

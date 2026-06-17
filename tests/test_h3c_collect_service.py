@@ -6,6 +6,8 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import h3c_collect_service
 from netconsole.services.h3c_collect_service import COLLECT_COMMANDS, collect_h3c_device_details
+from netconsole.services import h3c_optical_refresh_service
+from netconsole.services.h3c_optical_refresh_service import OPTICAL_REFRESH_COMMANDS, refresh_h3c_device_optical
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
@@ -84,6 +86,7 @@ def test_collect_service_writes_raw_log_collect_run_and_repository_data(monkeypa
     assert connection.commands == ["screen-length disable", *COLLECT_COMMANDS]
     assert connection.disconnected is True
     assert Path(result.raw_log_path).exists()
+    Path(result.raw_log_path).read_bytes().decode("utf-8")
     assert Path(result.raw_log_path).with_name("11111111-1111-4111-8111-111111111111_commands.jsonl").exists()
     assert repository.get_collect_run(result.collect_run_uuid)["status"] == "success"
     fact = repository.get_device_fact("11111111-1111-4111-8111-111111111111")
@@ -149,3 +152,64 @@ def test_collect_service_validates_commands_before_execution(monkeypatch, tmp_pa
     collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
 
     assert calls == [(["screen-length disable", *COLLECT_COMMANDS], "device_collect")]
+
+
+def test_optical_refresh_service_runs_three_commands_and_writes_interfaces_optical(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_optical_refresh_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    repository = make_repository(tmp_path)
+    device = make_device()
+    repository.upsert_device_fact(
+        {
+            "device_uuid": device.device_uuid,
+            "sysname": "SW01",
+            "model": "S6850",
+            "collected_at": "2026-06-16T00:00:00",
+            "updated_at": "2026-06-16T00:00:00",
+            "raw_log_path": "raw/collect/old/device.log",
+        }
+    )
+    repository.replace_optical_modules(
+        str(device.device_uuid),
+        [
+            {
+                "interface_name": "GigabitEthernet1/0/1",
+                "module_model": "SFP-GE-LX-SM1310",
+                "module_serial_number": "KEEP-SN-001",
+                "module_vendor": "H3C",
+                "wavelength": "1310 nm",
+                "transmission_distance": "10 km",
+                "collected_at": "2026-06-16T00:00:00",
+            }
+        ],
+    )
+
+    result = refresh_h3c_device_optical(device, "demo", repository=repository, paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert connection.commands == list(OPTICAL_REFRESH_COMMANDS)
+    assert connection.disconnected is True
+    assert Path(result.raw_log_path).exists()
+    assert Path(result.raw_log_path).read_bytes().decode("utf-8")
+    commands_file = Path(result.raw_log_path).with_name(f"{device.device_uuid}_commands.jsonl")
+    assert commands_file.exists()
+    assert result.interfaces_updated == 2
+    assert result.optical_modules_updated == 1
+    assert repository.list_device_interfaces(str(device.device_uuid))[0]["interface_name"] == "GigabitEthernet1/0/1"
+    optical = repository.list_optical_modules(str(device.device_uuid))[0]
+    assert optical["rx_power"] == "-3.21 dBm"
+    assert optical["module_serial_number"] == "KEEP-SN-001"
+    assert optical["module_model"] == "SFP-GE-LX-SM1310"
+    assert repository.get_latest_raw_log_path(str(device.device_uuid)) == f"raw/collect/{result.collect_run_uuid}/{device.device_uuid}.log"
+
+
+def test_optical_refresh_service_validates_optical_context(monkeypatch, tmp_path):
+    calls = []
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_optical_refresh_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(h3c_optical_refresh_service.command_guard, "validate_command_list", lambda commands, context: calls.append((list(commands), context)))
+    repository = make_repository(tmp_path)
+
+    refresh_h3c_device_optical(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+
+    assert calls == [(list(OPTICAL_REFRESH_COMMANDS), "optical_refresh")]

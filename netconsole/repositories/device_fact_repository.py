@@ -136,6 +136,19 @@ class DeviceFactRepository:
         value = fact.get("raw_log_path") if fact else None
         return str(value) if value else None
 
+    def update_latest_raw_log_path(self, device_uuid: str, collect_run_uuid: str, raw_log_path: str) -> None:
+        now = self._now()
+        with self.database.connect() as conn:
+            conn.execute(
+                """
+                UPDATE device_facts
+                SET collect_run_uuid = ?, raw_log_path = ?, updated_at = ?
+                WHERE device_uuid = ?
+                """,
+                (collect_run_uuid, raw_log_path, now, device_uuid),
+            )
+            conn.commit()
+
     def list_device_facts(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM device_facts ORDER BY sysname, device_uuid").fetchall()

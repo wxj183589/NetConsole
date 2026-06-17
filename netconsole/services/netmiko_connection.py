@@ -7,6 +7,7 @@ from typing import Any
 
 from netconsole.core import app_logger
 from netconsole.models.device import Device
+from netconsole.utils.text_encoding import clean_h3c_device_text
 
 try:
     from netmiko import ConnectHandler
@@ -16,7 +17,14 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
 
 H3C_NETMIKO_DEVICE_TYPE = "h3c_comware"
 H3C_TELNET_NETMIKO_DEVICE_TYPE = "hp_comware_telnet"
+H3C_DEFAULT_ENCODING = "gb18030"
 PROMPT_SYSNAME_PATTERN = re.compile(r"^\s*[<\[]([^<>\[\]]+)[>\]]\s*$")
+
+VENDOR_ENCODING_POLICY = {
+    "H3C": H3C_DEFAULT_ENCODING,
+    "Huawei": "utf-8",
+    "ZTE": "utf-8",
+}
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,7 @@ class ConnectionTarget:
     port: int
     username: str
     password: str
+    encoding: str = H3C_DEFAULT_ENCODING
 
 
 def test_device_connection(device: Device) -> ConnectionTestResult:
@@ -57,7 +66,7 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
         prompt = _safe_find_prompt(connection)
         message = "连接成功"
         try:
-            connection.send_command("display clock", read_timeout=10)
+            safe_send_command(connection, "display clock", read_timeout=10, encoding=target.encoding)
         except Exception as exc:
             message = f"连接成功，display clock 执行失败：{sanitize_sensitive_text(str(exc), device)}"
         result = ConnectionTestResult(
@@ -100,6 +109,7 @@ def choose_connection_target(device: Device) -> ConnectionTarget | None:
             port=int(device.ssh_port or 22),
             username=device.ssh_username or "",
             password=device.ssh_password or "",
+            encoding=encoding_for_vendor(device.device_vendor),
         )
     if bool(device.telnet_enabled):
         return ConnectionTarget(
@@ -109,12 +119,52 @@ def choose_connection_target(device: Device) -> ConnectionTarget | None:
             port=int(device.telnet_port or 23),
             username=device.telnet_username or "",
             password=device.telnet_password or "",
+            encoding=encoding_for_vendor(device.device_vendor),
         )
     return None
 
 
 def build_netmiko_params(target: ConnectionTarget) -> dict[str, object]:
     return _netmiko_params(target)
+
+
+def encoding_for_vendor(vendor: str | None) -> str:
+    return VENDOR_ENCODING_POLICY.get(str(vendor or "H3C"), "utf-8")
+
+
+def safe_send_command(
+    connection: Any,
+    command: str,
+    *,
+    read_timeout: int = 30,
+    strip_prompt: bool | None = None,
+    strip_command: bool | None = None,
+    use_timing: bool = False,
+    encoding: str = H3C_DEFAULT_ENCODING,
+) -> str:
+    if use_timing and hasattr(connection, "send_command_timing"):
+        kwargs: dict[str, object] = {"read_timeout": read_timeout}
+        if strip_prompt is not None:
+            kwargs["strip_prompt"] = strip_prompt
+        if strip_command is not None:
+            kwargs["strip_command"] = strip_command
+        output = connection.send_command_timing(command, **kwargs)
+    else:
+        output = connection.send_command(command, read_timeout=read_timeout)
+    return normalize_command_output(output, encoding)
+
+
+def normalize_command_output(output: object, encoding: str = H3C_DEFAULT_ENCODING) -> str:
+    if isinstance(output, bytes):
+        try:
+            text = output.decode(encoding, errors="replace")
+        except LookupError:
+            text = output.decode(H3C_DEFAULT_ENCODING, errors="replace")
+    else:
+        text = str(output or "")
+    if encoding == H3C_DEFAULT_ENCODING:
+        return clean_h3c_device_text(text)
+    return text
 
 
 def extract_sysname_from_prompt(prompt: str) -> str | None:

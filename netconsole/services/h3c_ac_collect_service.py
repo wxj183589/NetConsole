@@ -22,7 +22,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.h3c_collect_service import CommandResult
-from netconsole.services.neighbor_matcher import find_neighbor_rx_power, match_neighbor_device
+from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
 
 
@@ -208,7 +208,7 @@ def collect_h3c_fit_ap_optical(
 
     resources = [row for row in repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid)) if row.get("ap_ip")]
     rows: list[dict[str, object | None]] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(int(max_workers or 1), 200))) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, min(int(max_workers or 1), 1000))) as executor:
         futures = {
             executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
             for row in resources
@@ -307,7 +307,9 @@ def _collect_single_fit_ap_optical(
     collected_at = _now()
     base = {
         "ac_device_uuid": ac_device.device_uuid,
+        "ap_uuid": ap_row.get("ap_uuid"),
         "ap_name": ap_name,
+        "ap_mac": ap_row.get("ap_mac"),
         "ap_ip": ap_ip,
         "site": ap_row.get("site"),
         "collected_at": collected_at,
@@ -347,7 +349,11 @@ def _collect_single_fit_ap_optical(
             outputs.get("display transceiver interface", ""),
             outputs.get("display transceiver manuinfo interface", ""),
         )
-        match = match_neighbor_device(
+        if _is_invalid_lldp_neighbor(parsed.get("lldp_neighbor")):
+            parsed["lldp_neighbor"] = None
+            parsed["neighbor_device_name"] = None
+        reverse_match = match_ap_from_device_lldp(site_name, ap_mac=str(ap_row.get("ap_mac") or ""), ap_name=ap_name, paths=paths)
+        match = reverse_match if reverse_match.device_uuid else match_neighbor_device(
             site_name,
             neighbor_mac=str(parsed.get("neighbor_mac") or ""),
             neighbor_sysname=str(parsed.get("lldp_neighbor") or ""),
@@ -360,8 +366,17 @@ def _collect_single_fit_ap_optical(
             app_logger.log_warning("FIT_AP_OPTICAL_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
         if match.station:
             base["site"] = match.station
-        parsed["neighbor_device_name"] = match.device_name or parsed.get("lldp_neighbor")
-        parsed["neighbor_rx_power"] = find_neighbor_rx_power(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
+        if match.matched_by == "device_lldp":
+            parsed["neighbor_device_name"] = match.device_name
+            parsed["neighbor_interface"] = match.local_interface
+            parsed["interface_name"] = match.ap_interface or parsed.get("interface_name")
+        else:
+            parsed["neighbor_device_name"] = match.device_name or parsed.get("lldp_neighbor")
+        if _is_invalid_lldp_neighbor(parsed.get("neighbor_device_name")):
+            parsed["neighbor_device_name"] = None
+        neighbor_optical = find_neighbor_optical_module(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
+        parsed["neighbor_rx_power"] = str(neighbor_optical.get("rx_power")) if neighbor_optical and neighbor_optical.get("rx_power") else None
+        parsed["optical_alarm_status"] = _worse_optical_status(str(parsed.get("optical_alarm_status") or "unknown"), _evaluate_neighbor_optical_status(parsed.get("neighbor_rx_power"), neighbor_optical))
         success = any(parsed.values()) and all(result.success for result in command_results)
         status = "success" if success else "failed"
         app_logger.log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else _command_error_summary(command_results) or "no optical data parsed"))
@@ -470,6 +485,44 @@ def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str
 
 def _safe_filename(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_." else "_" for char in value)[:120] or "fit_ap"
+
+
+def _evaluate_neighbor_optical_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
+    from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status
+
+    if neighbor_optical:
+        status = evaluate_optical_status(neighbor_optical, None).get("status")
+        if status:
+            return str(status)
+    value = _to_float(rx_power)
+    if value is not None and value <= -35:
+        return "no_light"
+    return "unknown"
+
+
+def _worse_optical_status(left: str, right: str) -> str:
+    severity = {"unknown": 0, "skipped": 1, "normal": 2, "no_light": 3, "warning": 4, "link_abnormal": 5, "alarm": 6}
+    return left if severity.get(left, 0) >= severity.get(right, 0) else right
+
+
+def _to_float(value: object) -> float | None:
+    import re
+
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _is_invalid_lldp_neighbor(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    return any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr"))
 
 
 def _now() -> str:

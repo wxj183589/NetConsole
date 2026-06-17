@@ -1,4 +1,5 @@
 PySide6>=6.8
 pytest>=8.0
 netmiko
+openpyxl
 PyInstaller>=6.0

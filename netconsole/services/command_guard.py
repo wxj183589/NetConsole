@@ -43,6 +43,8 @@ SAFE_OPTICAL_REFRESH_COMMANDS = {
 }
 
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
+    "screen-length disable",
+    "display wlan ap all address",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",

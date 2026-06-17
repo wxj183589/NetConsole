@@ -189,6 +189,19 @@ IP packet frame type: Ethernet II, hardware address: 4c6f-b6a1-0202
     assert parsed[0]["port_status"] == "route"
 
 
+def test_interface_parser_keeps_chinese_description_readable():
+    parsed = parse_interfaces(
+        """
+GigabitEthernet2/0/13
+Current state: UP
+Line protocol state: UP
+Description: To_信号系统
+"""
+    )
+
+    assert parsed[0]["description"] == "To_信号系统"
+
+
 def test_interface_parser_identifies_access_l2_pvid_and_status():
     parsed = parse_interfaces(
         """
@@ -371,17 +384,38 @@ def test_evaluate_optical_status_returns_normal_warning_alarm_and_skipped():
         "rx_high_alarm": "-3.00",
         "tx_low_alarm": "-11.00",
         "tx_high_alarm": "-1.00",
+        "rx_low_warning": "-16.99",
     }
 
     assert evaluate_optical_status(optical, interface)["status"] == "normal"
     assert evaluate_optical_status({**optical, "rx_power": "-20.00"}, interface)["status"] == "alarm"
-    assert evaluate_optical_status({**optical, "rx_power": "-17.00"}, interface)["status"] == "warning"
+    assert evaluate_optical_status({**optical, "rx_power": "-14.35"}, interface)["status"] == "warning"
+    assert evaluate_optical_status({**optical, "rx_power": "-13.99"}, interface)["status"] == "warning"
+    assert evaluate_optical_status({**optical, "rx_power": "-13.98"}, interface)["status"] == "normal"
+    assert evaluate_optical_status({**optical, "rx_power": "-17.00"}, interface)["status"] == "normal"
     assert evaluate_optical_status({**optical, "tx_power": "-12.00"}, interface)["status"] == "alarm"
     assert evaluate_optical_status({**optical, "rx_power": "-36.96"}, interface)["status"] == "no_light"
     assert evaluate_optical_status({**optical, "rx_power": "-40.00"}, interface)["status"] == "no_light"
     assert evaluate_optical_status({**optical, "rx_power": "-9.71"}, {**interface, "link_status": "DOWN"})["status"] == "link_abnormal"
     assert evaluate_optical_status(optical, {**interface, "description": "to OLT uplink"})["status"] == "skipped"
     assert evaluate_optical_status(optical, {**interface, "port_status": "shutdown"})["status"] == "skipped"
+
+
+def test_evaluate_optical_status_uses_each_module_rx_low_warning():
+    interface = {"interface_name": "GigabitEthernet2/0/1", "link_status": "UP", "port_status": "access", "description": ""}
+    optical = {
+        "interface_name": "GigabitEthernet2/0/1",
+        "tx_power": "-6.00",
+        "rx_low_alarm": "-25.00",
+        "rx_high_alarm": "0.00",
+        "tx_low_alarm": "-11.00",
+        "tx_high_alarm": "-1.00",
+    }
+
+    assert evaluate_optical_status({**optical, "rx_low_warning": "-18.00", "rx_power": "-15.50"}, interface)["status"] == "warning"
+    assert evaluate_optical_status({**optical, "rx_low_warning": "-14.00", "rx_power": "-12.50"}, interface)["status"] == "warning"
+    assert evaluate_optical_status({**optical, "rx_low_warning": "-18.00", "rx_power": "-14.99"}, interface)["status"] == "normal"
+    assert evaluate_optical_status({**optical, "rx_power": "-22.50"}, interface)["status"] == "warning"
 
 
 def test_lldp_parser_extracts_local_neighbor_and_remote_interface():

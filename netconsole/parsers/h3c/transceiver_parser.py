@@ -141,8 +141,10 @@ def evaluate_optical_status(optical: dict[str, object | None], interface: dict[s
         return {"status": "alarm", "reason": "RX power out of alarm range"}
     if tx_power < tx_low or tx_power > tx_high:
         return {"status": "alarm", "reason": "TX power out of alarm range"}
-    if rx_low <= rx_power <= rx_low + 3:
-        return {"status": "warning", "reason": "RX power near lower limit"}
+    rx_warning_low = _to_float(optical.get("rx_low_warning"))
+    warning_low = rx_warning_low if rx_warning_low is not None else rx_low
+    if warning_low <= rx_power <= warning_low + 3:
+        return {"status": "warning", "reason": "RX power in low warning range"}
     return {"status": "normal", "reason": None}
 
 

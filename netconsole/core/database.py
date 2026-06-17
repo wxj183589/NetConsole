@@ -273,6 +273,7 @@ AC_FIT_AP_RESOURCES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL UNIQUE,
     ap_name TEXT,
     apid TEXT,
     ap_ip TEXT,
@@ -302,14 +303,16 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(ac_device_uuid, serial_number)
 );
 """
 
 AC_FIT_AP_METADATA_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ap_name TEXT NOT NULL UNIQUE,
+    ap_uuid TEXT NOT NULL UNIQUE,
+    ap_name TEXT,
     site_name TEXT,
     mileage TEXT,
     location_note TEXT,
@@ -319,11 +322,32 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
 );
 """
 
+AC_FIT_AP_RESOURCE_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_resource_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    ap_mac TEXT,
+    ap_ip TEXT,
+    serial_number TEXT,
+    state_raw TEXT,
+    state_display TEXT,
+    site_name TEXT,
+    collected_at TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    created_at TEXT
+);
+"""
+
 AC_FIT_AP_OPTICAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
     ap_name TEXT NOT NULL,
+    ap_mac TEXT,
     ap_ip TEXT,
     site TEXT,
     lldp_neighbor TEXT,
@@ -333,15 +357,136 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
     neighbor_rx_power TEXT,
     interface_name TEXT,
     temperature TEXT,
+    voltage TEXT,
+    bias_current TEXT,
     tx_power TEXT,
     rx_power TEXT,
+    rx_low_alarm TEXT,
+    rx_high_alarm TEXT,
+    tx_low_alarm TEXT,
+    tx_high_alarm TEXT,
+    rx_low_warning TEXT,
+    rx_high_warning TEXT,
+    tx_low_warning TEXT,
+    tx_high_warning TEXT,
     optical_alarm_status TEXT,
     status TEXT,
     error_message TEXT,
+    module_model TEXT,
+    module_serial_number TEXT,
+    module_vendor TEXT,
+    wavelength TEXT,
+    transmission_distance TEXT,
+    connector_type TEXT,
     collected_at TEXT,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     updated_at TEXT
+);
+"""
+
+AC_STATION_AP_CAPACITY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_station_ap_capacity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_name TEXT NOT NULL UNIQUE,
+    ap_total INTEGER NOT NULL,
+    remark TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+"""
+
+AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_station_online_summary_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_name TEXT NOT NULL,
+    ap_total INTEGER NOT NULL,
+    online_count INTEGER NOT NULL,
+    offline_count INTEGER NOT NULL,
+    online_rate TEXT,
+    remark TEXT,
+    collected_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+AC_FIT_AP_OPTICAL_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_optical_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    ap_mac TEXT,
+    ap_ip TEXT,
+    site TEXT,
+    lldp_neighbor TEXT,
+    neighbor_interface TEXT,
+    neighbor_mac TEXT,
+    neighbor_device_name TEXT,
+    neighbor_rx_power TEXT,
+    interface_name TEXT,
+    temperature TEXT,
+    voltage TEXT,
+    bias_current TEXT,
+    tx_power TEXT,
+    rx_power TEXT,
+    rx_low_alarm TEXT,
+    rx_high_alarm TEXT,
+    tx_low_alarm TEXT,
+    tx_high_alarm TEXT,
+    rx_low_warning TEXT,
+    rx_high_warning TEXT,
+    tx_low_warning TEXT,
+    tx_high_warning TEXT,
+    optical_alarm_status TEXT,
+    status TEXT,
+    error_message TEXT,
+    module_model TEXT,
+    module_serial_number TEXT,
+    module_vendor TEXT,
+    wavelength TEXT,
+    transmission_distance TEXT,
+    connector_type TEXT,
+    collected_at TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    created_at TEXT
+);
+"""
+
+AC_FIT_AP_LLDP_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_lldp_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    ap_mac TEXT,
+    local_interface TEXT,
+    lldp_neighbor TEXT,
+    neighbor_interface TEXT,
+    neighbor_mac TEXT,
+    neighbor_device_name TEXT,
+    collected_at TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    created_at TEXT
+);
+"""
+
+AC_FIT_AP_RADIO_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    rid INTEGER,
+    channel TEXT,
+    bandwidth TEXT,
+    tx_power TEXT,
+    collected_at TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    created_at TEXT
 );
 """
 
@@ -378,7 +523,13 @@ class Database:
                         AC_AP_SUMMARY_SCHEMA,
                         AC_FIT_AP_RESOURCES_SCHEMA,
                         AC_FIT_AP_METADATA_SCHEMA,
+                        AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
                         AC_FIT_AP_OPTICAL_SCHEMA,
+                        AC_STATION_AP_CAPACITY_SCHEMA,
+                        AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
+                        AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
+                        AC_FIT_AP_LLDP_HISTORY_SCHEMA,
+                        AC_FIT_AP_RADIO_HISTORY_SCHEMA,
                     )
                 )
             )

@@ -11,11 +11,11 @@ class AcResourceCollectThread(QThread):
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
-    def __init__(self, device: Device, site_name: str, max_workers: int = 200, parent=None) -> None:
+    def __init__(self, device: Device, site_name: str, concurrency: int = 20, parent=None, max_workers: int | None = None) -> None:
         super().__init__(parent)
         self.device = device
         self.site_name = site_name
-        self.max_workers = max_workers
+        self.concurrency = int(max_workers if max_workers is not None else concurrency)
 
     def run(self) -> None:
         self.collect_started.emit()
@@ -32,15 +32,16 @@ class FitApOpticalCollectThread(QThread):
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
-    def __init__(self, device: Device, site_name: str, parent=None) -> None:
+    def __init__(self, device: Device, site_name: str, concurrency: int = 200, parent=None, max_workers: int | None = None) -> None:
         super().__init__(parent)
         self.device = device
         self.site_name = site_name
+        self.concurrency = int(max_workers if max_workers is not None else concurrency)
 
     def run(self) -> None:
         self.collect_started.emit()
         try:
-            result = collect_h3c_fit_ap_optical(self.device, self.site_name, max_workers=self.max_workers)
+            result = collect_h3c_fit_ap_optical(self.device, self.site_name, max_workers=self.concurrency)
         except Exception as exc:
             self.collect_failed.emit(str(exc))
             return

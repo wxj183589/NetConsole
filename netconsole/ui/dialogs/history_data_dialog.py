@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableW
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table
+from netconsole.utils.optical_status import display_optical_status
 
 
 INTERFACE_HISTORY_COLUMNS = (
@@ -95,7 +96,8 @@ class HistoryDataDialog(QDialog):
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in self.columns])
         for row_index, row in enumerate(self.rows):
             for column_index, (_label_key, field) in enumerate(self.columns):
-                item = QTableWidgetItem(str(row.get(field) or ""))
+                value = display_optical_status(row.get(field), self.i18n.language) if field == "status" else str(row.get(field) or "")
+                item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(row_index, column_index, item)
         auto_resize_table_columns(table, column_min_widths=_history_column_min_widths(self.columns))

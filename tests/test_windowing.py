@@ -2,9 +2,10 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel
 
-from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, read_collect_log_text
+from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, CollectLogDialog, collect_search_matches, read_collect_log_text
 from netconsole.ui.table_utils import make_text_selectable
 from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, clean_device_text, clean_h3c_device_text, decode_text_auto, fix_mojibake_text, read_text_auto
@@ -120,3 +121,28 @@ def test_read_collect_log_text_missing_file_uses_friendly_error(tmp_path):
         read_collect_log_text(str(tmp_path / "missing.log"))
 
     assert str(exc_info.value) == COLLECT_LOG_NOT_FOUND
+
+
+def test_collect_log_search_finds_single_and_multiple_results():
+    assert collect_search_matches("display interface\nRX power", "RX power") == [(18, 8)]
+    assert len(collect_search_matches("ERROR error Error", "error")) == 3
+    assert collect_search_matches("Description: To_信号系统", "信号") == [(16, 2)]
+
+
+def test_collect_log_dialog_search_count_highlight_and_ctrl_f():
+    QApplication.instance() or QApplication([])
+    dialog = CollectLogDialog("Log", "raw.log", "display interface\nERROR\nerror\nGigabitEthernet2/0/13")
+    dialog.show()
+    dialog.activateWindow()
+
+    dialog.search_input.setText("error")
+
+    assert dialog.count_label.text() == "1 / 2"
+    assert len(dialog.text_edit.extraSelections()) == 2
+    dialog.find_next()
+    assert dialog.count_label.text() == "2 / 2"
+    shortcut_keys = [shortcut.key().toString() for shortcut in dialog.findChildren(QShortcut)]
+    assert QKeySequence("Ctrl+F").toString() in shortcut_keys
+    dialog.focus_search()
+    QApplication.processEvents()
+    assert dialog.search_input.selectedText() == "error"
