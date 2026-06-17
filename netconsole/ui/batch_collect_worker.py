@@ -72,11 +72,19 @@ class BatchCollectWorker(QThread):
     device_finished = Signal(object)
     batch_finished = Signal(int, int)
 
-    def __init__(self, devices: list[Device], site_name: str, parent=None, max_workers: int = 20) -> None:
+    def __init__(
+        self,
+        devices: list[Device],
+        site_name: str,
+        concurrency: int = 20,
+        parent=None,
+        max_workers: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self.devices = list(devices)
         self.site_name = site_name
-        self.max_workers = max_workers
+        self.concurrency = int(max_workers if max_workers is not None else concurrency)
+        self.max_workers = self.concurrency
 
     def run(self) -> None:
         app_logger.log_info("BATCH_COLLECT_STARTED", f"count={len(self.devices)}")
@@ -99,6 +107,6 @@ class BatchCollectWorker(QThread):
                 )
             self.device_finished.emit(item)
 
-        run_batch_collect(self.devices, self.site_name, max_workers=self.max_workers, result_callback=on_result)
+        run_batch_collect(self.devices, self.site_name, max_workers=self.concurrency, result_callback=on_result)
         app_logger.log_info("BATCH_COLLECT_FINISHED", f"success={success_count} failed={failed_count}")
         self.batch_finished.emit(success_count, failed_count)

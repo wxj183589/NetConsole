@@ -314,6 +314,7 @@ def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path
         "Interfaces",
         "Optical Modules",
         "LLDP Neighbors",
+        "Trackside AP Business",
     ]
     assert any("Demo data is generated only when the demo database is first created" in text for text in labels)
 
@@ -329,6 +330,9 @@ def test_device_detail_dialog_has_refresh_button(tmp_path):
     )
 
     assert dialog.refresh_button.text() == "Refresh"
+    assert dialog.refresh_optical_button.text() == "Refresh Optical"
+    assert "Copy Collect Log" not in [button.text() for button in dialog.findChildren(QPushButton)]
+    assert "Export Collect Log" not in [button.text() for button in dialog.findChildren(QPushButton)]
 
 
 def test_optical_status_labels_and_colors_are_mapped():
@@ -337,7 +341,7 @@ def test_optical_status_labels_and_colors_are_mapped():
     assert i18n.t("optical.status.link_abnormal") == "链路异常"
     assert i18n.t("optical.status.no_light") == "无光"
     assert DeviceDetailDialog.optical_status_color("normal") == "#ecfdf5"
-    assert DeviceDetailDialog.optical_status_color("warning") == "#fef3c7"
+    assert DeviceDetailDialog.optical_status_color("warning") == "#fef9c3"
     assert DeviceDetailDialog.optical_status_color("alarm") == "#fee2e2"
     assert DeviceDetailDialog.optical_status_color("link_abnormal") == "#ffe4e6"
     assert DeviceDetailDialog.optical_status_color("no_light") == "#e5e7eb"

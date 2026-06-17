@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import re
 
+from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
+
 
 MAC_RE = re.compile(r"\b[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}\b", re.IGNORECASE)
 INTERFACE_RE = re.compile(r"\b(?:[A-Za-z]+Ethernet|GE|XGE|Ten-GigabitEthernet|GigabitEthernet)\S+\b", re.IGNORECASE)
 
 
-def parse_fit_ap_optical(lldp_output: str, transceiver_output: str) -> dict[str, object | None]:
+def parse_fit_ap_optical(
+    lldp_output: str,
+    transceiver_output: str,
+    transceiver_interface_output: str = "",
+    transceiver_manuinfo_output: str = "",
+) -> dict[str, object | None]:
     return {
         **parse_fit_ap_lldp(lldp_output),
-        **parse_fit_ap_transceiver(transceiver_output),
+        **parse_fit_ap_transceiver(transceiver_output, transceiver_interface_output, transceiver_manuinfo_output),
     }
 
 
@@ -23,11 +30,12 @@ def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
         if len(parts) >= 4:
             return {
                 "lldp_neighbor": parts[0],
+                "interface_name": parts[1],
                 "neighbor_interface": parts[3],
                 "neighbor_mac": _first_mac(stripped) or parts[2],
             }
 
-    result: dict[str, object | None] = {"lldp_neighbor": None, "neighbor_interface": None, "neighbor_mac": None}
+    result: dict[str, object | None] = {"lldp_neighbor": None, "interface_name": None, "neighbor_interface": None, "neighbor_mac": None}
     current_system = None
     for line in (output or "").splitlines():
         stripped = line.strip()
@@ -38,6 +46,8 @@ def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
             result["lldp_neighbor"] = current_system
         elif re.search(r"Port\s+ID|Neighbor\s+interface", stripped, re.IGNORECASE) and ":" in stripped:
             result["neighbor_interface"] = stripped.split(":", 1)[1].strip()
+        elif re.search(r"Local\s+interface", stripped, re.IGNORECASE) and ":" in stripped:
+            result["interface_name"] = stripped.split(":", 1)[1].strip()
         mac = _first_mac(stripped)
         if mac:
             result["neighbor_mac"] = mac
@@ -46,13 +56,37 @@ def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
     return result
 
 
-def parse_fit_ap_transceiver(output: str) -> dict[str, object | None]:
+def parse_fit_ap_transceiver(output: str, interface_output: str = "", manuinfo_output: str = "") -> dict[str, object | None]:
     result: dict[str, object | None] = {
         "interface_name": None,
         "temperature": None,
         "tx_power": None,
         "rx_power": None,
+        "rx_low_alarm": None,
+        "rx_high_alarm": None,
+        "tx_low_alarm": None,
+        "tx_high_alarm": None,
+        "rx_low_warning": None,
+        "rx_high_warning": None,
+        "tx_low_warning": None,
+        "tx_high_warning": None,
+        "module_model": None,
+        "module_serial_number": None,
+        "module_vendor": None,
+        "wavelength": None,
+        "transmission_distance": None,
+        "connector_type": None,
     }
+    merged = merge_transceiver_data(
+        parse_transceiver_diagnosis(output),
+        parse_transceivers(interface_output),
+        parse_transceiver_manuinfo(manuinfo_output),
+    )
+    if merged:
+        result.update({key: value for key, value in merged[0].items() if value is not None})
+        _normalize_numeric_fields(result)
+        return result
+
     lines = [line.rstrip() for line in (output or "").splitlines()]
     for line in lines:
         iface_match = re.search(r"^([A-Za-z][A-Za-z-]*Ethernet\S+)\s+transceiver diagnostic information", line, re.IGNORECASE)
@@ -77,6 +111,7 @@ def parse_fit_ap_transceiver(output: str) -> dict[str, object | None]:
                     result["rx_power"] = values[3]
                     result["tx_power"] = values[4]
                     break
+    _normalize_numeric_fields(result)
     return result
 
 
@@ -99,3 +134,25 @@ def _parse_inline_value(line: str) -> dict[str, str | None] | None:
 def _first_mac(text: str) -> str | None:
     match = MAC_RE.search(text or "")
     return match.group(0) if match else None
+
+
+def _normalize_numeric_fields(result: dict[str, object | None]) -> None:
+    for field in (
+        "temperature",
+        "tx_power",
+        "rx_power",
+        "rx_low_alarm",
+        "rx_high_alarm",
+        "tx_low_alarm",
+        "tx_high_alarm",
+        "rx_low_warning",
+        "rx_high_warning",
+        "tx_low_warning",
+        "tx_high_warning",
+    ):
+        value = result.get(field)
+        if value in (None, ""):
+            continue
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+        if match:
+            result[field] = match.group(0)

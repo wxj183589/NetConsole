@@ -176,7 +176,7 @@ class DeviceManagementPage(QWidget):
         for row, device in enumerate(devices):
             dialog.mark_waiting(row, str(device.name or ""), str(device.ip_address or ""))
         self.batch_connection_test_dialog = dialog
-        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, self, max_workers=int(dialog.concurrency_combo.currentData() or 20))
+        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, concurrency=int(dialog.concurrency_combo.currentData() or 20), parent=self)
 
         def on_device_finished(item) -> None:
             row = next(
@@ -416,7 +416,7 @@ class DeviceManagementPage(QWidget):
             dialog.running = max(0, dialog.running - 1)
         dialog.update_summary()
         self.batch_collect_dialog = dialog
-        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, self, max_workers=int(dialog.concurrency_combo.currentData() or 20))
+        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, concurrency=int(dialog.concurrency_combo.currentData() or 20), parent=self)
 
         def on_device_finished(item) -> None:
             row = next(

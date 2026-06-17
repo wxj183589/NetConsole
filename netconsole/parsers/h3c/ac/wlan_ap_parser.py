@@ -32,41 +32,11 @@ def parse_wlan_ap_list(output: str) -> list[dict[str, object | None]]:
     rows: list[dict[str, object | None]] = []
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("-") or stripped.lower().startswith(("total ", "ap name", "apname")):
+        if _is_noise_line(stripped):
             continue
-        compact = stripped.split()
-        if len(compact) >= 5 and _looks_like_apid(compact[1]) and _looks_like_state(compact[2]):
-            online_time = compact[6] if len(compact) >= 9 and compact[-2].lower() in {"fit", "fat"} else " ".join(compact[6:]) if len(compact) > 6 else None
-            rows.append(
-                {
-                    "ap_name": compact[0],
-                    "apid": compact[1],
-                    "state": compact[2],
-                    "state_raw": compact[2],
-                    "state_display": map_fit_ap_state(compact[2]),
-                    "model": compact[3],
-                    "serial_number": compact[4],
-                    "group_name": compact[5] if len(compact) > 5 else None,
-                    "online_time": online_time,
-                }
-            )
-            continue
-        parts = re.split(r"\s{2,}|\t+", stripped)
-        if len(parts) >= 5 and _looks_like_apid(parts[1]) and _looks_like_state(parts[2]):
-            rows.append(
-                {
-                    "ap_name": parts[0],
-                    "apid": parts[1],
-                    "state": parts[2],
-                    "state_raw": parts[2],
-                    "state_display": map_fit_ap_state(parts[2]),
-                    "model": parts[3],
-                    "serial_number": parts[4],
-                    "group_name": parts[5] if len(parts) > 5 else None,
-                    "online_time": parts[6] if len(parts) > 6 else None,
-                }
-            )
-            continue
+        parsed = _parse_ap_row(stripped)
+        if parsed:
+            rows.append(parsed)
     return rows
 
 
@@ -84,9 +54,76 @@ def _percent_after(output: str, pattern: str) -> str | None:
 
 
 def _looks_like_state(value: str) -> bool:
-    states = {part for part in re.split(r"[/,]", value.upper()) if part}
-    return bool(states) and states <= {"R", "I", "M", "B", "RUN", "ONLINE", "OFFLINE", "IDLE"}
+    text = value.strip().upper()
+    if text in {"I", "J", "JA", "IL", "C", "DC", "R", "R/M", "R/B", "RUN", "ONLINE", "OFFLINE", "IDLE"}:
+        return True
+    states = {part for part in re.split(r"[/,]", text) if part}
+    return bool(states) and states <= {"R", "I", "J", "JA", "IL", "C", "DC", "M", "B", "RUN", "ONLINE", "OFFLINE", "IDLE"}
 
 
 def _looks_like_apid(value: str) -> bool:
     return value.isdigit()
+
+
+def _is_noise_line(stripped: str) -> bool:
+    lower = stripped.lower()
+    return (
+        not stripped
+        or stripped.startswith(("-", "="))
+        or lower.startswith(("total ", "maximum ", "remaining ", "server ", "sync ", "state :", "online time :", "ap name", "apname"))
+        or lower.startswith(("c = ", "i = "))
+        or stripped.startswith("<")
+        or stripped in {"(MHz) (%)   (dBm)"}
+    )
+
+
+def _parse_ap_row(stripped: str) -> dict[str, object | None] | None:
+    tokens = stripped.split()
+    if len(tokens) < 5:
+        return None
+    apid_index = next(
+        (
+            index
+            for index in range(1, len(tokens) - 3)
+            if _looks_like_apid(tokens[index]) and _looks_like_state(tokens[index + 1])
+        ),
+        -1,
+    )
+    if apid_index < 1:
+        return None
+    ap_name = " ".join(tokens[:apid_index]).strip()
+    state = tokens[apid_index + 1]
+    model_index = apid_index + 2
+    serial_index = apid_index + 3
+    if not ap_name or serial_index >= len(tokens):
+        return None
+    tail = tokens[serial_index + 1 :]
+    group_name, online_time = _parse_group_and_online_time(tail)
+    return {
+        "ap_name": ap_name,
+        "apid": tokens[apid_index],
+        "state": state,
+        "state_raw": state,
+        "state_display": map_fit_ap_state(state),
+        "model": tokens[model_index],
+        "serial_number": tokens[serial_index],
+        "group_name": group_name,
+        "online_time": online_time,
+        "raw_line": stripped,
+    }
+
+
+def _parse_group_and_online_time(tail: list[str]) -> tuple[str | None, str | None]:
+    if not tail:
+        return None, None
+    time_index = next((index for index, token in enumerate(tail) if _looks_like_online_time(token)), -1)
+    if time_index >= 0:
+        group = " ".join(tail[:time_index]).strip() or None
+        return group, tail[time_index]
+    if len(tail) >= 2 and tail[-2].isdigit() and tail[-1].lower() in {"days", "day", "hours", "hour", "mins", "minutes", "seconds"}:
+        return " ".join(tail[:-2]).strip() or None, " ".join(tail[-2:])
+    return tail[0], " ".join(tail[1:]).strip() or None
+
+
+def _looks_like_online_time(value: str) -> bool:
+    return bool(re.fullmatch(r"\d+(?::\d+){2,3}", value) or re.fullmatch(r"\d+[dhmsDHMS]", value))

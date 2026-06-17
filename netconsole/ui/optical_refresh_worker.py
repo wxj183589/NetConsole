@@ -3,13 +3,13 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.models.device import Device
-from netconsole.services.h3c_collect_service import collect_h3c_device_details
+from netconsole.services.h3c_optical_refresh_service import refresh_h3c_device_optical
 
 
-class DeviceCollectThread(QThread):
-    collect_started = Signal()
-    collect_finished = Signal(object)
-    collect_failed = Signal(str)
+class OpticalRefreshThread(QThread):
+    refresh_started = Signal()
+    refresh_finished = Signal(object)
+    refresh_failed = Signal(str)
 
     def __init__(self, device: Device, site_name: str, concurrency: int = 20, parent=None) -> None:
         super().__init__(parent)
@@ -18,10 +18,10 @@ class DeviceCollectThread(QThread):
         self.concurrency = concurrency
 
     def run(self) -> None:
-        self.collect_started.emit()
+        self.refresh_started.emit()
         try:
-            result = collect_h3c_device_details(self.device, self.site_name)
+            result = refresh_h3c_device_optical(self.device, self.site_name)
         except Exception as exc:
-            self.collect_failed.emit(str(exc))
+            self.refresh_failed.emit(str(exc))
             return
-        self.collect_finished.emit(result)
+        self.refresh_finished.emit(result)

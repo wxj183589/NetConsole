@@ -71,10 +71,19 @@ class BatchConnectionTestWorker(QThread):
     device_finished = Signal(object)
     batch_finished = Signal(int, int)
 
-    def __init__(self, devices: list[Device], parent=None, max_workers: int = 20) -> None:
+    def __init__(
+        self,
+        devices: list[Device],
+        site_name: str | None = None,
+        concurrency: int = 20,
+        parent=None,
+        max_workers: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self.devices = list(devices)
-        self.max_workers = max_workers
+        self.site_name = site_name
+        self.concurrency = int(max_workers if max_workers is not None else concurrency)
+        self.max_workers = self.concurrency
 
     def run(self) -> None:
         app_logger.log_info("BATCH_TEST_CONNECTION_STARTED", f"count={len(self.devices)}")
@@ -91,6 +100,6 @@ class BatchConnectionTestWorker(QThread):
                 app_logger.log_error("BATCH_TEST_CONNECTION_DEVICE_FAILED", f"device={item.device_name} ip={item.ip_address} protocol={item.protocol} error={item.error_message or ''}")
             self.device_finished.emit(item)
 
-        run_batch_connection_tests(self.devices, max_workers=self.max_workers, result_callback=on_result)
+        run_batch_connection_tests(self.devices, max_workers=self.concurrency, result_callback=on_result)
         app_logger.log_info("BATCH_TEST_CONNECTION_FINISHED", f"success={success_count} failed={failed_count}")
         self.batch_finished.emit(success_count, failed_count)

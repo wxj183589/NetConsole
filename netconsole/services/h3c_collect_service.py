@@ -15,11 +15,11 @@ from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
-from netconsole.parsers.h3c.transceiver_parser import evaluate_optical_status, merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
+from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -162,16 +162,20 @@ def _run_command(connection, command: str, device: Device, collect_run_uuid: str
         return CommandResult(command=command, success=False, error_message=reason, started_at=started_at, ended_at=_now())
     app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
-        if hasattr(connection, "send_command_timing"):
-            output = connection.send_command_timing(command, read_timeout=120, strip_prompt=False, strip_command=False)
-        else:
-            output = connection.send_command(command, read_timeout=30)
+        output = safe_send_command(
+            connection,
+            command,
+            read_timeout=120,
+            strip_prompt=False,
+            strip_command=False,
+            use_timing=True,
+        )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         app_logger.log_error("COLLECT_COMMAND_FAILED", _detail(device, collect_run_uuid, command=command, error=message))
         return CommandResult(command=command, success=False, error_message=message, started_at=started_at, ended_at=_now())
     app_logger.log_info("COLLECT_COMMAND_SUCCESS", _detail(device, collect_run_uuid, command=command))
-    return CommandResult(command=command, success=True, output=clean_h3c_device_text(str(output or "")), started_at=started_at, ended_at=_now())
+    return CommandResult(command=command, success=True, output=clean_h3c_device_text(output), started_at=started_at, ended_at=_now())
 
 
 def _parse_and_write(
@@ -224,9 +228,6 @@ def _parse_and_write(
                 parse_transceiver_diagnosis(outputs.get("display transceiver diagnosis interface", "")),
             )
             interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces_for_optical}
-            for module in modules:
-                status = evaluate_optical_status(module, interfaces_by_name.get(str(module.get("interface_name") or "")))
-                module["status"] = status["status"]
             modules = [_with_metadata(item, metadata) for item in modules]
             repository.replace_optical_modules(str(device.device_uuid), modules)
             optical_modules_updated = len(modules)

@@ -62,6 +62,35 @@ def test_command_guard_allows_display_boot_loader_but_rejects_config_boot_loader
     assert not is_command_allowed("boot-loader update all", "device_collect")
 
 
+def test_optical_refresh_context_only_allows_optical_refresh_commands():
+    assert is_command_allowed("screen-length disable", "optical_refresh")
+    assert is_command_allowed("display interface", "optical_refresh")
+    assert is_command_allowed("display transceiver diagnosis interface", "optical_refresh")
+    assert not is_command_allowed("display version", "optical_refresh")
+    for command in ("system-view", "undo lldp global enable", "shutdown", "reboot"):
+        assert not is_command_allowed(command, "optical_refresh")
+
+
+def test_ac_enable_ap_console_allows_only_fixed_sequence_commands():
+    for command in (
+        "screen-length disable",
+        "display wlan ap all address",
+        "system-view",
+        "probe",
+        "wlan ap-execute all exec-console enable",
+        "return",
+        "quit",
+    ):
+        assert is_command_allowed(command, "ac_enable_ap_console")
+
+    for context in ("device_collect", "ac_collect", "fit_ap_collect", "optical_refresh"):
+        assert not is_command_allowed("system-view", context)
+        assert not is_command_allowed("probe", context)
+
+    for command in ("undo lldp global enable", "shutdown", "reboot", "save"):
+        assert not is_command_allowed(command, "ac_enable_ap_console")
+
+
 def test_command_guard_logs_rejected_command(tmp_path):
     app_logger.configure_path_resolver(PathResolver(tmp_path))
 

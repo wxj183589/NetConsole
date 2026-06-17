@@ -116,36 +116,6 @@ def merge_transceiver_data(*sources: list[dict[str, object | None]]) -> list[dic
     return list(merged.values())
 
 
-def evaluate_optical_status(optical: dict[str, object | None], interface: dict[str, object | None] | None) -> dict[str, str | None]:
-    interface_name = str(optical.get("interface_name") or "")
-    description = str((interface or {}).get("description") or "")
-    if "OLT" in interface_name.upper() or "ONU" in interface_name.upper() or "OLT" in description.upper() or "ONU" in description.upper():
-        return {"status": "skipped", "reason": "OLT/ONU interface skipped"}
-    if interface and str(interface.get("port_status") or "").casefold() == "shutdown":
-        return {"status": "skipped", "reason": "interface shutdown"}
-
-    rx_power = _to_float(optical.get("rx_power"))
-    tx_power = _to_float(optical.get("tx_power"))
-    if rx_power is not None and rx_power <= -35:
-        return {"status": "no_light", "reason": "RX power is extremely low"}
-    if rx_power is not None and rx_power > -35 and interface and str(interface.get("link_status") or "").upper() != "UP":
-        return {"status": "link_abnormal", "reason": "RX power exists but interface is not UP"}
-    rx_low = _to_float(optical.get("rx_low_alarm"))
-    rx_high = _to_float(optical.get("rx_high_alarm"))
-    tx_low = _to_float(optical.get("tx_low_alarm"))
-    tx_high = _to_float(optical.get("tx_high_alarm"))
-    if None in {rx_power, tx_power, rx_low, rx_high, tx_low, tx_high}:
-        return {"status": "unknown", "reason": "missing optical power or threshold"}
-
-    if rx_power < rx_low or rx_power > rx_high:
-        return {"status": "alarm", "reason": "RX power out of alarm range"}
-    if tx_power < tx_low or tx_power > tx_high:
-        return {"status": "alarm", "reason": "TX power out of alarm range"}
-    if rx_low <= rx_power <= rx_low + 3:
-        return {"status": "warning", "reason": "RX power near lower limit"}
-    return {"status": "normal", "reason": None}
-
-
 def _set_if_match(
     target: dict[str, object | None],
     field: str,

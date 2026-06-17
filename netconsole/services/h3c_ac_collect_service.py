@@ -22,7 +22,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.h3c_collect_service import CommandResult
-from netconsole.services.neighbor_matcher import find_neighbor_rx_power, match_neighbor_device
+from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
 
 
@@ -38,6 +38,8 @@ RESOURCE_COMMANDS = (
 )
 
 ENABLE_FIT_AP_CONSOLE_COMMANDS = (
+    "screen-length disable",
+    "display wlan ap all address",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",
@@ -46,8 +48,11 @@ ENABLE_FIT_AP_CONSOLE_COMMANDS = (
 )
 
 FIT_AP_OPTICAL_COMMANDS = (
+    "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
+    "display transceiver interface",
+    "display transceiver manuinfo interface",
 )
 
 
@@ -105,6 +110,13 @@ def collect_h3c_ac_resources(
     app_logger.log_info("AC_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     app_logger.log_info("REAL_DEVICE_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     command_results: list[CommandResult] = []
+    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+        message = "AC resource collection only supports H3C AC devices"
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, message, command_results)
+
     target = choose_connection_target(ac_device)
     if target is None:
         message = "未启用连接方式"
@@ -158,7 +170,7 @@ def collect_h3c_fit_ap_optical(
     site_name: str,
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
-    max_workers: int = 5,
+    max_workers: int = 200,
 ) -> FitApOpticalCollectResult:
     paths = paths or PathResolver()
     repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
@@ -181,17 +193,22 @@ def collect_h3c_fit_ap_optical(
     )
     app_logger.log_info("FIT_AP_OPTICAL_STARTED", _detail(ac_device, collect_run_uuid))
     try:
+        app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_STARTED", _detail(ac_device, collect_run_uuid))
         enable_results = _enable_fit_ap_console(ac_device, collect_run_uuid)
         _write_raw_files(run_dir / f"{ac_device.device_uuid}.log", run_dir / f"{ac_device.device_uuid}_commands.jsonl", ac_device, collect_run_uuid, enable_results)
+        if any(not result.success for result in enable_results):
+            raise RuntimeError(_command_error_summary(enable_results) or "AC enable AP console failed")
+        app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_SUCCESS", _detail(ac_device, collect_run_uuid))
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
+        app_logger.log_error("FIT_AP_OPTICAL_AC_ENABLE_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
 
     resources = [row for row in repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid)) if row.get("ap_ip")]
     rows: list[dict[str, object | None]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, min(int(max_workers or 1), 1000))) as executor:
         futures = {
             executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
             for row in resources
@@ -199,6 +216,7 @@ def collect_h3c_fit_ap_optical(
         for future in as_completed(futures):
             rows.append(future.result())
     repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows)
+    app_logger.log_info("FIT_AP_OPTICAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
     failed = sum(1 for row in rows if row.get("status") != "success")
     status = "failed" if rows and failed == len(rows) else "partial_success" if failed else "success"
     if not rows:
@@ -289,7 +307,9 @@ def _collect_single_fit_ap_optical(
     collected_at = _now()
     base = {
         "ac_device_uuid": ac_device.device_uuid,
+        "ap_uuid": ap_row.get("ap_uuid"),
         "ap_name": ap_name,
+        "ap_mac": ap_row.get("ap_mac"),
         "ap_ip": ap_ip,
         "site": ap_row.get("site"),
         "collected_at": collected_at,
@@ -309,6 +329,7 @@ def _collect_single_fit_ap_optical(
     )
     command_results: list[CommandResult] = []
     connection = None
+    app_logger.log_info("FIT_AP_OPTICAL_AP_STARTED", _detail(ac_device, collect_run_uuid, ap=ap_name))
     try:
         target = choose_connection_target(temp_device)
         if target is None:
@@ -325,8 +346,14 @@ def _collect_single_fit_ap_optical(
         parsed = parse_fit_ap_optical(
             outputs.get("display lldp neighbor-information list", ""),
             outputs.get("display transceiver diagnosis interface", ""),
+            outputs.get("display transceiver interface", ""),
+            outputs.get("display transceiver manuinfo interface", ""),
         )
-        match = match_neighbor_device(
+        if _is_invalid_lldp_neighbor(parsed.get("lldp_neighbor")):
+            parsed["lldp_neighbor"] = None
+            parsed["neighbor_device_name"] = None
+        reverse_match = match_ap_from_device_lldp(site_name, ap_mac=str(ap_row.get("ap_mac") or ""), ap_name=ap_name, paths=paths)
+        match = reverse_match if reverse_match.device_uuid else match_neighbor_device(
             site_name,
             neighbor_mac=str(parsed.get("neighbor_mac") or ""),
             neighbor_sysname=str(parsed.get("lldp_neighbor") or ""),
@@ -334,17 +361,30 @@ def _collect_single_fit_ap_optical(
             paths=paths,
         )
         if match.device_uuid:
-            app_logger.log_info("FIT_AP_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
+            app_logger.log_info("FIT_AP_OPTICAL_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
         else:
-            app_logger.log_warning("FIT_AP_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
-        parsed["neighbor_device_name"] = match.device_name or parsed.get("lldp_neighbor")
-        parsed["neighbor_rx_power"] = find_neighbor_rx_power(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
+            app_logger.log_warning("FIT_AP_OPTICAL_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
+        if match.station:
+            base["site"] = match.station
+        if match.matched_by == "device_lldp":
+            parsed["neighbor_device_name"] = match.device_name
+            parsed["neighbor_interface"] = match.local_interface
+            parsed["interface_name"] = match.ap_interface or parsed.get("interface_name")
+        else:
+            parsed["neighbor_device_name"] = match.device_name or parsed.get("lldp_neighbor")
+        if _is_invalid_lldp_neighbor(parsed.get("neighbor_device_name")):
+            parsed["neighbor_device_name"] = None
+        neighbor_optical = find_neighbor_optical_module(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
+        parsed["neighbor_rx_power"] = str(neighbor_optical.get("rx_power")) if neighbor_optical and neighbor_optical.get("rx_power") else None
+        # optical_alarm_status is no longer stored — computed real-time by optical_severity_engine
         success = any(parsed.values()) and all(result.success for result in command_results)
-        return {**base, **parsed, "status": "success" if success else "failed", "error_message": None if success else _command_error_summary(command_results) or "no optical data parsed"}
+        status = "success" if success else "failed"
+        app_logger.log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else _command_error_summary(command_results) or "no optical data parsed"))
+        return {**base, **parsed, "status": status, "error_message": None if success else _command_error_summary(command_results) or "no optical data parsed"}
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), temp_device)
         _write_raw_files(raw_log_file, commands_file, temp_device, collect_run_uuid, command_results, fatal_error=message)
-        app_logger.log_error("FIT_AP_TELNET_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=message))
+        app_logger.log_error("FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=message))
         return {
             **base,
             "lldp_neighbor": None,
@@ -371,7 +411,13 @@ def _run_command(connection, command: str, device: Device, collect_run_uuid: str
         return CommandResult(command=command, success=False, error_message=reason)
     app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
-        output = connection.send_command(command, read_timeout=read_timeout)
+        output = netmiko_connection.safe_send_command(
+            connection,
+            command,
+            read_timeout=read_timeout,
+            use_timing=True,
+            encoding=netmiko_connection.encoding_for_vendor(device.device_vendor),
+        )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         return CommandResult(command=command, success=False, error_message=message)
@@ -438,6 +484,48 @@ def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str
 
 def _safe_filename(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_." else "_" for char in value)[:120] or "fit_ap"
+
+
+def _evaluate_neighbor_optical_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    if neighbor_optical:
+        return compute_optical_severity(
+            {
+                "switch_rx_power": neighbor_optical.get("rx_power"),
+                "switch_port_status": neighbor_optical.get("port_status"),
+                "alarm_low": neighbor_optical.get("rx_low_alarm"),
+                "alarm_high": neighbor_optical.get("rx_high_alarm"),
+                "warning_low": neighbor_optical.get("rx_low_warning"),
+            }
+        ).severity
+    return compute_optical_severity({"switch_rx_power": rx_power}).severity
+
+
+def _worse_optical_status(left: str, right: str) -> str:
+    from netconsole.core.optical_severity_engine import worse_optical_severity
+
+    return worse_optical_severity(left, right)
+
+
+def _to_float(value: object) -> float | None:
+    import re
+
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _is_invalid_lldp_neighbor(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    return any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr"))
 
 
 def _now() -> str:

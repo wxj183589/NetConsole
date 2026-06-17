@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTabWidget,
     QTableWidget,
@@ -24,8 +25,12 @@ from PySide6.QtWidgets import (
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
+from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, trackside_row_status
 from netconsole.services.h3c_collect_service import CollectDeviceResult
+from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
 from netconsole.ui.collect_worker import DeviceCollectThread
 from netconsole.ui.dialogs.history_data_dialog import (
     HistoryDataDialog,
@@ -33,7 +38,10 @@ from netconsole.ui.dialogs.history_data_dialog import (
     LLDP_HISTORY_COLUMNS,
     OPTICAL_HISTORY_COLUMNS,
 )
+from netconsole.ui.optical_refresh_worker import OpticalRefreshThread
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
 from netconsole.utils.text_encoding import read_text_with_fallback
 
@@ -95,7 +103,7 @@ OPTICAL_MODULE_COLUMNS = (
 
 OPTICAL_STATUS_COLORS = {
     "normal": "#ecfdf5",
-    "warning": "#fef3c7",
+    "warning": "#fef9c3",
     "alarm": "#fee2e2",
     "link_abnormal": "#ffe4e6",
     "no_light": "#e5e7eb",
@@ -123,6 +131,7 @@ class DeviceDetailDialog(QDialog):
         self.collect_thread: DeviceCollectThread | None = None
         self.history_dialogs: list[HistoryDataDialog] = []
         self.collect_log_dialogs: list[CollectLogDialog] = []
+        self.optical_refresh_thread: OpticalRefreshThread | None = None
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(False)
         self.setMinimumSize(720, 480)
@@ -131,24 +140,21 @@ class DeviceDetailDialog(QDialog):
         self.title_label = make_text_selectable(QLabel())
         self.always_on_top_button = QPushButton()
         self.refresh_button = QPushButton()
+        self.refresh_optical_button = QPushButton()
         self.view_collect_log_button = QPushButton()
-        self.copy_collect_log_button = QPushButton()
-        self.export_collect_log_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.refresh_button.clicked.connect(self.refresh_device_details)
+        self.refresh_optical_button.clicked.connect(self.refresh_device_optical)
         self.view_collect_log_button.clicked.connect(self.view_collect_log)
-        self.copy_collect_log_button.clicked.connect(self.copy_collect_log)
-        self.export_collect_log_button.clicked.connect(self.export_collect_log)
         self.tabs = QTabWidget()
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         header.addWidget(self.title_label)
         header.addStretch(1)
         header.addWidget(self.refresh_button)
+        header.addWidget(self.refresh_optical_button)
         header.addWidget(self.view_collect_log_button)
-        header.addWidget(self.copy_collect_log_button)
-        header.addWidget(self.export_collect_log_button)
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
@@ -160,9 +166,8 @@ class DeviceDetailDialog(QDialog):
         self.setWindowTitle(title)
         self.title_label.setText(title)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
+        self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
         self.view_collect_log_button.setText(self.i18n.t("details.view_collect_log"))
-        self.copy_collect_log_button.setText(self.i18n.t("details.copy_collect_log"))
-        self.export_collect_log_button.setText(self.i18n.t("details.export_collect_log"))
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
         self.reload_tabs()
 
@@ -172,13 +177,14 @@ class DeviceDetailDialog(QDialog):
         self.tabs.addTab(self._interfaces_tab(), self.i18n.t("details.interfaces"))
         self.tabs.addTab(self._optical_modules_tab(), self.i18n.t("details.optical_modules"))
         self.tabs.addTab(self._lldp_tab(), self.i18n.t("details.lldp"))
+        self.tabs.addTab(self._trackside_ap_business_tab(), self.i18n.t("trackside.title"))
 
     def refresh_device_details(self) -> None:
         if self.collect_thread is not None and self.collect_thread.isRunning():
             return
         self.refresh_button.setEnabled(False)
         self.refresh_button.setText(self.i18n.t("details.refreshing"))
-        self.collect_thread = DeviceCollectThread(self.device, self.site_name, self)
+        self.collect_thread = DeviceCollectThread(self.device, self.site_name, parent=self)
         self.collect_thread.collect_finished.connect(self._collect_finished)
         self.collect_thread.collect_failed.connect(self._collect_failed)
         self.collect_thread.finished.connect(self.collect_thread.deleteLater)
@@ -200,6 +206,34 @@ class DeviceDetailDialog(QDialog):
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
         QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=error_message))
+
+    def refresh_device_optical(self) -> None:
+        if self.optical_refresh_thread is not None and self.optical_refresh_thread.isRunning():
+            return
+        self.refresh_optical_button.setEnabled(False)
+        self.refresh_optical_button.setText(self.i18n.t("details.refreshing_optical"))
+        self.optical_refresh_thread = OpticalRefreshThread(self.device, self.site_name, parent=self)
+        self.optical_refresh_thread.refresh_finished.connect(self._optical_refresh_finished)
+        self.optical_refresh_thread.refresh_failed.connect(self._optical_refresh_failed)
+        self.optical_refresh_thread.finished.connect(self.optical_refresh_thread.deleteLater)
+        self.optical_refresh_thread.finished.connect(lambda: setattr(self, "optical_refresh_thread", None))
+        self.optical_refresh_thread.start()
+
+    def _optical_refresh_finished(self, result: OpticalRefreshResult) -> None:
+        self.refresh_optical_button.setEnabled(True)
+        self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
+        self.reload_tabs()
+        if result.success and result.error_message:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_partial"))
+        elif result.success:
+            QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_optical_done"))
+        else:
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=result.error_message or "unknown"))
+
+    def _optical_refresh_failed(self, error_message: str) -> None:
+        self.refresh_optical_button.setEnabled(True)
+        self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
+        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=error_message))
 
     def _overview_tab(self) -> QWidget:
         fact = self.repository.get_device_fact(str(self.device.device_uuid or ""))
@@ -234,26 +268,6 @@ class DeviceDetailDialog(QDialog):
         dialog.raise_()
         dialog.activateWindow()
 
-    def copy_collect_log(self) -> None:
-        try:
-            _path, text = self._load_collect_log()
-        except FileNotFoundError:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.collect_log_not_found"))
-            return
-        QApplication.clipboard().setText(text)
-        QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.collect_log_copied"))
-
-    def export_collect_log(self) -> None:
-        try:
-            _path, text = self._load_collect_log()
-        except FileNotFoundError:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.collect_log_not_found"))
-            return
-        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("details.export_collect_log"), f"{self.device.name}_collect_log.txt", "Text Files (*.txt);;All Files (*.*)")
-        if not path:
-            return
-        Path(path).write_text(text, encoding="utf-8")
-
     def _load_collect_log(self) -> tuple[Path, str]:
         raw_log_path = self.repository.get_latest_raw_log_path(str(self.device.device_uuid or ""))
         return read_collect_log_text(raw_log_path, PathResolver().get_site_root(self.site_name))
@@ -264,21 +278,59 @@ class DeviceDetailDialog(QDialog):
             return self._empty_tab("details.interfaces_note")
         optical_status_by_interface = {
             str(item.get("interface_name") or ""): str(item.get("status") or "")
-            for item in self.repository.list_optical_modules(str(self.device.device_uuid or ""))
+            for item in self._computed_optical_rows(self.repository.list_optical_modules(str(self.device.device_uuid or "")), rows)
         }
         return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows, "description", "interface", optical_status_by_interface)
 
     def _optical_modules_tab(self) -> QWidget:
-        rows = self.repository.list_optical_modules(str(self.device.device_uuid or ""))
+        device_uuid = str(self.device.device_uuid or "")
+        rows = self._computed_optical_rows(self.repository.list_optical_modules(device_uuid), self.repository.list_device_interfaces(device_uuid))
         if not rows:
             return self._empty_tab("details.optical_modules_note")
         return self._table_tab("details.optical_modules_note", OPTICAL_MODULE_COLUMNS, rows, "module_model", "optical")
+
+    def _computed_optical_rows(
+        self,
+        rows: list[dict[str, object | None]],
+        interfaces: list[dict[str, object | None]] | None = None,
+    ) -> list[dict[str, object | None]]:
+        interfaces_by_name = {str(row.get("interface_name") or ""): row for row in interfaces or []}
+        computed_rows: list[dict[str, object | None]] = []
+        for row in rows:
+            interface = interfaces_by_name.get(str(row.get("interface_name") or ""), {})
+            computed = dict(row)
+            computed["status"] = compute_switch_status(
+                switch_rx_power=row.get("rx_power"),
+                switch_port_status=row.get("port_status") or interface.get("link_status"),
+                alarm_low=row.get("rx_low_alarm"),
+                alarm_high=row.get("rx_high_alarm"),
+                warning_low=row.get("rx_low_warning"),
+            )
+            computed_rows.append(computed)
+        return computed_rows
 
     def _lldp_tab(self) -> QWidget:
         rows = self.repository.list_lldp_neighbors(str(self.device.device_uuid or ""))
         if not rows:
             return self._empty_tab("details.lldp_note")
         return self._table_tab("details.lldp_note", LLDP_COLUMNS, rows, "neighbor_sysname", "lldp")
+
+    def _trackside_ap_business_tab(self) -> QWidget:
+        device_uuid = str(self.device.device_uuid or "")
+        optical_modules = self.repository.list_optical_modules(device_uuid)
+        lookup = build_switch_data_lookup([self.device], {device_uuid: optical_modules})
+        rows = build_trackside_ap_business_rows(
+            [self.device],
+            {device_uuid: self.repository.list_device_interfaces(device_uuid)},
+            {device_uuid: optical_modules},
+            AcRepository(self.repository.database).list_all_fit_ap_optical(),
+            {device_uuid: self.repository.list_lldp_neighbors(device_uuid)},
+            AcRepository(self.repository.database).list_all_fit_ap_resources_with_metadata(),
+            lookup,
+        )
+        if not rows:
+            return self._empty_tab("trackside.note")
+        return self._table_tab("trackside.note", TRACKSIDE_AP_DEVICE_COLUMNS, rows, "description", "trackside")
 
     def _table_tab(
         self,
@@ -289,25 +341,49 @@ class DeviceDetailDialog(QDialog):
         history_kind: str,
         optical_status_by_interface: dict[str, str] | None = None,
     ) -> QWidget:
-        table = QTableWidget(len(rows), len(columns))
+        table = QTableWidget(0, len(columns))
         configure_readonly_table(table)
-        attach_table_context_menu(table, self.i18n.language, history_callback=lambda row, kind=history_kind, data=rows: self.open_history_data(kind, data[row]))
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
-        for row_index, row in enumerate(rows):
-            row_status = str(row.get("status") or "")
-            if history_kind == "interface":
-                row_status = (optical_status_by_interface or {}).get(str(row.get("interface_name") or ""), "")
-            for column_index, (_label_key, field) in enumerate(columns):
-                item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
-                item.setTextAlignment(Qt.AlignCenter)
-                self._apply_status_background(item, history_kind, row_status)
-                table.setItem(row_index, column_index, item)
+        page_state = {"page": 1, "page_size": DEFAULT_PAGE_SIZE, "visible_rows": []}
+        pagination = PaginationWidget(self.i18n)
+
+        def render() -> None:
+            visible_rows, state = paginate_rows(rows, int(page_state["page_size"]), int(page_state["page"]))
+            page_state["page"] = state.current_page
+            page_state["visible_rows"] = visible_rows
+            pagination.set_state(state)
+            table.setUpdatesEnabled(False)
+            table.setSortingEnabled(False)
+            table.setRowCount(len(visible_rows))
+            for row_index, row in enumerate(visible_rows):
+                row_status = str(row.get("status") or "")
+                if history_kind == "interface":
+                    row_status = (optical_status_by_interface or {}).get(str(row.get("interface_name") or ""), "")
+                elif history_kind == "trackside":
+                    row_status = trackside_row_status(row)
+                for column_index, (_label_key, field) in enumerate(columns):
+                    item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self._apply_status_background(item, history_kind, row_status)
+                    table.setItem(row_index, column_index, item)
+            table.setSortingEnabled(False)
+            table.setUpdatesEnabled(True)
+            auto_resize_table_columns(
+                table,
+                stretch_columns={stretch_index} if stretch_index is not None else set(),
+                column_min_widths=_column_min_widths(columns),
+            )
+
+        def open_paged_history(row: int, kind=history_kind) -> None:
+            visible_rows = page_state["visible_rows"]
+            if 0 <= row < len(visible_rows):
+                self.open_history_data(kind, visible_rows[row])
+
+        attach_table_context_menu(table, self.i18n.language, history_callback=open_paged_history, include_history=history_kind in {"interface", "optical", "lldp"})
+        pagination.pageChanged.connect(lambda page: (page_state.__setitem__("page", page), render()))
+        pagination.pageSizeChanged.connect(lambda size: (page_state.__setitem__("page_size", size), page_state.__setitem__("page", 1), render()))
         stretch_index = _column_index(columns, stretch_field)
-        auto_resize_table_columns(
-            table,
-            stretch_columns={stretch_index} if stretch_index is not None else set(),
-            column_min_widths=_column_min_widths(columns),
-        )
+        render()
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.addWidget(self._note_label(note_key))
@@ -316,10 +392,11 @@ class DeviceDetailDialog(QDialog):
         elif history_kind == "optical":
             layout.addWidget(self._note_label("details.optical_color_legend"))
         layout.addWidget(table)
+        layout.addWidget(pagination)
         return wrapper
 
     def _format_table_value(self, field: str, value: object | None) -> str:
-        if field == "status" and value in OPTICAL_STATUS_VALUES:
+        if field in {"status", "switch_optical_status", "ap_optical_status"} and value in OPTICAL_STATUS_VALUES:
             return self.i18n.t(f"optical.status.{value}")
         return str(value or "")
 
@@ -337,6 +414,8 @@ class DeviceDetailDialog(QDialog):
             color_value = DeviceDetailDialog.optical_status_color(status)
         elif history_kind == "interface":
             color_value = DeviceDetailDialog.interface_row_status_color(status)
+        elif history_kind == "trackside":
+            color_value = DeviceDetailDialog.optical_status_color(status)
         else:
             return
         if color_value is not None:
@@ -417,17 +496,135 @@ class DeviceDetailDialog(QDialog):
 class CollectLogDialog(QDialog):
     def __init__(self, title: str, raw_log_path: str, text: str, parent=None) -> None:
         super().__init__(parent, Qt.Window)
+        self.matches: list[tuple[int, int]] = []
+        self.current_match_index = -1
+        self._plain_text = text
+        self._folded_text = text.casefold()
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(title)
         self.resize(900, 640)
         self.path_label = make_text_selectable(QLabel(raw_log_path))
         self.path_label.setWordWrap(True)
+        self.copy_button = QPushButton("Copy Log")
+        self.export_button = QPushButton("Export Log")
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search")
+        self.previous_button = QPushButton("Previous")
+        self.next_button = QPushButton("Next")
+        self.clear_button = QPushButton("Clear")
+        self.close_button = QPushButton("Close")
+        self.count_label = make_text_selectable(QLabel("0 / 0"))
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setPlainText(text)
+        self.copy_button.clicked.connect(self.copy_log)
+        self.export_button.clicked.connect(self.export_log)
+        self.search_input.textChanged.connect(self.update_search)
+        self.previous_button.clicked.connect(self.find_previous)
+        self.next_button.clicked.connect(self.find_next)
+        self.clear_button.clicked.connect(self.clear_search)
+        self.close_button.clicked.connect(self.close)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.focus_search)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(self.copy_button)
+        toolbar.addWidget(self.export_button)
+        toolbar.addWidget(self.search_input, 1)
+        toolbar.addWidget(self.previous_button)
+        toolbar.addWidget(self.next_button)
+        toolbar.addWidget(self.clear_button)
+        toolbar.addWidget(self.count_label)
+        toolbar.addWidget(self.close_button)
         layout = QVBoxLayout(self)
         layout.addWidget(self.path_label)
+        layout.addLayout(toolbar)
         layout.addWidget(self.text_edit, 1)
+
+    def copy_log(self) -> None:
+        QApplication.clipboard().setText(self.text_edit.toPlainText())
+
+    def export_log(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, self.windowTitle(), "collect_log.txt", "Text Files (*.txt);;All Files (*.*)")
+        if path:
+            Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
+
+    def focus_search(self) -> None:
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+
+    def update_search(self) -> None:
+        query = self.search_input.text()
+        self.matches = collect_search_matches(self._plain_text, query, self._folded_text)
+        self.current_match_index = 0 if self.matches else -1
+        self._apply_search_highlights()
+        self._select_current_match()
+        self._update_count_label()
+
+    def find_next(self) -> None:
+        if not self.matches:
+            return
+        self.current_match_index = (self.current_match_index + 1) % len(self.matches)
+        self._apply_search_highlights()
+        self._select_current_match()
+        self._update_count_label()
+
+    def find_previous(self) -> None:
+        if not self.matches:
+            return
+        self.current_match_index = (self.current_match_index - 1) % len(self.matches)
+        self._apply_search_highlights()
+        self._select_current_match()
+        self._update_count_label()
+
+    def clear_search(self) -> None:
+        self.search_input.clear()
+        self.matches = []
+        self.current_match_index = -1
+        self.text_edit.setExtraSelections([])
+        self._update_count_label()
+
+    def _apply_search_highlights(self) -> None:
+        selections = []
+        for index, (start, length) in enumerate(self.matches):
+            cursor = QTextCursor(self.text_edit.document())
+            cursor.setPosition(start)
+            cursor.setPosition(start + length, QTextCursor.KeepAnchor)
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            fmt = QTextCharFormat()
+            fmt.setBackground(QColor("#facc15" if index != self.current_match_index else "#fb923c"))
+            selection.format = fmt
+            selections.append(selection)
+        self.text_edit.setExtraSelections(selections)
+
+    def _select_current_match(self) -> None:
+        if self.current_match_index < 0:
+            return
+        start, length = self.matches[self.current_match_index]
+        cursor = self.text_edit.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(start + length, QTextCursor.KeepAnchor)
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.ensureCursorVisible()
+
+    def _update_count_label(self) -> None:
+        current = self.current_match_index + 1 if self.current_match_index >= 0 else 0
+        self.count_label.setText(f"{current} / {len(self.matches)}")
+
+
+def collect_search_matches(text: str, query: str, folded_text: str | None = None) -> list[tuple[int, int]]:
+    if not query:
+        return []
+    haystack = folded_text if folded_text is not None else text.casefold()
+    needle = query.casefold()
+    matches: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        index = haystack.find(needle, start)
+        if index < 0:
+            break
+        matches.append((index, len(query)))
+        start = index + max(1, len(query))
+    return matches
 
 
 def read_collect_log_text(raw_log_path: str | None, site_root: Path | None = None) -> tuple[Path, str]:

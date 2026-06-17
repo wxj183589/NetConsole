@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from netconsole.models.device import Device
 from netconsole.services import netmiko_connection
-from netconsole.services.netmiko_connection import choose_connection_target, extract_sysname_from_prompt, sanitize_sensitive_text, test_device_connection
+from netconsole.services.netmiko_connection import (
+    H3C_DEFAULT_ENCODING,
+    choose_connection_target,
+    encoding_for_vendor,
+    extract_sysname_from_prompt,
+    safe_send_command,
+    sanitize_sensitive_text,
+    test_device_connection,
+)
 
 
 def test_extract_sysname_from_angle_prompt():
@@ -18,6 +26,21 @@ def test_extract_sysname_from_square_prompt():
 def test_extract_sysname_from_invalid_prompt_returns_none():
     assert extract_sysname_from_prompt("") is None
     assert extract_sysname_from_prompt("invalid") is None
+
+
+def test_h3c_encoding_policy_defaults_to_gb18030():
+    assert H3C_DEFAULT_ENCODING == "gb18030"
+    assert encoding_for_vendor("H3C") == "gb18030"
+
+
+def test_safe_send_command_decodes_h3c_gbk_output_to_unicode():
+    class FakeConnection:
+        def send_command(self, command, read_timeout=None):
+            return "Description: To_信号系统".encode("gbk")
+
+    output = safe_send_command(FakeConnection(), "display interface")
+
+    assert "Description: To_信号系统" in output
 
 
 def test_ssh_enabled_prefers_ssh():
