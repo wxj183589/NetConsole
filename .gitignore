@@ -35,6 +35,10 @@ data/sites/*/reports/*
 data/sites/*/backups/*
 data/sites/*/tasks/*
 data/sites/*/metrics/*
+data/config/*
+data/logs/*
+data/config/
+data/logs/
 
 # Local config and secrets
 *.local

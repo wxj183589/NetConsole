@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import release
+from project import release
 from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
