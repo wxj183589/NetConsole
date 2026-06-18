@@ -13,7 +13,6 @@ set "BUILD_ROOT=%PROJECT_ROOT%\build"
 set "DIST_ROOT=%PROJECT_ROOT%\dist"
 set "SPEC_ROOT=%PROJECT_ROOT%\spec"
 set "RELEASE_ROOT=%PROJECT_ROOT%\release"
-set "RUNTIME_ROOT=%BUILD_ROOT%\runtime"
 
 echo ==============================
 echo NetConsole Build System
@@ -54,45 +53,16 @@ if "%APP_VERSION%"=="" goto failed
 
 echo [6/8] PyInstaller build
 if not exist "%PROJECT_ROOT%" mkdir "%PROJECT_ROOT%"
-if exist "%RUNTIME_ROOT%" rmdir /S /Q "%RUNTIME_ROOT%"
-mkdir "%RUNTIME_ROOT%"
-robocopy "%ROOT%\netconsole" "%RUNTIME_ROOT%\netconsole" /E /XD docs tests project __pycache__ /XF *.pyc *.pyo >nul
-if errorlevel 8 goto failed
+"%PYTHON_EXE%" clean_build_spec.py --prepare --write-spec
+if errorlevel 1 goto failed
 cd /d "%PROJECT_ROOT%"
 
-"%PYTHON_EXE%" -m PyInstaller ^
-  --noconfirm ^
-  --onedir ^
-  --windowed ^
-  --name NetConsole ^
-  --icon "%ROOT%\netconsole\ui\icons\love.ico" ^
-  --version-file "%ROOT%\project\version_info.txt" ^
-  --paths "%ROOT%" ^
-  --distpath "%DIST_ROOT%" ^
-  --workpath "%BUILD_ROOT%" ^
-  --specpath "%SPEC_ROOT%" ^
-  --contents-directory "_internal" ^
-  --exclude-module tests ^
-  --exclude-module docs ^
-  --exclude-module project ^
-  --exclude-module __pycache__ ^
-  "%PROJECT_ROOT%\main.py"
-
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --distpath "%DIST_ROOT%" --workpath "%BUILD_ROOT%" "%SPEC_ROOT%\NetConsole.spec"
 if errorlevel 1 goto failed
-robocopy "%RUNTIME_ROOT%\netconsole" "%DIST_ROOT%\NetConsole\netconsole" /E /XD docs tests project __pycache__ /XF *.pyc *.pyo >nul
-if errorlevel 8 goto failed
 
 echo [7/8] Verify clean dist
 cd /d "%ROOT%"
-if exist "%DIST_ROOT%\NetConsole\tests" goto failed
-if exist "%DIST_ROOT%\NetConsole\docs" goto failed
-if exist "%DIST_ROOT%\NetConsole\project" goto failed
-if not exist "%DIST_ROOT%\NetConsole\netconsole" goto failed
-if exist "%DIST_ROOT%\NetConsole\_internal\netconsole" goto failed
-if exist "%DIST_ROOT%\NetConsole\netconsole\docs" goto failed
-if exist "%DIST_ROOT%\NetConsole\netconsole\tests" goto failed
-if exist "%DIST_ROOT%\NetConsole\netconsole\project" goto failed
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$allowed = @('NetConsole.exe', '_internal', 'netconsole'); $unexpected = Get-ChildItem -LiteralPath '%DIST_ROOT%\NetConsole' -Force | Where-Object { $allowed -notcontains $_.Name }; if ($unexpected) { $unexpected | ForEach-Object { Write-Host ('Unexpected dist item: ' + $_.FullName) }; exit 1 }"
+"%PYTHON_EXE%" clean_build_spec.py --finalize
 if errorlevel 1 goto failed
 
 echo [8/8] Create release zip

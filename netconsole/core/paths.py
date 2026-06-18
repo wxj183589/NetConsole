@@ -14,6 +14,10 @@ def _default_app_root() -> Path:
     return Path.cwd().resolve()
 
 
+def _is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
 @dataclass(frozen=True)
 class PathResolver:
     app_root: Path | None = None
@@ -105,19 +109,23 @@ class PathResolver:
         return site_path
 
     def ensure_project_dirs(self) -> None:
-        for path in (
-            self.docs_dir,
+        runtime_paths = (
             self.data_dir,
             self.config_dir,
-            self.tests_dir,
-            self.project_dir,
             self.sites_dir,
             self.logs_dir,
+        )
+        development_paths = (
+            self.docs_dir,
+            self.tests_dir,
+            self.project_dir,
             self.build_dir,
             self.dist_dir,
             self.scripts_dir,
             self.resources_dir,
             self.icons_dir,
             self.templates_dir,
-        ):
+        )
+        paths = runtime_paths if _is_frozen() else (*runtime_paths, *development_paths)
+        for path in paths:
             path.mkdir(parents=True, exist_ok=True)

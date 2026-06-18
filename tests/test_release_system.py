@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 
+import clean_build_spec
 import release
 from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
@@ -121,26 +122,51 @@ def test_build_release_script_uses_project_output_and_release_zip():
 
     assert "release.py" in text
     assert "PROJECT_ROOT=%ROOT%\\project" in text
-    assert "--distpath \"%DIST_ROOT%\"" in text
-    assert "--workpath \"%BUILD_ROOT%\"" in text
-    assert "--specpath \"%SPEC_ROOT%\"" in text
-    assert "--version-file \"%ROOT%\\project\\version_info.txt\"" in text
-    assert "--paths \"%ROOT%\"" in text
-    assert "--contents-directory \"_internal\"" in text
-    assert "--exclude-module tests" in text
-    assert "--exclude-module docs" in text
-    assert "--exclude-module project" in text
-    assert "--exclude-module __pycache__" in text
-    assert "/XD docs tests project __pycache__" in text
-    assert "robocopy \"%RUNTIME_ROOT%\\netconsole\" \"%DIST_ROOT%\\NetConsole\\netconsole\"" in text
+    assert "clean_build_spec.py --prepare --write-spec" in text
+    assert "PyInstaller --noconfirm --distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" \"%SPEC_ROOT%\\NetConsole.spec\"" in text
+    assert "clean_build_spec.py --finalize" in text
     assert "--add-data" not in text
-    assert "%PROJECT_ROOT%\\main.py" in text
-    assert "%ROOT%\\main.py" not in text
-    assert "netconsole\\docs;netconsole\\docs" not in text
-    assert "docs\\changelog.md;assets\\docs" not in text
-    assert "Unexpected dist item:" in text
-    assert 'allowed = @(\'NetConsole.exe\', \'_internal\', \'netconsole\')' in text
-    assert "if not exist \"%DIST_ROOT%\\NetConsole\\netconsole\" goto failed" in text
-    assert "%DIST_ROOT%\\NetConsole\\_internal\\netconsole" in text
-    assert "%DIST_ROOT%\\NetConsole\\netconsole\\docs" in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
+
+
+def test_clean_build_spec_uses_strict_whitelist_and_excludes():
+    assert clean_build_spec.CLEAN_BUILD is True
+    assert (".", ".") in clean_build_spec.FORBIDDEN_DATA
+    assert ("project", "project") in clean_build_spec.FORBIDDEN_DATA
+    assert ("tests", "tests") in clean_build_spec.FORBIDDEN_DATA
+    assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
+    assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
+    assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
+    assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") in clean_build_spec.ALLOWED_DATA
+    assert "tests" in clean_build_spec.EXCLUDE_DIRS
+    assert "docs" in clean_build_spec.EXCLUDE_DIRS
+    assert "project" in clean_build_spec.EXCLUDE_DIRS
+    assert "__pycache__" in clean_build_spec.EXCLUDE_DIRS
+
+
+def test_clean_build_spec_scans_runtime_import_graph():
+    imports = clean_build_spec.scan_import_graph()
+
+    assert "netconsole.app" in imports
+    assert all(not item.startswith("tests") for item in imports)
+    assert all(not item.startswith("project") for item in imports)
+
+
+def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
+    spec_file = tmp_path / "NetConsole.spec"
+    monkeypatch.setattr(clean_build_spec, "SPEC_ROOT", tmp_path)
+    monkeypatch.setattr(clean_build_spec, "SPEC_FILE", spec_file)
+
+    clean_build_spec.write_spec()
+    text = spec_file.read_text(encoding="utf-8")
+
+    assert "CLEAN_BUILD = True" in text
+    assert "RUNTIME_IMPORTS =" in text
+    assert "datas=[]" in text
+    assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
+    assert "contents_directory='_internal'" in text
+    assert "project\\\\main.py" in text or "project/main.py" in text
+    assert "('.', '.')" not in text
+    assert "('project', 'project')" not in text
+    assert "('tests', 'tests')" not in text
+    assert "('docs', 'docs')" not in text

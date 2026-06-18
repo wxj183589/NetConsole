@@ -62,3 +62,21 @@ def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):
     assert paths.app_root == tmp_path
     assert paths.data_dir == tmp_path / "data"
     assert paths.site_db_path() == tmp_path / "data" / "sites" / "demo" / "db" / "devices.db"
+
+
+def test_path_resolver_does_not_create_development_dirs_when_frozen(tmp_path, monkeypatch):
+    exe_path = tmp_path / "NetConsole.exe"
+    exe_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_path))
+
+    paths = PathResolver()
+    paths.ensure_project_dirs()
+
+    assert paths.data_dir.is_dir()
+    assert paths.config_dir.is_dir()
+    assert paths.logs_dir.is_dir()
+    assert paths.sites_dir.is_dir()
+    assert not paths.docs_dir.exists()
+    assert not paths.tests_dir.exists()
+    assert not paths.project_dir.exists()
