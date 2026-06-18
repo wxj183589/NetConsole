@@ -42,6 +42,13 @@ SAFE_OPTICAL_REFRESH_COMMANDS = {
     "display transceiver diagnosis interface",
 }
 
+SAFE_CONFIG_LIFECYCLE_COMMANDS = {
+    "screen-length disable",
+    "save force",
+    "display current-configuration",
+    "display saved-configuration",
+}
+
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
     "screen-length disable",
     "display wlan ap all address",
@@ -57,6 +64,7 @@ CONTEXT_COMMANDS = {
     "ac_collect": SAFE_AC_COMMANDS,
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
     "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
+    "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
 }
 
@@ -98,6 +106,7 @@ DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display transceiver interface",
     "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",
+    "save force",
 }
 
 

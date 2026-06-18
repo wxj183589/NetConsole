@@ -490,6 +490,21 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
 );
 """
 
+CONFIG_SNAPSHOTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS config_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER,
+    device_uuid TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    type TEXT NOT NULL,
+    file_path TEXT NOT NULL UNIQUE,
+    hash TEXT NOT NULL,
+    raw_log_path TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -530,6 +545,7 @@ class Database:
                         AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
                         AC_FIT_AP_LLDP_HISTORY_SCHEMA,
                         AC_FIT_AP_RADIO_HISTORY_SCHEMA,
+                        CONFIG_SNAPSHOTS_SCHEMA,
                     )
                 )
             )

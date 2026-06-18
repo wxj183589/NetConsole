@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 
-SUPPORTED_LANGUAGES = ("zh_CN", "en_US")
+SUPPORTED_LANGUAGES = ("zh_CN", "en_US", "zh", "en")
+locale = "zh"
 
 
 TRANSLATIONS = {
@@ -21,6 +22,43 @@ TRANSLATIONS = {
         "changelog.not_found": "未找到更新日志：{path}",
         "nav.devices": "设备管理",
         "nav.ac": "AC管理",
+        "nav.config_collection": "配置采集中心",
+        "config_center.title": "配置采集中心",
+        "config_center.btn.save_config": "保存配置",
+        "config_center.btn.download_config": "下载配置",
+        "config_center.btn.compare_config": "配置对比",
+        "config_center.btn.refresh": "刷新",
+        "config_center.btn.select_all": "全选",
+        "config_center.btn.open_config_dir": "打开配置目录",
+        "config_center.btn.download_snapshot": "下载快照",
+        "config_center.btn.delete_snapshot": "删除快照",
+        "config_center.tab.running": "运行中",
+        "config_center.tab.saved": "已保存",
+        "config_center.tab.diff": "差异",
+        "config_center.snapshots": "快照",
+        "config_center.col.device_name": "设备名称",
+        "config_center.col.type": "类型",
+        "config_center.col.station": "位置",
+        "config_center.col.time": "时间",
+        "config_center.col.size": "大小",
+        "config_center.status.running": "执行中...",
+        "config_center.status.done": "操作完成。",
+        "config_center.status.failed": "操作失败。",
+        "config_center.status.download_running": "下载配置中：{count} 台设备",
+        "config_center.status.download_done": "下载配置完成：成功 {success}，失败 {failed}",
+        "config_center.status.snapshot_downloaded": "快照已下载。",
+        "config_center.status.two_device_compare_done": "已完成双设备运行中配置对比。",
+        "config_center.status.latest_compare_done": "已基于最新历史快照完成对比。",
+        "config_center.msg.select_two_devices": "请选择两台设备进行多设备对比。",
+        "config_center.msg.need_snapshots": "需要先下载运行中和已保存快照。",
+        "config_center.msg.select_device": "请先选择一台设备。",
+        "config_center.msg.confirm_delete_snapshot": "确认删除选中的快照？",
+        "config_center.result.success": "成功",
+        "config_center.result.failed": "失败",
+        "config_center.text.running_config": "{device} 运行中配置",
+        "config_center.text.structure_diff": "结构差异：{device}",
+        "config_center.text.unified_diff": "统一差异：",
+        "config_center.unit.bytes": "{size} 字节",
         "nav.logs": "运行日志",
         "site.current": "当前站点",
         "site.new": "新增站点",
@@ -372,6 +410,43 @@ TRANSLATIONS = {
         "changelog.not_found": "Changelog not found: {path}",
         "nav.devices": "Device Management",
         "nav.ac": "AC Management",
+        "nav.config_collection": "Configuration Collection Center",
+        "config_center.title": "Configuration Collection Center",
+        "config_center.btn.save_config": "Save Config",
+        "config_center.btn.download_config": "Download Config",
+        "config_center.btn.compare_config": "Compare Config",
+        "config_center.btn.refresh": "Refresh",
+        "config_center.btn.select_all": "Select All",
+        "config_center.btn.open_config_dir": "Open Config Folder",
+        "config_center.btn.download_snapshot": "Download Snapshot",
+        "config_center.btn.delete_snapshot": "Delete Snapshot",
+        "config_center.tab.running": "Running",
+        "config_center.tab.saved": "Saved",
+        "config_center.tab.diff": "Diff",
+        "config_center.snapshots": "Snapshots",
+        "config_center.col.device_name": "Device Name",
+        "config_center.col.type": "Type",
+        "config_center.col.station": "Station",
+        "config_center.col.time": "Time",
+        "config_center.col.size": "Size",
+        "config_center.status.running": "Running...",
+        "config_center.status.done": "Operation completed.",
+        "config_center.status.failed": "Operation failed.",
+        "config_center.status.download_running": "Downloading configs: {count} devices",
+        "config_center.status.download_done": "Config download complete: success {success}, failed {failed}",
+        "config_center.status.snapshot_downloaded": "Snapshot downloaded.",
+        "config_center.status.two_device_compare_done": "Compared running configs for two devices.",
+        "config_center.status.latest_compare_done": "Compared the latest snapshots.",
+        "config_center.msg.select_two_devices": "Select exactly two devices for multi-device compare.",
+        "config_center.msg.need_snapshots": "Download running and saved snapshots first.",
+        "config_center.msg.select_device": "Select a device first.",
+        "config_center.msg.confirm_delete_snapshot": "Delete the selected snapshot?",
+        "config_center.result.success": "Success",
+        "config_center.result.failed": "Failed",
+        "config_center.text.running_config": "{device} running config",
+        "config_center.text.structure_diff": "Structure diff: {device}",
+        "config_center.text.unified_diff": "Unified Diff:",
+        "config_center.unit.bytes": "{size} B",
         "nav.logs": "Run Logs",
         "site.current": "Site",
         "site.new": "New Site",
@@ -712,13 +787,25 @@ TRANSLATIONS = {
 
 class I18n:
     def __init__(self, language: str = "zh_CN") -> None:
-        self.language = language if language in SUPPORTED_LANGUAGES else "zh_CN"
+        global locale
+        self.language = _normalize_language(language)
+        locale = "en" if self.language == "en_US" else "zh"
 
     def set_language(self, language: str) -> None:
+        global locale
         if language not in SUPPORTED_LANGUAGES:
             raise ValueError(f"Unsupported language: {language}")
-        self.language = language
+        self.language = _normalize_language(language)
+        locale = "en" if self.language == "en_US" else "zh"
 
     def t(self, key: str, **kwargs: object) -> str:
         text = TRANSLATIONS[self.language].get(key, key)
         return text.format(**kwargs) if kwargs else text
+
+
+def _normalize_language(language: str) -> str:
+    if language == "en":
+        return "en_US"
+    if language == "zh":
+        return "zh_CN"
+    return language if language in {"zh_CN", "en_US"} else "zh_CN"
