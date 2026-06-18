@@ -49,6 +49,12 @@ SAFE_CONFIG_LIFECYCLE_COMMANDS = {
     "display saved-configuration",
 }
 
+SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS = {
+    "screen-length disable",
+    "display diagnostic-information",
+    "n",
+}
+
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
     "screen-length disable",
     "display wlan ap all address",
@@ -65,6 +71,7 @@ CONTEXT_COMMANDS = {
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
     "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
     "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
+    "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
 }
 

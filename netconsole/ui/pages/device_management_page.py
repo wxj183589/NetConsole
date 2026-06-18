@@ -20,10 +20,12 @@ from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
+from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BatchConnectionTestWorker
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
+from netconsole.ui.diagnostic_download_worker import DiagnosticDownloadWorker
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
 from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
@@ -70,6 +72,7 @@ class DeviceManagementPage(QWidget):
         self.add_button = QPushButton()
         self.detail_button = QPushButton()
         self.test_connection_button = QPushButton()
+        self.diagnostic_download_button = QPushButton()
         self.batch_refresh_details_button = QPushButton()
         self.batch_delete_button = QPushButton()
         self.refresh_button = QPushButton()
@@ -91,6 +94,7 @@ class DeviceManagementPage(QWidget):
             self.add_button,
             self.detail_button,
             self.test_connection_button,
+            self.diagnostic_download_button,
             self.batch_refresh_details_button,
             self.batch_delete_button,
             self.refresh_button,
@@ -116,6 +120,7 @@ class DeviceManagementPage(QWidget):
         self.add_button.clicked.connect(self.add_device)
         self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.test_connection_button.clicked.connect(self.test_selected_device_connection)
+        self.diagnostic_download_button.clicked.connect(self.download_diagnostics)
         self.batch_refresh_details_button.clicked.connect(self.batch_refresh_details)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
         self.refresh_button.clicked.connect(self.refresh)
@@ -135,12 +140,14 @@ class DeviceManagementPage(QWidget):
         self.batch_connection_test_dialog: BatchConnectionTestProgressDialog | None = None
         self.batch_collect_worker: BatchCollectWorker | None = None
         self.batch_collect_dialog: BatchCollectProgressDialog | None = None
+        self.diagnostic_download_worker: DiagnosticDownloadWorker | None = None
 
     def retranslate(self) -> None:
         self.search_input.setPlaceholderText(self.i18n.t("devices.search"))
         self.add_button.setText(self.i18n.t("devices.add"))
         self.detail_button.setText(self.i18n.t("details.title"))
         self.test_connection_button.setText(self.i18n.t("devices.test_connection"))
+        self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_download"))
         self.batch_refresh_details_button.setText(self.i18n.t("devices.batch_refresh_details"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
         self.refresh_button.setText(self.i18n.t("devices.refresh"))
@@ -216,6 +223,47 @@ class DeviceManagementPage(QWidget):
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),
             )
+
+    def download_diagnostics(self) -> None:
+        devices = self._diagnostic_target_devices()
+        if not devices:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            return
+        self.diagnostic_download_button.setEnabled(False)
+        self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_downloading"))
+        service = DiagnosticDownloadService(self.site_name)
+        self.diagnostic_download_worker = DiagnosticDownloadWorker(service, devices, self)
+        self.diagnostic_download_worker.result_ready.connect(self._handle_diagnostic_results)
+        self.diagnostic_download_worker.finished.connect(self.diagnostic_download_worker.deleteLater)
+        self.diagnostic_download_worker.finished.connect(lambda: setattr(self, "diagnostic_download_worker", None))
+        self.diagnostic_download_worker.start()
+
+    def _diagnostic_target_devices(self):
+        checked_ids = self.table.checked_device_ids()
+        if checked_ids:
+            return [self.repository.get(device_id) for device_id in checked_ids]
+        current_id = self.selected_id()
+        if current_id is None:
+            return []
+        return [self.repository.get(current_id)]
+
+    def _handle_diagnostic_results(self, results) -> None:
+        self.diagnostic_download_button.setEnabled(True)
+        self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_download"))
+        success = sum(1 for item in results if item.success)
+        failed = len(results) - success
+        detail = "\n".join(
+            f"{item.device_name}: {self.i18n.t('devices.diagnostic_status_success' if item.success else 'devices.diagnostic_status_failed')}"
+            + (f" - {item.error_message}" if item.error_message else "")
+            for item in results
+        )
+        message = self.i18n.t("devices.diagnostic_done", success=success, failed=failed)
+        if detail:
+            message = f"{message}\n\n{detail}"
+        if failed:
+            QMessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
+        else:
+            QMessageBox.information(self, self.i18n.t("devices.diagnostic_download"), message)
 
     def _populate_filters(self) -> None:
         vendor = self.vendor_filter.currentData()
