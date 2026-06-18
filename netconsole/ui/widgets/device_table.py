@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QHBoxLayout,
-    QHeaderView,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -13,6 +11,8 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
+from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ROW_HEIGHT, apply_action_column, apply_table_style, set_table_column_fields
+from netconsole.ui.table_utils import configure_readonly_table
 
 
 CHECK_COLUMN = 0
@@ -53,13 +53,8 @@ class DeviceTable(QTableWidget):
         self.devices: list[Device] = []
         self.selected_device_ids: set[int] = set()
         self._updating_checks = False
-        self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.verticalHeader().setVisible(False)
-        self.verticalHeader().setDefaultSectionSize(34)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        set_table_column_fields(self, [field for field, _key in COLUMNS])
+        configure_readonly_table(self)
         self.horizontalHeader().sectionClicked.connect(self._header_clicked)
         self.itemChanged.connect(self._item_changed)
         self.cellClicked.connect(self._cell_clicked)
@@ -68,9 +63,8 @@ class DeviceTable(QTableWidget):
     def retranslate(self) -> None:
         self.setHorizontalHeaderLabels([self.i18n.t(key) if key else "" for _, key in COLUMNS])
         self._set_header_check_state(Qt.Unchecked)
-        widths = [44, 70, 190, 150, 150, 110, 160, 250]
-        for index, width in enumerate(widths):
-            self.setColumnWidth(index, width)
+        apply_table_style(self)
+        apply_action_column(self)
         self._refresh_action_buttons()
 
     def set_devices(self, devices: list[Device]) -> None:
@@ -97,6 +91,8 @@ class DeviceTable(QTableWidget):
             self.setCellWidget(row, self._column_index("actions"), self._action_widget(device))
         self._updating_checks = False
         self._set_header_check_state(Qt.Unchecked)
+        apply_table_style(self)
+        apply_action_column(self)
         self.selection_changed.emit()
 
     def selected_device_id(self) -> int | None:
@@ -140,20 +136,15 @@ class DeviceTable(QTableWidget):
         self.setItem(row, CHECK_COLUMN, item)
 
     def _action_widget(self, device: Device) -> QWidget:
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        detail_button = QPushButton(self.i18n.t("details.button"))
-        edit_button = QPushButton(self.i18n.t("devices.edit"))
-        delete_button = QPushButton(self.i18n.t("devices.delete"))
-        if device.id is not None:
-            device_id = int(device.id)
-            detail_button.clicked.connect(lambda _=False, value=device_id: self.detail_requested.emit(value))
-            edit_button.clicked.connect(lambda _=False, value=device_id: self.edit_requested.emit(value))
-            delete_button.clicked.connect(lambda _=False, value=device_id: self.delete_requested.emit(value))
-        for button in (detail_button, edit_button, delete_button):
-            layout.addWidget(button)
-        return widget
+        return ActionCellWidget(
+            connect_text=self.i18n.t("devices.test_connection"),
+            edit_text=self.i18n.t("devices.edit"),
+            delete_text=self.i18n.t("devices.delete"),
+            device_id=int(device.id) if device.id is not None else None,
+            detail_requested=self.detail_requested.emit,
+            edit_requested=self.edit_requested.emit,
+            delete_requested=self.delete_requested.emit,
+        )
 
     def _refresh_action_buttons(self) -> None:
         for row, device in enumerate(self.devices):
@@ -222,3 +213,36 @@ class DeviceTable(QTableWidget):
             if column_field == field:
                 return index
         raise KeyError(field)
+
+
+class ActionCellWidget(QWidget):
+    def __init__(
+        self,
+        connect_text: str,
+        edit_text: str,
+        delete_text: str,
+        device_id: int | None,
+        detail_requested,
+        edit_requested,
+        delete_requested,
+    ) -> None:
+        super().__init__()
+        self.setMinimumHeight(ROW_HEIGHT)
+        self.setMaximumHeight(ROW_HEIGHT)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignCenter)
+        buttons = (
+            (QPushButton(connect_text), detail_requested),
+            (QPushButton(edit_text), edit_requested),
+            (QPushButton(delete_text), delete_requested),
+        )
+        for button, callback in buttons:
+            button.setObjectName("tableActionButton")
+            button.setMinimumHeight(ACTION_BUTTON_HEIGHT)
+            button.setMaximumHeight(ACTION_BUTTON_HEIGHT)
+            button.setMinimumWidth(56)
+            if device_id is not None:
+                button.clicked.connect(lambda _=False, value=device_id, handler=callback: handler(value))
+            layout.addWidget(button)

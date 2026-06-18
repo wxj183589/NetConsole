@@ -82,10 +82,12 @@ def test_settings_store_persists_theme(tmp_path):
     paths = PathResolver(tmp_path)
     store = SettingsStore(paths)
 
-    store.set_theme("dark")
+    assert store.theme == "dark"
+
+    store.set_theme("light")
 
     assert paths.settings_path.exists()
-    assert SettingsStore(paths).theme == "dark"
+    assert SettingsStore(paths).theme == "light"
 
 
 def test_stylesheet_for_theme_switches_light_and_dark():

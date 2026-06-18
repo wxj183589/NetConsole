@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableW
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.optical_severity_engine import display_optical_status
@@ -84,7 +85,7 @@ class HistoryDataDialog(QDialog):
             self.pagination = PaginationWidget(self.i18n)
             self.pagination.pageChanged.connect(self.set_page)
             self.pagination.pageSizeChanged.connect(self.set_page_size)
-            layout.addWidget(self.table)
+            layout.addWidget(self.table, 1)
             layout.addWidget(self.pagination)
             self.refresh_table()
         else:
@@ -101,6 +102,7 @@ class HistoryDataDialog(QDialog):
 
     def _table(self) -> QTableWidget:
         table = QTableWidget(0, len(self.columns))
+        set_table_column_fields(table, [field for _label_key, field in self.columns])
         configure_readonly_table(table)
         attach_table_context_menu(table, self.i18n.language, include_history=False)
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in self.columns])
@@ -121,7 +123,7 @@ class HistoryDataDialog(QDialog):
                 self.table.setItem(row_index, column_index, item)
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(True)
-        auto_resize_table_columns(self.table, column_min_widths=_history_column_min_widths(self.columns))
+        auto_resize_table_columns(self.table)
 
     def set_page(self, page: int) -> None:
         self.page = page

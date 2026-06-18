@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from netconsole.models.device import Device
 from netconsole.core.i18n import I18n
 from netconsole.services.h3c_collect_service import CollectDeviceResult
-from netconsole.ui.batch_collect_worker import BatchCollectWorker, run_batch_collect
+from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker, run_batch_collect
 from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
 from PySide6.QtWidgets import QApplication
 
@@ -45,13 +45,30 @@ def test_batch_collect_single_device_failure_does_not_stop_others():
     assert by_name["B"].raw_log_path == "raw/2.log"
 
 
-def test_batch_collect_concurrency_options_include_100():
+def test_batch_collect_concurrency_defaults_to_fixed_50():
     app()
     dialog = BatchCollectProgressDialog(I18n("en_US"), 1)
     options = [dialog.concurrency_combo.itemData(index) for index in range(dialog.concurrency_combo.count())]
 
     assert options == [5, 10, 20, 50, 100]
-    assert dialog.concurrency_combo.currentData() == 20
+    assert dialog.concurrency_combo.currentData() == BATCH_CONCURRENCY
+
+
+def test_batch_collect_concurrency_combo_is_disabled_while_running():
+    app()
+    dialog = BatchCollectProgressDialog(I18n("en_US"), 1)
+
+    dialog.set_running(True)
+
+    assert dialog.concurrency_combo.isEnabled() is False
+
+
+def test_batch_collect_worker_uses_start_time_concurrency_only():
+    worker = BatchCollectWorker([], "demo", max_workers=50)
+
+    worker.concurrency = 5
+
+    assert worker.max_workers == 50
 
 
 def test_batch_collect_worker_accepts_max_concurrency_100():

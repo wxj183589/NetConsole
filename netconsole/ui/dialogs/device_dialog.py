@@ -73,35 +73,6 @@ class DeviceDialog(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setMinimumSize(760, 560)
         self.apply_initial_geometry()
-        self.setStyleSheet(
-            """
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #8a8f99;
-                border-radius: 3px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:unchecked:hover {
-                border: 1px solid #2563eb;
-                background: #f8fbff;
-            }
-            QCheckBox::indicator:checked {
-                background: #2563eb;
-                border: 1px solid #2563eb;
-                image: none;
-            }
-            QCheckBox::indicator:checked:hover {
-                background: #1d4ed8;
-                border: 1px solid #1d4ed8;
-            }
-            QCheckBox::indicator:disabled {
-                background: #e5e7eb;
-                border: 1px solid #cbd5e1;
-            }
-            """
-        )
-
         root = QVBoxLayout(self)
         top_layout = QHBoxLayout()
         self.title_label = QLabel()

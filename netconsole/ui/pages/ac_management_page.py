@@ -5,13 +5,12 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFileDialog,
     QGridLayout,
-    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -53,6 +52,10 @@ from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
+from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_table_style, set_table_column_fields
+from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
+from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
+from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.interface_sort import interface_sort_key
@@ -121,16 +124,10 @@ FIT_AP_OPTICAL_DETAIL_COLUMNS = (
     ("ac.error_message", "error_message"),
 )
 
-OPTICAL_STATUS_COLORS = {
-    "normal": "#dcfce7",
-    "warning": "#fef9c3",
-    "alarm": "#fee2e2",
-    "link_abnormal": "#ffe4e6",
-    "link_down": "#ffe4e6",
-    "no_light": "#e5e7eb",
-}
+OPTICAL_STATUS_COLORS = STATUS_COLOR_MAP
 OPTICAL_EXPORT_COLOR_RGB = {
     "normal": "DCFCE7",
+    "notice": "FEF9C3",
     "warning": "FEF9C3",
     "alarm": "FEE2E2",
     "link_abnormal": "FFE4E6",
@@ -138,8 +135,7 @@ OPTICAL_EXPORT_COLOR_RGB = {
     "no_light": "E5E7EB",
     "skipped": "F3F4F6",
 }
-OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "warning": 3, "alarm": 4, "link_abnormal": 5, "link_down": 5, "no_light": 6}
-OPTICAL_STATUS_FILTERS = ("", "normal", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown")
+OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
 AP_ONLINE_OVERVIEW_COLUMNS = (
     ("ac.station", "site"),
     ("ac.ap_total", "total"),
@@ -148,27 +144,6 @@ AP_ONLINE_OVERVIEW_COLUMNS = (
     ("ac.online_rate", "online_rate"),
     ("field.remark", "remark"),
 )
-AC_TAB_STYLESHEET = """
-QTabBar::tab {
-    background: #f3f4f6;
-    color: #111827;
-    font-weight: 500;
-    padding: 8px 14px;
-    border: 1px solid #d1d5db;
-    border-bottom: none;
-}
-QTabBar::tab:selected {
-    background: #ffffff;
-    color: #111827;
-    font-weight: 700;
-}
-QTabBar::tab:!selected {
-    background: #e5e7eb;
-    color: #111827;
-}
-"""
-
-
 def sort_fit_ap_optical_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
     def key(row: dict[str, object | None]) -> tuple[int, str, tuple[object, ...], str]:
         name = str(row.get("neighbor_device_name") or "").strip()
@@ -316,7 +291,7 @@ def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: 
 
 def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
     """Evaluate AP side optical alarm status — delegates to ``ap_source.compute_ap_status``."""
-    return compute_ap_status(row)
+    return _evaluate_ap_result(row).severity
 
 
 def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
@@ -383,9 +358,10 @@ def _evaluate_neighbor_status(rx_power: object, neighbor_optical: dict[str, obje
             "alarm_low": neighbor_optical.get("rx_low_alarm"),
             "alarm_high": neighbor_optical.get("rx_high_alarm"),
             "warning_low": neighbor_optical.get("rx_low_warning"),
+            "device_type": "switch",
         }).severity
     value = _to_float(rx_power)
-    return compute_optical_severity({"switch_rx_power": value}).severity
+    return compute_optical_severity({"switch_rx_power": value, "device_type": "switch"}).severity
 
 
 def _fit_ap_optical_export_value(row: dict[str, object | None], field: str) -> str:
@@ -410,6 +386,19 @@ def _to_float(value: object) -> float | None:
 
 def _display_value(value: object) -> str:
     return str(value) if value not in (None, "") else "-"
+
+
+def _evaluate_ap_result(row: dict[str, object | None]):
+    return compute_optical_severity(
+        {
+            "ap_rx_power": row.get("rx_power"),
+            "ap_port_status": row.get("ap_port_status"),
+            "alarm_low": row.get("rx_low_alarm"),
+            "alarm_high": row.get("rx_high_alarm"),
+            "warning_low": row.get("rx_low_warning"),
+            "device_type": "ap",
+        }
+    )
 
 
 def _ap_unique_key(row: dict[str, object | None]) -> str:
@@ -456,13 +445,7 @@ def _overview_row_fill(row: dict[str, object | None]):
 
 
 def _auto_width_sheet(sheet) -> None:
-    from openpyxl.utils import get_column_letter
-
-    for column_index in range(1, sheet.max_column + 1):
-        max_length = 0
-        for cell in sheet[get_column_letter(column_index)]:
-            max_length = max(max_length, len(str(cell.value or "")))
-        sheet.column_dimensions[get_column_letter(column_index)].width = min(max_length + 2, 48)
+    apply_worksheet_autofit(sheet, maximum=60)
 
 
 def _format_export_sheet(sheet) -> None:
@@ -534,7 +517,6 @@ class AcManagementPage(QWidget):
         self.clear_optical_filters_button = QPushButton()
         self.optical_ap_filter = QLineEdit()
         self.optical_site_filter = QComboBox()
-        self.optical_alarm_filter = QComboBox()
         self.overview_table = QTableWidget()
         self.export_overview_button = QPushButton()
         self.save_overview_history_button = QPushButton()
@@ -560,7 +542,10 @@ class AcManagementPage(QWidget):
         self.optical_table.setColumnCount(len(FIT_AP_OPTICAL_COLUMNS))
         self.overview_table.setColumnCount(len(AP_ONLINE_OVERVIEW_COLUMNS))
         self.trackside_table.setColumnCount(len(TRACKSIDE_AP_BUSINESS_COLUMNS))
-        self.tabs.setStyleSheet(AC_TAB_STYLESHEET)
+        set_table_column_fields(self.resources_table, [field for _key, field in FIT_AP_RESOURCE_COLUMNS])
+        set_table_column_fields(self.optical_table, [field for _key, field in FIT_AP_OPTICAL_COLUMNS])
+        set_table_column_fields(self.overview_table, [field for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
+        set_table_column_fields(self.trackside_table, [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         self.overview_table.itemChanged.connect(self.save_overview_total)
         self.resources_table.horizontalHeader().sectionClicked.connect(self._resource_header_clicked)
         self.resources_table.itemChanged.connect(self.update_selection_state)
@@ -603,7 +588,7 @@ class AcManagementPage(QWidget):
         resource_actions.addWidget(self.selection_label)
         resource_actions.addStretch(1)
         resources_layout.addLayout(resource_actions)
-        resources_layout.addWidget(self.resources_table)
+        resources_layout.addWidget(self.resources_table, 1)
         resources_layout.addWidget(self.resources_pagination)
         resources_tab.setLayout(resources_layout)
 
@@ -619,14 +604,13 @@ class AcManagementPage(QWidget):
         for widget in (
             self.optical_ap_filter,
             self.optical_site_filter,
-            self.optical_alarm_filter,
         ):
             optical_filters.addWidget(widget)
         self.optical_legend_label.setWordWrap(True)
         optical_layout.addLayout(optical_actions)
         optical_layout.addLayout(optical_filters)
         optical_layout.addWidget(self.optical_legend_label)
-        optical_layout.addWidget(self.optical_table)
+        optical_layout.addWidget(self.optical_table, 1)
         optical_layout.addWidget(self.optical_pagination)
         optical_tab.setLayout(optical_layout)
 
@@ -638,7 +622,7 @@ class AcManagementPage(QWidget):
         overview_actions.addWidget(self.view_overview_history_button)
         overview_actions.addStretch(1)
         overview_layout.addLayout(overview_actions)
-        overview_layout.addWidget(self.overview_table)
+        overview_layout.addWidget(self.overview_table, 1)
         overview_tab.setLayout(overview_layout)
 
         mr_tab = QWidget()
@@ -655,7 +639,7 @@ class AcManagementPage(QWidget):
         trackside_actions.addWidget(self.trackside_export_button)
         trackside_actions.addStretch(1)
         trackside_layout.addLayout(trackside_actions)
-        trackside_layout.addWidget(self.trackside_table)
+        trackside_layout.addWidget(self.trackside_table, 1)
         trackside_layout.addWidget(self.trackside_pagination)
         trackside_tab.setLayout(trackside_layout)
 
@@ -689,7 +673,6 @@ class AcManagementPage(QWidget):
         self.clear_optical_filters_button.clicked.connect(self.clear_optical_filters)
         self.optical_ap_filter.textChanged.connect(self.apply_optical_filters)
         self.optical_site_filter.currentIndexChanged.connect(self.apply_optical_filters)
-        self.optical_alarm_filter.currentIndexChanged.connect(self.apply_optical_filters)
         self.trackside_site_filter.currentIndexChanged.connect(self.apply_trackside_filters)
         self.trackside_search_input.textChanged.connect(self.apply_trackside_filters)
         self.resources_pagination.pageChanged.connect(self.set_resource_page)
@@ -734,15 +717,6 @@ class AcManagementPage(QWidget):
         for value in (50, 100, 200, 500, 1000):
             self.optical_concurrency_combo.addItem(f"{self.i18n.t('batch_collect.concurrency')}: {value}", value)
         self.optical_concurrency_combo.setCurrentIndex(3)
-        current_status = self.optical_alarm_filter.currentData()
-        self.optical_alarm_filter.blockSignals(True)
-        self.optical_alarm_filter.clear()
-        for status in OPTICAL_STATUS_FILTERS:
-            label = self.i18n.t("field.all") if not status else self.i18n.t(f"optical.status.{status}")
-            self.optical_alarm_filter.addItem(label, status)
-        index = self.optical_alarm_filter.findData(current_status)
-        self.optical_alarm_filter.setCurrentIndex(index if index >= 0 else 0)
-        self.optical_alarm_filter.blockSignals(False)
         self.optical_legend_label.setText(self.i18n.t("details.optical_color_legend"))
         self.status_label.setText(self.i18n.t("ac.status.not_collected"))
         self.coming_soon_label.setText(self.i18n.t("ac.coming_soon"))
@@ -760,9 +734,10 @@ class AcManagementPage(QWidget):
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS])
         self.overview_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
-        auto_resize_table_columns(self.resources_table, column_min_widths={0: 80, 1: 150})
-        self._resize_optical_columns()
-        auto_resize_table_columns(self.overview_table, column_min_widths={0: 180})
+        apply_table_style(self.resources_table)
+        apply_table_style(self.optical_table)
+        apply_table_style(self.overview_table)
+        apply_table_style(self.trackside_table)
         self.update_selection_state()
 
     def refresh_devices(self) -> None:
@@ -947,18 +922,18 @@ class AcManagementPage(QWidget):
         self.refresh_data()
 
     def export_aps(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ap.export_info"), make_fit_ap_export_filename(self.site_name), "CSV Files (*.csv)")
+        path = select_export_path(self, self.i18n.t("ap.export_info"), make_fit_ap_export_filename(self.site_name), CSV_FILTER)
         if not path:
             return
         rows = self.checked_or_all_ap_rows()
-        self.import_export_service.export_ap_csv(Path(path), rows)
-        app_logger.log_info("FIT_AP_EXPORT", f"count={len(rows)}, file={Path(path).name}")
+        self.import_export_service.export_ap_csv(path, rows)
+        remember_export_path(path)
+        app_logger.log_info("FIT_AP_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def current_optical_filters(self) -> dict[str, object | None]:
         return {
             "ap_name": self.optical_ap_filter.text(),
             "site": self.optical_site_filter.currentData(),
-            "optical_alarm_status": self.optical_alarm_filter.currentData(),
         }
 
     def filtered_optical_rows(self) -> list[dict[str, object | None]]:
@@ -1038,17 +1013,16 @@ class AcManagementPage(QWidget):
     def clear_optical_filters(self) -> None:
         self.optical_ap_filter.clear()
         self.optical_site_filter.setCurrentIndex(0)
-        self.optical_alarm_filter.setCurrentIndex(0)
         self.clear_selection()
         self.apply_optical_filters()
 
     def export_optical_table(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.export_table"), make_fit_ap_optical_export_filename(self.site_name), "Excel Files (*.xlsx)")
+        path = select_export_path(self, self.i18n.t("ac.export_table"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
         rows = self.filtered_optical_rows()
         export_fit_ap_optical_xlsx(
-            Path(path),
+            path,
             rows,
             FIT_AP_OPTICAL_COLUMNS,
             [self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS],
@@ -1056,23 +1030,26 @@ class AcManagementPage(QWidget):
             self.current_overview_rows(),
             [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
         )
-        app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"count={len(rows)}, file={Path(path).name}")
+        remember_export_path(path)
+        app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def export_overview_table(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.export_overview"), make_fit_ap_optical_export_filename(self.site_name), "Excel Files (*.xlsx)")
+        path = select_export_path(self, self.i18n.t("ac.export_overview"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
         rows = self.current_overview_rows()
-        export_ap_online_overview_xlsx(Path(path), rows, [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
-        app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={Path(path).name}")
+        export_ap_online_overview_xlsx(path, rows, [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
+        remember_export_path(path)
+        app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def export_trackside_table(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("trackside.export"), f"{self.site_name}_轨旁AP业务_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", "Excel Files (*.xlsx)")
+        path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_轨旁AP业务_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
         if not path:
             return
         rows = self.filtered_trackside_rows()
-        export_trackside_ap_business_xlsx(Path(path), rows, TRACKSIDE_AP_BUSINESS_COLUMNS, [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
-        app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={len(rows)}, file={Path(path).name}")
+        export_trackside_ap_business_xlsx(path, rows, TRACKSIDE_AP_BUSINESS_COLUMNS, [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+        remember_export_path(path)
+        app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def save_overview_history_snapshot(self) -> None:
         count = self.repository.save_station_online_summary_history(self.current_overview_rows())
@@ -1326,13 +1303,9 @@ class AcManagementPage(QWidget):
                         if field == "state_display":
                             item.setToolTip(f"{self.i18n.t('ap.state_raw')}: {row.get('state_raw') or row.get('state') or '-'}")
                         if table is self.optical_table:
-                            color = OPTICAL_STATUS_COLORS.get(evaluate_fit_ap_row_status(row))
-                            if color:
-                                item.setBackground(QColor(color))
+                            apply_status_item_contrast(item, evaluate_fit_ap_row_status(row))
                         if table is self.trackside_table:
-                            color = OPTICAL_STATUS_COLORS.get(trackside_row_status(row))
-                            if color:
-                                item.setBackground(QColor(color))
+                            apply_status_item_contrast(item, trackside_row_status(row))
                         if table is self.overview_table:
                             self._apply_overview_color(item, row, field)
                     item.setTextAlignment(Qt.AlignCenter)
@@ -1346,30 +1319,25 @@ class AcManagementPage(QWidget):
         if table is self.optical_table:
             self._resize_optical_columns()
         elif table is self.overview_table:
-            auto_resize_table_columns(table, column_min_widths={0: 180})
+            auto_resize_table_columns(table)
         elif table is self.trackside_table:
-            auto_resize_table_columns(table, column_min_widths={0: 150, 1: 180, 2: 180, 5: 220, 13: 160}, max_width=520)
+            auto_resize_table_columns(table)
         else:
-            auto_resize_table_columns(table, column_min_widths={0: 80, 1: 150})
+            auto_resize_table_columns(table)
 
     def _resize_optical_columns(self) -> None:
-        auto_resize_table_columns(self.optical_table, column_min_widths={0: 180, 1: 150, 2: 150, 3: 180}, max_width=520)
-        header = self.optical_table.horizontalHeader()
-        for column in range(self.optical_table.columnCount()):
-            header.setSectionResizeMode(column, QHeaderView.Interactive)
-        for column in (0, 1, 2, 3):
-            header.setSectionResizeMode(column, QHeaderView.Stretch)
+        auto_resize_table_columns(self.optical_table)
 
     def _apply_overview_color(self, item: QTableWidgetItem, row: dict[str, object | None], field: str) -> None:
         total = int(row.get("total") or 0)
         online = int(row.get("online") or 0)
         offline = int(row.get("offline") or 0)
         if total and online == total:
-            item.setBackground(QColor("#dcfce7"))
+            apply_item_contrast(item, STATUS_COLOR_MAP["normal"])
         elif total and online / total < 0.8:
-            item.setBackground(QColor("#fef9c3"))
+            apply_item_contrast(item, STATUS_COLOR_MAP["warning"])
         if field == "offline" and offline > 0:
-            item.setBackground(QColor("#fee2e2"))
+            apply_item_contrast(item, STATUS_COLOR_MAP["alarm"])
 
     @staticmethod
     def _table_row_to_dict(table: QTableWidget, columns: tuple[tuple[str, str], ...], row: int) -> dict[str, object | None]:

@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
+from netconsole.ui.logs.log_pagination_engine import LogPage, get_logs as paginate_log_file
 
 
 _paths = PathResolver()
@@ -42,23 +43,11 @@ def log_error(event: str, detail: str = "") -> None:
 
 
 def read_logs(keyword: str | None = None, level: str | None = None) -> list[dict[str, str]]:
-    path = _log_path()
-    if not path.exists():
-        return []
-    keyword_text = keyword.strip().casefold() if keyword else None
-    level_text = level.strip().upper() if level else None
-    logs: list[dict[str, str]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line in file:
-            parsed = _parse_line(line.rstrip("\n"))
-            if parsed is None:
-                continue
-            if level_text and parsed["level"] != level_text:
-                continue
-            if keyword_text and keyword_text not in " ".join(parsed.values()).casefold():
-                continue
-            logs.append(parsed)
-    return list(reversed(logs))
+    return get_logs(1, 1000, keyword, level).rows
+
+
+def get_logs(page: int = 1, page_size: int = 200, keyword: str | None = None, level: str | None = None) -> LogPage:
+    return paginate_log_file(_log_path(), page=page, page_size=page_size, keyword=keyword, level=level, parser=_parse_line)
 
 
 def clear_logs() -> None:

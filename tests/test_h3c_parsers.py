@@ -201,6 +201,45 @@ Description: To_信号系统
     assert parsed[0]["description"] == "To_信号系统"
 
 
+def test_interface_parser_keeps_gb2312_chinese_description_readable():
+    parsed = parse_interfaces(
+        """
+GigabitEthernet2/0/13
+Current state: UP
+Line protocol state: UP
+Description: To_广播系统
+"""
+    )
+
+    assert parsed[0]["description"] == "To_广播系统"
+
+
+def test_interface_parser_supports_loopback_management_and_null_ports():
+    parsed = parse_interfaces(
+        """
+InLoopBack0
+Current state: UP
+Line protocol state: UP
+M-GigabitEthernet0/0/0
+Current state: UP
+Line protocol state: UP
+LoopBack0
+Current state: UP
+Line protocol state: UP
+NULL0
+Current state: UP
+Line protocol state: UP
+"""
+    )
+
+    assert [item["interface_name"] for item in parsed] == [
+        "InLoopBack0",
+        "M-GigabitEthernet0/0/0",
+        "LoopBack0",
+        "NULL0",
+    ]
+
+
 def test_interface_parser_identifies_access_l2_pvid_and_status():
     parsed = parse_interfaces(
         """
@@ -381,8 +420,8 @@ def test_compute_optical_severity_returns_normal_warning_alarm_and_no_light():
 
     assert compute_optical_severity(base).severity == "normal"
     assert compute_optical_severity({**base, "switch_rx_power": "-20.00"}).severity == "alarm"
-    assert compute_optical_severity({**base, "switch_rx_power": "-14.35"}).severity == "warning"
-    assert compute_optical_severity({**base, "switch_rx_power": "-13.99"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-14.35"}).severity == "notice"
+    assert compute_optical_severity({**base, "switch_rx_power": "-13.99"}).severity == "normal"
     assert compute_optical_severity({**base, "switch_rx_power": "-13.98"}).severity == "normal"
     assert compute_optical_severity({**base, "switch_rx_power": "-17.00"}).severity == "warning"
     assert compute_optical_severity({**base, "switch_rx_power": "-20.32", "alarm_low": "-20.00"}).severity == "alarm"
@@ -397,9 +436,31 @@ def test_compute_optical_severity_uses_warning_low_threshold():
 
     base = {"switch_rx_power": "-10.00", "alarm_low": "-25.00", "warning_low": "-18.00"}
 
-    assert compute_optical_severity({**base, "switch_rx_power": "-15.50"}).severity == "warning"
-    assert compute_optical_severity({**base, "switch_rx_power": "-12.50", "warning_low": "-14.00"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-15.50"}).severity == "notice"
+    assert compute_optical_severity({**base, "switch_rx_power": "-12.50", "warning_low": "-14.00"}).severity == "notice"
     assert compute_optical_severity({**base, "switch_rx_power": "-14.99"}).severity == "normal"
+
+
+def test_compute_optical_severity_derives_ap_warning_threshold_from_alarm():
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    result = compute_optical_severity({"ap_rx_power": "-15.58", "alarm_low": "-19.00", "device_type": "ap"})
+
+    assert result.severity == "notice"
+    assert result.alarm_low == -19.0
+    assert result.warning_low == -16.99
+    assert result.maintenance_normal_line == -13.99
+    assert result.warning_source == "derived"
+    assert result.source_label == "AP derived"
+
+
+def test_compute_optical_severity_does_not_mark_missing_thresholds_normal():
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    result = compute_optical_severity({"ap_rx_power": "-10.00", "device_type": "ap"})
+
+    assert result.severity == "unknown"
+    assert result.source_label == "threshold missing"
 
 
 def test_lldp_parser_extracts_local_neighbor_and_remote_interface():
@@ -439,11 +500,12 @@ XGE0/0/28       2c4c-7d30-4e00  Ten-GigabitEthernet1/2/0/48     COCC-12-CORE
         "",
     )
 
-    assert parsed[0]["local_interface"] == "GE0/0/1"
+    assert parsed[0]["local_interface"] == "GigabitEthernet0/0/1"
     assert parsed[0]["neighbor_mac"] == "bc9c-c501-6684"
     assert parsed[0]["neighbor_interface"] == "1"
     assert parsed[0]["neighbor_sysname"] == "Intelligent Power Distribution Unit"
     assert parsed[1]["neighbor_interface"] == "GigabitEthernet0/0/19"
     assert parsed[1]["neighbor_sysname"] == "FutureMatrix"
+    assert parsed[2]["local_interface"] == "Ten-GigabitEthernet0/0/28"
     assert parsed[2]["neighbor_interface"] == "Ten-GigabitEthernet1/2/0/48"
     assert parsed[2]["neighbor_sysname"] == "COCC-12-CORE"

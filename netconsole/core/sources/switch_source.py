@@ -67,6 +67,7 @@ def compute_switch_status(
                 "alarm_low": alarm_low,
                 "alarm_high": alarm_high,
                 "warning_low": warning_low,
+                "device_type": "switch",
             }
         ).severity
 
@@ -84,6 +85,7 @@ def compute_switch_status(
                         "alarm_low": module.get("rx_low_alarm"),
                         "alarm_high": module.get("rx_high_alarm"),
                         "warning_low": module.get("rx_low_warning"),
+                        "device_type": "switch",
                     }
                 ).severity
 

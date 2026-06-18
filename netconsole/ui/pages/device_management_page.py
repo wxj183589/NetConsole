@@ -22,12 +22,13 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BatchConnectionTestWorker
-from netconsole.ui.batch_collect_worker import BatchCollectWorker
+from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
 from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
+from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
@@ -148,7 +149,7 @@ class DeviceManagementPage(QWidget):
         self.export_template_button.setText(self.i18n.t("devices.export_template"))
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
-        self.batch_delete_button.setStyleSheet("QPushButton { color: #b91c1c; font-weight: 600; }")
+        self.batch_delete_button.setObjectName("dangerButton")
         self._populate_filters()
         self.table.retranslate()
         self.update_selection_state()
@@ -416,7 +417,9 @@ class DeviceManagementPage(QWidget):
             dialog.running = max(0, dialog.running - 1)
         dialog.update_summary()
         self.batch_collect_dialog = dialog
-        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, concurrency=int(dialog.concurrency_combo.currentData() or 20), parent=self)
+        start_concurrency = int(dialog.concurrency_combo.currentData() or BATCH_CONCURRENCY)
+        dialog.set_running(True)
+        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, max_workers=start_concurrency, parent=self)
 
         def on_device_finished(item) -> None:
             row = next(
@@ -431,6 +434,7 @@ class DeviceManagementPage(QWidget):
 
         self.batch_collect_worker.device_finished.connect(on_device_finished)
         self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh())
+        self.batch_collect_worker.finished.connect(lambda: dialog.set_running(False))
         self.batch_collect_worker.finished.connect(self.batch_collect_worker.deleteLater)
         self.batch_collect_worker.finished.connect(lambda: setattr(self, "batch_collect_worker", None))
         dialog.show()
@@ -470,36 +474,28 @@ class DeviceManagementPage(QWidget):
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
 
     def export_csv(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            self.i18n.t("devices.export_csv"),
-            make_device_export_filename(self.site_name),
-            "CSV Files (*.csv)",
-        )
+        path = select_export_path(self, self.i18n.t("devices.export_csv"), make_device_export_filename(self.site_name), CSV_FILTER)
         if path:
             selected_devices = self.table.checked_devices()
             try:
-                self.service.export_csv(Path(path), choose_devices_for_export(self.repository.list(), selected_devices))
+                self.service.export_csv(path, choose_devices_for_export(self.repository.list(), selected_devices))
             except Exception as exc:
-                app_logger.log_error("CSV_EXPORT_FAILED", f"{Path(path).name}: {exc}")
+                app_logger.log_error("CSV_EXPORT_FAILED", f"{path.name}: {exc}")
                 QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
-            app_logger.log_info("CSV_EXPORTED", Path(path).name)
+            remember_export_path(path)
+            app_logger.log_info("CSV_EXPORTED", path.name)
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
 
     def export_template(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            self.i18n.t("devices.export_template"),
-            self.i18n.t("devices.template_filename"),
-            "CSV Files (*.csv)",
-        )
+        path = select_export_path(self, self.i18n.t("devices.export_template"), self.i18n.t("devices.template_filename"), CSV_FILTER)
         if path:
             try:
-                self.service.export_template_csv(Path(path))
+                self.service.export_template_csv(path)
             except Exception as exc:
-                app_logger.log_error("CSV_TEMPLATE_EXPORT_FAILED", f"{Path(path).name}: {exc}")
+                app_logger.log_error("CSV_TEMPLATE_EXPORT_FAILED", f"{path.name}: {exc}")
                 QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
-            app_logger.log_info("CSV_TEMPLATE_EXPORTED", Path(path).name)
+            remember_export_path(path)
+            app_logger.log_info("CSV_TEMPLATE_EXPORTED", path.name)
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))

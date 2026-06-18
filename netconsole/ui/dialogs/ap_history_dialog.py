@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.theme.contrast_engine import apply_item_contrast
+from netconsole.ui.render.table_render_engine import set_table_column_fields
+from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.optical_severity_engine import display_optical_status
@@ -69,7 +71,8 @@ OPTICAL_HISTORY_COLORS = {
 def export_ap_history_xlsx(path: Path, rows: list[dict[str, object | None]], columns: tuple[tuple[str, str], ...], headers: list[str], color_field: str | None = None) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.utils import get_column_letter
+
+    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 
     workbook = Workbook()
     sheet = workbook.active
@@ -90,10 +93,7 @@ def export_ap_history_xlsx(path: Path, rows: list[dict[str, object | None]], col
             cell.alignment = alignment
             if fill:
                 cell.fill = fill
-    for column_index in range(1, sheet.max_column + 1):
-        letter = get_column_letter(column_index)
-        width = max(len(str(cell.value or "")) for cell in sheet[letter]) + 2
-        sheet.column_dimensions[letter].width = min(width, 56)
+    apply_worksheet_autofit(sheet, maximum=60)
     workbook.save(path)
 
 
@@ -128,6 +128,7 @@ class ApHistoryDialog(QWidget):
         self.export_button = QPushButton()
         self.table = QTableWidget()
         self.pagination = PaginationWidget(self.i18n)
+        set_table_column_fields(self.table, [field for _key, field in columns])
         configure_readonly_table(self.table)
         self.table.setColumnCount(len(columns))
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -141,7 +142,7 @@ class ApHistoryDialog(QWidget):
         actions.addWidget(self.always_on_top_button)
         layout = QVBoxLayout()
         layout.addLayout(actions)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
         layout.addWidget(self.pagination)
         self.setLayout(layout)
 
@@ -175,11 +176,11 @@ class ApHistoryDialog(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if color:
-                    item.setBackground(QColor(color))
+                    apply_item_contrast(item, color)
                 self.table.setItem(row_index, column_index, item)
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(True)
-        auto_resize_table_columns(self.table, column_min_widths={0: 170}, max_width=560)
+        auto_resize_table_columns(self.table)
 
     def set_page(self, page: int) -> None:
         self.page = page
@@ -209,10 +210,11 @@ class ApHistoryDialog(QWidget):
             parent.activateWindow()
 
     def export_history(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.export_table"), f"{self.ap_name}_{self.history_type}_history.xlsx", "Excel Files (*.xlsx)")
+        path = select_export_path(self, self.i18n.t("ac.export_table"), f"{self.ap_name}_{self.history_type}_history.xlsx", EXCEL_FILTER)
         if not path:
             return
-        export_ap_history_xlsx(Path(path), self.rows, self.columns, [self.i18n.t(key) for key, _field in self.columns], self.color_field)
+        export_ap_history_xlsx(path, self.rows, self.columns, [self.i18n.t(key) for key, _field in self.columns], self.color_field)
+        remember_export_path(path)
 
 
 def _history_display_value(row: dict[str, object | None], field: str, color_field: str | None = None, language: str = "zh") -> str:

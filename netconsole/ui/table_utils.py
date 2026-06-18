@@ -1,50 +1,20 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QLabel, QMenu, QMessageBox, QTableWidget
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QLabel, QMenu, QMessageBox, QTableWidget
+
+from netconsole.ui.render.table_render_engine import apply_table_style
+from netconsole.ui.theme.qt_theme_engine import LIGHT_APP_STYLESHEET
 
 
-READONLY_TABLE_STYLESHEET = """
-QTableWidget {
-    background: #ffffff;
-    alternate-background-color: #f8fafc;
-    border: 1px solid #dde3ea;
-    gridline-color: #edf1f5;
-    selection-background-color: #dbeafe;
-    selection-color: #111827;
-}
-QTableWidget::item {
-    padding: 4px;
-    color: #111827;
-}
-QTableWidget::item:selected {
-    background: #dbeafe;
-    color: #111827;
-}
-QHeaderView::section {
-    background: #f3f4f6;
-    color: #111827;
-    font-weight: 600;
-    padding: 6px;
-    border: 1px solid #d1d5db;
-}
-"""
+READONLY_TABLE_STYLESHEET = LIGHT_APP_STYLESHEET
 
 
 def configure_readonly_table(table: QTableWidget) -> None:
     table.setEditTriggers(QTableWidget.NoEditTriggers)
     table.setSelectionBehavior(QTableWidget.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
-    table.setAlternatingRowColors(True)
-    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-    table.setWordWrap(False)
-    table.setStyleSheet(READONLY_TABLE_STYLESHEET)
-    table.verticalHeader().setDefaultSectionSize(32)
-    table.verticalHeader().setVisible(False)
-    table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
-    table.horizontalHeader().setMinimumHeight(34)
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-    table.horizontalHeader().setStretchLastSection(False)
+    apply_table_style(table)
 
 
 def make_text_selectable(label: QLabel) -> QLabel:
@@ -59,21 +29,8 @@ def auto_resize_table_columns(
     stretch_columns: set[int] | None = None,
     column_min_widths: dict[int, int] | None = None,
 ) -> None:
-    stretch_columns = stretch_columns or set()
-    column_min_widths = column_min_widths or {}
-    table.resizeColumnsToContents()
-    metrics = table.horizontalHeader().fontMetrics()
-    for column in range(table.columnCount()):
-        header_item = table.horizontalHeaderItem(column)
-        header_text = header_item.text() if header_item else ""
-        header_width = metrics.horizontalAdvance(header_text) + 28
-        current_width = table.columnWidth(column)
-        target_width = max(column_min_widths.get(column, min_width), header_width, current_width)
-        if column in stretch_columns:
-            target_width = max(target_width, 220)
-        if target_width > max_width and header_width <= max_width:
-            target_width = max_width
-        table.setColumnWidth(column, target_width)
+    _ = (min_width, max_width, stretch_columns, column_min_widths)
+    apply_table_style(table)
 
 
 def attach_table_context_menu(table: QTableWidget, language: str = "zh_CN", history_callback=None, include_history: bool = True) -> None:

@@ -7,7 +7,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from netconsole.core.i18n import I18n
-from netconsole.ui.batch_collect_worker import BatchCollectItemResult
+from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectItemResult
+from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 
 
@@ -23,7 +24,7 @@ class BatchCollectProgressDialog(QDialog):
         self.concurrency_combo = QComboBox()
         for value in (5, 10, 20, 50, 100):
             self.concurrency_combo.addItem(str(value), value)
-        self.concurrency_combo.setCurrentText("20")
+        self.concurrency_combo.setCurrentText(str(BATCH_CONCURRENCY))
         self.setModal(False)
         self.setMinimumSize(820, 520)
         self.resize(900, 560)
@@ -33,6 +34,7 @@ class BatchCollectProgressDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, total)
         self.table = QTableWidget(total, 6)
+        set_table_column_fields(self.table, ["device_name", "ip_address", "status", "elapsed", "raw_log_path", "error_message"])
         configure_readonly_table(self.table)
         attach_table_context_menu(self.table, self.i18n.language, include_history=False)
         self.copy_button = QPushButton()
@@ -59,6 +61,9 @@ class BatchCollectProgressDialog(QDialog):
         self.setLayout(layout)
         self.retranslate()
         self.update_summary()
+
+    def set_running(self, running: bool) -> None:
+        self.concurrency_combo.setEnabled(not running)
 
     def retranslate(self) -> None:
         self.setWindowTitle(self.i18n.t("batch_collect.title"))
@@ -133,4 +138,4 @@ class BatchCollectProgressDialog(QDialog):
             item = QTableWidgetItem(value)
             item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, column, item)
-        auto_resize_table_columns(self.table, column_min_widths={0: 160, 4: 260})
+        auto_resize_table_columns(self.table)

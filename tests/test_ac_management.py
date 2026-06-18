@@ -4,7 +4,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QMessageBox, QMenu, QTableWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QHeaderView, QMessageBox, QMenu, QTableWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
@@ -39,6 +39,8 @@ from netconsole.services.trackside_ap_business import (
     normalize_mac,
     trackside_row_status,
 )
+from netconsole.ui.theme.qt_theme_engine import apply_theme
+from netconsole.ui.render.table_render_engine import AP_MAC_COLUMN_WIDTH, AP_NAME_MIN_WIDTH, MEDIUM_PRIORITY_MAX_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.pagination import paginate_rows
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
@@ -721,6 +723,7 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert [page.optical_concurrency_combo.itemData(index) for index in range(page.optical_concurrency_combo.count())] == [50, 100, 200, 500, 1000]
     assert page.optical_concurrency_combo.currentData() == 500
     assert page.optical_legend_label.text()
+    assert page.tabs.tabText(0) == "FIT-AP Resources"
     assert page.tabs.tabText(2) == "AP Online Overview"
     assert page.tabs.tabText(3) == "Online Vehicle MR"
 
@@ -731,8 +734,31 @@ def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
     page._set_rows(page.optical_table, FIT_AP_OPTICAL_COLUMNS, [{"ap_name": "ap-a", "optical_alarm_status": "no_light"}])
 
-    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+    assert page.optical_table.item(0, 0).background().color().name() == "#6b7280"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
     assert page.optical_table.item(0, 0).textAlignment() == Qt.AlignCenter
+
+
+def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(
+        page.resources_table,
+        FIT_AP_RESOURCE_COLUMNS,
+        [{"ap_name": "Station-Very-Long-AP-Name-001", "ap_mac": "bc5a-3457-cbe0", "ap_ip": "10.1.1.1"}],
+    )
+    fields = [field for _key, field in FIT_AP_RESOURCE_COLUMNS]
+    ap_name_column = fields.index("ap_name")
+    ap_mac_column = fields.index("ap_mac")
+    widths = page.resources_table.property("netconsole_auto_layout_widths")
+
+    assert page.resources_table.horizontalHeader().sectionResizeMode(ap_name_column) == QHeaderView.Stretch
+    assert widths[ap_name_column] >= AP_NAME_MIN_WIDTH
+    assert page.resources_table.horizontalHeader().sectionResizeMode(ap_mac_column) == QHeaderView.Interactive
+    assert 112 <= widths[ap_mac_column] <= MEDIUM_PRIORITY_MAX_WIDTH
+    assert page.resources_table.verticalHeader().defaultSectionSize() == 36
+    assert page.resources_table.rowHeight(0) == 36
 
 
 def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_path):
@@ -755,7 +781,8 @@ def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_pa
 
     assert page.optical_table.item(0, 6).text() == "No Light"
     assert page.optical_table.item(0, 8).text() == "Normal"
-    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+    assert page.optical_table.item(0, 0).background().color().name() == "#6b7280"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
 
 
 def test_fit_ap_optical_table_color_uses_ap_alarm_when_more_severe(tmp_path):
@@ -778,7 +805,8 @@ def test_fit_ap_optical_table_color_uses_ap_alarm_when_more_severe(tmp_path):
 
     assert page.optical_table.item(0, 6).text() == "Normal"
     assert page.optical_table.item(0, 8).text() == "Alarm"
-    assert page.optical_table.item(0, 0).background().color().name() == "#fee2e2"
+    assert page.optical_table.item(0, 0).background().color().name() == "#f87171"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
 
 
 def test_fit_ap_optical_thread_accepts_concurrency():
@@ -802,12 +830,12 @@ def test_sort_fit_ap_optical_rows_orders_neighbor_and_interface_logically():
 def test_filter_fit_ap_optical_rows_supports_text_and_status_filters():
     rows = [
         {"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "S1", "lldp_neighbor": "HX_1", "neighbor_device_name": "Core-A", "rx_power": "-10.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "optical_alarm_status": "normal"},
-        {"ap_name": "AP-B", "ap_mac": "aabb-ccdd-eeff", "site": "S2", "lldp_neighbor": "HX_2", "neighbor_device_name": "Access-B", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "optical_alarm_status": "warning"},
+        {"ap_name": "AP-B", "ap_mac": "aabb-ccdd-eeff", "site": "S2", "lldp_neighbor": "HX_2", "neighbor_device_name": "Access-B", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "optical_alarm_status": "notice"},
     ]
 
     assert [row["ap_name"] for row in filter_fit_ap_optical_rows(rows, {"ap_name": "ap-a"})] == ["AP-A"]
     assert [row["ap_name"] for row in filter_fit_ap_optical_rows(rows, {"site": "s2"})] == ["AP-B"]
-    assert [row["ap_name"] for row in filter_fit_ap_optical_rows(rows, {"optical_alarm_status": "warning"})] == ["AP-B"]
+    assert [row["ap_name"] for row in filter_fit_ap_optical_rows(rows, {"optical_alarm_status": "notice"})] == ["AP-B"]
 
 
 def test_site_filter_items_are_generated_from_rows():
@@ -852,6 +880,7 @@ def test_fit_ap_optical_filters_do_not_include_ap_mac(tmp_path):
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
 
     assert not hasattr(page, "optical_ap_mac_filter")
+    assert not hasattr(page, "optical_alarm_filter")
 
 
 def test_enrich_fit_ap_optical_rows_adds_ap_mac_and_station_from_resources():
@@ -889,7 +918,6 @@ def test_clear_optical_filters_restores_all_rows(tmp_path):
     assert page.optical_table.rowCount() == 2
     assert page.optical_ap_filter.text() == ""
     assert page.optical_site_filter.currentData() == ""
-    assert page.optical_alarm_filter.currentData() == ""
 
 
 def test_evaluate_fit_ap_row_status_includes_neighbor_rx_power():
@@ -901,7 +929,7 @@ def test_evaluate_fit_ap_row_status_includes_neighbor_rx_power():
         )
         == "alarm"
     )
-    assert evaluate_fit_ap_row_status({"rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-10.00"}) == "warning"
+    assert evaluate_fit_ap_row_status({"rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-10.00"}) == "notice"
 
 
 def test_fit_ap_switch_status_and_ap_alarm_are_independent():
@@ -924,7 +952,7 @@ def test_fit_ap_switch_status_rules_and_missing_data():
     assert evaluate_fit_ap_switch_status({"neighbor_rx_power": None}) == "no_light"
     assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-45.00"}) == "no_light"
     assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-21.00", "switch_rx_low_alarm": "-20.00"}) == "alarm"
-    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.00", "switch_rx_low_alarm": "-20.00", "switch_rx_low_warning": "-15.00"}) == "warning"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.00", "switch_rx_low_alarm": "-20.00", "switch_rx_low_warning": "-15.00"}) == "notice"
     assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-10.00", "switch_rx_low_alarm": "-20.00", "switch_rx_low_warning": "-15.00"}) == "normal"
     assert evaluate_fit_ap_ap_status({}) == "no_light"
 
@@ -1027,9 +1055,11 @@ def test_export_fit_ap_optical_xlsx_contains_overview_and_optical_sheets(tmp_pat
     assert [cell.value for cell in overview_sheet[1]] == overview_headers
     assert [cell.value for cell in optical_sheet[1]] == headers
     assert "AP名称MAC" not in [cell.value for cell in optical_sheet[1]]
+    for forbidden_header in ("RX低告警", "RX警告下限", "RX正常线", "RX阈值来源"):
+        assert forbidden_header not in [cell.value for cell in optical_sheet[1]]
     assert optical_sheet["G2"].value == "未知"
     assert optical_sheet["I2"].value == "一般告警"
-    assert optical_sheet["I3"].value == "提示告警"
+    assert optical_sheet["I3"].value == "偏低关注"
     assert optical_sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
     assert optical_sheet["A3"].fill.fgColor.rgb == "00FEF9C3"
     assert overview_sheet["A2"].fill.fgColor.rgb == "00FEF9C3"
@@ -1058,7 +1088,8 @@ def test_fit_ap_optical_warning_row_uses_light_yellow(tmp_path):
         [{"ap_name": "AP-A", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-10.00"}],
     )
 
-    assert page.optical_table.item(0, 0).background().color().name() == "#fef9c3"
+    assert page.optical_table.item(0, 0).background().color().name() == "#fbbf24"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#111827"
 
 
 def test_fit_ap_optical_filters_before_paginating_and_export_uses_all_filtered_rows(tmp_path):
@@ -1096,9 +1127,9 @@ def test_fit_ap_optical_filters_before_paginating_and_export_uses_all_filtered_r
     assert workbook["FIT-AP光衰"].max_row == 6
 
 
-def test_optical_color_legend_mentions_rx_low_warning():
-    assert "RX警告下限" in I18n("zh_CN").t("details.optical_color_legend")
-    assert "RX low warning" in I18n("en_US").t("details.optical_color_legend")
+def test_optical_color_legend_does_not_expose_threshold_rules():
+    assert "RX警告下限" not in I18n("zh_CN").t("details.optical_color_legend")
+    assert "RX low warning" not in I18n("en_US").t("details.optical_color_legend")
 
 
 def test_ap_online_overview_rows_count_states_and_total_bottom():
@@ -1427,7 +1458,7 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
     assert [row["interface_name"] for row in rows] == ["GigabitEthernet2/0/1", "GigabitEthernet2/0/10"]
     assert rows[1]["switch_rx_power"] == "-6.10"
     assert rows[1]["ap_rx_power"] == "-14.35"
-    assert rows[1]["ap_optical_status"] == "warning"
+    assert rows[1]["ap_optical_status"] == "notice"
     assert rows[1]["ap_name"] == "AP10"
 
 
@@ -1454,7 +1485,7 @@ def test_trackside_ap_business_matches_fit_ap_by_lldp_neighbor_mac():
     assert rows[0]["ap_mac"] == "bc5a-3457-cbe0"
     assert rows[0]["ap_name"] == "Business-AP-22"
     assert rows[0]["ap_rx_power"] == "-14.35"
-    assert rows[0]["ap_optical_status"] == "warning"
+    assert rows[0]["ap_optical_status"] == "notice"
 
 
 def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
@@ -1471,7 +1502,7 @@ def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
     assert rows[0]["ap_mac"] == "bc5a-3457-cbe1"
     assert rows[0]["ap_name"] == "Renamed-AP-23"
     assert rows[0]["ap_rx_power"] is None
-    assert rows[0]["switch_optical_status"] == "normal"
+    assert rows[0]["switch_optical_status"] == "unknown"
     assert rows[0]["ap_optical_status"] == "no_light"
 
 
@@ -1488,7 +1519,7 @@ def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
     assert rows[0]["ap_mac"] == "bc5a-3457-cbe2"
     assert rows[0]["ap_name"] is None
     assert rows[0]["ap_rx_power"] is None
-    assert rows[0]["switch_optical_status"] == "warning"
+    assert rows[0]["switch_optical_status"] == "notice"
     assert rows[0]["ap_optical_status"] == "no_light"
 
 
@@ -1511,7 +1542,7 @@ def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
         {"sw-1": [{"local_interface": "GE2/0/25", "neighbor_mac": "bc5a-3457-cbe3"}]},
     )
 
-    assert rows[0]["switch_optical_status"] == "normal"
+    assert rows[0]["switch_optical_status"] == "unknown"
     assert rows[0]["ap_optical_status"] == "alarm"
     assert trackside_row_status(rows[0]) == "alarm"
 
@@ -1562,12 +1593,13 @@ def test_device_detail_trackside_ap_business_tab_displays_joined_data(tmp_path):
     assert dialog.tabs.tabText(4) == "Trackside AP Business"
     assert table.item(0, 0).text() == "GigabitEthernet2/0/10"
     assert table.item(0, 7).text() == "-6.10"
-    assert table.item(0, 8).text() == "Normal"
+    assert table.item(0, 8).text() == "Unknown"
     assert table.item(0, 9).text() == "bc5a-3457-cbe0"
     assert table.item(0, 10).text() == "AP10"
     assert table.item(0, 11).text() == "-14.35"
-    assert table.item(0, 12).text() == "Warning"
-    assert table.item(0, 0).background().color().name() == "#fef9c3"
+    assert table.item(0, 12).text() == "Notice"
+    assert table.item(0, 0).background().color().name() == "#fbbf24"
+    assert table.item(0, 0).foreground().color().name() == "#111827"
 
 
 def test_device_detail_interface_table_supports_pagination(tmp_path):
@@ -1637,12 +1669,13 @@ def test_ac_management_trackside_ap_business_tab_filter_and_export(tmp_path):
     assert page.tabs.tabText(4) == "Trackside AP Business"
     assert page.trackside_table.rowCount() == 2
     assert page.trackside_table.item(0, 8).text() == "-6.10"
-    assert page.trackside_table.item(0, 9).text() == "Normal"
+    assert page.trackside_table.item(0, 9).text() == "Unknown"
     assert page.trackside_table.item(0, 10).text() == "bc5a-3457-cbe0"
     assert page.trackside_table.item(0, 11).text() == "AP10"
     assert page.trackside_table.item(0, 12).text() == "-14.35"
-    assert page.trackside_table.item(0, 13).text() == "Warning"
-    assert page.trackside_table.item(0, 0).background().color().name() == "#fef9c3"
+    assert page.trackside_table.item(0, 13).text() == "Notice"
+    assert page.trackside_table.item(0, 0).background().color().name() == "#fbbf24"
+    assert page.trackside_table.item(0, 0).foreground().color().name() == "#111827"
 
     page.trackside_site_filter.setCurrentIndex(page.trackside_site_filter.findData("Station B"))
     assert page.trackside_table.rowCount() == 1
@@ -1928,16 +1961,18 @@ def test_ap_detail_metadata_site_falls_back_to_optical_site(tmp_path):
     assert dialog.site_input.text() == "Optical Station"
 
 
-def test_ap_detail_dialog_uses_light_clear_style(tmp_path):
-    app()
+def test_ap_detail_dialog_uses_global_theme_without_local_light_style(tmp_path):
+    qt_app = app()
+    apply_theme("light")
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
     dialog = FitApDetailDialog(I18n("en_US"), repository, "ac-1", ap_uuid)
 
-    assert "QComboBox" in dialog.styleSheet()
-    assert "background: #ffffff" in dialog.styleSheet()
+    assert dialog.styleSheet() == ""
+    assert "QComboBox" in qt_app.styleSheet()
+    assert "QTabWidget::pane" in qt_app.styleSheet()
     assert dialog.raw_fields_table.item(0, 0).textAlignment() == Qt.AlignCenter
 
 
@@ -2152,7 +2187,7 @@ def test_three_module_status_consistency_same_device_same_result(tmp_path):
     device_detail_switch_status = compute_switch_status(
         switch_rx_power=optical_modules[0].get("rx_power"),
     )
-    assert device_detail_switch_status == "normal"
+    assert device_detail_switch_status == "unknown"
 
     # FIT-AP optical: switch_optical_status must reference device detail
     devices = device_repository.list()
@@ -2219,9 +2254,9 @@ def test_build_device_optical_status_lookup_indexes_by_name_and_sysname(tmp_path
 def test_fit_ap_switch_status_computes_from_raw_data():
     """evaluate_fit_ap_switch_status must compute from raw data, not read cached fields."""
     # With raw rx_power data, status is computed real-time
-    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-10.00"}) == "normal"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-10.00"}) == "unknown"
     assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-20.00", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "alarm"
-    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.35", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "warning"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.35", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "notice"
 
 
 def test_trackside_ap_optical_status_computes_from_raw_data():
@@ -2247,7 +2282,7 @@ def test_trackside_ap_optical_status_computes_from_raw_data():
     # ap_optical_status is computed real-time: -20.32 < -20.00 → alarm
     assert rows[0]["ap_optical_status"] == "alarm"
     # switch_optical_status is computed real-time: -6.10 → normal
-    assert rows[0]["switch_optical_status"] == "normal"
+    assert rows[0]["switch_optical_status"] == "unknown"
 
 
 # ── Unified State Architecture tests ──────────────────────────────────────────
@@ -2264,9 +2299,9 @@ def test_state_engine_compute_state_returns_unified_result():
         "fit_ap_row": {"rx_power": "-20.32", "rx_low_alarm": "-20.00", "rx_low_warning": "-17.00"},
     })
     assert isinstance(result, StateResult)
-    assert result.switch_status == "warning"
+    assert result.switch_status == "notice"
     assert result.ap_status == "alarm"
-    assert result.optical_status == "alarm"   # worse of warning/alarm
+    assert result.optical_status == "alarm"   # worse of notice/alarm
     assert result.severity > 0
     assert result.color == STATUS_COLORS["alarm"]
 
@@ -2347,7 +2382,7 @@ def test_state_engine_three_pages_same_input_same_output():
     # FIT-AP ViewModel
     fit_ap_result = fit_ap_vm.populate_row(fit_ap_row)
     assert fit_ap_result.switch_status == "alarm"
-    assert fit_ap_result.ap_status == "warning"
+    assert fit_ap_result.ap_status == "notice"
 
     # Trackside ViewModel (using same FIT-AP row)
     trackside_row = {
@@ -2372,7 +2407,7 @@ def test_state_engine_no_ui_computes_status():
     # evaluate_fit_ap_ap_status must compute from raw rx_power
     assert evaluate_fit_ap_ap_status({"rx_power": "-36.96"}) == "no_light"
     # evaluate_fit_ap_switch_status must compute from raw neighbor_rx_power
-    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.35", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "warning"
+    assert evaluate_fit_ap_switch_status({"neighbor_rx_power": "-14.35", "rx_low_alarm": "-19.00", "warning_low": "-16.99"}) == "notice"
     # evaluate_fit_ap_row_status must go through compute_state with raw data
     row = {"neighbor_rx_power": "-10.00", "rx_power": "-20.32", "rx_low_alarm": "-20.00", "rx_low_warning": "-17.00"}
     assert evaluate_fit_ap_row_status(row) == "alarm"

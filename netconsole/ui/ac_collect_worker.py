@@ -4,6 +4,7 @@ from PySide6.QtCore import QThread, Signal
 
 from netconsole.models.device import Device
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
+from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY
 
 
 class AcResourceCollectThread(QThread):
@@ -11,7 +12,7 @@ class AcResourceCollectThread(QThread):
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
-    def __init__(self, device: Device, site_name: str, concurrency: int = 20, parent=None, max_workers: int | None = None) -> None:
+    def __init__(self, device: Device, site_name: str, concurrency: int = BATCH_CONCURRENCY, parent=None, max_workers: int | None = None) -> None:
         super().__init__(parent)
         self.device = device
         self.site_name = site_name
@@ -32,7 +33,7 @@ class FitApOpticalCollectThread(QThread):
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
-    def __init__(self, device: Device, site_name: str, concurrency: int = 200, parent=None, max_workers: int | None = None) -> None:
+    def __init__(self, device: Device, site_name: str, concurrency: int = BATCH_CONCURRENCY, parent=None, max_workers: int | None = None) -> None:
         super().__init__(parent)
         self.device = device
         self.site_name = site_name

@@ -4,20 +4,26 @@ import re
 from dataclasses import dataclass
 
 
+DERIVED_WARNING_DELTA_DB = 2.01
+MAINTENANCE_MARGIN_DB = 3.0
+
 SEVERITY_RANK = {
     "unknown": 0,
     "not_collected": 0,
     "skipped": 0,
     "": 0,
     "normal": 1,
-    "warning": 2,
-    "alarm": 3,
-    "link_abnormal": 4,
-    "no_light": 5,
+    "notice": 2,
+    "warning": 3,
+    "alarm": 4,
+    "link_abnormal": 5,
+    "link_down": 5,
+    "no_light": 6,
 }
 
 STATUS_COLORS = {
     "normal": "DCFCE7",
+    "notice": "FEF9C3",
     "warning": "FEF9C3",
     "alarm": "FEE2E2",
     "link_abnormal": "FFE4E6",
@@ -31,6 +37,7 @@ STATUS_COLORS = {
 OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
     "zh": {
         "normal": "正常",
+        "notice": "偏低关注",
         "warning": "提示告警",
         "alarm": "一般告警",
         "link_abnormal": "链路异常",
@@ -42,6 +49,7 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
     },
     "en": {
         "normal": "Normal",
+        "notice": "Notice",
         "warning": "Warning",
         "alarm": "Alarm",
         "link_abnormal": "Link Abnormal",
@@ -58,27 +66,79 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
 class OpticalSeverityResult:
     severity: str
     reason: str | None = None
+    rx_power: float | None = None
+    alarm_low: float | None = None
+    warning_low: float | None = None
+    maintenance_normal_line: float | None = None
+    warning_source: str = "missing"
+    source_label: str = "threshold missing"
 
 
 def compute_optical_severity(record: dict) -> OpticalSeverityResult:
+    """Compute RX optical status using native thresholds or traceable derivation.
+
+    Status model:
+    - normal: rx >= warning + 3 dB
+    - notice: warning <= rx < warning + 3 dB
+    - warning: alarm <= rx < warning
+    - alarm: rx < alarm
+
+    If warning is missing but alarm exists, warning is derived as alarm + 2.01 dB.
+    If both warning and alarm are missing, the status is unknown instead of normal.
+    """
     rx_power = _first_float(record, "rx_power", "switch_rx_power", "ap_rx_power")
     if rx_power is None or rx_power <= -35:
-        return OpticalSeverityResult("no_light", "RX power is missing or <= -35 dBm")
+        return OpticalSeverityResult("no_light", "RX power is missing or <= -35 dBm", rx_power=rx_power)
 
     port_status = str(_first_value(record, "port_status", "switch_port_status", "ap_port_status") or "").strip().upper()
     if port_status == "DOWN":
-        return OpticalSeverityResult("link_abnormal", "Port is DOWN")
+        return OpticalSeverityResult("link_abnormal", "Port is DOWN", rx_power=rx_power)
 
     alarm_low = _first_float(record, "alarm_low", "rx_low_alarm")
-    if alarm_low is not None and rx_power < alarm_low:
-        return OpticalSeverityResult("alarm", "RX power below alarm low threshold")
-
     warning_low = _first_float(record, "warning_low", "rx_low_warning")
-    warning_upper = warning_low + 3 if warning_low is not None else None
-    if alarm_low is not None and warning_upper is not None and alarm_low <= rx_power < warning_upper:
-        return OpticalSeverityResult("warning", "RX power in warning range")
+    device_type = str(_first_value(record, "device_type", "source_type") or "").strip().casefold()
+    warning_source = "native" if warning_low is not None else "missing"
+    if warning_low is None and alarm_low is not None:
+        warning_low = round(alarm_low + DERIVED_WARNING_DELTA_DB, 2)
+        warning_source = "derived"
+    source_label = _source_label(device_type, warning_source)
 
-    return OpticalSeverityResult("normal", None)
+    if warning_low is None:
+        return OpticalSeverityResult(
+            "unknown",
+            "RX threshold is missing",
+            rx_power=rx_power,
+            alarm_low=alarm_low,
+            warning_low=None,
+            maintenance_normal_line=None,
+            warning_source=warning_source,
+            source_label=source_label,
+        )
+
+    normal_line = round(warning_low + MAINTENANCE_MARGIN_DB, 2)
+    if rx_power >= normal_line:
+        severity = "normal"
+        reason = "RX power is above maintenance normal line"
+    elif warning_low <= rx_power < normal_line:
+        severity = "notice"
+        reason = "RX power is below maintenance normal line"
+    elif alarm_low is None or alarm_low <= rx_power < warning_low:
+        severity = "warning"
+        reason = "RX power is between alarm low and warning low threshold"
+    else:
+        severity = "alarm"
+        reason = "RX power below alarm low threshold"
+
+    return OpticalSeverityResult(
+        severity,
+        reason,
+        rx_power=rx_power,
+        alarm_low=alarm_low,
+        warning_low=warning_low,
+        maintenance_normal_line=normal_line,
+        warning_source=warning_source,
+        source_label=source_label,
+    )
 
 
 def worse_optical_severity(left: str, right: str) -> str:
@@ -115,3 +175,11 @@ def _to_float(value: object) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _source_label(device_type: str, warning_source: str) -> str:
+    if warning_source == "native":
+        return "AP native" if device_type == "ap" else "switch native"
+    if warning_source == "derived":
+        return "AP derived" if device_type == "ap" else "switch derived"
+    return "threshold missing"

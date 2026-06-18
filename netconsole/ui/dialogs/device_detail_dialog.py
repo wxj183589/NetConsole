@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core.i18n import I18n
+from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
@@ -40,6 +41,8 @@ from netconsole.ui.dialogs.history_data_dialog import (
 )
 from netconsole.ui.optical_refresh_worker import OpticalRefreshThread
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, status_background_color
+from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
@@ -84,14 +87,6 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.temperature", "temperature"),
     ("details.voltage", "voltage"),
     ("details.bias_current", "bias_current"),
-    ("details.rx_low_alarm", "rx_low_alarm"),
-    ("details.rx_high_alarm", "rx_high_alarm"),
-    ("details.tx_low_alarm", "tx_low_alarm"),
-    ("details.tx_high_alarm", "tx_high_alarm"),
-    ("details.rx_low_warning", "rx_low_warning"),
-    ("details.rx_high_warning", "rx_high_warning"),
-    ("details.tx_low_warning", "tx_low_warning"),
-    ("details.tx_high_warning", "tx_high_warning"),
     ("details.module_model", "module_model"),
     ("details.module_serial_number", "module_serial_number"),
     ("details.vendor", "module_vendor"),
@@ -101,16 +96,7 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.collected_at", "collected_at"),
 )
 
-OPTICAL_STATUS_COLORS = {
-    "normal": "#ecfdf5",
-    "warning": "#fef9c3",
-    "alarm": "#fee2e2",
-    "link_abnormal": "#ffe4e6",
-    "no_light": "#e5e7eb",
-    "skipped": "#f3f4f6",
-}
-
-OPTICAL_STATUS_VALUES = {"normal", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
+OPTICAL_STATUS_VALUES = {"normal", "notice", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
 
 LLDP_COLUMNS = (
     ("details.local_interface", "local_interface"),
@@ -158,7 +144,6 @@ class DeviceDetailDialog(QDialog):
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
-        self.apply_style()
         self.retranslate()
 
     def retranslate(self) -> None:
@@ -299,13 +284,17 @@ class DeviceDetailDialog(QDialog):
         for row in rows:
             interface = interfaces_by_name.get(str(row.get("interface_name") or ""), {})
             computed = dict(row)
-            computed["status"] = compute_switch_status(
-                switch_rx_power=row.get("rx_power"),
-                switch_port_status=row.get("port_status") or interface.get("link_status"),
-                alarm_low=row.get("rx_low_alarm"),
-                alarm_high=row.get("rx_high_alarm"),
-                warning_low=row.get("rx_low_warning"),
+            result = compute_optical_severity(
+                {
+                    "switch_rx_power": row.get("rx_power"),
+                    "switch_port_status": row.get("port_status") or interface.get("link_status"),
+                    "alarm_low": row.get("rx_low_alarm"),
+                    "alarm_high": row.get("rx_high_alarm"),
+                    "warning_low": row.get("rx_low_warning"),
+                    "device_type": "switch",
+                }
             )
+            computed["status"] = result.severity
             computed_rows.append(computed)
         return computed_rows
 
@@ -342,6 +331,7 @@ class DeviceDetailDialog(QDialog):
         optical_status_by_interface: dict[str, str] | None = None,
     ) -> QWidget:
         table = QTableWidget(0, len(columns))
+        set_table_column_fields(table, [field for _label_key, field in columns])
         configure_readonly_table(table)
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
         page_state = {"page": 1, "page_size": DEFAULT_PAGE_SIZE, "visible_rows": []}
@@ -368,11 +358,7 @@ class DeviceDetailDialog(QDialog):
                     table.setItem(row_index, column_index, item)
             table.setSortingEnabled(False)
             table.setUpdatesEnabled(True)
-            auto_resize_table_columns(
-                table,
-                stretch_columns={stretch_index} if stretch_index is not None else set(),
-                column_min_widths=_column_min_widths(columns),
-            )
+            auto_resize_table_columns(table)
 
         def open_paged_history(row: int, kind=history_kind) -> None:
             visible_rows = page_state["visible_rows"]
@@ -382,7 +368,7 @@ class DeviceDetailDialog(QDialog):
         attach_table_context_menu(table, self.i18n.language, history_callback=open_paged_history, include_history=history_kind in {"interface", "optical", "lldp"})
         pagination.pageChanged.connect(lambda page: (page_state.__setitem__("page", page), render()))
         pagination.pageSizeChanged.connect(lambda size: (page_state.__setitem__("page_size", size), page_state.__setitem__("page", 1), render()))
-        stretch_index = _column_index(columns, stretch_field)
+        _ = stretch_field
         render()
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
@@ -391,7 +377,7 @@ class DeviceDetailDialog(QDialog):
             layout.addWidget(self._note_label("details.interface_color_note"))
         elif history_kind == "optical":
             layout.addWidget(self._note_label("details.optical_color_legend"))
-        layout.addWidget(table)
+        layout.addWidget(table, 1)
         layout.addWidget(pagination)
         return wrapper
 
@@ -402,11 +388,11 @@ class DeviceDetailDialog(QDialog):
 
     @staticmethod
     def optical_status_color(status: object | None) -> str | None:
-        return OPTICAL_STATUS_COLORS.get(str(status or ""))
+        return status_background_color(status)
 
     @staticmethod
     def interface_row_status_color(status: object | None) -> str | None:
-        return OPTICAL_STATUS_COLORS.get(str(status or "")) if status in {"link_abnormal", "no_light", "alarm", "warning"} else None
+        return status_background_color(status) if status in {"link_abnormal", "no_light", "alarm", "warning", "notice"} else None
 
     @staticmethod
     def _apply_status_background(item: QTableWidgetItem, history_kind: str, status: object | None) -> None:
@@ -419,8 +405,7 @@ class DeviceDetailDialog(QDialog):
         else:
             return
         if color_value is not None:
-            item.setBackground(QColor(color_value))
-            item.setForeground(QColor("#111827"))
+            apply_status_item_contrast(item, status)
 
     def open_history_data(self, history_kind: str, row: dict[str, object | None]) -> HistoryDataDialog:
         device_uuid = str(self.device.device_uuid or "")
@@ -477,21 +462,6 @@ class DeviceDetailDialog(QDialog):
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
         self.raise_()
         self.activateWindow()
-
-    def apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QDialog, QWidget { background: #f7f8fa; color: #1f2933; font-family: "Microsoft YaHei", "Segoe UI"; font-size: 13px; }
-            QLabel { color: #1f2933; }
-            QTabWidget::pane { background: #ffffff; border: 1px solid #cbd5df; top: -1px; }
-            QTabBar::tab { background: #e9eef5; color: #1f2933; border: 1px solid #cbd5df; padding: 8px 16px; min-width: 92px; }
-            QTabBar::tab:selected { background: #ffffff; color: #0f3d75; border-bottom: 1px solid #ffffff; font-weight: 600; }
-            QTabBar::tab:!selected:hover { background: #f1f5fb; }
-            QPushButton { background: #ffffff; border: 1px solid #cbd5df; border-radius: 4px; padding: 6px 10px; }
-            QPushButton:hover { background: #eef5ff; border-color: #8bb7ee; }
-            """
-        )
-
 
 class CollectLogDialog(QDialog):
     def __init__(self, title: str, raw_log_path: str, text: str, parent=None) -> None:

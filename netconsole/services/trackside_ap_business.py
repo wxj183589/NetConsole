@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from netconsole.core.optical_severity_engine import display_optical_status, worse_optical_severity
-from netconsole.core.sources.ap_source import compute_ap_status
-from netconsole.core.sources.switch_source import (
-    build_switch_data_lookup,
-    compute_switch_status,
-)
+from netconsole.core.optical_severity_engine import compute_optical_severity, display_optical_status, worse_optical_severity
+from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.models.device import Device
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
@@ -50,6 +46,7 @@ TRACKSIDE_AP_DEVICE_COLUMNS = (
 
 TRACKSIDE_OPTICAL_COLOR_RGB = {
     "normal": "DCFCE7",
+    "notice": "FEF9C3",
     "warning": "FEF9C3",
     "alarm": "FEE2E2",
     "link_abnormal": "FFE4E6",
@@ -127,17 +124,28 @@ def build_trackside_ap_business_rows(
                 or fit_ap_optical_by_name_mac.get(neighbor_mac)
                 or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
             )
-            switch_status = compute_switch_status(
-                device_name=device.name,
-                interface_name=interface_name,
-                switch_rx_power=optical.get("rx_power"),
-                switch_port_status=optical.get("port_status"),
-                alarm_low=optical.get("rx_low_alarm"),
-                alarm_high=optical.get("rx_high_alarm"),
-                warning_low=optical.get("rx_low_warning"),
-                lookup=device_optical_status_lookup,
+            switch_result = compute_optical_severity(
+                {
+                    "switch_rx_power": optical.get("rx_power"),
+                    "switch_port_status": optical.get("port_status"),
+                    "alarm_low": optical.get("rx_low_alarm"),
+                    "alarm_high": optical.get("rx_high_alarm"),
+                    "warning_low": optical.get("rx_low_warning"),
+                    "device_type": "switch",
+                }
             )
-            ap_status = compute_ap_status(fit_ap)
+            switch_status = switch_result.severity
+            ap_result = compute_optical_severity(
+                {
+                    "ap_rx_power": fit_ap.get("rx_power"),
+                    "ap_port_status": fit_ap.get("ap_port_status"),
+                    "alarm_low": fit_ap.get("rx_low_alarm"),
+                    "alarm_high": fit_ap.get("rx_high_alarm"),
+                    "warning_low": fit_ap.get("rx_low_warning"),
+                    "device_type": "ap",
+                }
+            )
+            ap_status = ap_result.severity
             result.append(
                 {
                     "site": device.station or fit_ap.get("site") or "",
@@ -190,7 +198,8 @@ def build_trackside_site_filter_items(rows: list[dict[str, object | None]], all_
 def export_trackside_ap_business_xlsx(path: Path, rows: list[dict[str, object | None]], columns: tuple[tuple[str, str], ...], headers: list[str]) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter
+
+    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 
     workbook = Workbook()
     sheet = workbook.active
@@ -218,10 +227,7 @@ def export_trackside_ap_business_xlsx(path: Path, rows: list[dict[str, object | 
             cell.border = border
             if cell.row == 1:
                 cell.font = Font(bold=True)
-    for column_index in range(1, sheet.max_column + 1):
-        letter = get_column_letter(column_index)
-        max_length = max(len(str(cell.value or "")) for cell in sheet[letter])
-        sheet.column_dimensions[letter].width = min(max_length + 2, 48)
+    apply_worksheet_autofit(sheet, maximum=60)
     workbook.save(path)
 
 

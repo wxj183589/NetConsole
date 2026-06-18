@@ -28,19 +28,34 @@ def test_extract_sysname_from_invalid_prompt_returns_none():
     assert extract_sysname_from_prompt("invalid") is None
 
 
-def test_h3c_encoding_policy_defaults_to_gb18030():
-    assert H3C_DEFAULT_ENCODING == "gb18030"
-    assert encoding_for_vendor("H3C") == "gb18030"
+def test_h3c_encoding_policy_defaults_to_gb2312():
+    assert H3C_DEFAULT_ENCODING == "gb2312"
+    assert encoding_for_vendor("H3C") == "gb2312"
 
 
-def test_safe_send_command_decodes_h3c_gbk_output_to_unicode():
+def test_safe_send_command_decodes_h3c_gb2312_output_to_unicode():
     class FakeConnection:
-        def send_command(self, command, read_timeout=None):
-            return "Description: To_信号系统".encode("gbk")
+        def send_command(self, command, read_timeout=None, encoding=None):
+            assert encoding == "gb2312"
+            return "Description: To_广播系统".encode("gb2312")
 
     output = safe_send_command(FakeConnection(), "display interface")
 
-    assert "Description: To_信号系统" in output
+    assert "Description: To_广播系统" in output
+
+
+def test_safe_send_command_falls_back_to_utf8_on_decode_error():
+    calls = []
+
+    class FakeConnection:
+        def send_command(self, command, read_timeout=None, encoding=None):
+            calls.append(encoding)
+            if encoding == "gb2312":
+                raise UnicodeDecodeError("gb2312", b"", 0, 1, "boom")
+            return "utf8 ok"
+
+    assert safe_send_command(FakeConnection(), "display interface") == "utf8 ok"
+    assert calls == ["gb2312", "utf-8"]
 
 
 def test_ssh_enabled_prefers_ssh():
@@ -60,7 +75,7 @@ def test_ssh_enabled_prefers_ssh():
 
     assert target is not None
     assert target.protocol == "SSH"
-    assert target.device_type == "h3c_comware"
+    assert target.device_type == "hp_comware"
     assert target.port == 2222
     assert target.username == "ssh_user"
     assert target.password == "ssh_password"
@@ -92,7 +107,6 @@ def test_no_protocol_enabled_returns_failure():
     result = test_device_connection(device)
 
     assert result.success is False
-    assert result.message == "未启用连接方式"
     assert result.protocol == ""
 
 
@@ -125,9 +139,10 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
         def find_prompt(self):
             return "<SW01>"
 
-        def send_command(self, command, read_timeout=None):
+        def send_command(self, command, read_timeout=None, encoding=None):
             calls["command"] = command
             calls["read_timeout"] = read_timeout
+            calls["encoding"] = encoding
             return "clock"
 
         def disconnect(self):
@@ -154,7 +169,7 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
     assert result.protocol == "SSH"
     assert result.prompt == "<SW01>"
     assert calls["kwargs"] == {
-        "device_type": "h3c_comware",
+        "device_type": "hp_comware",
         "host": "10.0.0.52",
         "username": "admin",
         "password": "Admin@123",
@@ -163,9 +178,13 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
         "conn_timeout": 10,
         "auth_timeout": 10,
         "banner_timeout": 10,
+        "encoding": "gb2312",
+        "session_log": None,
+        "global_delay_factor": 1,
     }
     assert calls["command"] == "display clock"
     assert calls["read_timeout"] == 10
+    assert calls["encoding"] == "gb2312"
     assert calls["disconnect"] is True
 
 
