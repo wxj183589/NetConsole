@@ -54,6 +54,7 @@ FIT_AP_OPTICAL_COMMANDS = (
     "display transceiver interface",
     "display transceiver manuinfo interface",
 )
+BATCH_CONCURRENCY = 50
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,7 @@ def collect_h3c_fit_ap_optical(
     site_name: str,
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
-    max_workers: int = 200,
+    max_workers: int = BATCH_CONCURRENCY,
 ) -> FitApOpticalCollectResult:
     paths = paths or PathResolver()
     repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
@@ -208,7 +209,8 @@ def collect_h3c_fit_ap_optical(
 
     resources = [row for row in repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid)) if row.get("ap_ip")]
     rows: list[dict[str, object | None]] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(int(max_workers or 1), 1000))) as executor:
+    worker_count = max(1, min(int(max_workers or BATCH_CONCURRENCY), 1000))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
             executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
             for row in resources

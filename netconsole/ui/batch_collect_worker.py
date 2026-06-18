@@ -13,6 +13,7 @@ from netconsole.services.h3c_collect_service import CollectDeviceResult, collect
 
 
 Collector = Callable[[Device, str], CollectDeviceResult]
+BATCH_CONCURRENCY = 50
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ def run_batch_collect(
     devices: list[Device],
     site_name: str,
     collector: Collector = collect_h3c_device_details,
-    max_workers: int = 20,
+    max_workers: int = BATCH_CONCURRENCY,
     result_callback: Callable[[BatchCollectItemResult], None] | None = None,
 ) -> list[BatchCollectItemResult]:
     results: list[BatchCollectItemResult] = []
@@ -76,15 +77,15 @@ class BatchCollectWorker(QThread):
         self,
         devices: list[Device],
         site_name: str,
-        concurrency: int = 20,
+        concurrency: int = BATCH_CONCURRENCY,
         parent=None,
         max_workers: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.devices = list(devices)
         self.site_name = site_name
-        self.concurrency = int(max_workers if max_workers is not None else concurrency)
-        self.max_workers = self.concurrency
+        self.max_workers = int(max_workers if max_workers is not None else concurrency)
+        self.concurrency = self.max_workers
 
     def run(self) -> None:
         app_logger.log_info("BATCH_COLLECT_STARTED", f"count={len(self.devices)}")
@@ -107,6 +108,6 @@ class BatchCollectWorker(QThread):
                 )
             self.device_finished.emit(item)
 
-        run_batch_collect(self.devices, self.site_name, max_workers=self.concurrency, result_callback=on_result)
+        run_batch_collect(self.devices, self.site_name, max_workers=self.max_workers, result_callback=on_result)
         app_logger.log_info("BATCH_COLLECT_FINISHED", f"success={success_count} failed={failed_count}")
         self.batch_finished.emit(success_count, failed_count)

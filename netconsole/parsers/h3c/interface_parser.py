@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 
-from netconsole.utils.text_encoding import clean_h3c_device_text
+from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
+from netconsole.utils.text_encoding import safe_decode
 
 
-INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet)[\d/.:]+|Vlan-interface\d+|Bridge-Aggregation\d+|LoopBack\d+|NULL\d+"
+INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|M-GigabitEthernet|XGE|GE)[\d/.:]+|Vlan-interface\d+|Bridge-Aggregation\d+|InLoopBack\d+|LoopBack\d+|NULL\d+"
 INTERFACE_HEADER = re.compile(rf"^({INTERFACE_NAME})\s+current state:\s+(.+)$", re.IGNORECASE)
 INTERFACE_NAME_ONLY = re.compile(rf"^({INTERFACE_NAME})$", re.IGNORECASE)
 
@@ -21,7 +22,7 @@ def parse_interfaces(output: str) -> list[dict[str, object | None]]:
             if current:
                 interfaces.append(_finalize_interface(current))
             current = {
-                "interface_name": header.group(1),
+                "interface_name": normalize_interface(header.group(1)),
                 "link_status": header.group(2).strip(),
             }
             pending_name = None
@@ -30,7 +31,7 @@ def parse_interfaces(output: str) -> list[dict[str, object | None]]:
         if name_only:
             if current:
                 interfaces.append(_finalize_interface(current))
-            pending_name = name_only.group(1)
+            pending_name = normalize_interface(name_only.group(1))
             current = None
             continue
         if pending_name and line.strip().lower().startswith("current state:"):
@@ -46,7 +47,7 @@ def parse_interfaces(output: str) -> list[dict[str, object | None]]:
         if stripped.startswith("Line protocol current state:") or stripped.startswith("Line protocol state:"):
             current["protocol_status"] = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("Description:"):
-            current["description"] = clean_h3c_device_text(stripped.split(":", 1)[1].strip())
+            current["description"] = safe_decode(stripped.split(":", 1)[1].strip())
         elif stripped.lower().startswith("internet address"):
             address = _parse_internet_address(stripped)
             if address:

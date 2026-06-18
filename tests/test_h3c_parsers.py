@@ -201,6 +201,45 @@ Description: To_信号系统
     assert parsed[0]["description"] == "To_信号系统"
 
 
+def test_interface_parser_keeps_gb2312_chinese_description_readable():
+    parsed = parse_interfaces(
+        """
+GigabitEthernet2/0/13
+Current state: UP
+Line protocol state: UP
+Description: To_广播系统
+"""
+    )
+
+    assert parsed[0]["description"] == "To_广播系统"
+
+
+def test_interface_parser_supports_loopback_management_and_null_ports():
+    parsed = parse_interfaces(
+        """
+InLoopBack0
+Current state: UP
+Line protocol state: UP
+M-GigabitEthernet0/0/0
+Current state: UP
+Line protocol state: UP
+LoopBack0
+Current state: UP
+Line protocol state: UP
+NULL0
+Current state: UP
+Line protocol state: UP
+"""
+    )
+
+    assert [item["interface_name"] for item in parsed] == [
+        "InLoopBack0",
+        "M-GigabitEthernet0/0/0",
+        "LoopBack0",
+        "NULL0",
+    ]
+
+
 def test_interface_parser_identifies_access_l2_pvid_and_status():
     parsed = parse_interfaces(
         """
@@ -439,11 +478,12 @@ XGE0/0/28       2c4c-7d30-4e00  Ten-GigabitEthernet1/2/0/48     COCC-12-CORE
         "",
     )
 
-    assert parsed[0]["local_interface"] == "GE0/0/1"
+    assert parsed[0]["local_interface"] == "GigabitEthernet0/0/1"
     assert parsed[0]["neighbor_mac"] == "bc9c-c501-6684"
     assert parsed[0]["neighbor_interface"] == "1"
     assert parsed[0]["neighbor_sysname"] == "Intelligent Power Distribution Unit"
     assert parsed[1]["neighbor_interface"] == "GigabitEthernet0/0/19"
     assert parsed[1]["neighbor_sysname"] == "FutureMatrix"
+    assert parsed[2]["local_interface"] == "Ten-GigabitEthernet0/0/28"
     assert parsed[2]["neighbor_interface"] == "Ten-GigabitEthernet1/2/0/48"
     assert parsed[2]["neighbor_sysname"] == "COCC-12-CORE"

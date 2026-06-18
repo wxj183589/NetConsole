@@ -7,7 +7,7 @@ from typing import Any
 
 from netconsole.core import app_logger
 from netconsole.models.device import Device
-from netconsole.utils.text_encoding import clean_h3c_device_text
+from netconsole.utils.text_encoding import clean_h3c_device_text, safe_decode
 
 try:
     from netmiko import ConnectHandler
@@ -15,9 +15,10 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
     ConnectHandler = None  # type: ignore[assignment]
 
 
-H3C_NETMIKO_DEVICE_TYPE = "h3c_comware"
+H3C_NETMIKO_DEVICE_TYPE = "hp_comware"
 H3C_TELNET_NETMIKO_DEVICE_TYPE = "hp_comware_telnet"
-H3C_DEFAULT_ENCODING = "gb18030"
+H3C_DEFAULT_ENCODING = "gb2312"
+H3C_FALLBACK_ENCODING = "utf-8"
 PROMPT_SYSNAME_PATTERN = re.compile(r"^\s*[<\[]([^<>\[\]]+)[>\]]\s*$")
 
 VENDOR_ENCODING_POLICY = {
@@ -148,18 +149,15 @@ def safe_send_command(
             kwargs["strip_prompt"] = strip_prompt
         if strip_command is not None:
             kwargs["strip_command"] = strip_command
-        output = connection.send_command_timing(command, **kwargs)
+        output = _send_with_encoding(connection.send_command_timing, command, kwargs, encoding)
     else:
-        output = connection.send_command(command, read_timeout=read_timeout)
+        output = _send_with_encoding(connection.send_command, command, {"read_timeout": read_timeout}, encoding)
     return normalize_command_output(output, encoding)
 
 
 def normalize_command_output(output: object, encoding: str = H3C_DEFAULT_ENCODING) -> str:
     if isinstance(output, bytes):
-        try:
-            text = output.decode(encoding, errors="replace")
-        except LookupError:
-            text = output.decode(H3C_DEFAULT_ENCODING, errors="replace")
+        text = safe_decode(output)
     else:
         text = str(output or "")
     if encoding == H3C_DEFAULT_ENCODING:
@@ -203,7 +201,21 @@ def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
         "conn_timeout": 10,
         "auth_timeout": 10,
         "banner_timeout": 10,
+        "encoding": target.encoding,
+        "session_log": None,
+        "global_delay_factor": 1,
     }
+
+
+def _send_with_encoding(method: Any, command: str, kwargs: dict[str, object], encoding: str) -> object:
+    try:
+        return method(command, encoding=encoding, **kwargs)
+    except UnicodeDecodeError:
+        return method(command, encoding=H3C_FALLBACK_ENCODING, **kwargs)
+    except TypeError as exc:
+        if "encoding" not in str(exc):
+            raise
+        return method(command, **kwargs)
 
 
 def _safe_find_prompt(connection: Any) -> str | None:

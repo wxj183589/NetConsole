@@ -9,13 +9,11 @@ from uuid import uuid4
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.adapters.h3c.h3c_parser import H3CParser
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device
-from netconsole.parsers.h3c.interface_parser import parse_interfaces
-from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
-from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
@@ -193,6 +191,7 @@ def _parse_and_write(
     optical_modules_updated = 0
     lldp_neighbors_updated = 0
     interfaces_for_optical: list[dict[str, object | None]] = []
+    parser = H3CParser()
     try:
         facts = parse_device(outputs.get("display version", ""), outputs.get("display device", ""), outputs.get("display device manuinfo", ""))
         facts["sysname"] = (
@@ -211,7 +210,7 @@ def _parse_and_write(
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
         if "display interface" in outputs:
-            interfaces = [_with_metadata(item, metadata) for item in parse_interfaces(outputs.get("display interface", ""))]
+            interfaces = [_with_metadata(item, metadata) for item in parser.parse_interfaces(outputs.get("display interface", ""))]
             interfaces_for_optical = interfaces
             repository.replace_device_interfaces(str(device.device_uuid), interfaces)
             interfaces_updated = len(interfaces)
@@ -222,10 +221,14 @@ def _parse_and_write(
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
         if "display transceiver interface" in outputs or "display transceiver manuinfo interface" in outputs or "display transceiver diagnosis interface" in outputs:
-            modules = merge_transceiver_data(
-                parse_transceivers(outputs.get("display transceiver interface", "")),
-                parse_transceiver_manuinfo(outputs.get("display transceiver manuinfo interface", "")),
-                parse_transceiver_diagnosis(outputs.get("display transceiver diagnosis interface", "")),
+            modules = parser.parse_optical_repository(
+                "\n".join(
+                    [
+                        outputs.get("display transceiver interface", ""),
+                        outputs.get("display transceiver manuinfo interface", ""),
+                        outputs.get("display transceiver diagnosis interface", ""),
+                    ]
+                )
             )
             interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces_for_optical}
             modules = [_with_metadata(item, metadata) for item in modules]
@@ -238,7 +241,7 @@ def _parse_and_write(
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
         if "display lldp neighbor-information list" in outputs or "display lldp neighbor-information verbose" in outputs:
-            neighbors = parse_lldp_neighbors(
+            neighbors = parser.parse_lldp(
                 outputs.get("display lldp neighbor-information list", ""),
                 outputs.get("display lldp neighbor-information verbose", ""),
             )

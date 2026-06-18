@@ -9,6 +9,15 @@ FILE_ENCODING_ERROR = "文件编码无法识别"
 MOJIBAKE_MARKERS = ("锟", "�", "脙", "脗", "悴", "ハ")
 
 
+def safe_decode(text: bytes | str) -> str:
+    if isinstance(text, bytes):
+        try:
+            return clean_h3c_device_text(text.decode("gb2312"))
+        except UnicodeDecodeError:
+            return clean_h3c_device_text(text.decode("utf-8", errors="replace"))
+    return clean_h3c_device_text(str(text or ""))
+
+
 def decode_text_auto(data: bytes) -> str:
     for encoding in TEXT_ENCODINGS:
         try:

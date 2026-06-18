@@ -22,7 +22,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BatchConnectionTestWorker
-from netconsole.ui.batch_collect_worker import BatchCollectWorker
+from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
 from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
@@ -416,7 +416,9 @@ class DeviceManagementPage(QWidget):
             dialog.running = max(0, dialog.running - 1)
         dialog.update_summary()
         self.batch_collect_dialog = dialog
-        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, concurrency=int(dialog.concurrency_combo.currentData() or 20), parent=self)
+        start_concurrency = int(dialog.concurrency_combo.currentData() or BATCH_CONCURRENCY)
+        dialog.set_running(True)
+        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, max_workers=start_concurrency, parent=self)
 
         def on_device_finished(item) -> None:
             row = next(
@@ -431,6 +433,7 @@ class DeviceManagementPage(QWidget):
 
         self.batch_collect_worker.device_finished.connect(on_device_finished)
         self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh())
+        self.batch_collect_worker.finished.connect(lambda: dialog.set_running(False))
         self.batch_collect_worker.finished.connect(self.batch_collect_worker.deleteLater)
         self.batch_collect_worker.finished.connect(lambda: setattr(self, "batch_collect_worker", None))
         dialog.show()

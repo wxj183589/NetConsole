@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
+
 
 def parse_lldp_neighbors(list_output: str, verbose_output: str = "") -> list[dict[str, object | None]]:
     neighbors = _parse_verbose(verbose_output)
@@ -84,9 +86,9 @@ def _parse_list_row_by_header(line: str, positions: tuple[int, int, int, int] | 
     if not local_interface or not neighbor_mac or not neighbor_interface:
         return None
     return {
-        "local_interface": local_interface,
+        "local_interface": normalize_interface(local_interface),
         "neighbor_mac": neighbor_mac,
-        "neighbor_interface": neighbor_interface,
+        "neighbor_interface": normalize_interface(neighbor_interface),
         "neighbor_sysname": neighbor_sysname or None,
     }
 
@@ -102,9 +104,9 @@ def _parse_legacy_list_row_by_header(line: str, positions: tuple[int, int, int, 
     if not local_interface or not neighbor_interface:
         return None
     return {
-        "local_interface": local_interface,
+        "local_interface": normalize_interface(local_interface),
         "neighbor_sysname": neighbor_sysname or None,
-        "neighbor_interface": neighbor_interface,
+        "neighbor_interface": normalize_interface(neighbor_interface),
         "neighbor_ip": neighbor_ip or None,
     }
 
@@ -114,9 +116,9 @@ def _parse_list_row_fallback(line: str) -> dict[str, object | None] | None:
     if not match:
         return None
     return {
-        "local_interface": match.group(1),
+        "local_interface": normalize_interface(match.group(1)),
         "neighbor_mac": match.group(2),
-        "neighbor_interface": match.group(3).strip(),
+        "neighbor_interface": normalize_interface(match.group(3).strip()),
         "neighbor_sysname": (match.group(4) or "").strip() or None,
     }
 
@@ -131,7 +133,7 @@ def _parse_verbose(output: str) -> list[dict[str, object | None]]:
         if line.startswith("LLDP neighbor-information of port"):
             if current.get("local_interface"):
                 rows.append(current)
-            current = {"local_interface": _normalize_local_interface(line.rsplit(" ", 1)[-1])}
+            current = {"local_interface": normalize_interface(_normalize_local_interface(line.rsplit(" ", 1)[-1]))}
             continue
         _set_if_match(current, "neighbor_sysname", line, r"(?i)System name\s*[:：]\s*(.+)")
         _set_if_match(current, "neighbor_mac", line, r"(?i)(?:Chassis ID|MAC address)\s*[:：]\s*(.+)")
@@ -145,7 +147,8 @@ def _parse_verbose(output: str) -> list[dict[str, object | None]]:
 def _set_if_match(target: dict[str, object | None], field: str, text: str, pattern: str) -> None:
     match = re.search(pattern, text)
     if match:
-        target[field] = match.group(1).strip()
+        value = match.group(1).strip()
+        target[field] = normalize_interface(value) if field == "neighbor_interface" else value
 
 
 def _normalize_local_interface(value: str) -> str:

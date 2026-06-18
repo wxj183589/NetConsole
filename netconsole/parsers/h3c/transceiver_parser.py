@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 
+from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
 
-INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|XGE|GE)[\d/.:]+"
+INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|M-GigabitEthernet|XGE|GE)[\d/.:]+|InLoopBack\d+|LoopBack\d+|NULL\d+"
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
 
@@ -18,7 +19,7 @@ def parse_transceivers(output: str) -> list[dict[str, object | None]]:
         if iface:
             if current:
                 modules.append(current)
-            current = {"interface_name": iface.group(1)}
+            current = {"interface_name": normalize_interface(iface.group(1))}
             continue
         if current is None:
             continue
@@ -46,7 +47,7 @@ def parse_transceiver_manuinfo(output: str) -> list[dict[str, object | None]]:
         if iface:
             if current:
                 modules.append(current)
-            current = {"interface_name": iface.group(1)}
+            current = {"interface_name": normalize_interface(iface.group(1))}
             continue
         if current is None:
             continue
@@ -69,7 +70,7 @@ def parse_transceiver_diagnosis(output: str) -> list[dict[str, object | None]]:
         if iface:
             if current:
                 modules.append(current)
-            current = {"interface_name": iface.group(1)}
+            current = {"interface_name": normalize_interface(iface.group(1))}
             section = ""
             continue
         if current is None:
@@ -109,7 +110,7 @@ def merge_transceiver_data(*sources: list[dict[str, object | None]]) -> list[dic
     merged: dict[str, dict[str, object | None]] = {}
     for source in sources:
         for item in source:
-            name = str(item.get("interface_name") or "")
+            name = normalize_interface(str(item.get("interface_name") or ""))
             if not name:
                 continue
             merged.setdefault(name, {"interface_name": name}).update({key: value for key, value in item.items() if value})
