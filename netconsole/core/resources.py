@@ -5,13 +5,15 @@ from pathlib import Path
 
 
 def package_resource_path(*parts: str) -> Path:
-    relative = Path("netconsole", *parts)
+    asset_relative = Path("assets", *parts)
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            candidates.append(Path(meipass) / relative)
-        candidates.append(Path(sys.executable).resolve().parent / relative)
+            candidates.append(Path(meipass) / asset_relative)
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "_internal" / asset_relative)
+        candidates.append(exe_dir / asset_relative)
     candidates.append(Path(__file__).resolve().parents[1] / Path(*parts))
     for candidate in candidates:
         if candidate.exists():

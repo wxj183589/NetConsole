@@ -17,10 +17,10 @@ build/
 dist/
 build_output/
 release/
-project/build/*
-!project/build/README.md
-project/dist/*
-!project/dist/README.md
+project/build/
+project/dist/
+project/spec/
+project/release/
 *.spec
 
 # IDE

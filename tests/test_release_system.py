@@ -36,15 +36,22 @@ def test_release_script_pushes_two_remotes_and_tags():
     assert 'git", "tag", "-a", selected_version' in text
 
 
-def test_build_release_script_uses_build_output_and_release_zip():
+def test_build_release_script_uses_project_output_and_release_zip():
     root = Path(__file__).resolve().parents[1]
     text = (root / "build_release.bat").read_text(encoding="utf-8")
 
     assert "release.py" in text
-    assert "build_output" in text
-    assert "--distpath \"%BUILD_ROOT%\\dist\"" in text
-    assert "--workpath \"%BUILD_ROOT%\\build\"" in text
-    assert "--specpath \"%BUILD_ROOT%\\spec\"" in text
-    assert "--version-file \"%ROOT%project\\version_info.txt\"" in text
-    assert '--add-data "%ROOT%netconsole;netconsole"' in text
+    assert "PROJECT_ROOT=%ROOT%\\project" in text
+    assert "--distpath \"%DIST_ROOT%\"" in text
+    assert "--workpath \"%BUILD_ROOT%\"" in text
+    assert "--specpath \"%SPEC_ROOT%\"" in text
+    assert "--version-file \"%ROOT%\\project\\version_info.txt\"" in text
+    assert "--contents-directory \"_internal\"" in text
+    assert "--exclude-module tests" in text
+    assert "--exclude-module docs" in text
+    assert "--exclude-module project" in text
+    assert '--add-data "%ROOT%\\netconsole\\ui\\icons;assets\\ui\\icons"' in text
+    assert '--add-data "%ROOT%\\netconsole\\docs\\changelog.md;assets\\docs"' in text
+    assert "Unexpected dist item:" in text
+    assert "%DIST_ROOT%\\NetConsole\\netconsole" in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text

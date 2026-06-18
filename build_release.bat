@@ -2,13 +2,17 @@
 setlocal enabledelayedexpansion
 
 set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
+set "PROJECT_ROOT=%ROOT%\project"
 cd /d "%ROOT%"
 
 set "PYTHON_EXE=python"
-if exist ".venv\Scripts\python.exe" set "PYTHON_EXE=.venv\Scripts\python.exe"
+if exist "%ROOT%\.venv\Scripts\python.exe" set "PYTHON_EXE=%ROOT%\.venv\Scripts\python.exe"
 
-set "BUILD_ROOT=%ROOT%build_output"
-set "RELEASE_ROOT=%ROOT%release"
+set "BUILD_ROOT=%PROJECT_ROOT%\build"
+set "DIST_ROOT=%PROJECT_ROOT%\dist"
+set "SPEC_ROOT=%PROJECT_ROOT%\spec"
+set "RELEASE_ROOT=%PROJECT_ROOT%\release"
 
 echo ==============================
 echo NetConsole Build System
@@ -20,8 +24,8 @@ taskkill /F /IM NetConsole.exe >nul 2>nul
 
 echo [2/8] Clean old build output
 if exist "%BUILD_ROOT%" rmdir /S /Q "%BUILD_ROOT%"
-if exist "%ROOT%build" rmdir /S /Q "%ROOT%build"
-if exist "%ROOT%dist" rmdir /S /Q "%ROOT%dist"
+if exist "%DIST_ROOT%" rmdir /S /Q "%DIST_ROOT%"
+if exist "%SPEC_ROOT%" rmdir /S /Q "%SPEC_ROOT%"
 if exist "%RELEASE_ROOT%" rmdir /S /Q "%RELEASE_ROOT%"
 
 echo [3/8] Clean __pycache__
@@ -48,35 +52,47 @@ set /p APP_VERSION=<"%BUILD_ROOT%\version.txt"
 if "%APP_VERSION%"=="" goto failed
 
 echo [6/8] PyInstaller build
+if not exist "%PROJECT_ROOT%" mkdir "%PROJECT_ROOT%"
+cd /d "%PROJECT_ROOT%"
 
 "%PYTHON_EXE%" -m PyInstaller ^
   --noconfirm ^
   --onedir ^
   --windowed ^
   --name NetConsole ^
-  --icon "%ROOT%netconsole\ui\icons\love.ico" ^
-  --version-file "%ROOT%project\version_info.txt" ^
-  --distpath "%BUILD_ROOT%\dist" ^
-  --workpath "%BUILD_ROOT%\build" ^
-  --specpath "%BUILD_ROOT%\spec" ^
-  --add-data "%ROOT%netconsole;netconsole" ^
-  main.py
+  --icon "%ROOT%\netconsole\ui\icons\love.ico" ^
+  --version-file "%ROOT%\project\version_info.txt" ^
+  --distpath "%DIST_ROOT%" ^
+  --workpath "%BUILD_ROOT%" ^
+  --specpath "%SPEC_ROOT%" ^
+  --contents-directory "_internal" ^
+  --exclude-module tests ^
+  --exclude-module docs ^
+  --exclude-module project ^
+  --add-data "%ROOT%\netconsole\ui\icons;assets\ui\icons" ^
+  --add-data "%ROOT%\netconsole\docs\changelog.md;assets\docs" ^
+  "%ROOT%\main.py"
 
 if errorlevel 1 goto failed
 
-echo [7/8] Copy docs/icons
-xcopy /E /I /Y "netconsole\docs" "%BUILD_ROOT%\dist\NetConsole\netconsole\docs" >nul
-xcopy /E /I /Y "netconsole\ui\icons" "%BUILD_ROOT%\dist\NetConsole\netconsole\ui\icons" >nul
+echo [7/8] Verify clean dist
+cd /d "%ROOT%"
+if exist "%DIST_ROOT%\NetConsole\netconsole" goto failed
+if exist "%DIST_ROOT%\NetConsole\tests" goto failed
+if exist "%DIST_ROOT%\NetConsole\docs" goto failed
+if exist "%DIST_ROOT%\NetConsole\project" goto failed
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$allowed = @('NetConsole.exe', '_internal'); $unexpected = Get-ChildItem -LiteralPath '%DIST_ROOT%\NetConsole' -Force | Where-Object { $allowed -notcontains $_.Name }; if ($unexpected) { $unexpected | ForEach-Object { Write-Host ('Unexpected dist item: ' + $_.FullName) }; exit 1 }"
+if errorlevel 1 goto failed
 
 echo [8/8] Create release zip
 if not exist "%RELEASE_ROOT%" mkdir "%RELEASE_ROOT%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%BUILD_ROOT%\dist\NetConsole\*' -DestinationPath '%RELEASE_ROOT%\NetConsole_%APP_VERSION%.zip' -Force"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%DIST_ROOT%\NetConsole\*' -DestinationPath '%RELEASE_ROOT%\NetConsole_%APP_VERSION%.zip' -Force"
 if errorlevel 1 goto failed
 
 echo DONE
 echo ==============================
 echo Output:
-echo %BUILD_ROOT%\dist\NetConsole\NetConsole.exe
+echo %DIST_ROOT%\NetConsole\NetConsole.exe
 echo %RELEASE_ROOT%\NetConsole_%APP_VERSION%.zip
 echo ==============================
 exit /b 0

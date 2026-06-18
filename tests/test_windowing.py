@@ -139,10 +139,16 @@ def test_release_resources_and_build_script_are_configured():
     assert "--onedir" in script
     assert "--windowed" in script
     assert "--name NetConsole" in script
-    assert '--icon "%ROOT%netconsole\\ui\\icons\\love.ico"' in script
+    assert '--icon "%ROOT%\\netconsole\\ui\\icons\\love.ico"' in script
     assert "--version-file" in script
-    assert '--add-data "%ROOT%netconsole;netconsole"' in script
-    assert "build_output" in script
+    assert '--add-data "%ROOT%\\netconsole\\ui\\icons;assets\\ui\\icons"' in script
+    assert '--add-data "%ROOT%\\netconsole\\docs\\changelog.md;assets\\docs"' in script
+    assert "--contents-directory \"_internal\"" in script
+    assert "--exclude-module tests" in script
+    assert "--exclude-module docs" in script
+    assert "--exclude-module project" in script
+    assert "PROJECT_ROOT=%ROOT%\\project" in script
+    assert "Unexpected dist item:" in script
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in script
 
 
