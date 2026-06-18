@@ -57,7 +57,7 @@ if not exist "%PROJECT_ROOT%" mkdir "%PROJECT_ROOT%"
 if errorlevel 1 goto failed
 cd /d "%PROJECT_ROOT%"
 
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --distpath "%DIST_ROOT%" --workpath "%BUILD_ROOT%" "%SPEC_ROOT%\NetConsole.spec"
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --onedir --windowed --name NetConsole --icon "netconsole\ui\icons\love.ico" --clean --contents-directory _internal --paths "%ROOT%" --distpath "%DIST_ROOT%" --workpath "%BUILD_ROOT%" --specpath "%SPEC_ROOT%" --version-file "%PROJECT_ROOT%\version_info.txt" "%PROJECT_ROOT%\main.py"
 if errorlevel 1 goto failed
 
 echo [7/8] Verify clean dist
@@ -80,4 +80,7 @@ exit /b 0
 
 :failed
 echo BUILD FAILED
+if exist "%BUILD_ROOT%" rmdir /S /Q "%BUILD_ROOT%"
+if exist "%DIST_ROOT%" rmdir /S /Q "%DIST_ROOT%"
+if exist "%SPEC_ROOT%" rmdir /S /Q "%SPEC_ROOT%"
 exit /b 1

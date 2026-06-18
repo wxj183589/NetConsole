@@ -3,39 +3,39 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
-import os
 import shutil
 from pathlib import Path
 
+from netconsole.build.clean_build_lock import (
+    BUILD_PROJECT_ROOT as PROJECT_ROOT,
+    BUILD_ROOT,
+    CleanBuildLockError,
+    DIST_ROOT,
+    ENTRY_FILE,
+    FORBIDDEN_DATAS,
+    FORBIDDEN_PROJECT_SOURCES,
+    ICON_SOURCE,
+    RUNTIME_ROOT,
+    SPEC_FILE,
+    SPEC_ROOT,
+    validate_allowed_runtime,
+    validate_dist_output,
+    validate_project_safety,
+)
 
 CLEAN_BUILD = True
 ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = ROOT / "project"
-BUILD_ROOT = PROJECT_ROOT / "build"
-DIST_ROOT = PROJECT_ROOT / "dist"
-SPEC_ROOT = PROJECT_ROOT / "spec"
-SPEC_FILE = SPEC_ROOT / "NetConsole.spec"
-ENTRY_FILE = PROJECT_ROOT / "main.py"
-RUNTIME_ROOT = BUILD_ROOT / "clean_runtime"
 
 ALLOWED_DATA = [
     ("netconsole", "netconsole"),
     ("data", "data"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
-    ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md"),
 ]
 FORBIDDEN_DATA = [
-    (".", "."),
-    ("project", "project"),
-    ("tests", "tests"),
-    ("docs", "docs"),
+    (item, item) for item in FORBIDDEN_DATAS
 ]
 EXCLUDE_DIRS = [
-    "tests",
-    "docs",
-    "project",
-    "__pycache__",
-    ".git",
+    *FORBIDDEN_PROJECT_SOURCES,
     "build",
     "spec",
     "release",
@@ -152,7 +152,9 @@ def _source_to_module(source: Path) -> str:
 
 def prepare_runtime() -> None:
     if not CLEAN_BUILD:
-        raise RuntimeError("Clean Build Mode is required for release packaging")
+        raise CleanBuildLockError("Clean Build Mode is required for release packaging")
+    validate_project_safety(ALLOWED_DATA)
+    validate_allowed_runtime(ALLOWED_DATA)
     if RUNTIME_ROOT.exists():
         shutil.rmtree(RUNTIME_ROOT)
     RUNTIME_ROOT.mkdir(parents=True)
@@ -160,6 +162,8 @@ def prepare_runtime() -> None:
 
 
 def write_spec() -> Path:
+    validate_project_safety(ALLOWED_DATA)
+    validate_allowed_runtime(ALLOWED_DATA)
     SPEC_ROOT.mkdir(parents=True, exist_ok=True)
     runtime_imports = scan_import_graph()
     spec_text = f'''# -*- mode: python ; coding: utf-8 -*-
@@ -202,7 +206,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version={str(PROJECT_ROOT / "version_info.txt")!r},
-    icon=[{str(ROOT / "netconsole" / "ui" / "icons" / "love.ico")!r}],
+    icon=[{str(ICON_SOURCE)!r}],
     contents_directory='_internal',
 )
 coll = COLLECT(
@@ -215,6 +219,7 @@ coll = COLLECT(
     name='NetConsole',
 )
 '''
+    validate_project_safety(ALLOWED_DATA, spec_text)
     SPEC_FILE.write_text(spec_text, encoding="utf-8")
     return SPEC_FILE
 
@@ -230,36 +235,10 @@ def finalize_dist() -> None:
 
 def validate_dist() -> None:
     app_dist = DIST_ROOT / "NetConsole"
-    allowed_root = {"NetConsole.exe", "_internal", "netconsole", "data"}
-    if not app_dist.exists():
-        raise FileNotFoundError(f"missing dist directory: {app_dist}")
-    unexpected = [path.name for path in app_dist.iterdir() if path.name not in allowed_root]
-    if unexpected:
-        raise RuntimeError(f"unexpected dist root items: {unexpected}")
-    required = ["NetConsole.exe", "_internal", "netconsole"]
-    missing = [name for name in required if not (app_dist / name).exists()]
-    if missing:
-        raise RuntimeError(f"missing required dist items: {missing}")
-    forbidden_relative = [
-        "docs",
-        "tests",
-        "project",
-        "build",
-        "spec",
-        "_internal/netconsole",
-        "netconsole/tests",
-        "netconsole/project",
-        "netconsole/__pycache__",
-    ]
-    for relative in forbidden_relative:
-        if (app_dist / relative).exists():
-            raise RuntimeError(f"forbidden dist item exists: {relative}")
-    changelog = app_dist / "netconsole" / "docs" / "changelog.md"
-    if not changelog.exists():
-        raise RuntimeError("runtime changelog is missing")
+    validate_dist_output(app_dist)
     icon = app_dist / "netconsole" / "ui" / "icons" / "love.ico"
     if not icon.exists():
-        raise RuntimeError("runtime icon is missing")
+        raise CleanBuildLockError("runtime icon is missing")
 
 
 def _copy_runtime_assets() -> None:
@@ -268,11 +247,6 @@ def _copy_runtime_assets() -> None:
             destination = RUNTIME_ROOT / "netconsole" / "ui" / "icons" / icon.name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(icon, destination)
-    source = ROOT / "netconsole" / "docs" / "changelog.md"
-    if source.exists():
-        destination = RUNTIME_ROOT / "netconsole" / "docs" / "changelog.md"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
 
 
 def _replace_with_staged_files(source: Path, destination: Path) -> None:

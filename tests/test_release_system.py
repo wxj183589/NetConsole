@@ -3,6 +3,14 @@ import subprocess
 
 import clean_build_spec
 import release
+import pytest
+from netconsole.build.clean_build_lock import (
+    CleanBuildLockError,
+    validate_datas,
+    validate_dist_output,
+    validate_project_safety,
+    validate_pyinstaller_command,
+)
 from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
@@ -123,7 +131,10 @@ def test_build_release_script_uses_project_output_and_release_zip():
     assert "release.py" in text
     assert "PROJECT_ROOT=%ROOT%\\project" in text
     assert "clean_build_spec.py --prepare --write-spec" in text
-    assert "PyInstaller --noconfirm --distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" \"%SPEC_ROOT%\\NetConsole.spec\"" in text
+    assert "PyInstaller --noconfirm --onedir --windowed --name NetConsole --icon" in text
+    assert "--contents-directory _internal --paths \"%ROOT%\"" in text
+    assert "--distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" --specpath \"%SPEC_ROOT%\"" in text
+    assert "--version-file \"%PROJECT_ROOT%\\version_info.txt\" \"%PROJECT_ROOT%\\main.py\"" in text
     assert "clean_build_spec.py --finalize" in text
     assert "--add-data" not in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
@@ -136,8 +147,9 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("tests", "tests") in clean_build_spec.FORBIDDEN_DATA
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
+    assert ("data", "data") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
-    assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") in clean_build_spec.ALLOWED_DATA
+    assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
     assert "docs" in clean_build_spec.EXCLUDE_DIRS
     assert "project" in clean_build_spec.EXCLUDE_DIRS
@@ -164,7 +176,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
 
     assert expected_relative <= staged_relative
     assert (clean_build_spec.RUNTIME_ROOT / "netconsole" / "ui" / "icons" / "love.ico").exists()
-    assert (clean_build_spec.RUNTIME_ROOT / "netconsole" / "docs" / "changelog.md").exists()
+    assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "docs").exists()
     assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "tests").exists()
     assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "project").exists()
     all_py_files = {
@@ -200,3 +212,79 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "('project', 'project')" not in text
     assert "('tests', 'tests')" not in text
     assert "('docs', 'docs')" not in text
+
+
+@pytest.mark.parametrize(
+    "datas",
+    [
+        [("", ".")],
+        [(".", ".")],
+        [("project", "project")],
+        [("docs", "docs")],
+        [("tests", "tests")],
+        [(Path("docs"), "docs")],
+    ],
+)
+def test_clean_build_lock_rejects_illegal_datas(datas):
+    with pytest.raises(CleanBuildLockError, match="Illegal datasource detected"):
+        validate_datas(datas)
+
+
+def test_clean_build_lock_rejects_illegal_spec_datas():
+    with pytest.raises(CleanBuildLockError, match="Illegal PyInstaller spec datasource"):
+        validate_project_safety(spec_text="a = Analysis(['main.py'], datas=[('.', '.')])")
+
+
+def test_clean_build_lock_validates_required_pyinstaller_options():
+    root = Path(__file__).resolve().parents[1]
+    args = [
+        "--onedir",
+        "--windowed",
+        "--name",
+        "NetConsole",
+        "--icon",
+        "netconsole/ui/icons/love.ico",
+        "--distpath",
+        str(root / "project" / "dist"),
+        "--workpath",
+        str(root / "project" / "build"),
+    ]
+
+    validate_pyinstaller_command(args)
+
+    with pytest.raises(CleanBuildLockError, match="Missing required PyInstaller option: --windowed"):
+        validate_pyinstaller_command([arg for arg in args if arg != "--windowed"])
+
+
+@pytest.mark.parametrize("forbidden", ["docs", "tests", "project", "build", "spec"])
+def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
+    app_dist = tmp_path / "NetConsole"
+    (app_dist / "_internal").mkdir(parents=True)
+    (app_dist / "netconsole" / "ui" / "icons").mkdir(parents=True)
+    (app_dist / "data").mkdir()
+    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+    (app_dist / forbidden).mkdir()
+
+    with pytest.raises(CleanBuildLockError, match="CleanBuildLock violation"):
+        validate_dist_output(app_dist)
+
+
+def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
+    app_dist = tmp_path / "NetConsole"
+    (app_dist / "_internal").mkdir(parents=True)
+    (app_dist / "netconsole" / "ui" / "icons").mkdir(parents=True)
+    (app_dist / "data").mkdir()
+    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+    (app_dist / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
+
+    validate_dist_output(app_dist)
+
+    assert sorted(path.name for path in app_dist.iterdir()) == [
+        "NetConsole.exe",
+        "_internal",
+        "data",
+        "netconsole",
+    ]
+    assert not (app_dist / "docs").exists()
+    assert not (app_dist / "tests").exists()
+    assert not (app_dist / "project").exists()

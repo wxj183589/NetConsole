@@ -17,6 +17,8 @@ build/
 dist/
 build_output/
 release/
+!netconsole/build/
+!netconsole/build/*.py
 project/build/
 project/dist/
 project/spec/
