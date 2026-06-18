@@ -57,12 +57,12 @@ if not exist "%PROJECT_ROOT%" mkdir "%PROJECT_ROOT%"
 if errorlevel 1 goto failed
 cd /d "%PROJECT_ROOT%"
 
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --onedir --windowed --name NetConsole --icon "%ROOT%\netconsole\ui\icons\love.ico" --clean --contents-directory _internal --paths "%ROOT%" --distpath "%DIST_ROOT%" --workpath "%BUILD_ROOT%" --specpath "%SPEC_ROOT%" --version-file "%PROJECT_ROOT%\version_info.txt" "%PROJECT_ROOT%\main.py"
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --distpath "%DIST_ROOT%" --workpath "%BUILD_ROOT%" "%SPEC_ROOT%\NetConsole.spec"
 if errorlevel 1 goto failed
 
 echo [7/8] Verify clean dist
 cd /d "%ROOT%"
-"%PYTHON_EXE%" clean_build_spec.py --finalize
+"%PYTHON_EXE%" clean_build_spec.py --validate
 if errorlevel 1 goto failed
 
 echo [8/8] Create release zip

@@ -30,7 +30,7 @@ FORBIDDEN_DATAS = ("", ".", "project", "docs", "tests")
 FORBIDDEN_DIST_DIRS = ("docs", "tests", "project", "build", "spec")
 FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "spec"}
 ALLOWED_RUNTIME = ("netconsole", "data", "netconsole/ui/icons")
-ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "netconsole", "data")
+ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR)
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",
     "--windowed",
@@ -94,9 +94,13 @@ def validate_dist_output(app_dist: Path | None = None) -> None:
     if unexpected:
         raise CleanBuildLockError(f"CleanBuildLock violation: unexpected dist root items: {unexpected}")
 
-    for required in (EXE_NAME, INTERNAL_DIR, "netconsole", "data"):
+    for required in (EXE_NAME, INTERNAL_DIR):
         if not (app_dist / required).exists():
             raise CleanBuildLockError(f"CleanBuildLock violation: missing required dist item: {required}")
+    if (app_dist / "netconsole").exists():
+        raise CleanBuildLockError("CleanBuildLock violation: netconsole must not exist outside _internal")
+    if not (app_dist / INTERNAL_DIR / "netconsole").exists():
+        raise CleanBuildLockError("CleanBuildLock violation: netconsole must exist inside _internal")
 
     for forbidden in FORBIDDEN_DIST_DIRS:
         if (app_dist / forbidden).exists():

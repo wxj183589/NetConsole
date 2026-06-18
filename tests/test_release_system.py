@@ -134,11 +134,9 @@ def test_build_release_script_uses_project_output_and_release_zip():
     assert "project\\release.py" in text
     assert "PROJECT_ROOT=%ROOT%\\project" in text
     assert "clean_build_spec.py --prepare --write-spec" in text
-    assert "PyInstaller --noconfirm --onedir --windowed --name NetConsole --icon" in text
-    assert "--contents-directory _internal --paths \"%ROOT%\"" in text
-    assert "--distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" --specpath \"%SPEC_ROOT%\"" in text
-    assert "--version-file \"%PROJECT_ROOT%\\version_info.txt\" \"%PROJECT_ROOT%\\main.py\"" in text
-    assert "clean_build_spec.py --finalize" in text
+    assert "PyInstaller --noconfirm --clean --distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" \"%SPEC_ROOT%\\NetConsole.spec\"" in text
+    assert "clean_build_spec.py --validate" in text
+    assert "--finalize" not in text
     assert "--add-data" not in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
 
@@ -178,25 +176,19 @@ def test_clean_build_import_graph_is_entry_file_driven():
 
 
 def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_path, monkeypatch):
-    monkeypatch.setattr(clean_build_spec, "RUNTIME_ROOT", tmp_path / "runtime")
-
-    staged_files = clean_build_spec.build_runtime_subset_from_import_graph()
-    staged_relative = {path.relative_to(clean_build_spec.RUNTIME_ROOT) for path in staged_files}
+    runtime_files = clean_build_spec.build_runtime_subset_from_import_graph()
+    staged_relative = {path.relative_to(clean_build_spec.ROOT) for path in runtime_files}
     expected_relative = {
         path.relative_to(clean_build_spec.ROOT)
         for path in clean_build_spec.build_runtime_module_map().values()
     }
 
-    assert expected_relative <= staged_relative
-    assert (clean_build_spec.RUNTIME_ROOT / "netconsole" / "ui" / "icons" / "love.ico").exists()
-    assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "docs").exists()
-    assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "tests").exists()
-    assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "project").exists()
-    all_py_files = {
-        path.relative_to(clean_build_spec.RUNTIME_ROOT)
-        for path in (clean_build_spec.RUNTIME_ROOT / "netconsole").rglob("*.py")
-    }
-    assert all_py_files == expected_relative
+    assert staged_relative == expected_relative
+    assert all("docs" not in path.parts for path in staged_relative)
+    assert all("tests" not in path.parts for path in staged_relative)
+    assert all("project" not in path.parts for path in staged_relative)
+    datas = clean_build_spec.build_runtime_datas_from_import_graph()
+    assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
 
 
 def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
@@ -218,7 +210,8 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
 
     assert "CLEAN_BUILD = True" in text
     assert "RUNTIME_IMPORTS =" in text
-    assert "datas=[]" in text
+    assert "RUNTIME_DATAS =" in text
+    assert "datas=RUNTIME_DATAS" in text
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
     assert "project\\\\main.py" in text or "project/main.py" in text
@@ -273,9 +266,7 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
 @pytest.mark.parametrize("forbidden", ["docs", "tests", "project", "build", "spec"])
 def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
     app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal").mkdir(parents=True)
-    (app_dist / "netconsole" / "ui" / "icons").mkdir(parents=True)
-    (app_dist / "data").mkdir()
+    (app_dist / "_internal" / "netconsole").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / forbidden).mkdir()
 
@@ -285,23 +276,21 @@ def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
 
 def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal").mkdir(parents=True)
-    (app_dist / "netconsole" / "ui" / "icons").mkdir(parents=True)
-    (app_dist / "data").mkdir()
+    (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
-    (app_dist / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
 
     validate_dist_output(app_dist)
 
     assert sorted(path.name for path in app_dist.iterdir()) == [
         "NetConsole.exe",
         "_internal",
-        "data",
-        "netconsole",
     ]
     assert not (app_dist / "docs").exists()
     assert not (app_dist / "tests").exists()
     assert not (app_dist / "project").exists()
+    assert not (app_dist / "netconsole").exists()
+    assert (app_dist / "_internal" / "netconsole").exists()
 
 
 def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
@@ -318,35 +307,23 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
             "-m",
             "PyInstaller",
             "--noconfirm",
-            "--onedir",
-            "--windowed",
-            "--name",
-            "NetConsole",
-            "--icon",
-            str(root / "netconsole" / "ui" / "icons" / "love.ico"),
             "--clean",
-            "--contents-directory",
-            "_internal",
-            "--paths",
-            str(root),
             "--distpath",
             str(dist_root),
             "--workpath",
             str(build_root),
-            "--specpath",
-            str(spec_root),
-            "--version-file",
-            str(root / "project" / "version_info.txt"),
-            str(root / "project" / "main.py"),
+            str(spec_root / "NetConsole.spec"),
         ],
         cwd=root,
         check=True,
     )
-    subprocess.run([sys.executable, "clean_build_spec.py", "--finalize"], cwd=root, check=True)
+    subprocess.run([sys.executable, "clean_build_spec.py", "--validate"], cwd=root, check=True)
 
     validate_dist_output(app_dist)
     forbidden_names = {"docs", "tests", "project"}
     assert not [path for path in app_dist.rglob("*") if path.name in forbidden_names]
+    assert not (app_dist / "netconsole").exists()
+    assert (app_dist / "_internal" / "netconsole").exists()
 
     env = os.environ.copy()
     env["NETCONSOLE_SMOKE_TEST"] = "1"
