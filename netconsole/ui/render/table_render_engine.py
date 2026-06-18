@@ -25,6 +25,7 @@ from netconsole.ui.theme.qt_theme_engine import DARK_APP_STYLESHEET, LIGHT_APP_S
 
 STATUS_COLOR_MAP = {
     "normal": "#22c55e",
+    "notice": "#fbbf24",
     "warning": "#fbbf24",
     "alarm": "#f87171",
     "link_abnormal": "#fb7185",

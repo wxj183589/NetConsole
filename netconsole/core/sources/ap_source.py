@@ -27,5 +27,6 @@ def compute_ap_status(
             "alarm_low": fit_ap_row.get("rx_low_alarm"),
             "alarm_high": fit_ap_row.get("rx_high_alarm"),
             "warning_low": fit_ap_row.get("rx_low_warning"),
+            "device_type": "ap",
         }
     ).severity

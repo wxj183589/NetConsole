@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core.i18n import I18n
+from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
@@ -86,14 +87,6 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.temperature", "temperature"),
     ("details.voltage", "voltage"),
     ("details.bias_current", "bias_current"),
-    ("details.rx_low_alarm", "rx_low_alarm"),
-    ("details.rx_high_alarm", "rx_high_alarm"),
-    ("details.tx_low_alarm", "tx_low_alarm"),
-    ("details.tx_high_alarm", "tx_high_alarm"),
-    ("details.rx_low_warning", "rx_low_warning"),
-    ("details.rx_high_warning", "rx_high_warning"),
-    ("details.tx_low_warning", "tx_low_warning"),
-    ("details.tx_high_warning", "tx_high_warning"),
     ("details.module_model", "module_model"),
     ("details.module_serial_number", "module_serial_number"),
     ("details.vendor", "module_vendor"),
@@ -103,7 +96,7 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.collected_at", "collected_at"),
 )
 
-OPTICAL_STATUS_VALUES = {"normal", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
+OPTICAL_STATUS_VALUES = {"normal", "notice", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
 
 LLDP_COLUMNS = (
     ("details.local_interface", "local_interface"),
@@ -291,13 +284,17 @@ class DeviceDetailDialog(QDialog):
         for row in rows:
             interface = interfaces_by_name.get(str(row.get("interface_name") or ""), {})
             computed = dict(row)
-            computed["status"] = compute_switch_status(
-                switch_rx_power=row.get("rx_power"),
-                switch_port_status=row.get("port_status") or interface.get("link_status"),
-                alarm_low=row.get("rx_low_alarm"),
-                alarm_high=row.get("rx_high_alarm"),
-                warning_low=row.get("rx_low_warning"),
+            result = compute_optical_severity(
+                {
+                    "switch_rx_power": row.get("rx_power"),
+                    "switch_port_status": row.get("port_status") or interface.get("link_status"),
+                    "alarm_low": row.get("rx_low_alarm"),
+                    "alarm_high": row.get("rx_high_alarm"),
+                    "warning_low": row.get("rx_low_warning"),
+                    "device_type": "switch",
+                }
             )
+            computed["status"] = result.severity
             computed_rows.append(computed)
         return computed_rows
 
@@ -395,7 +392,7 @@ class DeviceDetailDialog(QDialog):
 
     @staticmethod
     def interface_row_status_color(status: object | None) -> str | None:
-        return status_background_color(status) if status in {"link_abnormal", "no_light", "alarm", "warning"} else None
+        return status_background_color(status) if status in {"link_abnormal", "no_light", "alarm", "warning", "notice"} else None
 
     @staticmethod
     def _apply_status_background(item: QTableWidgetItem, history_kind: str, status: object | None) -> None:

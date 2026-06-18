@@ -473,14 +473,6 @@ def test_device_detail_optical_module_columns_are_complete():
         "temperature",
         "voltage",
         "bias_current",
-        "rx_low_alarm",
-        "rx_high_alarm",
-        "tx_low_alarm",
-        "tx_high_alarm",
-        "rx_low_warning",
-        "rx_high_warning",
-        "tx_low_warning",
-        "tx_high_warning",
         "module_model",
         "module_serial_number",
         "module_vendor",
@@ -489,6 +481,10 @@ def test_device_detail_optical_module_columns_are_complete():
         "connector_type",
         "collected_at",
     ]
+    assert "rx_low_alarm" not in [field for _label_key, field in OPTICAL_MODULE_COLUMNS]
+    assert "rx_low_warning" not in [field for _label_key, field in OPTICAL_MODULE_COLUMNS]
+    assert "rx_normal_line" not in [field for _label_key, field in OPTICAL_MODULE_COLUMNS]
+    assert "rx_threshold_source" not in [field for _label_key, field in OPTICAL_MODULE_COLUMNS]
 
 
 def test_device_detail_lldp_columns_are_complete():

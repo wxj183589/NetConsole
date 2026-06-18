@@ -127,6 +127,7 @@ FIT_AP_OPTICAL_DETAIL_COLUMNS = (
 OPTICAL_STATUS_COLORS = STATUS_COLOR_MAP
 OPTICAL_EXPORT_COLOR_RGB = {
     "normal": "DCFCE7",
+    "notice": "FEF9C3",
     "warning": "FEF9C3",
     "alarm": "FEE2E2",
     "link_abnormal": "FFE4E6",
@@ -134,7 +135,7 @@ OPTICAL_EXPORT_COLOR_RGB = {
     "no_light": "E5E7EB",
     "skipped": "F3F4F6",
 }
-OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "warning": 3, "alarm": 4, "link_abnormal": 5, "link_down": 5, "no_light": 6}
+OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
 AP_ONLINE_OVERVIEW_COLUMNS = (
     ("ac.station", "site"),
     ("ac.ap_total", "total"),
@@ -290,7 +291,7 @@ def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: 
 
 def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
     """Evaluate AP side optical alarm status — delegates to ``ap_source.compute_ap_status``."""
-    return compute_ap_status(row)
+    return _evaluate_ap_result(row).severity
 
 
 def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
@@ -357,9 +358,10 @@ def _evaluate_neighbor_status(rx_power: object, neighbor_optical: dict[str, obje
             "alarm_low": neighbor_optical.get("rx_low_alarm"),
             "alarm_high": neighbor_optical.get("rx_high_alarm"),
             "warning_low": neighbor_optical.get("rx_low_warning"),
+            "device_type": "switch",
         }).severity
     value = _to_float(rx_power)
-    return compute_optical_severity({"switch_rx_power": value}).severity
+    return compute_optical_severity({"switch_rx_power": value, "device_type": "switch"}).severity
 
 
 def _fit_ap_optical_export_value(row: dict[str, object | None], field: str) -> str:
@@ -384,6 +386,19 @@ def _to_float(value: object) -> float | None:
 
 def _display_value(value: object) -> str:
     return str(value) if value not in (None, "") else "-"
+
+
+def _evaluate_ap_result(row: dict[str, object | None]):
+    return compute_optical_severity(
+        {
+            "ap_rx_power": row.get("rx_power"),
+            "ap_port_status": row.get("ap_port_status"),
+            "alarm_low": row.get("rx_low_alarm"),
+            "alarm_high": row.get("rx_high_alarm"),
+            "warning_low": row.get("rx_low_warning"),
+            "device_type": "ap",
+        }
+    )
 
 
 def _ap_unique_key(row: dict[str, object | None]) -> str:

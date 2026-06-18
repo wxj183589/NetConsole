@@ -63,3 +63,45 @@ def test_export_logs_creates_empty_file_when_log_missing(tmp_path):
 
     assert target.exists()
     assert target.read_text(encoding="utf-8") == ""
+
+
+def test_get_logs_paginates_large_log_without_returning_all_rows(tmp_path):
+    paths = configure(tmp_path)
+    paths.app_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with paths.app_log_path.open("w", encoding="utf-8") as file:
+        for index in range(100_000):
+            level = "ERROR" if index % 1000 == 0 else "INFO"
+            file.write(f"2026-06-18 10:00:00 | {level} | EVENT_{index:06d} | detail {index}\n")
+
+    first_page = app_logger.get_logs(page=1, page_size=200)
+    second_page = app_logger.get_logs(page=2, page_size=200)
+    error_page = app_logger.get_logs(page=1, page_size=500, level="ERROR")
+
+    assert len(first_page.rows) == 200
+    assert first_page.state.total_items == 100_000
+    assert first_page.state.total_pages == 500
+    assert first_page.rows[0]["event"] == "EVENT_099999"
+    assert second_page.rows[0]["event"] == "EVENT_099799"
+    assert len(error_page.rows) == 100
+    assert all(row["level"] == "ERROR" for row in error_page.rows)
+
+
+def test_get_logs_supports_keyword_with_pagination(tmp_path):
+    paths = configure(tmp_path)
+    paths.app_log_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.app_log_path.write_text(
+        "\n".join(
+            [
+                "2026-06-18 10:00:00 | INFO | APP_START | ready",
+                "2026-06-18 10:00:01 | WARNING | DEVICE_WARN | check target",
+                "2026-06-18 10:00:02 | ERROR | DEVICE_ERROR | target failed",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    page = app_logger.get_logs(page=1, page_size=200, keyword="target")
+
+    assert [row["event"] for row in page.rows] == ["DEVICE_ERROR", "DEVICE_WARN"]
+    assert page.state.total_items == 2

@@ -420,8 +420,8 @@ def test_compute_optical_severity_returns_normal_warning_alarm_and_no_light():
 
     assert compute_optical_severity(base).severity == "normal"
     assert compute_optical_severity({**base, "switch_rx_power": "-20.00"}).severity == "alarm"
-    assert compute_optical_severity({**base, "switch_rx_power": "-14.35"}).severity == "warning"
-    assert compute_optical_severity({**base, "switch_rx_power": "-13.99"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-14.35"}).severity == "notice"
+    assert compute_optical_severity({**base, "switch_rx_power": "-13.99"}).severity == "normal"
     assert compute_optical_severity({**base, "switch_rx_power": "-13.98"}).severity == "normal"
     assert compute_optical_severity({**base, "switch_rx_power": "-17.00"}).severity == "warning"
     assert compute_optical_severity({**base, "switch_rx_power": "-20.32", "alarm_low": "-20.00"}).severity == "alarm"
@@ -436,9 +436,31 @@ def test_compute_optical_severity_uses_warning_low_threshold():
 
     base = {"switch_rx_power": "-10.00", "alarm_low": "-25.00", "warning_low": "-18.00"}
 
-    assert compute_optical_severity({**base, "switch_rx_power": "-15.50"}).severity == "warning"
-    assert compute_optical_severity({**base, "switch_rx_power": "-12.50", "warning_low": "-14.00"}).severity == "warning"
+    assert compute_optical_severity({**base, "switch_rx_power": "-15.50"}).severity == "notice"
+    assert compute_optical_severity({**base, "switch_rx_power": "-12.50", "warning_low": "-14.00"}).severity == "notice"
     assert compute_optical_severity({**base, "switch_rx_power": "-14.99"}).severity == "normal"
+
+
+def test_compute_optical_severity_derives_ap_warning_threshold_from_alarm():
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    result = compute_optical_severity({"ap_rx_power": "-15.58", "alarm_low": "-19.00", "device_type": "ap"})
+
+    assert result.severity == "notice"
+    assert result.alarm_low == -19.0
+    assert result.warning_low == -16.99
+    assert result.maintenance_normal_line == -13.99
+    assert result.warning_source == "derived"
+    assert result.source_label == "AP derived"
+
+
+def test_compute_optical_severity_does_not_mark_missing_thresholds_normal():
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    result = compute_optical_severity({"ap_rx_power": "-10.00", "device_type": "ap"})
+
+    assert result.severity == "unknown"
+    assert result.source_label == "threshold missing"
 
 
 def test_lldp_parser_extracts_local_neighbor_and_remote_interface():
