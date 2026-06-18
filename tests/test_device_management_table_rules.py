@@ -5,14 +5,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget
 
+from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.services.diagnostic_download_service import DiagnosticDownloadResult
 from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
-from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, select_device_id_for_connection
+from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, open_diagnostic_folder_for_results, select_device_id_for_connection
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DeviceTable, protocol_label
 
 
@@ -66,6 +69,57 @@ def test_choose_devices_for_export_uses_selected_when_available():
     selected = [all_devices[1]]
 
     assert choose_devices_for_export(all_devices, selected) == selected
+
+
+def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monkeypatch):
+    paths = PathResolver(tmp_path)
+    diagnostic_dir = paths.ensure_site_dirs("demo") / "raw" / "diagnostic"
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    first = diagnostic_dir / "SW01_diag_20260618_101200.txt"
+    second = diagnostic_dir / "SW02_diag_20260618_101300.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    opened = []
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr("os.startfile", lambda path: opened.append(path), raising=False)
+
+    result = open_diagnostic_folder_for_results(
+        [
+            DiagnosticDownloadResult(1, "SW01", "20260618_101200", "raw/diagnostic/SW01_diag_20260618_101200.txt", "success"),
+            DiagnosticDownloadResult(2, "SW02", "20260618_101300", "raw/diagnostic/SW02_diag_20260618_101300.txt", "success"),
+        ],
+        "demo",
+        paths,
+    )
+
+    assert result is True
+    assert opened == [str(diagnostic_dir)]
+
+
+def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
+    paths = PathResolver(tmp_path)
+    app_logger.configure_path_resolver(paths)
+    diagnostic_dir = paths.ensure_site_dirs("demo") / "raw" / "diagnostic"
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    diagnostic_file = diagnostic_dir / "SW01_diag_20260618_101200.txt"
+    diagnostic_file.write_text("first", encoding="utf-8")
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+
+    def fail_open(_path):
+        raise OSError("cannot open")
+
+    monkeypatch.setattr("os.startfile", fail_open, raising=False)
+
+    result = open_diagnostic_folder_for_results(
+        [DiagnosticDownloadResult(1, "SW01", "20260618_101200", "raw/diagnostic/SW01_diag_20260618_101200.txt", "success")],
+        "demo",
+        paths,
+    )
+
+    assert result is False
+    assert app_logger.read_logs()[0]["event"] == "DIAGNOSTIC_FOLDER_OPEN_FAILED"
 
 
 def test_test_connection_selection_requires_a_device():

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import platform
+import subprocess
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -16,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.core import app_logger
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -53,6 +57,33 @@ def select_device_id_for_connection(checked_ids: list[int], current_id: int | No
     if current_id is None:
         return None, "devices.select_first_test"
     return current_id, None
+
+
+def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResolver | None = None) -> bool:
+    paths = paths or PathResolver()
+    successful_files = [
+        paths.site_dir(site_name) / item.file_path
+        for item in results
+        if getattr(item, "success", False) and getattr(item, "file_path", None)
+    ]
+    existing_files = [path for path in successful_files if path.exists()]
+    if not existing_files:
+        return True
+    latest_file = max(existing_files, key=lambda path: path.stat().st_mtime)
+    folder_path = latest_file.parent
+    try:
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(str(folder_path))  # type: ignore[attr-defined]
+        elif system == "Darwin":
+            subprocess.run(["open", str(folder_path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(folder_path)], check=False)
+        app_logger.log_info("DIAGNOSTIC_FOLDER_OPENED", f"folder={folder_path}, latest_file={latest_file.name}")
+        return True
+    except Exception as exc:
+        app_logger.log_error("DIAGNOSTIC_FOLDER_OPEN_FAILED", f"folder={folder_path}, error={exc}")
+        return False
 
 
 class DeviceManagementPage(QWidget):
@@ -260,6 +291,9 @@ class DeviceManagementPage(QWidget):
         message = self.i18n.t("devices.diagnostic_done", success=success, failed=failed)
         if detail:
             message = f"{message}\n\n{detail}"
+        folder_opened = open_diagnostic_folder_for_results(results, self.site_name)
+        if not folder_opened:
+            message = f"{message}\n\n{self.i18n.t('devices.diagnostic_open_folder_failed')}"
         if failed:
             QMessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
         else:
