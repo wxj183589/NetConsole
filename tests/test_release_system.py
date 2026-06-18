@@ -1,6 +1,7 @@
 from pathlib import Path
+import subprocess
 
-from project import release
+import release
 from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
@@ -25,15 +26,93 @@ def test_render_version_py_contains_single_version_source_fields():
     assert "https://github.com/wxj183589/NetConsole.git" in text
 
 
+def test_release_script_documents_gitea_https_authentication():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "release.py").read_text(encoding="utf-8")
+
+    assert "self-hosted Gitea repository" in text
+    assert "Personal Access Token" in text
+    assert "SSH key" in text
+    assert "Release system should not block on auth failure" in text
+
+
 def test_release_script_pushes_two_remotes_and_tags():
     root = Path(__file__).resolve().parents[1]
     text = (root / "release.py").read_text(encoding="utf-8")
 
+    assert "def safe_run(cmd: list[str])" in text
+    assert "def check_git_remote()" in text
     assert 'git", "push", "origin", "main"' in text
     assert 'git", "push", "github", "main"' in text
     assert 'git", "push", "origin", selected_version' in text
     assert 'git", "push", "github", selected_version' in text
     assert 'git", "tag", "-a", selected_version' in text
+
+
+def test_release_push_failures_do_not_interrupt_release(monkeypatch):
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(release, "write_release_files", lambda *args: None)
+    monkeypatch.setattr(release, "ensure_remotes", lambda dry_run: None)
+    monkeypatch.setattr(release, "check_git_remote", lambda: False)
+    monkeypatch.setattr(
+        release,
+        "run_git",
+        lambda args, check=True: "abc1234" if args[:2] == ["rev-parse", "--short"] else "",
+    )
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[:2] == ["git", "push"]:
+            raise subprocess.CalledProcessError(128, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+    result = release.release(version="v1.0.9", dry_run=False)
+
+    assert result.build_success
+    assert result.commit_success
+    assert result.tag_success
+    assert not result.push_origin_success
+    assert not result.push_github_success
+    assert result.final_status == release.OFFLINE_RELEASE
+    assert ["git", "tag", "-a", "v1.0.9", "-m", "Release v1.0.9"] in commands
+    assert ["git", "push", "origin", "main"] in commands
+    assert ["git", "push", "github", "main"] in commands
+    assert ["git", "push", "origin", "v1.0.9"] in commands
+    assert ["git", "push", "github", "v1.0.9"] in commands
+
+
+def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(release, "write_release_files", lambda *args: None)
+    monkeypatch.setattr(release, "ensure_remotes", lambda dry_run: None)
+    monkeypatch.setattr(release, "check_git_remote", lambda: True)
+    monkeypatch.setattr(
+        release,
+        "run_git",
+        lambda args, check=True: "abc1234" if args[:2] == ["rev-parse", "--short"] else "",
+    )
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[:3] == ["git", "tag", "-a"]:
+            raise subprocess.CalledProcessError(128, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+    result = release.release(version="v1.0.10", dry_run=False)
+
+    assert result.build_success
+    assert not result.tag_success
+    assert result.push_origin_success
+    assert result.push_github_success
+    assert result.final_status == release.LOCAL_BUILD_ONLY
+    assert ["git", "push", "origin", "main"] in commands
+    assert ["git", "push", "github", "main"] in commands
 
 
 def test_build_release_script_uses_project_output_and_release_zip():
