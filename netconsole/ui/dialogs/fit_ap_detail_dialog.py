@@ -20,7 +20,7 @@ from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
-from netconsole.ui.table.table_style_engine import set_table_column_fields
+from netconsole.ui.theme.table_style_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.sources.ap_source import compute_ap_status

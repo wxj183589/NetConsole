@@ -4,10 +4,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QHeaderView, QSizePolicy, QTableWidget, QTableWidgetItem
 
-from netconsole.ui.table.table_style_engine import (
+from netconsole.ui.theme.table_style_engine import (
+    ACTION_COLUMN_WIDTH,
+    DARK_WIDGET_STYLESHEET,
     HIGH_PRIORITY_MIN_WIDTH,
     MEDIUM_PRIORITY_MAX_WIDTH,
     ROW_HEIGHT,
+    apply_action_column,
+    apply_dark_theme,
     apply_table_style,
     set_table_column_fields,
 )
@@ -95,6 +99,38 @@ def test_configure_readonly_table_applies_unified_behavior():
     assert table.alternatingRowColors() is True
     assert table.verticalHeader().defaultSectionSize() == ROW_HEIGHT
     assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Stretch
+
+
+def test_action_column_is_fixed_and_not_stretched():
+    app()
+    table = QTableWidget(1, 3)
+    set_table_column_fields(table, ["name", "ip_address", "actions"])
+    table.setHorizontalHeaderLabels(["Name", "IP", "Actions"])
+
+    apply_table_style(table)
+    apply_action_column(table)
+
+    assert table.columnWidth(2) == ACTION_COLUMN_WIDTH
+    assert table.horizontalHeader().sectionResizeMode(2) == QHeaderView.Fixed
+    assert table.horizontalHeader().stretchLastSection() is False
+
+
+def test_dark_theme_stylesheet_covers_core_controls_and_states():
+    assert "QTableWidget" in DARK_WIDGET_STYLESHEET
+    assert "QHeaderView::section" in DARK_WIDGET_STYLESHEET
+    assert "QPushButton:hover" in DARK_WIDGET_STYLESHEET
+    assert "QLineEdit:disabled" in DARK_WIDGET_STYLESHEET
+    assert "QComboBox:disabled" in DARK_WIDGET_STYLESHEET
+    assert "selection-background-color" in DARK_WIDGET_STYLESHEET
+
+
+def test_apply_dark_theme_sets_widget_stylesheet():
+    app()
+    table = QTableWidget()
+
+    apply_dark_theme(table)
+
+    assert "QTableWidget" in table.styleSheet()
 
 
 def test_table_context_menu_actions_exist_in_english():

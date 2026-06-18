@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLa
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectItemResult
-from netconsole.ui.table.table_style_engine import set_table_column_fields
+from netconsole.ui.theme.table_style_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 
 

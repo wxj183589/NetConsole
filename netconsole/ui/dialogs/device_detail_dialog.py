@@ -40,7 +40,7 @@ from netconsole.ui.dialogs.history_data_dialog import (
 )
 from netconsole.ui.optical_refresh_worker import OpticalRefreshThread
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
-from netconsole.ui.table.table_style_engine import set_table_column_fields
+from netconsole.ui.theme.table_style_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager

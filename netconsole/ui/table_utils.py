@@ -3,34 +3,10 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QLabel, QMenu, QMessageBox, QTableWidget
 
-from netconsole.ui.table.table_style_engine import apply_table_style
+from netconsole.ui.theme.table_style_engine import LIGHT_WIDGET_STYLESHEET, apply_table_style
 
 
-READONLY_TABLE_STYLESHEET = """
-QTableWidget {
-    background: #ffffff;
-    alternate-background-color: #f8fafc;
-    border: 1px solid #dde3ea;
-    gridline-color: #edf1f5;
-    selection-background-color: #dbeafe;
-    selection-color: #111827;
-}
-QTableWidget::item {
-    padding: 4px;
-    color: #111827;
-}
-QTableWidget::item:selected {
-    background: #dbeafe;
-    color: #111827;
-}
-QHeaderView::section {
-    background: #f3f4f6;
-    color: #111827;
-    font-weight: 600;
-    padding: 6px;
-    border: 1px solid #d1d5db;
-}
-"""
+READONLY_TABLE_STYLESHEET = LIGHT_WIDGET_STYLESHEET
 
 
 def configure_readonly_table(table: QTableWidget) -> None:

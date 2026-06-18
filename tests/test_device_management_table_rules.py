@@ -3,12 +3,13 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QTableWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.ui.theme.table_style_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, select_device_id_for_connection
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DeviceTable, protocol_label
@@ -108,22 +109,37 @@ def test_row_edit_button_calls_edit_callback():
     assert edited == [1]
 
 
-def test_row_action_buttons_include_detail_edit_and_delete():
+def test_row_action_buttons_include_connection_edit_and_delete():
     table = make_table()
     action_widget = table.cellWidget(0, 7)
     buttons = action_widget.findChildren(QPushButton)
 
-    assert [button.text() for button in buttons] == ["Details", "Edit", "Delete"]
+    assert [button.text() for button in buttons] == ["Test Connection", "Edit", "Delete"]
 
 
-def test_row_action_buttons_include_chinese_detail_text():
+def test_row_action_buttons_include_chinese_connection_text():
     app()
     table = DeviceTable(I18n("zh_CN"))
     table.set_devices([Device(id=1, name="A")])
     action_widget = table.cellWidget(0, 7)
     buttons = action_widget.findChildren(QPushButton)
 
-    assert buttons[0].text() == "详情"
+    assert buttons[0].text() == "\u6d4b\u8bd5\u8fde\u63a5"
+
+
+
+def test_device_table_action_column_is_fixed_and_buttons_are_compact():
+    table = make_table()
+    action_column = table._column_index("actions")
+    action_widget = table.cellWidget(0, action_column)
+    buttons = action_widget.findChildren(QPushButton)
+
+    assert table.columnWidth(action_column) == ACTION_COLUMN_WIDTH
+    assert table.horizontalHeader().sectionResizeMode(action_column) == QHeaderView.Fixed
+    assert table.horizontalHeader().stretchLastSection() is False
+    assert action_widget.layout().spacing() == 6
+    assert [button.objectName() for button in buttons] == ["tableActionButton", "tableActionButton", "tableActionButton"]
+    assert all(button.maximumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
 
 
 def test_checkbox_click_adds_and_removes_selected_device_id():
@@ -338,8 +354,8 @@ def test_device_detail_dialog_has_refresh_button(tmp_path):
 def test_optical_status_labels_and_colors_are_mapped():
     i18n = I18n("zh_CN")
 
-    assert i18n.t("optical.status.link_abnormal") == "链路异常"
-    assert i18n.t("optical.status.no_light") == "无光"
+    assert i18n.t("optical.status.link_abnormal") == "\u94fe\u8def\u5f02\u5e38"
+    assert i18n.t("optical.status.no_light") == "\u65e0\u5149"
     assert DeviceDetailDialog.optical_status_color("normal") == "#ecfdf5"
     assert DeviceDetailDialog.optical_status_color("warning") == "#fef9c3"
     assert DeviceDetailDialog.optical_status_color("alarm") == "#fee2e2"

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
-from netconsole.ui.table.table_style_engine import apply_table_style, set_table_column_fields
+from netconsole.ui.theme.table_style_engine import ACTION_BUTTON_HEIGHT, apply_action_column, apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 
 
@@ -64,6 +64,7 @@ class DeviceTable(QTableWidget):
         self.setHorizontalHeaderLabels([self.i18n.t(key) if key else "" for _, key in COLUMNS])
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
+        apply_action_column(self)
         self._refresh_action_buttons()
 
     def set_devices(self, devices: list[Device]) -> None:
@@ -91,6 +92,7 @@ class DeviceTable(QTableWidget):
         self._updating_checks = False
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
+        apply_action_column(self)
         self.selection_changed.emit()
 
     def selected_device_id(self) -> int | None:
@@ -136,8 +138,9 @@ class DeviceTable(QTableWidget):
     def _action_widget(self, device: Device) -> QWidget:
         widget = QWidget()
         layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        detail_button = QPushButton(self.i18n.t("details.button"))
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(6)
+        detail_button = QPushButton(self.i18n.t("devices.test_connection"))
         edit_button = QPushButton(self.i18n.t("devices.edit"))
         delete_button = QPushButton(self.i18n.t("devices.delete"))
         if device.id is not None:
@@ -146,7 +149,11 @@ class DeviceTable(QTableWidget):
             edit_button.clicked.connect(lambda _=False, value=device_id: self.edit_requested.emit(value))
             delete_button.clicked.connect(lambda _=False, value=device_id: self.delete_requested.emit(value))
         for button in (detail_button, edit_button, delete_button):
+            button.setObjectName("tableActionButton")
+            button.setFixedHeight(ACTION_BUTTON_HEIGHT)
+            button.setMinimumWidth(56)
             layout.addWidget(button)
+        layout.addStretch(1)
         return widget
 
     def _refresh_action_buttons(self) -> None:
