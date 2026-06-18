@@ -19,6 +19,7 @@ REMOTE_URLS = {
     "origin": INTERNAL_REMOTE,
     "github": GITHUB_REMOTE,
 }
+APP_AUTHOR = "梦游"
 ONLINE_RELEASE = "ONLINE_RELEASE"
 LOCAL_BUILD_ONLY = "LOCAL_BUILD_ONLY"
 OFFLINE_RELEASE = "OFFLINE_RELEASE"
@@ -112,7 +113,7 @@ def render_version_py(version: str, build_time: str, git_commit: str) -> str:
 APP_VERSION = "{version}"
 BUILD_TIME = "{build_time}"
 GIT_COMMIT = "{git_commit}"
-APP_AUTHOR = "姊︽父"
+APP_AUTHOR = "{APP_AUTHOR}"
 REPOSITORY_URLS = (
     "{INTERNAL_REMOTE}",
     "{GITHUB_REMOTE}",
@@ -141,7 +142,7 @@ VSVersionInfo(
       StringTable(
         '040904B0',
         [
-          StringStruct('CompanyName', '姊︽父'),
+          StringStruct('CompanyName', '{APP_AUTHOR}'),
           StringStruct('FileDescription', 'NetConsole Windows Desktop Network Device Management Tool'),
           StringStruct('FileVersion', '{dotted}'),
           StringStruct('InternalName', 'NetConsole'),

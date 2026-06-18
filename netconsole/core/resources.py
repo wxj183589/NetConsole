@@ -4,18 +4,22 @@ import sys
 from pathlib import Path
 
 
+def runtime_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "_internal"
+    return Path(__file__).resolve().parents[2]
+
+
+def get_changelog_path(base_dir: Path) -> Path:
+    return base_dir / "netconsole" / "docs" / "changelog.md"
+
+
 def package_resource_path(*parts: str) -> Path:
-    asset_relative = Path("assets", *parts)
+    resource_relative = Path("netconsole", *parts)
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.append(Path(meipass) / asset_relative)
-        exe_dir = Path(sys.executable).resolve().parent
-        candidates.append(exe_dir / "netconsole" / Path(*parts))
-        candidates.append(exe_dir / "_internal" / asset_relative)
-        candidates.append(exe_dir / asset_relative)
-    candidates.append(Path(__file__).resolve().parents[1] / Path(*parts))
+        candidates.append(runtime_base_dir() / resource_relative)
+    candidates.append(runtime_base_dir() / resource_relative)
     for candidate in candidates:
         if candidate.exists():
             return candidate
@@ -27,4 +31,4 @@ def icon_path(name: str = "love.png") -> Path:
 
 
 def changelog_path() -> Path:
-    return package_resource_path("docs", "changelog.md")
+    return get_changelog_path(runtime_base_dir())

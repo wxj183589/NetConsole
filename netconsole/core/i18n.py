@@ -51,7 +51,7 @@ TRANSLATIONS = {
         "devices.export_template": "导出模板",
         "devices.clear_selection": "清空选择",
         "devices.invert_selection": "反选",
-        "devices.template_filename": "设备导入模板.csv",
+        "devices.template_filename": "宁波12-设备导入模板.csv",
         "devices.delete_confirm": "确定删除选中的设备吗？",
         "devices.batch_delete_confirm": "确定删除选中的 {count} 台设备吗？",
         "devices.batch_refresh_confirm": "确定更新选中的 {count} 台设备详情？",

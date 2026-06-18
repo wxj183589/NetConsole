@@ -13,6 +13,7 @@ from netconsole.build.clean_build_lock import (
     validate_project_safety,
     validate_pyinstaller_command,
 )
+from netconsole.core.resources import get_changelog_path
 from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
@@ -33,6 +34,7 @@ def test_render_version_py_contains_single_version_source_fields():
     assert 'APP_VERSION = "v1.0.7"' in text
     assert 'BUILD_TIME = "2026-06-17 12:00:00"' in text
     assert 'GIT_COMMIT = "abc1234"' in text
+    assert 'APP_AUTHOR = "梦游"' in text
     assert "https://nas.love-ok.com:3021/mengyou/NetConsole.git" in text
     assert "https://github.com/wxj183589/NetConsole.git" in text
 
@@ -150,6 +152,7 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
+    assert ("netconsole/docs", "netconsole/docs") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
     assert "docs" in clean_build_spec.EXCLUDE_DIRS
@@ -237,6 +240,10 @@ def test_clean_build_lock_rejects_illegal_datas(datas):
         validate_datas(datas)
 
 
+def test_clean_build_lock_allows_netconsole_docs_runtime_path():
+    validate_datas([("netconsole/docs", "netconsole/docs")])
+
+
 def test_clean_build_lock_rejects_illegal_spec_datas():
     with pytest.raises(CleanBuildLockError, match="Illegal PyInstaller spec datasource"):
         validate_project_safety(spec_text="a = Analysis(['main.py'], datas=[('.', '.')])")
@@ -293,6 +300,15 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     assert (app_dist / "_internal" / "netconsole").exists()
 
 
+def test_changelog_path_uses_internal_netconsole_docs():
+    base_dir = Path("dist") / "NetConsole" / "_internal"
+
+    path = get_changelog_path(base_dir)
+
+    assert path == base_dir / "netconsole" / "docs" / "changelog.md"
+    assert "assets" not in path.parts
+
+
 def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     root = Path(__file__).resolve().parents[1]
     dist_root = root / "project" / "dist"
@@ -320,10 +336,13 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     subprocess.run([sys.executable, "clean_build_spec.py", "--validate"], cwd=root, check=True)
 
     validate_dist_output(app_dist)
-    forbidden_names = {"docs", "tests", "project"}
-    assert not [path for path in app_dist.rglob("*") if path.name in forbidden_names]
+    assert not (app_dist / "docs").exists()
+    assert not (app_dist / "tests").exists()
+    assert not (app_dist / "project").exists()
     assert not (app_dist / "netconsole").exists()
     assert (app_dist / "_internal" / "netconsole").exists()
+    assert (app_dist / "_internal" / "netconsole" / "docs" / "changelog.md").exists()
+    assert not (app_dist / "_internal" / "assets" / "docs" / "changelog.md").exists()
 
     env = os.environ.copy()
     env["NETCONSOLE_SMOKE_TEST"] = "1"

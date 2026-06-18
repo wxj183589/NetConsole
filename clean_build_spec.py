@@ -28,6 +28,7 @@ ALLOWED_DATA = [
     ("netconsole", "netconsole"),
     ("data", "data"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
+    ("netconsole/docs", "netconsole/docs"),
 ]
 FORBIDDEN_DATA = [
     (item, item) for item in FORBIDDEN_DATAS
@@ -75,6 +76,9 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     for icon in sorted((ROOT / "netconsole" / "ui" / "icons").glob("*")):
         if icon.is_file():
             datas.append((str(icon), "netconsole/ui/icons"))
+    changelog = ROOT / "netconsole" / "docs" / "changelog.md"
+    if changelog.is_file():
+        datas.append((str(changelog), "netconsole/docs"))
     return datas
 
 

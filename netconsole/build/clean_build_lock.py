@@ -29,7 +29,7 @@ FORBIDDEN_PROJECT_SOURCES = ("docs", "tests", "project", ".git", "__pycache__")
 FORBIDDEN_DATAS = ("", ".", "project", "docs", "tests")
 FORBIDDEN_DIST_DIRS = ("docs", "tests", "project", "build", "spec")
 FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "spec"}
-ALLOWED_RUNTIME = ("netconsole", "data", "netconsole/ui/icons")
+ALLOWED_RUNTIME = ("netconsole", "data", "netconsole/ui/icons", "netconsole/docs")
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR)
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",
@@ -107,7 +107,8 @@ def validate_dist_output(app_dist: Path | None = None) -> None:
             raise CleanBuildLockError(f"CleanBuildLock violation: forbidden folder exists: {forbidden}")
 
     for path in app_dist.rglob("*"):
-        if path.name in FORBIDDEN_RUNTIME_NAMES:
+        relative_parts = path.relative_to(app_dist).parts
+        if _is_forbidden_dist_path(relative_parts):
             relative = path.relative_to(app_dist).as_posix()
             raise CleanBuildLockError(f"CleanBuildLock violation: forbidden runtime item exists: {relative}")
 
@@ -135,6 +136,21 @@ def _validate_spec_text(spec_text: str) -> None:
             raise CleanBuildLockError(f"Illegal PyInstaller spec datasource detected: {fragment}")
 
 
+def _is_forbidden_dist_path(parts: tuple[str, ...]) -> bool:
+    if not parts:
+        return False
+    lowered = tuple(part.lower() for part in parts)
+    if lowered[0] in FORBIDDEN_DIST_DIRS:
+        return True
+    if len(lowered) >= 2 and lowered[:2] == (INTERNAL_DIR, "assets"):
+        return True
+    if any(part in {"tests", "project", "build", "spec", "__pycache__"} for part in lowered):
+        return True
+    if "docs" in lowered and not lowered[:3] == (INTERNAL_DIR, "netconsole", "docs"):
+        return True
+    return False
+
+
 def _normalize_data_part(value: object) -> str:
     text = os.fspath(value) if isinstance(value, os.PathLike) else str(value)
     return text.replace("\\", "/").strip().strip("/").lower()
@@ -144,7 +160,7 @@ def _is_forbidden_source(source: str) -> bool:
     if source in FORBIDDEN_DATAS:
         return True
     parts = Path(source).parts
-    return any(part.lower() in FORBIDDEN_DATAS for part in parts)
+    return bool(parts and parts[0].lower() in FORBIDDEN_DATAS)
 
 
 def _require_option_value(args: Sequence[str], option: str, expected: str) -> None:
