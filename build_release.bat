@@ -35,9 +35,9 @@ for /d /r %%D in (__pycache__) do (
 
 echo [4/8] Auto release version, git commit, push and tag
 if "%NETCONSOLE_RELEASE_DRY_RUN%"=="1" (
-    "%PYTHON_EXE%" release.py --dry-run
+    "%PYTHON_EXE%" project\release.py --dry-run
 ) else (
-    "%PYTHON_EXE%" release.py
+    "%PYTHON_EXE%" project\release.py
 )
 if errorlevel 1 goto failed
 

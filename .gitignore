@@ -24,6 +24,8 @@ project/dist/
 project/spec/
 project/release/
 *.spec
+project/resources/
+project/scripts
 
 # IDE
 .idea/
@@ -47,4 +49,4 @@ data/logs/
 *.env
 *.env.*
 
-/NetConsole/docs/宁波12-设备导入模板.csv
+docs/宁波12-设备导入模板.csv

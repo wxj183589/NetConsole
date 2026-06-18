@@ -15,6 +15,7 @@ from netconsole.build.clean_build_lock import (
     FORBIDDEN_DATAS,
     FORBIDDEN_PROJECT_SOURCES,
     ICON_SOURCE,
+    RUNTIME_MANIFEST,
     RUNTIME_ROOT,
     SPEC_FILE,
     SPEC_ROOT,
@@ -74,7 +75,7 @@ def build_runtime_subset_from_import_graph() -> list[Path]:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(module_file, destination)
         staged_files.append(destination)
-    _copy_runtime_assets()
+    staged_files.extend(_copy_runtime_assets())
     (RUNTIME_ROOT / "data").mkdir(parents=True, exist_ok=True)
     return staged_files
 
@@ -158,7 +159,8 @@ def prepare_runtime() -> None:
     if RUNTIME_ROOT.exists():
         shutil.rmtree(RUNTIME_ROOT)
     RUNTIME_ROOT.mkdir(parents=True)
-    build_runtime_subset_from_import_graph()
+    staged_files = build_runtime_subset_from_import_graph()
+    _write_runtime_manifest(staged_files)
 
 
 def write_spec() -> Path:
@@ -228,8 +230,7 @@ def finalize_dist() -> None:
     app_dist = DIST_ROOT / "NetConsole"
     if not app_dist.exists():
         raise FileNotFoundError(f"missing PyInstaller output: {app_dist}")
-    _replace_with_staged_files(RUNTIME_ROOT / "netconsole", app_dist / "netconsole")
-    _replace_with_staged_files(RUNTIME_ROOT / "data", app_dist / "data")
+    _replace_with_manifest_files(app_dist)
     validate_dist()
 
 
@@ -241,28 +242,41 @@ def validate_dist() -> None:
         raise CleanBuildLockError("runtime icon is missing")
 
 
-def _copy_runtime_assets() -> None:
+def _copy_runtime_assets() -> list[Path]:
+    staged_files: list[Path] = []
     for icon in (ROOT / "netconsole" / "ui" / "icons").glob("*"):
         if icon.is_file():
             destination = RUNTIME_ROOT / "netconsole" / "ui" / "icons" / icon.name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(icon, destination)
+            staged_files.append(destination)
+    return staged_files
 
 
-def _replace_with_staged_files(source: Path, destination: Path) -> None:
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    if not source.exists():
-        return
-    for item in source.rglob("*"):
-        relative = item.relative_to(source)
-        target = destination / relative
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
+def _write_runtime_manifest(staged_files: list[Path]) -> None:
+    relative_files = sorted(path.relative_to(RUNTIME_ROOT).as_posix() for path in staged_files)
+    RUNTIME_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    RUNTIME_MANIFEST.write_text("\n".join(relative_files) + "\n", encoding="utf-8")
+
+
+def _replace_with_manifest_files(app_dist: Path) -> None:
+    if not RUNTIME_MANIFEST.exists():
+        raise CleanBuildLockError(f"runtime manifest is missing: {RUNTIME_MANIFEST}")
+    for runtime_dir in ("netconsole", "data"):
+        destination = app_dist / runtime_dir
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+    for line in RUNTIME_MANIFEST.read_text(encoding="utf-8").splitlines():
+        relative = Path(line)
+        if not relative.parts or relative.parts[0] not in {"netconsole", "data"}:
+            raise CleanBuildLockError(f"runtime manifest contains illegal path: {line}")
+        source = RUNTIME_ROOT / relative
+        if not source.is_file():
+            raise CleanBuildLockError(f"runtime manifest file is missing: {line}")
+        target = app_dist / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 def main() -> int:

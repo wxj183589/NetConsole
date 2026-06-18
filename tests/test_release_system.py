@@ -4,8 +4,8 @@ import subprocess
 import sys
 
 import clean_build_spec
-import release
 import pytest
+from project import release
 from netconsole.build.clean_build_lock import (
     CleanBuildLockError,
     validate_datas,
@@ -39,8 +39,9 @@ def test_render_version_py_contains_single_version_source_fields():
 
 def test_release_script_documents_gitea_https_authentication():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "release.py").read_text(encoding="utf-8")
+    text = (root / "project" / "release.py").read_text(encoding="utf-8")
 
+    assert not (root / "release.py").exists()
     assert "self-hosted Gitea repository" in text
     assert "Personal Access Token" in text
     assert "SSH key" in text
@@ -49,7 +50,7 @@ def test_release_script_documents_gitea_https_authentication():
 
 def test_release_script_pushes_two_remotes_and_tags():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "release.py").read_text(encoding="utf-8")
+    text = (root / "project" / "release.py").read_text(encoding="utf-8")
 
     assert "def safe_run(cmd: list[str])" in text
     assert "def check_git_remote()" in text
@@ -130,7 +131,7 @@ def test_build_release_script_uses_project_output_and_release_zip():
     root = Path(__file__).resolve().parents[1]
     text = (root / "build_release.bat").read_text(encoding="utf-8")
 
-    assert "release.py" in text
+    assert "project\\release.py" in text
     assert "PROJECT_ROOT=%ROOT%\\project" in text
     assert "clean_build_spec.py --prepare --write-spec" in text
     assert "PyInstaller --noconfirm --onedir --windowed --name NetConsole --icon" in text
@@ -166,6 +167,16 @@ def test_clean_build_spec_scans_runtime_import_graph():
     assert all(not item.startswith("project") for item in imports)
 
 
+def test_clean_build_import_graph_is_entry_file_driven():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "clean_build_spec.py").read_text(encoding="utf-8")
+
+    assert "pending_sources = [ENTRY_FILE]" in text
+    assert ".rglob(" not in text
+    assert '(ROOT / "netconsole").rglob' not in text
+    assert "(ROOT / 'netconsole').rglob" not in text
+
+
 def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_path, monkeypatch):
     monkeypatch.setattr(clean_build_spec, "RUNTIME_ROOT", tmp_path / "runtime")
 
@@ -188,12 +199,13 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert all_py_files == expected_relative
 
 
-def test_clean_build_spec_does_not_use_copytree():
+def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
     root = Path(__file__).resolve().parents[1]
     text = (root / "clean_build_spec.py").read_text(encoding="utf-8")
 
     assert "copytree" not in text
     assert "_copy_runtime_package" not in text
+    assert ".rglob(" not in text
 
 
 def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):

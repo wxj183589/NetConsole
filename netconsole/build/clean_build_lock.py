@@ -18,6 +18,7 @@ SPEC_ROOT = BUILD_PROJECT_ROOT / "spec"
 SPEC_FILE = SPEC_ROOT / "NetConsole.spec"
 ENTRY_FILE = BUILD_PROJECT_ROOT / "main.py"
 RUNTIME_ROOT = BUILD_ROOT / "clean_runtime"
+RUNTIME_MANIFEST = BUILD_ROOT / "clean_runtime_manifest.txt"
 
 APP_NAME = "NetConsole"
 EXE_NAME = "NetConsole.exe"
