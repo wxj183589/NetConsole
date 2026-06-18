@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import os
 import shutil
 from pathlib import Path
@@ -43,24 +44,110 @@ EXCLUDE_FILES = {"*.pyc", "*.pyo"}
 
 
 def scan_import_graph() -> list[str]:
+    return sorted(build_runtime_module_map().keys())
+
+
+def build_runtime_module_map() -> dict[str, Path]:
+    module_files: dict[str, Path] = {}
+    seen_sources: set[Path] = set()
+    pending_sources = [ENTRY_FILE]
+    while pending_sources:
+        source = pending_sources.pop()
+        source = source.resolve()
+        if source in seen_sources or not source.exists():
+            continue
+        seen_sources.add(source)
+        for module in _imports_from_source(source):
+            for resolved_module, module_file in _resolve_module_with_packages(module).items():
+                if resolved_module not in module_files:
+                    module_files[resolved_module] = module_file
+                    pending_sources.append(module_file)
+    return dict(sorted(module_files.items()))
+
+
+def build_runtime_subset_from_import_graph() -> list[Path]:
+    module_map = build_runtime_module_map()
+    staged_files: list[Path] = []
+    for module_file in module_map.values():
+        relative = module_file.relative_to(ROOT)
+        destination = RUNTIME_ROOT / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(module_file, destination)
+        staged_files.append(destination)
+    _copy_runtime_assets()
+    (RUNTIME_ROOT / "data").mkdir(parents=True, exist_ok=True)
+    return staged_files
+
+
+def _imports_from_source(source: Path) -> set[str]:
     runtime_modules: set[str] = set()
-    sources = [ENTRY_FILE, *(ROOT / "netconsole").rglob("*.py")]
-    for source in sources:
-        if source != ENTRY_FILE and any(part in EXCLUDE_DIRS for part in source.parts):
-            continue
-        try:
-            tree = ast.parse(source.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return runtime_modules
+    current_module = _source_to_module(source)
+    current_package = current_module if source.name == "__init__.py" else current_module.rpartition(".")[0]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _is_runtime_module(alias.name):
+                    runtime_modules.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            base_module = _resolve_import_from_module(node, current_package)
+            if base_module and _is_runtime_module(base_module):
+                runtime_modules.add(base_module)
                 for alias in node.names:
-                    if alias.name == "netconsole" or alias.name.startswith("netconsole."):
-                        runtime_modules.add(alias.name)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                if node.module == "netconsole" or node.module.startswith("netconsole."):
-                    runtime_modules.add(node.module)
-    return sorted(runtime_modules)
+                    candidate = f"{base_module}.{alias.name}"
+                    if _module_file(candidate):
+                        runtime_modules.add(candidate)
+    return runtime_modules
+
+
+def _resolve_import_from_module(node: ast.ImportFrom, current_package: str) -> str | None:
+    if node.level:
+        relative = "." * node.level + (node.module or "")
+        try:
+            return importlib.util.resolve_name(relative, current_package)
+        except ImportError:
+            return None
+    return node.module
+
+
+def _is_runtime_module(module: str) -> bool:
+    return module == "netconsole" or module.startswith("netconsole.")
+
+
+def _resolve_module_with_packages(module: str) -> dict[str, Path]:
+    resolved: dict[str, Path] = {}
+    parts = module.split(".")
+    for index in range(1, len(parts) + 1):
+        package_module = ".".join(parts[:index])
+        module_file = _module_file(package_module)
+        if module_file:
+            resolved[package_module] = module_file
+    return resolved
+
+
+def _module_file(module: str) -> Path | None:
+    if not _is_runtime_module(module):
+        return None
+    relative_parts = module.split(".")
+    module_path = ROOT.joinpath(*relative_parts)
+    package_init = module_path / "__init__.py"
+    if package_init.exists():
+        return package_init
+    file_path = module_path.with_suffix(".py")
+    if file_path.exists():
+        return file_path
+    return None
+
+
+def _source_to_module(source: Path) -> str:
+    relative = source.resolve().relative_to(ROOT).with_suffix("")
+    parts = list(relative.parts)
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
 
 
 def prepare_runtime() -> None:
@@ -69,9 +156,7 @@ def prepare_runtime() -> None:
     if RUNTIME_ROOT.exists():
         shutil.rmtree(RUNTIME_ROOT)
     RUNTIME_ROOT.mkdir(parents=True)
-    _copy_runtime_package(ROOT / "netconsole", RUNTIME_ROOT / "netconsole")
-    _copy_changelog()
-    (RUNTIME_ROOT / "data").mkdir(parents=True, exist_ok=True)
+    build_runtime_subset_from_import_graph()
 
 
 def write_spec() -> Path:
@@ -138,8 +223,8 @@ def finalize_dist() -> None:
     app_dist = DIST_ROOT / "NetConsole"
     if not app_dist.exists():
         raise FileNotFoundError(f"missing PyInstaller output: {app_dist}")
-    _replace_tree(RUNTIME_ROOT / "netconsole", app_dist / "netconsole")
-    _replace_tree(RUNTIME_ROOT / "data", app_dist / "data")
+    _replace_with_staged_files(RUNTIME_ROOT / "netconsole", app_dist / "netconsole")
+    _replace_with_staged_files(RUNTIME_ROOT / "data", app_dist / "data")
     validate_dist()
 
 
@@ -177,33 +262,33 @@ def validate_dist() -> None:
         raise RuntimeError("runtime icon is missing")
 
 
-def _copy_runtime_package(source: Path, destination: Path) -> None:
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        ignored: set[str] = set()
-        for name in names:
-            path = Path(directory) / name
-            if path.is_dir() and name in EXCLUDE_DIRS:
-                ignored.add(name)
-            if name.endswith((".pyc", ".pyo")):
-                ignored.add(name)
-        return ignored
-
-    shutil.copytree(source, destination, ignore=ignore)
-
-
-def _copy_changelog() -> None:
+def _copy_runtime_assets() -> None:
+    for icon in (ROOT / "netconsole" / "ui" / "icons").glob("*"):
+        if icon.is_file():
+            destination = RUNTIME_ROOT / "netconsole" / "ui" / "icons" / icon.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(icon, destination)
     source = ROOT / "netconsole" / "docs" / "changelog.md"
-    if not source.exists():
-        return
-    destination = RUNTIME_ROOT / "netconsole" / "docs" / "changelog.md"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
+    if source.exists():
+        destination = RUNTIME_ROOT / "netconsole" / "docs" / "changelog.md"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
 
 
-def _replace_tree(source: Path, destination: Path) -> None:
+def _replace_with_staged_files(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(source, destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    if not source.exists():
+        return
+    for item in source.rglob("*"):
+        relative = item.relative_to(source)
+        target = destination / relative
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, target)
 
 
 def main() -> int:

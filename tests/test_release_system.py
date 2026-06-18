@@ -152,6 +152,36 @@ def test_clean_build_spec_scans_runtime_import_graph():
     assert all(not item.startswith("project") for item in imports)
 
 
+def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_path, monkeypatch):
+    monkeypatch.setattr(clean_build_spec, "RUNTIME_ROOT", tmp_path / "runtime")
+
+    staged_files = clean_build_spec.build_runtime_subset_from_import_graph()
+    staged_relative = {path.relative_to(clean_build_spec.RUNTIME_ROOT) for path in staged_files}
+    expected_relative = {
+        path.relative_to(clean_build_spec.ROOT)
+        for path in clean_build_spec.build_runtime_module_map().values()
+    }
+
+    assert expected_relative <= staged_relative
+    assert (clean_build_spec.RUNTIME_ROOT / "netconsole" / "ui" / "icons" / "love.ico").exists()
+    assert (clean_build_spec.RUNTIME_ROOT / "netconsole" / "docs" / "changelog.md").exists()
+    assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "tests").exists()
+    assert not (clean_build_spec.RUNTIME_ROOT / "netconsole" / "project").exists()
+    all_py_files = {
+        path.relative_to(clean_build_spec.RUNTIME_ROOT)
+        for path in (clean_build_spec.RUNTIME_ROOT / "netconsole").rglob("*.py")
+    }
+    assert all_py_files == expected_relative
+
+
+def test_clean_build_spec_does_not_use_copytree():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "clean_build_spec.py").read_text(encoding="utf-8")
+
+    assert "copytree" not in text
+    assert "_copy_runtime_package" not in text
+
+
 def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     spec_file = tmp_path / "NetConsole.spec"
     monkeypatch.setattr(clean_build_spec, "SPEC_ROOT", tmp_path)

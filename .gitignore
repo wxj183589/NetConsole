@@ -44,3 +44,5 @@ data/logs/
 *.local
 *.env
 *.env.*
+
+/NetConsole/docs/宁波12-设备导入模板.csv
