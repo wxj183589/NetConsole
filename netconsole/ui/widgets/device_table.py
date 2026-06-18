@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
-from netconsole.ui.theme.table_style_engine import ACTION_BUTTON_HEIGHT, apply_action_column, apply_table_style, set_table_column_fields
+from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ROW_HEIGHT, apply_action_column, apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 
 
@@ -136,25 +136,15 @@ class DeviceTable(QTableWidget):
         self.setItem(row, CHECK_COLUMN, item)
 
     def _action_widget(self, device: Device) -> QWidget:
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.setSpacing(6)
-        detail_button = QPushButton(self.i18n.t("devices.test_connection"))
-        edit_button = QPushButton(self.i18n.t("devices.edit"))
-        delete_button = QPushButton(self.i18n.t("devices.delete"))
-        if device.id is not None:
-            device_id = int(device.id)
-            detail_button.clicked.connect(lambda _=False, value=device_id: self.detail_requested.emit(value))
-            edit_button.clicked.connect(lambda _=False, value=device_id: self.edit_requested.emit(value))
-            delete_button.clicked.connect(lambda _=False, value=device_id: self.delete_requested.emit(value))
-        for button in (detail_button, edit_button, delete_button):
-            button.setObjectName("tableActionButton")
-            button.setFixedHeight(ACTION_BUTTON_HEIGHT)
-            button.setMinimumWidth(56)
-            layout.addWidget(button)
-        layout.addStretch(1)
-        return widget
+        return ActionCellWidget(
+            connect_text=self.i18n.t("devices.test_connection"),
+            edit_text=self.i18n.t("devices.edit"),
+            delete_text=self.i18n.t("devices.delete"),
+            device_id=int(device.id) if device.id is not None else None,
+            detail_requested=self.detail_requested.emit,
+            edit_requested=self.edit_requested.emit,
+            delete_requested=self.delete_requested.emit,
+        )
 
     def _refresh_action_buttons(self) -> None:
         for row, device in enumerate(self.devices):
@@ -223,3 +213,36 @@ class DeviceTable(QTableWidget):
             if column_field == field:
                 return index
         raise KeyError(field)
+
+
+class ActionCellWidget(QWidget):
+    def __init__(
+        self,
+        connect_text: str,
+        edit_text: str,
+        delete_text: str,
+        device_id: int | None,
+        detail_requested,
+        edit_requested,
+        delete_requested,
+    ) -> None:
+        super().__init__()
+        self.setMinimumHeight(ROW_HEIGHT)
+        self.setMaximumHeight(ROW_HEIGHT)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignCenter)
+        buttons = (
+            (QPushButton(connect_text), detail_requested),
+            (QPushButton(edit_text), edit_requested),
+            (QPushButton(delete_text), delete_requested),
+        )
+        for button, callback in buttons:
+            button.setObjectName("tableActionButton")
+            button.setMinimumHeight(ACTION_BUTTON_HEIGHT)
+            button.setMaximumHeight(ACTION_BUTTON_HEIGHT)
+            button.setMinimumWidth(56)
+            if device_id is not None:
+                button.clicked.connect(lambda _=False, value=device_id, handler=callback: handler(value))
+            layout.addWidget(button)

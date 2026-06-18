@@ -8,7 +8,8 @@ from netconsole.core.paths import PathResolver
 
 
 DEFAULT_SETTINGS = {
-    "theme": "light",
+    "theme": "dark",
+    "last_export_path": "",
 }
 VALID_THEMES = {"light", "dark"}
 
@@ -35,6 +36,14 @@ class SettingsStore:
         if theme not in VALID_THEMES:
             raise ValueError(f"unsupported theme: {theme}")
         self.values["theme"] = theme
+        self.save()
+
+    @property
+    def last_export_path(self) -> str:
+        return str(self.values.get("last_export_path") or "")
+
+    def set_last_export_path(self, path: str | Path) -> None:
+        self.values["last_export_path"] = str(path)
         self.save()
 
     def save(self) -> None:

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
-from netconsole.ui.table_utils import attach_table_context_menu, configure_readonly_table
+from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table
 
 
 def make_app_log_export_filename(now: datetime | None = None) -> str:
@@ -91,8 +91,7 @@ class AppLogPage(QWidget):
         for row, item in enumerate(logs):
             for column, key in enumerate(("time", "level", "event", "detail")):
                 self.table.setItem(row, column, QTableWidgetItem(item[key]))
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setStretchLastSection(True)
+        auto_resize_table_columns(self.table)
 
     def clear_logs(self) -> None:
         answer = QMessageBox.question(self, self.i18n.t("logs.title"), self.i18n.t("logs.clear_confirm"))

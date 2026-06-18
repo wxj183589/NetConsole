@@ -20,7 +20,7 @@ from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
-from netconsole.ui.theme.table_style_engine import set_table_column_fields
+from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.sources.ap_source import compute_ap_status
@@ -28,32 +28,6 @@ from netconsole.core.state_engine import display_optical_status
 
 
 FIT_AP_DETAIL_TABS = ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
-DETAIL_STYLESHEET = """
-QWidget {
-    background: #ffffff;
-    color: #111827;
-}
-QTabBar::tab {
-    background: #f3f4f6;
-    color: #111827;
-    font-weight: 500;
-    padding: 8px 14px;
-    border: 1px solid #d1d5db;
-    border-bottom: none;
-}
-QTabBar::tab:selected {
-    background: #ffffff;
-    color: #111827;
-    font-weight: 700;
-}
-QComboBox, QComboBox QAbstractItemView {
-    background: #ffffff;
-    color: #111827;
-    selection-background-color: #dbeafe;
-    selection-color: #111827;
-    min-height: 24px;
-}
-"""
 LLDP_COLUMNS = (
     ("ac.lldp_neighbor", "lldp_neighbor"),
     ("ap.neighbor_interface", "neighbor_interface"),
@@ -80,7 +54,6 @@ class FitApDetailDialog(QWidget):
         self.ap_uuid = str(resource.get("ap_uuid") or ap_uuid)
         self.ap_name = str(resource.get("ap_name") or ap_uuid)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.setStyleSheet(DETAIL_STYLESHEET)
         self.setWindowTitle(self.i18n.t("ap.detail_title", ap=self.ap_name))
         self.resize(900, 680)
         self.setMinimumSize(760, 520)

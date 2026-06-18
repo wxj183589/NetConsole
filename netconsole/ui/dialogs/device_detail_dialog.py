@@ -40,7 +40,8 @@ from netconsole.ui.dialogs.history_data_dialog import (
 )
 from netconsole.ui.optical_refresh_worker import OpticalRefreshThread
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
-from netconsole.ui.theme.table_style_engine import set_table_column_fields
+from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, status_background_color
+from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
@@ -102,15 +103,6 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.collected_at", "collected_at"),
 )
 
-OPTICAL_STATUS_COLORS = {
-    "normal": "#ecfdf5",
-    "warning": "#fef9c3",
-    "alarm": "#fee2e2",
-    "link_abnormal": "#ffe4e6",
-    "no_light": "#e5e7eb",
-    "skipped": "#f3f4f6",
-}
-
 OPTICAL_STATUS_VALUES = {"normal", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
 
 LLDP_COLUMNS = (
@@ -159,7 +151,6 @@ class DeviceDetailDialog(QDialog):
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
-        self.apply_style()
         self.retranslate()
 
     def retranslate(self) -> None:
@@ -400,11 +391,11 @@ class DeviceDetailDialog(QDialog):
 
     @staticmethod
     def optical_status_color(status: object | None) -> str | None:
-        return OPTICAL_STATUS_COLORS.get(str(status or ""))
+        return status_background_color(status)
 
     @staticmethod
     def interface_row_status_color(status: object | None) -> str | None:
-        return OPTICAL_STATUS_COLORS.get(str(status or "")) if status in {"link_abnormal", "no_light", "alarm", "warning"} else None
+        return status_background_color(status) if status in {"link_abnormal", "no_light", "alarm", "warning"} else None
 
     @staticmethod
     def _apply_status_background(item: QTableWidgetItem, history_kind: str, status: object | None) -> None:
@@ -417,8 +408,7 @@ class DeviceDetailDialog(QDialog):
         else:
             return
         if color_value is not None:
-            item.setBackground(QColor(color_value))
-            item.setForeground(QColor("#111827"))
+            apply_status_item_contrast(item, status)
 
     def open_history_data(self, history_kind: str, row: dict[str, object | None]) -> HistoryDataDialog:
         device_uuid = str(self.device.device_uuid or "")
@@ -475,21 +465,6 @@ class DeviceDetailDialog(QDialog):
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
         self.raise_()
         self.activateWindow()
-
-    def apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QDialog, QWidget { background: #f7f8fa; color: #1f2933; font-family: "Microsoft YaHei", "Segoe UI"; font-size: 13px; }
-            QLabel { color: #1f2933; }
-            QTabWidget::pane { background: #ffffff; border: 1px solid #cbd5df; top: -1px; }
-            QTabBar::tab { background: #e9eef5; color: #1f2933; border: 1px solid #cbd5df; padding: 8px 16px; min-width: 92px; }
-            QTabBar::tab:selected { background: #ffffff; color: #0f3d75; border-bottom: 1px solid #ffffff; font-weight: 600; }
-            QTabBar::tab:!selected:hover { background: #f1f5fb; }
-            QPushButton { background: #ffffff; border: 1px solid #cbd5df; border-radius: 4px; padding: 6px 10px; }
-            QPushButton:hover { background: #eef5ff; border-color: #8bb7ee; }
-            """
-        )
-
 
 class CollectLogDialog(QDialog):
     def __init__(self, title: str, raw_log_path: str, text: str, parent=None) -> None:

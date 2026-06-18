@@ -4,7 +4,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QMessageBox, QMenu, QTableWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QHeaderView, QMessageBox, QMenu, QTableWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
@@ -39,6 +39,8 @@ from netconsole.services.trackside_ap_business import (
     normalize_mac,
     trackside_row_status,
 )
+from netconsole.ui.theme.qt_theme_engine import apply_theme
+from netconsole.ui.render.table_render_engine import AP_MAC_COLUMN_WIDTH, AP_NAME_MIN_WIDTH, MEDIUM_PRIORITY_MAX_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.pagination import paginate_rows
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
@@ -721,6 +723,7 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert [page.optical_concurrency_combo.itemData(index) for index in range(page.optical_concurrency_combo.count())] == [50, 100, 200, 500, 1000]
     assert page.optical_concurrency_combo.currentData() == 500
     assert page.optical_legend_label.text()
+    assert page.tabs.tabText(0) == "FIT-AP Resources"
     assert page.tabs.tabText(2) == "AP Online Overview"
     assert page.tabs.tabText(3) == "Online Vehicle MR"
 
@@ -731,8 +734,31 @@ def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
     page._set_rows(page.optical_table, FIT_AP_OPTICAL_COLUMNS, [{"ap_name": "ap-a", "optical_alarm_status": "no_light"}])
 
-    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+    assert page.optical_table.item(0, 0).background().color().name() == "#6b7280"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
     assert page.optical_table.item(0, 0).textAlignment() == Qt.AlignCenter
+
+
+def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(
+        page.resources_table,
+        FIT_AP_RESOURCE_COLUMNS,
+        [{"ap_name": "Station-Very-Long-AP-Name-001", "ap_mac": "bc5a-3457-cbe0", "ap_ip": "10.1.1.1"}],
+    )
+    fields = [field for _key, field in FIT_AP_RESOURCE_COLUMNS]
+    ap_name_column = fields.index("ap_name")
+    ap_mac_column = fields.index("ap_mac")
+    widths = page.resources_table.property("netconsole_auto_layout_widths")
+
+    assert page.resources_table.horizontalHeader().sectionResizeMode(ap_name_column) == QHeaderView.Stretch
+    assert widths[ap_name_column] >= AP_NAME_MIN_WIDTH
+    assert page.resources_table.horizontalHeader().sectionResizeMode(ap_mac_column) == QHeaderView.Interactive
+    assert 112 <= widths[ap_mac_column] <= MEDIUM_PRIORITY_MAX_WIDTH
+    assert page.resources_table.verticalHeader().defaultSectionSize() == 36
+    assert page.resources_table.rowHeight(0) == 36
 
 
 def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_path):
@@ -755,7 +781,8 @@ def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_pa
 
     assert page.optical_table.item(0, 6).text() == "No Light"
     assert page.optical_table.item(0, 8).text() == "Normal"
-    assert page.optical_table.item(0, 0).background().color().name() == "#e5e7eb"
+    assert page.optical_table.item(0, 0).background().color().name() == "#6b7280"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
 
 
 def test_fit_ap_optical_table_color_uses_ap_alarm_when_more_severe(tmp_path):
@@ -778,7 +805,8 @@ def test_fit_ap_optical_table_color_uses_ap_alarm_when_more_severe(tmp_path):
 
     assert page.optical_table.item(0, 6).text() == "Normal"
     assert page.optical_table.item(0, 8).text() == "Alarm"
-    assert page.optical_table.item(0, 0).background().color().name() == "#fee2e2"
+    assert page.optical_table.item(0, 0).background().color().name() == "#f87171"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
 
 
 def test_fit_ap_optical_thread_accepts_concurrency():
@@ -852,6 +880,7 @@ def test_fit_ap_optical_filters_do_not_include_ap_mac(tmp_path):
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
 
     assert not hasattr(page, "optical_ap_mac_filter")
+    assert not hasattr(page, "optical_alarm_filter")
 
 
 def test_enrich_fit_ap_optical_rows_adds_ap_mac_and_station_from_resources():
@@ -889,7 +918,6 @@ def test_clear_optical_filters_restores_all_rows(tmp_path):
     assert page.optical_table.rowCount() == 2
     assert page.optical_ap_filter.text() == ""
     assert page.optical_site_filter.currentData() == ""
-    assert page.optical_alarm_filter.currentData() == ""
 
 
 def test_evaluate_fit_ap_row_status_includes_neighbor_rx_power():
@@ -1058,7 +1086,8 @@ def test_fit_ap_optical_warning_row_uses_light_yellow(tmp_path):
         [{"ap_name": "AP-A", "rx_power": "-14.00", "rx_low_alarm": "-20.00", "rx_low_warning": "-15.00", "neighbor_rx_power": "-10.00"}],
     )
 
-    assert page.optical_table.item(0, 0).background().color().name() == "#fef9c3"
+    assert page.optical_table.item(0, 0).background().color().name() == "#fbbf24"
+    assert page.optical_table.item(0, 0).foreground().color().name() == "#111827"
 
 
 def test_fit_ap_optical_filters_before_paginating_and_export_uses_all_filtered_rows(tmp_path):
@@ -1567,7 +1596,8 @@ def test_device_detail_trackside_ap_business_tab_displays_joined_data(tmp_path):
     assert table.item(0, 10).text() == "AP10"
     assert table.item(0, 11).text() == "-14.35"
     assert table.item(0, 12).text() == "Warning"
-    assert table.item(0, 0).background().color().name() == "#fef9c3"
+    assert table.item(0, 0).background().color().name() == "#fbbf24"
+    assert table.item(0, 0).foreground().color().name() == "#111827"
 
 
 def test_device_detail_interface_table_supports_pagination(tmp_path):
@@ -1642,7 +1672,8 @@ def test_ac_management_trackside_ap_business_tab_filter_and_export(tmp_path):
     assert page.trackside_table.item(0, 11).text() == "AP10"
     assert page.trackside_table.item(0, 12).text() == "-14.35"
     assert page.trackside_table.item(0, 13).text() == "Warning"
-    assert page.trackside_table.item(0, 0).background().color().name() == "#fef9c3"
+    assert page.trackside_table.item(0, 0).background().color().name() == "#fbbf24"
+    assert page.trackside_table.item(0, 0).foreground().color().name() == "#111827"
 
     page.trackside_site_filter.setCurrentIndex(page.trackside_site_filter.findData("Station B"))
     assert page.trackside_table.rowCount() == 1
@@ -1928,16 +1959,18 @@ def test_ap_detail_metadata_site_falls_back_to_optical_site(tmp_path):
     assert dialog.site_input.text() == "Optical Station"
 
 
-def test_ap_detail_dialog_uses_light_clear_style(tmp_path):
-    app()
+def test_ap_detail_dialog_uses_global_theme_without_local_light_style(tmp_path):
+    qt_app = app()
+    apply_theme("light")
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
     dialog = FitApDetailDialog(I18n("en_US"), repository, "ac-1", ap_uuid)
 
-    assert "QComboBox" in dialog.styleSheet()
-    assert "background: #ffffff" in dialog.styleSheet()
+    assert dialog.styleSheet() == ""
+    assert "QComboBox" in qt_app.styleSheet()
+    assert "QTabWidget::pane" in qt_app.styleSheet()
     assert dialog.raw_fields_table.item(0, 0).textAlignment() == Qt.AlignCenter
 
 

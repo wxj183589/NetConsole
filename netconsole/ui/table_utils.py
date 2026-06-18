@@ -3,17 +3,17 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QLabel, QMenu, QMessageBox, QTableWidget
 
-from netconsole.ui.theme.table_style_engine import LIGHT_WIDGET_STYLESHEET, apply_table_style
+from netconsole.ui.render.table_render_engine import apply_table_style
+from netconsole.ui.theme.qt_theme_engine import LIGHT_APP_STYLESHEET
 
 
-READONLY_TABLE_STYLESHEET = LIGHT_WIDGET_STYLESHEET
+READONLY_TABLE_STYLESHEET = LIGHT_APP_STYLESHEET
 
 
 def configure_readonly_table(table: QTableWidget) -> None:
     table.setEditTriggers(QTableWidget.NoEditTriggers)
     table.setSelectionBehavior(QTableWidget.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
-    table.setStyleSheet(READONLY_TABLE_STYLESHEET)
     apply_table_style(table)
 
 

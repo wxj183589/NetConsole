@@ -190,7 +190,8 @@ def build_trackside_site_filter_items(rows: list[dict[str, object | None]], all_
 def export_trackside_ap_business_xlsx(path: Path, rows: list[dict[str, object | None]], columns: tuple[tuple[str, str], ...], headers: list[str]) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter
+
+    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 
     workbook = Workbook()
     sheet = workbook.active
@@ -218,10 +219,7 @@ def export_trackside_ap_business_xlsx(path: Path, rows: list[dict[str, object | 
             cell.border = border
             if cell.row == 1:
                 cell.font = Font(bold=True)
-    for column_index in range(1, sheet.max_column + 1):
-        letter = get_column_letter(column_index)
-        max_length = max(len(str(cell.value or "")) for cell in sheet[letter])
-        sheet.column_dimensions[letter].width = min(max_length + 2, 48)
+    apply_worksheet_autofit(sheet, maximum=60)
     workbook.save(path)
 
 
