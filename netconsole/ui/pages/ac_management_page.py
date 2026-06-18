@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QGridLayout,
-    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -53,6 +52,7 @@ from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
+from netconsole.ui.table.table_style_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.interface_sort import interface_sort_key
@@ -560,6 +560,10 @@ class AcManagementPage(QWidget):
         self.optical_table.setColumnCount(len(FIT_AP_OPTICAL_COLUMNS))
         self.overview_table.setColumnCount(len(AP_ONLINE_OVERVIEW_COLUMNS))
         self.trackside_table.setColumnCount(len(TRACKSIDE_AP_BUSINESS_COLUMNS))
+        set_table_column_fields(self.resources_table, [field for _key, field in FIT_AP_RESOURCE_COLUMNS])
+        set_table_column_fields(self.optical_table, [field for _key, field in FIT_AP_OPTICAL_COLUMNS])
+        set_table_column_fields(self.overview_table, [field for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
+        set_table_column_fields(self.trackside_table, [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         self.tabs.setStyleSheet(AC_TAB_STYLESHEET)
         self.overview_table.itemChanged.connect(self.save_overview_total)
         self.resources_table.horizontalHeader().sectionClicked.connect(self._resource_header_clicked)
@@ -603,7 +607,7 @@ class AcManagementPage(QWidget):
         resource_actions.addWidget(self.selection_label)
         resource_actions.addStretch(1)
         resources_layout.addLayout(resource_actions)
-        resources_layout.addWidget(self.resources_table)
+        resources_layout.addWidget(self.resources_table, 1)
         resources_layout.addWidget(self.resources_pagination)
         resources_tab.setLayout(resources_layout)
 
@@ -626,7 +630,7 @@ class AcManagementPage(QWidget):
         optical_layout.addLayout(optical_actions)
         optical_layout.addLayout(optical_filters)
         optical_layout.addWidget(self.optical_legend_label)
-        optical_layout.addWidget(self.optical_table)
+        optical_layout.addWidget(self.optical_table, 1)
         optical_layout.addWidget(self.optical_pagination)
         optical_tab.setLayout(optical_layout)
 
@@ -638,7 +642,7 @@ class AcManagementPage(QWidget):
         overview_actions.addWidget(self.view_overview_history_button)
         overview_actions.addStretch(1)
         overview_layout.addLayout(overview_actions)
-        overview_layout.addWidget(self.overview_table)
+        overview_layout.addWidget(self.overview_table, 1)
         overview_tab.setLayout(overview_layout)
 
         mr_tab = QWidget()
@@ -655,7 +659,7 @@ class AcManagementPage(QWidget):
         trackside_actions.addWidget(self.trackside_export_button)
         trackside_actions.addStretch(1)
         trackside_layout.addLayout(trackside_actions)
-        trackside_layout.addWidget(self.trackside_table)
+        trackside_layout.addWidget(self.trackside_table, 1)
         trackside_layout.addWidget(self.trackside_pagination)
         trackside_tab.setLayout(trackside_layout)
 
@@ -760,9 +764,10 @@ class AcManagementPage(QWidget):
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS])
         self.overview_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
-        auto_resize_table_columns(self.resources_table, column_min_widths={0: 80, 1: 150})
-        self._resize_optical_columns()
-        auto_resize_table_columns(self.overview_table, column_min_widths={0: 180})
+        apply_table_style(self.resources_table)
+        apply_table_style(self.optical_table)
+        apply_table_style(self.overview_table)
+        apply_table_style(self.trackside_table)
         self.update_selection_state()
 
     def refresh_devices(self) -> None:
@@ -1346,19 +1351,14 @@ class AcManagementPage(QWidget):
         if table is self.optical_table:
             self._resize_optical_columns()
         elif table is self.overview_table:
-            auto_resize_table_columns(table, column_min_widths={0: 180})
+            auto_resize_table_columns(table)
         elif table is self.trackside_table:
-            auto_resize_table_columns(table, column_min_widths={0: 150, 1: 180, 2: 180, 5: 220, 13: 160}, max_width=520)
+            auto_resize_table_columns(table)
         else:
-            auto_resize_table_columns(table, column_min_widths={0: 80, 1: 150})
+            auto_resize_table_columns(table)
 
     def _resize_optical_columns(self) -> None:
-        auto_resize_table_columns(self.optical_table, column_min_widths={0: 180, 1: 150, 2: 150, 3: 180}, max_width=520)
-        header = self.optical_table.horizontalHeader()
-        for column in range(self.optical_table.columnCount()):
-            header.setSectionResizeMode(column, QHeaderView.Interactive)
-        for column in (0, 1, 2, 3):
-            header.setSectionResizeMode(column, QHeaderView.Stretch)
+        auto_resize_table_columns(self.optical_table)
 
     def _apply_overview_color(self, item: QTableWidgetItem, row: dict[str, object | None], field: str) -> None:
         total = int(row.get("total") or 0)

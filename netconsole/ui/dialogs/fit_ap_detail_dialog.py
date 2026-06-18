@@ -20,6 +20,7 @@ from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.table.table_style_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.sources.ap_source import compute_ap_status
@@ -184,38 +185,42 @@ class FitApDetailDialog(QWidget):
 
     def _build_radio_tab(self) -> None:
         self.radio_table.setColumnCount(4)
+        set_table_column_fields(self.radio_table, ["rid", "channel", "bandwidth", "tx_power"])
         layout = QVBoxLayout()
         actions = QHBoxLayout()
         actions.addWidget(self.radio_history_button)
         actions.addStretch(1)
         layout.addLayout(actions)
-        layout.addWidget(self.radio_table)
+        layout.addWidget(self.radio_table, 1)
         self.radio_tab.setLayout(layout)
 
     def _build_lldp_tab(self) -> None:
         self.lldp_table.setColumnCount(len(LLDP_COLUMNS))
+        set_table_column_fields(self.lldp_table, [field for _key, field in LLDP_COLUMNS])
         layout = QVBoxLayout()
         actions = QHBoxLayout()
         actions.addWidget(self.lldp_history_button)
         actions.addStretch(1)
         layout.addLayout(actions)
-        layout.addWidget(self.lldp_table)
+        layout.addWidget(self.lldp_table, 1)
         self.lldp_tab.setLayout(layout)
 
     def _build_optical_tab(self) -> None:
         self.optical_table.setColumnCount(len(OPTICAL_COLUMNS))
+        set_table_column_fields(self.optical_table, [field for _key, field in OPTICAL_COLUMNS])
         layout = QVBoxLayout()
         actions = QHBoxLayout()
         actions.addWidget(self.optical_history_button)
         actions.addStretch(1)
         layout.addLayout(actions)
-        layout.addWidget(self.optical_table)
+        layout.addWidget(self.optical_table, 1)
         self.optical_tab.setLayout(layout)
 
     def _build_raw_fields_tab(self) -> None:
         self.raw_fields_table.setColumnCount(3)
+        set_table_column_fields(self.raw_fields_table, ["type", "name", "value"])
         layout = QVBoxLayout()
-        layout.addWidget(self.raw_fields_table)
+        layout.addWidget(self.raw_fields_table, 1)
         layout.addWidget(self.raw_fields_pagination)
         self.raw_fields_tab.setLayout(layout)
 
@@ -298,7 +303,7 @@ class FitApDetailDialog(QWidget):
                 item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
                 item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(row_index, column_index, item)
-        auto_resize_table_columns(table, column_min_widths={0: 180})
+        auto_resize_table_columns(table)
 
     def _set_raw_fields_table(self, resource: dict[str, object | None], metadata: dict[str, object | None], optical: dict[str, object | None]) -> None:
         rows: list[dict[str, object | None]] = []
@@ -326,7 +331,7 @@ class FitApDetailDialog(QWidget):
                 self.raw_fields_table.setItem(row_index, column_index, item)
         self.raw_fields_table.setSortingEnabled(False)
         self.raw_fields_table.setUpdatesEnabled(True)
-        auto_resize_table_columns(self.raw_fields_table, column_min_widths={0: 100, 1: 180, 2: 260})
+        auto_resize_table_columns(self.raw_fields_table)
 
     def set_raw_fields_page(self, page: int) -> None:
         self.raw_fields_page = page

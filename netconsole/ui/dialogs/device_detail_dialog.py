@@ -40,6 +40,7 @@ from netconsole.ui.dialogs.history_data_dialog import (
 )
 from netconsole.ui.optical_refresh_worker import OpticalRefreshThread
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.table.table_style_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
@@ -342,6 +343,7 @@ class DeviceDetailDialog(QDialog):
         optical_status_by_interface: dict[str, str] | None = None,
     ) -> QWidget:
         table = QTableWidget(0, len(columns))
+        set_table_column_fields(table, [field for _label_key, field in columns])
         configure_readonly_table(table)
         table.setHorizontalHeaderLabels([self.i18n.t(label_key) for label_key, _field in columns])
         page_state = {"page": 1, "page_size": DEFAULT_PAGE_SIZE, "visible_rows": []}
@@ -368,11 +370,7 @@ class DeviceDetailDialog(QDialog):
                     table.setItem(row_index, column_index, item)
             table.setSortingEnabled(False)
             table.setUpdatesEnabled(True)
-            auto_resize_table_columns(
-                table,
-                stretch_columns={stretch_index} if stretch_index is not None else set(),
-                column_min_widths=_column_min_widths(columns),
-            )
+            auto_resize_table_columns(table)
 
         def open_paged_history(row: int, kind=history_kind) -> None:
             visible_rows = page_state["visible_rows"]
@@ -382,7 +380,7 @@ class DeviceDetailDialog(QDialog):
         attach_table_context_menu(table, self.i18n.language, history_callback=open_paged_history, include_history=history_kind in {"interface", "optical", "lldp"})
         pagination.pageChanged.connect(lambda page: (page_state.__setitem__("page", page), render()))
         pagination.pageSizeChanged.connect(lambda size: (page_state.__setitem__("page_size", size), page_state.__setitem__("page", 1), render()))
-        stretch_index = _column_index(columns, stretch_field)
+        _ = stretch_field
         render()
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
@@ -391,7 +389,7 @@ class DeviceDetailDialog(QDialog):
             layout.addWidget(self._note_label("details.interface_color_note"))
         elif history_kind == "optical":
             layout.addWidget(self._note_label("details.optical_color_legend"))
-        layout.addWidget(table)
+        layout.addWidget(table, 1)
         layout.addWidget(pagination)
         return wrapper
 

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QHBoxLayout,
-    QHeaderView,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -13,6 +11,8 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
+from netconsole.ui.table.table_style_engine import apply_table_style, set_table_column_fields
+from netconsole.ui.table_utils import configure_readonly_table
 
 
 CHECK_COLUMN = 0
@@ -53,13 +53,8 @@ class DeviceTable(QTableWidget):
         self.devices: list[Device] = []
         self.selected_device_ids: set[int] = set()
         self._updating_checks = False
-        self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.verticalHeader().setVisible(False)
-        self.verticalHeader().setDefaultSectionSize(34)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        set_table_column_fields(self, [field for field, _key in COLUMNS])
+        configure_readonly_table(self)
         self.horizontalHeader().sectionClicked.connect(self._header_clicked)
         self.itemChanged.connect(self._item_changed)
         self.cellClicked.connect(self._cell_clicked)
@@ -68,9 +63,7 @@ class DeviceTable(QTableWidget):
     def retranslate(self) -> None:
         self.setHorizontalHeaderLabels([self.i18n.t(key) if key else "" for _, key in COLUMNS])
         self._set_header_check_state(Qt.Unchecked)
-        widths = [44, 70, 190, 150, 150, 110, 160, 250]
-        for index, width in enumerate(widths):
-            self.setColumnWidth(index, width)
+        apply_table_style(self)
         self._refresh_action_buttons()
 
     def set_devices(self, devices: list[Device]) -> None:
@@ -97,6 +90,7 @@ class DeviceTable(QTableWidget):
             self.setCellWidget(row, self._column_index("actions"), self._action_widget(device))
         self._updating_checks = False
         self._set_header_check_state(Qt.Unchecked)
+        apply_table_style(self)
         self.selection_changed.emit()
 
     def selected_device_id(self) -> int | None:

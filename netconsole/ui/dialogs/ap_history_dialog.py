@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton, QTableWidge
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.table.table_style_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.optical_severity_engine import display_optical_status
@@ -128,6 +129,7 @@ class ApHistoryDialog(QWidget):
         self.export_button = QPushButton()
         self.table = QTableWidget()
         self.pagination = PaginationWidget(self.i18n)
+        set_table_column_fields(self.table, [field for _key, field in columns])
         configure_readonly_table(self.table)
         self.table.setColumnCount(len(columns))
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -141,7 +143,7 @@ class ApHistoryDialog(QWidget):
         actions.addWidget(self.always_on_top_button)
         layout = QVBoxLayout()
         layout.addLayout(actions)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
         layout.addWidget(self.pagination)
         self.setLayout(layout)
 
@@ -179,7 +181,7 @@ class ApHistoryDialog(QWidget):
                 self.table.setItem(row_index, column_index, item)
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(True)
-        auto_resize_table_columns(self.table, column_min_widths={0: 170}, max_width=560)
+        auto_resize_table_columns(self.table)
 
     def set_page(self, page: int) -> None:
         self.page = page
