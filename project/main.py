@@ -18,4 +18,6 @@ from netconsole.app import run
 
 
 if __name__ == "__main__":
+    if os.environ.get("NETCONSOLE_SMOKE_TEST") == "1":
+        raise SystemExit(0)
     raise SystemExit(run())

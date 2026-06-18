@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 import subprocess
+import sys
 
 import clean_build_spec
 import release
@@ -243,7 +245,7 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
         "--name",
         "NetConsole",
         "--icon",
-        "netconsole/ui/icons/love.ico",
+        str(root / "netconsole" / "ui" / "icons" / "love.ico"),
         "--distpath",
         str(root / "project" / "dist"),
         "--workpath",
@@ -288,3 +290,52 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     assert not (app_dist / "docs").exists()
     assert not (app_dist / "tests").exists()
     assert not (app_dist / "project").exists()
+
+
+def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
+    root = Path(__file__).resolve().parents[1]
+    dist_root = root / "project" / "dist"
+    build_root = root / "project" / "build"
+    spec_root = root / "project" / "spec"
+    app_dist = dist_root / "NetConsole"
+
+    subprocess.run([sys.executable, "clean_build_spec.py", "--prepare", "--write-spec"], cwd=root, check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--noconfirm",
+            "--onedir",
+            "--windowed",
+            "--name",
+            "NetConsole",
+            "--icon",
+            str(root / "netconsole" / "ui" / "icons" / "love.ico"),
+            "--clean",
+            "--contents-directory",
+            "_internal",
+            "--paths",
+            str(root),
+            "--distpath",
+            str(dist_root),
+            "--workpath",
+            str(build_root),
+            "--specpath",
+            str(spec_root),
+            "--version-file",
+            str(root / "project" / "version_info.txt"),
+            str(root / "project" / "main.py"),
+        ],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run([sys.executable, "clean_build_spec.py", "--finalize"], cwd=root, check=True)
+
+    validate_dist_output(app_dist)
+    forbidden_names = {"docs", "tests", "project"}
+    assert not [path for path in app_dist.rglob("*") if path.name in forbidden_names]
+
+    env = os.environ.copy()
+    env["NETCONSOLE_SMOKE_TEST"] = "1"
+    subprocess.run([str(app_dist / "NetConsole.exe")], cwd=app_dist, env=env, check=True, timeout=20)

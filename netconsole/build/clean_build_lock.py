@@ -76,7 +76,7 @@ def validate_pyinstaller_command(args: Sequence[str]) -> None:
         if item not in normalized:
             raise CleanBuildLockError(f"Missing required PyInstaller option: {item}")
     _require_option_value(normalized, "--name", APP_NAME)
-    _require_option_value(normalized, "--icon", "netconsole/ui/icons/love.ico")
+    _require_path_option(normalized, "--icon", ICON_SOURCE, "netconsole/ui/icons/love.ico")
     _require_option_value(normalized, "--distpath", str(DIST_ROOT).replace("\\", "/"))
     _require_option_value(normalized, "--workpath", str(BUILD_ROOT).replace("\\", "/"))
 
@@ -150,4 +150,21 @@ def _require_option_value(args: Sequence[str], option: str, expected: str) -> No
         raise CleanBuildLockError(f"Missing value for PyInstaller option: {option}")
     actual = args[index + 1].replace("\\", "/")
     if actual != expected:
+        raise CleanBuildLockError(f"Invalid PyInstaller {option}: {actual}")
+
+
+def _require_path_option(args: Sequence[str], option: str, expected_path: Path, expected_relative: str) -> None:
+    if option not in args:
+        raise CleanBuildLockError(f"Missing required PyInstaller option: {option}")
+    index = args.index(option)
+    if index + 1 >= len(args):
+        raise CleanBuildLockError(f"Missing value for PyInstaller option: {option}")
+    actual = args[index + 1].replace("\\", "/")
+    if actual == expected_relative:
+        return
+    try:
+        resolved = Path(actual).resolve()
+    except OSError:
+        resolved = Path(actual)
+    if resolved != expected_path.resolve():
         raise CleanBuildLockError(f"Invalid PyInstaller {option}: {actual}")
