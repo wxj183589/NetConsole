@@ -141,14 +141,20 @@ def test_release_resources_and_build_script_are_configured():
     assert "--name NetConsole" in script
     assert '--icon "%ROOT%\\netconsole\\ui\\icons\\love.ico"' in script
     assert "--version-file" in script
-    assert '--add-data "%ROOT%\\netconsole\\ui\\icons;assets\\ui\\icons"' in script
-    assert '--add-data "%ROOT%\\netconsole\\docs\\changelog.md;assets\\docs"' in script
+    assert "--paths \"%ROOT%\"" in script
+    assert "--add-data" not in script
+    assert "robocopy \"%RUNTIME_ROOT%\\netconsole\" \"%DIST_ROOT%\\NetConsole\\netconsole\"" in script
     assert "--contents-directory \"_internal\"" in script
     assert "--exclude-module tests" in script
     assert "--exclude-module docs" in script
     assert "--exclude-module project" in script
+    assert "--exclude-module __pycache__" in script
+    assert "/XD docs tests project __pycache__" in script
+    assert "%PROJECT_ROOT%\\main.py" in script
     assert "PROJECT_ROOT=%ROOT%\\project" in script
     assert "Unexpected dist item:" in script
+    assert "if not exist \"%DIST_ROOT%\\NetConsole\\netconsole\" goto failed" in script
+    assert "%DIST_ROOT%\\NetConsole\\_internal\\netconsole" in script
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in script
 
 

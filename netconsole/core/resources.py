@@ -12,6 +12,7 @@ def package_resource_path(*parts: str) -> Path:
         if meipass:
             candidates.append(Path(meipass) / asset_relative)
         exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "netconsole" / Path(*parts))
         candidates.append(exe_dir / "_internal" / asset_relative)
         candidates.append(exe_dir / asset_relative)
     candidates.append(Path(__file__).resolve().parents[1] / Path(*parts))

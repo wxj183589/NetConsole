@@ -125,12 +125,22 @@ def test_build_release_script_uses_project_output_and_release_zip():
     assert "--workpath \"%BUILD_ROOT%\"" in text
     assert "--specpath \"%SPEC_ROOT%\"" in text
     assert "--version-file \"%ROOT%\\project\\version_info.txt\"" in text
+    assert "--paths \"%ROOT%\"" in text
     assert "--contents-directory \"_internal\"" in text
     assert "--exclude-module tests" in text
     assert "--exclude-module docs" in text
     assert "--exclude-module project" in text
-    assert '--add-data "%ROOT%\\netconsole\\ui\\icons;assets\\ui\\icons"' in text
-    assert '--add-data "%ROOT%\\netconsole\\docs\\changelog.md;assets\\docs"' in text
+    assert "--exclude-module __pycache__" in text
+    assert "/XD docs tests project __pycache__" in text
+    assert "robocopy \"%RUNTIME_ROOT%\\netconsole\" \"%DIST_ROOT%\\NetConsole\\netconsole\"" in text
+    assert "--add-data" not in text
+    assert "%PROJECT_ROOT%\\main.py" in text
+    assert "%ROOT%\\main.py" not in text
+    assert "netconsole\\docs;netconsole\\docs" not in text
+    assert "docs\\changelog.md;assets\\docs" not in text
     assert "Unexpected dist item:" in text
-    assert "%DIST_ROOT%\\NetConsole\\netconsole" in text
+    assert 'allowed = @(\'NetConsole.exe\', \'_internal\', \'netconsole\')' in text
+    assert "if not exist \"%DIST_ROOT%\\NetConsole\\netconsole\" goto failed" in text
+    assert "%DIST_ROOT%\\NetConsole\\_internal\\netconsole" in text
+    assert "%DIST_ROOT%\\NetConsole\\netconsole\\docs" in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
