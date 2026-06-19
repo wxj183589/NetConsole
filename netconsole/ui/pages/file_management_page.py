@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
+from uuid import uuid4
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from time import monotonic
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -20,11 +24,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QHeaderView,
 )
 
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.file_transfer_service import (
@@ -43,7 +49,14 @@ from netconsole.ui.table_utils import configure_readonly_table
 
 
 LOCAL_COLUMNS = (("name", "file_management.name"), ("size", "file_management.size"), ("modified", "file_management.modified"), ("type", "file_management.type"))
-REMOTE_COLUMNS = (("name", "file_management.name"), ("size", "file_management.size"), ("modified", "file_management.modified"), ("type", "file_management.type"))
+REMOTE_CHECK_COLUMN = 0
+REMOTE_COLUMNS = (
+    ("select", "file_management.select_column"),
+    ("name", "file_management.name"),
+    ("size", "file_management.size"),
+    ("modified", "file_management.modified"),
+    ("type", "file_management.type"),
+)
 QUEUE_COLUMNS = (
     ("name", "file_management.name"),
     ("device", "file_management.source_device"),
@@ -61,6 +74,7 @@ QUEUE_COLUMNS = (
 @dataclass
 class TransferTask:
     id: int
+    batch_id: str
     device: Device
     remote_file: RemoteDeviceFile
     local_path: Path
@@ -68,6 +82,20 @@ class TransferTask:
     downloaded: int = 0
     status_key: str = "file_management.status.queued"
     speed: str = "-"
+
+
+@dataclass
+class DownloadBatch:
+    batch_id: str
+    created_at: str
+    device_id: int | None
+    task_ids: list[int]
+    total_count: int
+    success_count: int = 0
+    failed_count: int = 0
+    cancelled_count: int = 0
+    completed_count: int = 0
+    summary_shown: bool = False
 
 
 class CancelToken:
@@ -166,11 +194,22 @@ class FileManagementPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths or PathResolver()
+        self.settings = SettingsStore(self.paths)
+        self._initializing_columns = True
+        self._restoring_column_widths = False
+        self._local_column_layout_initialized = False
+        self._remote_column_layout_initialized = False
+        self.remote_sort_column = 1
+        self.remote_sort_order = Qt.AscendingOrder
         self.sftp_service: FileTransferService | None = None
         self.connected_device: Device | None = None
+        self.connection_status_key = "file_management.status.disconnected"
         self.remote_files: list[RemoteDeviceFile] = []
+        self.checked_remote_paths: set[str] = set()
+        self._updating_remote_checks = False
         self.local_path = self.paths.ensure_site_dirs(site_name) / "raw" / "files"
         self.tasks: list[TransferTask] = []
+        self.batches: dict[str, DownloadBatch] = {}
         self.next_task_id = 1
         self.active_worker: SftpDownloadWorker | None = None
         self.connect_worker: SftpConnectWorker | None = None
@@ -200,6 +239,9 @@ class FileManagementPage(QWidget):
         self.remote_path_label = QLabel()
         self.remote_up_button = QPushButton()
         self.remote_refresh_button = QPushButton()
+        self.remote_select_all_button = QPushButton()
+        self.remote_clear_selection_button = QPushButton()
+        self.remote_mesh_logs_button = QPushButton()
         self.download_button = QPushButton()
         self.remote_table = QTableWidget(0, len(REMOTE_COLUMNS))
         set_table_column_fields(self.remote_table, [field for field, _key in REMOTE_COLUMNS])
@@ -246,12 +288,21 @@ class FileManagementPage(QWidget):
         self.open_local_button.clicked.connect(lambda: open_folder(self.local_path))
         self.remote_up_button.clicked.connect(self.remote_up)
         self.remote_refresh_button.clicked.connect(self.refresh_remote)
+        self.remote_select_all_button.clicked.connect(self.select_all_remote_files)
+        self.remote_clear_selection_button.clicked.connect(self.clear_remote_selection)
+        self.remote_mesh_logs_button.clicked.connect(self.select_mesh_logs)
         self.download_button.clicked.connect(self.download_selected)
         self.local_table.cellDoubleClicked.connect(self.local_double_clicked)
         self.remote_table.cellDoubleClicked.connect(self.remote_double_clicked)
+        self.remote_table.itemChanged.connect(self.remote_item_changed)
+        self.remote_table.horizontalHeader().sectionClicked.connect(self.remote_header_clicked)
+        self.local_table.horizontalHeader().sectionResized.connect(lambda _section, _old, _new: self.save_table_column_widths(self.local_table, "file_manager/local_table/column_widths"))
+        self.remote_table.horizontalHeader().sectionResized.connect(lambda _section, _old, _new: self.save_table_column_widths(self.remote_table, "file_manager/remote_table/column_widths"))
+        self.local_table.itemActivated.connect(lambda item: self.open_local_path_from_item(item))
 
         self.retranslate()
         self.refresh_devices()
+        self._initializing_columns = False
 
     def _local_panel(self) -> QWidget:
         panel = QWidget()
@@ -273,6 +324,9 @@ class FileManagementPage(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self.remote_up_button)
         controls.addWidget(self.remote_refresh_button)
+        controls.addWidget(self.remote_select_all_button)
+        controls.addWidget(self.remote_clear_selection_button)
+        controls.addWidget(self.remote_mesh_logs_button)
         controls.addWidget(self.download_button)
         controls.addStretch(1)
         layout = QVBoxLayout(panel)
@@ -292,21 +346,26 @@ class FileManagementPage(QWidget):
         self.remote_up_button.setText(self.i18n.t("file_management.up"))
         self.local_refresh_button.setText(self.i18n.t("file_management.refresh"))
         self.remote_refresh_button.setText(self.i18n.t("file_management.refresh"))
+        self.remote_select_all_button.setText(self.i18n.t("file_management.select_all"))
+        self.remote_clear_selection_button.setText(self.i18n.t("file_management.clear_selection"))
+        self.remote_mesh_logs_button.setText(self.i18n.t("file_management.mesh_logs"))
         self.new_folder_button.setText(self.i18n.t("file_management.new_folder"))
         self.open_local_button.setText(self.i18n.t("file_management.open_local_folder"))
-        self.download_button.setText(self.i18n.t("file_management.download"))
         self.queue_title.setText(self.i18n.t("file_management.transfer_queue"))
         self.protocol_label.setText(f"{self.i18n.t('file_management.protocol')}: SFTP")
         self.local_table.setHorizontalHeaderLabels([self.i18n.t(key) for _field, key in LOCAL_COLUMNS])
         self.remote_table.setHorizontalHeaderLabels([self.i18n.t(key) for _field, key in REMOTE_COLUMNS])
+        self.remote_table.horizontalHeaderItem(REMOTE_CHECK_COLUMN).setText("")
         self.queue_table.setHorizontalHeaderLabels([self.i18n.t(key) for _field, key in QUEUE_COLUMNS])
-        apply_table_style(self.local_table)
-        apply_table_style(self.remote_table)
-        apply_table_style(self.queue_table)
+        self.apply_table_style_without_saving(self.local_table)
+        self.apply_table_style_without_saving(self.remote_table)
+        self.apply_table_style_without_saving(self.queue_table)
+        self.apply_column_layouts()
         self.update_device_labels()
-        self.update_connection_status("file_management.status.disconnected")
+        self.update_connection_status(self.connection_status_key)
         self.refresh_local()
         self.refresh_queue()
+        self.update_download_button()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.disconnect_sftp()
@@ -339,6 +398,7 @@ class FileManagementPage(QWidget):
         device = self.current_device()
         self.update_device_labels()
         self.remote_files = []
+        self.checked_remote_paths.clear()
         self.populate_remote_table()
         self.local_path = self.default_local_dir(device)
         self.local_path.mkdir(parents=True, exist_ok=True)
@@ -356,6 +416,7 @@ class FileManagementPage(QWidget):
         self.type_label.setText(f"{self.i18n.t('field.device_type')}: {device.device_type or '-'}")
 
     def update_connection_status(self, status_key: str) -> None:
+        self.connection_status_key = status_key
         self.connection_status_label.setText(f"{self.i18n.t('file_management.connection_status')}: {self.i18n.t(status_key)}")
 
     def default_local_dir(self, device: Device | None) -> Path:
@@ -391,6 +452,7 @@ class FileManagementPage(QWidget):
         QMessageBox.warning(self, self.i18n.t("file_management.title"), error)
 
     def disconnect_sftp(self) -> None:
+        self.fail_waiting_tasks_on_disconnect()
         if self.list_worker and self.list_worker.isRunning():
             self.list_worker.wait(1000)
         if self.sftp_service is not None:
@@ -398,10 +460,22 @@ class FileManagementPage(QWidget):
         self.sftp_service = None
         self.connected_device = None
         self.remote_files = []
+        self.checked_remote_paths.clear()
         self.populate_remote_table()
         self.connect_button.setEnabled(True)
         self.update_connection_status("file_management.status.disconnected")
         self.remote_path_label.setText(f"{self.i18n.t('file_management.current_path')}: -")
+
+    def fail_waiting_tasks_on_disconnect(self) -> None:
+        changed = False
+        for task in self.tasks:
+            if task.status_key == "file_management.status.queued":
+                task.status_key = "file_management.status.failed"
+                changed = True
+        if self.active_worker is not None and self.active_worker.isRunning():
+            self.active_worker.cancel()
+        if changed:
+            self.refresh_queue()
 
     def refresh_remote(self) -> None:
         if self.sftp_service is None or not self.sftp_service.is_connected():
@@ -417,6 +491,8 @@ class FileManagementPage(QWidget):
     def on_remote_listed(self, remote_path: str, files: list[RemoteDeviceFile]) -> None:
         self.remote_refresh_button.setEnabled(True)
         self.remote_path_label.setText(f"{self.i18n.t('file_management.current_path')}: {remote_path}")
+        existing = {item.remote_path for item in files if not item.is_dir}
+        self.checked_remote_paths.intersection_update(existing)
         self.remote_files = files
         self.populate_remote_table()
 
@@ -432,6 +508,8 @@ class FileManagementPage(QWidget):
     def start_remote_list(self, path: str) -> None:
         if self.sftp_service is None:
             return
+        self.checked_remote_paths.clear()
+        self.update_download_button()
         self.remote_refresh_button.setEnabled(False)
         self.list_worker = SftpListWorker(self.sftp_service, path, self)
         self.list_worker.listed.connect(self.on_remote_listed)
@@ -441,9 +519,11 @@ class FileManagementPage(QWidget):
         self.list_worker.start()
 
     def populate_remote_table(self) -> None:
+        self._updating_remote_checks = True
         self.remote_table.setRowCount(len(self.remote_files))
         for row, item in enumerate(self.remote_files):
             values = {
+                "select": "",
                 "name": item.name,
                 "size": "" if item.is_dir or item.size is None else str(item.size),
                 "modified": item.modified_time or "",
@@ -452,71 +532,68 @@ class FileManagementPage(QWidget):
             for column, (field, _key) in enumerate(REMOTE_COLUMNS):
                 table_item = QTableWidgetItem(values.get(field, ""))
                 table_item.setData(Qt.UserRole, row)
+                table_item.setToolTip(values.get(field, ""))
+                if field == "select":
+                    table_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    if not item.is_dir:
+                        table_item.setFlags(table_item.flags() | Qt.ItemIsUserCheckable)
+                        table_item.setCheckState(Qt.Checked if item.remote_path in self.checked_remote_paths else Qt.Unchecked)
+                    else:
+                        table_item.setFlags(Qt.ItemIsEnabled)
+                elif field == "size":
+                    table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.remote_table.setItem(row, column, table_item)
-        apply_table_style(self.remote_table)
+        self._updating_remote_checks = False
+        self.apply_table_style_without_saving(self.remote_table)
+        self.apply_remote_column_layout()
+        self.update_download_button()
 
     def remote_double_clicked(self, row: int, _column: int) -> None:
-        if row < 0 or row >= len(self.remote_files):
+        item = self.remote_file_for_table_row(row)
+        if item is None:
             return
-        item = self.remote_files[row]
         if item.is_dir:
             self.start_remote_list(item.remote_path)
         else:
-            self.enqueue_download(item)
+            self.toggle_remote_file_checked(item)
 
     def selected_remote_file(self) -> RemoteDeviceFile | None:
         row = self.remote_table.currentRow()
-        if row < 0 or row >= len(self.remote_files):
-            return None
-        return self.remote_files[row]
+        return self.remote_file_for_table_row(row)
 
     def download_selected(self) -> None:
-        item = self.selected_remote_file()
-        if item is None or item.is_dir:
-            QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.select_file"))
+        files = self.checked_remote_files_in_view_order()
+        if not files:
+            QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_file_selected"))
             return
-        self.enqueue_download(item)
+        self.enqueue_downloads(files)
 
-    def enqueue_download(self, remote_file: RemoteDeviceFile) -> None:
+    def enqueue_downloads(self, remote_files: list[RemoteDeviceFile]) -> None:
         device = self.connected_device or self.current_device()
         if device is None:
             return
-        target = self.resolve_download_target(remote_file)
-        if target is None:
-            return
-        task = TransferTask(self.next_task_id, device, remote_file, target, int(remote_file.size or 0))
-        self.next_task_id += 1
-        self.tasks.append(task)
+        queued_paths = {task.remote_file.remote_path for task in self.tasks if task.status_key in {"file_management.status.queued", "file_management.status.downloading"}}
+        batch_id = str(uuid4())
+        task_ids: list[int] = []
+        for remote_file in remote_files:
+            if remote_file.is_dir or remote_file.remote_path in queued_paths:
+                continue
+            target = resolve_local_download_path(self.local_path, remote_file, device.name)
+            task = TransferTask(self.allocate_task_id(), batch_id, device, remote_file, target, int(remote_file.size or 0))
+            self.tasks.append(task)
+            task_ids.append(task.id)
+            queued_paths.add(remote_file.remote_path)
+        if task_ids:
+            self.batches[batch_id] = DownloadBatch(
+                batch_id=batch_id,
+                created_at=datetime.now().isoformat(timespec="seconds"),
+                device_id=device.id,
+                task_ids=task_ids,
+                total_count=len(task_ids),
+            )
         self.refresh_queue()
         self.start_next_download()
-
-    def resolve_download_target(self, remote_file: RemoteDeviceFile) -> Path | None:
-        target = self.local_path / remote_file.name
-        message = self.i18n.t(
-            "file_management.download_confirm",
-            name=remote_file.name,
-            remote_path=remote_file.remote_path,
-            size=remote_file.size if remote_file.size is not None else "-",
-            local_path=target,
-        )
-        if target.exists():
-            box = QMessageBox(self)
-            box.setWindowTitle(self.i18n.t("file_management.download"))
-            box.setText(message)
-            overwrite = box.addButton(self.i18n.t("file_management.overwrite"), QMessageBox.AcceptRole)
-            rename = box.addButton(self.i18n.t("file_management.auto_rename"), QMessageBox.ActionRole)
-            cancel = box.addButton(self.i18n.t("file_management.cancel"), QMessageBox.RejectRole)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is cancel:
-                return None
-            if clicked is rename:
-                return auto_rename_path(target)
-            if clicked is overwrite:
-                return target
-            return None
-        answer = QMessageBox.question(self, self.i18n.t("file_management.download"), message)
-        return target if answer == QMessageBox.Yes else None
 
     def start_next_download(self) -> None:
         if self.active_worker is not None:
@@ -525,6 +602,7 @@ class FileManagementPage(QWidget):
             app_logger.log_warning("FILE_TRANSFER_CONCURRENCY_IGNORED", f"configured={FILE_TRANSFER_MAX_CONCURRENCY}, active=1")
         next_task = next((task for task in self.tasks if task.status_key == "file_management.status.queued"), None)
         if next_task is None:
+            self.maybe_show_finished_batch_summaries()
             return
         next_task.status_key = "file_management.status.downloading"
         next_task.speed = "-"
@@ -555,23 +633,26 @@ class FileManagementPage(QWidget):
         task.speed = "-"
         self.refresh_queue()
         self.refresh_local(select_path=task.local_path)
+        self.maybe_show_batch_summary(task.batch_id)
 
     def on_download_cancelled(self, task: TransferTask) -> None:
         task.status_key = "file_management.status.cancelled"
         task.speed = "-"
         self.refresh_queue()
+        self.maybe_show_batch_summary(task.batch_id)
 
     def on_download_failed(self, task: TransferTask, error: str) -> None:
         task.status_key = "file_management.status.verification_failed" if error == "verification_failed" else "file_management.status.failed"
         task.speed = "-"
         self.refresh_queue()
+        self.maybe_show_batch_summary(task.batch_id)
 
     def refresh_queue(self) -> None:
         self.queue_table.setRowCount(len(self.tasks))
         for row, task in enumerate(self.tasks):
             progress = int(task.downloaded * 100 / task.size) if task.size else 0
             values = {
-                "name": task.remote_file.name,
+                "name": task.local_path.name,
                 "device": task.device.name,
                 "remote_path": task.remote_file.remote_path,
                 "local_path": str(task.local_path),
@@ -587,8 +668,15 @@ class FileManagementPage(QWidget):
                     continue
                 item = QTableWidgetItem(values.get(field, ""))
                 item.setData(Qt.UserRole, task.id)
+                tooltip = values.get(field, "")
+                if field == "name":
+                    tooltip = f"{values.get(field, '')}\n{task.remote_file.name}"
+                item.setToolTip(tooltip)
+                if field in {"size", "downloaded", "progress", "speed"}:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.queue_table.setItem(row, column, item)
-        apply_table_style(self.queue_table)
+        self.apply_table_style_without_saving(self.queue_table)
+        self.apply_queue_column_layout()
 
     def queue_action_widget(self, task: TransferTask) -> QWidget:
         widget = QWidget()
@@ -616,11 +704,242 @@ class FileManagementPage(QWidget):
         self.refresh_queue()
 
     def retry_task(self, task: TransferTask) -> None:
-        task.downloaded = 0
-        task.status_key = "file_management.status.queued"
-        task.speed = "-"
+        batch_id = str(uuid4())
+        retry = TransferTask(
+            self.allocate_task_id(),
+            batch_id,
+            task.device,
+            task.remote_file,
+            resolve_local_download_path(self.local_path, task.remote_file, task.device.name),
+            int(task.remote_file.size or task.size or 0),
+        )
+        self.tasks.append(retry)
+        self.batches[batch_id] = DownloadBatch(
+            batch_id=batch_id,
+            created_at=datetime.now().isoformat(timespec="seconds"),
+            device_id=task.device.id,
+            task_ids=[retry.id],
+            total_count=1,
+        )
         self.refresh_queue()
         self.start_next_download()
+
+    def allocate_task_id(self) -> int:
+        existing = {task.id for task in self.tasks}
+        while self.next_task_id in existing:
+            self.next_task_id += 1
+        task_id = self.next_task_id
+        self.next_task_id += 1
+        return task_id
+
+    def remote_file_for_table_row(self, row: int) -> RemoteDeviceFile | None:
+        if row < 0:
+            return None
+        item = self.remote_table.item(row, 0)
+        if item is None:
+            return None
+        index = item.data(Qt.UserRole)
+        if index is None:
+            return None
+        try:
+            remote_file = self.remote_files[int(index)]
+        except (TypeError, ValueError, IndexError):
+            return None
+        return remote_file
+
+    def checked_remote_files_in_view_order(self) -> list[RemoteDeviceFile]:
+        files: list[RemoteDeviceFile] = []
+        for row in range(self.remote_table.rowCount()):
+            remote_file = self.remote_file_for_table_row(row)
+            if remote_file is not None and not remote_file.is_dir and remote_file.remote_path in self.checked_remote_paths:
+                files.append(remote_file)
+        return files
+
+    def remote_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_remote_checks or item.column() != REMOTE_CHECK_COLUMN:
+            return
+        remote_file = self.remote_file_for_table_row(item.row())
+        if remote_file is None or remote_file.is_dir:
+            return
+        if item.checkState() == Qt.Checked:
+            self.checked_remote_paths.add(remote_file.remote_path)
+        else:
+            self.checked_remote_paths.discard(remote_file.remote_path)
+        self.update_download_button()
+
+    def remote_header_clicked(self, section: int) -> None:
+        if section == REMOTE_CHECK_COLUMN:
+            return
+        if self.remote_sort_column == section:
+            self.remote_sort_order = Qt.DescendingOrder if self.remote_sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        else:
+            self.remote_sort_column = section
+            self.remote_sort_order = Qt.AscendingOrder
+        self.remote_table.sortItems(section, self.remote_sort_order)
+
+    def select_all_remote_files(self) -> None:
+        files = [item for item in self.remote_files if not item.is_dir]
+        for item in files:
+            self.checked_remote_paths.add(item.remote_path)
+        self.populate_remote_table()
+
+    def clear_remote_selection(self) -> None:
+        self.checked_remote_paths.clear()
+        self.populate_remote_table()
+
+    def select_mesh_logs(self) -> None:
+        selected_paths = {
+            item.remote_path
+            for item in self.remote_files
+            if not item.is_dir and is_mesh_log_file(item.name)
+        }
+        self.checked_remote_paths.clear()
+        self.checked_remote_paths.update(selected_paths)
+        self.populate_remote_table()
+        if not selected_paths:
+            QMessageBox.information(self, self.i18n.t("file_management.mesh_logs"), self.i18n.t("file_management.no_mesh_logs_found"))
+
+    def toggle_remote_file_checked(self, remote_file: RemoteDeviceFile) -> None:
+        if remote_file.remote_path in self.checked_remote_paths:
+            self.checked_remote_paths.discard(remote_file.remote_path)
+        else:
+            self.checked_remote_paths.add(remote_file.remote_path)
+        self.populate_remote_table()
+
+    def update_download_button(self) -> None:
+        count = len(self.checked_remote_files_in_view_order())
+        self.download_button.setEnabled(count > 0)
+        if count:
+            self.download_button.setText(self.i18n.t("file_management.download_files_count", count=count))
+            self.download_button.setToolTip(self.i18n.t("file_management.selected_files", count=count))
+        else:
+            self.download_button.setText(self.i18n.t("file_management.download_files"))
+            self.download_button.setToolTip(self.i18n.t("file_management.no_file_selected"))
+
+    def maybe_show_finished_batch_summaries(self) -> None:
+        for batch_id in list(self.batches):
+            self.maybe_show_batch_summary(batch_id)
+
+    def maybe_show_batch_summary(self, batch_id: str) -> None:
+        batch = self.batches.get(batch_id)
+        if batch is None or batch.summary_shown:
+            return
+        terminal_states = {
+            "file_management.status.completed",
+            "file_management.status.cancelled",
+            "file_management.status.failed",
+            "file_management.status.verification_failed",
+        }
+        batch_tasks = [task for task in self.tasks if task.id in set(batch.task_ids)]
+        if len(batch_tasks) != batch.total_count or any(task.status_key not in terminal_states for task in batch_tasks):
+            return
+        success = sum(1 for task in batch_tasks if task.status_key == "file_management.status.completed")
+        cancelled = sum(1 for task in batch_tasks if task.status_key == "file_management.status.cancelled")
+        failed = len(batch_tasks) - success - cancelled
+        batch.success_count = success
+        batch.cancelled_count = cancelled
+        batch.failed_count = failed
+        batch.completed_count = len(batch_tasks)
+        batch.summary_shown = True
+        QMessageBox.information(
+            self,
+            self.i18n.t("file_management.download_completed_title"),
+            self.i18n.t("file_management.download_summary", success=success, failed=failed, cancelled=cancelled),
+        )
+
+    def apply_column_layouts(self) -> None:
+        self.apply_local_column_layout()
+        self.apply_remote_column_layout()
+        self.apply_queue_column_layout()
+
+    def apply_table_style_without_saving(self, table: QTableWidget) -> None:
+        header = table.horizontalHeader()
+        self._restoring_column_widths = True
+        old_blocked = header.blockSignals(True)
+        try:
+            apply_table_style(table)
+        finally:
+            header.blockSignals(old_blocked)
+            self._restoring_column_widths = False
+
+    def apply_local_column_layout(self) -> None:
+        header = self.local_table.horizontalHeader()
+        self._restoring_column_widths = True
+        old_blocked = header.blockSignals(True)
+        try:
+            header.setSectionResizeMode(0, QHeaderView.Interactive)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            has_saved = isinstance(self.settings.get_value("file_manager/local_table/column_widths", None), list)
+            if has_saved or not self._local_column_layout_initialized:
+                self.restore_table_column_widths(self.local_table, "file_manager/local_table/column_widths", {0: 280, 1: 90, 2: 150, 3: 80}, {0: 180, 1: 60, 2: 120, 3: 60})
+                self._local_column_layout_initialized = True
+        finally:
+            header.blockSignals(old_blocked)
+            self._restoring_column_widths = False
+
+    def apply_remote_column_layout(self) -> None:
+        header = self.remote_table.horizontalHeader()
+        self._restoring_column_widths = True
+        old_blocked = header.blockSignals(True)
+        try:
+            header.setMinimumSectionSize(1)
+            header.setSectionResizeMode(0, QHeaderView.Fixed)
+            header.setSectionResizeMode(1, QHeaderView.Interactive)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+            self.remote_table.setColumnWidth(0, 40)
+            has_saved = isinstance(self.settings.get_value("file_manager/remote_table/column_widths", None), list)
+            if has_saved or not self._remote_column_layout_initialized:
+                self.restore_table_column_widths(self.remote_table, "file_manager/remote_table/column_widths", {0: 40, 1: 350, 2: 90, 3: 150, 4: 80}, {0: 36, 1: 180, 2: 60, 3: 120, 4: 60}, fixed_widths={0: 40})
+                self._remote_column_layout_initialized = True
+        finally:
+            header.blockSignals(old_blocked)
+            self._restoring_column_widths = False
+
+    def apply_queue_column_layout(self) -> None:
+        header = self.queue_table.horizontalHeader()
+        for column in range(self.queue_table.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        self.queue_table.setColumnWidth(0, max(180, self.queue_table.columnWidth(0)))
+
+    def restore_table_column_widths(
+        self,
+        table: QTableWidget,
+        key: str,
+        defaults: dict[int, int],
+        minimums: dict[int, int],
+        fixed_widths: dict[int, int] | None = None,
+    ) -> None:
+        fixed_widths = fixed_widths or {}
+        raw = self.settings.get_value(key, None)
+        widths = raw if isinstance(raw, list) else []
+        header = table.horizontalHeader()
+        self._restoring_column_widths = True
+        old_blocked = header.blockSignals(True)
+        try:
+            for column in range(table.columnCount()):
+                if column in fixed_widths:
+                    width = fixed_widths[column]
+                elif column < len(widths):
+                    width = safe_column_width(widths[column], minimums.get(column, 50), defaults.get(column, 100))
+                else:
+                    width = defaults.get(column, 100)
+                table.setColumnWidth(column, width)
+        finally:
+            header.blockSignals(old_blocked)
+            self._restoring_column_widths = False
+
+    def save_table_column_widths(self, table: QTableWidget, key: str) -> None:
+        if self._initializing_columns or self._restoring_column_widths:
+            return
+        widths = [max(1, int(table.columnWidth(column))) for column in range(table.columnCount())]
+        if key == "file_manager/remote_table/column_widths" and widths:
+            widths[0] = 40
+        self.settings.set_value(key, widths)
 
     def refresh_local(self, select_path: Path | None = None) -> None:
         self.local_path.mkdir(parents=True, exist_ok=True)
@@ -639,21 +958,47 @@ class FileManagementPage(QWidget):
             for column, (field, _key) in enumerate(LOCAL_COLUMNS):
                 item = QTableWidgetItem(values.get(field, ""))
                 item.setData(Qt.UserRole, str(path))
+                item.setToolTip(str(path if field == "name" else values.get(field, "")))
+                if field == "size":
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.local_table.setItem(row, column, item)
             if select_path is not None and path.resolve() == select_path.resolve():
                 selected_row = row
-        apply_table_style(self.local_table)
+        self.apply_table_style_without_saving(self.local_table)
+        self.apply_local_column_layout()
         if selected_row >= 0:
             self.local_table.selectRow(selected_row)
 
     def local_double_clicked(self, row: int, _column: int) -> None:
         item = self.local_table.item(row, 0)
+        self.open_local_path_from_item(item)
+
+    def open_local_path_from_item(self, item: QTableWidgetItem | None) -> None:
         if item is None:
             return
-        path = Path(str(item.data(Qt.UserRole)))
+        path = Path(str(item.data(Qt.UserRole))).resolve()
+        if not path.exists():
+            self.refresh_local()
+            QMessageBox.warning(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.file_not_found"))
+            return
         if path.is_dir():
             self.local_path = path
             self.refresh_local()
+            return
+        self.open_local_file(path)
+
+    def open_local_file(self, path: Path) -> None:
+        if not path.exists():
+            self.refresh_local()
+            QMessageBox.warning(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.file_not_found"))
+            return
+        ok = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+        if not ok:
+            QMessageBox.warning(
+                self,
+                self.i18n.t("file_management.open_file_failed"),
+                self.i18n.t("file_management.no_associated_application"),
+            )
 
     def local_up(self) -> None:
         root = self.paths.ensure_site_dirs(self.site_name) / "raw" / "files"
@@ -702,6 +1047,54 @@ def format_speed(bytes_per_second: float) -> str:
         value /= 1024
         index += 1
     return f"{value:.1f} {units[index]}"
+
+
+def safe_column_width(value: object, minimum: int, default: int) -> int:
+    try:
+        width = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(int(minimum), width)
+
+
+MESH_HISTORY_LOG_PATTERN = re.compile(r"^\d{4}_\d{2}_\d{2}_\d+meshlog\.log\.gz$", re.IGNORECASE)
+
+
+def is_mesh_log_file(filename: str) -> bool:
+    basename = Path(str(filename or "")).name
+    return basename.casefold() == "meshlog.log" or MESH_HISTORY_LOG_PATTERN.match(basename) is not None
+
+
+def resolve_local_download_name(remote_file: RemoteDeviceFile, device_name: str = "", today: date | None = None) -> str:
+    basename = Path(str(remote_file.name or "")).name
+    safe_name = safe_device_name(device_name or "device")
+    if MESH_HISTORY_LOG_PATTERN.match(basename):
+        return f"{safe_name}-{basename}"
+    if basename.casefold() != "meshlog.log":
+        return basename
+    resolved_date = meshlog_modified_date(remote_file.modified_time)
+    if resolved_date is None:
+        resolved_date = today or date.today()
+        app_logger.log_info("MESHLOG_DATE_FALLBACK", f"remote_path={remote_file.remote_path}")
+    return f"{safe_name}-{resolved_date:%Y_%m_%d}-meshlog.log"
+
+
+def meshlog_modified_date(value: object) -> date | None:
+    text = str(value or "").strip()
+    if not text or text.startswith("1970-01-01"):
+        return None
+    for fmt, length in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
+        try:
+            return datetime.strptime(text[:length], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_local_download_path(directory: Path, remote_file: RemoteDeviceFile, device_name: str = "") -> Path:
+    filename = resolve_local_download_name(remote_file, device_name)
+    target = Path(directory) / filename
+    return auto_rename_path(target)
 
 
 def open_folder(folder: Path) -> bool:

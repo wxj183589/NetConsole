@@ -54,6 +54,13 @@ class SettingsStore:
         self.values["last_export_path"] = str(path)
         self.save()
 
+    def get_value(self, key: str, default: object = None) -> object:
+        return self.values.get(key, default)
+
+    def set_value(self, key: str, value: object) -> None:
+        self.values[key] = value
+        self.save()
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.values, ensure_ascii=False, indent=2), encoding="utf-8")
