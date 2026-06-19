@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self.version_button.setObjectName("versionButton")
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
+        self.device_page.groups_changed.connect(self.refresh_group_filters)
         self.new_site_button.clicked.connect(self.create_site)
         self.switch_site_button.clicked.connect(self.switch_site_dialog)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
@@ -198,6 +199,12 @@ class MainWindow(QMainWindow):
         self.file_management_page.set_repository(self.repository, site.name)
         self.ac_page.set_repository(self.repository, site.name)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
+
+    def refresh_group_filters(self) -> None:
+        self.config_collection_page.refresh_groups()
+        self.config_collection_page.refresh()
+        self.file_management_page.refresh_groups()
+        self.file_management_page.refresh_devices(trigger_device_change=False)
 
     def switch_language(self, language: str) -> None:
         self.i18n.set_language(language)

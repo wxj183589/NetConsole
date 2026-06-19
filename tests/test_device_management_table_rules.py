@@ -35,6 +35,7 @@ def test_main_table_columns_only_include_core_fields():
         "select",
         "status",
         "name",
+        "group",
         "station",
         "ip_address",
         "protocols",
@@ -157,7 +158,7 @@ def test_row_edit_button_calls_edit_callback():
     edited = []
     table.edit_requested.connect(lambda device_id: edited.append(device_id))
 
-    action_widget = table.cellWidget(0, 7)
+    action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
     buttons[1].click()
 
@@ -166,7 +167,7 @@ def test_row_edit_button_calls_edit_callback():
 
 def test_row_action_buttons_include_connection_edit_and_delete():
     table = make_table()
-    action_widget = table.cellWidget(0, 7)
+    action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
 
     assert [button.text() for button in buttons] == ["Test Connection", "Edit", "Delete"]
@@ -176,7 +177,7 @@ def test_row_action_buttons_include_chinese_connection_text():
     app()
     table = DeviceTable(I18n("zh_CN"))
     table.set_devices([Device(id=1, name="A")])
-    action_widget = table.cellWidget(0, 7)
+    action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
 
     assert buttons[0].text() == "\u6d4b\u8bd5\u8fde\u63a5"

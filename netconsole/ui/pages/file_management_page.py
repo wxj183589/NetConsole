@@ -33,6 +33,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
 from netconsole.services.file_transfer_service import (
     FILE_TRANSFER_MAX_CONCURRENCY,
     FileTransferService,
@@ -194,6 +196,7 @@ class FileManagementPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths or PathResolver()
+        self.group_repository = self._make_group_repository(repository, site_name)
         self.settings = SettingsStore(self.paths)
         self._initializing_columns = True
         self._restoring_column_widths = False
@@ -216,6 +219,8 @@ class FileManagementPage(QWidget):
         self.list_worker: SftpListWorker | None = None
 
         self.site_label = QLabel()
+        self.group_label = QLabel()
+        self.group_combo = QComboBox()
         self.device_combo = QComboBox()
         self.device_name_label = QLabel()
         self.ip_label = QLabel()
@@ -255,6 +260,8 @@ class FileManagementPage(QWidget):
         top = QHBoxLayout()
         for widget in (
             self.site_label,
+            self.group_label,
+            self.group_combo,
             self.device_combo,
             self.device_name_label,
             self.ip_label,
@@ -279,6 +286,7 @@ class FileManagementPage(QWidget):
         layout.addWidget(self.queue_table)
         self.setLayout(layout)
 
+        self.group_combo.currentIndexChanged.connect(self.on_group_filter_changed)
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
         self.connect_button.clicked.connect(self.connect_sftp)
         self.disconnect_button.clicked.connect(self.disconnect_sftp)
@@ -338,6 +346,7 @@ class FileManagementPage(QWidget):
 
     def retranslate(self) -> None:
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
+        self.group_label.setText(self.i18n.t("groups.group"))
         self.connect_button.setText(self.i18n.t("file_management.connect"))
         self.disconnect_button.setText(self.i18n.t("file_management.disconnect"))
         self.local_title.setText(self.i18n.t("file_management.local_files"))
@@ -363,6 +372,7 @@ class FileManagementPage(QWidget):
         self.apply_column_layouts()
         self.update_device_labels()
         self.update_connection_status(self.connection_status_key)
+        self.refresh_groups()
         self.refresh_local()
         self.refresh_queue()
         self.update_download_button()
@@ -371,20 +381,67 @@ class FileManagementPage(QWidget):
         self.disconnect_sftp()
         self.repository = repository
         self.site_name = site_name
+        self.group_repository = self._make_group_repository(repository, site_name)
         self.local_path = self.paths.ensure_site_dirs(site_name) / "raw" / "files"
+        self.refresh_groups()
         self.refresh_devices()
         self.retranslate()
 
-    def refresh_devices(self) -> None:
+    def refresh_groups(self) -> None:
+        current = self.group_combo.currentData()
+        self.group_combo.blockSignals(True)
+        self.group_combo.clear()
+        self.group_combo.addItem(self.i18n.t("groups.all_groups"), ALL_GROUPS)
+        self.group_combo.addItem(self.i18n.t("groups.ungrouped"), UNGROUPED)
+        for group in self._list_groups():
+            self.group_combo.addItem(group.name, group.id)
+        index = self.group_combo.findData(current if current is not None else ALL_GROUPS)
+        self.group_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.group_combo.blockSignals(False)
+
+    @staticmethod
+    def _make_group_repository(repository: DeviceRepository, site_name: str) -> DeviceGroupRepository | None:
+        database = getattr(repository, "database", None)
+        return DeviceGroupRepository(database, site_name) if database is not None else None
+
+    def _list_groups(self):
+        if self.group_repository is None:
+            return []
+        try:
+            return self.group_repository.list()
+        except Exception as exc:
+            app_logger.log_warning("FILE_MANAGER_GROUP_LIST_FAILED", str(exc))
+            return []
+
+    def refresh_devices(self, trigger_device_change: bool = True) -> None:
         current_id = self.device_combo.currentData()
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
-        for device in self.repository.list():
+        try:
+            devices = self.repository.list(group_filter=group_filter_to_repository_value(self.group_combo.currentData()))
+        except TypeError:
+            devices = self.repository.list()
+        if not devices:
+            self.device_combo.addItem(self.i18n.t("groups.no_devices_in_group"), None)
+        for device in devices:
             if device.id is not None:
                 self.device_combo.addItem(str(device.name or device.sysname or device.ip_address), int(device.id))
         index = self.device_combo.findData(current_id)
         self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.device_combo.count() else -1))
+        new_id = self.device_combo.currentData()
         self.device_combo.blockSignals(False)
+        if trigger_device_change and new_id != current_id:
+            self.on_device_changed()
+        elif trigger_device_change:
+            self.update_device_labels()
+
+    def on_group_filter_changed(self) -> None:
+        current_device_id = self.device_combo.currentData()
+        self.refresh_devices(trigger_device_change=False)
+        if current_device_id is not None and self.device_combo.findData(current_device_id) >= 0:
+            self.update_device_labels()
+            return
+        self.disconnect_sftp()
         self.on_device_changed()
 
     def current_device(self) -> Device | None:
@@ -396,6 +453,7 @@ class FileManagementPage(QWidget):
     def on_device_changed(self) -> None:
         self.disconnect_sftp()
         device = self.current_device()
+        self.connect_button.setEnabled(device is not None)
         self.update_device_labels()
         self.remote_files = []
         self.checked_remote_paths.clear()

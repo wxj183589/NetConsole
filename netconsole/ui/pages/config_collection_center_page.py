@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
+    QComboBox,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -23,7 +24,9 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
 from netconsole.services.config_lifecycle_service import ConfigDiffResult, ConfigLifecycleService, MultiDeviceCompareResult
 from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
@@ -43,6 +46,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.site_name = site_name
         self.paths = paths
         self.snapshot_repository = ConfigSnapshotRepository(repository.database)
+        self.group_repository = DeviceGroupRepository(repository.database, site_name)
         self.service = ConfigLifecycleService(site_name, repository.database, paths, self.snapshot_repository)
         self.worker: ConfigLifecycleWorker | None = None
         self.devices: list[Device] = []
@@ -51,6 +55,8 @@ class ConfigCollectionCenterPage(QWidget):
         self._updating_checks = False
 
         self.title_label = QLabel()
+        self.group_label = QLabel()
+        self.group_filter = QComboBox()
         self.status_label = QLabel()
         self.snapshots_label = QLabel()
         self.device_table = QTableWidget(0, len(DEVICE_COLUMNS))
@@ -85,6 +91,11 @@ class ConfigCollectionCenterPage(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(self.title_label)
+        group_row = QHBoxLayout()
+        group_row.addWidget(self.group_label)
+        group_row.addWidget(self.group_filter)
+        group_row.addStretch(1)
+        left_layout.addLayout(group_row)
         left_layout.addWidget(self.device_table, 3)
         left_layout.addLayout(operations)
         left_layout.addWidget(self.status_label)
@@ -108,6 +119,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.device_table.itemSelectionChanged.connect(self.refresh_snapshots)
         self.device_table.itemChanged.connect(self._device_item_changed)
         self.device_table.horizontalHeader().sectionClicked.connect(self._header_clicked)
+        self.group_filter.currentIndexChanged.connect(self._group_filter_changed)
         self.snapshot_table.itemSelectionChanged.connect(self.show_selected_snapshot)
         self.save_button.clicked.connect(lambda: self._start_single_action("save"))
         self.fetch_button.clicked.connect(self.download_configs)
@@ -125,6 +137,7 @@ class ConfigCollectionCenterPage(QWidget):
 
     def retranslate(self) -> None:
         self.title_label.setText(self.t("config_center.title"))
+        self.group_label.setText(self.t("groups.group"))
         self.snapshots_label.setText(self.t("config_center.snapshots"))
         self.save_button.setText(self.t("config_center.btn.save_config"))
         self.fetch_button.setText(self.t("config_center.btn.download_config"))
@@ -154,17 +167,36 @@ class ConfigCollectionCenterPage(QWidget):
         self.tabs.setTabText(1, self.t("config_center.tab.saved"))
         self.tabs.setTabText(2, self.t("config_center.tab.diff"))
         self._sync_buttons()
+        self.refresh_groups()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
         self.site_name = site_name
         self.snapshot_repository = ConfigSnapshotRepository(repository.database)
+        self.group_repository = DeviceGroupRepository(repository.database, site_name)
         self.service = ConfigLifecycleService(site_name, repository.database, self.paths, self.snapshot_repository)
+        self.checked_device_ids.clear()
+        self.refresh_groups()
+        self.refresh()
+
+    def refresh_groups(self) -> None:
+        current = self.group_filter.currentData()
+        self.group_filter.blockSignals(True)
+        self.group_filter.clear()
+        self.group_filter.addItem(self.t("groups.all_groups"), ALL_GROUPS)
+        self.group_filter.addItem(self.t("groups.ungrouped"), UNGROUPED)
+        for group in self.group_repository.list():
+            self.group_filter.addItem(group.name, group.id)
+        index = self.group_filter.findData(current if current is not None else ALL_GROUPS)
+        self.group_filter.setCurrentIndex(index if index >= 0 else 0)
+        self.group_filter.blockSignals(False)
+
+    def _group_filter_changed(self) -> None:
         self.checked_device_ids.clear()
         self.refresh()
 
     def refresh(self) -> None:
-        self.devices = self.repository.list(vendor="H3C")
+        self.devices = self.repository.list(vendor="H3C", group_filter=group_filter_to_repository_value(self.group_filter.currentData()))
         self._updating_checks = True
         self.device_table.setRowCount(len(self.devices))
         for row, device in enumerate(self.devices):

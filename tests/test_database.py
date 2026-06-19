@@ -30,6 +30,7 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "ac_fit_ap_resources" in table_names
     assert "ac_fit_ap_optical" in table_names
     assert "config_snapshots" in table_names
+    assert "device_groups" in table_names
     assert "base" + "line" not in config_snapshot_columns
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns
@@ -51,6 +52,7 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "snmp_v3_enabled",
         "snmpv3_auth_password",
         "snmpv3_priv_password",
+        "group_id",
     ):
         assert column in columns
     for removed_column in (

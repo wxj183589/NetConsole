@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.device_group import DeviceGroup
 from netconsole.services.netmiko_connection import ConnectionTestResult, extract_sysname_from_prompt
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
@@ -31,7 +32,7 @@ from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
 from netconsole.ui.windowing import fit_default_window_size
 
 
-BASIC_FIELDS = ("name", "sysname", "device_vendor", "device_type", "station", "remark")
+BASIC_FIELDS = ("name", "sysname", "group_id", "device_vendor", "device_type", "station", "remark")
 CONNECTION_FIELDS = (
     "ip_address",
     "ssh_enabled",
@@ -61,10 +62,11 @@ SNMP_FIELDS = (
 class DeviceDialog(QDialog):
     saved = Signal(object)
 
-    def __init__(self, i18n: I18n, parent=None, device: Device | None = None) -> None:
+    def __init__(self, i18n: I18n, parent=None, device: Device | None = None, groups: list[DeviceGroup] | None = None) -> None:
         super().__init__(parent, Qt.Window)
         self.i18n = i18n
         self.original = device
+        self.groups = list(groups or [])
         self.inputs: dict[str, object] = {}
         self.labels: dict[str, QLabel] = {}
         self.connection_test_thread: DeviceConnectionTestThread | None = None
@@ -103,6 +105,7 @@ class DeviceDialog(QDialog):
 
         self._add_line(basic_form, "name")
         self._add_line(basic_form, "sysname")
+        self._add_group_combo(basic_form)
         self._add_combo(basic_form, "device_vendor", DEVICE_VENDORS)
         self._add_combo(basic_form, "device_type", DEVICE_TYPES)
         self._add_line(basic_form, "station")
@@ -209,6 +212,13 @@ class DeviceDialog(QDialog):
             self.snmpv3_security_combo = widget
         self._add_labelled_widget(form, field, widget)
 
+    def _add_group_combo(self, form: QFormLayout) -> None:
+        widget = QComboBox()
+        widget.addItem(self.i18n.t("groups.ungrouped"), None)
+        for group in self.groups:
+            widget.addItem(group.name, group.id)
+        self._add_labelled_widget(form, "group_id", widget)
+
     def _add_spin(self, form: QFormLayout, field: str, minimum: int, maximum: int) -> None:
         widget = QSpinBox()
         widget.setRange(minimum, maximum)
@@ -243,7 +253,7 @@ class DeviceDialog(QDialog):
             elif isinstance(widget, QTextEdit):
                 widget.setPlainText("" if value is None else str(value))
             elif isinstance(widget, QComboBox):
-                index = widget.findText("" if value is None else str(value))
+                index = widget.findData(value) if field == "group_id" else widget.findText("" if value is None else str(value))
                 widget.setCurrentIndex(index if index >= 0 else 0)
             elif isinstance(widget, QSpinBox):
                 widget.setValue(int(value or 0))
@@ -264,6 +274,9 @@ class DeviceDialog(QDialog):
         self.test_button.setText(self.i18n.t("dialog.test_connection"))
         self.test_button.setToolTip(self.i18n.t("dialog.test_connection_tip"))
         self.save_button.setText(self.i18n.t("dialog.save_device"))
+        group_widget = self.inputs.get("group_id")
+        if isinstance(group_widget, QComboBox) and group_widget.count():
+            group_widget.setItemText(0, self.i18n.t("groups.ungrouped"))
         for field, label in self.labels.items():
             suffix = " *" if field in {"name", "ip_address"} else ""
             label.setText(self.i18n.t(f"field.{field}") + suffix)
@@ -334,7 +347,7 @@ class DeviceDialog(QDialog):
         for field in BASIC_FIELDS + CONNECTION_FIELDS + SNMP_FIELDS:
             widget = self.inputs[field]
             if isinstance(widget, (QLineEdit, QTextEdit, QComboBox)):
-                data[field] = self._text(field) or None
+                data[field] = widget.currentData() if field == "group_id" and isinstance(widget, QComboBox) else self._text(field) or None
             elif isinstance(widget, QSpinBox):
                 data[field] = widget.value()
             elif isinstance(widget, QCheckBox):
