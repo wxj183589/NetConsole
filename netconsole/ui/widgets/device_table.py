@@ -19,7 +19,6 @@ CHECK_COLUMN = 0
 
 COLUMNS = (
     ("select", ""),
-    ("status", "field.status"),
     ("name", "field.name"),
     ("group", "groups.group"),
     ("station", "field.station"),
@@ -60,6 +59,7 @@ class DeviceTable(QTableWidget):
         self.horizontalHeader().sectionClicked.connect(self._header_clicked)
         self.itemChanged.connect(self._item_changed)
         self.cellClicked.connect(self._cell_clicked)
+        self.cellDoubleClicked.connect(self._cell_double_clicked)
         self.retranslate()
 
     def retranslate(self) -> None:
@@ -77,7 +77,6 @@ class DeviceTable(QTableWidget):
         for row, device in enumerate(devices):
             self._set_checkbox_item(row, device)
             values = {
-                "status": "-",
                 "name": device.name,
                 "group": self.group_names.get(int(device.group_id), self.i18n.t("groups.ungrouped")) if device.group_id else self.i18n.t("groups.ungrouped"),
                 "station": device.station,
@@ -143,7 +142,7 @@ class DeviceTable(QTableWidget):
 
     def _action_widget(self, device: Device) -> QWidget:
         return ActionCellWidget(
-            connect_text=self.i18n.t("devices.test_connection"),
+            detail_text=self.i18n.t("details.button"),
             edit_text=self.i18n.t("devices.edit"),
             delete_text=self.i18n.t("devices.delete"),
             device_id=int(device.id) if device.id is not None else None,
@@ -198,6 +197,14 @@ class DeviceTable(QTableWidget):
             return
         self.setCurrentCell(row, column)
 
+    def _cell_double_clicked(self, row: int, column: int) -> None:
+        if column in {CHECK_COLUMN, self._column_index("actions")}:
+            return
+        if 0 <= row < len(self.devices):
+            device = self.devices[row]
+            if device.id is not None:
+                self.detail_requested.emit(int(device.id))
+
     def _sync_header_check_state(self) -> None:
         checked_count = len(self.selected_device_ids)
         if checked_count == 0:
@@ -224,7 +231,7 @@ class DeviceTable(QTableWidget):
 class ActionCellWidget(QWidget):
     def __init__(
         self,
-        connect_text: str,
+        detail_text: str,
         edit_text: str,
         delete_text: str,
         device_id: int | None,
@@ -240,7 +247,7 @@ class ActionCellWidget(QWidget):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignCenter)
         buttons = (
-            (QPushButton(connect_text), detail_requested),
+            (QPushButton(detail_text), detail_requested),
             (QPushButton(edit_text), edit_requested),
             (QPushButton(delete_text), delete_requested),
         )

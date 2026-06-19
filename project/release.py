@@ -95,14 +95,14 @@ def check_git_remote() -> bool:
 def next_patch_version(tags: list[str]) -> str:
     max_patch = -1
     for tag in tags:
-        match = re.fullmatch(r"v1\.0\.(\d+)", tag.strip())
+        match = re.fullmatch(r"v1\.1\.(\d+)", tag.strip())
         if match:
             max_patch = max(max_patch, int(match.group(1)))
-    return f"v1.0.{max_patch + 1 if max_patch >= 0 else 0}"
+    return f"v1.1.{max_patch + 1 if max_patch >= 0 else 0}"
 
 
 def get_next_version() -> str:
-    output = run_git(["tag", "--list", "v1.0.*"])
+    output = run_git(["tag", "--list", "v1.1.*"])
     return next_patch_version(output.splitlines())
 
 
@@ -274,7 +274,7 @@ def _version_numbers(version: str) -> tuple[int, int, int, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="NetConsole release automation")
-    parser.add_argument("--version", help="release version, e.g. v1.0.0")
+    parser.add_argument("--version", help="release version, e.g. v1.1.0")
     parser.add_argument("--dry-run", action="store_true", help="print actions without changing git")
     args = parser.parse_args()
     result = release(version=args.version, dry_run=args.dry_run)

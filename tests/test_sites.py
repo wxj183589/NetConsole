@@ -79,6 +79,42 @@ def test_new_site_repository_reads_its_own_database(tmp_path):
     assert [device.name for device in repo_b.list()] == ["B-SW"]
 
 
+def test_existing_site_database_is_initialized_when_opened(tmp_path):
+    paths = PathResolver(tmp_path)
+    site_root = paths.ensure_site_dirs("legacy")
+    db = Database(site_root / "db" / "devices.db")
+    with db.connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_uuid TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                device_vendor TEXT NOT NULL DEFAULT 'H3C',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO devices (device_uuid, name, ip_address, created_at, updated_at)
+            VALUES ('legacy-uuid', 'AC-OLD', '10.122.100.10', '2026-06-19T10:00:00', '2026-06-19T10:00:00')
+            """
+        )
+        conn.commit()
+
+    site = SiteManager(paths).ensure_site("legacy")
+
+    with Database(site.database_path).connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
+        count = conn.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"]
+
+    assert "https_port" in columns
+    assert count == 1
+
+
 def test_missing_current_site_falls_back_to_demo(tmp_path):
     paths = PathResolver(tmp_path)
     manager = SiteManager(paths)

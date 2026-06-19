@@ -30,6 +30,7 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
 from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, trackside_row_status
+from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
 from netconsole.ui.collect_worker import DeviceCollectThread
@@ -107,13 +108,35 @@ LLDP_COLUMNS = (
 )
 
 
+def _is_ac_device(device: Device) -> bool:
+    return str(device.device_type or "").upper() == "AC"
+
+
+def _login_protocol(device: Device) -> str:
+    protocols = []
+    if device.ssh_enabled:
+        protocols.append("SSH")
+    if device.telnet_enabled:
+        protocols.append("Telnet")
+    return "/".join(protocols) or "-"
+
+
 class DeviceDetailDialog(QDialog):
-    def __init__(self, i18n: I18n, repository: DeviceFactRepository, device: Device, parent=None, site_name: str = "demo") -> None:
+    def __init__(
+        self,
+        i18n: I18n,
+        repository: DeviceFactRepository,
+        device: Device,
+        parent=None,
+        site_name: str = "demo",
+        group_names: dict[int, str] | None = None,
+    ) -> None:
         super().__init__(parent, Qt.Window)
         self.i18n = i18n
         self.repository = repository
         self.device = device
         self.site_name = site_name
+        self.group_names = dict(group_names or {})
         self.collect_thread: DeviceCollectThread | None = None
         self.history_dialogs: list[HistoryDataDialog] = []
         self.collect_log_dialogs: list[CollectLogDialog] = []
@@ -222,9 +245,6 @@ class DeviceDetailDialog(QDialog):
 
     def _overview_tab(self) -> QWidget:
         fact = self.repository.get_device_fact(str(self.device.device_uuid or ""))
-        if not fact:
-            return self._empty_tab("details.overview_note")
-
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.addWidget(self._note_label("details.overview_note"))
@@ -232,13 +252,57 @@ class DeviceDetailDialog(QDialog):
         form.setLabelAlignment(Qt.AlignRight)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addLayout(form)
-        for label_key, field in OVERVIEW_FIELDS:
-            value = QLabel(str(fact.get(field) or ""))
+        for label_key, value_text in self._device_overview_rows():
+            value = QLabel(value_text)
             value.setWordWrap(True)
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             form.addRow(self.i18n.t(label_key), value)
+        if _is_ac_device(self.device):
+            self._add_ac_web_rows(form)
+        if fact:
+            for label_key, field in OVERVIEW_FIELDS:
+                value = QLabel(str(fact.get(field) or ""))
+                value.setWordWrap(True)
+                value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                form.addRow(self.i18n.t(label_key), value)
         layout.addStretch(1)
         return widget
+
+    def _device_overview_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("field.name", str(self.device.name or "")),
+            ("field.sysname", str(self.device.sysname or "")),
+            ("groups.group", self.group_names.get(int(self.device.group_id), self.i18n.t("groups.ungrouped")) if self.device.group_id else self.i18n.t("groups.ungrouped")),
+            ("field.device_type", str(self.device.device_type or "")),
+            ("field.station", str(self.device.station or "")),
+            ("field.ip_address", str(self.device.ip_address or "")),
+            ("field.ssh_port", str(self.device.ssh_port or "")),
+            ("details.login_protocol", _login_protocol(self.device)),
+            ("field.remark", str(self.device.remark or "")),
+            ("field.updated_at", str(self.device.updated_at or "")),
+        ]
+
+    def _add_ac_web_rows(self, form: QFormLayout) -> None:
+        port, source = effective_https_port(self.device.https_port)
+        url = build_https_url(self.device.ip_address, port)
+        port_text = str(port) if source == "device" else self.i18n.t("ac.https_port_default", port=port)
+        for label_key, text in (("field.https_port", port_text), ("details.web_address", url or self.i18n.t("common.not_collected"))):
+            value = QLabel(text)
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            form.addRow(self.i18n.t(label_key), value)
+        button = QPushButton(self.i18n.t("ac.open_web"))
+        button.setEnabled(url is not None)
+        button.clicked.connect(self.open_device_web)
+        form.addRow("", button)
+
+    def open_device_web(self) -> None:
+        port, _source = effective_https_port(self.device.https_port)
+        if not build_https_url(self.device.ip_address, port):
+            QMessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
+            return
+        if not open_https_url(self.device.ip_address, port):
+            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
 
     def view_collect_log(self) -> None:
         try:

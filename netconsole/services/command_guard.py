@@ -26,6 +26,8 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
     "display wlan ap all radio",
     "display cpu-usage",
     "display memory",
+    "display ip https | include port",
+    "display ip https",
 }
 
 SAFE_FIT_AP_COMMANDS = {
@@ -112,7 +114,10 @@ DANGEROUS_PATTERNS = (
     r"\bpublic-key\b",
 )
 
-PIPE_ALLOWLIST = {"display current-configuration | in sysname"}
+PIPE_ALLOWLIST = {
+    "display current-configuration | in sysname",
+    "display ip https | include port",
+}
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display boot-loader",
     "display interface",

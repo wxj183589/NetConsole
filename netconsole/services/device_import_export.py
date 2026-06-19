@@ -85,6 +85,7 @@ EXPORT_FIELDS = [
     "snmpv3_auth_password",
     "snmpv3_priv_protocol",
     "snmpv3_priv_password",
+    "https_port",
     "remark",
     "created_at",
     "updated_at",
@@ -196,9 +197,11 @@ class DeviceImportExportService:
         self._normalize_snmpv3_fields(payload)
         if not payload["ssh_enabled"] and not payload["telnet_enabled"]:
             raise ValueError("At least one of SSH or Telnet must be enabled")
-        for field in ("ssh_port", "telnet_port", "snmp_port"):
+        for field in ("ssh_port", "telnet_port", "snmp_port", "https_port"):
             if payload.get(field) is not None:
                 payload[field] = int(payload[field])
+                if field == "https_port" and not 1 <= int(payload[field]) <= 65535:
+                    raise ValueError(f"Invalid https_port: {payload[field]}")
 
     @staticmethod
     def _normalize_snmpv3_fields(payload: dict[str, object]) -> None:

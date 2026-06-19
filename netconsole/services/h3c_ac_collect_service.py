@@ -19,8 +19,10 @@ from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_w
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
+from netconsole.services.device_web_service import matching_https_port_lines, parse_https_port
 from netconsole.services.h3c_collect_service import CommandResult
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
@@ -35,6 +37,11 @@ RESOURCE_COMMANDS = (
     "display version",
     "display device",
     "display device manuinfo",
+)
+
+HTTPS_PORT_COMMANDS = (
+    "display ip https",
+    "display ip https | include port",
 )
 
 ENABLE_FIT_AP_CONSOLE_COMMANDS = (
@@ -65,8 +72,19 @@ class AcResourceCollectResult:
     raw_log_path: str
     summary_updated: bool
     fit_ap_resources_updated: int
+    https_port: int | None
+    https_port_collected: bool
+    https_port_persisted: bool
+    https_port_error: str | None
     error_message: str | None
     command_results: list[CommandResult] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class HttpsPortPersistenceResult:
+    persisted_port: int | None
+    persisted: bool
+    error_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -116,7 +134,7 @@ def collect_h3c_ac_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results)
 
     target = choose_connection_target(ac_device)
     if target is None:
@@ -124,11 +142,11 @@ def collect_h3c_ac_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results)
 
     connection = None
     try:
-        command_guard.validate_command_list(["screen-length disable", *RESOURCE_COMMANDS], "ac_collect")
+        command_guard.validate_command_list(["screen-length disable", *RESOURCE_COMMANDS, *HTTPS_PORT_COMMANDS], "ac_collect")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         command_results.append(_run_command(connection, "screen-length disable", ac_device, collect_run_uuid, context="ac_collect"))
         outputs: dict[str, str] = {}
@@ -137,11 +155,14 @@ def collect_h3c_ac_resources(
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
+        https_port, https_results = collect_https_port(connection, ac_device, collect_run_uuid)
+        command_results.extend(https_results)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
         summary_updated = any(value is not None for key, value in summary.items() if key != "ac_device_uuid")
         if summary_updated:
             repository.upsert_ac_ap_summary(summary)
+        persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port)
         repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
         status = "success" if summary_updated or resources else "failed"
         error_message = _command_error_summary(command_results)
@@ -153,14 +174,27 @@ def collect_h3c_ac_resources(
         else:
             app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
             app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
-        return AcResourceCollectResult(status == "success", str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), summary_updated, len(resources), error_message or None, command_results)
+        return AcResourceCollectResult(
+            status == "success",
+            str(ac_device.device_uuid),
+            collect_run_uuid,
+            str(raw_log_file),
+            summary_updated,
+            len(resources),
+            https_port,
+            https_port is not None,
+            persistence.persisted,
+            persistence.error_message,
+            error_message or None,
+            command_results,
+        )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results)
     finally:
         if connection is not None:
             _disconnect(connection)
@@ -274,6 +308,55 @@ def parse_ac_resource_outputs(
             }
         )
     return summary, resources
+
+
+def collect_https_port(connection, ac_device: Device, collect_run_uuid: str) -> tuple[int | None, list[CommandResult]]:
+    app_logger.log_info("AC_HTTPS_PORT_COMMAND_STARTED", _detail(ac_device, collect_run_uuid, error="command_executed=true"))
+    results: list[CommandResult] = []
+    for command in HTTPS_PORT_COMMANDS:
+        result = _run_command(connection, command, ac_device, collect_run_uuid, context="ac_collect")
+        results.append(result)
+        output_length = len(result.output or "")
+        app_logger.log_info("AC_HTTPS_PORT_COMMAND_RESULT", _detail(ac_device, collect_run_uuid, command=command, error=f"output_length={output_length}"))
+        if not result.success:
+            continue
+        for line in matching_https_port_lines(result.output):
+            app_logger.log_info("AC_HTTPS_PORT_MATCHED_LINE", _detail(ac_device, collect_run_uuid, error=f'matched_line="{line}"'))
+        port = parse_https_port(result.output)
+        app_logger.log_info("AC_HTTPS_PORT_PARSED", _detail(ac_device, collect_run_uuid, command=command, error=f"parsed_port={port if port is not None else 'none'}"))
+        if port is not None:
+            return port, results
+    return None, results
+
+
+def _update_https_port(database: Database, ac_device: Device, collect_run_uuid: str, port: int | None) -> HttpsPortPersistenceResult:
+    if port is None:
+        app_logger.log_info("AC_HTTPS_PORT_NOT_COLLECTED", _detail(ac_device, collect_run_uuid, error="no valid HTTPS port parsed"))
+        return HttpsPortPersistenceResult(None, False)
+    if ac_device.id is None:
+        message = f"device_id_missing, parsed_port={port}"
+        app_logger.log_info("AC_HTTPS_PORT_NOT_SAVED", _detail(ac_device, collect_run_uuid, error=message))
+        return HttpsPortPersistenceResult(None, False, message)
+    try:
+        repository = DeviceRepository(database)
+        old_port = repository.get(int(ac_device.id)).https_port
+        app_logger.log_info("AC_HTTPS_PORT_DB_BEFORE", _detail(ac_device, collect_run_uuid, error=f"old_db_port={old_port}"))
+        repository.update_https_port(int(ac_device.id), port)
+        saved_device = repository.get(int(ac_device.id))
+        if saved_device.https_port != port:
+            message = f"persistence verification failed, parsed_port={port}, persisted_port={saved_device.https_port}"
+            app_logger.log_warning("AC_HTTPS_PORT_SAVE_FAILED", _detail(ac_device, collect_run_uuid, error=message))
+            return HttpsPortPersistenceResult(saved_device.https_port, False, message)
+        ac_device.https_port = saved_device.https_port
+        app_logger.log_info(
+            "AC_HTTPS_PORT_UPDATED",
+            _detail(ac_device, collect_run_uuid, error=f"parsed_port={port}, persisted_port={saved_device.https_port}, persistence_verified=true"),
+        )
+        return HttpsPortPersistenceResult(saved_device.https_port, True)
+    except Exception as exc:
+        message = sanitize_sensitive_text(str(exc), ac_device)
+        app_logger.log_warning("AC_HTTPS_PORT_SAVE_FAILED", _detail(ac_device, collect_run_uuid, error=message))
+        return HttpsPortPersistenceResult(None, False, message)
 
 
 def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[CommandResult]:

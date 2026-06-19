@@ -95,10 +95,9 @@ class SiteManager:
         root_path = self.ensure_site_dirs(site_name)
         database = Database(self.paths.site_db_path(site_name))
         first_database = not database.exists()
-        if first_database:
-            database.initialize()
-            if with_demo_data:
-                insert_demo_devices(DeviceRepository(database))
+        database.initialize()
+        if first_database and with_demo_data:
+            insert_demo_devices(DeviceRepository(database))
         return Site(name=site_name, root_path=root_path, database_path=database.path)
 
     def ensure_app_config(self) -> dict[str, object]:

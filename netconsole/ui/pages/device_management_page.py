@@ -479,7 +479,14 @@ class DeviceManagementPage(QWidget):
             existing.raise_()
             existing.activateWindow()
             return
-        dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
+        dialog = DeviceDetailDialog(
+            self.i18n,
+            self.fact_repository,
+            device,
+            self,
+            self.site_name,
+            {int(group.id): group.name for group in self._list_groups() if group.id is not None},
+        )
         self.detail_dialogs[detail_key] = dialog
         window_manager.register_child_window(dialog)
         dialog.destroyed.connect(lambda _=None, key=detail_key, window=dialog: self._remove_detail_dialog(key, window))

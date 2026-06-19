@@ -18,14 +18,14 @@ from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
 def test_version_file_exposes_release_metadata():
-    assert APP_VERSION.startswith("v1.0.")
+    assert APP_VERSION.startswith("v1.1.")
     assert BUILD_TIME
     assert GIT_COMMIT
 
 
 def test_next_patch_version_uses_existing_v1_tags():
-    assert release.next_patch_version([]) == "v1.0.0"
-    assert release.next_patch_version(["v1.0.0", "v1.0.2", "v0.9.9", "bad"]) == "v1.0.3"
+    assert release.next_patch_version([]) == "v1.1.0"
+    assert release.next_patch_version(["v1.1.0", "v1.1.2", "v1.0.9", "bad"]) == "v1.1.3"
 
 
 def test_render_version_py_contains_single_version_source_fields():

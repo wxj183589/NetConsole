@@ -53,6 +53,7 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "snmpv3_auth_password",
         "snmpv3_priv_password",
         "group_id",
+        "https_port",
     ):
         assert column in columns
     for removed_column in (
@@ -73,6 +74,41 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "tags",
     ):
         assert removed_column not in columns
+
+
+def test_database_initialize_adds_https_port_to_existing_devices_table(tmp_path):
+    db = Database(tmp_path / "legacy.db")
+    with db.connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_uuid TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                device_vendor TEXT NOT NULL DEFAULT 'H3C',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO devices (device_uuid, name, ip_address, created_at, updated_at)
+            VALUES ('legacy-uuid', 'AC-OLD', '10.122.100.10', '2026-06-19T10:00:00', '2026-06-19T10:00:00')
+            """
+        )
+        conn.commit()
+
+    db.initialize()
+
+    with db.connect() as conn:
+        columns = {row["name"]: row["type"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
+        row = conn.execute("SELECT device_uuid, name, ip_address, https_port FROM devices WHERE device_uuid = 'legacy-uuid'").fetchone()
+
+    assert columns["https_port"].upper() == "INTEGER"
+    assert columns["group_id"].upper() == "INTEGER"
+    assert dict(row) == {"device_uuid": "legacy-uuid", "name": "AC-OLD", "ip_address": "10.122.100.10", "https_port": None}
 
 
 def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(tmp_path):

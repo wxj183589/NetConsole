@@ -33,7 +33,6 @@ def test_protocol_display_rules():
 def test_main_table_columns_only_include_core_fields():
     assert [field for field, _key in COLUMNS] == [
         "select",
-        "status",
         "name",
         "group",
         "station",
@@ -170,7 +169,7 @@ def test_row_action_buttons_include_connection_edit_and_delete():
     action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
 
-    assert [button.text() for button in buttons] == ["Test Connection", "Edit", "Delete"]
+    assert [button.text() for button in buttons] == ["Details", "Edit", "Delete"]
 
 
 def test_row_action_buttons_include_chinese_connection_text():
@@ -180,7 +179,7 @@ def test_row_action_buttons_include_chinese_connection_text():
     action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
 
-    assert buttons[0].text() == "\u6d4b\u8bd5\u8fde\u63a5"
+    assert buttons[0].text() == "\u8be6\u60c5"
 
 
 

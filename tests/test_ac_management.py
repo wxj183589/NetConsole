@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -26,7 +27,8 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.fit_ap_import_export import FitApImportExportService
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
-from netconsole.services.h3c_ac_collect_service import RESOURCE_COMMANDS, collect_h3c_ac_resources
+from netconsole.services.device_web_service import build_https_url, effective_https_port, parse_https_port
+from netconsole.services.h3c_ac_collect_service import HTTPS_PORT_COMMANDS, RESOURCE_COMMANDS, collect_h3c_ac_resources
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
 from netconsole.services.trackside_ap_business import (
@@ -81,12 +83,18 @@ def ac_fixture(name: str) -> str:
 
 
 class FakeConnection:
-    def __init__(self):
+    def __init__(self, outputs=None):
         self.commands = []
         self.disconnected = False
+        self.outputs = outputs or {}
 
     def send_command(self, command, read_timeout=None):
         self.commands.append(command)
+        if command in self.outputs:
+            value = self.outputs[command]
+            if isinstance(value, Exception):
+                raise value
+            return value
         return {
             "screen-length disable": "",
             "display wlan ap all": fixture("display_wlan_ap_all.txt"),
@@ -94,6 +102,8 @@ class FakeConnection:
             "display wlan ap all radio": fixture("display_wlan_ap_all_radio.txt"),
             "display cpu-usage": fixture("display_cpu_usage.txt"),
             "display memory": fixture("display_memory.txt"),
+            "display ip https | include port": "HTTPS port: 443\n",
+            "display ip https": "HTTPS port: 443\n",
             "display version": fixture("display_version.txt"),
             "display device": fixture("display_device_ac.txt"),
             "display device manuinfo": fixture("display_device_manuinfo.txt"),
@@ -655,13 +665,159 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert result.success is True
     assert result.summary_updated is True
     assert result.fit_ap_resources_updated == 2
-    assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS]
+    assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS, "display ip https"]
     assert connection.disconnected is True
     assert Path(result.raw_log_path).exists()
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["total_aps"] == 2
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["cpu_usage"] == "16%"
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["memory_usage"] == "47%"
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
+
+
+def test_h3c_ac_collect_service_saves_https_port(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac_device = device_repository.create(make_ac_device())
+
+    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert result.https_port == 443
+    assert result.https_port_collected is True
+    assert result.https_port_persisted is True
+    assert result.https_port_error is None
+    assert device_repository.get(int(ac_device.id)).https_port == 443
+
+
+def test_h3c_ac_collect_service_saves_non_default_https_port(monkeypatch, tmp_path):
+    connection = FakeConnection({"display ip https": "<AC>display ip https\nHTTPS port: 10443\nOperation status : Enabled\n<AC>"})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac_device = device_repository.create(make_ac_device())
+
+    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert result.https_port == 10443
+    assert result.https_port_collected is True
+    assert result.https_port_persisted is True
+    assert device_repository.get(int(ac_device.id)).https_port == 10443
+
+
+def test_h3c_ac_collect_service_reports_https_port_save_failure(monkeypatch, tmp_path):
+    connection = FakeConnection({"display ip https": "HTTPS port: 10443\n"})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(h3c_ac_collect_service.DeviceRepository, "update_https_port", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("no such column: https_port")))
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac_device = device_repository.create(make_ac_device())
+
+    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert result.https_port == 10443
+    assert result.https_port_collected is True
+    assert result.https_port_persisted is False
+    assert "no such column: https_port" in str(result.https_port_error)
+    assert device_repository.get(int(ac_device.id)).https_port is None
+
+
+def test_https_port_parser_and_url_builder_are_strict():
+    assert parse_https_port("HTTPS port: 443") == 443
+    assert parse_https_port("HTTPS port: 10443") == 10443
+    assert parse_https_port("<AC>display ip https | include port\r\nHTTPS port : 8443\r\n<AC>") == 8443
+    assert parse_https_port("\x1b[24D HTTPS port：443") == 443
+    assert parse_https_port("HTTP port: 80\nSSH server port: 22") is None
+    assert parse_https_port("HTTPS port: 70000") is None
+    assert build_https_url("10.122.100.10", 443) == "https://10.122.100.10:443"
+    assert build_https_url("2001:db8::10", 443) == "https://[2001:db8::10]:443"
+    assert build_https_url("", 443) is None
+
+
+def test_h3c_ac_collect_service_falls_back_to_full_https_command(monkeypatch, tmp_path):
+    connection = FakeConnection({"display ip https": "", "display ip https | include port": "<AC>display ip https | include port\nHTTPS port: 8443\n<AC>"})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac_device = device_repository.create(make_ac_device())
+
+    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert result.https_port == 8443
+    assert connection.commands[-2:] == ["display ip https", "display ip https | include port"]
+    assert device_repository.get(int(ac_device.id)).https_port == 8443
+
+
+def test_h3c_ac_collect_service_keeps_existing_https_port_on_collect_failure(monkeypatch, tmp_path):
+    connection = FakeConnection({"display ip https | include port": RuntimeError("unsupported"), "display ip https": ""})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac_device = device_repository.create(make_ac_device())
+    device_repository.update_https_port(int(ac_device.id), 443)
+
+    result = collect_h3c_ac_resources(device_repository.get(int(ac_device.id)), "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert result.https_port is None
+    assert device_repository.get(int(ac_device.id)).https_port == 443
+
+
+def test_ac_page_refresh_enables_open_web_button_when_https_port_exists(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    ac_device = next(device for device in context.repository.list(vendor="H3C", device_type="AC") if device.id is not None)
+    context.repository.update_https_port(int(ac_device.id), 443)
+
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page.refresh_devices()
+
+    assert page.summary_labels["https_port"].text() == "443"
+    assert page.open_web_button.isEnabled() is True
+    assert build_https_url(page.current_device().ip_address, page.current_device().https_port).endswith(":443")
+
+
+def test_ac_page_uses_default_https_port_when_db_port_is_empty(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page.refresh_devices()
+
+    assert page.current_device().https_port is None
+    assert page.summary_labels["https_port"].text() == "443 (Default)"
+    assert page.open_web_button.isEnabled() is True
+    port, source = effective_https_port(page.current_device().https_port)
+    assert source == "default"
+    assert build_https_url(page.current_device().ip_address, port).endswith(":443")
+
+
+def test_ac_page_prefers_collected_https_port_when_save_failed(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page.refresh_devices()
+    result = SimpleNamespace(
+        success=True,
+        error_message=None,
+        https_port=10443,
+        https_port_collected=True,
+        https_port_persisted=False,
+        https_port_error="no such column: https_port",
+    )
+
+    page._finish_resource_collect(result)
+
+    assert page.current_device().https_port == 10443
+    assert page.summary_labels["https_port"].text() == "10443"
+    assert page.open_web_button.isEnabled() is True
+    assert page.status_label.text() == "Update completed. HTTPS port 10443 was collected, but could not be saved."
+    assert build_https_url(page.current_device().ip_address, page.current_device().https_port).endswith(":10443")
 
 
 def test_h3c_ac_collect_service_validates_commands_before_execution(monkeypatch, tmp_path):
@@ -674,7 +830,7 @@ def test_h3c_ac_collect_service_validates_commands_before_execution(monkeypatch,
 
     collect_h3c_ac_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
 
-    assert calls == [(["screen-length disable", *RESOURCE_COMMANDS], "ac_collect")]
+    assert calls == [(["screen-length disable", *RESOURCE_COMMANDS, *HTTPS_PORT_COMMANDS], "ac_collect")]
 
 
 def test_ac_management_page_column_configuration_exists(tmp_path):
@@ -2146,11 +2302,13 @@ def test_ac_log_event_names_do_not_contain_password():
     assert all("PASSWORD" not in event for event in event_names)
 
 
-def test_no_database_migration_code():
+def test_database_migration_code_is_limited_to_additive_columns():
     root = Path(__file__).parents[1] / "netconsole"
     texts = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
 
-    assert "ALTER TABLE" not in texts
+    assert texts.count("ALTER TABLE") == 1
+    assert "ADD COLUMN" in texts
+    assert "DROP TABLE" not in texts
     assert "schema_version" not in texts
     assert "upgrade_database" not in texts
 

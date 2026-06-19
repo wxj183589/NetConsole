@@ -99,3 +99,14 @@ class DeviceRepository:
             )
             conn.commit()
         return self.get(device_id)
+
+    def update_https_port(self, device_id: int, https_port: int | None) -> Device:
+        if https_port is not None and not 1 <= int(https_port) <= 65535:
+            raise ValueError(f"Invalid HTTPS port: {https_port}")
+        with self.database.connect() as conn:
+            conn.execute(
+                "UPDATE devices SET https_port = ?, updated_at = ? WHERE id = ?",
+                (https_port, datetime.now().isoformat(timespec="seconds"), device_id),
+            )
+            conn.commit()
+        return self.get(device_id)

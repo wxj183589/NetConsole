@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +46,7 @@ from netconsole.services.trackside_ap_business import (
     trackside_row_status,
 )
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_fit_ap_export_filename
+from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
@@ -67,6 +67,7 @@ SUMMARY_FIELDS = (
     ("details.model", "model"),
     ("details.serial_number", "serial_number"),
     ("details.software_version", "software_version"),
+    ("field.https_port", "https_port"),
     ("ac.total_aps", "total_aps"),
     ("ac.online_aps", "online_aps"),
     ("ac.offline_aps", "offline_aps"),
@@ -739,6 +740,7 @@ class AcManagementPage(QWidget):
         apply_table_style(self.overview_table)
         apply_table_style(self.trackside_table)
         self.update_selection_state()
+        self.update_open_web_button()
 
     def refresh_devices(self) -> None:
         current_uuid = self.current_device_uuid()
@@ -763,6 +765,7 @@ class AcManagementPage(QWidget):
             self.apply_optical_filters()
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
             self.refresh_trackside_table()
+            self.update_open_web_button()
             return
         self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
         resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
@@ -775,11 +778,26 @@ class AcManagementPage(QWidget):
         self.refresh_overview_table(resources)
         self.refresh_trackside_table()
         self.update_selection_state()
+        self.update_open_web_button()
 
     def open_web(self) -> None:
         device = self.current_device()
-        if device is not None:
-            webbrowser.open(f"https://{device.ip_address}")
+        if device is None:
+            return
+        port, _source = effective_https_port(device.https_port)
+        if not build_https_url(device.ip_address, port):
+            QMessageBox.information(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.https_port_not_collected"))
+            return
+        if not open_https_url(device.ip_address, port):
+            QMessageBox.warning(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.open_web_failed"))
+
+    def update_open_web_button(self) -> None:
+        device = self.current_device()
+        port, _source = effective_https_port(device.https_port if device is not None else None)
+        enabled = device is not None and build_https_url(device.ip_address, port) is not None
+        self.open_web_button.setEnabled(enabled)
+        self.open_web_button.setToolTip("" if enabled else self.i18n.t("ac.https_port_not_collected"))
+        app_logger.log_info("AC_HTTPS_PORT_BUTTON_STATE", f"device={device.name if device else ''}, effective_port={port}, button_enabled={enabled}")
 
     def refresh_ac_resources(self) -> None:
         device = self.current_device()
@@ -810,10 +828,36 @@ class AcManagementPage(QWidget):
 
     def _finish_resource_collect(self, result) -> None:
         self.refresh_button.setEnabled(True)
-        self.status_label.setText(self.i18n.t("ac.status.done" if result.success else "ac.status.failed"))
         if not result.success and result.error_message:
+            self.status_label.setText(self.i18n.t("ac.status.failed"))
             QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
-        self.refresh_data()
+            self.refresh_devices()
+            return
+        self.refresh_devices()
+        if getattr(result, "https_port_collected", False) and result.https_port is not None:
+            if not getattr(result, "https_port_persisted", False):
+                self._apply_transient_https_port(result.https_port)
+                self.status_label.setText(self.i18n.t("ac.update_done_https_save_failed", port=result.https_port))
+            else:
+                self.status_label.setText(self.i18n.t("ac.update_done_with_https", port=result.https_port))
+        else:
+            device = self.current_device()
+            port, source = effective_https_port(device.https_port if device is not None else None)
+            self.status_label.setText(
+                self.i18n.t("ac.update_done_https_history", port=port)
+                if source == "device"
+                else self.i18n.t("ac.update_done_https_default", port=DEFAULT_HTTPS_PORT)
+            )
+        device = self.current_device()
+        app_logger.log_info("AC_HTTPS_PORT_UI_REFRESHED", f"device={device.name if device else ''}, ui_port={device.https_port if device else None}")
+
+    def _apply_transient_https_port(self, port: int) -> None:
+        device = self.current_device()
+        if device is None:
+            return
+        device.https_port = port
+        self._set_summary(self.repository.get_ac_ap_summary(str(device.device_uuid or "")))
+        self.update_open_web_button()
 
     def _fail_resource_collect(self, message: str) -> None:
         self.refresh_button.setEnabled(True)
@@ -1264,6 +1308,11 @@ class AcManagementPage(QWidget):
 
     def _set_summary(self, row: dict[str, object | None] | None) -> None:
         for _key, field in SUMMARY_FIELDS:
+            if field == "https_port":
+                device = self.current_device()
+                port, source = effective_https_port(device.https_port if device is not None else None)
+                self.summary_labels[field].setText(str(port) if source == "device" else self.i18n.t("ac.https_port_default", port=port))
+                continue
             value = row.get(field) if row else None
             self.summary_labels[field].setText(str(value) if value not in (None, "") else "-")
         if row and self.summary_labels.get("cpu_usage"):

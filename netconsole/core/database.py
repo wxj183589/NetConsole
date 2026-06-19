@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS devices (
     snmpv3_auth_password TEXT,
     snmpv3_priv_protocol TEXT,
     snmpv3_priv_password TEXT,
+    https_port INTEGER,
     remark TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -535,33 +536,56 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as conn:
-            conn.executescript(
-                "\n".join(
-                    (
-                        DEVICES_SCHEMA,
-                        DEVICE_GROUPS_SCHEMA,
-                        COLLECT_RUNS_SCHEMA,
-                        DEVICE_FACTS_SCHEMA,
-                        DEVICE_INTERFACES_SCHEMA,
-                        DEVICE_OPTICAL_MODULES_SCHEMA,
-                        DEVICE_LLDP_NEIGHBORS_SCHEMA,
-                        DEVICE_FACTS_HISTORY_SCHEMA,
-                        DEVICE_INTERFACES_HISTORY_SCHEMA,
-                        DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
-                        DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
-                        AC_AP_SUMMARY_SCHEMA,
-                        AC_FIT_AP_RESOURCES_SCHEMA,
-                        AC_FIT_AP_METADATA_SCHEMA,
-                        AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
-                        AC_FIT_AP_OPTICAL_SCHEMA,
-                        AC_STATION_AP_CAPACITY_SCHEMA,
-                        AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
-                        AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
-                        AC_FIT_AP_LLDP_HISTORY_SCHEMA,
-                        AC_FIT_AP_RADIO_HISTORY_SCHEMA,
-                        CONFIG_SNAPSHOTS_SCHEMA,
+            try:
+                conn.executescript(
+                    "\n".join(
+                        (
+                            DEVICES_SCHEMA,
+                            DEVICE_GROUPS_SCHEMA,
+                            COLLECT_RUNS_SCHEMA,
+                            DEVICE_FACTS_SCHEMA,
+                            DEVICE_INTERFACES_SCHEMA,
+                            DEVICE_OPTICAL_MODULES_SCHEMA,
+                            DEVICE_LLDP_NEIGHBORS_SCHEMA,
+                            DEVICE_FACTS_HISTORY_SCHEMA,
+                            DEVICE_INTERFACES_HISTORY_SCHEMA,
+                            DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
+                            DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
+                            AC_AP_SUMMARY_SCHEMA,
+                            AC_FIT_AP_RESOURCES_SCHEMA,
+                            AC_FIT_AP_METADATA_SCHEMA,
+                            AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
+                            AC_FIT_AP_OPTICAL_SCHEMA,
+                            AC_STATION_AP_CAPACITY_SCHEMA,
+                            AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
+                            AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
+                            AC_FIT_AP_LLDP_HISTORY_SCHEMA,
+                            AC_FIT_AP_RADIO_HISTORY_SCHEMA,
+                            CONFIG_SNAPSHOTS_SCHEMA,
+                        )
                     )
                 )
-            )
-            conn.commit()
+                _ensure_column(conn, "devices", "https_port", "INTEGER")
+                _ensure_column(conn, "devices", "group_id", "INTEGER")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                try:
+                    from netconsole.core import app_logger
+
+                    app_logger.log_error("DATABASE_INITIALIZE_FAILED", f"path={self.path}")
+                except Exception:
+                    pass
+                raise
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_definition: str) -> None:
+    if _column_exists(conn, table_name, column_name):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 

@@ -130,3 +130,20 @@ def test_device_groups_are_site_scoped_and_filter_devices(tmp_path):
     groups.delete(int(core.id))
 
     assert repository.get(int(grouped.id)).group_id is None
+
+
+def test_repository_updates_https_port(tmp_path):
+    repository = make_repository(tmp_path)
+    created = repository.create(Device(name="AC", ip_address="10.0.0.51", device_type="AC"))
+
+    updated = repository.update_https_port(int(created.id), 8443)
+
+    assert updated.https_port == 8443
+    assert repository.get(int(created.id)).https_port == 8443
+
+    try:
+        repository.update_https_port(int(created.id), 70000)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid HTTPS port should fail")

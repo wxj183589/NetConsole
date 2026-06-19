@@ -54,6 +54,9 @@ def test_command_guard_rejects_dangerous_commands():
 def test_command_guard_rejects_semicolon_and_non_whitelist_pipe():
     assert not is_command_allowed("display version ; reboot", "device_collect")
     assert not is_command_allowed("display version | include H3C", "device_collect")
+    assert is_command_allowed("display ip https | include port", "ac_collect")
+    assert is_command_allowed("display ip https", "ac_collect")
+    assert not is_command_allowed("display ip https | include port", "device_collect")
 
 
 def test_command_guard_allows_display_boot_loader_but_rejects_config_boot_loader():
