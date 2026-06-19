@@ -10,6 +10,7 @@ from netconsole.core.paths import PathResolver
 DEFAULT_SETTINGS = {
     "theme": "dark",
     "last_export_path": "",
+    "file_transfer_max_concurrency": 1,
 }
 VALID_THEMES = {"light", "dark"}
 
@@ -41,6 +42,13 @@ class SettingsStore:
     @property
     def last_export_path(self) -> str:
         return str(self.values.get("last_export_path") or "")
+
+    @property
+    def file_transfer_max_concurrency(self) -> int:
+        try:
+            return max(1, int(self.values.get("file_transfer_max_concurrency") or 1))
+        except (TypeError, ValueError):
+            return 1
 
     def set_last_export_path(self, path: str | Path) -> None:
         self.values["last_export_path"] = str(path)

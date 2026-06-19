@@ -16,7 +16,13 @@ class Navigation(QListWidget):
     def retranslate(self) -> None:
         current_page = self.current_page()
         self.clear()
-        for key, page_id in (("nav.devices", "devices"), ("nav.config_collection", "config_collection"), ("nav.ac", "ac"), ("nav.logs", "logs")):
+        for key, page_id in (
+            ("nav.devices", "devices"),
+            ("nav.config_collection", "config_collection"),
+            ("nav.file_management", "file_management"),
+            ("nav.ac", "ac"),
+            ("nav.logs", "logs"),
+        ):
             item = QListWidgetItem(self.i18n.t(key))
             item.setData(256, page_id)
             self.addItem(item)

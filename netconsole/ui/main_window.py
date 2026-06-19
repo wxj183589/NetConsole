@@ -31,6 +31,7 @@ from netconsole.ui.pages.ac_management_page import AcManagementPage
 from netconsole.ui.pages.app_log_page import AppLogPage
 from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
+from netconsole.ui.pages.file_management_page import FileManagementPage
 from netconsole.ui.theme import apply_global_theme
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import fit_default_window_size
@@ -53,10 +54,12 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.device_page = DeviceManagementPage(repository, i18n, site.name)
         self.config_collection_page = ConfigCollectionCenterPage(repository, i18n, site.name, paths)
+        self.file_management_page = FileManagementPage(repository, i18n, site.name, paths)
         self.ac_page = AcManagementPage(repository, i18n, site.name)
         self.log_page = AppLogPage(i18n)
         self.stack.addWidget(self.device_page)
         self.stack.addWidget(self.config_collection_page)
+        self.stack.addWidget(self.file_management_page)
         self.stack.addWidget(self.ac_page)
         self.stack.addWidget(self.log_page)
 
@@ -140,6 +143,10 @@ class MainWindow(QMainWindow):
             self.config_collection_page.refresh()
             self.stack.setCurrentWidget(self.config_collection_page)
             app_logger.log_info("CONFIG_COLLECTION_PAGE_OPENED", self.site.name)
+        elif page_id == "file_management":
+            self.file_management_page.refresh_devices()
+            self.stack.setCurrentWidget(self.file_management_page)
+            app_logger.log_info("FILE_MANAGEMENT_PAGE_OPENED", self.site.name)
         else:
             self.stack.setCurrentWidget(self.device_page)
             app_logger.log_info("DEVICE_PAGE_OPENED", self.site.name)
@@ -188,6 +195,7 @@ class MainWindow(QMainWindow):
         self.repository = DeviceRepository(Database(site.database_path))
         self.device_page.set_repository(self.repository, site.name)
         self.config_collection_page.set_repository(self.repository, site.name)
+        self.file_management_page.set_repository(self.repository, site.name)
         self.ac_page.set_repository(self.repository, site.name)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
 
@@ -258,6 +266,7 @@ class MainWindow(QMainWindow):
         self.navigation.retranslate()
         self.device_page.retranslate()
         self.config_collection_page.retranslate()
+        self.file_management_page.retranslate()
         self.ac_page.retranslate()
         self.log_page.retranslate()
 

@@ -55,6 +55,11 @@ SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS = {
     "n",
 }
 
+SAFE_FILE_MANAGEMENT_COMMANDS = {
+    "dir flash:/",
+    "dir flash:/diagfile/",
+}
+
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
     "screen-length disable",
     "display wlan ap all address",
@@ -72,6 +77,7 @@ CONTEXT_COMMANDS = {
     "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
     "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
     "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
+    "file_management": SAFE_FILE_MANAGEMENT_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
 }
 
