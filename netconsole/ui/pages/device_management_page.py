@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import platform
+import subprocess
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -16,18 +21,24 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.core import app_logger
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
+from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
+from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BatchConnectionTestWorker
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
+from netconsole.ui.diagnostic_download_worker import DiagnosticDownloadWorker
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
 from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
+from netconsole.ui.dialogs.device_group_dialog import DeviceGroupDialog
 from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import DeviceDialogRegistry
@@ -53,23 +64,59 @@ def select_device_id_for_connection(checked_ids: list[int], current_id: int | No
     return current_id, None
 
 
+def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResolver | None = None) -> bool:
+    paths = paths or PathResolver()
+    successful_files = [
+        paths.site_dir(site_name) / item.file_path
+        for item in results
+        if getattr(item, "success", False) and getattr(item, "file_path", None)
+    ]
+    existing_files = [path for path in successful_files if path.exists()]
+    if not existing_files:
+        return True
+    latest_file = max(existing_files, key=lambda path: path.stat().st_mtime)
+    folder_path = latest_file.parent
+    try:
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(str(folder_path))  # type: ignore[attr-defined]
+        elif system == "Darwin":
+            subprocess.run(["open", str(folder_path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(folder_path)], check=False)
+        app_logger.log_info("DIAGNOSTIC_FOLDER_OPENED", f"folder={folder_path}, latest_file={latest_file.name}")
+        return True
+    except Exception as exc:
+        app_logger.log_error("DIAGNOSTIC_FOLDER_OPEN_FAILED", f"folder={folder_path}, error={exc}")
+        return False
+
+
 class DeviceManagementPage(QWidget):
+    groups_changed = Signal()
+
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo") -> None:
         super().__init__()
         self.repository = repository
         self.fact_repository = DeviceFactRepository(repository.database)
+        self.group_repository = self._make_group_repository(repository, site_name)
+        self.group_service = DeviceGroupService(repository, self.group_repository) if self.group_repository is not None else None
         self.i18n = i18n
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
+        self.group_dialog: DeviceGroupDialog | None = None
 
         self.search_input = QLineEdit()
         self.vendor_filter = QComboBox()
         self.type_filter = QComboBox()
+        self.group_filter = QComboBox()
         self.add_button = QPushButton()
         self.detail_button = QPushButton()
         self.test_connection_button = QPushButton()
+        self.diagnostic_download_button = QPushButton()
+        self.manage_groups_button = QPushButton()
+        self.assign_group_button = QPushButton()
         self.batch_refresh_details_button = QPushButton()
         self.batch_delete_button = QPushButton()
         self.refresh_button = QPushButton()
@@ -85,12 +132,16 @@ class DeviceManagementPage(QWidget):
         filters.addWidget(self.search_input, 1)
         filters.addWidget(self.vendor_filter)
         filters.addWidget(self.type_filter)
+        filters.addWidget(self.group_filter)
 
         actions = QHBoxLayout()
         for button in (
             self.add_button,
             self.detail_button,
             self.test_connection_button,
+            self.diagnostic_download_button,
+            self.manage_groups_button,
+            self.assign_group_button,
             self.batch_refresh_details_button,
             self.batch_delete_button,
             self.refresh_button,
@@ -113,9 +164,13 @@ class DeviceManagementPage(QWidget):
         self.search_input.textChanged.connect(self.refresh)
         self.vendor_filter.currentIndexChanged.connect(self.refresh)
         self.type_filter.currentIndexChanged.connect(self.refresh)
+        self.group_filter.currentIndexChanged.connect(self.refresh)
         self.add_button.clicked.connect(self.add_device)
         self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.test_connection_button.clicked.connect(self.test_selected_device_connection)
+        self.diagnostic_download_button.clicked.connect(self.download_diagnostics)
+        self.manage_groups_button.clicked.connect(self.manage_groups)
+        self.assign_group_button.clicked.connect(self.assign_group)
         self.batch_refresh_details_button.clicked.connect(self.batch_refresh_details)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
         self.refresh_button.clicked.connect(self.refresh)
@@ -135,12 +190,16 @@ class DeviceManagementPage(QWidget):
         self.batch_connection_test_dialog: BatchConnectionTestProgressDialog | None = None
         self.batch_collect_worker: BatchCollectWorker | None = None
         self.batch_collect_dialog: BatchCollectProgressDialog | None = None
+        self.diagnostic_download_worker: DiagnosticDownloadWorker | None = None
 
     def retranslate(self) -> None:
         self.search_input.setPlaceholderText(self.i18n.t("devices.search"))
         self.add_button.setText(self.i18n.t("devices.add"))
         self.detail_button.setText(self.i18n.t("details.title"))
         self.test_connection_button.setText(self.i18n.t("devices.test_connection"))
+        self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_download"))
+        self.manage_groups_button.setText(self.i18n.t("groups.manage_groups"))
+        self.assign_group_button.setText(self.i18n.t("groups.assign_group"))
         self.batch_refresh_details_button.setText(self.i18n.t("devices.batch_refresh_details"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
         self.refresh_button.setText(self.i18n.t("devices.refresh"))
@@ -217,48 +276,160 @@ class DeviceManagementPage(QWidget):
                 self.i18n.t("connection.failed_detail", reason=result.message),
             )
 
+    def download_diagnostics(self) -> None:
+        devices = self._diagnostic_target_devices()
+        if not devices:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            return
+        self.diagnostic_download_button.setEnabled(False)
+        self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_downloading"))
+        service = DiagnosticDownloadService(self.site_name)
+        self.diagnostic_download_worker = DiagnosticDownloadWorker(service, devices, self)
+        self.diagnostic_download_worker.result_ready.connect(self._handle_diagnostic_results)
+        self.diagnostic_download_worker.finished.connect(self.diagnostic_download_worker.deleteLater)
+        self.diagnostic_download_worker.finished.connect(lambda: setattr(self, "diagnostic_download_worker", None))
+        self.diagnostic_download_worker.start()
+
+    def _diagnostic_target_devices(self):
+        checked_ids = self.table.checked_device_ids()
+        if checked_ids:
+            return [self.repository.get(device_id) for device_id in checked_ids]
+        current_id = self.selected_id()
+        if current_id is None:
+            return []
+        return [self.repository.get(current_id)]
+
+    def _handle_diagnostic_results(self, results) -> None:
+        self.diagnostic_download_button.setEnabled(True)
+        self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_download"))
+        success = sum(1 for item in results if item.success)
+        failed = len(results) - success
+        detail = "\n".join(
+            f"{item.device_name}: {self.i18n.t('devices.diagnostic_status_success' if item.success else 'devices.diagnostic_status_failed')}"
+            + (f" - {item.error_message}" if item.error_message else "")
+            for item in results
+        )
+        message = self.i18n.t("devices.diagnostic_done", success=success, failed=failed)
+        if detail:
+            message = f"{message}\n\n{detail}"
+        folder_opened = open_diagnostic_folder_for_results(results, self.site_name)
+        if not folder_opened:
+            message = f"{message}\n\n{self.i18n.t('devices.diagnostic_open_folder_failed')}"
+        if failed:
+            QMessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
+        else:
+            QMessageBox.information(self, self.i18n.t("devices.diagnostic_download"), message)
+
     def _populate_filters(self) -> None:
         vendor = self.vendor_filter.currentData()
         dtype = self.type_filter.currentData()
+        group = self.group_filter.currentData()
         self.vendor_filter.blockSignals(True)
         self.type_filter.blockSignals(True)
+        self.group_filter.blockSignals(True)
         self.vendor_filter.clear()
         self.type_filter.clear()
+        self.group_filter.clear()
         self.vendor_filter.addItem(self.i18n.t("devices.vendor.all"), None)
         self.type_filter.addItem(self.i18n.t("devices.type.all"), None)
+        self.group_filter.addItem(self.i18n.t("groups.all_groups"), ALL_GROUPS)
+        self.group_filter.addItem(self.i18n.t("groups.ungrouped"), UNGROUPED)
+        for item in self._list_groups():
+            self.group_filter.addItem(item.name, item.id)
         for item in DEVICE_VENDORS:
             self.vendor_filter.addItem(item, item)
         for item in DEVICE_TYPES:
             self.type_filter.addItem(item, item)
         self._restore_combo_value(self.vendor_filter, vendor)
         self._restore_combo_value(self.type_filter, dtype)
+        self._restore_combo_value(self.group_filter, group if group is not None else ALL_GROUPS)
         self.vendor_filter.blockSignals(False)
         self.type_filter.blockSignals(False)
+        self.group_filter.blockSignals(False)
 
     @staticmethod
     def _restore_combo_value(combo: QComboBox, value: object) -> None:
         index = combo.findData(value)
         combo.setCurrentIndex(index if index >= 0 else 0)
 
+    @staticmethod
+    def _make_group_repository(repository: DeviceRepository, site_name: str) -> DeviceGroupRepository | None:
+        database = getattr(repository, "database", None)
+        return DeviceGroupRepository(database, site_name) if database is not None else None
+
+    def _list_groups(self):
+        if self.group_repository is None:
+            return []
+        try:
+            return self.group_repository.list()
+        except Exception as exc:
+            app_logger.log_warning("DEVICE_GROUP_LIST_FAILED", str(exc))
+            return []
+
     def refresh(self) -> None:
         devices = self.repository.list(
             search=self.search_input.text().strip() or None,
             vendor=self.vendor_filter.currentData(),
             device_type=self.type_filter.currentData(),
+            group_filter=group_filter_to_repository_value(self.group_filter.currentData()),
         )
+        self.table.set_group_names({int(group.id): group.name for group in self._list_groups() if group.id is not None})
         self.table.set_devices(devices)
         self.update_selection_state()
+
+    def refresh_groups(self) -> None:
+        self._populate_filters()
+        self.refresh()
+
+    def manage_groups(self) -> None:
+        if self.group_repository is None:
+            return
+        if self.group_dialog is not None:
+            self._activate_window(self.group_dialog)
+            return
+        dialog = DeviceGroupDialog(self.i18n, self.group_repository, self)
+        self.group_dialog = dialog
+        dialog.groups_changed.connect(self._handle_groups_changed)
+        dialog.destroyed.connect(lambda _=None: setattr(self, "group_dialog", None))
+        self._show_window(dialog)
+
+    def _handle_groups_changed(self) -> None:
+        self.refresh_groups()
+        self.groups_changed.emit()
+
+    def assign_group(self) -> None:
+        device_ids = self.table.checked_device_ids()
+        if not device_ids or self.group_service is None:
+            return
+        groups = self._list_groups()
+        labels = [self.i18n.t("groups.ungrouped")] + [group.name for group in groups]
+        label, accepted = QInputDialog.getItem(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.select_group"), labels, 0, False)
+        if not accepted:
+            return
+        group_id = None
+        if label != self.i18n.t("groups.ungrouped"):
+            group = next((item for item in groups if item.name == label), None)
+            group_id = int(group.id) if group and group.id is not None else None
+        result = self.group_service.assign_devices(device_ids, group_id)
+        QMessageBox.information(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.assign_done", success=result.success, failed=result.failed))
+        self.clear_selection()
+        self.refresh_groups()
+        self.groups_changed.emit()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
         self.fact_repository = DeviceFactRepository(repository.database)
+        self.group_repository = self._make_group_repository(repository, site_name)
+        self.group_service = DeviceGroupService(repository, self.group_repository) if self.group_repository is not None else None
         self.site_name = site_name
         self.service = DeviceImportExportService(repository)
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs = {}
+        self.group_dialog = None
         self.search_input.clear()
         self.vendor_filter.setCurrentIndex(0)
         self.type_filter.setCurrentIndex(0)
+        self.group_filter.setCurrentIndex(0)
         self.refresh()
 
     def selected_id(self) -> int | None:
@@ -269,7 +440,7 @@ class DeviceManagementPage(QWidget):
         if isinstance(existing, DeviceDialog):
             self._activate_window(existing)
             return
-        dialog = DeviceDialog(self.i18n, self)
+        dialog = DeviceDialog(self.i18n, self, groups=self._list_groups())
         self.dialog_registry.set_add_window(dialog)
         dialog.saved.connect(self._create_device_from_dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self.dialog_registry.remove_add_window(window))
@@ -292,7 +463,7 @@ class DeviceManagementPage(QWidget):
         if isinstance(existing, DeviceDialog):
             self._activate_window(existing)
             return
-        dialog = DeviceDialog(self.i18n, self, device)
+        dialog = DeviceDialog(self.i18n, self, device, groups=self._list_groups())
         self.dialog_registry.set_edit_window(device_uuid, dialog)
         dialog.saved.connect(self._update_device_from_dialog)
         dialog.destroyed.connect(lambda _=None, uuid=device_uuid, window=dialog: self.dialog_registry.remove_edit_window(uuid, window))
@@ -459,6 +630,7 @@ class DeviceManagementPage(QWidget):
         self.batch_delete_button.setEnabled(count > 0)
         self.clear_selection_button.setEnabled(count > 0)
         self.invert_selection_button.setEnabled(self.table.rowCount() > 0)
+        self.assign_group_button.setEnabled(count > 0)
 
     def import_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("devices.import_csv"), "", "CSV Files (*.csv)")

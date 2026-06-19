@@ -67,6 +67,7 @@ class DeviceRepository:
         search: str | None = None,
         vendor: str | None = None,
         device_type: str | None = None,
+        group_filter: int | str | None = None,
     ) -> list[Device]:
         clauses: list[str] = []
         params: list[object] = []
@@ -80,7 +81,21 @@ class DeviceRepository:
         if device_type:
             clauses.append("device_type = ?")
             params.append(device_type)
+        if group_filter == "__ungrouped__":
+            clauses.append("group_id IS NULL")
+        elif group_filter is not None:
+            clauses.append("group_id = ?")
+            params.append(int(group_filter))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.database.connect() as conn:
             rows = conn.execute(f"SELECT * FROM devices {where} ORDER BY id DESC", params).fetchall()
         return [Device.from_mapping(dict(row)) for row in rows]
+
+    def update_group(self, device_id: int, group_id: int | None) -> Device:
+        with self.database.connect() as conn:
+            conn.execute(
+                "UPDATE devices SET group_id = ?, updated_at = ? WHERE id = ?",
+                (group_id, datetime.now().isoformat(timespec="seconds"), device_id),
+            )
+            conn.commit()
+        return self.get(device_id)

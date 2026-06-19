@@ -15,6 +15,7 @@ class Device:
     name: str = ""
     sysname: str | None = None
     station: str | None = None
+    group_id: int | None = None
     device_vendor: str = "H3C"
     device_type: str | None = "SW"
     ip_address: str = ""

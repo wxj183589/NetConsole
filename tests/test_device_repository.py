@@ -1,5 +1,6 @@
 from netconsole.core.database import Database
 from netconsole.models.device import Device
+from netconsole.repositories.device_group_repository import DeviceGroupRepository, DuplicateGroupName
 from netconsole.repositories.device_repository import DeviceRepository
 
 
@@ -101,3 +102,31 @@ def test_repository_allows_blank_ssh_username_and_password(tmp_path):
 
     assert created.ssh_username == ""
     assert created.ssh_password == ""
+
+
+def test_device_groups_are_site_scoped_and_filter_devices(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    repository = DeviceRepository(db)
+    groups = DeviceGroupRepository(db, "demo")
+
+    core = groups.create(" 控制中心 ")
+    other_site_group = DeviceGroupRepository(db, "other").create("控制中心")
+    grouped = repository.create(Device(name="Core", ip_address="10.0.0.10", group_id=core.id))
+    ungrouped = repository.create(Device(name="Edge", ip_address="10.0.0.11"))
+
+    assert groups.list()[0].name == "控制中心"
+    assert other_site_group.name == "控制中心"
+    assert [device.id for device in repository.list(group_filter=core.id)] == [grouped.id]
+    assert [device.id for device in repository.list(group_filter="__ungrouped__")] == [ungrouped.id]
+
+    try:
+        groups.create("控制中心")
+    except DuplicateGroupName:
+        pass
+    else:
+        raise AssertionError("duplicate group name should fail within a site")
+
+    groups.delete(int(core.id))
+
+    assert repository.get(int(grouped.id)).group_id is None

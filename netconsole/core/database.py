@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS devices (
     name TEXT NOT NULL,
     sysname TEXT,
     station TEXT,
+    group_id INTEGER,
     device_vendor TEXT NOT NULL DEFAULT 'H3C',
     device_type TEXT,
     ip_address TEXT NOT NULL,
@@ -490,6 +491,33 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
 );
 """
 
+DEVICE_GROUPS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(site_id, name)
+);
+"""
+
+CONFIG_SNAPSHOTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS config_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER,
+    device_uuid TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    type TEXT NOT NULL,
+    file_path TEXT NOT NULL UNIQUE,
+    hash TEXT NOT NULL,
+    raw_log_path TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -511,6 +539,7 @@ class Database:
                 "\n".join(
                     (
                         DEVICES_SCHEMA,
+                        DEVICE_GROUPS_SCHEMA,
                         COLLECT_RUNS_SCHEMA,
                         DEVICE_FACTS_SCHEMA,
                         DEVICE_INTERFACES_SCHEMA,
@@ -530,6 +559,7 @@ class Database:
                         AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
                         AC_FIT_AP_LLDP_HISTORY_SCHEMA,
                         AC_FIT_AP_RADIO_HISTORY_SCHEMA,
+                        CONFIG_SNAPSHOTS_SCHEMA,
                     )
                 )
             )

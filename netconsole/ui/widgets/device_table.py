@@ -21,6 +21,7 @@ COLUMNS = (
     ("select", ""),
     ("status", "field.status"),
     ("name", "field.name"),
+    ("group", "groups.group"),
     ("station", "field.station"),
     ("ip_address", "field.ip_address"),
     ("protocols", "field.protocols"),
@@ -51,6 +52,7 @@ class DeviceTable(QTableWidget):
         super().__init__(0, len(COLUMNS))
         self.i18n = i18n
         self.devices: list[Device] = []
+        self.group_names: dict[int, str] = {}
         self.selected_device_ids: set[int] = set()
         self._updating_checks = False
         set_table_column_fields(self, [field for field, _key in COLUMNS])
@@ -77,6 +79,7 @@ class DeviceTable(QTableWidget):
             values = {
                 "status": "-",
                 "name": device.name,
+                "group": self.group_names.get(int(device.group_id), self.i18n.t("groups.ungrouped")) if device.group_id else self.i18n.t("groups.ungrouped"),
                 "station": device.station,
                 "ip_address": device.ip_address,
                 "protocols": protocol_label(device.ssh_enabled, device.telnet_enabled),
@@ -94,6 +97,9 @@ class DeviceTable(QTableWidget):
         apply_table_style(self)
         apply_action_column(self)
         self.selection_changed.emit()
+
+    def set_group_names(self, group_names: dict[int, str]) -> None:
+        self.group_names = dict(group_names)
 
     def selected_device_id(self) -> int | None:
         row = self.currentRow()
