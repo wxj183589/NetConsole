@@ -1,3 +1,10 @@
+v1.2.0
+- 轨道交通：新增 MESH 日志分析能力，按车载 MR 独立保存历史日志、索引来源文件、链路明细、事件和解析问题。
+- Peer 趋势窗口：保留接收信号、RSSI 与底噪、信道负载、当前主链路 RSSI、Active 链路信道负载五类图表，并支持 Hover、滚轮缩放、拖拽平移、时间滚动条和锚点居中。
+- 当前主链路 RSSI：简化原 ACTIVE / Next Active 图，仅显示当前 Active MR 侧原始 RSSI，保留 Active 切换竖线，不再显示 Next Active 曲线、Next Peer 标记或 Peer 侧 RSSI。
+- Active 链路信道负载：仅显示当前 Active MR 侧 TxBusy/RxBusy，移除 Peer 侧和下一主链路负载曲线。
+- 性能与稳定性：优化 MR 切换防抖、仓储缓存、当前标签懒加载、大数据降采样和 Hover 缓存，补充 MESH 专项测试与全量回归。
+
 v1.1.0
 - 配置采集中心：支持 running/saved 配置采集、保存、快照归档、清洗后差异对比和中英文界面。
 - 文件管理：新增独立双栏浏览下载页面，支持设备文件选择、列宽持久化、MESH 日志快速选择与本地命名规则。

@@ -1,0 +1,888 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QHeaderView,
+)
+
+from netconsole.core import app_logger
+from netconsole.core.i18n import I18n
+from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
+from netconsole.models.mesh_log_models import MeshMrProfile, format_mac_h3c
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.ui.mesh_log_workers import MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
+from netconsole.ui.mesh_table_column_state import MeshTableColumnState
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
+from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+
+
+FILE_FILTER = "MESH Logs (*.log *.log.gz *.txt);;Log Files (*.log *.log.gz);;Text Files (*.txt);;All Files (*.*)"
+MESH_DEFAULT_PAGE_SIZE = 1000
+
+
+class MeshLogAnalysisPage(QWidget):
+    def __init__(self, i18n: I18n, site_name: str = "demo", paths: PathResolver | None = None) -> None:
+        super().__init__()
+        self.i18n = i18n
+        self.site_name = site_name
+        self.paths = paths or PathResolver()
+        self.storage = MeshStorageService(site_name, self.paths)
+        self.settings = SettingsStore(self.paths)
+        self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        self.repo_cache: dict[str, MeshMrRepository] = {}
+        self.profile_by_id: dict[str, MeshMrProfile] = {}
+        self.worker: MeshLogImportWorker | None = None
+        self.derived_worker: MeshDerivedAnalysisRebuildWorker | None = None
+        self.peer_dialogs: list[MeshPeerDetailDialog] = []
+        self.profiles: list[MeshMrProfile] = []
+        self.current_profile: MeshMrProfile | None = None
+        self.link_page = 1
+        self.event_page = 1
+        self.issue_page = 1
+        self.source_page = 1
+        self.page_size = MESH_DEFAULT_PAGE_SIZE
+        self._populating_tables = False
+        self._suppress_mr_selection = False
+        self.mr_load_generation = 0
+        self.dirty_tabs: set[str] = {"source", "link", "event", "issue"}
+
+        self.title_label = QLabel()
+        self.create_mr_button = QPushButton()
+        self.import_button = QPushButton()
+        self.import_folder_button = QPushButton()
+        self.cancel_button = QPushButton()
+        self.refresh_button = QPushButton()
+        self.open_folder_button = QPushButton()
+        self.progress_bar = QProgressBar()
+        self.progress_label = QLabel()
+
+        self.mr_table = QTableWidget(0, 8)
+        self.source_table = QTableWidget(0, 13)
+        self.link_table = QTableWidget(0, 21)
+        self.event_table = QTableWidget(0, 14)
+        self.issue_table = QTableWidget(0, 7)
+        self.issue_empty_widget = QWidget()
+        self.issue_empty_title = QLabel()
+        self.issue_empty_description = QLabel()
+        for table in (self.mr_table, self.source_table, self.link_table, self.event_table, self.issue_table):
+            table.setProperty("netconsole_manual_column_widths", True)
+            configure_readonly_table(table)
+            table.setSortingEnabled(True)
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            table.setWordWrap(False)
+            table.setTextElideMode(Qt.ElideRight)
+            table.verticalHeader().setDefaultSectionSize(max(table.fontMetrics().height() + 12, 32))
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.Interactive)
+            header.setStretchLastSection(False)
+        self.link_table.setAlternatingRowColors(False)
+
+        self.radio_filter = QLineEdit()
+        self.state_filter = QLineEdit()
+        self.peer_filter = QLineEdit()
+        self.keyword_filter = QLineEdit()
+        self.detail_text = QTextEdit()
+        self.detail_text.setReadOnly(True)
+
+        self.source_pagination = PaginationWidget(self.i18n)
+        self.link_pagination = PaginationWidget(self.i18n)
+        self.event_pagination = PaginationWidget(self.i18n)
+        self.issue_pagination = PaginationWidget(self.i18n)
+        for pagination in (self.source_pagination, self.link_pagination, self.event_pagination, self.issue_pagination):
+            pagination.set_state(PaginationState(page_size=self.page_size, current_page=1, total_items=0, total_pages=1))
+        self.tabs = QTabWidget()
+        self.filter_timer = QTimer(self)
+        self.filter_timer.setSingleShot(True)
+        self.filter_timer.setInterval(300)
+        self.mr_selection_timer = QTimer(self)
+        self.mr_selection_timer.setSingleShot(True)
+        self.mr_selection_timer.setInterval(120)
+        self.column_states: dict[str, MeshTableColumnState] = {}
+        self._build_layout()
+        self._connect_signals()
+        self.retranslate()
+        self._setup_column_states()
+        self.refresh_all()
+
+    def set_site(self, site_name: str) -> None:
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+        self.site_name = site_name
+        self.storage = MeshStorageService(site_name, self.paths)
+        self.settings = SettingsStore(self.paths)
+        self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        self.repo_cache.clear()
+        self.profile_by_id.clear()
+        self.current_profile = None
+        self.refresh_all()
+
+    def retranslate(self) -> None:
+        self.title_label.setText(self.i18n.t("mesh_analysis.title"))
+        self.create_mr_button.setText(self.i18n.t("mesh_analysis.create_mr"))
+        self.import_button.setText(self.i18n.t("mesh_analysis.import_logs"))
+        self.import_folder_button.setText(self.i18n.t("mesh_analysis.import_folder"))
+        self.cancel_button.setText(self.i18n.t("mesh_analysis.cancel"))
+        self.refresh_button.setText(self.i18n.t("mesh_analysis.refresh"))
+        self.open_folder_button.setText(self.i18n.t("mesh_analysis.open_folder"))
+        self.radio_filter.setPlaceholderText("Radio")
+        self.state_filter.setPlaceholderText(self.i18n.t("mesh_analysis.state"))
+        self.peer_filter.setPlaceholderText("PeerMac")
+        self.keyword_filter.setPlaceholderText(self.i18n.t("mesh_analysis.keyword"))
+        self.mr_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("mesh_analysis.mr_name"),
+                self.i18n.t("mesh_analysis.earliest_time"),
+                self.i18n.t("mesh_analysis.latest_time"),
+                self.i18n.t("mesh_analysis.source_files"),
+                self.i18n.t("mesh_analysis.samples"),
+                self.i18n.t("mesh_analysis.link_records"),
+                self.i18n.t("mesh_analysis.events"),
+                self.i18n.t("mesh_analysis.last_import_at"),
+            ]
+        )
+        self.source_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("mesh_analysis.file_name"),
+                self.i18n.t("mesh_analysis.archived_path"),
+                self.i18n.t("mesh_analysis.file_size"),
+                "SHA-256",
+                self.i18n.t("mesh_analysis.imported_at"),
+                self.i18n.t("mesh_analysis.start_time"),
+                self.i18n.t("mesh_analysis.end_time"),
+                self.i18n.t("mesh_analysis.parse_status"),
+                self.i18n.t("mesh_analysis.records_parsed"),
+                self.i18n.t("mesh_analysis.records_skipped"),
+                self.i18n.t("mesh_analysis.duplicate_records"),
+                self.i18n.t("mesh_analysis.issue_count"),
+                self.i18n.t("mesh_analysis.parser_version"),
+            ]
+        )
+        self.link_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("mesh_analysis.sample_time"),
+                "Radio",
+                self.i18n.t("mesh_analysis.state"),
+                "PeerMac",
+                self.i18n.t("mesh_analysis.establish_time"),
+                self.i18n.t("mesh_analysis.duration"),
+                "LinkCnt",
+                self.i18n.t("mesh_analysis.local_rssi"),
+                self.i18n.t("mesh_analysis.peer_rssi"),
+                self.i18n.t("mesh_analysis.local_noise"),
+                self.i18n.t("mesh_analysis.peer_noise"),
+                self.i18n.t("mesh_analysis.local_signal"),
+                self.i18n.t("mesh_analysis.peer_signal"),
+                self.i18n.t("mesh_analysis.local_rate"),
+                self.i18n.t("mesh_analysis.peer_rate"),
+                "L_TxBusy",
+                "P_TxBusy",
+                "L_RxBusy",
+                "P_RxBusy",
+                self.i18n.t("mesh_analysis.source_file"),
+                self.i18n.t("mesh_analysis.line_number"),
+            ]
+        )
+        self.event_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("mesh_analysis.event_time"),
+                "Radio",
+                self.i18n.t("mesh_analysis.event_type"),
+                self.i18n.t("mesh_analysis.from_peer"),
+                self.i18n.t("mesh_analysis.to_peer"),
+                self.i18n.t("mesh_analysis.observed_window"),
+                self.i18n.t("mesh_analysis.previous_mr_rssi"),
+                self.i18n.t("mesh_analysis.new_mr_rssi"),
+                self.i18n.t("mesh_analysis.previous_peer_rssi"),
+                self.i18n.t("mesh_analysis.new_peer_rssi"),
+                self.i18n.t("mesh_analysis.from_rate"),
+                self.i18n.t("mesh_analysis.to_rate"),
+                self.i18n.t("mesh_analysis.source_file"),
+                self.i18n.t("mesh_analysis.line_number"),
+            ]
+        )
+        self.issue_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("mesh_analysis.file_name"),
+                self.i18n.t("mesh_analysis.line_number"),
+                self.i18n.t("mesh_analysis.severity"),
+                self.i18n.t("mesh_analysis.issue_type"),
+                self.i18n.t("mesh_analysis.field_name"),
+                self.i18n.t("mesh_analysis.message"),
+                self.i18n.t("mesh_analysis.raw_content"),
+            ]
+        )
+        self.tabs.setTabText(0, self.i18n.t("mesh_analysis.source_files"))
+        self.tabs.setTabText(1, self.i18n.t("mesh_analysis.link_details"))
+        self.tabs.setTabText(2, self.i18n.t("mesh_analysis.events"))
+        self._set_issue_tab_count(0)
+        self.issue_empty_title.setText(self.i18n.t("mesh_analysis.no_parse_issues"))
+        self.issue_empty_description.setText(self.i18n.t("mesh_analysis.no_parse_issues_description"))
+        self._restore_column_widths()
+
+    def _build_layout(self) -> None:
+        toolbar = QHBoxLayout()
+        for button in (
+            self.create_mr_button,
+            self.import_button,
+            self.import_folder_button,
+            self.cancel_button,
+            self.refresh_button,
+            self.open_folder_button,
+        ):
+            toolbar.addWidget(button)
+        toolbar.addStretch(1)
+        progress = QHBoxLayout()
+        progress.addWidget(self.progress_bar, 1)
+        progress.addWidget(self.progress_label)
+        filters = QHBoxLayout()
+        filters.addWidget(self.radio_filter)
+        filters.addWidget(self.state_filter)
+        filters.addWidget(self.peer_filter)
+        filters.addWidget(self.keyword_filter, 1)
+        source_page = QWidget()
+        source_layout = QVBoxLayout(source_page)
+        source_layout.addWidget(self.source_table)
+        source_layout.addWidget(self.source_pagination)
+        links_page = QWidget()
+        links_layout = QVBoxLayout(links_page)
+        links_layout.addLayout(filters)
+        links_layout.addWidget(self.link_table, 1)
+        links_layout.addWidget(self.link_pagination)
+        links_layout.addWidget(self.detail_text)
+        event_page = QWidget()
+        event_layout = QVBoxLayout(event_page)
+        event_layout.addWidget(self.event_table)
+        event_layout.addWidget(self.event_pagination)
+        issue_page = QWidget()
+        issue_layout = QVBoxLayout(issue_page)
+        empty_layout = QVBoxLayout(self.issue_empty_widget)
+        empty_layout.addStretch(1)
+        self.issue_empty_title.setAlignment(Qt.AlignCenter)
+        self.issue_empty_description.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(self.issue_empty_title)
+        empty_layout.addWidget(self.issue_empty_description)
+        empty_layout.addStretch(1)
+        issue_layout.addWidget(self.issue_table)
+        issue_layout.addWidget(self.issue_pagination)
+        issue_layout.addWidget(self.issue_empty_widget, 1)
+        self.tabs.addTab(source_page, "")
+        self.tabs.addTab(links_page, "")
+        self.tabs.addTab(event_page, "")
+        self.tabs.addTab(issue_page, "")
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.addWidget(self.tabs)
+        splitter = QSplitter()
+        splitter.addWidget(self.mr_table)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(1, 4)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.title_label)
+        layout.addLayout(toolbar)
+        layout.addLayout(progress)
+        layout.addWidget(splitter, 1)
+
+    def _connect_signals(self) -> None:
+        self.create_mr_button.clicked.connect(self.create_mr)
+        self.import_button.clicked.connect(self.import_logs)
+        self.import_folder_button.clicked.connect(self.import_folder)
+        self.cancel_button.clicked.connect(self.cancel_import)
+        self.refresh_button.clicked.connect(lambda: self.refresh_all())
+        self.open_folder_button.clicked.connect(self.open_mr_folder)
+        self.mr_table.itemSelectionChanged.connect(self._schedule_current_mr_selection)
+        self.radio_filter.textChanged.connect(self._schedule_link_refresh)
+        self.state_filter.textChanged.connect(self._schedule_link_refresh)
+        self.peer_filter.textChanged.connect(self._schedule_link_refresh)
+        self.keyword_filter.textChanged.connect(self._schedule_link_refresh)
+        self.filter_timer.timeout.connect(self.refresh_link_table)
+        self.mr_selection_timer.timeout.connect(self.select_current_mr)
+        self.link_table.itemSelectionChanged.connect(self.show_link_detail)
+        self.link_table.cellDoubleClicked.connect(self._open_peer_from_link_cell)
+        self.event_table.cellDoubleClicked.connect(self._open_peer_from_event_cell)
+        self.source_pagination.pageChanged.connect(lambda page: self._set_page("source", page))
+        self.link_pagination.pageChanged.connect(lambda page: self._set_page("link", page))
+        self.event_pagination.pageChanged.connect(lambda page: self._set_page("event", page))
+        self.issue_pagination.pageChanged.connect(lambda page: self._set_page("issue", page))
+        for pagination in (self.source_pagination, self.link_pagination, self.event_pagination, self.issue_pagination):
+            pagination.pageSizeChanged.connect(self._set_page_size)
+        self.tabs.currentChanged.connect(lambda _index: self.refresh_current_tab())
+
+    def create_mr(self) -> None:
+        name, ok = QInputDialog.getText(self, self.i18n.t("mesh_analysis.create_mr"), self.i18n.t("mesh_analysis.mr_name"))
+        if not ok:
+            return
+        try:
+            profile = self.storage.create_mr_profile(name)
+        except Exception as exc:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.create_mr"), str(exc))
+            return
+        app_logger.log_info("MESH_MR_CREATED", profile.display_name)
+        self.refresh_all(select_mr_id=profile.mr_id)
+
+    def import_logs(self) -> None:
+        profile = self._require_profile()
+        if profile is None:
+            return
+        files, _ = QFileDialog.getOpenFileNames(self, self.i18n.t("mesh_analysis.import_logs"), str(self.paths.ensure_site_dirs(self.site_name) / "raw" / "files"), FILE_FILTER)
+        if files:
+            self._start_import(profile, [Path(file) for file in files])
+
+    def import_folder(self) -> None:
+        profile = self._require_profile()
+        if profile is None:
+            return
+        folder = QFileDialog.getExistingDirectory(self, self.i18n.t("mesh_analysis.import_folder"), str(self.paths.ensure_site_dirs(self.site_name) / "raw" / "files"))
+        if not folder:
+            return
+        files = MeshImportService(self.site_name, self.paths).discover_mesh_logs(Path(folder))
+        self._start_import(profile, files)
+
+    def cancel_import(self) -> None:
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+
+    def refresh_all(self, select_mr_id: str | None = None) -> None:
+        current_id = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
+        self.profiles = self.catalog_repo.list_profiles()
+        self.profile_by_id = {profile.mr_id: profile for profile in self.profiles}
+        sorting = self.mr_table.isSortingEnabled()
+        sort_column = self.mr_table.horizontalHeader().sortIndicatorSection()
+        sort_order = self.mr_table.horizontalHeader().sortIndicatorOrder()
+        self.mr_table.setSortingEnabled(False)
+        self._suppress_mr_selection = True
+        blocker = QSignalBlocker(self.mr_table)
+        self.mr_table.setRowCount(len(self.profiles))
+        selected_row = -1
+        for row, profile in enumerate(self.profiles):
+            if current_id and profile.mr_id == current_id:
+                selected_row = row
+            values = [
+                profile.display_name,
+                _display(profile.earliest_sample_time),
+                _display(profile.latest_sample_time),
+                profile.source_file_count,
+                profile.sample_count,
+                profile.link_record_count,
+                profile.event_count,
+                _display(profile.last_import_at),
+            ]
+            _set_row(self.mr_table, row, values, profile.mr_id)
+        del blocker
+        self.mr_table.setSortingEnabled(sorting)
+        if sorting and sort_column >= 0:
+            self.mr_table.sortItems(sort_column, sort_order)
+        if self.profiles:
+            target_id = current_id or self.profiles[0].mr_id
+            selected_row = self._find_mr_row(str(target_id))
+        if selected_row >= 0:
+            self.mr_table.selectRow(selected_row)
+            mr_id = self.mr_table.item(selected_row, 0).data(Qt.UserRole)
+            self._suppress_mr_selection = False
+            self._load_profile_by_id(str(mr_id))
+        else:
+            self._suppress_mr_selection = False
+            self.current_profile = None
+            self.refresh_current_mr_data()
+
+    def refresh_profiles(self, select_mr_id: str | None = None) -> None:
+        self.refresh_all(select_mr_id)
+
+    def _schedule_current_mr_selection(self) -> None:
+        if self._suppress_mr_selection:
+            return
+        app_logger.log_info("MESH_MR_SWITCH_REQUESTED", f"row={self.mr_table.currentRow()}")
+        self.mr_selection_timer.start()
+
+    def select_current_mr(self) -> None:
+        row = self.mr_table.currentRow()
+        if row < 0:
+            return
+        item = self.mr_table.item(row, 0)
+        if item is None:
+            return
+        self._load_profile_by_id(str(item.data(Qt.UserRole)))
+
+    def _load_profile_by_id(self, mr_id: str) -> None:
+        self.current_profile = self.profile_by_id.get(mr_id) or self.catalog_repo.get_profile(mr_id)
+        if self.current_profile is None:
+            return
+        self.mr_load_generation += 1
+        generation = self.mr_load_generation
+        app_logger.log_info("MESH_MR_LOAD_STARTED", f"mr_id={mr_id}, generation={generation}, tab={self._current_tab_name()}")
+        self.source_page = self.link_page = self.event_page = self.issue_page = 1
+        self.dirty_tabs = {"source", "link", "event", "issue"}
+        self.refresh_current_tab(generation)
+        app_logger.log_info("MESH_MR_LOAD_COMPLETED", f"mr_id={mr_id}, generation={generation}, tab={self._current_tab_name()}")
+
+    def refresh_current_mr_data(self, current_tab_only: bool = False) -> None:
+        if self.current_profile is None:
+            for table in (self.source_table, self.link_table, self.event_table, self.issue_table):
+                table.setRowCount(0)
+            self.refresh_parse_issues()
+            return
+        repo = self._repo()
+        self._ensure_current_derived_analysis(repo)
+        if current_tab_only:
+            self._render_tab(self._current_tab_name(), repo)
+            return
+        self._render_sources(repo)
+        self.refresh_link_table()
+        self._render_events(repo)
+        self.refresh_parse_issues(repo)
+        self.dirty_tabs.clear()
+
+    def refresh_current_tab(self, generation: int | None = None) -> None:
+        if self.current_profile is None:
+            return
+        if generation is not None and generation != self.mr_load_generation:
+            app_logger.log_info("MESH_MR_LOAD_DISCARDED", f"generation={generation}, current={self.mr_load_generation}")
+            return
+        tab = self._current_tab_name()
+        if tab not in self.dirty_tabs and generation is None:
+            return
+        repo = self._repo()
+        self._ensure_current_derived_analysis(repo)
+        self._render_tab(tab, repo)
+        self.dirty_tabs.discard(tab)
+
+    def _render_tab(self, tab: str, repo: MeshMrRepository) -> None:
+        if tab == "source":
+            self._render_sources(repo)
+        elif tab == "link":
+            self._render_links(repo)
+        elif tab == "event":
+            self._render_events(repo)
+        elif tab == "issue":
+            self.refresh_parse_issues(repo)
+
+    def refresh_link_table(self) -> None:
+        if self.current_profile is None:
+            self.link_table.setRowCount(0)
+            return
+        self._render_links(self._repo())
+        self.dirty_tabs.discard("link")
+
+    def show_link_detail(self) -> None:
+        row = self.link_table.currentRow()
+        item = self.link_table.item(row, 0) if row >= 0 else None
+        data = item.data(Qt.UserRole) if item else None
+        if not isinstance(data, dict):
+            self.detail_text.clear()
+            return
+        metrics = _json_dict(data.get("metrics_json"))
+        deltas = _json_dict(data.get("deltas_json"))
+        lines = [
+            f"Session: {data.get('session_id') or '-'}",
+            f"CPU: {metrics.get('local_cpu_percent')}/{metrics.get('peer_cpu_percent')}",
+            f"Mem: {metrics.get('local_mem_percent')}/{metrics.get('peer_mem_percent')}",
+            f"TxDesFreeCnt: {metrics.get('local_tx_des_free_cnt')}/{metrics.get('peer_tx_des_free_cnt')}",
+            f"Tx/Rx: {metrics.get('local_tx')}/{metrics.get('peer_tx')}  {metrics.get('local_rx')}/{metrics.get('peer_rx')}",
+            f"Retry/Err: {metrics.get('local_retry')}/{metrics.get('peer_retry')}  {metrics.get('local_err')}/{metrics.get('peer_err')}",
+            f"Delta: {deltas}",
+            f"Raw: {data.get('raw_line')}",
+        ]
+        self.detail_text.setPlainText("\n".join(lines))
+
+    def open_mr_folder(self) -> None:
+        profile = self._require_profile()
+        if profile is None:
+            return
+        path = self.paths.mesh_mr_root(self.site_name, profile.safe_folder_name)
+        path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(path)))
+
+    def _start_import(self, profile: MeshMrProfile, files: list[Path]) -> None:
+        if not files:
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.no_files"))
+            return
+        self.progress_bar.setValue(0)
+        self.worker = MeshLogImportWorker(self.site_name, self.paths, profile, files)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.completed.connect(self._on_import_finished)
+        self.worker.failed.connect(self._on_import_failed)
+        self.worker.cancelled.connect(self._on_import_cancelled)
+        self.worker.completed.connect(self._cleanup_worker)
+        self.worker.failed.connect(lambda _error: self._cleanup_worker())
+        self.worker.cancelled.connect(self._cleanup_worker)
+        self.worker.start()
+        app_logger.log_info("MESH_PARSE_STARTED", profile.display_name)
+
+    def _on_progress(self, file_index: int, total_files: int, lines: int, parsed: int, skipped: int) -> None:
+        self.progress_bar.setValue(int(file_index / max(total_files, 1) * 100))
+        self.progress_label.setText(self.i18n.t("mesh_analysis.progress", file=file_index, total=total_files, lines=lines, parsed=parsed, skipped=skipped))
+
+    def _on_import_finished(self, result) -> None:
+        self.progress_bar.setValue(100)
+        self.progress_label.setText(self.i18n.t("mesh_analysis.import_done", count=result.imported_count, duplicate=result.duplicate_count))
+        current_id = self.current_profile.mr_id if self.current_profile else None
+        self.refresh_all(select_mr_id=current_id)
+        app_logger.log_info("MESH_ANALYSIS_COMPLETED", self.progress_label.text())
+
+    def _on_import_failed(self, error: str) -> None:
+        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), error)
+        app_logger.log_error("MESH_PARSE_FAILED", error)
+
+    def _on_import_cancelled(self) -> None:
+        self.progress_label.setText(self.i18n.t("mesh_analysis.cancelled"))
+
+    def _cleanup_worker(self) -> None:
+        if self.worker is not None:
+            self.worker.deleteLater()
+            self.worker = None
+
+    def _render_sources(self, repo: MeshMrRepository) -> None:
+        rows = repo.list_source_files()
+        total, page_rows = _page(rows, self.source_page, self.page_size)
+        self.source_pagination.set_state(PaginationState(self.page_size, self.source_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
+        _begin_table_update(self.source_table)
+        self.source_table.setRowCount(len(page_rows))
+        for row_index, row in enumerate(page_rows):
+            values = [
+                row.get("archived_filename"),
+                row.get("archived_path"),
+                row.get("file_size"),
+                str(row.get("sha256") or "")[:12],
+                row.get("imported_at"),
+                row.get("first_sample_time"),
+                row.get("last_sample_time"),
+                row.get("parse_status"),
+                row.get("records_parsed"),
+                row.get("records_skipped"),
+                row.get("duplicate_records"),
+                row.get("issue_count"),
+                row.get("parser_version"),
+            ]
+            _set_row(self.source_table, row_index, values)
+        _end_table_update(self.source_table)
+
+    def _render_links(self, repo: MeshMrRepository) -> None:
+        filters = {
+            "radio": int(self.radio_filter.text()) if self.radio_filter.text().strip().isdigit() else None,
+            "state": self.state_filter.text().strip().upper() or None,
+            "peer": self.peer_filter.text().strip().replace("-", "").replace(":", "").lower() or None,
+            "keyword": self.keyword_filter.text().strip() or None,
+        }
+        total, rows = repo.query_links(self.page_size, (self.link_page - 1) * self.page_size, filters)
+        self.link_pagination.set_state(PaginationState(self.page_size, self.link_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
+        _begin_table_update(self.link_table)
+        self.link_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            metrics = _json_dict(row.get("metrics_json"))
+            peer = format_mac_h3c(row.get("peer_mac_normalized")) if row.get("peer_mac_normalized") else row.get("peer_mac_raw")
+            values = [
+                row.get("sample_time"),
+                row.get("radio"),
+                row.get("link_state"),
+                peer,
+                row.get("establish_time"),
+                row.get("duration_text"),
+                row.get("link_count"),
+                metrics.get("local_rssi_db"),
+                metrics.get("peer_rssi_db"),
+                row.get("local_noise_dbm"),
+                row.get("peer_noise_dbm"),
+                row.get("local_signal_dbm"),
+                row.get("peer_signal_dbm"),
+                metrics.get("local_rate_raw"),
+                metrics.get("peer_rate_raw"),
+                metrics.get("local_tx_busy"),
+                metrics.get("peer_tx_busy"),
+                metrics.get("local_rx_busy"),
+                metrics.get("peer_rx_busy"),
+                row.get("archived_filename"),
+                row.get("source_line_number"),
+            ]
+            _set_row(self.link_table, row_index, values, row)
+        _end_table_update(self.link_table)
+        self.restyle_visible_link_rows()
+
+    def _render_events(self, repo: MeshMrRepository) -> None:
+        total, rows = repo.query_events(self.page_size, (self.event_page - 1) * self.page_size)
+        self.event_pagination.set_state(PaginationState(self.page_size, self.event_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
+        _begin_table_update(self.event_table)
+        self.event_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            details = _json_dict(row.get("details_json"))
+            values = [
+                row.get("event_time"),
+                row.get("radio"),
+                self._event_label(str(row.get("event_type"))),
+                row.get("from_peer_mac"),
+                row.get("to_peer_mac"),
+                row.get("observed_window_ms"),
+                details.get("from_local_rssi"),
+                details.get("to_local_rssi"),
+                details.get("from_peer_rssi"),
+                details.get("to_peer_rssi"),
+                details.get("from_local_rate"),
+                details.get("to_local_rate"),
+                details.get("source_file"),
+                row.get("source_line_number"),
+            ]
+            _set_row(self.event_table, row_index, values, row)
+        _end_table_update(self.event_table)
+
+    def refresh_parse_issues(self, repo: MeshMrRepository | None = None) -> None:
+        if self.current_profile is None and repo is None:
+            self._set_issue_tab_count(0)
+            self.issue_table.setRowCount(0)
+            self.issue_table.hide()
+            self.issue_pagination.hide()
+            self.issue_empty_widget.show()
+            return
+        self._render_issues(repo or self._repo())
+
+    def _render_issues(self, repo: MeshMrRepository) -> None:
+        total, rows = repo.query_issues(self.page_size, (self.issue_page - 1) * self.page_size)
+        self._set_issue_tab_count(total)
+        if total <= 0:
+            self.issue_table.setRowCount(0)
+            self.issue_table.hide()
+            self.issue_pagination.hide()
+            self.issue_empty_widget.show()
+            self.issue_pagination.set_state(PaginationState(self.page_size, 1, 0, 1))
+            return
+        self.issue_empty_widget.hide()
+        self.issue_table.show()
+        self.issue_pagination.show()
+        self.issue_pagination.set_state(PaginationState(self.page_size, self.issue_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
+        _begin_table_update(self.issue_table)
+        self.issue_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [Path(str(row.get("source_file"))).name, row.get("line_number"), row.get("severity"), row.get("issue_type"), row.get("field_name"), row.get("message"), row.get("raw_line")]
+            _set_row(self.issue_table, row_index, values)
+        _end_table_update(self.issue_table)
+
+    def _set_issue_tab_count(self, count: int) -> None:
+        if self.tabs.count() >= 4:
+            self.tabs.setTabText(3, self.i18n.t("mesh_analysis.parse_issues_with_count", count=count))
+
+    def _ensure_current_derived_analysis(self, repo: MeshMrRepository) -> None:
+        if self.derived_worker is not None and self.derived_worker.isRunning():
+            return
+        if not repo.needs_derived_analysis_rebuild():
+            return
+        self.progress_label.setText(self.i18n.t("mesh_analysis.rebuilding_derived_analysis"))
+        self.derived_worker = MeshDerivedAnalysisRebuildWorker(repo.path, self)
+        self.derived_worker.completed.connect(self._on_derived_rebuild_finished)
+        self.derived_worker.failed.connect(self._on_derived_rebuild_failed)
+        self.derived_worker.completed.connect(self._cleanup_derived_worker)
+        self.derived_worker.failed.connect(lambda _error: self._cleanup_derived_worker())
+        self.derived_worker.start()
+        app_logger.log_info("MESH_DERIVED_REBUILD_STARTED", repo.path.name)
+
+    def _on_derived_rebuild_finished(self) -> None:
+        self.progress_label.setText(self.i18n.t("mesh_analysis.derived_analysis_ready"))
+        current_id = self.current_profile.mr_id if self.current_profile else None
+        if current_id:
+            self.refresh_all(select_mr_id=current_id)
+        app_logger.log_info("MESH_DERIVED_REBUILD_COMPLETED", current_id or "")
+
+    def _on_derived_rebuild_failed(self, error: str) -> None:
+        self.progress_label.setText(error)
+        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), error)
+        app_logger.log_error("MESH_DERIVED_REBUILD_FAILED", error)
+
+    def _cleanup_derived_worker(self) -> None:
+        if self.derived_worker is not None:
+            self.derived_worker.deleteLater()
+            self.derived_worker = None
+
+    def _set_page(self, page_name: str, page: int) -> None:
+        setattr(self, f"{page_name}_page", page)
+        self.dirty_tabs.add(page_name)
+        if self._current_tab_name() == page_name:
+            self.refresh_current_tab()
+
+    def _set_page_size(self, page_size: int) -> None:
+        self.page_size = page_size
+        self.source_page = self.link_page = self.event_page = self.issue_page = 1
+        self.dirty_tabs = {"source", "link", "event", "issue"}
+        self.refresh_current_tab()
+
+    def restyle_visible_link_rows(self) -> None:
+        base = self.link_table.palette().base()
+        alternate = self.link_table.palette().alternateBase()
+        active_color = QColor("#22c55e")
+        default_color = self.link_table.palette().text().color()
+        for row in range(self.link_table.rowCount()):
+            data_item = self.link_table.item(row, 0)
+            data = data_item.data(Qt.UserRole) if data_item else {}
+            group_index = int(data.get("sample_group_index") or 0) if isinstance(data, dict) else 0
+            background = base if group_index % 2 == 0 else alternate
+            is_active = isinstance(data, dict) and data.get("link_state") == "ACTIVE"
+            for column in range(self.link_table.columnCount()):
+                item = self.link_table.item(row, column)
+                if item is None:
+                    continue
+                item.setBackground(background)
+                font = item.font()
+                font.setBold(is_active)
+                item.setFont(font)
+                item.setForeground(active_color if is_active else default_color)
+
+    def _schedule_link_refresh(self) -> None:
+        self.filter_timer.start()
+
+    def _setup_column_states(self) -> None:
+        defaults = {
+            "mr": [180, 180, 180, 90, 100, 120, 90, 180],
+            "source": [180, 320, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
+            "link": [190, 60, 90, 150, 180, 135, 70, 95, 95, 95, 95, 110, 110, 130, 130, 85, 85, 85, 85, 240, 70],
+            "event": [180, 60, 140, 150, 150, 120, 110, 110, 110, 110, 110, 110, 240, 70],
+            "issue": [180, 70, 90, 140, 120, 240, 320],
+        }
+        tables = {"mr": self.mr_table, "source": self.source_table, "link": self.link_table, "event": self.event_table, "issue": self.issue_table}
+        for key, table in tables.items():
+            state = MeshTableColumnState(self.settings, table, f"mesh_analysis/column_widths/{key}", defaults[key])
+            self.column_states[key] = state
+            state.restore()
+
+    def _restore_column_widths(self) -> None:
+        for state in getattr(self, "column_states", {}).values():
+            state.restore()
+
+    def _open_peer_from_link_cell(self, row: int, column: int) -> None:
+        if column != 3 or self.current_profile is None:
+            return
+        item = self.link_table.item(row, 0)
+        data = item.data(Qt.UserRole) if item else None
+        if not isinstance(data, dict):
+            return
+        peer = data.get("peer_mac_normalized")
+        if not peer:
+            return
+        link_id = int(data.get("id") or 0) or None
+        self._open_peer_dialog(str(peer), int(data.get("radio") or 0), str(data.get("session_id") or ""), link_id)
+
+    def _open_peer_from_event_cell(self, row: int, column: int) -> None:
+        if column not in {3, 4} or self.current_profile is None:
+            return
+        text = self.event_table.item(row, column).text() if self.event_table.item(row, column) else ""
+        peer = text.replace("-", "").replace(":", "").lower()
+        if len(peer) == 12:
+            radio = int(self.event_table.item(row, 1).text()) if self.event_table.item(row, 1) and self.event_table.item(row, 1).text().isdigit() else None
+            self._open_peer_dialog(peer, radio, "")
+
+    def _open_peer_dialog(self, peer_mac: str, radio: int | None, session_id: str, anchor_link_id: int | None = None) -> None:
+        if self.current_profile is None:
+            return
+        dialog = MeshPeerDetailDialog(self.i18n, self.current_profile, self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name), peer_mac, radio, session_id, self, anchor_link_id=anchor_link_id)
+        dialog.destroyed.connect(lambda _=None, d=dialog: self.peer_dialogs.remove(d) if d in self.peer_dialogs else None)
+        self.peer_dialogs.append(dialog)
+        dialog.show()
+
+    def _find_mr_row(self, mr_id: str) -> int:
+        for row in range(self.mr_table.rowCount()):
+            item = self.mr_table.item(row, 0)
+            if item is not None and str(item.data(Qt.UserRole)) == mr_id:
+                return row
+        return 0 if self.mr_table.rowCount() else -1
+
+    def _event_label(self, event_type: str) -> str:
+        return {
+            "ACTIVE_SWITCH": self.i18n.t("mesh_analysis.active_switch"),
+            "NO_ACTIVE": self.i18n.t("mesh_analysis.no_active"),
+            "MULTI_ACTIVE": self.i18n.t("mesh_analysis.multiple_active"),
+            "LINK_REESTABLISHED": self.i18n.t("mesh_analysis.link_reestablished"),
+            "COUNTER_RESET": self.i18n.t("mesh_analysis.counter_reset"),
+        }.get(event_type, event_type)
+
+    def _require_profile(self) -> MeshMrProfile | None:
+        if self.current_profile is None:
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.select_mr_first"))
+            return None
+        return self.current_profile
+
+    def _repo(self) -> MeshMrRepository:
+        assert self.current_profile is not None
+        mr_id = self.current_profile.mr_id
+        repo = self.repo_cache.get(mr_id)
+        if repo is not None:
+            app_logger.log_info("MESH_MR_CACHE_HIT", mr_id)
+            return repo
+        app_logger.log_info("MESH_MR_CACHE_MISS", mr_id)
+        repo = MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name))
+        self.repo_cache[mr_id] = repo
+        return repo
+
+    def _current_tab_name(self) -> str:
+        return {0: "source", 1: "link", 2: "event", 3: "issue"}.get(self.tabs.currentIndex(), "source")
+
+
+def _display(value) -> str:
+    if value is None or value == "":
+        return "-"
+    if hasattr(value, "isoformat"):
+        return value.isoformat(sep=" ", timespec="milliseconds")
+    return str(value)
+
+
+def _set_row(table: QTableWidget, row_index: int, values: list[object], user_data: object | None = None) -> None:
+    row_height = max(table.fontMetrics().height() + 12, 32)
+    table.setRowHeight(row_index, row_height)
+    for column, value in enumerate(values):
+        text = _display(value)
+        item = QTableWidgetItem(text)
+        item.setToolTip(text)
+        if column == 0 and user_data is not None:
+            item.setData(Qt.UserRole, user_data)
+        if isinstance(value, int | float):
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        elif column in {1, 2, 6, table.columnCount() - 1}:
+            item.setTextAlignment(Qt.AlignCenter)
+        table.setItem(row_index, column, item)
+
+
+def _begin_table_update(table: QTableWidget) -> None:
+    table.setProperty("mesh_sorting_enabled", table.isSortingEnabled())
+    table.setSortingEnabled(False)
+
+
+def _end_table_update(table: QTableWidget) -> None:
+    table.setSortingEnabled(bool(table.property("mesh_sorting_enabled")))
+
+
+def _page(rows: list[dict[str, object]], current_page: int, page_size: int) -> tuple[int, list[dict[str, object]]]:
+    total = len(rows)
+    start = (max(current_page, 1) - 1) * page_size
+    return total, rows[start : start + page_size]
+
+
+def _json_dict(value) -> dict[str, object]:
+    import json
+
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

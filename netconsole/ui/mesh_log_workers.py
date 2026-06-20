@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from pathlib import Path
+from time import monotonic
+
+from PySide6.QtCore import QThread, Signal
+
+from netconsole.core.paths import PathResolver
+from netconsole.models.mesh_log_models import MeshMrProfile
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.mesh_import_service import MeshImportService
+
+
+class MeshLogImportWorker(QThread):
+    progress = Signal(int, int, int, int, int)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, site_name: str, paths: PathResolver, profile: MeshMrProfile, files: list[Path], parent=None) -> None:
+        super().__init__(parent)
+        self.site_name = site_name
+        self.paths = paths
+        self.profile = profile
+        self.files = files
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    def run(self) -> None:
+        try:
+            service = MeshImportService(self.site_name, self.paths)
+            last_emit = 0.0
+
+            def emit_progress(file_index: int, total_files: int, lines: int, parsed: int, skipped: int) -> None:
+                nonlocal last_emit
+                now = monotonic()
+                if now - last_emit >= 0.2 or file_index >= total_files:
+                    last_emit = now
+                    self.progress.emit(file_index, total_files, lines, parsed, skipped)
+
+            result = service.import_files(
+                self.profile,
+                self.files,
+                should_cancel=self.is_cancelled,
+                progress=emit_progress,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        if self._cancelled:
+            self.cancelled.emit()
+            return
+        self.completed.emit(result)
+
+
+class MeshDerivedAnalysisRebuildWorker(QThread):
+    completed = Signal()
+    failed = Signal(str)
+    progress = Signal(int)
+
+    def __init__(self, db_path: Path, parent=None) -> None:
+        super().__init__(parent)
+        self.db_path = db_path
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    def run(self) -> None:
+        try:
+            MeshMrRepository(self.db_path).rebuild_derived_analysis(
+                should_cancel=self.is_cancelled,
+                progress=lambda processed: self.progress.emit(int(processed or 0)),
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        if not self._cancelled:
+            self.completed.emit()
