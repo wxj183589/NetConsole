@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import re
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
+    QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -33,11 +36,12 @@ from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepositor
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
-from netconsole.ui.mesh_log_workers import MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
+from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker, MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
 from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
 
 
@@ -57,6 +61,7 @@ class MeshLogAnalysisPage(QWidget):
         self.repo_cache: dict[str, MeshMrRepository] = {}
         self.profile_by_id: dict[str, MeshMrProfile] = {}
         self.worker: MeshLogImportWorker | None = None
+        self.report_worker: MeshAnalysisReportWorker | None = None
         self.derived_worker: MeshDerivedAnalysisRebuildWorker | None = None
         self.peer_dialogs: list[MeshPeerDetailDialog] = []
         self.profiles: list[MeshMrProfile] = []
@@ -78,6 +83,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button = QPushButton()
         self.refresh_button = QPushButton()
         self.open_folder_button = QPushButton()
+        self.generate_report_button = QPushButton()
         self.progress_bar = QProgressBar()
         self.progress_label = QLabel()
 
@@ -149,6 +155,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button.setText(self.i18n.t("mesh_analysis.cancel"))
         self.refresh_button.setText(self.i18n.t("mesh_analysis.refresh"))
         self.open_folder_button.setText(self.i18n.t("mesh_analysis.open_folder"))
+        self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
         self.radio_filter.setPlaceholderText("Radio")
         self.state_filter.setPlaceholderText(self.i18n.t("mesh_analysis.state"))
         self.peer_filter.setPlaceholderText("PeerMac")
@@ -253,6 +260,7 @@ class MeshLogAnalysisPage(QWidget):
             self.cancel_button,
             self.refresh_button,
             self.open_folder_button,
+            self.generate_report_button,
         ):
             toolbar.addWidget(button)
         toolbar.addStretch(1)
@@ -314,6 +322,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button.clicked.connect(self.cancel_import)
         self.refresh_button.clicked.connect(lambda: self.refresh_all())
         self.open_folder_button.clicked.connect(self.open_mr_folder)
+        self.generate_report_button.clicked.connect(self.generate_report)
         self.mr_table.itemSelectionChanged.connect(self._schedule_current_mr_selection)
         self.radio_filter.textChanged.connect(self._schedule_link_refresh)
         self.state_filter.textChanged.connect(self._schedule_link_refresh)
@@ -365,6 +374,8 @@ class MeshLogAnalysisPage(QWidget):
     def cancel_import(self) -> None:
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
+        if self.report_worker and self.report_worker.isRunning():
+            self.report_worker.cancel()
 
     def refresh_all(self, select_mr_id: str | None = None) -> None:
         current_id = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
@@ -515,6 +526,55 @@ class MeshLogAnalysisPage(QWidget):
         path = self.paths.mesh_mr_root(self.site_name, profile.safe_folder_name)
         path.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(path)))
+
+    def generate_report(self) -> None:
+        profile = self._require_profile()
+        if profile is None:
+            return
+        if self.report_worker and self.report_worker.isRunning():
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.running"))
+            return
+        dialog = MeshReportSettingsDialog(self.i18n, profile.display_name, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        options = dialog.options()
+        export_dir = self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_mr = _safe_filename(profile.display_name)
+        output_path = export_dir / f"{filename_mr}_MESH分析报告_{timestamp}.xlsx"
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(self.i18n.t("mesh_report.generating"))
+        self.report_worker = MeshAnalysisReportWorker(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name), profile.display_name, output_path, options, self)
+        self.report_worker.progress.connect(self._on_report_progress)
+        self.report_worker.completed.connect(self._on_report_finished)
+        self.report_worker.failed.connect(self._on_report_failed)
+        self.report_worker.cancelled.connect(self._on_report_cancelled)
+        self.report_worker.completed.connect(lambda _path: self._cleanup_report_worker())
+        self.report_worker.failed.connect(lambda _error: self._cleanup_report_worker())
+        self.report_worker.cancelled.connect(self._cleanup_report_worker)
+        self.report_worker.start()
+
+    def _on_report_progress(self, value: int, message: str) -> None:
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(self.i18n.t("mesh_report.progress", value=value, stage=message))
+
+    def _on_report_finished(self, path: str) -> None:
+        self.progress_bar.setValue(100)
+        self.progress_label.setText(self.i18n.t("mesh_report.done", path=path))
+        QMessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
+
+    def _on_report_failed(self, error: str) -> None:
+        self.progress_label.setText(self.i18n.t("mesh_report.failed", error=error))
+        QMessageBox.warning(self, self.i18n.t("mesh_report.generate_report"), error)
+
+    def _on_report_cancelled(self) -> None:
+        self.progress_label.setText(self.i18n.t("mesh_report.cancelled"))
+
+    def _cleanup_report_worker(self) -> None:
+        if self.report_worker is not None:
+            self.report_worker.deleteLater()
+            self.report_worker = None
 
     def _start_import(self, profile: MeshMrProfile, files: list[Path]) -> None:
         if not files:
@@ -886,3 +946,8 @@ def _json_dict(value) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_filename(value: str) -> str:
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", value).strip(" ._")
+    return safe or "MR"

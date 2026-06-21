@@ -32,6 +32,7 @@ FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "sp
 ALLOWED_RUNTIME = (
     "netconsole",
     "data",
+    "tools",
     "tools/fping_v3",
     "tools/fping_v3/fping_v3.exe",
     "tools/iperf",

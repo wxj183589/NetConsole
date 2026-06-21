@@ -2,10 +2,12 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
+from netconsole.core import app_logger
+from netconsole.core import version as version_info
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import changelog_path, icon_path
@@ -17,8 +19,63 @@ from netconsole.ui.main_window import MainWindow
 from netconsole.ui.theme import stylesheet_for_theme
 from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, CollectLogDialog, collect_search_matches, read_collect_log_text
 from netconsole.ui.table_utils import make_text_selectable
+from netconsole.ui.widgets.loading_overlay import LoadingOverlay
+from netconsole.ui.widgets.startup_splash import StartupSplash
 from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, clean_device_text, clean_h3c_device_text, decode_text_auto, fix_mojibake_text, read_text_auto
+
+
+class FakeSignal:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def connect(self, callback) -> None:
+        self.callbacks.append(callback)
+
+
+class FakeTrayIcon:
+    DoubleClick = QSystemTrayIcon.DoubleClick
+    Information = QSystemTrayIcon.Information
+    available = True
+    instances = []
+
+    def __init__(self, icon, parent=None) -> None:
+        self.icon = icon
+        self.parent = parent
+        self.activated = FakeSignal()
+        self.menu = None
+        self.tooltip = ""
+        self.visible = False
+        self.messages = []
+        FakeTrayIcon.instances.append(self)
+
+    @staticmethod
+    def isSystemTrayAvailable() -> bool:
+        return FakeTrayIcon.available
+
+    def setContextMenu(self, menu) -> None:
+        self.menu = menu
+
+    def setToolTip(self, tooltip: str) -> None:
+        self.tooltip = tooltip
+
+    def show(self) -> None:
+        self.visible = True
+
+    def showMessage(self, title, message, icon=None, msecs=0) -> None:
+        self.messages.append((title, message, icon, msecs))
+
+
+def install_fake_tray(monkeypatch, available: bool = True) -> type[FakeTrayIcon]:
+    FakeTrayIcon.available = available
+    FakeTrayIcon.instances = []
+    monkeypatch.setattr("netconsole.ui.main_window.QSystemTrayIcon", FakeTrayIcon)
+    return FakeTrayIcon
+
+
+@pytest.fixture(autouse=True)
+def fake_tray_by_default(monkeypatch):
+    install_fake_tray(monkeypatch, False)
 
 
 def test_main_window_size_uses_default_on_large_screen():
@@ -112,7 +169,481 @@ def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
     window.show_changelog_dialog()
     assert isinstance(window.changelog_dialog, ChangelogDialog)
     assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
+    window.app_is_exiting = True
     window.close()
+
+
+def test_main_window_starts_with_only_default_page(tmp_path):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+
+    assert set(window.pages) == {"devices"}
+    assert window.rail_transit_page is None
+    assert window.network_tools_page is None
+    assert window.ac_page is None
+    assert window.file_management_page is None
+    assert window.config_collection_page is None
+    assert window.log_page is None
+    assert window.stack.count() == 1
+
+
+def test_lazy_page_activation_runs_after_page_is_shown(tmp_path, monkeypatch):
+    qt_app = QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    events: list[str] = []
+    network_row = next(
+        index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "network_tools"
+    )
+
+    from netconsole.ui.pages.network_tools_page import NetworkToolsPage
+
+    monkeypatch.setattr(NetworkToolsPage, "refresh_all", lambda self: events.append("refresh"))
+    monkeypatch.setattr(window.stack, "setCurrentWidget", lambda widget: events.append("shown"))
+
+    window.open_current_page(network_row)
+
+    assert events == ["shown"]
+    qt_app.processEvents()
+    assert events == ["shown", "refresh"]
+
+
+def test_loading_overlay_shows_and_hides():
+    QApplication.instance() or QApplication([])
+    parent = QWidget()
+    parent.resize(320, 200)
+    overlay = LoadingOverlay(parent)
+
+    overlay.show_loading("Loading rail transit data...")
+
+    assert not overlay.isHidden()
+    assert overlay.spinner.timer.isActive()
+    assert overlay.message_label.text() == "Loading rail transit data..."
+
+    overlay.hide_loading()
+
+    assert not overlay.isVisible()
+    assert not overlay.spinner.timer.isActive()
+
+
+def test_startup_splash_updates_message_and_progress():
+    QApplication.instance() or QApplication([])
+    splash = StartupSplash(I18n("en_US"))
+
+    splash.show_message("Opening main window...")
+    splash.set_progress(80)
+
+    assert splash.message_label.text() == "Opening main window..."
+    assert splash.progress.value() == 80
+    splash.close()
+
+
+def test_startup_splash_uses_product_name_without_net_tools():
+    QApplication.instance() or QApplication([])
+    splash = StartupSplash(I18n("en_US"))
+    texts = [label.text() for label in splash.findChildren(QLabel)]
+
+    assert "NetConsole" in texts
+    assert "Net Tools" not in texts
+    assert all("Net Tools" not in text for text in texts)
+    splash.close()
+
+
+def test_startup_splash_version_label_is_localized():
+    QApplication.instance() or QApplication([])
+    zh_splash = StartupSplash(I18n("zh_CN"))
+    en_splash = StartupSplash(I18n("en_US"))
+
+    assert zh_splash.version_label.text() == f"版本：{version_info.APP_VERSION_DISPLAY}"
+    assert en_splash.version_label.text() == f"Version: {version_info.APP_VERSION_DISPLAY}"
+    zh_splash.close()
+    en_splash.close()
+
+
+def test_ui_version_text_uses_shared_version_source(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(version_info, "APP_NAME", "NetConsole")
+    monkeypatch.setattr(version_info, "APP_VERSION", "v9.9.9")
+    monkeypatch.setattr(version_info, "APP_VERSION_DISPLAY", "v9.9.9")
+    context = create_demo_context(PathResolver(tmp_path))
+
+    splash = StartupSplash(I18n("en_US"))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    changelog = ChangelogDialog(I18n("en_US"))
+
+    assert splash.version_label.text() == "Version: v9.9.9"
+    assert window.windowTitle() == "NetConsole v9.9.9"
+    assert window.version_button.text() == "v9.9.9"
+    assert window.version_button.toolTip() == "NetConsole v9.9.9"
+    assert changelog.windowTitle() == "Changelog v9.9.9"
+    splash.close()
+    changelog.close()
+    window.app_is_exiting = True
+    window.close()
+
+
+def test_changelog_title_uses_localized_version():
+    QApplication.instance() or QApplication([])
+    zh_dialog = ChangelogDialog(I18n("zh_CN"))
+    en_dialog = ChangelogDialog(I18n("en_US"))
+
+    assert zh_dialog.windowTitle() == f"更新日志 {version_info.APP_VERSION_DISPLAY}"
+    assert en_dialog.windowTitle() == f"Changelog {version_info.APP_VERSION_DISPLAY}"
+    zh_dialog.close()
+    en_dialog.close()
+
+
+def test_ui_files_do_not_hardcode_release_version_or_net_tools():
+    root = Path(__file__).resolve().parents[1]
+    checked_files = [
+        root / "netconsole" / "ui" / "widgets" / "startup_splash.py",
+        root / "netconsole" / "ui" / "main_window.py",
+        root / "netconsole" / "ui" / "dialogs" / "changelog_dialog.py",
+        root / "netconsole" / "ui" / "dialogs" / "about_dialog.py",
+    ]
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in checked_files)
+
+    assert "Net Tools" not in combined
+    assert "v1.1.0" not in combined
+
+
+def test_lazy_page_activation_errors_are_logged_not_raised(tmp_path, monkeypatch):
+    qt_app = QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    app_logger.configure_path_resolver(context.paths)
+    app_logger.clear_logs()
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    log_row = next(index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "logs")
+
+    from netconsole.ui.pages.app_log_page import AppLogPage
+
+    def fail_refresh(self) -> None:
+        raise RuntimeError("background failed")
+
+    monkeypatch.setattr(AppLogPage, "refresh", fail_refresh)
+
+    window.open_current_page(log_row)
+    qt_app.processEvents()
+
+    assert any(item["event"] == "PAGE_ACTIVATE_FAILED:LOGS" for item in app_logger.read_logs())
+
+
+def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
+    import netconsole.app as app_module
+
+    paths = PathResolver(tmp_path)
+    paths.ensure_project_dirs()
+    app_logger.configure_path_resolver(paths)
+    app_logger.clear_logs()
+    shown: list[bool] = []
+
+    class FakeApplication:
+        def __init__(self, argv):
+            self.argv = argv
+
+        def setApplicationName(self, name):
+            pass
+
+        def setApplicationVersion(self, version):
+            pass
+
+        def setWindowIcon(self, icon):
+            pass
+
+        def exec(self):
+            return 0
+
+    class FakeWindow:
+        def show(self):
+            shown.append(True)
+
+    class FakeSplash:
+        def __init__(self, i18n):
+            self.messages = []
+
+        def show_centered(self):
+            pass
+
+        def show_message(self, message):
+            self.messages.append(message)
+
+        def set_progress(self, value):
+            pass
+
+        def close_after_main_window_shown(self):
+            pass
+
+    class FakeSettingsStore:
+        def __init__(self, paths):
+            self.startup_mode = "preload_all"
+
+    class FakePreloadManager:
+        def __init__(self, i18n, splash, started_at):
+            self.i18n = i18n
+            self.splash = splash
+            self.started_at = started_at
+
+        def run(self, mode):
+            assert mode == "preload_all"
+            return FakeWindow()
+
+    monkeypatch.setattr(app_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(app_module, "QIcon", lambda path: object())
+    monkeypatch.setattr(app_module, "icon_path", lambda name: tmp_path / name)
+    monkeypatch.setattr(app_module, "SettingsStore", FakeSettingsStore)
+    monkeypatch.setattr(app_module, "StartupPreloadManager", FakePreloadManager)
+    monkeypatch.setattr(app_module, "StartupSplash", FakeSplash)
+
+    assert app_module.run() == 0
+
+    logs = app_logger.read_logs()
+    events = [item["event"] for item in reversed(logs)]
+    assert events == ["APP_START", "STARTUP", "MAIN_WINDOW_CREATED", "MAIN_WINDOW_SHOWN"]
+    assert shown == [True]
+    assert all("elapsed_ms=" in item["detail"] for item in logs if item["event"] != "STARTUP")
+
+
+def test_app_run_fast_start_uses_build_window(tmp_path, monkeypatch):
+    import netconsole.app as app_module
+
+    shown: list[str] = []
+
+    class FakeApplication:
+        def __init__(self, argv):
+            pass
+
+        def setApplicationName(self, name):
+            pass
+
+        def setApplicationVersion(self, version):
+            pass
+
+        def setWindowIcon(self, icon):
+            pass
+
+        def exec(self):
+            return 0
+
+    class FakeWindow:
+        def show(self):
+            shown.append("show")
+
+    class FakeSplash:
+        def __init__(self, i18n):
+            pass
+
+        def show_centered(self):
+            pass
+
+        def show_message(self, message):
+            pass
+
+        def set_progress(self, value):
+            pass
+
+        def close_after_main_window_shown(self):
+            pass
+
+    class FakeSettingsStore:
+        def __init__(self, paths):
+            self.startup_mode = "fast_start"
+
+    built: list[bool] = []
+    monkeypatch.setattr(app_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(app_module, "QIcon", lambda path: object())
+    monkeypatch.setattr(app_module, "icon_path", lambda name: tmp_path / name)
+    monkeypatch.setattr(app_module, "SettingsStore", FakeSettingsStore)
+    monkeypatch.setattr(app_module, "build_window", lambda started_at: built.append(True) or FakeWindow())
+    monkeypatch.setattr(app_module, "StartupSplash", FakeSplash)
+
+    assert app_module.run() == 0
+
+    assert built == [True]
+    assert shown == ["show"]
+
+
+def test_startup_preload_manager_preloads_main_pages(tmp_path, monkeypatch):
+    from netconsole.ui import startup_preload as preload_module
+
+    QApplication.instance() or QApplication([])
+    context_path = PathResolver(tmp_path)
+
+    class FakeSplash:
+        def __init__(self):
+            self.progress = []
+            self.messages = []
+
+        def show_message(self, message):
+            self.messages.append(message)
+
+        def set_progress(self, value):
+            self.progress.append(value)
+
+    monkeypatch.setattr(preload_module, "create_demo_context", lambda: create_demo_context(context_path))
+    splash = FakeSplash()
+    manager = preload_module.StartupPreloadManager(I18n("en_US"), splash)
+
+    window = manager.run("preload_all")
+
+    assert {"devices", "ac", "rail_transit", "config_collection", "file_management", "network_tools", "logs"}.issubset(window.pages)
+    assert {"devices", "ac", "rail_transit", "config_collection", "file_management", "network_tools", "logs"}.issubset(window.preloaded_pages)
+    assert splash.progress[-1] == 100
+
+    rail_page = window.pages["rail_transit"]
+    activated: list[tuple[str, bool]] = []
+    monkeypatch.setattr(window, "activate_page", lambda page_id, **kwargs: activated.append((page_id, bool(kwargs.get("force_if_empty")))))
+    rail_row = next(index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "rail_transit")
+
+    window.open_current_page(rail_row)
+    QApplication.processEvents()
+
+    assert window.pages["rail_transit"] is rail_page
+    assert activated == [("rail_transit", True)]
+
+
+def test_startup_preload_manager_continues_after_module_failure(monkeypatch):
+    from netconsole.ui import startup_preload as preload_module
+
+    class FakeSplash:
+        def __init__(self):
+            self.progress = []
+
+        def show_message(self, message):
+            pass
+
+        def set_progress(self, value):
+            self.progress.append(value)
+
+    class FakeWindow:
+        def __init__(self, *args, **kwargs):
+            self.failures = {}
+
+        def preload_page(self, page_id):
+            if page_id == "rail_transit":
+                raise RuntimeError("rail failed")
+
+        def mark_preload_failures(self, failures):
+            self.failures = failures
+
+    monkeypatch.setattr(preload_module, "create_demo_context", lambda: create_demo_context(PathResolver()))
+    monkeypatch.setattr(preload_module, "MainWindow", FakeWindow)
+    splash = FakeSplash()
+    manager = preload_module.StartupPreloadManager(I18n("en_US"), splash)
+
+    window = manager.run("preload_all")
+
+    assert window.failures["preload_rail_transit"] == "rail failed"
+    assert splash.progress[-1] == 100
+
+
+def test_close_event_cancel_keeps_window_open(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    monkeypatch.setattr(window, "ask_close_behavior", lambda has_tasks: "cancel")
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert not event.isAccepted()
+
+
+def test_close_event_minimizes_to_tray(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    fake_tray = install_fake_tray(monkeypatch, True)
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    window.show()
+    monkeypatch.setattr(window, "ask_close_behavior", lambda has_tasks: "minimize_to_tray")
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert not window.isVisible()
+    assert window.tray_icon is not None
+    assert fake_tray.instances[-1].messages
+
+
+def test_close_event_exit_stops_background_tasks(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    stopped: list[bool] = []
+    monkeypatch.setattr(window, "ask_close_behavior", lambda has_tasks: "exit")
+    monkeypatch.setattr("netconsole.ui.main_window.background_task_manager.stop_all", lambda: stopped.append(True))
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert event.isAccepted()
+    assert stopped == [True]
+
+
+def test_tray_double_click_shows_window(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    install_fake_tray(monkeypatch, True)
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    shown: list[str] = []
+    monkeypatch.setattr(window, "show_main_window", lambda: shown.append("show"))
+
+    window.on_tray_activated(FakeTrayIcon.DoubleClick)
+
+    assert shown == ["show"]
+
+
+def test_tray_menu_contains_expected_actions(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    install_fake_tray(monkeypatch, True)
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+
+    action_texts = [action.text() for action in window.tray_menu.actions() if action.text()]
+
+    assert action_texts == ["Show Window", "Hide to Tray", "Open Log Folder", "Stop All Background Tasks", "Exit"]
+
+
+def test_tray_unavailable_close_dialog_has_no_minimize_option(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    install_fake_tray(monkeypatch, False)
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+
+    assert not window.tray_available
+    assert window.tray_icon is None
+
+
+def test_close_behavior_remember_choice_minimizes_next_time(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    install_fake_tray(monkeypatch, True)
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    window.settings.set_close_behavior("minimize_to_tray")
+    asked: list[bool] = []
+    monkeypatch.setattr(window, "ask_close_behavior", lambda has_tasks: asked.append(True) or "cancel")
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert asked == []
+    assert not event.isAccepted()
+    assert not window.isVisible()
+
+
+def test_close_event_background_task_prompt_receives_task_state(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    seen: list[bool] = []
+    monkeypatch.setattr(window, "has_background_tasks", lambda: True)
+    monkeypatch.setattr(window, "ask_close_behavior", lambda has_tasks: seen.append(has_tasks) or "cancel")
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert seen == [True]
 
 
 def test_about_repository_dialog_copies_and_opens_links(monkeypatch):

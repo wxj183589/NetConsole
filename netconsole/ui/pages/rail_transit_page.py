@@ -30,9 +30,14 @@ class RailTransitPage(QWidget):
     def refresh_all(self) -> None:
         self.refresh_current_async_or_lazy()
 
-    def refresh_current_async_or_lazy(self) -> None:
+    def refresh_current_async_or_lazy(self, force_if_empty: bool = False) -> None:
         if self.tabs.currentWidget() is self.trackside_page:
-            self.trackside_page.refresh_async(force=False)
+            force = force_if_empty and (
+                not self.trackside_page.has_loaded
+                or self.trackside_page.dirty
+                or not self.trackside_page.trackside_rows
+            )
+            self.trackside_page.refresh_async(force=force)
         elif self.tabs.currentWidget() is self.online_mr_page:
             self.online_mr_page.refresh_all()
         else:

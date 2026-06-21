@@ -1,4 +1,9 @@
 v1.2.0
+- MESH Log Analysis: added structured analysis report generation with Excel export, including overview, active primary-link segments, switch order, flap detection, link establishment order, peer lifecycle, no-active/multi-active windows, RSSI statistics, channel busy statistics, raw events and parse issues.
+- MESH Log Analysis: added a report settings dialog, background report worker, progress updates, cancel handling and temporary-file cleanup for Excel export.
+- Startup and navigation: improved startup/preload experience, loading overlay behavior and version text consistency across splash, changelog, main window and About views.
+- Rail Transit Trackside AP Service: refined navigation placement, localized visible fields, hidden internal connection/status columns from UI/export, and fixed interface/optical history dialog behavior.
+- Packaging: fixed runtime tool path resolution and ensured bundled network tools are discoverable after clean builds.
 - Onboard MR Online Collection UI: reorganized the page into connection, collection period, radio parameters, high-frequency ping, advanced parameters, live status and detail tabs, with bounded input widths, collapsible advanced settings and persistent table column widths.
 - Onboard MR Online Collection: added Fast Pinger v3 discovery/version detection, high-frequency ping command construction, output parsing, summary parsing, ping sample persistence and Active-segment aggregation.
 - Onboard MR Online Collection: added repeat command definitions for mesh link, channel busy, AP radio statistics, switch-history latest and interface rate collection, plus Ctrl+C repeat stop handling.

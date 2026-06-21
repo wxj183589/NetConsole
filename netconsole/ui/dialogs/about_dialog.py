@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QGridLayout, QHBoxLayout, Q
 
 from netconsole.core.i18n import I18n
 from netconsole.core.resources import icon_path
-from netconsole.core.version import APP_AUTHOR, APP_VERSION, REPOSITORY_URLS
+from netconsole.core import version as version_info
 
 
 class AboutRepositoryDialog(QDialog):
@@ -21,15 +21,15 @@ class AboutRepositoryDialog(QDialog):
         self.setMinimumWidth(620)
 
         layout = QVBoxLayout(self)
-        title = QLabel(f"NetConsole {APP_VERSION}")
+        title = QLabel(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
-        layout.addWidget(QLabel(f"{self.i18n.t('about.author')}: {APP_AUTHOR}"))
+        layout.addWidget(QLabel(f"{self.i18n.t('about.author')}: {version_info.APP_AUTHOR}"))
         layout.addWidget(QLabel(self.i18n.t("about.repositories")))
 
         grid = QGridLayout()
-        for row, url in enumerate(REPOSITORY_URLS):
+        for row, url in enumerate(version_info.REPOSITORY_URLS):
             line = QLineEdit(url)
             line.setReadOnly(True)
             copy_button = QPushButton(self.i18n.t("about.copy_link"))

@@ -82,12 +82,13 @@ from netconsole.ui.pages.ac_management_page import (
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
-from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult
+from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
 from netconsole.ui.ac_collect_worker import FitApOpticalCollectThread
 from netconsole.ui.dialogs.ap_detail_dialog import ApDetailDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog, export_ap_history_xlsx
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FIT_AP_DETAIL_TABS, OPTICAL_COLUMNS, FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import STATION_ONLINE_HISTORY_COLUMNS, StationOnlineHistoryDialog, export_station_online_history_xlsx
+from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
 from netconsole.core.optical_severity_engine import display_optical_status
 
 
@@ -1808,8 +1809,11 @@ def test_trackside_ap_business_filter_by_site_and_search():
     rows = [
         {"site": "Station A", "ap_name": "AP-A", "device_name": "HX_1", "interface_name": "GigabitEthernet1/0/1"},
         {"site": "Station B", "ap_name": "AP-B", "device_name": "HX_2", "interface_name": "GigabitEthernet1/0/2"},
+        {"site": "Station C", "ap_name": "AP-C", "device_name": "HX_3", "interface_name": "GigabitEthernet1/0/3"},
     ]
 
+    assert len(filter_trackside_ap_business_rows(rows, "", "")) == 3
+    assert len(filter_trackside_ap_business_rows(rows, None, "")) == 3
     assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "Station A", "")] == ["AP-A"]
     assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "", "hx_2")] == ["AP-B"]
     assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "Station B", "1/0/2")] == ["AP-B"]
@@ -2393,11 +2397,17 @@ def test_trackside_ap_business_double_click_interface_opens_history(tmp_path):
     assert len(page.history_windows) == 1
     history = page.history_windows[0]
     assert "Interface Optical History - HX_1 GigabitEthernet1/0/1" == history.windowTitle()
+    assert history.parent() is None
+    assert history.windowFlags() & Qt.Window
+    assert history.windowFlags() & Qt.WindowMinimizeButtonHint
+    assert history.windowFlags() & Qt.WindowMaximizeButtonHint
+    assert history.windowFlags() & Qt.WindowCloseButtonHint
+    assert not history.isModal()
     assert history.table.rowCount() == 1
     assert history.table.item(0, 3).text() == "-6.10"
 
 
-def test_trackside_ap_business_double_click_interface_without_history_is_friendly(tmp_path, monkeypatch):
+def test_trackside_ap_business_double_click_interface_without_history_opens_empty_window(tmp_path, monkeypatch):
     app()
     messages: list[str] = []
     monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
@@ -2410,7 +2420,98 @@ def test_trackside_ap_business_double_click_interface_without_history_is_friendl
 
     page.open_interface_history_from_trackside(0)
 
-    assert messages == ["No optical history was found for this interface"]
+    assert messages == []
+    assert len(page.history_windows) == 1
+    history = page.history_windows[0]
+    assert history.table.rowCount() == 0
+    assert history.status_label.text() == "No optical history was found for this interface"
+
+
+def test_trackside_ap_business_reuses_same_interface_history_window(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    device = repository.create(Device(name="HX_1", ip_address="10.0.0.1"))
+    page = TracksideApServicePage(repository, I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.trackside_rows = [{"site": "A", "device_uuid": device.device_uuid, "device_name": "HX_1", "interface_name": "GigabitEthernet1/0/1"}]
+    page.apply_trackside_pagination()
+
+    page.open_interface_history_from_trackside(0)
+    first = page.history_windows[0]
+    page.open_interface_history_from_trackside(0)
+
+    assert len(page.history_windows) == 1
+    assert page.history_windows[0] is first
+
+
+def test_trackside_ap_business_allows_different_interface_history_windows(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    device = repository.create(Device(name="HX_1", ip_address="10.0.0.1"))
+    page = TracksideApServicePage(repository, I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.trackside_rows = [
+        {"site": "A", "device_uuid": device.device_uuid, "device_name": "HX_1", "interface_name": "GigabitEthernet1/0/1"},
+        {"site": "A", "device_uuid": device.device_uuid, "device_name": "HX_1", "interface_name": "GigabitEthernet1/0/2"},
+    ]
+    page.apply_trackside_pagination()
+
+    page.open_interface_history_from_trackside(0)
+    page.open_interface_history_from_trackside(1)
+
+    assert len(page.history_windows) == 2
+    assert {window.windowTitle() for window in page.history_windows} == {
+        "Interface Optical History - HX_1 GigabitEthernet1/0/1",
+        "Interface Optical History - HX_1 GigabitEthernet1/0/2",
+    }
+
+
+def test_trackside_interface_history_detail_updates_with_selection(tmp_path):
+    app()
+    rows = [
+        {"collected_at": "2026-01-02T00:00:00", "source_device_name": "HX_1", "interface_name": "GE1/0/1", "rx_power": "-6.10", "raw_log_path": str(tmp_path / "a.log")},
+        {"collected_at": "2026-01-03T00:00:00", "source_device_name": "HX_1", "interface_name": "GE1/0/1", "rx_power": "-7.20", "raw_log_path": str(tmp_path / "b.log")},
+    ]
+    dialog = TracksideInterfaceHistoryDialog(I18n("en_US"), rows, "Interface Optical History - HX_1 GE1/0/1", SettingsStore(PathResolver(tmp_path)))
+
+    assert dialog.detail_table.item(3, 1).text() == "-6.10"
+    dialog.table.selectRow(1)
+    dialog.refresh_detail()
+
+    assert dialog.detail_table.item(3, 1).text() == "-7.20"
+    assert dialog.detail_table.horizontalHeaderItem(0).text() == "Name"
+    assert dialog.detail_table.horizontalHeaderItem(1).text() == "Value"
+
+
+def test_trackside_interface_history_window_flags_and_pin(tmp_path):
+    app()
+    dialog = TracksideInterfaceHistoryDialog(I18n("en_US"), [], "Interface Optical History - HX_1 GE1/0/1", SettingsStore(PathResolver(tmp_path)))
+
+    assert dialog.parent() is None
+    assert dialog.windowFlags() & Qt.Window
+    assert dialog.windowFlags() & Qt.WindowMinimizeButtonHint
+    assert dialog.windowFlags() & Qt.WindowMaximizeButtonHint
+    assert dialog.windowFlags() & Qt.WindowCloseButtonHint
+    assert not dialog.isModal()
+
+    dialog.pin_button.setChecked(True)
+    assert dialog.windowFlags() & Qt.WindowStaysOnTopHint
+
+
+def test_trackside_interface_history_column_widths_persist(tmp_path):
+    app()
+    paths = PathResolver(tmp_path)
+    settings = SettingsStore(paths)
+    rows = [{"collected_at": "2026-01-02T00:00:00", "source_device_name": "HX_1", "interface_name": "GE1/0/1"}]
+    first = TracksideInterfaceHistoryDialog(I18n("en_US"), rows, "Interface Optical History - HX_1 GE1/0/1", settings)
+    first.table.setColumnWidth(2, 280)
+    first.detail_table.setColumnWidth(1, 420)
+    first._save_window_state()
+
+    reopened = TracksideInterfaceHistoryDialog(I18n("en_US"), rows, "Interface Optical History - HX_1 GE1/0/1", SettingsStore(paths))
+
+    assert reopened.table.columnWidth(2) == 280
+    assert reopened.detail_table.columnWidth(1) == 420
 
 
 def test_trackside_ap_business_ap_mac_double_click_opens_existing_ap_detail_by_mac(tmp_path, monkeypatch):
@@ -2504,6 +2605,7 @@ def test_trackside_ap_refresh_async_uses_background_loader_and_loading_state(tmp
     assert not page.dirty
     assert page.update_button.isEnabled()
     assert page.trackside_table.rowCount() == 1
+    assert page.status_label.text() == "Loaded 1 rows"
 
 
 def test_trackside_ap_generation_discards_stale_load_result(tmp_path, monkeypatch):
@@ -2521,6 +2623,7 @@ def test_trackside_ap_generation_discards_stale_load_result(tmp_path, monkeypatc
 
     assert page.trackside_rows == []
     assert not page.has_loaded
+    assert page.dirty
 
 
 def test_trackside_ap_set_repository_does_not_synchronously_refresh(tmp_path, monkeypatch):
@@ -2589,6 +2692,138 @@ def test_trackside_ap_cache_skips_duplicate_worker(tmp_path, monkeypatch):
     assert len(loader.instances) == 1
 
 
+def test_trackside_ap_force_refreshes_empty_cache(tmp_path, monkeypatch):
+    app()
+    loader = install_fake_trackside_loader(monkeypatch)
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.refresh_async()
+    loader.instances[0].load_finished.emit(
+        TracksideApBusinessLoadResult(
+            page.load_generation,
+            "demo",
+            [],
+            1,
+            1,
+            1,
+            interface_count=1,
+            candidate_ap_interface_count=0,
+            row_count=0,
+            empty_reason="trackside.empty.no_ap_interfaces",
+        )
+    )
+
+    page.refresh_async(force=True)
+
+    assert len(loader.instances) == 2
+    assert page.is_loading
+
+
+def test_trackside_ap_empty_result_shows_diagnostic_reason(tmp_path, monkeypatch):
+    app()
+    loader = install_fake_trackside_loader(monkeypatch)
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.refresh_async()
+    loader.instances[0].load_finished.emit(
+        TracksideApBusinessLoadResult(
+            page.load_generation,
+            "demo",
+            [],
+            1,
+            1,
+            1,
+            interface_count=5,
+            candidate_ap_interface_count=0,
+            row_count=0,
+            empty_reason="trackside.empty.no_ap_interfaces",
+        )
+    )
+
+    assert page.has_loaded
+    assert not page.dirty
+    assert page.trackside_table.rowCount() == 0
+    assert "No trackside AP service data is available." in page.status_label.text()
+    assert "no interface description contains AP" in page.status_label.text()
+
+
+def test_trackside_load_snapshot_returns_diagnostic_counts_and_empty_reason(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    switch = repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.replace_device_interfaces(
+        switch.device_uuid,
+        [
+            {"interface_name": "GigabitEthernet2/0/10", "description": "Camera", "collected_at": "2026-01-01T00:00:00"},
+            {"interface_name": "GigabitEthernet2/0/11", "description": "Access", "collected_at": "2026-01-01T00:00:00"},
+        ],
+    )
+
+    result = load_trackside_ap_business_snapshot(repository, "demo", 7)
+
+    assert result.generation == 7
+    assert result.device_count == 1
+    assert result.interface_count == 2
+    assert result.candidate_ap_interface_count == 0
+    assert result.row_count == 0
+    assert result.empty_reason == "trackside.empty.no_ap_interfaces"
+
+
+def test_trackside_load_snapshot_counts_successful_business_rows(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    switch = repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    fact_repository = DeviceFactRepository(database)
+    fact_repository.replace_device_interfaces(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_optical_modules(
+        switch.device_uuid,
+        [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    fact_repository.replace_lldp_neighbors(
+        switch.device_uuid,
+        [{"local_interface": "GE2/0/10", "neighbor_mac": "bc5a-3457-cbe0", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    ac = repository.create(make_ac_device())
+    AcRepository(database).replace_fit_ap_optical(
+        ac.device_uuid,
+        [{"ap_uuid": "ap-10", "ap_mac": "bc5a-3457-cbe0", "ap_name": "AP10", "neighbor_device_name": "HX_1", "neighbor_interface": "GigabitEthernet2/0/10", "rx_power": "-14.35"}],
+    )
+
+    result = load_trackside_ap_business_snapshot(repository, "demo", 8)
+
+    assert result.row_count == 1
+    assert result.interface_count == 1
+    assert result.optical_count == 1
+    assert result.lldp_count == 1
+    assert result.fit_ap_optical_count == 1
+    assert result.candidate_ap_interface_count == 1
+    assert result.empty_reason == ""
+
+
+def test_trackside_ap_load_failure_keeps_retry_state(tmp_path, monkeypatch):
+    app()
+    loader = install_fake_trackside_loader(monkeypatch)
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.has_loaded = True
+    page.dirty = False
+    page.refresh_async(force=True)
+
+    loader.instances[0].load_failed.emit(page.load_generation, "boom")
+
+    assert not page.has_loaded
+    assert page.dirty
+    assert not page.is_loading
+    assert page.update_button.isEnabled()
+    assert "Failed to load trackside AP service data: boom" == page.status_label.text()
+
+
 def test_trackside_ap_update_completion_marks_dirty_and_reloads(tmp_path, monkeypatch):
     app()
     loader = install_fake_trackside_loader(monkeypatch)
@@ -2627,15 +2862,31 @@ def test_main_window_opens_rail_transit_before_lazy_refresh(tmp_path, monkeypatc
     window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
     events: list[str] = []
     rail_row = next(index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "rail_transit")
+    rail_page = window.get_or_create_page("rail_transit")
 
-    monkeypatch.setattr(window.rail_transit_page, "refresh_all", lambda: events.append("sync_refresh"))
-    monkeypatch.setattr(window.rail_transit_page, "refresh_current_async_or_lazy", lambda: events.append("lazy_refresh"))
+    monkeypatch.setattr(rail_page, "refresh_all", lambda: events.append("sync_refresh"))
+    monkeypatch.setattr(rail_page, "refresh_current_async_or_lazy", lambda **kwargs: events.append(f"lazy_refresh:{kwargs.get('force_if_empty')}"))
     monkeypatch.setattr(window.stack, "setCurrentWidget", lambda widget: events.append("shown"))
 
     window.open_current_page(rail_row)
     qt_app.processEvents()
 
-    assert events == ["shown", "lazy_refresh"]
+    assert events == ["shown", "lazy_refresh:True"]
+
+
+def test_rail_transit_force_if_empty_refreshes_empty_trackside_cache(tmp_path, monkeypatch):
+    app()
+    database = make_database(tmp_path)
+    page = RailTransitPage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
+    calls: list[bool] = []
+    page.trackside_page.has_loaded = True
+    page.trackside_page.dirty = False
+    page.trackside_page.trackside_rows = []
+    monkeypatch.setattr(page.trackside_page, "refresh_async", lambda force=False: calls.append(force))
+
+    page.refresh_current_async_or_lazy(force_if_empty=True)
+
+    assert calls == [True]
 
 
 def test_station_online_history_dialog_columns_and_filter(tmp_path):

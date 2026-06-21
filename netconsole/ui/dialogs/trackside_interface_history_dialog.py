@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QByteArray, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.services.rail_transit.trackside_optical_history import TracksideOpticalHistoryService
@@ -30,22 +30,34 @@ INTERFACE_HISTORY_COLUMNS = (
 )
 
 
-class TracksideInterfaceHistoryDialog(QWidget):
+class TracksideInterfaceHistoryDialog(QDialog):
     def __init__(self, i18n: I18n, rows: list[dict[str, object | None]], title: str, settings, parent=None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            None,
+            Qt.Window
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint,
+        )
         self.i18n = i18n
         self.rows = rows
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
         self.settings = settings
         self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(False)
+        self.setSizeGripEnabled(True)
         self.setWindowTitle(title)
         self.resize(1100, 640)
         self.setMinimumSize(860, 520)
 
+        self.close_button = QPushButton()
         self.export_button = QPushButton()
         self.open_raw_button = QPushButton()
-        self.close_button = QPushButton()
+        self.pin_button = QPushButton()
+        self.pin_button.setCheckable(True)
+        self.status_label = QLabel()
+        self.status_label.setAlignment(Qt.AlignCenter)
         self.table = QTableWidget()
         self.detail_table = QTableWidget()
         self.pagination = PaginationWidget(i18n)
@@ -64,39 +76,44 @@ class TracksideInterfaceHistoryDialog(QWidget):
         self.table.itemDoubleClicked.connect(lambda _item: self.refresh_detail())
 
         actions = QHBoxLayout()
+        actions.addWidget(self.close_button)
         actions.addWidget(self.export_button)
         actions.addWidget(self.open_raw_button)
+        actions.addWidget(self.pin_button)
         actions.addStretch(1)
-        actions.addWidget(self.close_button)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(self.table, 1)
         left_layout.addWidget(self.pagination)
+        left_layout.addWidget(self.status_label)
         self.splitter.addWidget(left)
         self.splitter.addWidget(self.detail_table)
-        self.splitter.setSizes([660, 440])
+        self.splitter.setSizes([770, 330])
         layout = QVBoxLayout(self)
         layout.addLayout(actions)
         layout.addWidget(self.splitter, 1)
 
-        self.table_state = TableColumnState(settings, self.table, "rail_transit/trackside_ap/interface_history_column_widths", default_widths())
-        self.detail_state = TableColumnState(settings, self.detail_table, "rail_transit/trackside_ap/interface_history_detail_widths", {"name": 180, "value": 360})
+        self.table_state = TableColumnState(settings, self.table, "rail_transit/trackside_interface_history/table_column_widths", default_widths())
+        self.detail_state = TableColumnState(settings, self.detail_table, "rail_transit/trackside_interface_history/detail_column_widths", {"name": 180, "value": 360})
         self.export_button.clicked.connect(self.export_history)
         self.open_raw_button.clicked.connect(self.open_raw_log_folder)
+        self.pin_button.toggled.connect(self.set_always_on_top)
         self.close_button.clicked.connect(self.close)
         self.pagination.pageChanged.connect(self.set_page)
         self.pagination.pageSizeChanged.connect(self.set_page_size)
         self.retranslate()
         self.table_state.restore()
         self.detail_state.restore()
+        self._restore_window_state()
         self.refresh_table()
 
     def retranslate(self) -> None:
+        self.close_button.setText(self.i18n.t("dialog.close"))
         self.export_button.setText(self.i18n.t("trackside_ap.export_history"))
         self.open_raw_button.setText(self.i18n.t("trackside_ap.open_raw_log_folder"))
-        self.close_button.setText(self.i18n.t("dialog.close"))
+        self.pin_button.setText(self.i18n.t("window.always_on_top"))
         self.table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in INTERFACE_HISTORY_COLUMNS])
-        self.detail_table.setHorizontalHeaderLabels([self.i18n.t("field.name"), self.i18n.t("field.value")])
+        self.detail_table.setHorizontalHeaderLabels([self.i18n.t("trackside_ap.field_name"), self.i18n.t("trackside_ap.field_value")])
         self.pagination.retranslate()
 
     def refresh_table(self) -> None:
@@ -113,6 +130,9 @@ class TracksideInterfaceHistoryDialog(QWidget):
                 self.table.setItem(row_index, column_index, item)
         if rows:
             self.table.selectRow(0)
+            self.status_label.setText("")
+        else:
+            self.status_label.setText(self.i18n.t("trackside_ap.no_interface_history"))
         self.refresh_detail()
 
     def refresh_detail(self) -> None:
@@ -151,6 +171,47 @@ class TracksideInterfaceHistoryDialog(QWidget):
             return
         export_interface_history_xlsx(path, self.rows, [self.i18n.t(key) for key, _field in INTERFACE_HISTORY_COLUMNS])
         remember_export_path(path)
+
+    def set_always_on_top(self, enabled: bool) -> None:
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event) -> None:
+        self._save_window_state()
+        super().closeEvent(event)
+
+    def _save_window_state(self) -> None:
+        self.table_state.save_now()
+        self.detail_state.save_now()
+        self.settings.set_value("rail_transit/trackside_interface_history/window_geometry", bytes(self.saveGeometry()).hex())
+        self.settings.set_value("rail_transit/trackside_interface_history/window_maximized", self.isMaximized())
+        self.settings.set_value("rail_transit/trackside_interface_history/splitter_state", bytes(self.splitter.saveState()).hex())
+
+    def _restore_window_state(self) -> None:
+        geometry_hex = str(self.settings.get_value("rail_transit/trackside_interface_history/window_geometry", "") or "")
+        if geometry_hex:
+            try:
+                geometry = QByteArray.fromHex(geometry_hex.encode("ascii"))
+                if geometry and self._geometry_is_on_screen(geometry):
+                    self.restoreGeometry(geometry)
+            except ValueError:
+                pass
+        splitter_hex = str(self.settings.get_value("rail_transit/trackside_interface_history/splitter_state", "") or "")
+        if splitter_hex:
+            try:
+                self.splitter.restoreState(QByteArray.fromHex(splitter_hex.encode("ascii")))
+            except ValueError:
+                pass
+        if bool(self.settings.get_value("rail_transit/trackside_interface_history/window_maximized", False)):
+            self.showMaximized()
+
+    def _geometry_is_on_screen(self, geometry: QByteArray) -> bool:
+        probe = QDialog()
+        probe.restoreGeometry(geometry)
+        frame = probe.frameGeometry()
+        return any(screen.availableGeometry().intersects(frame) for screen in QApplication.screens())
 
 
 def export_interface_history_xlsx(path: Path, rows: list[dict[str, object | None]], headers: list[str]) -> None:

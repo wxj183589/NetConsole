@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.settings import SettingsStore
+from netconsole.services.tool_path_resolver import resolve_tool_path
 
 
 @dataclass(frozen=True)
@@ -21,32 +20,7 @@ class IperfToolStatus:
 
 
 def find_iperf_tool(paths: PathResolver, custom_path: str | Path | None = None) -> Path | None:
-    candidates: list[Path] = []
-    if custom_path:
-        candidates.append(Path(custom_path))
-    try:
-        configured = SettingsStore(paths).get_value("network_tools/iperf_path", "")
-    except Exception:
-        configured = ""
-    if configured:
-        candidates.append(Path(str(configured)))
-    candidates.extend(
-        [
-            paths.app_root / "tools" / "iperf" / "iperf3.exe",
-            paths.project_dir / "tools" / "iperf" / "iperf3.exe",
-        ]
-    )
-    path_candidate = shutil.which("iperf3.exe") or shutil.which("iperf3")
-    if path_candidate:
-        candidates.append(Path(path_candidate))
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            resolved = candidate
-        if resolved.exists() and resolved.is_file():
-            return resolved
-    return None
+    return resolve_tool_path("iperf3", paths, custom_path=custom_path)
 
 
 def detect_iperf_version(

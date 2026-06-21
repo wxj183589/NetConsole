@@ -103,10 +103,12 @@ class TracksideApServicePage(QWidget):
         self.load_generation = 0
         self.dirty = True
         self.has_loaded = False
+        self.empty_reason = ""
         self.last_loaded_at: datetime | None = None
         self._table_widths_initialized = False
         self.detail_windows: list[QWidget] = []
         self.history_windows: list[QWidget] = []
+        self.history_windows_by_key: dict[str, QWidget] = {}
 
         self.update_button = QPushButton()
         self.cancel_update_button = QPushButton()
@@ -179,7 +181,7 @@ class TracksideApServicePage(QWidget):
         if self.is_loading:
             self.status_label.setText(self.i18n.t("trackside_ap.loading"))
         elif self.collect_thread is None:
-            self.status_label.setText(self.i18n.t("trackside_ap.not_collected"))
+            self._update_idle_status()
         self.cancel_update_button.setEnabled(self.collect_thread is not None)
         apply_table_style(self.trackside_table)
         self._configure_trackside_table()
@@ -189,11 +191,14 @@ class TracksideApServicePage(QWidget):
 
     def refresh_async(self, force: bool = False) -> None:
         if self.is_loading:
+            self.status_label.setText(self.i18n.t("trackside_ap.loading"))
             return
         if self.has_loaded and not self.dirty and not force:
             self.apply_trackside_pagination()
+            self._update_idle_status()
             return
         self.is_loading = True
+        self.empty_reason = ""
         self.load_generation += 1
         generation = self.load_generation
         self.update_button.setEnabled(False)
@@ -218,6 +223,7 @@ class TracksideApServicePage(QWidget):
         self.trackside_page = 1
         self.dirty = True
         self.has_loaded = False
+        self.empty_reason = ""
         self.last_loaded_at = None
         self._set_trackside_site_filter_items([])
         self.apply_trackside_pagination()
@@ -229,9 +235,14 @@ class TracksideApServicePage(QWidget):
         if result.generation != self.load_generation:
             app_logger.log_info(
                 "TRACKSIDE_LOAD_DISCARDED",
-                f"site={result.site_name}, generation={result.generation}, current_generation={self.load_generation}, row_count={len(result.rows)}",
+                (
+                    f"site={result.site_name}, generation={result.generation}, current_generation={self.load_generation}, "
+                    f"dirty={self.dirty}, is_visible={self.isVisible()}, is_loading={self.is_loading}, "
+                    f"has_loaded={self.has_loaded}, row_count={len(result.rows)}"
+                ),
             )
             self.is_loading = False
+            self.dirty = True
             if self.dirty and self.isVisible():
                 QTimer.singleShot(0, lambda: self.refresh_async(force=True))
             return
@@ -240,32 +251,57 @@ class TracksideApServicePage(QWidget):
         self.has_loaded = True
         self.last_loaded_at = datetime.now()
         self.trackside_rows = result.rows
+        self.empty_reason = result.empty_reason if not result.rows else ""
         self._set_trackside_site_filter_items(self.trackside_rows)
         render_start = perf_counter()
         self.apply_trackside_filters()
         render_ms = int((perf_counter() - render_start) * 1000)
         if self.collect_thread is None:
             self.update_button.setEnabled(True)
-            self.status_label.setText(self.i18n.t("trackside_ap.not_collected"))
+            self._update_idle_status()
         app_logger.log_info(
             "TRACKSIDE_LOAD_COMPLETED",
             (
                 f"site={result.site_name}, generation={result.generation}, device_count={result.device_count}, "
-                f"row_count={len(result.rows)}, query_ms={result.query_ms}, build_ms={result.build_ms}, render_ms={render_ms}"
+                f"interface_count={result.interface_count}, candidate_ap_interface_count={result.candidate_ap_interface_count}, "
+                f"optical_count={result.optical_count}, lldp_count={result.lldp_count}, "
+                f"fit_ap_optical_count={result.fit_ap_optical_count}, fit_ap_resource_count={result.fit_ap_resource_count}, "
+                f"row_count={result.row_count or len(result.rows)}, empty_reason={result.empty_reason}, "
+                f"query_ms={result.query_ms}, build_ms={result.build_ms}, render_ms={render_ms}"
             ),
         )
+        if not result.rows:
+            app_logger.log_warning(
+                "TRACKSIDE_LOAD_EMPTY",
+                (
+                    f"site={result.site_name}, device_count={result.device_count}, interface_count={result.interface_count}, "
+                    f"candidate_ap_interface_count={result.candidate_ap_interface_count}, optical_count={result.optical_count}, "
+                    f"lldp_count={result.lldp_count}, fit_ap_optical_count={result.fit_ap_optical_count}, "
+                    f"fit_ap_resource_count={result.fit_ap_resource_count}, empty_reason={result.empty_reason}"
+                ),
+            )
 
     def _fail_load(self, generation: int, message: str) -> None:
         if generation != self.load_generation:
-            app_logger.log_info("TRACKSIDE_LOAD_DISCARDED", f"site={self.site_name}, generation={generation}, current_generation={self.load_generation}")
+            app_logger.log_info(
+                "TRACKSIDE_LOAD_DISCARDED",
+                (
+                    f"site={self.site_name}, generation={generation}, current_generation={self.load_generation}, "
+                    f"dirty={self.dirty}, is_visible={self.isVisible()}, is_loading={self.is_loading}, has_loaded={self.has_loaded}"
+                ),
+            )
             self.is_loading = False
+            self.dirty = True
             if self.dirty and self.isVisible():
                 QTimer.singleShot(0, lambda: self.refresh_async(force=True))
             return
         self.is_loading = False
+        self.dirty = True
+        self.has_loaded = False
+        self.empty_reason = "trackside.empty.load_failed"
         if self.collect_thread is None:
             self.update_button.setEnabled(True)
-        self.status_label.setText(message or self.i18n.t("trackside_ap.load_failed"))
+        self.status_label.setText(f"{self.i18n.t('trackside_ap.load_failed')}: {message}" if message else self.i18n.t("trackside_ap.load_failed"))
         app_logger.log_error("TRACKSIDE_LOAD_FAILED", f"site={self.site_name}, generation={generation}, error={message}")
 
     def _clear_load_thread(self, thread: TracksideApBusinessLoadThread) -> None:
@@ -378,15 +414,20 @@ class TracksideApServicePage(QWidget):
         if not device_uuid or not interface_name:
             QMessageBox.information(self, self.i18n.t("trackside_ap.interface_history"), self.i18n.t("trackside_ap.no_interface_history"))
             return
+        window_key = self._interface_history_window_key(current_row)
+        existing = self.history_windows_by_key.get(window_key)
+        if existing is not None and existing.isVisible():
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
         service = TracksideOpticalHistoryService(self.device_repository)
         history_rows = service.query_interface_history_all(device_uuid, interface_name)
-        if not history_rows:
-            QMessageBox.information(self, self.i18n.t("trackside_ap.interface_history"), self.i18n.t("trackside_ap.no_interface_history"))
-            return
-        title = f"{self.i18n.t('trackside_ap.interface_history')} - {device_name} {interface_name}"
-        dialog = TracksideInterfaceHistoryDialog(self.i18n, history_rows, title, self.settings, self)
+        title = self.i18n.t("trackside_ap.interface_history_title", device=device_name, interface=interface_name)
+        dialog = TracksideInterfaceHistoryDialog(self.i18n, history_rows, title, self.settings)
         self.history_windows.append(dialog)
-        dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_history_window(window))
+        self.history_windows_by_key[window_key] = dialog
+        dialog.destroyed.connect(lambda _=None, window=dialog, key=window_key: self._forget_history_window(window, key))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -469,8 +510,14 @@ class TracksideApServicePage(QWidget):
     def _forget_detail_window(self, window: QWidget) -> None:
         self.detail_windows = [item for item in self.detail_windows if item is not window]
 
-    def _forget_history_window(self, window: QWidget) -> None:
+    def _forget_history_window(self, window: QWidget, key: str | None = None) -> None:
         self.history_windows = [item for item in self.history_windows if item is not window]
+        if key is not None and self.history_windows_by_key.get(key) is window:
+            self.history_windows_by_key.pop(key, None)
+
+    def _interface_history_window_key(self, row: dict[str, object | None]) -> str:
+        device_key = str(row.get("source_device_id") or row.get("device_uuid") or row.get("source_device") or row.get("device_name") or "")
+        return f"{device_key}::{row.get('interface_name') or ''}"
 
     def _set_trackside_site_filter_items(self, rows: list[dict[str, object | None]]) -> None:
         current = self.trackside_site_filter.currentData()
@@ -510,6 +557,19 @@ class TracksideApServicePage(QWidget):
             self._table_widths_initialized = True
         render_ms = int((perf_counter() - render_start) * 1000)
         app_logger.log_info("TRACKSIDE_RENDER_COMPLETED", f"site={self.site_name}, row_count={len(rows)}, render_ms={render_ms}")
+
+    def _update_idle_status(self) -> None:
+        if self.is_loading:
+            self.status_label.setText(self.i18n.t("trackside_ap.loading"))
+            return
+        if self.trackside_rows:
+            self.status_label.setText(self.i18n.t("trackside.loaded_count", count=len(self.trackside_rows)))
+            return
+        if self.has_loaded:
+            reason_key = self.empty_reason or "trackside.empty.no_rows"
+            self.status_label.setText(f"{self.i18n.t('trackside.empty.title')} {self.i18n.t(reason_key)}")
+            return
+        self.status_label.setText(self.i18n.t("trackside_ap.not_collected"))
 
     def _configure_trackside_table(self) -> None:
         self.trackside_table.setWordWrap(False)

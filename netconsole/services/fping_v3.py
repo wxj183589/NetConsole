@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -11,6 +10,7 @@ from typing import Callable, Iterable
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
+from netconsole.services.tool_path_resolver import resolve_tool_path
 
 
 FPING_SETTING_KEY = "online_mr.fping_path"
@@ -58,25 +58,7 @@ class FpingSampleClock:
 
 
 def find_fping_tool(paths: PathResolver, settings: SettingsStore | None = None) -> Path | None:
-    candidates: list[Path] = []
-    if settings is not None:
-        custom = str(settings.get_value(FPING_SETTING_KEY, "") or "").strip()
-        if custom:
-            candidates.append(Path(custom))
-    candidates.extend(
-        [
-            paths.app_root / "tools" / "fping_v3" / "Fping_v3.exe",
-            paths.project_dir / "tools" / "fping_v3" / "Fping_v3.exe",
-        ]
-    )
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate.resolve()
-    for name in ("Fping_v3.exe", "Fping.exe"):
-        resolved = shutil.which(name)
-        if resolved:
-            return Path(resolved).resolve()
-    return None
+    return resolve_tool_path("fping_v3", paths, settings=settings)
 
 
 def detect_fping_version(path: Path, runner: Callable[..., subprocess.CompletedProcess] | None = None) -> FpingToolStatus:

@@ -17,6 +17,7 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     collect_trackside_optical,
 )
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
+from netconsole.services.trackside_ap_business import description_contains_ap
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,14 @@ class TracksideApBusinessLoadResult:
     device_count: int
     query_ms: int
     build_ms: int
+    interface_count: int = 0
+    optical_count: int = 0
+    lldp_count: int = 0
+    fit_ap_optical_count: int = 0
+    fit_ap_resource_count: int = 0
+    candidate_ap_interface_count: int = 0
+    row_count: int = 0
+    empty_reason: str = ""
 
 
 def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name: str, generation: int) -> TracksideApBusinessLoadResult:
@@ -39,6 +48,15 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
     lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
     fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
+    interface_count = sum(len(rows) for rows in interfaces_by_device.values())
+    optical_count = sum(len(rows) for rows in optical_by_device.values())
+    lldp_count = sum(len(rows) for rows in lldp_by_device.values())
+    candidate_ap_interface_count = sum(
+        1
+        for rows in interfaces_by_device.values()
+        for row in rows
+        if description_contains_ap(row.get("description"))
+    )
     query_ms = int((perf_counter() - query_start) * 1000)
 
     build_start = perf_counter()
@@ -52,7 +70,60 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
         build_switch_data_lookup(devices, optical_by_device),
     )
     build_ms = int((perf_counter() - build_start) * 1000)
-    return TracksideApBusinessLoadResult(generation, site_name, rows, len(devices), query_ms, build_ms)
+    row_count = len(rows)
+    empty_reason = ""
+    if row_count == 0:
+        empty_reason = _trackside_empty_reason(
+            len(devices),
+            interface_count,
+            candidate_ap_interface_count,
+            optical_count,
+            lldp_count,
+            len(fit_ap_optical_rows),
+            len(fit_ap_resource_rows),
+        )
+    return TracksideApBusinessLoadResult(
+        generation,
+        site_name,
+        rows,
+        len(devices),
+        query_ms,
+        build_ms,
+        interface_count,
+        optical_count,
+        lldp_count,
+        len(fit_ap_optical_rows),
+        len(fit_ap_resource_rows),
+        candidate_ap_interface_count,
+        row_count,
+        empty_reason,
+    )
+
+
+def _trackside_empty_reason(
+    device_count: int,
+    interface_count: int,
+    candidate_ap_interface_count: int,
+    optical_count: int,
+    lldp_count: int,
+    fit_ap_optical_count: int,
+    fit_ap_resource_count: int,
+) -> str:
+    if device_count == 0:
+        return "trackside.empty.no_devices"
+    if interface_count == 0:
+        return "trackside.empty.no_interfaces"
+    if candidate_ap_interface_count == 0:
+        return "trackside.empty.no_ap_interfaces"
+    if optical_count == 0 and fit_ap_optical_count == 0 and fit_ap_resource_count == 0:
+        return "trackside.empty.no_optical_or_fit"
+    if lldp_count == 0 and fit_ap_optical_count == 0:
+        return "trackside.empty.no_lldp_or_fit"
+    if fit_ap_resource_count == 0:
+        return "trackside.empty.no_fit_ap_resource"
+    if fit_ap_optical_count == 0:
+        return "trackside.empty.no_fit_ap_optical"
+    return "trackside.empty.no_rows"
 
 
 class TracksideApBusinessLoadThread(QThread):

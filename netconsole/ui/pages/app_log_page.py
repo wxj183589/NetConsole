@@ -31,7 +31,7 @@ def make_app_log_export_filename(now: datetime | None = None) -> str:
 
 
 class AppLogPage(QWidget):
-    def __init__(self, i18n: I18n) -> None:
+    def __init__(self, i18n: I18n, auto_refresh: bool = True) -> None:
         super().__init__()
         self.i18n = i18n
 
@@ -72,7 +72,8 @@ class AppLogPage(QWidget):
         self.pagination.pageChanged.connect(self.set_page)
         self.pagination.pageSizeChanged.connect(self.set_page_size)
         self.retranslate()
-        self.refresh()
+        if auto_refresh:
+            self.refresh()
 
     def retranslate(self) -> None:
         current_level = self.level_filter.currentData()
