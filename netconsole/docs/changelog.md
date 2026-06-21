@@ -1,34 +1,28 @@
 v1.2.0
-- MESH Log Analysis: added structured analysis report generation with Excel export, including overview, active primary-link segments, switch order, flap detection, link establishment order, peer lifecycle, no-active/multi-active windows, RSSI statistics, channel busy statistics, raw events and parse issues.
-- MESH Log Analysis: added a report settings dialog, background report worker, progress updates, cancel handling and temporary-file cleanup for Excel export.
-- Startup and navigation: improved startup/preload experience, loading overlay behavior and version text consistency across splash, changelog, main window and About views.
-- Rail Transit Trackside AP Service: refined navigation placement, localized visible fields, hidden internal connection/status columns from UI/export, and fixed interface/optical history dialog behavior.
-- Packaging: fixed runtime tool path resolution and ensured bundled network tools are discoverable after clean builds.
-- Onboard MR Online Collection UI: reorganized the page into connection, collection period, radio parameters, high-frequency ping, advanced parameters, live status and detail tabs, with bounded input widths, collapsible advanced settings and persistent table column widths.
-- Onboard MR Online Collection: added Fast Pinger v3 discovery/version detection, high-frequency ping command construction, output parsing, summary parsing, ping sample persistence and Active-segment aggregation.
-- Onboard MR Online Collection: added repeat command definitions for mesh link, channel busy, AP radio statistics, switch-history latest and interface rate collection, plus Ctrl+C repeat stop handling.
-- Online diagnosis storage: switched online sessions to rail_transit/online_mr session layout and online_diagnosis.sqlite with ping, interface rate, terminal event and latest switch-history tables.
-- Packaging: included tools/fping_v3/Fping_v3.exe in clean build runtime data and updated clean build allow-list.
-- Rail Transit: added Onboard MR Online Collection with independent per-MR long sessions, max-2 concurrency guard, SSH/Telnet connection parameters, collection intervals, auto reconnect, session history, raw output and collector log views.
-- Online MR persistence: each collection session now writes session_meta.json, flushed raw command logs, reconnect.log and parsed/live_records.sqlite with live_samples, live_mesh_links, channel busy, raw indexes, events and collector logs.
-- Online MR reliability: added strict initialization command ordering, NetConsole-side periodic scheduling, safe stop flow, stale active-session recovery to ABORTED and throttled UI refresh.
-- Tests: added online MR collection coverage for concurrency, init order, scheduling, reconnect, raw/sqlite/meta persistence, recovery, UI throttle and parse-failure continuation.
-- 轨道交通：新增 MESH 日志分析能力，按车载 MR 独立保存历史日志、索引来源文件、链路明细、事件和解析问题。
-- Peer 趋势窗口：保留接收信号、RSSI 与底噪、信道负载、当前主链路 RSSI、Active 链路信道负载五类图表，并支持 Hover、滚轮缩放、拖拽平移、时间滚动条和锚点居中。
-- 当前主链路 RSSI：简化原 ACTIVE / Next Active 图，仅显示当前 Active MR 侧原始 RSSI，保留 Active 切换竖线，不再显示 Next Active 曲线、Next Peer 标记或 Peer 侧 RSSI。
-- Active 链路信道负载：仅显示当前 Active MR 侧 TxBusy/RxBusy，移除 Peer 侧和下一主链路负载曲线。
-- 性能与稳定性：优化 MR 切换防抖、仓储缓存、当前标签懒加载、大数据降采样和 Hover 缓存，补充 MESH 专项测试与全量回归。
+- 无线扫描：新增混合扫描模式，合并 Windows WLAN API 与 netsh 结果，同一 BSSID 只显示一条记录，并同时显示频宽、MIMO、加密方式和认证方式。
+- 轨道交通：优化轨旁AP业务加载逻辑，修复进入页面空表、首次点击卡顿、进度文字异常、接口历史窗口嵌入主页和光模块历史被遮挡问题。
+- 轨旁AP业务：新增光衰采集更新，复用 FIT-AP 光衰诊断逻辑，隐藏内部连接字段和未本地化状态字段，并同步修复导出字段。
+- MESH日志分析：新增分析报告导出，支持主链路切换顺序、来回切换、建链顺序、Peer 生命周期、无 Active、多 Active、RSSI、信道繁忙度、原始事件和解析问题统计。
+- MESH日志分析：优化 Peer 趋势窗口，支持 Hover 提示、滚轮缩放、拖拽平移、时间滚动条、锚点居中和长时间数据降采样。
+- 车载MR在线收集：新增 Fast Pinger v3 工具发现与版本检测，支持高频 Ping 命令构造、输出解析、汇总解析、Ping 采样持久化和 Active 主链路段聚合。
+- 车载MR在线收集：新增 MESH 主链路、信道繁忙度、AP 射频统计、切换历史最新记录和接口速率 repeat 采集命令，并支持 Ctrl+C 停止 repeat。
+- 车载MR在线收集：重组页面布局，拆分连接、采集周期、射频参数、高频 Ping、高级参数、实时状态和详情页签，限制输入框宽度并保存表格列宽。
+- 在线诊断存储：将在线采集会话统一保存到 rail_transit/online_mr 目录，使用 online_diagnosis.sqlite 保存 Ping、接口速率、终端事件和最新切换历史。
+- 网络工具：新增 IPERF 带宽测试与无线扫描功能，无线扫描支持轨旁 AP BSSID 反查、频宽/MIMO 解析、主表导出和扫描源选择保存。
+- 启动体验：新增启动预加载和加载动画，删除启动页 Net Tools 副标题，统一 Splash、更新日志、主窗口和关于窗口的版本显示。
+- 打包：修复 tools 目录未进入发布包的问题，将 tools/fping_v3/Fping_v3.exe 和 tools/iperf/iperf3.exe 统一放入 _internal/tools，并更新清理打包白名单。
+- 稳定性：完善后台 Worker、取消任务、异常恢复、缓存、列宽保存、多语言显示和全量回归测试覆盖。
 
 v1.1.0
-- 配置采集中心：支持 running/saved 配置采集、保存、快照归档、清洗后差异对比和中英文界面。
-- 文件管理：新增独立双栏浏览下载页面，支持设备文件选择、列宽持久化、MESH 日志快速选择与本地命名规则。
+- 配置采集中心：支持运行配置和已保存配置采集、保存配置、快照归档、清洗后差异对比和中英文界面。
+- 文件管理：新增类似 WinSCP 的双栏文件管理，支持设备文件下载、本地目录打开、设备名称目录规则和 MESH 日志快速选择。
 - 设备管理：新增诊断下载、设备分组、详情入口和 AC 网页打开能力。
-- AC 管理：修复 HTTPS 端口采集、旧站点数据库字段补齐、保存失败提示和默认端口回退逻辑。
-- 稳定性：完善批量/顺序下载统计、配置与文件采集测试覆盖。
+- AC管理：修复 HTTPS 端口采集、日志解析、旧站点数据库字段补齐、任务失败提示和默认端口回退逻辑。
+- 稳定性：完善批量采集、配置采集、文件采集、顺序下载统计和测试覆盖。
 
 v1.0.0
-- 初始版本发布
-- AC管理模块
-- FIT-AP光衰分析
-- LLDP邻居解析
-- 轨旁AP业务
+- 初始版本发布。
+- 新增 AC管理模块。
+- 新增 FIT-AP 光衰分析。
+- 新增 LLDP 邻居解析。
+- 新增轨旁AP业务。

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.ui.pages.iperf_bandwidth_page import IperfBandwidthPage
+from netconsole.ui.pages.wireless_scan_page import WirelessScanPage
 
 
 class NetworkToolsPage(QWidget):
@@ -15,18 +16,24 @@ class NetworkToolsPage(QWidget):
         self.paths = paths
         self.tabs = QTabWidget()
         self.iperf_page = IperfBandwidthPage(i18n, site_name, paths)
+        self.wireless_scan_page = WirelessScanPage(i18n, site_name, paths)
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
         self.tabs.addTab(self.iperf_page, "")
+        self.tabs.addTab(self.wireless_scan_page, "")
         self.retranslate()
 
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
         self.iperf_page.set_site(site_name)
+        self.wireless_scan_page.set_site(site_name)
 
     def refresh_all(self) -> None:
         self.iperf_page.refresh_tool_status()
+        self.wireless_scan_page.load_adapters()
 
     def retranslate(self) -> None:
         self.tabs.setTabText(0, self.i18n.t("network_tools.iperf"))
+        self.tabs.setTabText(1, self.i18n.t("network_tools.wireless_scan"))
         self.iperf_page.retranslate()
+        self.wireless_scan_page.retranslate()

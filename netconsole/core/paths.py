@@ -158,6 +158,18 @@ class PathResolver:
     def iperf_db_path(self, site_name: str = "demo") -> Path:
         return self.iperf_root(site_name) / "iperf_results.sqlite"
 
+    def wireless_scan_root(self, site_name: str = "demo") -> Path:
+        return self.network_tools_root(site_name) / "wireless_scan"
+
+    def wireless_scan_db_path(self, site_name: str = "demo") -> Path:
+        return self.wireless_scan_root(site_name) / "wireless_scan.sqlite"
+
+    def wireless_scan_raw_dir(self, site_name: str = "demo") -> Path:
+        return self.wireless_scan_root(site_name) / "raw"
+
+    def wireless_scan_export_dir(self, site_name: str = "demo") -> Path:
+        return self.wireless_scan_root(site_name) / "exports"
+
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
