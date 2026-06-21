@@ -199,8 +199,8 @@ def release(version: str | None = None, dry_run: bool = False) -> ReleaseResult:
         check_remote_success = check_git_remote()
 
     commit_success = _run_required_git(["git", "add", "."], dry_run)
-    commit_success = _run_required_git(["git", "commit", "--allow-empty", "-m", "auto release build"], dry_run) and commit_success
-    tag_success = _run_optional_git(["git", "tag", "-a", selected_version, "-m", f"Release {selected_version}"], dry_run)
+    commit_success = _run_required_git(["git", "commit", "--allow-empty", "-m", "自动发布：更新版本、更新日志与构建文件"], dry_run) and commit_success
+    tag_success = _run_optional_git(["git", "tag", "-a", selected_version, "-m", f"发布 {selected_version}"], dry_run)
 
     push_origin_success = _run_optional_git(["git", "push", "origin", "main"], dry_run)
     push_github_success = _run_optional_git(["git", "push", "github", "main"], dry_run)

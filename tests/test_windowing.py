@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon, QTextEdit, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core import app_logger
@@ -259,6 +259,22 @@ def test_startup_splash_version_label_is_localized():
     assert en_splash.version_label.text() == f"Version: {version_info.APP_VERSION_DISPLAY}"
     zh_splash.close()
     en_splash.close()
+
+
+def test_changelog_dialog_zh_uses_chinese_title_button_and_content():
+    QApplication.instance() or QApplication([])
+    dialog = ChangelogDialog(I18n("zh_CN"))
+
+    assert dialog.windowTitle() == f"更新日志 {version_info.APP_VERSION_DISPLAY}"
+    assert any(button.text() == "关闭" for button in dialog.findChildren(QPushButton))
+    text_widgets = dialog.findChildren(QTextEdit)
+    assert text_widgets
+    content = text_widgets[0].toPlainText()
+    assert "无线扫描" in content
+    assert "车载MR在线收集" in content
+    for forbidden in ("Onboard MR Online Collection", "Packaging", "Rail Transit", "Tests", "command construction", "output parsing"):
+        assert forbidden not in content
+    dialog.close()
 
 
 def test_ui_version_text_uses_shared_version_source(tmp_path, monkeypatch):

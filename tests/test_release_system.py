@@ -93,7 +93,7 @@ def test_release_push_failures_do_not_interrupt_release(monkeypatch):
     assert not result.push_origin_success
     assert not result.push_github_success
     assert result.final_status == release.OFFLINE_RELEASE
-    assert ["git", "tag", "-a", "v1.0.9", "-m", "Release v1.0.9"] in commands
+    assert ["git", "tag", "-a", "v1.0.9", "-m", "发布 v1.0.9"] in commands
     assert ["git", "push", "origin", "main"] in commands
     assert ["git", "push", "github", "main"] in commands
     assert ["git", "push", "origin", "v1.0.9"] in commands
@@ -143,6 +143,39 @@ def test_build_release_script_uses_project_output_and_release_zip():
     assert "--finalize" not in text
     assert "--add-data" not in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
+
+
+def test_changelog_source_is_chinese_for_zh_ui():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "netconsole" / "docs" / "changelog.md").read_text(encoding="utf-8")
+    forbidden_fragments = [
+        "Onboard MR Online Collection",
+        "Packaging",
+        "Rail Transit",
+        "Tests",
+        "added",
+        "switched",
+        "command construction",
+        "output parsing",
+        "high-frequency ping",
+        "persistent",
+        "recovery",
+        "UI throttle",
+        "startup preload",
+    ]
+
+    assert all(fragment not in text for fragment in forbidden_fragments)
+    for required in ("无线扫描", "车载MR在线收集", "MESH日志分析", "轨旁AP业务", "打包", "启动体验"):
+        assert required in text
+
+
+def test_release_script_uses_chinese_auto_commit_message():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "project" / "release.py").read_text(encoding="utf-8")
+
+    assert 'git", "commit", "--allow-empty", "-m", "自动发布：更新版本、更新日志与构建文件"' in text
+    assert "auto release build" not in text
+    assert 'git", "tag", "-a", selected_version, "-m", f"发布 {selected_version}"' in text
 
 
 def test_clean_build_spec_uses_strict_whitelist_and_excludes():
