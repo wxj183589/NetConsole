@@ -32,7 +32,8 @@ from netconsole.ui.pages.app_log_page import AppLogPage
 from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
 from netconsole.ui.pages.file_management_page import FileManagementPage
-from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+from netconsole.ui.pages.network_tools_page import NetworkToolsPage
+from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.theme import apply_global_theme
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import fit_default_window_size
@@ -56,13 +57,15 @@ class MainWindow(QMainWindow):
         self.device_page = DeviceManagementPage(repository, i18n, site.name)
         self.config_collection_page = ConfigCollectionCenterPage(repository, i18n, site.name, paths)
         self.file_management_page = FileManagementPage(repository, i18n, site.name, paths)
-        self.rail_transit_page = MeshLogAnalysisPage(i18n, site.name, paths)
+        self.rail_transit_page = RailTransitPage(repository, i18n, site.name, paths)
+        self.network_tools_page = NetworkToolsPage(i18n, site.name, paths)
         self.ac_page = AcManagementPage(repository, i18n, site.name)
         self.log_page = AppLogPage(i18n)
         self.stack.addWidget(self.device_page)
         self.stack.addWidget(self.config_collection_page)
         self.stack.addWidget(self.file_management_page)
         self.stack.addWidget(self.rail_transit_page)
+        self.stack.addWidget(self.network_tools_page)
         self.stack.addWidget(self.ac_page)
         self.stack.addWidget(self.log_page)
 
@@ -155,6 +158,10 @@ class MainWindow(QMainWindow):
             self.rail_transit_page.refresh_all()
             self.stack.setCurrentWidget(self.rail_transit_page)
             app_logger.log_info("RAIL_TRANSIT_PAGE_OPENED", self.site.name)
+        elif page_id == "network_tools":
+            self.network_tools_page.refresh_all()
+            self.stack.setCurrentWidget(self.network_tools_page)
+            app_logger.log_info("NETWORK_TOOLS_PAGE_OPENED", self.site.name)
         else:
             self.stack.setCurrentWidget(self.device_page)
             app_logger.log_info("DEVICE_PAGE_OPENED", self.site.name)
@@ -204,7 +211,8 @@ class MainWindow(QMainWindow):
         self.device_page.set_repository(self.repository, site.name)
         self.config_collection_page.set_repository(self.repository, site.name)
         self.file_management_page.set_repository(self.repository, site.name)
-        self.rail_transit_page.set_site(site.name)
+        self.rail_transit_page.set_repository(self.repository, site.name)
+        self.network_tools_page.set_site(site.name)
         self.ac_page.set_repository(self.repository, site.name)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
 

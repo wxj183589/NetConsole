@@ -119,6 +119,36 @@ class PathResolver:
     def mesh_mr_export_dir(self, site_name: str, safe_mr_name: str) -> Path:
         return self.mesh_mr_root(site_name, safe_mr_name) / "exports"
 
+    def mesh_mr_online_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.mesh_mr_root(site_name, safe_mr_name) / "online_sessions"
+
+    def mesh_mr_online_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
+        return self.mesh_mr_online_sessions_root(site_name, safe_mr_name) / session_id
+
+    def online_mr_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "rail_transit" / "online_mr"
+
+    def online_mr_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.online_mr_root(site_name) / safe_mr_name / "sessions"
+
+    def online_mr_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
+        return self.online_mr_sessions_root(site_name, safe_mr_name) / session_id
+
+    def network_tools_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "network_tools"
+
+    def iperf_root(self, site_name: str = "demo") -> Path:
+        return self.network_tools_root(site_name) / "iperf"
+
+    def iperf_server_dir(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "server"
+
+    def iperf_client_dir(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "client"
+
+    def iperf_db_path(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "iperf_results.sqlite"
+
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:

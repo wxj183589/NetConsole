@@ -212,6 +212,10 @@ def normalize_mac(value: str) -> str | None:
     return None
 
 
+def normalize_peer_mac(value: str) -> str | None:
+    return normalize_mac(value)
+
+
 def parse_pair_token(token: str, percent: bool = False) -> tuple[int | None, int | None, bool]:
     if "/" not in token:
         return None, None, False
@@ -219,6 +223,10 @@ def parse_pair_token(token: str, percent: bool = False) -> tuple[int | None, int
     local_value = _parse_int(left.rstrip("%") if percent else left)
     peer_value = _parse_int(right.rstrip("%") if percent else right)
     return local_value, peer_value, local_value is not None and peer_value is not None
+
+
+def parse_pair_metric(token: str, percent: bool = False) -> tuple[int | None, int | None, bool]:
+    return parse_pair_token(token, percent=percent)
 
 
 def calculate_signal(metrics: dict[str, int | None]) -> tuple[int | None, int | None, int | None, int | None]:
@@ -231,6 +239,67 @@ def calculate_signal(metrics: dict[str, int | None]) -> tuple[int | None, int | 
     local_signal = local_rssi + local_noise_dbm if isinstance(local_rssi, int) and local_rssi > 0 and local_noise_dbm is not None else None
     peer_signal = peer_rssi + peer_noise_dbm if isinstance(peer_rssi, int) and peer_rssi > 0 and peer_noise_dbm is not None else None
     return local_noise_dbm, peer_noise_dbm, local_signal, peer_signal
+
+
+def compute_signal_dbm(metrics: dict[str, int | None]) -> tuple[int | None, int | None, int | None, int | None]:
+    return calculate_signal(metrics)
+
+
+def parse_mesh_link_table(
+    text: str,
+    *,
+    source_label: str = "online",
+    source_file: str = "",
+    sample_time: datetime | None = None,
+    radio: int | None = None,
+) -> tuple[list[MeshLogRecord], list[ParseIssue]]:
+    parser = MeshLogParser()
+    records: list[MeshLogRecord] = []
+    issues: list[ParseIssue] = []
+    current_radio = radio
+    current_sample_time = sample_time
+    current_tag: str | None = None
+    path = Path(source_file or "<online>")
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        raw_line = line.rstrip("\r\n")
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        ts_match = TIMESTAMP_RE.match(stripped)
+        if ts_match:
+            try:
+                current_radio = int(ts_match.group("radio"))
+                current_sample_time = _parse_sample_time(ts_match.group("date"), ts_match.group("time"))
+                current_tag = ts_match.group("tag")
+            except ValueError:
+                issues.append(ParseIssue(str(path), line_number, "鏃堕棿鏍煎紡寮傚父", "閲囨牱鏃堕棿鏍煎紡寮傚父", raw_line))
+            continue
+        if not stripped.startswith("["):
+            continue
+        parsed, row_issues = parser._parse_record_line(
+            stripped,
+            raw_line,
+            path,
+            line_number,
+            source_label,
+            current_radio,
+            current_sample_time,
+            current_tag,
+        )
+        issues.extend(row_issues)
+        if parsed is not None:
+            records.append(parsed)
+    return records, issues
+
+
+def parse_mesh_log_file(
+    path: Path,
+    source_label: str | None = None,
+    precomputed_hash: str | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    progress: Callable[[int, int, int], None] | None = None,
+) -> tuple[ImportedLogFile, list[MeshLogRecord], list[ParseIssue]]:
+    return MeshLogParser().parse_file(path, source_label, precomputed_hash, should_cancel, progress)
 
 
 def parse_duration_seconds(parts: list[str]) -> int | None:

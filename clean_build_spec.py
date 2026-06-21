@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parent
 ALLOWED_DATA = [
     ("netconsole", "netconsole"),
     ("data", "data"),
+    ("tools/fping_v3/Fping_v3.exe", "tools/fping_v3"),
+    ("tools/iperf/iperf3.exe", "tools/iperf"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
     ("netconsole/docs", "netconsole/docs"),
 ]
@@ -79,6 +81,10 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     changelog = ROOT / "netconsole" / "docs" / "changelog.md"
     if changelog.is_file():
         datas.append((str(changelog), "netconsole/docs"))
+    for source, destination in ALLOWED_DATA:
+        source_path = ROOT / source
+        if source_path.is_file() and (str(source_path), destination) not in datas:
+            datas.append((str(source_path), destination))
     return datas
 
 

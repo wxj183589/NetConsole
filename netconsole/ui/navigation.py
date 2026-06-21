@@ -21,6 +21,7 @@ class Navigation(QListWidget):
             ("nav.config_collection", "config_collection"),
             ("nav.file_management", "file_management"),
             ("nav.rail_transit", "rail_transit"),
+            ("nav.network_tools", "network_tools"),
             ("nav.ac", "ac"),
             ("nav.logs", "logs"),
         ):
