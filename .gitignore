@@ -43,6 +43,8 @@ data/config/*
 data/logs/*
 data/config/
 data/logs/
+data/*
+data/
 
 # Local config and secrets
 *.local

@@ -94,7 +94,10 @@ def apply_table_policy(table: QTableWidget) -> None:
     header.setDefaultAlignment(Qt.AlignCenter)
     header.setMinimumHeight(34)
     header.setSectionResizeMode(QHeaderView.Interactive)
-    apply_auto_layout(table)
+    if not table.property("netconsole_manual_column_widths"):
+        apply_auto_layout(table)
+    else:
+        header.setStretchLastSection(False)
 
 
 def apply_table_style(table: QTableWidget) -> None:

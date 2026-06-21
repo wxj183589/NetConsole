@@ -101,11 +101,70 @@ class PathResolver:
     def site_metrics_dir(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "metrics"
 
+    def site_mesh_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "rail_transit" / "mesh"
+
+    def mesh_catalog_path(self, site_name: str = "demo") -> Path:
+        return self.site_mesh_root(site_name) / "catalog.sqlite"
+
+    def mesh_mr_root(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.site_mesh_root(site_name) / safe_mr_name
+
+    def mesh_mr_db_path(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.mesh_mr_root(site_name, safe_mr_name) / "mesh.sqlite"
+
+    def mesh_mr_raw_dir(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.mesh_mr_root(site_name, safe_mr_name) / "raw"
+
+    def mesh_mr_export_dir(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.mesh_mr_root(site_name, safe_mr_name) / "exports"
+
+    def mesh_mr_online_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.mesh_mr_root(site_name, safe_mr_name) / "online_sessions"
+
+    def mesh_mr_online_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
+        return self.mesh_mr_online_sessions_root(site_name, safe_mr_name) / session_id
+
+    def online_mr_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "rail_transit" / "online_mr"
+
+    def online_mr_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.online_mr_root(site_name) / safe_mr_name / "sessions"
+
+    def online_mr_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
+        return self.online_mr_sessions_root(site_name, safe_mr_name) / session_id
+
+    def trackside_ap_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "rail_transit" / "trackside_ap"
+
+    def trackside_ap_optical_sessions_root(self, site_name: str = "demo") -> Path:
+        return self.trackside_ap_root(site_name) / "optical_sessions"
+
+    def trackside_ap_optical_session_dir(self, site_name: str, session_id: str) -> Path:
+        return self.trackside_ap_optical_sessions_root(site_name) / session_id
+
+    def network_tools_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "network_tools"
+
+    def iperf_root(self, site_name: str = "demo") -> Path:
+        return self.network_tools_root(site_name) / "iperf"
+
+    def iperf_server_dir(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "server"
+
+    def iperf_client_dir(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "client"
+
+    def iperf_db_path(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "iperf_results.sqlite"
+
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
             (site_path / dirname).mkdir(parents=True, exist_ok=True)
         (site_path / "raw" / "collect").mkdir(parents=True, exist_ok=True)
+        self.site_mesh_root(site_name).mkdir(parents=True, exist_ok=True)
+        self.trackside_ap_optical_sessions_root(site_name).mkdir(parents=True, exist_ok=True)
         return site_path
 
     def ensure_project_dirs(self) -> None:

@@ -18,20 +18,22 @@ from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
 def test_version_file_exposes_release_metadata():
-    assert APP_VERSION.startswith("v1.1.")
+    assert APP_VERSION.startswith("v1.2.")
     assert BUILD_TIME
     assert GIT_COMMIT
 
 
-def test_next_patch_version_uses_existing_v1_tags():
-    assert release.next_patch_version([]) == "v1.1.0"
-    assert release.next_patch_version(["v1.1.0", "v1.1.2", "v1.0.9", "bad"]) == "v1.1.3"
+def test_next_patch_version_uses_existing_v12_tags():
+    assert release.next_patch_version([]) == "v1.2.0"
+    assert release.next_patch_version(["v1.2.0", "v1.2.2", "v1.1.9", "bad"]) == "v1.2.3"
 
 
 def test_render_version_py_contains_single_version_source_fields():
     text = release.render_version_py("v1.0.7", "2026-06-17 12:00:00", "abc1234")
 
+    assert 'APP_NAME = "NetConsole"' in text
     assert 'APP_VERSION = "v1.0.7"' in text
+    assert "APP_VERSION_DISPLAY = APP_VERSION" in text
     assert 'BUILD_TIME = "2026-06-17 12:00:00"' in text
     assert 'GIT_COMMIT = "abc1234"' in text
     assert 'APP_AUTHOR = "梦游"' in text
@@ -151,6 +153,7 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") in clean_build_spec.ALLOWED_DATA
+    assert ("tools", "tools") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs", "netconsole/docs") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
@@ -192,6 +195,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert all("project" not in path.parts for path in staged_relative)
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
+    assert any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
 
 
 def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
@@ -217,6 +221,7 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "datas=RUNTIME_DATAS" in text
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
+    assert "('tools', 'tools')" in text or '("tools", "tools")' in text
     assert "project\\\\main.py" in text or "project/main.py" in text
     assert "('.', '.')" not in text
     assert "('project', 'project')" not in text
@@ -300,6 +305,45 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     assert (app_dist / "_internal" / "netconsole").exists()
 
 
+def test_clean_build_packaged_tools_validation(tmp_path):
+    app_dist = tmp_path / "NetConsole"
+    (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "fping_v3").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
+    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+
+    clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
+
+
+def test_clean_build_packaged_tools_validation_rejects_missing_tool(tmp_path):
+    app_dist = tmp_path / "NetConsole"
+    (app_dist / "_internal" / "tools" / "fping_v3").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").write_text("", encoding="utf-8")
+
+    with pytest.raises(CleanBuildLockError, match="packaged runtime tool is missing"):
+        clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
+
+
+def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_path, monkeypatch):
+    app_dist = tmp_path / "NetConsole"
+    (app_dist / "_internal" / "tools" / "fping_v3").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if str(args[0]).endswith("Fping_v3.exe"):
+            return subprocess.CompletedProcess(args, 2, stdout="Fast pinger version 3.00\nHost not found: -v error", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="iperf 3.20 (cJSON 1.7.15)", stderr="")
+
+    monkeypatch.setattr(clean_build_spec.subprocess, "run", fake_run)
+
+    clean_build_spec.check_packaged_tools(app_dist)
+
+
 def test_changelog_path_uses_internal_netconsole_docs():
     base_dir = Path("dist") / "NetConsole" / "_internal"
 
@@ -341,6 +385,8 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     assert not (app_dist / "project").exists()
     assert not (app_dist / "netconsole").exists()
     assert (app_dist / "_internal" / "netconsole").exists()
+    assert (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").exists()
+    assert (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").exists()
     assert (app_dist / "_internal" / "netconsole" / "docs" / "changelog.md").exists()
     assert not (app_dist / "_internal" / "assets" / "docs" / "changelog.md").exists()
 

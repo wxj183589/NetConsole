@@ -11,8 +11,13 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "last_export_path": "",
     "file_transfer_max_concurrency": 1,
+    "app/close_behavior": "ask",
+    "app/tray_notice_shown": False,
+    "app/startup_mode": "preload_all",
 }
 VALID_THEMES = {"light", "dark"}
+VALID_CLOSE_BEHAVIORS = {"ask", "minimize_to_tray", "exit"}
+VALID_STARTUP_MODES = {"preload_all", "fast_start"}
 
 
 @dataclass
@@ -49,6 +54,36 @@ class SettingsStore:
             return max(1, int(self.values.get("file_transfer_max_concurrency") or 1))
         except (TypeError, ValueError):
             return 1
+
+    @property
+    def close_behavior(self) -> str:
+        behavior = str(self.values.get("app/close_behavior") or DEFAULT_SETTINGS["app/close_behavior"])
+        return behavior if behavior in VALID_CLOSE_BEHAVIORS else "ask"
+
+    def set_close_behavior(self, behavior: str) -> None:
+        if behavior not in VALID_CLOSE_BEHAVIORS:
+            raise ValueError(f"unsupported close behavior: {behavior}")
+        self.values["app/close_behavior"] = behavior
+        self.save()
+
+    @property
+    def tray_notice_shown(self) -> bool:
+        return bool(self.values.get("app/tray_notice_shown"))
+
+    def set_tray_notice_shown(self, shown: bool) -> None:
+        self.values["app/tray_notice_shown"] = bool(shown)
+        self.save()
+
+    @property
+    def startup_mode(self) -> str:
+        mode = str(self.values.get("app/startup_mode") or DEFAULT_SETTINGS["app/startup_mode"])
+        return mode if mode in VALID_STARTUP_MODES else "preload_all"
+
+    def set_startup_mode(self, mode: str) -> None:
+        if mode not in VALID_STARTUP_MODES:
+            raise ValueError(f"unsupported startup mode: {mode}")
+        self.values["app/startup_mode"] = mode
+        self.save()
 
     def set_last_export_path(self, path: str | Path) -> None:
         self.values["last_export_path"] = str(path)

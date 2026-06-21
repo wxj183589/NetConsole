@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
@@ -106,17 +106,20 @@ class ApHistoryDialog(QWidget):
         rows: list[dict[str, object | None]],
         columns: tuple[tuple[str, str], ...],
         color_field: str | None = None,
+        owner=None,
         parent=None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(None)
         self.i18n = i18n
         self.ap_name = ap_name
         self.history_type = history_type
         self.rows = rows
         self.columns = columns
         self.color_field = color_field
+        self.owner = owner if owner is not None else parent
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(self.i18n.t("history.title_with_object", device=ap_name, object=history_type))
         self.resize(900, 560)
@@ -127,12 +130,26 @@ class ApHistoryDialog(QWidget):
         self.always_on_top_button.setCheckable(True)
         self.export_button = QPushButton()
         self.table = QTableWidget()
+        self.detail_table = QTableWidget()
         self.pagination = PaginationWidget(self.i18n)
+        self.splitter = QSplitter(Qt.Horizontal)
         set_table_column_fields(self.table, [field for _key, field in columns])
+        set_table_column_fields(self.detail_table, ["name", "value"])
         configure_readonly_table(self.table)
+        configure_readonly_table(self.detail_table)
+        self.table.setWordWrap(False)
+        self.detail_table.setWordWrap(False)
+        self.table.setTextElideMode(Qt.ElideRight)
+        self.detail_table.setTextElideMode(Qt.ElideRight)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.detail_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.detail_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setColumnCount(len(columns))
+        self.detail_table.setColumnCount(2)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
+        self.table.itemSelectionChanged.connect(self.refresh_detail)
 
         actions = QHBoxLayout()
         actions.addWidget(self.back_button)
@@ -142,8 +159,14 @@ class ApHistoryDialog(QWidget):
         actions.addWidget(self.always_on_top_button)
         layout = QVBoxLayout()
         layout.addLayout(actions)
-        layout.addWidget(self.table, 1)
-        layout.addWidget(self.pagination)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.addWidget(self.table, 1)
+        left_layout.addWidget(self.pagination)
+        self.splitter.addWidget(left)
+        self.splitter.addWidget(self.detail_table)
+        self.splitter.setSizes([540, 360])
+        layout.addWidget(self.splitter, 1)
         self.setLayout(layout)
 
         self.back_button.clicked.connect(self.return_to_parent)
@@ -161,6 +184,7 @@ class ApHistoryDialog(QWidget):
         self.always_on_top_button.setText(self.i18n.t("window.always_on_top"))
         self.export_button.setText(self.i18n.t("ac.export_table"))
         self.table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in self.columns])
+        self.detail_table.setHorizontalHeaderLabels([self.i18n.t("field.name"), self.i18n.t("field.value")])
 
     def refresh_table(self) -> None:
         rows, state = paginate_rows(self.rows, self.page_size, self.page)
@@ -181,6 +205,24 @@ class ApHistoryDialog(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(True)
         auto_resize_table_columns(self.table)
+        if rows:
+            self.table.selectRow(0)
+        self.refresh_detail()
+
+    def refresh_detail(self) -> None:
+        row = self.current_record()
+        rows = [(self.i18n.t(key), row.get(field)) for key, field in self.columns] if row else []
+        self.detail_table.setRowCount(len(rows))
+        for row_index, (name, value) in enumerate(rows):
+            for column_index, text in enumerate((name, value)):
+                item = QTableWidgetItem(str(text) if text not in (None, "") else "-")
+                item.setToolTip(str(text) if text not in (None, "") else "")
+                self.detail_table.setItem(row_index, column_index, item)
+
+    def current_record(self) -> dict[str, object | None] | None:
+        current = self.table.currentRow()
+        rows, _state = paginate_rows(self.rows, self.page_size, self.page)
+        return rows[current] if 0 <= current < len(rows) else None
 
     def set_page(self, page: int) -> None:
         self.page = page
@@ -202,12 +244,11 @@ class ApHistoryDialog(QWidget):
         self.show()
 
     def return_to_parent(self) -> None:
-        parent = self.parentWidget()
         self.close()
-        if parent is not None:
-            parent.show()
-            parent.raise_()
-            parent.activateWindow()
+        if self.owner is not None:
+            self.owner.show()
+            self.owner.raise_()
+            self.owner.activateWindow()
 
     def export_history(self) -> None:
         path = select_export_path(self, self.i18n.t("ac.export_table"), f"{self.ap_name}_{self.history_type}_history.xlsx", EXCEL_FILTER)

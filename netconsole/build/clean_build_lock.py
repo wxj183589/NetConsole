@@ -29,7 +29,17 @@ FORBIDDEN_PROJECT_SOURCES = ("docs", "tests", "project", ".git", "__pycache__")
 FORBIDDEN_DATAS = ("", ".", "project", "docs", "tests")
 FORBIDDEN_DIST_DIRS = ("docs", "tests", "project", "build", "spec")
 FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "spec"}
-ALLOWED_RUNTIME = ("netconsole", "data", "netconsole/ui/icons", "netconsole/docs")
+ALLOWED_RUNTIME = (
+    "netconsole",
+    "data",
+    "tools",
+    "tools/fping_v3",
+    "tools/fping_v3/fping_v3.exe",
+    "tools/iperf",
+    "tools/iperf/iperf3.exe",
+    "netconsole/ui/icons",
+    "netconsole/docs",
+)
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR)
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",

@@ -18,9 +18,11 @@ class Navigation(QListWidget):
         self.clear()
         for key, page_id in (
             ("nav.devices", "devices"),
+            ("nav.ac", "ac"),
+            ("nav.rail_transit", "rail_transit"),
             ("nav.config_collection", "config_collection"),
             ("nav.file_management", "file_management"),
-            ("nav.ac", "ac"),
+            ("nav.network_tools", "network_tools"),
             ("nav.logs", "logs"),
         ):
             item = QListWidgetItem(self.i18n.t(key))

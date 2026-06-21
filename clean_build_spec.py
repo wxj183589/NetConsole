@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import subprocess
 from pathlib import Path
 
 from netconsole.build.clean_build_lock import (
@@ -27,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 ALLOWED_DATA = [
     ("netconsole", "netconsole"),
     ("data", "data"),
+    ("tools", "tools"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
     ("netconsole/docs", "netconsole/docs"),
 ]
@@ -40,6 +42,14 @@ EXCLUDE_DIRS = [
     "release",
 ]
 EXCLUDE_FILES = {"*.pyc", "*.pyo"}
+REQUIRED_TOOL_FILES = (
+    Path("tools") / "fping_v3" / "Fping_v3.exe",
+    Path("tools") / "iperf" / "iperf3.exe",
+)
+TOOL_VERSION_MARKERS = {
+    Path("tools") / "fping_v3" / "Fping_v3.exe": ("Fast pinger version 3.00", "Wouter Dhondt"),
+    Path("tools") / "iperf" / "iperf3.exe": ("iperf 3.",),
+}
 
 
 def scan_import_graph() -> list[str]:
@@ -79,6 +89,12 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     changelog = ROOT / "netconsole" / "docs" / "changelog.md"
     if changelog.is_file():
         datas.append((str(changelog), "netconsole/docs"))
+    for source, destination in ALLOWED_DATA:
+        source_path = ROOT / source
+        if (source == "tools" and source_path.is_dir()) or source_path.is_file():
+            if (str(source_path), destination) in datas:
+                continue
+            datas.append((str(source_path), destination))
     return datas
 
 
@@ -158,11 +174,13 @@ def prepare_runtime() -> None:
         raise CleanBuildLockError("Clean Build Mode is required for release packaging")
     validate_project_safety(ALLOWED_DATA)
     validate_allowed_runtime(ALLOWED_DATA)
+    validate_tool_sources()
 
 
 def write_spec() -> Path:
     validate_project_safety(ALLOWED_DATA)
     validate_allowed_runtime(ALLOWED_DATA)
+    validate_tool_sources()
     SPEC_ROOT.mkdir(parents=True, exist_ok=True)
     runtime_imports = scan_import_graph()
     runtime_datas = build_runtime_datas_from_import_graph()
@@ -231,6 +249,37 @@ def validate_dist() -> None:
     icon = app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico"
     if not icon.exists():
         raise CleanBuildLockError("runtime icon is missing")
+    check_packaged_tools(app_dist)
+
+
+def validate_tool_sources() -> None:
+    missing = [path.as_posix() for path in REQUIRED_TOOL_FILES if not (ROOT / path).is_file()]
+    if missing:
+        raise CleanBuildLockError(f"required runtime tool is missing: {', '.join(missing)}")
+
+
+def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: bool = True) -> None:
+    app_dist = Path(app_dist or DIST_ROOT / "NetConsole")
+    for relative in REQUIRED_TOOL_FILES:
+        packaged = app_dist / "_internal" / relative
+        if not packaged.is_file():
+            raise CleanBuildLockError(f"packaged runtime tool is missing: {packaged}")
+        print(f"[OK] {relative.as_posix()} included")
+        if run_version_check:
+            _check_tool_version(packaged, relative)
+
+
+def _check_tool_version(tool_path: Path, relative: Path) -> None:
+    try:
+        completed = subprocess.run([str(tool_path), "-v"], capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        raise CleanBuildLockError(f"packaged runtime tool version check failed: {relative.as_posix()}: {exc}") from exc
+    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    markers = TOOL_VERSION_MARKERS[relative]
+    if not any(marker in output for marker in markers):
+        raise CleanBuildLockError(f"packaged runtime tool version output is invalid: {relative.as_posix()}")
+    first_line = next((line.strip() for line in output.splitlines() if line.strip()), "version detected")
+    print(f"[OK] {relative.as_posix()} version: {first_line}")
 
 
 def main() -> int:

@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTextEd
 
 from netconsole.core.i18n import I18n
 from netconsole.core.resources import changelog_path, icon_path
-from netconsole.core.version import APP_VERSION
+from netconsole.core import version as version_info
 
 
 class ChangelogDialog(QDialog):
@@ -16,10 +16,11 @@ class ChangelogDialog(QDialog):
         self.setModal(False)
         self.setWindowIcon(QIcon(str(icon_path("love.ico"))))
         self.setMinimumSize(720, 520)
-        self.setWindowTitle(self.i18n.t("changelog.title", version=APP_VERSION))
+        title_text = self.i18n.t("app.changelog_title", version=version_info.APP_VERSION_DISPLAY)
+        self.setWindowTitle(title_text)
 
         layout = QVBoxLayout(self)
-        title = QLabel(self.i18n.t("changelog.title", version=APP_VERSION))
+        title = QLabel(title_text)
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)

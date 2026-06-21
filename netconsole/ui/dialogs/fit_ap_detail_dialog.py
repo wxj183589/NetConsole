@@ -17,7 +17,11 @@ from PySide6.QtWidgets import (
 
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
+from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
+from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
+from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
@@ -50,6 +54,7 @@ class FitApDetailDialog(QWidget):
         self.i18n = i18n
         self.repository = repository
         self.ac_device_uuid = ac_device_uuid
+        self.settings = SettingsStore(PathResolver())
         resource = self.repository.get_fit_ap_resource_by_uuid(ac_device_uuid, ap_uuid) or self.repository.get_fit_ap_resource(ac_device_uuid, ap_uuid) or {}
         self.ap_uuid = str(resource.get("ap_uuid") or ap_uuid)
         self.ap_name = str(resource.get("ap_name") or ap_uuid)
@@ -57,6 +62,7 @@ class FitApDetailDialog(QWidget):
         self.setWindowTitle(self.i18n.t("ap.detail_title", ap=self.ap_name))
         self.resize(900, 680)
         self.setMinimumSize(760, 520)
+        self._restore_window_state()
 
         self.always_on_top_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
@@ -85,8 +91,13 @@ class FitApDetailDialog(QWidget):
         self.raw_fields_page = 1
         self.raw_fields_page_size = DEFAULT_PAGE_SIZE
         self.history_windows: list[ApHistoryDialog] = []
+        self.optical_history_window: ApOpticalHistoryDialog | None = None
+        self.optical_history_service = ApOpticalHistoryService(repository)
         for table in (self.radio_table, self.lldp_table, self.optical_table, self.raw_fields_table):
             configure_readonly_table(table)
+            table.setWordWrap(False)
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         for table, kind in ((self.radio_table, "radio"), (self.lldp_table, "lldp"), (self.optical_table, "optical")):
             table.setContextMenuPolicy(Qt.CustomContextMenu)
             table.customContextMenuRequested.connect(lambda position, current_table=table, current_kind=kind: self.show_history_context_menu(current_table, current_kind, position))
@@ -202,7 +213,7 @@ class FitApDetailDialog(QWidget):
         self.save_button.setText(self.i18n.t("dialog.save_device"))
         self.radio_history_button.setText(self.i18n.t("history.view"))
         self.lldp_history_button.setText(self.i18n.t("history.view"))
-        self.optical_history_button.setText(self.i18n.t("history.view"))
+        self.optical_history_button.setText(self.i18n.t("ap_detail.view_optical_history"))
         self.tabs.setTabText(0, self.i18n.t("ap.basic_info"))
         self.tabs.setTabText(1, self.i18n.t("ap.metadata"))
         self.tabs.setTabText(2, "Radio")
@@ -236,7 +247,8 @@ class FitApDetailDialog(QWidget):
         self.direction_combo.setCurrentIndex(index if index >= 0 else 0)
         self._set_radio_table(resource)
         self._set_table(self.lldp_table, LLDP_COLUMNS, [optical] if optical else [])
-        self._set_table(self.optical_table, OPTICAL_COLUMNS, [optical] if optical else [])
+        summary = self.optical_history_service.get_latest_optical_summary(self.ac_device_uuid, self.ap_uuid)
+        self._set_table(self.optical_table, OPTICAL_COLUMNS, [summary] if summary else [])
         self._set_raw_fields_table(resource, metadata, optical)
 
     def save_metadata(self) -> None:
@@ -335,11 +347,9 @@ class FitApDetailDialog(QWidget):
             title = self.i18n.t("ac.lldp_neighbor")
             color_field = None
         else:
-            rows = self.repository.list_fit_ap_optical_history_by_ap(self.ap_uuid)
-            columns = AP_OPTICAL_HISTORY_COLUMNS
-            title = self.i18n.t("ap.optical_module")
-            color_field = "optical_alarm_status"
-        dialog = ApHistoryDialog(self.i18n, self.ap_name, title, rows, columns, color_field, self)
+            self.open_optical_history()
+            return
+        dialog = ApHistoryDialog(self.i18n, self.ap_name, title, rows, columns, color_field, owner=self)
         self.history_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_history_window(window))
         dialog.show()
@@ -348,6 +358,37 @@ class FitApDetailDialog(QWidget):
 
     def _forget_history_window(self, window: ApHistoryDialog) -> None:
         self.history_windows = [item for item in self.history_windows if item is not window]
+
+    def open_optical_history(self) -> None:
+        if self.optical_history_window is not None:
+            self.optical_history_window.show()
+            self.optical_history_window.raise_()
+            self.optical_history_window.activateWindow()
+            return
+        rows = self.optical_history_service.query_ap_optical_history_all(self.ap_uuid)
+        dialog = ApOpticalHistoryDialog(self.i18n, self.ap_name, rows, self.settings, owner=self)
+        self.optical_history_window = dialog
+        dialog.destroyed.connect(lambda _=None: setattr(self, "optical_history_window", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def closeEvent(self, event) -> None:
+        self.settings.set_value("ac/ap_detail/window_geometry", {"width": self.width(), "height": self.height()})
+        self.settings.set_value("ac/ap_detail/window_maximized", self.isMaximized())
+        super().closeEvent(event)
+
+    def _restore_window_state(self) -> None:
+        geometry = self.settings.get_value("ac/ap_detail/window_geometry", {})
+        if isinstance(geometry, dict):
+            try:
+                width = max(760, int(geometry.get("width") or 900))
+                height = max(520, int(geometry.get("height") or 680))
+                self.resize(width, height)
+            except (TypeError, ValueError):
+                pass
+        if self.settings.get_value("ac/ap_detail/window_maximized", False):
+            self.showMaximized()
 
 
 def normalize_direction(value: str) -> str:
