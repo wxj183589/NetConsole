@@ -134,6 +134,15 @@ class PathResolver:
     def online_mr_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
         return self.online_mr_sessions_root(site_name, safe_mr_name) / session_id
 
+    def trackside_ap_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "rail_transit" / "trackside_ap"
+
+    def trackside_ap_optical_sessions_root(self, site_name: str = "demo") -> Path:
+        return self.trackside_ap_root(site_name) / "optical_sessions"
+
+    def trackside_ap_optical_session_dir(self, site_name: str, session_id: str) -> Path:
+        return self.trackside_ap_optical_sessions_root(site_name) / session_id
+
     def network_tools_root(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "network_tools"
 
@@ -155,6 +164,7 @@ class PathResolver:
             (site_path / dirname).mkdir(parents=True, exist_ok=True)
         (site_path / "raw" / "collect").mkdir(parents=True, exist_ok=True)
         self.site_mesh_root(site_name).mkdir(parents=True, exist_ok=True)
+        self.trackside_ap_optical_sessions_root(site_name).mkdir(parents=True, exist_ok=True)
         return site_path
 
     def ensure_project_dirs(self) -> None:

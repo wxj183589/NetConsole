@@ -9,7 +9,16 @@ from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 
 
-TRACKSIDE_AP_BUSINESS_COLUMNS = (
+TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
+    "host",
+    "host_address",
+    "management_ip",
+    "ap_ip",
+    "source_device",
+    "collection_status",
+}
+
+TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("ac.station", "site"),
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
@@ -24,8 +33,11 @@ TRACKSIDE_AP_BUSINESS_COLUMNS = (
     ("ac.ap_name", "ap_name"),
     ("ac.ap_side_rx_power", "ap_rx_power"),
     ("trackside.ap_optical_status", "ap_optical_status"),
-    ("field.updated_at", "updated_at"),
+    ("trackside_ap.tx_power", "ap_tx_power"),
+    ("trackside_ap.last_collected_at", "updated_at"),
 )
+
+TRACKSIDE_AP_BUSINESS_COLUMNS = TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS
 
 TRACKSIDE_AP_DEVICE_COLUMNS = (
     ("details.interface_name", "interface_name"),
@@ -164,9 +176,13 @@ def build_trackside_ap_business_rows(
                     "switch_optical_status": switch_status,
                     "ap_mac": normalize_mac(fit_ap.get("ap_mac")) or neighbor_mac,
                     "ap_name": fit_ap.get("ap_name"),
+                    "ap_ip": fit_ap.get("ap_ip"),
                     "ap_rx_power": fit_ap.get("rx_power"),
+                    "ap_tx_power": fit_ap.get("tx_power"),
                     "ap_optical_status": ap_status,
                     "updated_at": fit_ap.get("updated_at") or optical.get("updated_at") or interface.get("updated_at") or interface.get("collected_at"),
+                    "source_device": fit_ap.get("device_name") or fit_ap.get("neighbor_device_name") or device.name,
+                    "collection_status": fit_ap.get("status") or ("success" if optical else "not_collected"),
                 }
             )
     return sorted(result, key=lambda row: (str(row.get("site") or ""), str(row.get("device_name") or ""), interface_sort_key(row.get("interface_name"))))

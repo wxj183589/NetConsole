@@ -155,9 +155,10 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentWidget(self.file_management_page)
             app_logger.log_info("FILE_MANAGEMENT_PAGE_OPENED", self.site.name)
         elif page_id == "rail_transit":
-            self.rail_transit_page.refresh_all()
+            app_logger.log_info("RAIL_TRANSIT_OPEN_REQUESTED", self.site.name)
             self.stack.setCurrentWidget(self.rail_transit_page)
-            app_logger.log_info("RAIL_TRANSIT_PAGE_OPENED", self.site.name)
+            app_logger.log_info("RAIL_TRANSIT_PAGE_SHOWN", self.site.name)
+            self.rail_transit_page.refresh_current_async_or_lazy()
         elif page_id == "network_tools":
             self.network_tools_page.refresh_all()
             self.stack.setCurrentWidget(self.network_tools_page)
