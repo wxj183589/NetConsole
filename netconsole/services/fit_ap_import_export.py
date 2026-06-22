@@ -36,6 +36,22 @@ AP_EXPORT_FIELDS = [
     "更新时间",
 ]
 
+AP_EXPORT_FIELDS = [
+    "AP名称",
+    "AP_IP",
+    "AP_MAC",
+    "型号",
+    "SN",
+    "状态",
+    "AP组",
+    "在线时长",
+    "归属站点",
+    "里程",
+    "点位说明",
+    "上下行",
+    "更新时间",
+]
+
 
 @dataclass(frozen=True)
 class ApMetadataImportResult:

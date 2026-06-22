@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QHeaderView, QMessageBox, QMenu, QSplitter, QTableWidget, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QSplitter, QTableWidget, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
@@ -1206,11 +1206,17 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     ]
     assert "ac.ap_name_mac" not in [key for key, _field in FIT_AP_OPTICAL_COLUMNS]
     assert [page.optical_concurrency_combo.itemData(index) for index in range(page.optical_concurrency_combo.count())] == [50, 100, 200, 500, 1000]
-    assert page.optical_concurrency_combo.currentData() == 500
+    assert page.optical_concurrency_combo.currentData() == 1000
     assert page.optical_legend_label.text()
+    resource_headers = [page.resources_table.horizontalHeaderItem(index).text() for index in range(page.resources_table.columnCount())]
+    assert "field.mac_address" not in resource_headers
+    assert "AP_MAC" in resource_headers
+    assert "AP_IP" in resource_headers
+    assert "SN" in resource_headers
     assert page.tabs.tabText(0) == "Trackside AP Plan"
-    assert page.tabs.tabText(1) == "FIT-AP Resources"
-    assert page.tabs.tabText(3) == "AP Online Overview"
+    assert page.tabs.tabText(1) == "AP Online Overview"
+    assert page.tabs.tabText(2) == "FIT-AP Resources"
+    assert page.tabs.tabText(3) == "FIT-AP Optical"
     assert page.tabs.tabText(4) == "Online Vehicle MR"
 
 
@@ -2882,12 +2888,14 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     page.refresh_async(force=True)
     process_events_until(lambda: page.has_loaded and not page.is_loading)
     assert page.trackside_table.rowCount() == 2
-    assert page.trackside_table.item(0, 9).text() == "-6.10"
-    assert page.trackside_table.item(0, 10).text() == "Unknown"
-    assert page.trackside_table.item(0, 11).text() == "bc5a-3457-cbe0"
-    assert page.trackside_table.item(0, 12).text() == "AP10"
-    assert page.trackside_table.item(0, 13).text() == "-14.35"
-    assert page.trackside_table.item(0, 14).text() == "Notice"
+    fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]
+    assert "match_source" not in fields
+    assert page.trackside_table.item(0, fields.index("switch_rx_power")).text() == "-6.10"
+    assert page.trackside_table.item(0, fields.index("switch_optical_status")).text() == "Unknown"
+    assert page.trackside_table.item(0, fields.index("ap_mac")).text() == "bc5a-3457-cbe0"
+    assert page.trackside_table.item(0, fields.index("ap_name")).text() == "AP10"
+    assert page.trackside_table.item(0, fields.index("ap_rx_power")).text() == "-14.35"
+    assert page.trackside_table.item(0, fields.index("ap_optical_status")).text() == "Notice"
     assert page.trackside_table.item(0, 0).background().color().name() == "#fbbf24"
     assert page.trackside_table.item(0, 0).foreground().color().name() == "#111827"
 
@@ -2932,6 +2940,7 @@ def test_trackside_ap_business_visible_columns_hide_internal_fields(tmp_path):
     assert "Management IP" not in headers
     assert "Source Device" not in headers
     assert "Collection Status" not in headers
+    assert "Match Source" not in headers
     assert "trackside.collection_status" not in headers
     assert "ap_ip" in TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS
     assert "source_device" in TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS
@@ -2961,12 +2970,14 @@ def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):
 
     sheet = load_workbook(export_path).active
     headers = [cell.value for cell in sheet[1]]
+    assert "TX功率" not in headers
     assert "IP Address" not in headers
     assert "Host" not in headers
     assert "Host Address" not in headers
     assert "Management IP" not in headers
     assert "Source Device" not in headers
     assert "Collection Status" not in headers
+    assert "Match Source" not in headers
     assert "trackside.collection_status" not in headers
     assert "collection_status" not in headers
     assert "source_device" not in headers
@@ -3014,12 +3025,11 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
     ap_mac_column = headers.index("AP_MAC") + 1
     ap_name_column = headers.index("AP名称") + 1
     ap_rx_column = headers.index("AP侧收光(dBm)") + 1
-    ap_tx_column = headers.index("TX功率") + 1
+    assert "TX功率" not in headers
     assert sheet.cell(2, alarm_column).value == "-"
     assert sheet.cell(2, ap_mac_column).value == "-"
     assert sheet.cell(2, ap_name_column).value == "-"
     assert sheet.cell(2, ap_rx_column).value == "-"
-    assert sheet.cell(2, ap_tx_column).value == "-"
     assert sheet.cell(2, alarm_column).value != "无光模块"
     assert sheet.cell(3, alarm_column).value == "无光模块"
 
@@ -3128,7 +3138,7 @@ def test_trackside_ap_page_formats_missing_ap_side_as_dash(tmp_path):
     assert page.trackside_table.item(0, fields.index("ap_name")).text() == "-"
     assert page.trackside_table.item(0, fields.index("ap_rx_power")).text() == "-"
     assert page.trackside_table.item(0, fields.index("ap_optical_status")).text() == "-"
-    assert page.trackside_table.item(0, fields.index("ap_tx_power")).text() == "-"
+    assert "ap_tx_power" not in fields
     assert page.trackside_table.item(0, 0).background().color().name() != "#f87171"
 
 
@@ -3343,6 +3353,7 @@ def test_trackside_ap_business_ignores_legacy_column_width_settings(tmp_path):
     assert page.trackside_table.item(0, 0).text() == "Station A"
     assert "Source Device" not in headers
     assert "Collection Status" not in headers
+    assert "TX Power" not in headers
 
 
 def test_trackside_ap_business_default_widths_and_scrollbar_are_readable(tmp_path):
@@ -3685,6 +3696,22 @@ def test_trackside_ap_search_filter_is_debounced(tmp_path):
     assert page.trackside_table.rowCount() == 1
 
 
+def test_trackside_ap_site_filter_keeps_station_names_readable(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("zh_CN"), "demo", PathResolver(tmp_path))
+    page.trackside_rows = [
+        {"site": "03横溪站", "ap_name": "AP-1"},
+        {"site": "04-横溪站1-超长车站名称", "ap_name": "AP-2"},
+    ]
+
+    page._set_trackside_site_filter_items(page.trackside_rows)
+
+    assert page.trackside_site_filter.minimumWidth() >= 180
+    assert page.trackside_site_filter.sizeAdjustPolicy() == QComboBox.AdjustToContents
+    assert page.trackside_site_filter.view().minimumWidth() > page.trackside_site_filter.minimumWidth()
+
+
 def test_trackside_ap_cache_skips_duplicate_worker(tmp_path, monkeypatch):
     app()
     loader = install_fake_trackside_loader(monkeypatch)
@@ -3994,6 +4021,9 @@ def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):
     assert dialog.minimumHeight() == 520
     assert dialog.tabs.count() == 6
     assert FIT_AP_DETAIL_TABS == ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
+    assert dialog.tabs.currentWidget() is dialog.raw_fields_tab
+    assert dialog.raw_fields_table.columnCount() == 2
+    assert dialog.raw_fields_table.item(0, 0).text().startswith("resource.")
     assert dialog.raw_fields_table.rowCount() > 0
     assert repository.get_fit_ap_metadata("ap-a")["site_name"] == "Station A"
 

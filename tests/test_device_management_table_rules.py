@@ -16,7 +16,7 @@ from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, open_diagnostic_folder_for_results, select_device_id_for_connection
-from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DeviceTable, protocol_label
+from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
 
 
 def app():
@@ -183,15 +183,19 @@ def test_row_action_buttons_include_chinese_connection_text():
 
 
 
-def test_device_table_action_column_is_fixed_and_buttons_are_compact():
+def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
     table = make_table()
     action_column = table._column_index("actions")
     action_widget = table.cellWidget(0, action_column)
     buttons = action_widget.findChildren(QPushButton)
 
     assert table.columnWidth(action_column) == ACTION_COLUMN_WIDTH
-    assert table.horizontalHeader().sectionResizeMode(action_column) == QHeaderView.Fixed
+    assert table.horizontalHeader().sectionResizeMode(action_column) == QHeaderView.Interactive
     assert table.horizontalHeader().stretchLastSection() is False
+    assert table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert table.columnWidth(table._column_index("select")) == DEVICE_COLUMN_WIDTHS["select"]
+    assert table.columnWidth(table._column_index("name")) == DEVICE_COLUMN_WIDTHS["name"]
+    assert table.columnWidth(table._column_index("ip_address")) == DEVICE_COLUMN_WIDTHS["ip_address"]
     assert action_widget.layout().spacing() == 6
     assert action_widget.layout().contentsMargins().left() == 0
     assert action_widget.layout().contentsMargins().top() == 0
@@ -304,6 +308,8 @@ def test_top_toolbar_omits_edit_delete_and_contains_batch_refresh_details():
     assert "Edit" not in top_buttons
     assert "Delete" not in top_buttons
     assert page.batch_refresh_details_button.text() == "Batch Refresh Details"
+    assert page.action_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert page.selection_label.parent() is page
 
 
 def test_same_device_detail_window_is_created_once(monkeypatch):

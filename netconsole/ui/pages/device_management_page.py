@@ -5,16 +5,19 @@ from pathlib import Path
 import platform
 import subprocess
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -129,13 +132,25 @@ class DeviceManagementPage(QWidget):
         self.selection_label = QLabel()
         self.table = DeviceTable(i18n)
 
+        self.search_input.setMinimumWidth(240)
+        self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.vendor_filter.setFixedWidth(130)
+        self.type_filter.setFixedWidth(130)
+        self.group_filter.setFixedWidth(170)
+        self.selection_label.setMinimumWidth(130)
+        self.selection_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
         filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
         filters.addWidget(self.search_input, 1)
         filters.addWidget(self.vendor_filter)
         filters.addWidget(self.type_filter)
         filters.addWidget(self.group_filter)
 
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(6)
+        self.action_content = QWidget()
         for button in (
             self.add_button,
             self.detail_button,
@@ -153,12 +168,24 @@ class DeviceManagementPage(QWidget):
             self.invert_selection_button,
         ):
             actions.addWidget(button)
-        actions.addWidget(self.selection_label)
         actions.addStretch(1)
+        self.action_content.setLayout(actions)
+        self.action_scroll = QScrollArea()
+        self.action_scroll.setFrameShape(QFrame.NoFrame)
+        self.action_scroll.setWidgetResizable(False)
+        self.action_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.action_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.action_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.action_scroll.setWidget(self.action_content)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.addWidget(self.action_scroll, 1)
+        action_row.addWidget(self.selection_label)
 
         layout = QVBoxLayout()
         layout.addLayout(filters)
-        layout.addLayout(actions)
+        layout.addLayout(action_row)
         layout.addWidget(self.table, 1)
         self.setLayout(layout)
 
@@ -212,7 +239,12 @@ class DeviceManagementPage(QWidget):
         self.batch_delete_button.setObjectName("dangerButton")
         self._populate_filters()
         self.table.retranslate()
+        self._sync_action_scroll_width()
         self.update_selection_state()
+
+    def _sync_action_scroll_width(self) -> None:
+        self.action_content.adjustSize()
+        self.action_content.setMinimumWidth(self.action_content.sizeHint().width())
 
     def test_selected_device_connection(self) -> None:
         checked_ids = self.table.checked_device_ids()

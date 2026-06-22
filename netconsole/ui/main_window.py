@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -139,7 +140,7 @@ class MainWindow(QMainWindow):
         root.setLayout(root_layout)
         self.setCentralWidget(root)
         self.setWindowIcon(QIcon(str(icon_path("love.ico"))))
-        self.setMinimumSize(1200, 760)
+        self.setMinimumSize(1280, 760)
         self.apply_initial_geometry()
         self.apply_style(self.current_theme)
         self.retranslate()
@@ -414,10 +415,10 @@ class MainWindow(QMainWindow):
     def apply_initial_geometry(self) -> None:
         screen = QApplication.primaryScreen()
         if screen is None:
-            self.resize(1440, 900)
+            self.resize(1600, 900)
             return
         available = screen.availableGeometry()
-        size = fit_default_window_size(available.width(), available.height(), 1440, 900)
+        size = fit_default_window_size(available.width(), available.height(), 1600, 900)
         self.resize(size.width, size.height)
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
@@ -454,13 +455,17 @@ class MainWindow(QMainWindow):
     def _system_panel(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("systemPanel")
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         theme_row = QHBoxLayout()
+        theme_row.setSpacing(6)
         theme_row.addWidget(self.light_theme_button)
         theme_row.addWidget(self.dark_theme_button)
         layout.addLayout(theme_row)
         about_row = QHBoxLayout()
+        about_row.setSpacing(6)
         about_row.addWidget(self.version_button, 1)
         about_row.addWidget(self.about_button)
         layout.addLayout(about_row)

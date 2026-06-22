@@ -6,7 +6,7 @@ import re
 from time import perf_counter
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QComboBox,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -63,7 +64,6 @@ def trackside_default_column_widths() -> dict[str, int]:
         "description": 220,
         "port_status": 110,
         "pvid": 70,
-        "match_source": 110,
         "vlan": 80,
         "switch_rx_power": 120,
         "switch_optical_status": 120,
@@ -71,7 +71,6 @@ def trackside_default_column_widths() -> dict[str, int]:
         "ap_name": 180,
         "ap_rx_power": 120,
         "ap_optical_status": 130,
-        "ap_tx_power": 100,
         "updated_at": 170,
     }
 
@@ -116,7 +115,12 @@ class TracksideApServicePage(QWidget):
         self.update_button = QPushButton()
         self.cancel_update_button = QPushButton()
         self.trackside_site_filter = QComboBox()
+        self.trackside_site_filter.setMinimumWidth(180)
+        self.trackside_site_filter.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.trackside_site_filter.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.trackside_search_input = QLineEdit()
+        self.trackside_search_input.setMinimumWidth(180)
+        self.trackside_search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.trackside_export_button = QPushButton()
         self.status_label = make_text_selectable(QLabel())
         self.trackside_table = QTableWidget()
@@ -539,6 +543,15 @@ class TracksideApServicePage(QWidget):
         index = self.trackside_site_filter.findData(current)
         self.trackside_site_filter.setCurrentIndex(index if index >= 0 else 0)
         self.trackside_site_filter.blockSignals(False)
+        self._adjust_trackside_site_filter_popup_width()
+
+    def _adjust_trackside_site_filter_popup_width(self) -> None:
+        metrics = QFontMetrics(self.trackside_site_filter.font())
+        longest = 0
+        for index in range(self.trackside_site_filter.count()):
+            longest = max(longest, metrics.horizontalAdvance(self.trackside_site_filter.itemText(index)))
+        width = max(self.trackside_site_filter.width(), self.trackside_site_filter.minimumWidth(), longest + 40)
+        self.trackside_site_filter.view().setMinimumWidth(width)
 
     def _set_rows(self, rows: list[dict[str, object | None]]) -> None:
         render_start = perf_counter()

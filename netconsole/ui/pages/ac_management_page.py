@@ -91,12 +91,12 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("", "select"),
     ("ac.ap_name", "ap_name"),
     ("APID", "apid"),
-    ("field.ip_address", "ap_ip"),
-    ("field.mac_address", "ap_mac"),
+    ("AP_IP", "ap_ip"),
+    ("AP_MAC", "ap_mac"),
     ("details.model", "model"),
-    ("details.serial_number", "serial_number"),
+    ("SN", "serial_number"),
     ("field.status", "state_display"),
-    ("ac.group_name", "group_name"),
+    ("AP组", "group_name"),
     ("ac.online_time", "online_time"),
     ("field.updated_at", "updated_at"),
 )
@@ -643,10 +643,13 @@ class AcManagementPage(QWidget):
         self.trackside_pagination.retranslate()
         self.clear_optical_filters_button.setText(self.i18n.t("ac.clear_filters"))
         self.optical_ap_filter.setPlaceholderText(self.i18n.t("ac.ap_name"))
+        current_concurrency = self.optical_concurrency_combo.currentData()
         self.optical_concurrency_combo.clear()
         for value in (50, 100, 200, 500, 1000):
             self.optical_concurrency_combo.addItem(f"{self.i18n.t('batch_collect.concurrency')}: {value}", value)
-        self.optical_concurrency_combo.setCurrentIndex(3)
+        target_concurrency = current_concurrency if current_concurrency is not None else 1000
+        index = self.optical_concurrency_combo.findData(target_concurrency)
+        self.optical_concurrency_combo.setCurrentIndex(index if index >= 0 else self.optical_concurrency_combo.findData(1000))
         self.optical_legend_label.setText(self.i18n.t("details.optical_color_legend"))
         self.status_label.setText(self.i18n.t("ac.status.not_collected"))
         self.coming_soon_label.setText(self.i18n.t("ac.coming_soon"))
