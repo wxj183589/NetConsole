@@ -93,6 +93,7 @@ def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResol
 
 class DeviceManagementPage(QWidget):
     groups_changed = Signal()
+    devices_changed = Signal()
 
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo") -> None:
         super().__init__()
@@ -102,7 +103,7 @@ class DeviceManagementPage(QWidget):
         self.group_service = DeviceGroupService(repository, self.group_repository) if self.group_repository is not None else None
         self.i18n = i18n
         self.site_name = site_name
-        self.service = DeviceImportExportService(repository)
+        self.service = DeviceImportExportService(repository, self.group_repository)
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
         self.group_dialog: DeviceGroupDialog | None = None
@@ -415,6 +416,7 @@ class DeviceManagementPage(QWidget):
         self.clear_selection()
         self.refresh_groups()
         self.groups_changed.emit()
+        self.devices_changed.emit()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
@@ -422,7 +424,7 @@ class DeviceManagementPage(QWidget):
         self.group_repository = self._make_group_repository(repository, site_name)
         self.group_service = DeviceGroupService(repository, self.group_repository) if self.group_repository is not None else None
         self.site_name = site_name
-        self.service = DeviceImportExportService(repository)
+        self.service = DeviceImportExportService(repository, self.group_repository)
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs = {}
         self.group_dialog = None
@@ -525,6 +527,7 @@ class DeviceManagementPage(QWidget):
             return
         app_logger.log_info("DEVICE_CREATED", f"设备已新增: {created.name}")
         self.refresh()
+        self.devices_changed.emit()
         self._close_sender_dialog()
 
     def _update_device_from_dialog(self, device) -> None:
@@ -536,6 +539,7 @@ class DeviceManagementPage(QWidget):
             return
         app_logger.log_info("DEVICE_UPDATED", f"设备已编辑: {updated.name}")
         self.refresh()
+        self.devices_changed.emit()
         self._close_sender_dialog()
 
     def _close_sender_dialog(self) -> None:
@@ -557,6 +561,7 @@ class DeviceManagementPage(QWidget):
             self.repository.delete(device_id)
             app_logger.log_info("DEVICE_DELETED", f"设备已删除: {device.name}")
             self.refresh()
+            self.devices_changed.emit()
 
     def batch_delete_devices(self) -> None:
         device_ids = self.table.checked_device_ids()
@@ -572,6 +577,7 @@ class DeviceManagementPage(QWidget):
         delete_device_ids(self.repository, device_ids)
         app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
         self.refresh()
+        self.devices_changed.emit()
 
     def batch_refresh_details(self) -> None:
         device_ids = self.table.checked_device_ids()
@@ -648,7 +654,11 @@ class DeviceManagementPage(QWidget):
                 app_logger.log_error("CSV_IMPORT_FAILED", f"{Path(path).name}: {exc}")
                 QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
-            self.refresh()
+            self.refresh_groups()
+            if result.groups_created:
+                self.groups_changed.emit()
+            if result.created:
+                self.devices_changed.emit()
             app_logger.log_info("CSV_IMPORTED", f"{Path(path).name}: created={result.created}, skipped={result.skipped}")
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
 

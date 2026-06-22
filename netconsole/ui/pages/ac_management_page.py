@@ -569,9 +569,9 @@ class AcManagementPage(QWidget):
         mr_tab.setLayout(mr_layout)
 
         self.tabs.addTab(self.trackside_plan_page, "")
+        self.tabs.addTab(overview_tab, "")
         self.tabs.addTab(resources_tab, "")
         self.tabs.addTab(optical_tab, "")
-        self.tabs.addTab(overview_tab, "")
         self.tabs.addTab(mr_tab, "")
         # Trackside AP Service is mounted under Rail Transit.
 
@@ -655,9 +655,9 @@ class AcManagementPage(QWidget):
             if label is not None:
                 label.setText(self.i18n.t(key))
         self.tabs.setTabText(0, self.i18n.t("ac.trackside_ap_plan"))
-        self.tabs.setTabText(1, self.i18n.t("ac.fit_ap_resources"))
-        self.tabs.setTabText(2, self.i18n.t("ac.fit_ap_optical"))
-        self.tabs.setTabText(3, self.i18n.t("ac.ap_online_overview"))
+        self.tabs.setTabText(1, self.i18n.t("ac.ap_online_overview"))
+        self.tabs.setTabText(2, self.i18n.t("ac.fit_ap_resources"))
+        self.tabs.setTabText(3, self.i18n.t("ac.fit_ap_optical"))
         self.tabs.setTabText(4, self.i18n.t("ac.online_vehicle_mr"))
         self.trackside_plan_page.retranslate()
         self.resources_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_RESOURCE_COLUMNS])

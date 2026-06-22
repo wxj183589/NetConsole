@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -35,6 +35,15 @@ TRACKSIDE_PLAN_COLUMNS = (
     ("ac.trackside_plan.ap_management_vlan", "ap_management_vlans"),
 )
 TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN"]
+TRACKSIDE_PLAN_COLUMN_WIDTHS = {
+    "station_name": 260,
+    "ap_count": 90,
+    "ap_start_address": 170,
+    "mask_length": 140,
+    "ap_gateway": 170,
+    "ap_management_vlans": 170,
+}
+MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
 
 
 class TracksideApPlanPage(QWidget):
@@ -67,8 +76,10 @@ class TracksideApPlanPage(QWidget):
         self.table.setColumnCount(len(TRACKSIDE_PLAN_COLUMNS))
         set_table_column_fields(self.table, [field for _key, field in TRACKSIDE_PLAN_COLUMNS])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         apply_table_style(self.table)
+        self._apply_column_layout()
 
         layout = QVBoxLayout(self)
         layout.addLayout(actions)
@@ -103,6 +114,7 @@ class TracksideApPlanPage(QWidget):
         self.table.insertRow(row)
         for column in range(len(TRACKSIDE_PLAN_COLUMNS)):
             self.table.setItem(row, column, self._make_item(""))
+        self._apply_column_layout()
         self._dirty = True
 
     def delete_selected(self) -> None:
@@ -174,6 +186,23 @@ class TracksideApPlanPage(QWidget):
                 f"加载轨旁AP规划：station={row.get('station_name')}, ap_count={row.get('ap_count')}, vlan={row.get('ap_management_vlans')}",
             )
         self.table.blockSignals(False)
+        self._apply_column_layout()
+        QTimer.singleShot(0, self._apply_column_layout)
+
+    def _apply_column_layout(self) -> None:
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        fields = [field for _key, field in TRACKSIDE_PLAN_COLUMNS]
+        fixed_width = sum(TRACKSIDE_PLAN_COLUMN_WIDTHS[field] for field in fields if field != "station_name")
+        available = max(self.table.viewport().width(), 0)
+        station_width = TRACKSIDE_PLAN_COLUMN_WIDTHS["station_name"]
+        if available > fixed_width + station_width:
+            station_width = available - fixed_width
+        for column, field in enumerate(fields):
+            width = station_width if field == "station_name" else TRACKSIDE_PLAN_COLUMN_WIDTHS[field]
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+            self.table.setColumnWidth(column, width)
 
     def _read_table_rows(self) -> list[dict[str, object | None]]:
         rows = []
@@ -201,16 +230,10 @@ class TracksideApPlanPage(QWidget):
                 raise ValueError(f"第{index}行 AP数量：必须是整数") from None
             if int(row["ap_count"]) < 0:
                 raise ValueError(f"第{index}行 AP数量：必须是非负整数")
-            mask = str(row.get("mask_length") or "").strip()
-            if mask:
-                try:
-                    row["mask_length"] = int(mask)
-                except ValueError:
-                    raise ValueError(f"第{index}行 掩码：必须是0-32整数") from None
-                if int(row["mask_length"]) < 0 or int(row["mask_length"]) > 32:
-                    raise ValueError(f"第{index}行 掩码：必须是0-32整数")
-            else:
-                row["mask_length"] = None
+            mask_length = _parse_mask_length(row.get("mask_length"))
+            if mask_length is None and str(row.get("mask_length") or "").strip():
+                raise ValueError(f"第{index}行 掩码：{MASK_ERROR_TEXT}")
+            row["mask_length"] = mask_length
             vlans = parse_vlan_set(row.get("ap_management_vlans"))
             if not vlans:
                 raise ValueError(f"第{index}行 AP管理VLAN：必填")
@@ -330,3 +353,33 @@ def _valid_ipv4_or_placeholder(value: str) -> bool:
         except ValueError:
             return False
     return True
+
+
+def _parse_mask_length(value: object) -> int | None:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        prefix = int(text)
+        return prefix if 0 <= prefix <= 32 else None
+    if "." in text:
+        return _dotted_netmask_to_prefix(text)
+    return None
+
+
+def _dotted_netmask_to_prefix(mask: str) -> int | None:
+    parts = mask.split(".")
+    if len(parts) != 4:
+        return None
+    octets: list[int] = []
+    for part in parts:
+        if not part.isdigit():
+            return None
+        value = int(part)
+        if value < 0 or value > 255:
+            return None
+        octets.append(value)
+    bits = "".join(f"{octet:08b}" for octet in octets)
+    if re.fullmatch(r"1*0*", bits) is None:
+        return None
+    return bits.count("1")

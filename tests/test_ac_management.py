@@ -88,7 +88,7 @@ from netconsole.ui.pages.ac_management_page import (
     sort_fit_ap_optical_rows,
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
-from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
+from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage, read_trackside_plan_file, _dotted_netmask_to_prefix, _parse_mask_length
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
 from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
 from netconsole.ui.ac_collect_worker import FitApOpticalCollectThread
@@ -592,6 +592,89 @@ def test_trackside_ap_plan_page_saves_edited_ap_count_from_table(tmp_path):
     assert rows[0]["ap_count"] == 34
     assert page.table.item(0, 1).text() == "34"
     assert repository.list_active_trackside_plan_capacity_details()["Station A"]["ap_total"] == 34
+
+
+def test_trackside_ap_plan_accepts_dotted_netmask_and_saves_prefix(tmp_path):
+    app()
+    repository = AcRepository(make_database(tmp_path))
+    page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    page.add_row()
+    values = ["站", "0", "192.168.104.1", "255.255.252.0", "192.168.104.254", "201"]
+    for column, value in enumerate(values):
+        page.table.item(0, column).setText(value)
+
+    assert page.save_plan() is True
+
+    rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert rows[0]["mask_length"] == 22
+    assert page.table.item(0, 3).text() == "22"
+
+
+def test_trackside_ap_plan_rejects_non_contiguous_dotted_netmask(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    rows = [{"station_name": "A", "ap_count": 1, "mask_length": "255.0.255.0", "ap_management_vlans": "201"}]
+
+    with pytest.raises(ValueError, match="必须是0-32或合法连续IPv4掩码"):
+        page._validate_rows(rows)
+
+
+def test_trackside_ap_plan_csv_import_accepts_dotted_netmask(tmp_path):
+    csv_path = tmp_path / "trackside_plan.csv"
+    csv_path.write_text(
+        "车站名称,AP数量,AP起始地址,掩码,AP网关,AP管理VLAN\n"
+        "站,0,192.168.104.1,255.255.252.0,192.168.104.254,201\n",
+        encoding="utf-8-sig",
+    )
+    repository = AcRepository(make_database(tmp_path))
+    page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    rows = read_trackside_plan_file(csv_path)
+
+    page._validate_rows(rows)
+
+    assert rows[0]["mask_length"] == 22
+
+
+def test_trackside_ap_plan_mask_parser_supports_prefix_and_dotted_values():
+    assert _parse_mask_length("") is None
+    assert _parse_mask_length("0") == 0
+    assert _parse_mask_length("24") == 24
+    assert _parse_mask_length(32) == 32
+    assert _parse_mask_length("255.255.255.0") == 24
+    assert _parse_mask_length("255.255.252.0") == 22
+    assert _parse_mask_length("255.255.0.0") == 16
+    assert _parse_mask_length("0.0.0.0") == 0
+    assert _dotted_netmask_to_prefix("255.255.255.255") == 32
+    for invalid in ("255.0.255.0", "255.255.255.1", "255.255.255.256", "abc", "33", "-1"):
+        assert _parse_mask_length(invalid) is None
+
+
+def test_trackside_ap_plan_column_layout_keeps_network_fields_readable(tmp_path):
+    app()
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {
+                "station_name": "站",
+                "ap_count": 0,
+                "ap_start_address": "192.168.104.1",
+                "mask_length": 22,
+                "ap_gateway": "192.168.104.254",
+                "ap_management_vlans": "201",
+            }
+        ],
+    )
+    page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    page._apply_column_layout()
+
+    assert page.table.horizontalHeader().stretchLastSection() is False
+    assert page.table.columnWidth(0) >= 260
+    assert page.table.columnWidth(1) >= 90
+    assert page.table.columnWidth(2) >= 170
+    assert page.table.columnWidth(3) >= 140
+    assert page.table.columnWidth(4) >= 170
+    assert page.table.columnWidth(5) >= 170
 
 
 def test_ap_online_overview_with_trackside_plan_locks_total_but_allows_remark(tmp_path):

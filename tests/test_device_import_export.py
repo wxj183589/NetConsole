@@ -8,6 +8,7 @@ from netconsole.core.database import Database
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import (
     CSV_ENCODING_ERROR,
@@ -27,6 +28,15 @@ def make_service(tmp_path):
     db.initialize()
     repository = DeviceRepository(db)
     return repository, DeviceImportExportService(repository)
+
+
+def make_group_service(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    repository = DeviceRepository(db)
+    groups = DeviceGroupRepository(db, "demo")
+    groups.ensure_default_groups()
+    return repository, groups, DeviceImportExportService(repository, groups)
 
 
 def read_csv(path):
@@ -73,6 +83,50 @@ def test_export_template_csv_has_multiple_current_examples(tmp_path):
     assert imported["FIT-AP-示例"].telnet_enabled == 1
     assert imported["FIT-AP-示例"].telnet_username is None
     assert imported["FIT-AP-示例"].telnet_password == "Admin@123"
+
+
+def test_template_exports_and_imports_group_column(tmp_path):
+    repository, groups, service = make_group_service(tmp_path)
+    csv_path = tmp_path / "devices.csv"
+    write_rows(
+        csv_path,
+        [
+            TEMPLATE_FIELDS,
+            ["Vehicle AP", "192.168.1.30", "H3C", "车厢", "车载", "FAT-AP", "yes", "22", "no", "23", "admin", "pwd", "", "", ""],
+            ["Temp SW", "192.168.1.31", "H3C", "临时", "临时测试组", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", ""],
+        ],
+    )
+
+    result = service.import_csv(csv_path)
+    imported = {device.name: device for device in repository.list()}
+    group_lookup = {group.name: group.id for group in groups.list()}
+
+    assert "分组" in TEMPLATE_FIELDS
+    assert result.created == 2
+    assert result.groups_created == 1
+    assert imported["Vehicle AP"].group_id == group_lookup["车载"]
+    assert imported["Temp SW"].group_id == group_lookup["临时测试组"]
+
+
+def test_template_import_can_explicitly_create_custom_named_group(tmp_path):
+    repository, groups, service = make_group_service(tmp_path)
+    csv_path = tmp_path / "custom_group_devices.csv"
+    write_rows(
+        csv_path,
+        [
+            TEMPLATE_FIELDS,
+            ["Custom SW", "192.168.1.40", "H3C", "OCC", "自定义", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", ""],
+        ],
+    )
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+    group_lookup = {group.name: group.id for group in groups.list()}
+
+    assert result.created == 1
+    assert result.groups_created == 1
+    assert imported.group_id == group_lookup["自定义"]
+    assert list(group_lookup) == ["COCC", "BOCC", "车站", "车载", "自定义"]
 
 
 def test_simplified_template_import_defaults_and_credentials(tmp_path):

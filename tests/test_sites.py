@@ -6,6 +6,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.device import Device
+from netconsole.repositories.device_group_repository import DEFAULT_DEVICE_GROUPS, DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 
 
@@ -34,6 +35,53 @@ def test_demo_site_has_demo_data_and_new_site_is_empty(tmp_path):
     empty_repo = DeviceRepository(Database(empty_site.database_path))
     assert len(demo_repo.list()) == 8
     assert empty_repo.list() == []
+
+
+def test_site_database_ensures_default_device_groups(tmp_path):
+    manager = SiteManager(PathResolver(tmp_path))
+    site = manager.create_site("A")
+    database = Database(site.database_path)
+    groups = DeviceGroupRepository(database, "A")
+
+    assert [(group.name, group.sort_order) for group in groups.list()] == list(DEFAULT_DEVICE_GROUPS)
+
+    manager.ensure_site("A")
+
+    assert [group.name for group in groups.list()] == [name for name, _sort_order in DEFAULT_DEVICE_GROUPS]
+
+
+def test_default_device_groups_do_not_create_custom_group(tmp_path):
+    site = SiteManager(PathResolver(tmp_path)).create_site("A")
+    groups = DeviceGroupRepository(Database(site.database_path), "A")
+
+    assert [group.name for group in groups.list()] == ["COCC", "BOCC", "车站", "车载"]
+
+
+def test_empty_legacy_custom_group_is_removed_on_site_init(tmp_path):
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+    site = manager.create_site("legacy")
+    database = Database(site.database_path)
+    groups = DeviceGroupRepository(database, "legacy")
+    groups.create("自定义")
+
+    manager.ensure_site("legacy")
+
+    assert "自定义" not in [group.name for group in groups.list()]
+
+
+def test_legacy_custom_group_with_devices_is_kept_as_user_group(tmp_path):
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+    site = manager.create_site("legacy")
+    database = Database(site.database_path)
+    groups = DeviceGroupRepository(database, "legacy")
+    custom = groups.create("自定义")
+    DeviceRepository(database).create(Device(name="CustomDevice", ip_address="10.0.0.1", group_id=custom.id))
+
+    manager.ensure_site("legacy")
+
+    assert [group.name for group in groups.list()] == ["COCC", "BOCC", "车站", "车载", "自定义"]
 
 
 @pytest.mark.parametrize("name", ["", "bad/name", "bad\\name", "bad:name", "bad*name", ".", ".."])
