@@ -40,7 +40,7 @@ ALLOWED_RUNTIME = (
     "netconsole/ui/icons",
     "netconsole/docs",
 )
-ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR)
+ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "logs")
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",
     "--windowed",

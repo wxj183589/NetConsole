@@ -2744,6 +2744,85 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
     assert sheet.cell(3, alarm_column).value == "无光模块"
 
 
+def test_trackside_ap_business_export_switch_optical_summary_missing_module_count(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_switch_summary.xlsx"
+    i18n = I18n("zh_CN")
+    rows = [
+        *(
+            {
+                "site": "01小洋江站",
+                "device_name": "01-小洋江站1",
+                "interface_name": f"GigabitEthernet2/0/{index}",
+                "switch_optical_status": "normal",
+            }
+            for index in range(1, 29)
+        ),
+        {
+            "site": "01小洋江站",
+            "device_name": "01-小洋江站1",
+            "interface_name": "GigabitEthernet2/0/36",
+            "switch_optical_status": "no_module",
+        },
+        {
+            "site": "01小洋江站",
+            "device_name": "01-小洋江站1",
+            "interface_name": "GigabitEthernet2/0/37",
+            "switch_optical_status": "no_module",
+        },
+        {
+            "site": "01小洋江站",
+            "device_name": "01-小洋江站1",
+            "interface_name": "GigabitEthernet2/0/38",
+            "switch_optical_status": "no_module",
+        },
+        {
+            "site": "02云龙火车站站",
+            "device_name": "02-云龙火车站1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_optical_status": "normal",
+        },
+        {
+            "site": "03横溪站",
+            "device_name": "03-横溪站1",
+            "switch_optical_status": "normal",
+            "missing_module_ports": "GE2/0/36, GE2/0/37",
+        },
+    ]
+    overview_headers = [i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS]
+    trackside_headers = [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS]
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        rows,
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        trackside_headers,
+        [{"site": "合计", "total": 1, "online": 1, "offline": 0, "online_rate": "100.0%", "remark": ""}],
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        overview_headers,
+    )
+
+    workbook = load_workbook(export_path)
+    summary = workbook["交换机光模块统计"]
+    assert [cell.value for cell in summary[1]] == ["交换机", "光模块数量", "未插光模块端口数量", "未插光模块端口"]
+    rows_by_switch = {
+        summary.cell(row=index, column=1).value: [summary.cell(row=index, column=column).value for column in range(2, 5)]
+        for index in range(2, summary.max_row + 1)
+    }
+    assert rows_by_switch["01-小洋江站1"] == [28, 3, "GE2/0/36, GE2/0/37, GE2/0/38"]
+    assert rows_by_switch["02-云龙火车站1"] == [1, 0, "-"]
+    assert rows_by_switch["03-横溪站1"] == [1, 2, "GE2/0/36, GE2/0/37"]
+    assert summary.freeze_panes == "A2"
+    assert summary["A1"].font.bold
+    assert summary.column_dimensions["A"].width == 22
+    assert summary.column_dimensions["B"].width == 14
+    assert summary.column_dimensions["C"].width == 20
+    assert summary.column_dimensions["D"].width == 80
+    assert [cell.value for cell in workbook["轨旁AP业务"][1]] == trackside_headers
+    assert [cell.value for cell in workbook["AP上线情况概览"][1]] == overview_headers
+
+
 def test_trackside_ap_page_formats_missing_ap_side_as_dash(tmp_path):
     app()
     database = make_database(tmp_path)

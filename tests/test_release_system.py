@@ -6,6 +6,7 @@ import sys
 import clean_build_spec
 import pytest
 from project import release
+from scripts.check_runtime_deps import check_runtime_deps
 from netconsole.build.clean_build_lock import (
     CleanBuildLockError,
     validate_datas,
@@ -140,6 +141,9 @@ def test_build_release_script_uses_project_output_and_release_zip():
     assert "clean_build_spec.py --prepare --write-spec" in text
     assert "PyInstaller --noconfirm --clean --distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" \"%SPEC_ROOT%\\NetConsole.spec\"" in text
     assert "clean_build_spec.py --validate" in text
+    assert "Verify clean dist and runtime DLLs" in text
+    assert "%DIST_ROOT%\\NetConsole\\data" in text
+    assert "%DIST_ROOT%\\NetConsole\\logs" in text
     assert "--finalize" not in text
     assert "--add-data" not in text
     assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
@@ -251,7 +255,13 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "CLEAN_BUILD = True" in text
     assert "RUNTIME_IMPORTS =" in text
     assert "RUNTIME_DATAS =" in text
+    assert 'collect_all("PySide6")' in text
+    assert "VC_RUNTIME_BINARIES =" in text
+    assert "pyside_binaries" in text
+    assert "pyside_hiddenimports" in text
     assert "datas=RUNTIME_DATAS" in text
+    assert "datas=RUNTIME_DATAS + pyside_datas" in text
+    assert "binaries=pyside_binaries + VC_RUNTIME_BINARIES" in text
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
     assert "('tools', 'tools')" in text or '("tools", "tools")' in text
@@ -312,6 +322,8 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
 def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
     app_dist = tmp_path / "NetConsole"
     (app_dist / "_internal" / "netconsole").mkdir(parents=True)
+    (app_dist / "data").mkdir()
+    (app_dist / "logs").mkdir()
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / forbidden).mkdir()
 
@@ -322,6 +334,8 @@ def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
 def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     app_dist = tmp_path / "NetConsole"
     (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
+    (app_dist / "data").mkdir()
+    (app_dist / "logs").mkdir()
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
 
@@ -330,6 +344,8 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     assert sorted(path.name for path in app_dist.iterdir()) == [
         "NetConsole.exe",
         "_internal",
+        "data",
+        "logs",
     ]
     assert not (app_dist / "docs").exists()
     assert not (app_dist / "tests").exists()
@@ -358,6 +374,122 @@ def test_clean_build_packaged_tools_validation_rejects_missing_tool(tmp_path):
 
     with pytest.raises(CleanBuildLockError, match="packaged runtime tool is missing"):
         clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
+
+
+def test_collect_vc_runtime_dlls_finds_required_files(tmp_path):
+    dll_dir = tmp_path / "runtime"
+    dll_dir.mkdir()
+    for dll_name in clean_build_spec.REQUIRED_VC_RUNTIME_DLLS:
+        (dll_dir / dll_name).write_text("", encoding="utf-8")
+
+    result = clean_build_spec.collect_vc_runtime_dlls([dll_dir])
+
+    assert {Path(source).name for source, _target in result} == set(clean_build_spec.REQUIRED_VC_RUNTIME_DLLS)
+    assert all(target == "." for _source, target in result)
+
+
+def test_collect_vc_runtime_dlls_rejects_missing_required_file(tmp_path):
+    dll_dir = tmp_path / "runtime"
+    dll_dir.mkdir()
+    for dll_name in clean_build_spec.REQUIRED_VC_RUNTIME_DLLS:
+        if dll_name != "VCRUNTIME140_1.dll":
+            (dll_dir / dll_name).write_text("", encoding="utf-8")
+
+    with pytest.raises(CleanBuildLockError, match="VCRUNTIME140_1.dll"):
+        clean_build_spec.collect_vc_runtime_dlls([dll_dir])
+
+
+def _make_packaged_runtime(tmp_path: Path) -> Path:
+    app_dist = tmp_path / "NetConsole"
+    internal = app_dist / "_internal"
+    (internal / "PySide6" / "plugins" / "platforms").mkdir(parents=True)
+    (internal / "tools" / "fping_v3").mkdir(parents=True)
+    (internal / "tools" / "iperf").mkdir(parents=True)
+    (app_dist / "data").mkdir(parents=True)
+    (app_dist / "logs").mkdir(parents=True)
+    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+    for name in ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "python310.dll"):
+        (internal / "PySide6" / name).write_text("", encoding="utf-8")
+    for name in ("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "CONCRT140.dll", "msvcp140_1.dll", "msvcp140_2.dll"):
+        (internal / name).write_text("", encoding="utf-8")
+    (internal / "PySide6" / "plugins" / "platforms" / "qwindows.dll").write_text("", encoding="utf-8")
+    (internal / "tools" / "fping_v3" / "Fping_v3.exe").write_text("", encoding="utf-8")
+    (internal / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+    return app_dist
+
+
+def test_runtime_deps_rejects_missing_internal_dir(tmp_path):
+    app_dist = tmp_path / "NetConsole"
+    app_dist.mkdir()
+    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+
+    result = check_runtime_deps(app_dist)
+
+    assert not result.ok
+    assert any("缺少 _internal" in message for message in result.messages)
+
+
+def test_runtime_deps_rejects_missing_qtgui_dll(tmp_path):
+    app_dist = _make_packaged_runtime(tmp_path)
+    (app_dist / "_internal" / "PySide6" / "Qt6Gui.dll").unlink()
+
+    result = check_runtime_deps(app_dist)
+
+    assert not result.ok
+    assert any("Qt6Gui.dll missing" in message and "QtGui" in message for message in result.messages)
+
+
+def test_runtime_deps_rejects_missing_qwindows_plugin(tmp_path):
+    app_dist = _make_packaged_runtime(tmp_path)
+    (app_dist / "_internal" / "PySide6" / "plugins" / "platforms" / "qwindows.dll").unlink()
+
+    result = check_runtime_deps(app_dist)
+
+    assert not result.ok
+    assert any("qwindows.dll missing" in message and "Qt platform plugin" in message for message in result.messages)
+
+
+def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
+    app_dist = _make_packaged_runtime(tmp_path)
+
+    result = check_runtime_deps(app_dist)
+
+    assert result.ok
+    assert "[OK] Qt6Core.dll found" in result.messages
+    assert "[OK] Qt6Gui.dll found" in result.messages
+    assert "[OK] Qt6Widgets.dll found" in result.messages
+    assert "[OK] qwindows.dll found" in result.messages
+    assert "[OK] VCRUNTIME140.dll found" in result.messages
+    assert "[OK] MSVCP140.dll found" in result.messages
+    assert "[OK] CONCRT140.dll found" in result.messages
+    assert "[OK] tools/fping_v3/Fping_v3.exe found" in result.messages
+    assert "[OK] tools/iperf/iperf3.exe found" in result.messages
+
+
+def test_check_packaged_runtime_script_runs_from_repo_root(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    app_dist = _make_packaged_runtime(tmp_path)
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/check_packaged_runtime.py", str(app_dist)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "[OK] Qt6Gui.dll found" in completed.stdout
+    assert "[OK] VCRUNTIME140.dll found" in completed.stdout
+
+
+def test_readme_documents_complete_folder_and_vc_runtime():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "完整解压整个 NetConsole 文件夹" in text
+    assert "内置 VC++ 运行库" in text
+    assert "Windows 10 1809+" in text
+    assert "不保证兼容" in text
 
 
 def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_path, monkeypatch):
@@ -410,6 +542,8 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
         cwd=root,
         check=True,
     )
+    (app_dist / "data").mkdir(exist_ok=True)
+    (app_dist / "logs").mkdir(exist_ok=True)
     subprocess.run([sys.executable, "clean_build_spec.py", "--validate"], cwd=root, check=True)
 
     validate_dist_output(app_dist)
@@ -417,6 +551,8 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     assert not (app_dist / "tests").exists()
     assert not (app_dist / "project").exists()
     assert not (app_dist / "netconsole").exists()
+    assert (app_dist / "data").exists()
+    assert (app_dist / "logs").exists()
     assert (app_dist / "_internal" / "netconsole").exists()
     assert (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").exists()
     assert (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").exists()

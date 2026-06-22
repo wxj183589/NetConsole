@@ -60,7 +60,10 @@ cd /d "%PROJECT_ROOT%"
 "%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --distpath "%DIST_ROOT%" --workpath "%BUILD_ROOT%" "%SPEC_ROOT%\NetConsole.spec"
 if errorlevel 1 goto failed
 
-echo [7/8] Verify clean dist
+if not exist "%DIST_ROOT%\NetConsole\data" mkdir "%DIST_ROOT%\NetConsole\data"
+if not exist "%DIST_ROOT%\NetConsole\logs" mkdir "%DIST_ROOT%\NetConsole\logs"
+
+echo [7/8] Verify clean dist and runtime DLLs
 cd /d "%ROOT%"
 "%PYTHON_EXE%" clean_build_spec.py --validate
 if errorlevel 1 goto failed

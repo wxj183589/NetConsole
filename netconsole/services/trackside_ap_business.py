@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from netconsole.core.optical_severity_engine import compute_optical_severity, display_optical_status, worse_optical_severity
 from netconsole.core.sources.switch_source import build_switch_data_lookup
@@ -311,6 +312,7 @@ def export_trackside_ap_business_xlsx(
     _append_switch_optical_summary_sheet(workbook, rows, alignment, border, header_font)
     for worksheet in workbook.worksheets:
         apply_worksheet_autofit(worksheet, maximum=60)
+    _set_switch_optical_summary_widths(workbook)
     workbook.save(path)
 
 
@@ -450,28 +452,47 @@ def _append_ap_overview_sheet(
 
 def _append_switch_optical_summary_sheet(workbook, rows: list[dict[str, object | None]], alignment, border, header_font) -> None:
     sheet = workbook.create_sheet("交换机光模块统计")
-    sheet.append(["交换机", "光模块数量", "未插光模块端口"])
+    sheet.append(["交换机", "光模块数量", "未插光模块端口数量", "未插光模块端口"])
     grouped: dict[str, dict[str, object]] = {}
     for row in rows:
         switch_name = str(row.get("device_name") or "-")
         item = grouped.setdefault(switch_name, {"module_count": 0, "missing_ports": []})
-        if row.get("switch_optical_status") == "no_module":
-            missing_ports = item["missing_ports"]
-            if isinstance(missing_ports, list):
-                missing_ports.append(str(row.get("interface_name") or "-"))
+        missing_ports = item["missing_ports"]
+        if isinstance(missing_ports, list):
+            missing_ports.extend(_normalize_missing_module_ports(row.get("missing_module_ports")))
+        if row.get("switch_optical_status") == "no_module" and isinstance(missing_ports, list):
+            missing_ports.extend(_normalize_missing_module_ports(row.get("interface_name") or "-"))
         else:
             item["module_count"] = int(item["module_count"]) + 1
     for switch_name in sorted(grouped):
         item = grouped[switch_name]
-        missing_ports = item["missing_ports"]
+        missing_ports = _normalize_missing_module_ports(item["missing_ports"])
         sheet.append(
             [
                 switch_name,
                 item["module_count"],
-                ", ".join(_short_interface_name(port) for port in missing_ports) if isinstance(missing_ports, list) and missing_ports else "-",
+                len(missing_ports),
+                ", ".join(_short_interface_name(port) for port in missing_ports) if missing_ports else "-",
             ]
         )
     _format_export_sheet(sheet, alignment, border, header_font)
+    sheet.auto_filter.ref = sheet.dimensions
+
+
+def _normalize_missing_module_ports(value: object) -> list[str]:
+    if value in (None, "", "-"):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item or "").strip() and str(item or "").strip() != "-"]
+    return [part.strip() for part in re.split(r"[,，;；]", str(value)) if part.strip() and part.strip() != "-"]
+
+
+def _set_switch_optical_summary_widths(workbook) -> None:
+    if "交换机光模块统计" not in workbook.sheetnames:
+        return
+    sheet = workbook["交换机光模块统计"]
+    for column, width in {"A": 22, "B": 14, "C": 20, "D": 80}.items():
+        sheet.column_dimensions[column].width = width
 
 
 def _ap_state(row: dict[str, object | None]) -> str:

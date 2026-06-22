@@ -4,10 +4,13 @@ NetConsole 是一个面向网络设备运维的本地 Windows 桌面工具，使
 
 ## 运行环境
 
-- Windows 10 / Windows 11
-- Python 3.13
+- 正式支持：Windows 10 1809+ 64位 / Windows 11 64位
+- 可尝试运行：Windows Server 2012 / Windows Server 2012 R2，但不在 Qt6 官方支持范围内，不保证兼容
+- 开发环境：Python 3.13
 - PowerShell
 - 本地 SQLite 数据库
+
+发布版为便携 onedir 目录，解压即用，无需安装 Python。发布包已内置 VC++ 运行库 DLL，一般不需要单独安装 Microsoft Visual C++ Redistributable。不支持 Windows 7 / Windows XP。
 
 部分功能依赖外部工具或系统能力：
 
@@ -205,6 +208,40 @@ _internal/tools/
 _internal/tools/fping_v3/Fping_v3.exe
 _internal/tools/iperf/iperf3.exe
 ```
+
+发布包必须完整保留 `dist/NetConsole/` 目录结构：
+
+```text
+dist/
+  NetConsole/
+    NetConsole.exe
+    _internal/
+      PySide6/
+      tools/
+    data/
+    logs/
+```
+
+使用时必须完整解压整个 NetConsole 文件夹，不要只复制或单独运行 `NetConsole.exe`。如果缺少 `_internal`、Qt DLL 或 Qt platform plugin，Windows 10 可能在启动时报错：
+
+```text
+DLL load failed while importing QtGui
+```
+
+打包后会自动执行运行库检查，也可以手动执行：
+
+```powershell
+python scripts\check_packaged_runtime.py project\dist\NetConsole
+```
+
+如果仍提示缺 DLL 或 `QtGui DLL load failed`：
+
+1. 确认完整复制整个 NetConsole 文件夹。
+2. 确认 `_internal` 目录存在。
+3. 确认 `Qt6Gui.dll`、`Qt6Core.dll`、`Qt6Widgets.dll` 存在。
+4. 确认 `qwindows.dll` 存在。
+5. 确认 `_internal` 内存在 `VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`、`MSVCP140.dll`、`CONCRT140.dll`、`msvcp140_1.dll`、`msvcp140_2.dll`。
+6. Windows Server 2012 / 2012 R2 可能仍需系统更新或重启；如仍失败，属于 Qt6 与旧系统的兼容风险，建议升级到 Windows 10/11 或使用兼容分支。
 
 ## 手工验证：连接测试
 
