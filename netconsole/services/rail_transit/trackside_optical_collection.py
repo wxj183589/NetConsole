@@ -15,6 +15,7 @@ from netconsole.core.database import Database
 from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.transceiver_parser import parse_transceiver_diagnosis
 from netconsole.repositories.ac_repository import AcRepository
@@ -30,6 +31,8 @@ from netconsole.utils.text_encoding import clean_h3c_device_text
 
 TRACKSIDE_OPTICAL_COMMANDS = (
     "screen-length disable",
+    "display interface",
+    "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
 )
 DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY = 1000
@@ -104,6 +107,7 @@ class TracksideDeviceCollectionResult:
     parsed_count: int = 0
     error_message: str | None = None
     rows: list[dict[str, object | None]] = field(default_factory=list)
+    interfaces: list[dict[str, object | None]] = field(default_factory=list)
     lldp_rows: list[dict[str, object | None]] = field(default_factory=list)
 
 
@@ -399,11 +403,12 @@ def _collect_one_target(target: TracksideOpticalTarget, raw_dir: Path, session_d
             output = clean_h3c_device_text(safe_send_command(connection, command, read_timeout=120, strip_prompt=False, strip_command=False, use_timing=True))
             command_outputs[command] = output
             lines.extend([f"===== COMMAND: {command} =====", output, ""])
+        interfaces = parse_interfaces(command_outputs.get("display interface", ""))
         parsed = parse_transceiver_diagnosis(command_outputs.get("display transceiver diagnosis interface", ""))
         lldp_rows = parse_lldp_neighbors(command_outputs.get("display lldp neighbor-information list", ""))
         rows = [_result_row(target, row, session_dir, raw_log) for row in parsed]
         raw_log.write_text("\n".join(lines), encoding="utf-8")
-        return TracksideDeviceCollectionResult(target, True, str(raw_log), len(rows), rows=rows, lldp_rows=lldp_rows)
+        return TracksideDeviceCollectionResult(target, True, str(raw_log), len(rows), rows=rows, interfaces=interfaces, lldp_rows=lldp_rows)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), target.device)
         lines.extend(["===== ERROR =====", message, ""])
@@ -423,26 +428,23 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
         return
     if result.target.target_type == "SWITCH":
         fact_repository = DeviceFactRepository(repository.database)
+        metadata = {
+            "collected_at": _now(),
+            "updated_at": _now(),
+            "collect_run_uuid": "",
+            "raw_log_path": result.raw_log_path,
+        }
+        if result.interfaces:
+            fact_repository.replace_device_interfaces(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.interfaces])
         existing = fact_repository.list_optical_modules(str(result.target.device_uuid or ""))
         modules = merge_existing_optical_modules(
             existing,
             result.rows,
             [],
-            {
-                "collected_at": _now(),
-                "updated_at": _now(),
-                "collect_run_uuid": "",
-                "raw_log_path": result.raw_log_path,
-            },
+            metadata,
         )
         fact_repository.replace_optical_modules(str(result.target.device_uuid or ""), modules)
         if result.lldp_rows:
-            metadata = {
-                "collected_at": _now(),
-                "updated_at": _now(),
-                "collect_run_uuid": "",
-                "raw_log_path": result.raw_log_path,
-            }
             fact_repository.replace_lldp_neighbors(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.lldp_rows])
         return
     if result.target.ac_device_uuid:

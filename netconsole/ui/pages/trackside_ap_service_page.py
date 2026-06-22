@@ -63,6 +63,7 @@ def trackside_default_column_widths() -> dict[str, int]:
         "description": 220,
         "port_status": 110,
         "pvid": 70,
+        "match_source": 110,
         "vlan": 80,
         "switch_rx_power": 120,
         "switch_optical_status": 120,
@@ -591,11 +592,14 @@ class TracksideApServicePage(QWidget):
         header.setStretchLastSection(False)
 
     def ap_online_overview_rows(self) -> list[dict[str, object | None]]:
+        capacity_details = self.ac_repository.list_active_trackside_plan_capacity_details()
+        if not capacity_details:
+            capacity_details = self.ac_repository.list_station_ap_capacity_details()
         return ApOnlineOverviewService.build_rows(
             metadata_rows=self.ac_repository.list_fit_ap_metadata(),
             fit_ap_resources=self.ac_repository.list_all_fit_ap_resources_with_metadata(),
             optical_rows=self.ac_repository.list_all_fit_ap_optical(),
-            capacity_details=self.ac_repository.list_station_ap_capacity_details(),
+            capacity_details=capacity_details,
         )
 
     def ap_online_overview_counts(self) -> tuple[int, int]:

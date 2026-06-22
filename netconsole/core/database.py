@@ -398,6 +398,31 @@ CREATE TABLE IF NOT EXISTS ac_station_ap_capacity (
 );
 """
 
+AC_TRACKSIDE_AP_PLAN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_trackside_ap_plan (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL,
+    station_name TEXT NOT NULL,
+    ap_count INTEGER NOT NULL DEFAULT 0,
+    ap_start_address TEXT,
+    mask_length INTEGER,
+    ap_gateway TEXT,
+    ap_management_vlans TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(mode, station_name)
+);
+"""
+
+AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_trackside_ap_plan_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_station_online_summary_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -557,6 +582,8 @@ class Database:
                             AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
                             AC_FIT_AP_OPTICAL_SCHEMA,
                             AC_STATION_AP_CAPACITY_SCHEMA,
+                            AC_TRACKSIDE_AP_PLAN_SCHEMA,
+                            AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA,
                             AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
                             AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
                             AC_FIT_AP_LLDP_HISTORY_SCHEMA,

@@ -25,7 +25,7 @@ from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
 from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
-from netconsole.repositories.ac_repository import AcRepository
+from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -58,8 +58,12 @@ from netconsole.services.trackside_ap_business import (
     format_ap_side_alarm,
     format_trackside_display_value,
     has_ap_side_optical_data,
+    is_trackside_ap_interface,
+    normalize_vlan_text,
+    parse_vlan_set,
     normalize_interface_name as normalize_trackside_interface_name,
     normalize_mac,
+    pvid_matches_trackside_plan,
     trackside_row_status,
 )
 from netconsole.ui.theme.qt_theme_engine import apply_theme
@@ -84,6 +88,7 @@ from netconsole.ui.pages.ac_management_page import (
     sort_fit_ap_optical_rows,
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
+from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
 from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
 from netconsole.ui.ac_collect_worker import FitApOpticalCollectThread
@@ -153,6 +158,20 @@ class FakeOpticalConnection:
             raise RuntimeError("boom")
         if command == "screen-length disable":
             return ""
+        if command == "display interface":
+            return """
+GigabitEthernet1/0/1 current state: UP
+Line protocol current state: UP
+Description: To AP
+PVID: 921
+Port link-type: access
+Untagged VLANs: 921
+"""
+        if command == "display lldp neighbor-information list":
+            return """
+Local Interface    Chassis ID          Port ID             System Name
+GE1/0/1            bc5a-3457-cbe0      GigabitEthernet1/0/2 AP-1
+"""
         if command == "display transceiver diagnosis interface":
             return """
 GigabitEthernet1/0/1 transceiver diagnostic information:
@@ -248,6 +267,8 @@ def test_ac_tables_are_created(tmp_path):
     assert "ac_fit_ap_metadata" in table_names
     assert "ac_fit_ap_resource_history" in table_names
     assert "ac_station_ap_capacity" in table_names
+    assert "ac_trackside_ap_plan" in table_names
+    assert "ac_trackside_ap_plan_settings" in table_names
     assert "ac_fit_ap_optical_history" in table_names
     assert "ac_fit_ap_radio_history" in table_names
     assert "ac_fit_ap_lldp_history" in table_names
@@ -501,6 +522,126 @@ def test_station_ap_capacity_remark_can_be_saved_and_loaded(tmp_path):
     details = repository.list_station_ap_capacity_details()
     assert details["Station A"]["ap_total"] == 56
     assert details["Station A"]["remark"] == "Need field check"
+
+
+def test_trackside_ap_plan_repository_unified_capacity_and_pvid_plan(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.upsert_station_ap_capacity("Station A", 12)
+    repository.upsert_station_ap_remark("Station A", "Keep this remark")
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {"station_name": "Station A", "ap_count": 10, "ap_management_vlans": "921"},
+            {"station_name": "Station B", "ap_count": 56, "ap_management_vlans": "922,923"},
+        ],
+    )
+
+    assert repository.get_trackside_ap_plan_mode() == TRACKSIDE_AP_PLAN_MODE
+    details = repository.list_active_trackside_plan_capacity_details()
+    assert details["Station A"]["ap_total"] == 10
+    assert details["Station A"]["remark"] == "Keep this remark"
+    assert details["Station A"]["source"] == "trackside_plan"
+    active_plan = repository.get_active_trackside_pvid_plan()
+    assert active_plan["station_vlans"]["Station A"] == {921}
+    assert active_plan["all_vlans"] == {921, 922, 923}
+    assert active_plan["station_totals"]["Station B"] == 56
+
+    repository.upsert_trackside_ap_plan_row(TRACKSIDE_AP_PLAN_MODE, {"station_name": "Station A", "ap_count": 30, "ap_management_vlans": "921"})
+    updated_details = repository.list_active_trackside_plan_capacity_details()
+    assert updated_details["Station A"]["ap_total"] == 30
+    assert updated_details["Station A"]["remark"] == "Keep this remark"
+
+
+def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_trackside_ap_plan_rows(
+        "single_vlan",
+        [{"station_name": "Station A", "ap_count": 10, "ap_management_vlans": "921"}],
+    )
+    repository.replace_trackside_ap_plan_rows(
+        "multi_vlan",
+        [{"station_name": "Station B", "ap_count": 56, "ap_management_vlans": "922,923"}],
+    )
+
+    unified_rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert [row["station_name"] for row in unified_rows] == ["Station B"]
+    assert unified_rows[0]["mode"] == TRACKSIDE_AP_PLAN_MODE
+    assert unified_rows[0]["ap_count"] == 56
+
+    repository.upsert_trackside_ap_plan_row(TRACKSIDE_AP_PLAN_MODE, {"station_name": "Station B", "ap_count": 34, "ap_management_vlans": "922"})
+    refreshed_rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert refreshed_rows[0]["ap_count"] == 34
+
+
+def test_trackside_ap_plan_page_saves_edited_ap_count_from_table(tmp_path):
+    app()
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [{"station_name": "Station A", "ap_count": 42, "ap_management_vlans": "921"}],
+    )
+    page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+
+    item = page.table.item(0, 1)
+    assert item is not None
+    assert item.flags() & Qt.ItemFlag.ItemIsEditable
+    item.setText("34")
+
+    assert page.save_plan() is True
+    rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert rows[0]["ap_count"] == 34
+    assert page.table.item(0, 1).text() == "34"
+    assert repository.list_active_trackside_plan_capacity_details()["Station A"]["ap_total"] == 34
+
+
+def test_ap_online_overview_with_trackside_plan_locks_total_but_allows_remark(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac = device_repository.create(make_ac_device())
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(ac.device_uuid, [{"ap_uuid": "ap-1", "serial_number": "SN-1", "site": "Station A", "state": "R/M"}])
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [{"station_name": "Station A", "ap_count": 34, "ap_management_vlans": "921"}],
+    )
+
+    page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    total_item = page.overview_table.item(0, 1)
+    remark_item = page.overview_table.item(0, 5)
+    assert not total_item.flags() & Qt.ItemFlag.ItemIsEditable
+    assert remark_item.flags() & Qt.ItemFlag.ItemIsEditable
+
+    remark_item.setText("Keep field note")
+    details = repository.list_active_trackside_plan_capacity_details()
+    assert details["Station A"]["ap_total"] == 34
+    assert details["Station A"]["remark"] == "Keep field note"
+
+
+def test_trackside_ap_plan_refresh_prompts_for_unsaved_changes(tmp_path, monkeypatch):
+    app()
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [{"station_name": "Station A", "ap_count": 42, "ap_management_vlans": "921"}],
+    )
+    page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
+    page.table.item(0, 1).setText("34")
+    page.refresh()
+    assert page.table.item(0, 1).text() == "34"
+    assert repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)[0]["ap_count"] == 42
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Discard)
+    page.refresh()
+    assert page.table.item(0, 1).text() == "42"
+
+    page.table.item(0, 1).setText("34")
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
+    page.refresh()
+    assert page.table.item(0, 1).text() == "34"
+    assert repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)[0]["ap_count"] == 34
 
 
 def test_station_online_summary_history_table_created(tmp_path):
@@ -984,9 +1125,10 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert [page.optical_concurrency_combo.itemData(index) for index in range(page.optical_concurrency_combo.count())] == [50, 100, 200, 500, 1000]
     assert page.optical_concurrency_combo.currentData() == 500
     assert page.optical_legend_label.text()
-    assert page.tabs.tabText(0) == "FIT-AP Resources"
-    assert page.tabs.tabText(2) == "AP Online Overview"
-    assert page.tabs.tabText(3) == "Online Vehicle MR"
+    assert page.tabs.tabText(0) == "Trackside AP Plan"
+    assert page.tabs.tabText(1) == "FIT-AP Resources"
+    assert page.tabs.tabText(3) == "AP Online Overview"
+    assert page.tabs.tabText(4) == "Online Vehicle MR"
 
 
 def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
@@ -1833,7 +1975,7 @@ def test_ap_online_overview_page_hides_new_online_section(tmp_path):
         "上线率",
         "备注",
     ]
-    assert page.tabs.widget(2).findChild(PaginationWidget) is None
+    assert page.tabs.widget(3).findChild(PaginationWidget) is None
 
 
 def test_ap_online_overview_table_edit_rules_and_save(tmp_path):
@@ -2048,6 +2190,57 @@ def test_trackside_ap_normalizes_mac_and_interface_names():
     assert normalize_trackside_interface_name("GigabitEthernet2/0/22") == "GigabitEthernet2/0/22"
     assert normalize_trackside_interface_name("XGE1/0/49") == "Ten-GigabitEthernet1/0/49"
     assert normalize_trackside_interface_name("BAGG1") == "Bridge-Aggregation1"
+
+
+def test_trackside_vlan_parser_normalizes_ranges_and_rejects_invalid_values():
+    assert parse_vlan_set("21，925-927; 21 922") == {21, 922, 925, 926, 927}
+    assert normalize_vlan_text("922,21,921-922") == "21,921,922"
+    for value in ("0", "4095", "abc", "930-925"):
+        with pytest.raises(ValueError):
+            parse_vlan_set(value)
+
+
+def test_trackside_ap_interface_matches_description_or_pvid_plan():
+    plan = {
+        "mode": TRACKSIDE_AP_PLAN_MODE,
+        "station_vlans": {"Station A": {921}},
+        "all_vlans": {921},
+        "station_totals": {"Station A": 30},
+    }
+    switch = Device(name="SW", station="Station A", device_uuid="sw-1")
+
+    assert is_trackside_ap_interface(switch, {"description": "", "pvid": "921"}, plan) == (True, "pvid")
+    assert is_trackside_ap_interface(switch, {"description": "to AP", "pvid": "1"}, plan) == (True, "description")
+    assert is_trackside_ap_interface(switch, {"description": "to AP", "pvid": "921"}, plan) == (True, "description+pvid")
+    assert is_trackside_ap_interface(switch, {"description": "", "pvid": "922"}, plan) == (False, "none")
+
+
+def test_trackside_ap_interface_prefers_station_vlans_and_falls_back_global():
+    plan = {
+        "mode": TRACKSIDE_AP_PLAN_MODE,
+        "station_vlans": {"Station A": {921}, "Station B": {922}},
+        "all_vlans": {921, 922},
+        "station_totals": {"Station A": 30, "Station B": 56},
+    }
+
+    assert pvid_matches_trackside_plan("Station A", "921", plan) is True
+    assert pvid_matches_trackside_plan("Station A", "922", plan) is False
+    assert pvid_matches_trackside_plan("", "922", plan) is True
+
+
+def test_trackside_ap_business_rows_include_pvid_match_source():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "description": "", "pvid": "921"}]},
+        {"sw-1": []},
+        [],
+        trackside_ap_plan={"mode": TRACKSIDE_AP_PLAN_MODE, "station_vlans": {"Station A": {921}}, "all_vlans": {921}},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["match_source"] == "pvid"
+    assert format_trackside_display_value("match_source", rows[0]) == "PVID匹配"
 
 
 def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
@@ -2422,6 +2615,10 @@ def test_trackside_optical_collection_runs_commands_saves_raw_and_continues_afte
     assert len(rows) >= 2
     assert any(row[1] == "-6.10" for row in rows)
     assert any(row[2] for row in rows)
+    ok_device = next(device for device in repository.list() if device.name == "OK")
+    interfaces = DeviceFactRepository(database).list_device_interfaces(ok_device.device_uuid)
+    assert interfaces[0]["pvid"] == "921"
+    assert interfaces[0]["description"] == "To AP"
 
 
 def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(tmp_path, monkeypatch):
@@ -2602,12 +2799,12 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     page.refresh_async(force=True)
     process_events_until(lambda: page.has_loaded and not page.is_loading)
     assert page.trackside_table.rowCount() == 2
-    assert page.trackside_table.item(0, 8).text() == "-6.10"
-    assert page.trackside_table.item(0, 9).text() == "Unknown"
-    assert page.trackside_table.item(0, 10).text() == "bc5a-3457-cbe0"
-    assert page.trackside_table.item(0, 11).text() == "AP10"
-    assert page.trackside_table.item(0, 12).text() == "-14.35"
-    assert page.trackside_table.item(0, 13).text() == "Notice"
+    assert page.trackside_table.item(0, 9).text() == "-6.10"
+    assert page.trackside_table.item(0, 10).text() == "Unknown"
+    assert page.trackside_table.item(0, 11).text() == "bc5a-3457-cbe0"
+    assert page.trackside_table.item(0, 12).text() == "AP10"
+    assert page.trackside_table.item(0, 13).text() == "-14.35"
+    assert page.trackside_table.item(0, 14).text() == "Notice"
     assert page.trackside_table.item(0, 0).background().color().name() == "#fbbf24"
     assert page.trackside_table.item(0, 0).foreground().color().name() == "#111827"
 

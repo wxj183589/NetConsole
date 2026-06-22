@@ -58,6 +58,7 @@ from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOptica
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
+from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
 from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_table_style, set_table_column_fields
 from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
@@ -418,6 +419,7 @@ class AcManagementPage(QWidget):
         self.detail_windows: list[FitApDetailDialog] = []
         self.optical_rows: list[dict[str, object | None]] = []
         self.trackside_rows: list[dict[str, object | None]] = []
+        self._overview_uses_trackside_plan = False
         self.resource_rows: list[dict[str, object | None]] = []
         self._device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] = {}
         self.resource_page = 1
@@ -462,6 +464,7 @@ class AcManagementPage(QWidget):
         self.trackside_export_button = QPushButton()
         self.optical_legend_label = make_text_selectable(QLabel())
         self.coming_soon_label = make_text_selectable(QLabel())
+        self.trackside_plan_page = TracksideApPlanPage(self.repository, self.i18n, self.site_name)
 
         configure_readonly_table(self.resources_table)
         configure_readonly_table(self.optical_table)
@@ -565,6 +568,7 @@ class AcManagementPage(QWidget):
         mr_layout.addWidget(self.coming_soon_label, 1)
         mr_tab.setLayout(mr_layout)
 
+        self.tabs.addTab(self.trackside_plan_page, "")
         self.tabs.addTab(resources_tab, "")
         self.tabs.addTab(optical_tab, "")
         self.tabs.addTab(overview_tab, "")
@@ -603,6 +607,7 @@ class AcManagementPage(QWidget):
         self.optical_pagination.pageSizeChanged.connect(self.set_optical_page_size)
         self.trackside_pagination.pageChanged.connect(self.set_trackside_page)
         self.trackside_pagination.pageSizeChanged.connect(self.set_trackside_page_size)
+        self.trackside_plan_page.plan_saved.connect(self._handle_trackside_plan_saved)
         self.retranslate()
         self.refresh_devices()
 
@@ -612,6 +617,9 @@ class AcManagementPage(QWidget):
         self.fact_repository = DeviceFactRepository(device_repository.database)
         self.import_export_service = FitApImportExportService(self.repository)
         self.site_name = site_name
+        self.trackside_plan_page.repository = self.repository
+        self.trackside_plan_page.site_name = site_name
+        self.trackside_plan_page.refresh()
         self.refresh_devices()
 
     def retranslate(self) -> None:
@@ -646,10 +654,12 @@ class AcManagementPage(QWidget):
             label = self.findChild(QLabel, f"summary_label_{SUMMARY_FIELDS[index][1]}")
             if label is not None:
                 label.setText(self.i18n.t(key))
-        self.tabs.setTabText(0, self.i18n.t("ac.fit_ap_resources"))
-        self.tabs.setTabText(1, self.i18n.t("ac.fit_ap_optical"))
-        self.tabs.setTabText(2, self.i18n.t("ac.ap_online_overview"))
-        self.tabs.setTabText(3, self.i18n.t("ac.online_vehicle_mr"))
+        self.tabs.setTabText(0, self.i18n.t("ac.trackside_ap_plan"))
+        self.tabs.setTabText(1, self.i18n.t("ac.fit_ap_resources"))
+        self.tabs.setTabText(2, self.i18n.t("ac.fit_ap_optical"))
+        self.tabs.setTabText(3, self.i18n.t("ac.ap_online_overview"))
+        self.tabs.setTabText(4, self.i18n.t("ac.online_vehicle_mr"))
+        self.trackside_plan_page.retranslate()
         self.resources_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_RESOURCE_COLUMNS])
         self.resources_table.horizontalHeaderItem(CHECK_COLUMN).setText(self.i18n.t("ap.select_all"))
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS])
@@ -984,6 +994,7 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_table"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
+        self.refresh_overview_table()
         rows = self.filtered_optical_rows()
         export_fit_ap_optical_xlsx(
             path,
@@ -1001,6 +1012,7 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_overview"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
+        self.refresh_overview_table()
         rows = self.current_overview_rows()
         export_ap_online_overview_xlsx(path, rows, [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
         remember_export_path(path)
@@ -1010,6 +1022,7 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_轨旁AP业务_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
         if not path:
             return
+        self.refresh_overview_table()
         rows = self.filtered_trackside_rows()
         export_trackside_ap_business_xlsx(
             path,
@@ -1056,6 +1069,10 @@ class AcManagementPage(QWidget):
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
             return
         source_rows = resources if resources is not None else self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        capacity_details = self.repository.list_active_trackside_plan_capacity_details()
+        self._overview_uses_trackside_plan = bool(capacity_details)
+        if not capacity_details:
+            capacity_details = self.repository.list_station_ap_capacity_details()
         self._set_rows(
             self.overview_table,
             AP_ONLINE_OVERVIEW_COLUMNS,
@@ -1063,9 +1080,13 @@ class AcManagementPage(QWidget):
                 metadata_rows=self.repository.list_fit_ap_metadata(),
                 fit_ap_resources=source_rows,
                 optical_rows=self.repository.list_fit_ap_optical(ac_uuid),
-                capacity_details=self.repository.list_station_ap_capacity_details(),
+                capacity_details=capacity_details,
             ),
         )
+
+    def _handle_trackside_plan_saved(self) -> None:
+        self.refresh_overview_table()
+        self.refresh_trackside_table()
 
     def _rebuild_device_optical_status_lookup(self) -> None:
         """Rebuild the device optical status lookup from all devices and their optical modules.
@@ -1091,6 +1112,7 @@ class AcManagementPage(QWidget):
             lldp_by_device,
             self.repository.list_all_fit_ap_resources_with_metadata(),
             lookup,
+            self.repository.get_active_trackside_pvid_plan(),
         )
         self._set_trackside_site_filter_items(self.trackside_rows)
         self.apply_trackside_filters()
@@ -1278,10 +1300,15 @@ class AcManagementPage(QWidget):
                         elif field in {"switch_optical_status", "ap_optical_status"}:
                             value = display_optical_status(str(value or ""), self.i18n.language) if value else value
                         item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
-                        if table is self.overview_table and field in {"total", "remark"} and row.get("site") != "合计":
+                        plan_locked = table is self.overview_table and bool(row.get("source") == "trackside_plan" or row.get("remark") == "\u8f68\u65c1AP\u89c4\u5212")
+                        if field == "remark":
+                            plan_locked = False
+                        if table is self.overview_table and field in {"total", "remark"} and row.get("site") != "合计" and not plan_locked:
                             item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                         else:
                             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                        if plan_locked and field == "total":
+                            item.setToolTip(self.i18n.t("ac.trackside_plan_total_locked"))
                         if field == "state_display":
                             item.setToolTip(f"{self.i18n.t('ap.state_raw')}: {row.get('state_raw') or row.get('state') or '-'}")
                         if table is self.optical_table:
@@ -1342,6 +1369,10 @@ class AcManagementPage(QWidget):
                 self.refresh_overview_table()
                 return
             self.repository.upsert_station_ap_remark(site_item.text(), remark)
+            self.refresh_overview_table()
+            return
+        if self._overview_uses_trackside_plan:
+            QMessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.trackside_plan_total_locked"))
             self.refresh_overview_table()
             return
         try:

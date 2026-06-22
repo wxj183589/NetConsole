@@ -2017,6 +2017,54 @@ TRANSLATIONS["en_US"].update(
 
 TRANSLATIONS["zh_CN"].update(
     {
+        "ac.trackside_ap_plan": "\u8f68\u65c1AP\u89c4\u5212",
+        "ac.trackside_plan.station_name": "\u8f66\u7ad9\u540d\u79f0",
+        "ac.trackside_plan.ap_count": "AP\u6570\u91cf",
+        "ac.trackside_plan.ap_start_address": "AP\u8d77\u59cb\u5730\u5740",
+        "ac.trackside_plan.mask": "\u63a9\u7801",
+        "ac.trackside_plan.ap_gateway": "AP\u7f51\u5173",
+        "ac.trackside_plan.ap_management_vlan": "AP\u7ba1\u7406VLAN",
+        "ac.trackside_plan.add_row": "\u65b0\u589e\u884c",
+        "ac.trackside_plan.delete_selected": "\u5220\u9664\u9009\u4e2d",
+        "ac.trackside_plan.save": "\u4fdd\u5b58",
+        "ac.trackside_plan.import": "\u5bfc\u5165",
+        "ac.trackside_plan.export": "\u5bfc\u51fa",
+        "ac.trackside_plan.template": "\u4e0b\u8f7d\u6a21\u677f",
+        "ac.trackside_plan.validation_failed": "\u89c4\u5212\u6570\u636e\u6821\u9a8c\u5931\u8d25",
+        "ac.trackside_plan_total_locked": "AP\u603b\u6570\u7531\u8f68\u65c1AP\u89c4\u5212\u751f\u6210\uff0c\u8bf7\u5230\u8f68\u65c1AP\u89c4\u5212\u9875\u4fee\u6539\u3002",
+        "trackside.match_source": "\u8bc6\u522b\u6765\u6e90",
+        "trackside.match_source.description": "\u63cf\u8ff0\u5339\u914d",
+        "trackside.match_source.pvid": "PVID\u5339\u914d",
+        "trackside.match_source.both": "\u63cf\u8ff0+PVID",
+    }
+)
+
+TRANSLATIONS["en_US"].update(
+    {
+        "ac.trackside_ap_plan": "Trackside AP Plan",
+        "ac.trackside_plan.station_name": "Station",
+        "ac.trackside_plan.ap_count": "AP Count",
+        "ac.trackside_plan.ap_start_address": "AP Start Address",
+        "ac.trackside_plan.mask": "Mask",
+        "ac.trackside_plan.ap_gateway": "AP Gateway",
+        "ac.trackside_plan.ap_management_vlan": "AP Management VLAN",
+        "ac.trackside_plan.add_row": "Add Row",
+        "ac.trackside_plan.delete_selected": "Delete Selected",
+        "ac.trackside_plan.save": "Save",
+        "ac.trackside_plan.import": "Import",
+        "ac.trackside_plan.export": "Export",
+        "ac.trackside_plan.template": "Download Template",
+        "ac.trackside_plan.validation_failed": "Plan validation failed",
+        "ac.trackside_plan_total_locked": "AP total is generated from Trackside AP Plan. Edit it on the Trackside AP Plan page.",
+        "trackside.match_source": "Match Source",
+        "trackside.match_source.description": "Description",
+        "trackside.match_source.pvid": "PVID",
+        "trackside.match_source.both": "Description+PVID",
+    }
+)
+
+TRANSLATIONS["zh_CN"].update(
+    {
         "mesh_report.generate_report": "生成分析报告",
         "mesh_report.settings_title": "MESH分析报告设置",
         "mesh_report.report_name": "报告名称",

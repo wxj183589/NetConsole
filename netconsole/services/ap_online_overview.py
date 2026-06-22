@@ -192,7 +192,8 @@ def build_station_totals(
         if not site_name:
             continue
         capacity_total, remark = _capacity_total_remark(value)
-        grouped[site_name] = {"site": site_name, "total": capacity_total, "online": 0, "offline": 0, "remark": remark}
+        source = value.get("source") if isinstance(value, dict) else ""
+        grouped[site_name] = {"site": site_name, "total": capacity_total, "online": 0, "offline": 0, "remark": remark, "source": source}
 
     seen: set[str] = set()
     for plan in planned_aps:
@@ -278,6 +279,8 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
             "offline": max(total - online, 0),
             "remark": row.get("remark") or "",
         }
+        if row.get("source"):
+            normalized["source"] = row.get("source") or ""
         result.append(_with_online_rate(normalized))
     total = sum(int(row.get("total") or 0) for row in result)
     online = sum(int(row.get("online") or 0) for row in result)

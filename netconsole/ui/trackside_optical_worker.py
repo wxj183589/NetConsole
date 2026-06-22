@@ -17,7 +17,7 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     collect_trackside_optical,
 )
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
-from netconsole.services.trackside_ap_business import description_contains_ap
+from netconsole.services.trackside_ap_business import is_trackside_ap_interface
 
 
 @dataclass(frozen=True)
@@ -48,14 +48,15 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
     lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
     fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
+    active_plan = ac_repository.get_active_trackside_pvid_plan()
     interface_count = sum(len(rows) for rows in interfaces_by_device.values())
     optical_count = sum(len(rows) for rows in optical_by_device.values())
     lldp_count = sum(len(rows) for rows in lldp_by_device.values())
     candidate_ap_interface_count = sum(
         1
-        for rows in interfaces_by_device.values()
-        for row in rows
-        if description_contains_ap(row.get("description"))
+        for device in devices
+        for row in interfaces_by_device.get(str(device.device_uuid or ""), [])
+        if is_trackside_ap_interface(device, row, active_plan)[0]
     )
     query_ms = int((perf_counter() - query_start) * 1000)
 
@@ -68,6 +69,7 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
         lldp_by_device,
         fit_ap_resource_rows,
         build_switch_data_lookup(devices, optical_by_device),
+        active_plan,
     )
     build_ms = int((perf_counter() - build_start) * 1000)
     row_count = len(rows)

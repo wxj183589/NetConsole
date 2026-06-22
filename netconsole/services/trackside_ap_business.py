@@ -28,6 +28,7 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("details.port_description", "description"),
     ("details.port_status", "port_status"),
     ("details.pvid", "pvid"),
+    ("trackside.match_source", "match_source"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
@@ -72,10 +73,86 @@ TRACKSIDE_OPTICAL_COLOR_RGB = {
 
 AP_SIDE_DISPLAY_FIELDS = {"ap_mac", "ap_name", "ap_rx_power", "ap_tx_power"}
 AP_SIDE_MISSING_DISPLAY = "-"
+MATCH_SOURCE_LABELS = {
+    "description": "\u63cf\u8ff0\u5339\u914d",
+    "pvid": "PVID\u5339\u914d",
+    "description+pvid": "\u63cf\u8ff0+PVID",
+    "none": "-",
+}
 
 
 def description_contains_ap(description: object) -> bool:
     return "ap" in str(description or "").casefold()
+
+
+def parse_vlan_set(value: object) -> set[int]:
+    if value in (None, ""):
+        return set()
+    tokens = [item for item in re.split(r"[,，;；\s]+", str(value).strip()) if item]
+    vlans: set[int] = set()
+    for token in tokens:
+        if "-" in token:
+            parts = token.split("-", 1)
+            if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                raise ValueError(f"invalid VLAN range: {token}")
+            start = int(parts[0])
+            end = int(parts[1])
+            if start > end:
+                raise ValueError(f"invalid VLAN range: {token}")
+            for vlan in range(start, end + 1):
+                _validate_vlan(vlan)
+                vlans.add(vlan)
+            continue
+        if not token.isdigit():
+            raise ValueError(f"invalid VLAN: {token}")
+        vlan = int(token)
+        _validate_vlan(vlan)
+        vlans.add(vlan)
+    return vlans
+
+
+def normalize_vlan_text(value: object) -> str:
+    return ",".join(str(vlan) for vlan in sorted(parse_vlan_set(value)))
+
+
+def pvid_matches_trackside_plan(device_station: object, pvid: object, active_plan: dict | None) -> bool:
+    if not active_plan:
+        return False
+    try:
+        vlan = int(str(pvid or "").strip())
+    except ValueError:
+        return False
+    if vlan <= 0:
+        return False
+    station_name = str(device_station or "").strip()
+    station_vlans = active_plan.get("station_vlans") if isinstance(active_plan, dict) else {}
+    if isinstance(station_vlans, dict) and station_name and station_name in station_vlans:
+        return vlan in set(station_vlans.get(station_name) or set())
+    if isinstance(station_vlans, dict) and station_name and station_vlans and station_name not in station_vlans:
+        try:
+            from netconsole.core import app_logger
+
+            app_logger.log_warning("TRACKSIDE_AP_PLAN_STATION_FALLBACK", f"station={station_name}, pvid={vlan}")
+        except Exception:
+            pass
+    return vlan in set(active_plan.get("all_vlans") or set()) if isinstance(active_plan, dict) else False
+
+
+def is_trackside_ap_interface(device: Device, interface: dict[str, object | None], active_plan: dict | None = None) -> tuple[bool, str]:
+    by_description = description_contains_ap(interface.get("description"))
+    by_pvid = pvid_matches_trackside_plan(getattr(device, "station", ""), interface.get("pvid"), active_plan)
+    if by_description and by_pvid:
+        return True, "description+pvid"
+    if by_description:
+        return True, "description"
+    if by_pvid:
+        return True, "pvid"
+    return False, "none"
+
+
+def _validate_vlan(vlan: int) -> None:
+    if vlan < 1 or vlan > 4094:
+        raise ValueError(f"VLAN out of range: {vlan}")
 
 
 def build_device_optical_status_lookup(
@@ -94,6 +171,7 @@ def build_trackside_ap_business_rows(
     lldp_by_device: dict[str, list[dict[str, object | None]]] | None = None,
     fit_ap_resource_rows: list[dict[str, object | None]] | None = None,
     device_optical_status_lookup: dict[tuple[str, str], str] | None = None,
+    trackside_ap_plan: dict | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {
         device_uuid: {normalize_interface_name(row.get("interface_name")).casefold(): row for row in rows}
@@ -130,7 +208,8 @@ def build_trackside_ap_business_rows(
         optical_index = optical_indexes.get(device_uuid, {})
         lldp_index = lldp_indexes.get(device_uuid, {})
         for interface in interfaces_by_device.get(device_uuid, []):
-            if not description_contains_ap(interface.get("description")):
+            matched, match_source = is_trackside_ap_interface(device, interface, trackside_ap_plan)
+            if not matched:
                 continue
             interface_name = str(interface.get("interface_name") or "")
             normalized_interface = normalize_interface_name(interface_name).casefold()
@@ -190,6 +269,7 @@ def build_trackside_ap_business_rows(
                     "description": interface.get("description"),
                     "port_status": interface.get("port_status"),
                     "pvid": interface.get("pvid"),
+                    "match_source": match_source,
                     "vlan": interface.get("vlan"),
                     "switch_rx_power": optical.get("rx_power"),
                     "switch_optical_status": switch_status,
@@ -236,6 +316,8 @@ def format_ap_side_alarm(row: dict[str, object | None], language: str = "zh") ->
 
 
 def format_trackside_display_value(field: str, row: dict[str, object | None], language: str = "zh") -> str:
+    if field == "match_source":
+        return _match_source_label(row.get(field), language)
     if field == "ap_optical_status":
         return format_ap_side_alarm(row, language)
     if field in AP_SIDE_DISPLAY_FIELDS and not has_ap_side_optical_data(row):
@@ -248,6 +330,18 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
     return str(value) if value not in (None, "") else AP_SIDE_MISSING_DISPLAY
 
 
+def _match_source_label(value: object, language: str = "zh") -> str:
+    source = str(value or "none")
+    if language.startswith("en"):
+        return {
+            "description": "Description",
+            "pvid": "PVID",
+            "description+pvid": "Description+PVID",
+            "none": "-",
+        }.get(source, source or "-")
+    return MATCH_SOURCE_LABELS.get(source, source or "-")
+
+
 def filter_trackside_ap_business_rows(rows: list[dict[str, object | None]], site: object = "", search: object = "") -> list[dict[str, object | None]]:
     site_text = str(site or "").strip()
     search_text = str(search or "").strip().casefold()
@@ -255,7 +349,7 @@ def filter_trackside_ap_business_rows(rows: list[dict[str, object | None]], site
     if site_text:
         result = [row for row in result if str(row.get("site") or "") == site_text]
     if search_text:
-        fields = ("ap_name", "ap_mac", "device_name", "interface_name", "site")
+        fields = ("ap_name", "ap_mac", "device_name", "interface_name", "site", "match_source", "pvid", "vlan")
         result = [row for row in result if any(search_text in str(row.get(field) or "").casefold() for field in fields)]
     return result
 

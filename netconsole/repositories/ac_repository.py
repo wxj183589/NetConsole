@@ -4,8 +4,24 @@ from datetime import datetime
 from uuid import uuid4
 
 from netconsole.core.database import Database
+from netconsole.services.trackside_ap_business import parse_vlan_set
 
 
+TRACKSIDE_AP_PLAN_MODE = "unified"
+LEGACY_TRACKSIDE_PLAN_MODES = {"single_vlan", "multi_vlan"}
+TRACKSIDE_PLAN_MODES = {TRACKSIDE_AP_PLAN_MODE, *LEGACY_TRACKSIDE_PLAN_MODES}
+TRACKSIDE_PLAN_FIELDS = (
+    "mode",
+    "station_name",
+    "ap_count",
+    "ap_start_address",
+    "mask_length",
+    "ap_gateway",
+    "ap_management_vlans",
+    "sort_order",
+    "created_at",
+    "updated_at",
+)
 SUMMARY_FIELDS = (
     "ac_device_uuid",
     "total_aps",
@@ -569,6 +585,128 @@ class AcRepository:
             for row in rows
         }
 
+    def get_trackside_ap_plan_mode(self) -> str:
+        return TRACKSIDE_AP_PLAN_MODE
+
+    def set_trackside_ap_plan_mode(self, mode: str) -> None:
+        mode = self._normalize_trackside_plan_mode(mode)
+        now = self._now()
+        with self.database.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ac_trackside_ap_plan_settings (key, value, updated_at)
+                VALUES ('active_mode', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (mode, now),
+            )
+            conn.commit()
+
+    def list_trackside_ap_plan(self, mode: str | None = None) -> list[dict[str, object | None]]:
+        if mode == TRACKSIDE_AP_PLAN_MODE:
+            result = self._list_trackside_ap_plan_by_mode(TRACKSIDE_AP_PLAN_MODE)
+            if result:
+                return result
+            legacy_rows = self._list_legacy_trackside_plan_as_unified()
+            if legacy_rows:
+                self.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, legacy_rows)
+                return self._list_trackside_ap_plan_by_mode(TRACKSIDE_AP_PLAN_MODE)
+            return []
+
+        params: list[object] = []
+        where = ""
+        if mode is not None:
+            where = "WHERE mode = ?"
+            params.append(self._normalize_trackside_plan_mode(mode))
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ac_trackside_ap_plan
+                {where}
+                ORDER BY mode, sort_order, station_name
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_trackside_ap_plan_rows(self, mode: str, rows: list[dict[str, object | None]]) -> None:
+        mode = self._normalize_trackside_plan_mode(mode)
+        now = self._now()
+        saved_payloads: list[dict[str, object | None]] = []
+        with self.database.connect() as conn:
+            conn.execute("DELETE FROM ac_trackside_ap_plan WHERE mode = ?", (mode,))
+            for index, row in enumerate(rows):
+                payload = self._trackside_plan_payload(mode, row, index, now)
+                saved_payloads.append(payload)
+                columns = ", ".join(TRACKSIDE_PLAN_FIELDS)
+                placeholders = ", ".join("?" for _ in TRACKSIDE_PLAN_FIELDS)
+                conn.execute(
+                    f"INSERT INTO ac_trackside_ap_plan ({columns}) VALUES ({placeholders})",
+                    [payload[field] for field in TRACKSIDE_PLAN_FIELDS],
+                )
+            conn.commit()
+
+    def upsert_trackside_ap_plan_row(self, mode: str, row: dict[str, object | None]) -> None:
+        mode = self._normalize_trackside_plan_mode(mode)
+        now = self._now()
+        payload = self._trackside_plan_payload(mode, row, int(row.get("sort_order") or 0), now)
+        columns = ", ".join(TRACKSIDE_PLAN_FIELDS)
+        placeholders = ", ".join("?" for _ in TRACKSIDE_PLAN_FIELDS)
+        updates = ", ".join(f"{field} = excluded.{field}" for field in TRACKSIDE_PLAN_FIELDS if field not in {"mode", "station_name", "created_at"})
+        with self.database.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO ac_trackside_ap_plan ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT(mode, station_name) DO UPDATE SET {updates}
+                """,
+                [payload[field] for field in TRACKSIDE_PLAN_FIELDS],
+            )
+            conn.commit()
+
+    def delete_trackside_ap_plan_rows(self, mode: str, station_names: list[str]) -> None:
+        mode = self._normalize_trackside_plan_mode(mode)
+        names = [str(name or "").strip() for name in station_names if str(name or "").strip()]
+        if not names:
+            return
+        placeholders = ", ".join("?" for _ in names)
+        with self.database.connect() as conn:
+            conn.execute(f"DELETE FROM ac_trackside_ap_plan WHERE mode = ? AND station_name IN ({placeholders})", [mode, *names])
+            conn.commit()
+
+    def list_active_trackside_plan_capacity_details(self) -> dict[str, dict[str, object | None]]:
+        rows = self.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+        if not rows:
+            return {}
+        old_details = self.list_station_ap_capacity_details()
+        return {
+            str(row["station_name"]): {
+                "ap_total": int(row.get("ap_count") or 0),
+                "remark": (old_details.get(str(row["station_name"])) or {}).get("remark", ""),
+                "source": "trackside_plan",
+            }
+            for row in rows
+            if str(row.get("station_name") or "").strip()
+        }
+
+    def get_active_trackside_pvid_plan(self) -> dict[str, object]:
+        mode = TRACKSIDE_AP_PLAN_MODE
+        rows = self.list_trackside_ap_plan(mode)
+        station_vlans: dict[str, set[int]] = {}
+        station_totals: dict[str, int] = {}
+        all_vlans: set[int] = set()
+        for row in rows:
+            station = str(row.get("station_name") or "").strip()
+            if not station:
+                continue
+            vlans = parse_vlan_set(row.get("ap_management_vlans"))
+            if not vlans:
+                continue
+            station_vlans[station] = vlans
+            all_vlans.update(vlans)
+            station_totals[station] = int(row.get("ap_count") or 0)
+        return {"mode": mode, "station_vlans": station_vlans, "all_vlans": all_vlans, "station_totals": station_totals}
+
     def save_station_online_summary_history(self, rows: list[dict[str, object | None]], collected_at: str | None = None) -> int:
         now = self._now()
         stamp = collected_at or now
@@ -757,6 +895,51 @@ class AcRepository:
     @classmethod
     def _payload(cls, fields: tuple[str, ...], data: dict[str, object | None]) -> dict[str, object | None]:
         return {field: data.get(field) for field in fields}
+
+    @staticmethod
+    def _normalize_trackside_plan_mode(mode: str) -> str:
+        if mode not in TRACKSIDE_PLAN_MODES:
+            raise ValueError(f"Unsupported trackside AP plan mode: {mode}")
+        return mode
+
+    @classmethod
+    def _trackside_plan_payload(cls, mode: str, row: dict[str, object | None], sort_order: int, now: str) -> dict[str, object | None]:
+        station_name = str(row.get("station_name") or "").strip()
+        if not station_name:
+            raise ValueError("station_name is required")
+        payload = cls._payload(TRACKSIDE_PLAN_FIELDS, row)
+        payload["mode"] = mode
+        payload["station_name"] = station_name
+        payload["ap_count"] = max(int(row.get("ap_count") or 0), 0)
+        payload["mask_length"] = row.get("mask_length")
+        payload["sort_order"] = row.get("sort_order") if row.get("sort_order") is not None else sort_order
+        payload["ap_management_vlans"] = str(row.get("ap_management_vlans") or "").strip()
+        payload["created_at"] = row.get("created_at") or now
+        payload["updated_at"] = now
+        return payload
+
+    def _list_legacy_trackside_plan_as_unified(self) -> list[dict[str, object | None]]:
+        rows = self._list_trackside_ap_plan_by_mode("multi_vlan") or self._list_trackside_ap_plan_by_mode("single_vlan")
+        result = []
+        for index, row in enumerate(rows):
+            item = dict(row)
+            item["mode"] = TRACKSIDE_AP_PLAN_MODE
+            item["sort_order"] = index
+            result.append(item)
+        return result
+
+    def _list_trackside_ap_plan_by_mode(self, mode: str) -> list[dict[str, object | None]]:
+        mode = self._normalize_trackside_plan_mode(mode)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ac_trackside_ap_plan
+                WHERE mode = ?
+                ORDER BY sort_order, station_name
+                """,
+                (mode,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     @classmethod
     def _set_time_defaults(cls, payload: dict[str, object | None]) -> None:
