@@ -79,14 +79,14 @@ def fake_tray_by_default(monkeypatch):
 
 
 def test_main_window_size_uses_default_on_large_screen():
-    size = fit_default_window_size(1920, 1080, 1440, 900)
+    size = fit_default_window_size(1920, 1080, 1600, 900)
 
-    assert size.width == 1440
+    assert size.width == 1600
     assert size.height == 900
 
 
 def test_window_size_does_not_exceed_ninety_percent_on_small_screen():
-    size = fit_default_window_size(1366, 768, 1440, 900)
+    size = fit_default_window_size(1366, 768, 1600, 900)
 
     assert size.width == int(1366 * 0.9)
     assert size.height == int(768 * 0.9)

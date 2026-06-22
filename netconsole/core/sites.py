@@ -6,6 +6,7 @@ from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.demo_data import insert_demo_devices
 
@@ -98,6 +99,7 @@ class SiteManager:
         database.initialize()
         if first_database and with_demo_data:
             insert_demo_devices(DeviceRepository(database))
+        DeviceGroupRepository(database, site_name).ensure_default_groups()
         return Site(name=site_name, root_path=root_path, database_path=database.path)
 
     def ensure_app_config(self) -> dict[str, object]:

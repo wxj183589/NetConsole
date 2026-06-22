@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QHeaderView,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -16,6 +17,16 @@ from netconsole.ui.table_utils import configure_readonly_table
 
 
 CHECK_COLUMN = 0
+DEVICE_COLUMN_WIDTHS = {
+    "select": 48,
+    "name": 260,
+    "group": 90,
+    "station": 110,
+    "ip_address": 130,
+    "protocols": 70,
+    "updated_at": 150,
+    "actions": 220,
+}
 
 COLUMNS = (
     ("select", ""),
@@ -67,6 +78,7 @@ class DeviceTable(QTableWidget):
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
         apply_action_column(self)
+        self._apply_column_layout()
         self._refresh_action_buttons()
 
     def set_devices(self, devices: list[Device]) -> None:
@@ -95,6 +107,7 @@ class DeviceTable(QTableWidget):
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
         apply_action_column(self)
+        self._apply_column_layout()
         self.selection_changed.emit()
 
     def set_group_names(self, group_names: dict[int, str]) -> None:
@@ -219,6 +232,23 @@ class DeviceTable(QTableWidget):
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
         item.setCheckState(state)
         self.setHorizontalHeaderItem(CHECK_COLUMN, item)
+
+    def _apply_column_layout(self) -> None:
+        self.setWordWrap(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setProperty("netconsole_manual_column_widths", True)
+        header = self.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        for column, (field, _) in enumerate(COLUMNS):
+            width = DEVICE_COLUMN_WIDTHS.get(field)
+            if width is not None:
+                self.setColumnWidth(column, width)
+            if field == "select":
+                header.setSectionResizeMode(column, QHeaderView.Fixed)
+            else:
+                header.setSectionResizeMode(column, QHeaderView.Interactive)
 
     @staticmethod
     def _column_index(field: str) -> int:

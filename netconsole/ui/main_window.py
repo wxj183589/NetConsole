@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -100,6 +101,7 @@ class MainWindow(QMainWindow):
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
         self.device_page.groups_changed.connect(self.refresh_group_filters)
+        self.device_page.devices_changed.connect(self.refresh_device_dependents)
         self.new_site_button.clicked.connect(self.create_site)
         self.switch_site_button.clicked.connect(self.switch_site_dialog)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
@@ -138,7 +140,7 @@ class MainWindow(QMainWindow):
         root.setLayout(root_layout)
         self.setCentralWidget(root)
         self.setWindowIcon(QIcon(str(icon_path("love.ico"))))
-        self.setMinimumSize(1200, 760)
+        self.setMinimumSize(1280, 760)
         self.apply_initial_geometry()
         self.apply_style(self.current_theme)
         self.retranslate()
@@ -169,6 +171,8 @@ class MainWindow(QMainWindow):
             self.show_page_loading(str(page_id))
         if page_id == "rail_transit":
             QTimer.singleShot(0, lambda: self.activate_page("rail_transit", force_if_empty=True))
+        elif page_id == "ac":
+            QTimer.singleShot(0, lambda: self.activate_page("ac"))
         elif str(page_id) not in self.preloaded_pages:
             QTimer.singleShot(0, lambda page_id=str(page_id): self.activate_page(page_id))
         else:
@@ -330,6 +334,18 @@ class MainWindow(QMainWindow):
         if self.file_management_page is not None:
             self.file_management_page.refresh_groups()
             self.file_management_page.refresh_devices(trigger_device_change=False)
+        if self.rail_transit_page is not None and hasattr(self.rail_transit_page, "refresh_groups"):
+            self.rail_transit_page.refresh_groups()
+
+    def refresh_device_dependents(self) -> None:
+        if self.ac_page is not None:
+            self.ac_page.refresh_devices()
+        if self.config_collection_page is not None:
+            self.config_collection_page.refresh()
+        if self.file_management_page is not None:
+            self.file_management_page.refresh_devices(trigger_device_change=False)
+        if self.rail_transit_page is not None and hasattr(self.rail_transit_page, "mark_devices_changed"):
+            self.rail_transit_page.mark_devices_changed()
 
     def switch_language(self, language: str) -> None:
         self.i18n.set_language(language)
@@ -399,10 +415,10 @@ class MainWindow(QMainWindow):
     def apply_initial_geometry(self) -> None:
         screen = QApplication.primaryScreen()
         if screen is None:
-            self.resize(1440, 900)
+            self.resize(1600, 900)
             return
         available = screen.availableGeometry()
-        size = fit_default_window_size(available.width(), available.height(), 1440, 900)
+        size = fit_default_window_size(available.width(), available.height(), 1600, 900)
         self.resize(size.width, size.height)
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
@@ -439,13 +455,17 @@ class MainWindow(QMainWindow):
     def _system_panel(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("systemPanel")
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         theme_row = QHBoxLayout()
+        theme_row.setSpacing(6)
         theme_row.addWidget(self.light_theme_button)
         theme_row.addWidget(self.dark_theme_button)
         layout.addLayout(theme_row)
         about_row = QHBoxLayout()
+        about_row.setSpacing(6)
         about_row.addWidget(self.version_button, 1)
         about_row.addWidget(self.about_button)
         layout.addLayout(about_row)

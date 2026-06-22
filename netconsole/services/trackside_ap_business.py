@@ -28,7 +28,6 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("details.port_description", "description"),
     ("details.port_status", "port_status"),
     ("details.pvid", "pvid"),
-    ("trackside.match_source", "match_source"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
@@ -36,7 +35,6 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("ac.ap_name", "ap_name"),
     ("ac.ap_side_rx_power", "ap_rx_power"),
     ("trackside.ap_optical_status", "ap_optical_status"),
-    ("trackside_ap.tx_power", "ap_tx_power"),
     ("trackside_ap.last_collected_at", "updated_at"),
 )
 

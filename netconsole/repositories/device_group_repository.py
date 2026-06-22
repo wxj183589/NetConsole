@@ -6,6 +6,15 @@ from netconsole.core.database import Database
 from netconsole.models.device_group import DeviceGroup
 
 
+DEFAULT_DEVICE_GROUPS: tuple[tuple[str, int], ...] = (
+    ("COCC", 10),
+    ("BOCC", 20),
+    ("车站", 30),
+    ("车载", 40),
+)
+LEGACY_CUSTOM_GROUP_NAME = "自定义"
+
+
 class DuplicateGroupName(ValueError):
     pass
 
@@ -18,7 +27,19 @@ class DeviceGroupRepository:
     def list(self) -> list[DeviceGroup]:
         with self.database.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM device_groups WHERE site_id = ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC",
+                """
+                SELECT * FROM device_groups
+                WHERE site_id = ?
+                ORDER BY
+                    CASE
+                        WHEN LOWER(name) = LOWER('COCC') THEN 10
+                        WHEN LOWER(name) = LOWER('BOCC') THEN 20
+                        WHEN name = '车站' THEN 30
+                        WHEN name = '车载' THEN 40
+                        ELSE 100000 + sort_order
+                    END ASC,
+                    name COLLATE NOCASE ASC
+                """,
                 (self.site_id,),
             ).fetchall()
         return [DeviceGroup(**dict(row)) for row in rows]
@@ -30,7 +51,7 @@ class DeviceGroupRepository:
             raise KeyError(f"Device group not found: {group_id}")
         return DeviceGroup(**dict(row))
 
-    def create(self, name: str) -> DeviceGroup:
+    def create(self, name: str, sort_order: int = 100) -> DeviceGroup:
         clean = normalize_group_name(name)
         now = datetime.now().isoformat(timespec="seconds")
         with self.database.connect() as conn:
@@ -38,7 +59,7 @@ class DeviceGroupRepository:
                 raise DuplicateGroupName(clean)
             cursor = conn.execute(
                 "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (self.site_id, clean, 0, now, now),
+                (self.site_id, clean, sort_order, now, now),
             )
             conn.commit()
             return self.get(int(cursor.lastrowid))
@@ -81,6 +102,30 @@ class DeviceGroupRepository:
         with self.database.connect() as conn:
             row = conn.execute("SELECT 1 FROM device_groups WHERE site_id = ? AND LOWER(name) = LOWER(?) LIMIT 1", (self.site_id, clean)).fetchone()
         return row is not None
+
+    def find_by_name(self, name: str) -> DeviceGroup | None:
+        clean = normalize_group_name(name)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM device_groups WHERE site_id = ? AND LOWER(name) = LOWER(?) LIMIT 1",
+                (self.site_id, clean),
+            ).fetchone()
+        return DeviceGroup(**dict(row)) if row is not None else None
+
+    def ensure_default_groups(self) -> list[DeviceGroup]:
+        created: list[DeviceGroup] = []
+        for name, sort_order in DEFAULT_DEVICE_GROUPS:
+            if not self.exists_name(name):
+                created.append(self.create(name, sort_order=sort_order))
+        self._delete_empty_legacy_custom_group()
+        return created
+
+    def _delete_empty_legacy_custom_group(self) -> None:
+        group = self.find_by_name(LEGACY_CUSTOM_GROUP_NAME)
+        if group is None or group.id is None:
+            return
+        if self.count_devices(int(group.id)) == 0:
+            self.delete(int(group.id))
 
 
 def normalize_group_name(name: str) -> str:
