@@ -45,6 +45,13 @@ from netconsole.services.trackside_ap_business import (
     filter_trackside_ap_business_rows,
     trackside_row_status,
 )
+from netconsole.services.ap_online_overview import (
+    AP_ONLINE_OVERVIEW_COLUMNS,
+    ApOnlineOverviewService,
+    build_ap_online_overview_rows,
+    export_ap_online_overview_xlsx,
+    write_ap_online_overview_sheet as _write_ap_online_overview_sheet,
+)
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_fit_ap_export_filename
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
@@ -137,14 +144,6 @@ OPTICAL_EXPORT_COLOR_RGB = {
     "skipped": "F3F4F6",
 }
 OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
-AP_ONLINE_OVERVIEW_COLUMNS = (
-    ("ac.station", "site"),
-    ("ac.ap_total", "total"),
-    ("ac.online", "online"),
-    ("ac.offline", "offline"),
-    ("ac.online_rate", "online_rate"),
-    ("field.remark", "remark"),
-)
 def sort_fit_ap_optical_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
     def key(row: dict[str, object | None]) -> tuple[int, str, tuple[object, ...], str]:
         name = str(row.get("neighbor_device_name") or "").strip()
@@ -208,72 +207,6 @@ def filter_fit_ap_optical_rows(rows: list[dict[str, object | None]], filters: di
 def build_site_filter_items(rows: list[dict[str, object | None]], all_label: str) -> list[tuple[str, str]]:
     sites = sorted({str(row.get("site") or "").strip() for row in rows if str(row.get("site") or "").strip()})
     return [(all_label, ""), *[(site, site) for site in sites]]
-
-
-def build_ap_online_overview_rows(
-    rows: list[dict[str, object | None]],
-    optical_rows: list[dict[str, object | None]] | None = None,
-    capacities: dict[str, object] | None = None,
-) -> list[dict[str, object | None]]:
-    optical_by_uuid = {str(row.get("ap_uuid") or ""): row for row in optical_rows or [] if row.get("ap_uuid")}
-    optical_by_name = {str(row.get("ap_name") or ""): row for row in optical_rows or [] if row.get("ap_name")}
-    capacities = capacities or {}
-    grouped: dict[str, dict[str, object | None]] = {}
-    seen: set[str] = set()
-    for row in rows:
-        unique_key = _ap_unique_key(row)
-        if unique_key in seen:
-            continue
-        seen.add(unique_key)
-        optical = optical_by_uuid.get(str(row.get("ap_uuid") or "")) or optical_by_name.get(str(row.get("ap_name") or ""), {})
-        site = str(optical.get("site") or row.get("site_name") or row.get("site") or "").strip() or "未归属"
-        item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0})
-        item["total"] = int(item["total"] or 0) + 1
-        if is_fit_ap_online(row):
-            item["online"] = int(item["online"] or 0) + 1
-    result = []
-    for row in sorted(grouped.values(), key=lambda item: str(item.get("site") or "")):
-        site = str(row.get("site") or "")
-        online = int(row.get("online") or 0)
-        total, remark = _capacity_total_remark(capacities.get(site), online)
-        row["total"] = total
-        row["offline"] = max(total - online, 0)
-        row["remark"] = remark
-        result.append(_with_online_rate(row))
-    total = sum(int(row.get("total") or 0) for row in result)
-    online = sum(int(row.get("online") or 0) for row in result)
-    offline = total - online
-    return [*result, _with_online_rate({"site": "合计", "total": total, "online": online, "offline": offline, "remark": ""})]
-
-
-def is_fit_ap_online(row: dict[str, object | None]) -> bool:
-    state = str(row.get("state") or row.get("state_raw") or row.get("state_display") or "").strip().upper()
-    return state in {"R", "R/M", "R/B"}
-
-
-def export_ap_online_overview_xlsx(path: Path, rows: list[dict[str, object | None]], headers: list[str]) -> None:
-    from openpyxl import Workbook
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "AP Online Overview"
-    _write_ap_online_overview_sheet(sheet, rows, headers)
-    workbook.save(path)
-
-
-def _write_ap_online_overview_sheet(sheet, rows: list[dict[str, object | None]], headers: list[str]) -> None:
-    from openpyxl.styles import PatternFill
-
-    sheet.append(headers)
-    for row in rows:
-        sheet.append([_display_value(row.get(field)) for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
-        fill = _overview_row_fill(row)
-        for cell in sheet[sheet.max_row]:
-            if fill:
-                cell.fill = fill
-        if int(row.get("offline") or 0) > 0:
-            sheet.cell(sheet.max_row, 4).fill = PatternFill(fill_type="solid", fgColor="FEE2E2")
-    _format_export_sheet(sheet)
 
 
 def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
@@ -1078,7 +1011,15 @@ class AcManagementPage(QWidget):
         if not path:
             return
         rows = self.filtered_trackside_rows()
-        export_trackside_ap_business_xlsx(path, rows, TRACKSIDE_AP_BUSINESS_COLUMNS, [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+        export_trackside_ap_business_xlsx(
+            path,
+            rows,
+            TRACKSIDE_AP_BUSINESS_COLUMNS,
+            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+            self.current_overview_rows(),
+            AP_ONLINE_OVERVIEW_COLUMNS,
+            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+        )
         remember_export_path(path)
         app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={len(rows)}, file={path.name}")
 
@@ -1118,7 +1059,12 @@ class AcManagementPage(QWidget):
         self._set_rows(
             self.overview_table,
             AP_ONLINE_OVERVIEW_COLUMNS,
-            build_ap_online_overview_rows(source_rows, self.optical_rows, self.repository.list_station_ap_capacity_details()),
+            ApOnlineOverviewService.build_rows(
+                metadata_rows=self.repository.list_fit_ap_metadata(),
+                fit_ap_resources=source_rows,
+                optical_rows=self.repository.list_fit_ap_optical(ac_uuid),
+                capacity_details=self.repository.list_station_ap_capacity_details(),
+            ),
         )
 
     def _rebuild_device_optical_status_lookup(self) -> None:

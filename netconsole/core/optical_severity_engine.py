@@ -11,6 +11,7 @@ SEVERITY_RANK = {
     "unknown": 0,
     "not_collected": 0,
     "skipped": 0,
+    "no_module": 0,
     "": 0,
     "normal": 1,
     "notice": 2,
@@ -29,6 +30,7 @@ STATUS_COLORS = {
     "link_abnormal": "FFE4E6",
     "link_down": "FFE4E6",
     "no_light": "E5E7EB",
+    "no_module": "F3F4F6",
     "skipped": "F3F4F6",
     "not_collected": "F3F4F6",
     "unknown": "F3F4F6",
@@ -43,6 +45,7 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "link_abnormal": "链路异常",
         "link_down": "链路断开",
         "no_light": "无光",
+        "no_module": "无光模块",
         "skipped": "未检查",
         "not_collected": "未采集",
         "unknown": "未知",
@@ -55,6 +58,7 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "link_abnormal": "Link Abnormal",
         "link_down": "Link Down",
         "no_light": "No Light",
+        "no_module": "No Module",
         "skipped": "Skipped",
         "not_collected": "Not Collected",
         "unknown": "Unknown",
@@ -86,6 +90,10 @@ def compute_optical_severity(record: dict) -> OpticalSeverityResult:
     If warning is missing but alarm exists, warning is derived as alarm + 2.01 dB.
     If both warning and alarm are missing, the status is unknown instead of normal.
     """
+    module_present = _first_value(record, "module_present", "has_module")
+    if _is_false(module_present) or _is_true(_first_value(record, "no_module")):
+        return OpticalSeverityResult("no_module", "Optical module is not present")
+
     rx_power = _first_float(record, "rx_power", "switch_rx_power", "ap_rx_power")
     if rx_power is None or rx_power <= -35:
         return OpticalSeverityResult("no_light", "RX power is missing or <= -35 dBm", rx_power=rx_power)
@@ -175,6 +183,18 @@ def _to_float(value: object) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _is_false(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    return str(value).strip().casefold() in {"0", "false", "no", "n", "none", "null", "absent", "not_present"}
+
+
+def _is_true(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    return str(value).strip().casefold() in {"1", "true", "yes", "y", "present", "no_module"}
 
 
 def _source_label(device_type: str, warning_source: str) -> str:

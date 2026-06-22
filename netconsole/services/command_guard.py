@@ -6,6 +6,7 @@ from netconsole.core import app_logger
 
 
 SAFE_DEVICE_COMMANDS = {
+    "screen-length d",
     "screen-length disable",
     "display current-configuration | in sysname",
     "display version",
@@ -31,6 +32,7 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
 }
 
 SAFE_FIT_AP_COMMANDS = {
+    "screen-length d",
     "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
@@ -39,12 +41,15 @@ SAFE_FIT_AP_COMMANDS = {
 }
 
 SAFE_OPTICAL_REFRESH_COMMANDS = {
+    "screen-length d",
     "screen-length disable",
     "display interface",
+    "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
 }
 
 SAFE_CONFIG_LIFECYCLE_COMMANDS = {
+    "screen-length d",
     "screen-length disable",
     "save force",
     "display current-configuration",
@@ -52,6 +57,7 @@ SAFE_CONFIG_LIFECYCLE_COMMANDS = {
 }
 
 SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS = {
+    "screen-length d",
     "screen-length disable",
     "display diagnostic-information",
     "n",

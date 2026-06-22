@@ -32,8 +32,10 @@ def parse_optical_repository(raw: str) -> list[dict[str, object | None]]:
 
 def _alarm_status(item: dict[str, object | None]) -> str:
     status = str(item.get("status") or "").strip().lower()
-    if status in {"normal", "warning", "alarm", "no_light"}:
+    if status in {"normal", "warning", "alarm", "no_light", "no_module"}:
         return status
+    if not _has_optical_module_data(item):
+        return "no_module"
     rx_power = str(item.get("rx_power") or "")
     return "no_light" if rx_power.startswith("-40") else "normal"
 
@@ -45,3 +47,19 @@ def _to_float(value: object) -> float | None:
         return float(str(value).split()[0])
     except (ValueError, IndexError):
         return None
+
+
+def _has_optical_module_data(item: dict[str, object | None]) -> bool:
+    return any(
+        item.get(field) not in (None, "")
+        for field in (
+            "rx_power",
+            "tx_power",
+            "module_model",
+            "module_serial_number",
+            "module_vendor",
+            "wavelength",
+            "transmission_distance",
+            "connector_type",
+        )
+    )

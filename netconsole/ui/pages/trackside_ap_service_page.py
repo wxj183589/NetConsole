@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import re
 from time import perf_counter
 
 from PySide6.QtCore import QTimer, Qt
@@ -26,7 +27,6 @@ from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.state_engine import display_optical_status
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -37,8 +37,10 @@ from netconsole.services.trackside_ap_business import (
     build_trackside_site_filter_items,
     export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
+    format_trackside_display_value,
     trackside_row_status,
 )
+from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, ApOnlineOverviewService
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
@@ -387,10 +389,18 @@ class TracksideApServicePage(QWidget):
         self.apply_trackside_pagination()
 
     def export_trackside_table(self) -> None:
-        path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_trackside_ap_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
+        path = select_export_path(self, self.i18n.t("trackside.export"), trackside_export_default_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        export_trackside_ap_business_xlsx(path, self.filtered_trackside_rows(), TRACKSIDE_AP_BUSINESS_COLUMNS, [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+        export_trackside_ap_business_xlsx(
+            path,
+            self.filtered_trackside_rows(),
+            TRACKSIDE_AP_BUSINESS_COLUMNS,
+            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+            self.ap_online_overview_rows(),
+            AP_ONLINE_OVERVIEW_COLUMNS,
+            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+        )
         remember_export_path(path)
 
     def handle_trackside_double_click(self, item: QTableWidgetItem) -> None:
@@ -539,9 +549,7 @@ class TracksideApServicePage(QWidget):
             self.trackside_table.setRowCount(len(rows))
             for row_index, row in enumerate(rows):
                 for column_index, (_key, field) in enumerate(TRACKSIDE_AP_BUSINESS_COLUMNS):
-                    value = row.get(field)
-                    if field in {"switch_optical_status", "ap_optical_status"}:
-                        value = display_optical_status(str(value or ""), self.i18n.language) if value else value
+                    value = format_trackside_display_value(field, row, self.i18n.language)
                     item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     item.setTextAlignment(Qt.AlignCenter)
@@ -563,7 +571,8 @@ class TracksideApServicePage(QWidget):
             self.status_label.setText(self.i18n.t("trackside_ap.loading"))
             return
         if self.trackside_rows:
-            self.status_label.setText(self.i18n.t("trackside.loaded_count", count=len(self.trackside_rows)))
+            online, offline = self.ap_online_overview_counts()
+            self.status_label.setText(self.i18n.t("trackside.loaded_count_with_ap_status", count=len(self.trackside_rows), online=online, offline=offline))
             return
         if self.has_loaded:
             reason_key = self.empty_reason or "trackside.empty.no_rows"
@@ -580,3 +589,22 @@ class TracksideApServicePage(QWidget):
         header = self.trackside_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
+
+    def ap_online_overview_rows(self) -> list[dict[str, object | None]]:
+        return ApOnlineOverviewService.build_rows(
+            metadata_rows=self.ac_repository.list_fit_ap_metadata(),
+            fit_ap_resources=self.ac_repository.list_all_fit_ap_resources_with_metadata(),
+            optical_rows=self.ac_repository.list_all_fit_ap_optical(),
+            capacity_details=self.ac_repository.list_station_ap_capacity_details(),
+        )
+
+    def ap_online_overview_counts(self) -> tuple[int, int]:
+        overview_rows = self.ap_online_overview_rows()
+        total_row = next((row for row in overview_rows if str(row.get("site") or "") == "合计"), overview_rows[-1] if overview_rows else {})
+        return int(total_row.get("online") or 0), int(total_row.get("offline") or 0)
+
+
+def trackside_export_default_filename(site_name: str) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_site = re.sub(r'[\\/:*?"<>|]+', "_", str(site_name or "").strip()) or "site"
+    return f"{safe_site}_\u8f68\u65c1AP\u4e1a\u52a1_{timestamp}.xlsx"

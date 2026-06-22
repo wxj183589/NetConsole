@@ -15,13 +15,14 @@ from netconsole.core.database import Database
 from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.transceiver_parser import parse_transceiver_diagnosis
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard, netmiko_connection
-from netconsole.services.h3c_ac_collect_service import collect_h3c_fit_ap_optical
+from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
@@ -103,6 +104,7 @@ class TracksideDeviceCollectionResult:
     parsed_count: int = 0
     error_message: str | None = None
     rows: list[dict[str, object | None]] = field(default_factory=list)
+    lldp_rows: list[dict[str, object | None]] = field(default_factory=list)
 
 
 @dataclass
@@ -259,42 +261,48 @@ def collect_trackside_optical(
     targets = dedupe_targets(switch_targets)
     skipped = [*switch_skipped]
     session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
-    session_dir = paths.trackside_ap_optical_session_dir(site_name, session_id)
+    session_dir = paths.trackside_ap_update_session_dir(site_name, session_id)
     raw_dir = session_dir / "raw"
-    fit_ap_raw_dir = raw_dir / "fit_ap"
-    station_switch_raw_dir = raw_dir / "station_switch"
+    fit_ap_resource_raw_dir = raw_dir / "ac_fit_ap_resource"
+    fit_ap_optical_raw_dir = raw_dir / "ac_fit_ap_optical"
+    station_switch_raw_dir = raw_dir / "station_switch_optical"
     parsed_dir = session_dir / "parsed"
     exports_dir = session_dir / "exports"
-    for directory in (fit_ap_raw_dir, station_switch_raw_dir, parsed_dir, exports_dir):
+    for directory in (fit_ap_resource_raw_dir, fit_ap_optical_raw_dir, station_switch_raw_dir, parsed_dir, exports_dir):
         directory.mkdir(parents=True, exist_ok=True)
     started_at = _now()
     cancel_event = cancel_event or Event()
     command_guard.validate_command_list(TRACKSIDE_OPTICAL_COMMANDS, "optical_refresh")
-    fit_ap_results, fit_ap_total, fit_ap_skipped = _collect_fit_ap_optical_subtasks(repository, site_name, paths, session_dir, concurrency, cancel_event)
+    max_workers = max(1, min(int(concurrency or DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), len(targets) or 1))
+    results: list[TracksideDeviceCollectionResult] = []
+    completed = 0
+    total_units = len(targets)
+    if progress_callback is not None:
+        progress_callback(0, total_units)
+    with ThreadPoolExecutor(max_workers=1) as branch_executor:
+        fit_future = branch_executor.submit(_collect_fit_ap_optical_subtasks, repository, site_name, paths, session_dir, concurrency, cancel_event)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for target in targets:
+                if cancel_event.is_set():
+                    skipped.append(TracksideSkippedTarget(target.name, target.target_type, "cancelled", target.host))
+                    continue
+                futures.append(executor.submit(_collect_one_target, target, station_switch_raw_dir, session_dir))
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                _persist_result(repository, ac_repository, result, parsed_dir / "trackside_update_results.sqlite")
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, max(total_units, 1))
+        fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
     skipped.extend(fit_ap_skipped)
     fit_success = sum(max(int(result.optical_rows_updated or 0) - int(result.failed_aps or 0), 0) for result in fit_ap_results)
     fit_failed = sum(int(result.failed_aps or 0) for result in fit_ap_results)
     fit_failures = sum(1 for result in fit_ap_results if not result.success and not result.partial_success and int(result.optical_rows_updated or 0) == 0)
-    max_workers = max(1, min(int(concurrency or DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), len(targets) or 1))
-    results: list[TracksideDeviceCollectionResult] = []
-    completed = 0
     total_units = fit_ap_total + len(targets)
     if progress_callback is not None:
-        progress_callback(min(fit_success + fit_failed, total_units), total_units)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for target in targets:
-            if cancel_event.is_set():
-                skipped.append(TracksideSkippedTarget(target.name, target.target_type, "cancelled", target.host))
-                continue
-            futures.append(executor.submit(_collect_one_target, target, station_switch_raw_dir, session_dir))
-        for future in as_completed(futures):
-            result = future.result()
-            results.append(result)
-            _persist_result(repository, ac_repository, result, parsed_dir / "optical_results.sqlite")
-            completed += 1
-            if progress_callback is not None:
-                progress_callback(min(fit_success + fit_failed + completed, total_units), total_units)
+        progress_callback(total_units, total_units)
     status = "CANCELLED" if cancel_event.is_set() else "DONE"
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
@@ -307,6 +315,12 @@ def collect_trackside_optical(
             "ended_at": _now(),
             "target_count": total_units,
             "fit_ap_total": fit_ap_total,
+            "fit_ap_resource_count": fit_ap_total,
+            "fit_ap_resource_status": "DONE" if fit_ap_results or fit_ap_total else "SKIPPED",
+            "fit_ap_optical_status": "DONE" if fit_ap_results else "SKIPPED",
+            "station_switch_optical_status": "DONE" if results else "SKIPPED",
+            "fit_ap_optical_success_count": fit_success,
+            "station_switch_success_count": sum(1 for result in results if result.success),
             "station_switch_total": len(targets),
             "success_count": success_count,
             "failed_count": failed_count,
@@ -334,6 +348,13 @@ def _collect_fit_ap_optical_subtasks(
     skipped: list[TracksideSkippedTarget] = []
     total = 0
     for ac_device in sorted(repository.list(vendor="H3C", device_type="AC"), key=lambda item: str(item.name or "").casefold()):
+        if cancel_event.is_set():
+            continue
+        resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths)
+        _copy_ac_raw(paths, site_name, resource_result.collect_run_uuid, session_dir / "raw" / "ac_fit_ap_resource")
+        if not resource_result.success:
+            skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.ip_address))
+            continue
         resources = ac_repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid or ""))
         total += len(resources)
         skipped.extend(
@@ -346,13 +367,13 @@ def _collect_fit_ap_optical_subtasks(
             continue
         result = collect_h3c_fit_ap_optical(ac_device, site_name, repository=ac_repository, paths=paths, max_workers=concurrency)
         results.append(result)
-        _copy_fit_ap_raw(paths, site_name, result.collect_run_uuid, session_dir)
+        _copy_ac_raw(paths, site_name, result.collect_run_uuid, session_dir / "raw" / "ac_fit_ap_optical")
     return results, total, skipped
 
 
-def _copy_fit_ap_raw(paths: PathResolver, site_name: str, collect_run_uuid: str, session_dir: Path) -> None:
+def _copy_ac_raw(paths: PathResolver, site_name: str, collect_run_uuid: str, target_root: Path) -> None:
     source = paths.site_dir(site_name) / "raw" / "ac" / collect_run_uuid
-    target = session_dir / "raw" / "fit_ap" / collect_run_uuid
+    target = target_root / collect_run_uuid
     if not source.exists():
         return
     if target.exists():
@@ -379,9 +400,10 @@ def _collect_one_target(target: TracksideOpticalTarget, raw_dir: Path, session_d
             command_outputs[command] = output
             lines.extend([f"===== COMMAND: {command} =====", output, ""])
         parsed = parse_transceiver_diagnosis(command_outputs.get("display transceiver diagnosis interface", ""))
+        lldp_rows = parse_lldp_neighbors(command_outputs.get("display lldp neighbor-information list", ""))
         rows = [_result_row(target, row, session_dir, raw_log) for row in parsed]
         raw_log.write_text("\n".join(lines), encoding="utf-8")
-        return TracksideDeviceCollectionResult(target, True, str(raw_log), len(rows), rows=rows)
+        return TracksideDeviceCollectionResult(target, True, str(raw_log), len(rows), rows=rows, lldp_rows=lldp_rows)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), target.device)
         lines.extend(["===== ERROR =====", message, ""])
@@ -414,6 +436,14 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
             },
         )
         fact_repository.replace_optical_modules(str(result.target.device_uuid or ""), modules)
+        if result.lldp_rows:
+            metadata = {
+                "collected_at": _now(),
+                "updated_at": _now(),
+                "collect_run_uuid": "",
+                "raw_log_path": result.raw_log_path,
+            }
+            fact_repository.replace_lldp_neighbors(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.lldp_rows])
         return
     if result.target.ac_device_uuid:
         existing = ac_repository.list_fit_ap_optical(result.target.ac_device_uuid)

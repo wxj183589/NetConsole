@@ -55,6 +55,9 @@ from netconsole.services.trackside_ap_business import (
     description_contains_ap,
     export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
+    format_ap_side_alarm,
+    format_trackside_display_value,
+    has_ap_side_optical_data,
     normalize_interface_name as normalize_trackside_interface_name,
     normalize_mac,
     trackside_row_status,
@@ -524,11 +527,16 @@ def test_station_online_summary_history_save_and_list_desc(tmp_path):
     assert history[0]["online_count"] == 4
 
 
-def test_station_ap_capacity_is_not_overwritten_by_new_overview_data(tmp_path):
+def test_station_ap_capacity_overrides_incomplete_planned_total(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.upsert_station_ap_capacity("Station A", 56)
 
-    overview = build_ap_online_overview_rows([{"site": "Station A", "state": "R/M"}], capacities=repository.list_station_ap_capacities())
+    rows = [{"ap_name": "AP-A", "site_name": "Station A", "state": "R/M"}]
+    overview = build_ap_online_overview_rows(
+        planned_aps=rows,
+        fit_ap_resources=rows,
+        capacities=repository.list_station_ap_capacities(),
+    )
 
     assert overview[0]["total"] == 56
     assert overview[0]["online"] == 1
@@ -1387,36 +1395,399 @@ def test_optical_color_legend_does_not_expose_threshold_rules():
 
 def test_ap_online_overview_rows_count_states_and_total_bottom():
     rows = [
-        {"site": "02云龙火车站站", "state": "R/M"},
-        {"site": "02云龙火车站站", "state": "R/B"},
-        {"site": "01小洋江站", "state": "I"},
-        {"site": "01小洋江站", "state": "JA"},
-        {"site": "01小洋江站", "state": "R"},
+        {"ap_name": "AP-2-1", "site": "02云龙火车站站", "state": "R/M"},
+        {"ap_name": "AP-2-2", "site": "02云龙火车站站", "state": "R/B"},
+        {"ap_name": "AP-1-1", "site": "01小洋江站", "state": "I"},
+        {"ap_name": "AP-1-2", "site": "01小洋江站", "state": "JA"},
+        {"ap_name": "AP-1-3", "site": "01小洋江站", "state": "R"},
     ]
 
-    overview = build_ap_online_overview_rows(rows)
+    overview = build_ap_online_overview_rows(planned_aps=rows, fit_ap_resources=rows)
 
-    assert overview[0] == {"site": "01小洋江站", "total": 1, "online": 1, "offline": 0, "remark": "", "online_rate": "100.0%"}
+    assert overview[0] == {"site": "01小洋江站", "total": 3, "online": 1, "offline": 2, "remark": "", "online_rate": "33.3%"}
     assert overview[1] == {"site": "02云龙火车站站", "total": 2, "online": 2, "offline": 0, "remark": "", "online_rate": "100.0%"}
-    assert overview[-1] == {"site": "合计", "total": 3, "online": 3, "offline": 0, "remark": "", "online_rate": "100.0%"}
+    assert overview[-1] == {"site": "\u5408\u8ba1", "total": 5, "online": 3, "offline": 2, "remark": "", "online_rate": "60.0%"}
 
 
-def test_ap_online_overview_uses_site_priority_capacity_and_unassigned():
+def test_ap_online_overview_uses_fit_ap_resource_site_capacity_and_unassigned():
     resources = [
         {"ap_uuid": "ap-1", "site_name": "Metadata Station", "site": "Resource Station", "state": "R/M"},
         {"ap_uuid": "ap-2", "site": "", "state": "JA"},
     ]
-    optical = [{"ap_uuid": "ap-1", "site": "Optical Station"}]
+    overview = build_ap_online_overview_rows(
+        planned_aps=[],
+        fit_ap_resources=resources,
+        capacity_details={"Metadata Station": {"ap_total": 5, "remark": "Keep watching"}},
+    )
 
-    overview = build_ap_online_overview_rows(resources, optical, {"Optical Station": {"ap_total": 5, "remark": "Keep watching"}})
-
-    assert [row["site"] for row in overview] == ["Optical Station", "未归属", "合计"]
+    assert [row["site"] for row in overview] == ["Metadata Station", "\u5408\u8ba1"]
     assert overview[0]["total"] == 5
     assert overview[0]["online"] == 1
     assert overview[0]["offline"] == 4
     assert overview[0]["remark"] == "Keep watching"
-    assert overview[1]["total"] == 0
+    assert overview[1]["online"] == 1
+
+
+def test_ap_online_overview_matches_dirty_resource_site_back_to_plan():
+    resources = [{"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "site": "Demo", "state": "R"}]
+    plans = [{"AP_MAC": "0011.2233.4455", "ap_name": "AP-A", "station": "01小洋江站"}]
+
+    overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources)
+
+    assert [row["site"] for row in overview] == ["01小洋江站", "\u5408\u8ba1"]
+    assert overview[0]["total"] == 1
+    assert overview[0]["online"] == 1
+    assert overview[0]["offline"] == 0
+
+
+def test_ap_online_overview_unmatched_online_uses_unassigned_not_dirty_site():
+    resources = [{"ap_mac": "00aa-bbcc-ddee", "ap_name": "AP-Z", "site": "Demo", "state": "R/M"}]
+    plans = [{"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "station": "01小洋江站"}]
+
+    overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources)
+
+    assert [row["site"] for row in overview] == ["01小洋江站", "\u672a\u5f52\u5c5e", "\u5408\u8ba1"]
+    assert overview[1]["total"] == 1
+    assert overview[1]["online"] == 1
     assert overview[1]["offline"] == 0
+    assert all(row["site"] != "Demo" for row in overview)
+
+
+def test_ap_online_overview_keeps_bulk_unmatched_in_unassigned_when_plan_coverage_is_missing():
+    resources = [{"ap_mac": f"00aa-bbcc-{index:04x}", "site": "Demo", "state": "R/M"} for index in range(20)]
+    plans = [{"ap_mac": "0011-2233-4455", "station": "Station A"}]
+    capacities = {"Station A": {"ap_total": 30, "remark": ""}, "Station B": {"ap_total": 56, "remark": ""}}
+
+    overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources, capacity_details=capacities)
+
+    assert [row["site"] for row in overview] == ["Station A", "Station B", "\u672a\u5f52\u5c5e", "\u5408\u8ba1"]
+    assert all(row["site"] != "Demo" for row in overview)
+    assert overview[-1]["total"] == 106
+    assert overview[-1]["online"] == 20
+
+
+def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
+    plan_rows = [
+        *({"ap_uuid": f"s1-plan-{index}", "ap_name": f"S1-AP-{index}", "site_name": "01小洋江站"} for index in range(30)),
+        *({"ap_uuid": f"s2-plan-{index}", "ap_name": f"S2-AP-{index}", "site_name": "02云龙火车站站"} for index in range(56)),
+        {"ap_uuid": "unknown-plan-0", "ap_name": "UNKNOWN-AP-0", "site_name": "\u672a\u5f52\u5c5e"},
+    ]
+    resource_rows = [
+        *({"ap_uuid": f"s1-plan-{index}", "ap_name": f"S1-AP-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R/M"} for index in range(26)),
+        *({"ap_uuid": f"s2-plan-{index}", "ap_name": f"S2-AP-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R"} for index in range(48)),
+        {"ap_uuid": "unknown-plan-0", "ap_name": "UNKNOWN-AP-0", "site": "\u672a\u5f52\u5c5e", "state": "online"},
+    ]
+
+    overview = build_ap_online_overview_rows(planned_aps=plan_rows, fit_ap_resources=resource_rows)
+
+    assert overview[0] == {"site": "01小洋江站", "total": 30, "online": 26, "offline": 4, "remark": "", "online_rate": "86.7%"}
+    assert overview[1] == {"site": "02云龙火车站站", "total": 56, "online": 48, "offline": 8, "remark": "", "online_rate": "85.7%"}
+    assert overview[2] == {"site": "\u672a\u5f52\u5c5e", "total": 1, "online": 1, "offline": 0, "remark": "", "online_rate": "100.0%"}
+    assert overview[-1] == {"site": "\u5408\u8ba1", "total": 87, "online": 75, "offline": 12, "remark": "", "online_rate": "86.2%"}
+
+
+def test_ap_online_overview_does_not_use_fit_ap_resource_count_as_total_when_plan_exists():
+    plan_rows = [{"ap_uuid": f"plan-{index}", "site_name": "Station A"} for index in range(948)]
+    resource_rows = [{"ap_uuid": f"plan-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R/M"} for index in range(773)]
+
+    overview = build_ap_online_overview_rows(planned_aps=plan_rows, fit_ap_resources=resource_rows)
+
+    assert overview[0]["site"] == "Station A"
+    assert overview[0]["total"] == 948
+    assert overview[0]["online"] == 773
+    assert overview[0]["offline"] == 175
+    assert overview[0]["online_rate"] == "81.5%"
+    assert overview[-1]["total"] == 948
+    assert overview[-1]["online"] == 773
+    assert overview[-1]["offline"] == 175
+    assert overview[-1]["online_rate"] == "81.5%"
+
+
+def test_ap_online_overview_capacity_total_takes_priority_over_incomplete_plan():
+    planned_aps = [
+        {"ap_name": "AP-A-1", "site_name": "01小洋江站"},
+        {"ap_name": "AP-B-1", "site_name": "02云龙火车站"},
+    ]
+    rows = build_ap_online_overview_rows(
+        planned_aps=planned_aps,
+        fit_ap_resources=[],
+        capacity_details={
+            "01小洋江站": {"ap_total": 30, "remark": ""},
+            "02云龙火车站": {"ap_total": 56, "remark": ""},
+            "08丹城站": {"ap_total": 78, "remark": ""},
+            "10大目湾站": {"ap_total": 34, "remark": "大目湾校减-8"},
+        },
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["total"] == 30
+    assert by_site["02云龙火车站"]["total"] == 56
+    assert by_site["08丹城站"]["total"] == 78
+    assert by_site["10大目湾站"]["total"] == 34
+    assert by_site["10大目湾站"]["remark"] == "大目湾校减-8"
+
+
+def test_ap_online_overview_matches_by_known_resource_station_when_metadata_key_missing():
+    resources = [
+        *({"ap_name": f"UNKNOWN-A-{index}", "site_name": "01小洋江站", "state": "R"} for index in range(26)),
+        *({"ap_name": f"UNKNOWN-B-{index}", "site_name": "02云龙火车站", "state": "R"} for index in range(48)),
+    ]
+    rows = build_ap_online_overview_rows(
+        planned_aps=[],
+        fit_ap_resources=resources,
+        capacity_details={
+            "01小洋江站": {"ap_total": 30, "remark": ""},
+            "02云龙火车站": {"ap_total": 56, "remark": ""},
+        },
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 26
+    assert by_site["02云龙火车站"]["online"] == 48
+    assert "未归属" not in by_site
+    assert rows[-1]["total"] == 86
+    assert rows[-1]["online"] == 74
+
+
+def test_ap_online_overview_matches_online_by_metadata_name_even_when_resource_site_is_dirty():
+    metadata_rows = [
+        *({"ap_name": f"STA-A-{index}", "site_name": "01小洋江站"} for index in range(26)),
+        *({"ap_name": f"STA-B-{index}", "site_name": "02云龙火车站"} for index in range(48)),
+    ]
+    resources = [
+        *({"ap_name": f" STA-A-{index} ", "site_name": "Demo", "state": "R"} for index in range(26)),
+        *({"ap_name": f"STA-B-{index}", "site": "体育中心站", "state": "R"} for index in range(48)),
+    ]
+    rows = build_ap_online_overview_rows(
+        metadata_rows=metadata_rows,
+        fit_ap_resources=resources,
+        capacity_details={
+            "01小洋江站": {"ap_total": 30, "remark": ""},
+            "02云龙火车站": {"ap_total": 56, "remark": ""},
+        },
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 26
+    assert by_site["02云龙火车站"]["online"] == 48
+    assert "Demo" not in by_site
+    assert "体育中心站" not in by_site
+    assert "未归属" not in by_site
+
+
+def test_ap_online_overview_metadata_empty_uses_optical_site_by_uuid():
+    rows = build_ap_online_overview_rows(
+        metadata_rows=[{"ap_uuid": "", "ap_name": "", "site_name": ""}],
+        fit_ap_resources=[{"ap_uuid": "A", "ap_name": "AP001", "ap_mac": "30f5-277a-82c0", "state": "R"}],
+        optical_rows=[{"ap_uuid": "A", "ap_name": "AP001", "ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}],
+        capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 1
+    assert "未归属" not in by_site
+
+
+def test_ap_online_overview_matches_optical_site_by_mac_without_uuid():
+    rows = build_ap_online_overview_rows(
+        metadata_rows=[],
+        fit_ap_resources=[{"ap_name": "AP001", "ap_mac": "30:f5:27:7a:82:c0", "state": "ONLINE"}],
+        optical_rows=[{"ap_name": "OTHER", "ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}],
+        capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
+    )
+
+    assert {row["site"]: row for row in rows}["01小洋江站"]["online"] == 1
+
+
+def test_ap_online_overview_matches_optical_site_by_name_without_uuid_or_mac():
+    rows = build_ap_online_overview_rows(
+        metadata_rows=[],
+        fit_ap_resources=[{"ap_name": " AP - 001 ", "state": "R/B"}],
+        optical_rows=[{"ap_name": "AP-001", "site": "02云龙火车站"}],
+        capacity_details={"02云龙火车站": {"ap_total": 56, "remark": ""}},
+    )
+
+    assert {row["site"]: row for row in rows}["02云龙火车站"]["online"] == 1
+
+
+def test_ap_online_overview_resource_dirty_site_does_not_override_optical_site():
+    rows = build_ap_online_overview_rows(
+        metadata_rows=[],
+        fit_ap_resources=[{"ap_mac": "30f5-277a-82c0", "site": "Demo", "state": "R"}],
+        optical_rows=[{"ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}],
+        capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 1
+    assert "Demo" not in by_site
+
+
+def test_ap_online_overview_falls_back_to_known_resource_site_when_no_optical_match():
+    rows = build_ap_online_overview_rows(
+        metadata_rows=[],
+        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "01小洋江站", "state": "R"}],
+        optical_rows=[],
+        capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 1
+    assert "未归属" not in by_site
+
+
+def test_ap_online_overview_unknown_dirty_resource_site_goes_unassigned():
+    rows = build_ap_online_overview_rows(
+        metadata_rows=[],
+        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "体育中心站", "state": "R"}],
+        optical_rows=[],
+        capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["未归属"]["online"] == 1
+    assert "体育中心站" not in by_site
+
+
+def test_ap_online_overview_dirty_unknown_station_does_not_create_station_row():
+    rows = build_ap_online_overview_rows(
+        planned_aps=[],
+        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "Demo", "state": "R"}],
+        capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert "Demo" not in by_site
+    assert by_site["未归属"]["online"] == 1
+
+
+def _make_standard_ap_online_overview_fixture():
+    station_totals = {
+        "01小洋江站": 30,
+        "02云龙火车站": 56,
+        "03横溪站": 126,
+        "04横溪站": 138,
+        "05鄞州咸祥": 134,
+        "06象山贤庠": 134,
+        "07大徐站": 94,
+        "08丹城站": 78,
+        "09滨海大道站": 56,
+        "10大目湾站": 34,
+        "11云龙车辆段": 67,
+        "未归属": 1,
+    }
+    station_online = {
+        "01小洋江站": 26,
+        "02云龙火车站": 48,
+        "03横溪站": 111,
+        "04横溪站": 135,
+        "05鄞州咸祥": 105,
+        "06象山贤庠": 41,
+        "07大徐站": 94,
+        "08丹城站": 78,
+        "09滨海大道站": 48,
+        "10大目湾站": 34,
+        "11云龙车辆段": 52,
+        "未归属": 1,
+    }
+    planned_aps = []
+    resources = []
+    optical_rows = []
+    for station, total in station_totals.items():
+        for index in range(total):
+            ap_name = f"{station}-AP-{index:03d}"
+            mac = f"30f527{len(planned_aps):06x}"[-12:]
+            planned_aps.append({"ap_name": ap_name, "ap_mac": mac, "site_name": station})
+            if index < station_online[station]:
+                dirty_site = "Demo" if station == "01小洋江站" and index == 0 else ("体育中心站" if station == "02云龙火车站" and index == 0 else station)
+                resources.append({"ap_name": f" {ap_name} ", "ap_mac": mac.upper(), "site": dirty_site, "state": "R/M"})
+                optical_rows.append({"ap_name": ap_name, "ap_mac": mac, "site": station})
+    return planned_aps, resources, optical_rows
+
+
+def _standard_ap_capacity_details():
+    return {
+        "01小洋江站": {"ap_total": 30, "remark": ""},
+        "02云龙火车站": {"ap_total": 56, "remark": ""},
+        "03横溪站": {"ap_total": 126, "remark": ""},
+        "04横溪站": {"ap_total": 138, "remark": ""},
+        "05鄞州咸祥": {"ap_total": 134, "remark": ""},
+        "06象山贤庠": {"ap_total": 134, "remark": ""},
+        "07大徐站": {"ap_total": 94, "remark": ""},
+        "08丹城站": {"ap_total": 78, "remark": ""},
+        "09滨海大道站": {"ap_total": 56, "remark": ""},
+        "10大目湾站": {"ap_total": 34, "remark": "大目湾校减-8"},
+        "11云龙车辆段": {"ap_total": 67, "remark": ""},
+        "未归属": {"ap_total": 1, "remark": ""},
+    }
+
+
+def test_ap_online_overview_standard_large_sample_matches_expected_totals():
+    planned_aps, resources, optical_rows = _make_standard_ap_online_overview_fixture()
+    rows = build_ap_online_overview_rows(
+        metadata_rows=planned_aps,
+        fit_ap_resources=resources,
+        optical_rows=optical_rows,
+        capacity_details=_standard_ap_capacity_details(),
+    )
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 26
+    assert by_site["08丹城站"]["total"] == 78
+    assert by_site["08丹城站"]["online"] == 78
+    assert by_site["10大目湾站"]["total"] == 34
+    assert by_site["10大目湾站"]["remark"] == "大目湾校减-8"
+    assert "Demo" not in by_site
+    assert "体育中心站" not in by_site
+    assert rows[-1] == {"site": "\u5408\u8ba1", "total": 948, "online": 773, "offline": 175, "remark": "", "online_rate": "81.5%"}
+
+
+def test_ap_online_overview_name_match_without_mac_and_unmatched_goes_to_unassigned():
+    planned_aps = [{"ap_name": " AP - 001 ", "site_name": "01小洋江站"}]
+    resources = [
+        {"ap_name": "AP-001", "site": "Demo", "state": "ONLINE"},
+        {"ap_name": "AP-Z", "site": "体育中心站", "state": "R"},
+    ]
+    rows = build_ap_online_overview_rows(planned_aps=planned_aps, fit_ap_resources=resources)
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["01小洋江站"]["online"] == 1
+    assert by_site["未归属"]["online"] == 1
+    assert "Demo" not in by_site
+    assert "体育中心站" not in by_site
+
+
+def test_trackside_overview_export_large_sample_has_only_overview_columns(tmp_path):
+    from openpyxl import load_workbook
+
+    planned_aps, resources, optical_rows = _make_standard_ap_online_overview_fixture()
+    overview_rows = build_ap_online_overview_rows(
+        metadata_rows=planned_aps,
+        fit_ap_resources=resources,
+        optical_rows=optical_rows,
+        capacity_details=_standard_ap_capacity_details(),
+    )
+    export_path = tmp_path / "large_trackside_overview.xlsx"
+    i18n = I18n("zh_CN")
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        [],
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+        overview_rows,
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        ["车站", "AP总数量", "上线", "未上线", "上线率", "备注"],
+    )
+
+    sheet = load_workbook(export_path)["AP上线情况概览"]
+    rows = [[cell.value for cell in row] for row in sheet.iter_rows(values_only=False)]
+    assert rows[0] == ["车站", "AP总数量", "上线", "未上线", "上线率", "备注"]
+    assert rows[-1] == ["合计", "948", "773", "175", "81.5%", "-"]
+    assert "Demo" not in {row[0] for row in rows}
+    assert "体育中心站" not in {row[0] for row in rows}
+    forbidden_headers = {"RX功率", "TX功率", "温度", "电压", "Bias电流", "光告警", "RX低告警", "RX警告下限", "RX正常线", "RX阈值来源"}
+    assert forbidden_headers.isdisjoint(set(rows[0]))
 
 
 def test_ap_online_overview_deduplicates_by_uuid_serial_and_mac():
@@ -1429,7 +1800,7 @@ def test_ap_online_overview_deduplicates_by_uuid_serial_and_mac():
         {"ap_mac": "mac-3", "site": "S1", "state": "I"},
     ]
 
-    overview = build_ap_online_overview_rows(rows, capacities={"S1": 5})
+    overview = build_ap_online_overview_rows(planned_aps=rows, fit_ap_resources=rows, capacities={"S1": 5})
 
     assert overview[0]["total"] == 5
     assert overview[0]["online"] == 2
@@ -1478,6 +1849,8 @@ def test_ap_online_overview_table_edit_rules_and_save(tmp_path):
             {"ap_uuid": "ap-2", "ap_name": "AP-B", "serial_number": "SN-2", "site": "Station A", "state": "I"},
         ],
     )
+    repository.upsert_fit_ap_metadata({"ap_uuid": "ap-1", "ap_name": "AP-A", "site_name": "Station A"})
+    repository.upsert_fit_ap_metadata({"ap_uuid": "ap-2", "ap_name": "AP-B", "site_name": "Station A"})
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
 
     total_item = page.overview_table.item(0, 1)
@@ -1532,6 +1905,8 @@ def test_ap_online_overview_saved_total_survives_refresh_and_reload(tmp_path):
     ac = device_repository.create(make_ac_device())
     repository = AcRepository(database)
     repository.replace_fit_ap_resources(ac.device_uuid, [{"ap_uuid": "ap-1", "serial_number": "SN-1", "site": "Station A", "state": "R/M"}])
+    repository.upsert_fit_ap_metadata({"ap_uuid": "ap-1", "ap_name": "AP-1", "site_name": "Station A"})
+    repository.upsert_fit_ap_metadata({"ap_uuid": "ap-2", "ap_name": "AP-2", "site_name": "Station A"})
     repository.upsert_station_ap_capacity("Station A", 9)
     repository.upsert_station_ap_remark("Station A", "Persistent remark")
 
@@ -1570,12 +1945,14 @@ def test_ap_online_overview_new_station_defaults_total_to_online_count(tmp_path)
             {"ap_uuid": "ap-2", "serial_number": "SN-2", "site": "Station A", "state": "I"},
         ],
     )
+    repository.upsert_fit_ap_metadata({"ap_uuid": "ap-1", "ap_name": "AP-1", "site_name": "Station A"})
+    repository.upsert_fit_ap_metadata({"ap_uuid": "ap-2", "ap_name": "AP-2", "site_name": "Station A"})
 
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
 
-    assert page.overview_table.item(0, 1).text() == "1"
+    assert page.overview_table.item(0, 1).text() == "2"
     assert page.overview_table.item(0, 2).text() == "1"
-    assert page.overview_table.item(0, 3).text() == "0"
+    assert page.overview_table.item(0, 3).text() == "1"
 
 
 def test_ap_online_overview_rejects_invalid_total_and_restores(monkeypatch, tmp_path):
@@ -1623,11 +2000,17 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     from openpyxl import load_workbook
 
     export_path = tmp_path / "overview.xlsx"
+    plan_rows = [
+        {"ap_name": "AP-1", "site_name": "01小洋江站"},
+        {"ap_name": "AP-2", "site_name": "02云龙火车站站"},
+    ]
+    resource_rows = [
+        {"ap_name": "AP-1", "site": "01小洋江站", "state": "R"},
+        {"ap_name": "AP-2", "site": "02云龙火车站站", "state": "I"},
+    ]
     rows = build_ap_online_overview_rows(
-        [
-            {"site": "01小洋江站", "state": "R"},
-            {"site": "02云龙火车站站", "state": "I"},
-        ],
+        planned_aps=plan_rows,
+        fit_ap_resources=resource_rows,
         capacities={"02云龙火车站站": 1},
     )
     rows[1]["remark"] = "Need check"
@@ -1697,6 +2080,7 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
                 {
                     "ac_device_uuid": "ac-1",
                     "ap_uuid": "ap-10",
+                    "ap_mac": "bc5a-3457-cbe0",
                     "neighbor_device_name": "HX_1",
                     "neighbor_interface": "GigabitEthernet2/0/10",
                     "ap_name": "AP10",
@@ -1752,11 +2136,13 @@ def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
         [{"ac_device_uuid": "ac-1", "ap_uuid": "ap-23", "ap_mac": "bc5a-3457-cbe1", "ap_name": "Renamed-AP-23"}],
     )
 
-    assert rows[0]["ap_mac"] == "bc5a-3457-cbe1"
-    assert rows[0]["ap_name"] == "Renamed-AP-23"
+    assert rows[0]["ap_mac"] is None
+    assert rows[0]["ap_name"] is None
     assert rows[0]["ap_rx_power"] is None
     assert rows[0]["switch_optical_status"] == "unknown"
-    assert rows[0]["ap_optical_status"] == "no_light"
+    assert rows[0]["ap_optical_status"] == ""
+    assert has_ap_side_optical_data(rows[0]) is False
+    assert format_ap_side_alarm(rows[0]) == "-"
 
 
 def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
@@ -1769,11 +2155,13 @@ def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
         {"sw-1": [{"local_interface": "GE2/0/24", "neighbor_mac": "bc5a-3457-cbe2"}]},
     )
 
-    assert rows[0]["ap_mac"] == "bc5a-3457-cbe2"
+    assert rows[0]["ap_mac"] is None
     assert rows[0]["ap_name"] is None
     assert rows[0]["ap_rx_power"] is None
     assert rows[0]["switch_optical_status"] == "notice"
-    assert rows[0]["ap_optical_status"] == "no_light"
+    assert rows[0]["ap_optical_status"] == ""
+    assert has_ap_side_optical_data(rows[0]) is False
+    assert format_ap_side_alarm(rows[0]) == "-"
 
 
 def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
@@ -1802,7 +2190,78 @@ def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
 
 def test_trackside_ap_business_row_status_uses_more_severe_side():
     assert trackside_row_status({"switch_optical_status": "warning", "ap_optical_status": "normal"}) == "warning"
-    assert trackside_row_status({"switch_optical_status": "normal", "ap_optical_status": "alarm"}) == "alarm"
+    assert trackside_row_status({"switch_optical_status": "normal", "ap_optical_status": "alarm", "ap_side_has_data": True}) == "alarm"
+
+
+def test_trackside_ap_side_missing_data_formats_as_dash():
+    row = {
+        "ap_mac": "-",
+        "ap_name": "-",
+        "ap_rx_power": "-",
+        "ap_tx_power": "",
+        "ap_optical_status": "no_module",
+        "ap_side_has_data": False,
+    }
+
+    assert has_ap_side_optical_data(row) is False
+    assert format_ap_side_alarm(row) == "-"
+    assert format_trackside_display_value("ap_mac", row) == "-"
+    assert format_trackside_display_value("ap_name", row) == "-"
+    assert format_trackside_display_value("ap_rx_power", row) == "-"
+    assert format_trackside_display_value("ap_tx_power", row) == "-"
+
+
+def test_trackside_ap_side_unmatched_optical_record_formats_as_dash():
+    row = {
+        "ap_mac": "bc5a-3457-cbe1",
+        "ap_name": "Renamed-AP-23",
+        "ap_rx_power": None,
+        "ap_optical_status": "no_module",
+        "ap_side_has_data": False,
+    }
+
+    assert has_ap_side_optical_data(row) is False
+    assert format_ap_side_alarm(row) == "-"
+
+
+def test_trackside_ap_side_explicit_no_module_keeps_no_module_label():
+    row = {
+        "ap_mac": "bc5a-3457-cbe1",
+        "ap_name": "AP23",
+        "ap_rx_power": None,
+        "ap_tx_power": None,
+        "ap_optical_status": "no_module",
+        "raw_status": "no module",
+        "ap_side_has_data": True,
+    }
+
+    assert has_ap_side_optical_data(row) is True
+    assert format_ap_side_alarm(row) == "无光模块"
+
+
+def test_trackside_ap_side_normal_and_notice_format_from_computed_status():
+    normal = {
+        "ap_mac": "bc5a-3457-cbe1",
+        "ap_name": "AP23",
+        "ap_rx_power": "-7.55",
+        "ap_tx_power": "1.20",
+        "ap_optical_status": "normal",
+        "ap_side_has_data": True,
+    }
+    notice = {**normal, "ap_rx_power": "-14.35", "ap_optical_status": "notice"}
+
+    assert format_ap_side_alarm(normal) == "正常"
+    assert format_ap_side_alarm(notice) == "偏低关注"
+
+
+def test_trackside_row_status_ignores_missing_ap_side_data():
+    row = {
+        "switch_optical_status": "normal",
+        "ap_optical_status": "alarm",
+        "ap_side_has_data": False,
+    }
+
+    assert trackside_row_status(row) == "normal"
 
 
 def test_trackside_ap_business_filter_by_site_and_search():
@@ -1951,13 +2410,14 @@ def test_trackside_optical_collection_runs_commands_saves_raw_and_continues_afte
     assert result.success_count == 1
     assert result.failed_count == 1
     assert any(connection.commands == list(TRACKSIDE_OPTICAL_COMMANDS) for connection in FakeOpticalConnection.instances)
-    raw_files = list((result.session_dir / "raw" / "station_switch").glob("*.log"))
+    raw_files = list((result.session_dir / "raw" / "station_switch_optical").glob("*.log"))
     assert len(raw_files) == 2
     assert any("screen-length disable" in path.read_text(encoding="utf-8") for path in raw_files)
-    assert (result.session_dir / "raw" / "fit_ap").exists()
-    assert (result.session_dir / "raw" / "station_switch").exists()
+    assert (result.session_dir / "raw" / "ac_fit_ap_resource").exists()
+    assert (result.session_dir / "raw" / "ac_fit_ap_optical").exists()
+    assert (result.session_dir / "raw" / "station_switch_optical").exists()
     assert (result.session_dir / "session_meta.json").exists()
-    with sqlite3.connect(result.session_dir / "parsed" / "optical_results.sqlite") as conn:
+    with sqlite3.connect(result.session_dir / "parsed" / "trackside_update_results.sqlite") as conn:
         rows = conn.execute("SELECT device_name, rx_power, error_message FROM optical_results").fetchall()
     assert len(rows) >= 2
     assert any(row[1] == "-6.10" for row in rows)
@@ -1975,13 +2435,29 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     ac_repo.replace_fit_ap_resources(
         ac.device_uuid,
         [
-            {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_ip": "10.0.0.21"},
-            {"ap_uuid": "ap-2", "ap_name": "AP2", "ap_ip": "10.0.0.22"},
-            {"ap_uuid": "ap-skip", "ap_name": "AP-SKIP", "ap_ip": ""},
+            {"ap_uuid": "ap-1", "serial_number": "SN-1", "ap_name": "AP1", "ap_ip": "10.0.0.21"},
+            {"ap_uuid": "ap-2", "serial_number": "SN-2", "ap_name": "AP2", "ap_ip": "10.0.0.22"},
+            {"ap_uuid": "ap-skip", "serial_number": "SN-SKIP", "ap_name": "AP-SKIP", "ap_ip": ""},
         ],
     )
     paths = PathResolver(tmp_path)
     fit_calls = []
+    resource_calls = []
+
+    def fake_resource_collect(ac_device, site_name, repository=None, paths=None):
+        resource_calls.append((ac_device.device_uuid, site_name))
+        run_dir = paths.site_dir(site_name) / "raw" / "ac" / "resource-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "resource.log").write_text("resource raw", encoding="utf-8")
+        repository.replace_fit_ap_resources(
+            ac_device.device_uuid,
+            [
+                {"ap_uuid": "ap-1", "serial_number": "SN-1", "ap_name": "AP1", "ap_ip": "10.0.0.21"},
+                {"ap_uuid": "ap-2", "serial_number": "SN-2", "ap_name": "AP2", "ap_ip": "10.0.0.22"},
+                {"ap_uuid": "ap-skip", "serial_number": "SN-SKIP", "ap_name": "AP-SKIP", "ap_ip": ""},
+            ],
+        )
+        return SimpleNamespace(success=True, collect_run_uuid="resource-run", error_message=None)
 
     def fake_fit_collect(ac_device, site_name, repository=None, paths=None, max_workers=None):
         fit_calls.append((ac_device.device_uuid, site_name, max_workers))
@@ -1991,11 +2467,13 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), "fit-run", 2, 0, None)
 
     FakeOpticalConnection.instances = []
+    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect)
     monkeypatch.setattr(trackside_optical_collection, "collect_h3c_fit_ap_optical", fake_fit_collect)
     monkeypatch.setattr(trackside_optical_collection.netmiko_connection, "ConnectHandler", FakeOpticalConnection)
 
     result = collect_trackside_optical(repository, "demo", paths, [], concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY)
 
+    assert resource_calls == [(ac.device_uuid, "demo")]
     assert fit_calls == [(ac.device_uuid, "demo", 1000)]
     assert result.fit_ap_total == 3
     assert result.station_switch_total == 1
@@ -2003,8 +2481,9 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     assert result.failed_count == 0
     assert result.skipped_count == 1
     assert result.target_count == 4
-    assert (result.session_dir / "raw" / "fit_ap" / "fit-run" / "fit_ap" / "AP1.log").exists()
-    assert list((result.session_dir / "raw" / "station_switch").glob("*.log"))
+    assert (result.session_dir / "raw" / "ac_fit_ap_resource" / "resource-run" / "resource.log").exists()
+    assert (result.session_dir / "raw" / "ac_fit_ap_optical" / "fit-run" / "fit_ap" / "AP1.log").exists()
+    assert list((result.session_dir / "raw" / "station_switch_optical").glob("*.log"))
     assert switch.id is not None
 
 
@@ -2212,6 +2691,174 @@ def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):
     assert "collection_status" not in headers
     assert "source_device" not in headers
     assert "host" not in headers
+
+
+def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
+    from openpyxl import load_workbook
+
+    rows = [
+        {
+            "site": "Station A",
+            "device_name": "HX_1",
+            "interface_name": "GigabitEthernet1/0/1",
+            "switch_optical_status": "normal",
+            "ap_mac": None,
+            "ap_name": None,
+            "ap_rx_power": None,
+            "ap_tx_power": None,
+            "ap_optical_status": "no_module",
+            "ap_side_has_data": False,
+        },
+        {
+            "site": "Station A",
+            "device_name": "HX_1",
+            "interface_name": "GigabitEthernet1/0/2",
+            "switch_optical_status": "normal",
+            "ap_mac": "bc5a-3457-cbe1",
+            "ap_name": "AP23",
+            "ap_rx_power": None,
+            "ap_tx_power": None,
+            "ap_optical_status": "no_module",
+            "raw_status": "no module",
+            "ap_side_has_data": True,
+        },
+    ]
+    i18n = I18n("zh_CN")
+    export_path = tmp_path / "trackside_ap_missing.xlsx"
+
+    export_trackside_ap_business_xlsx(export_path, rows, TRACKSIDE_AP_BUSINESS_COLUMNS, [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+
+    sheet = load_workbook(export_path).active
+    headers = [cell.value for cell in sheet[1]]
+    alarm_column = headers.index("AP侧光告警") + 1
+    ap_mac_column = headers.index("AP_MAC") + 1
+    ap_name_column = headers.index("AP名称") + 1
+    ap_rx_column = headers.index("AP侧收光(dBm)") + 1
+    ap_tx_column = headers.index("TX功率") + 1
+    assert sheet.cell(2, alarm_column).value == "-"
+    assert sheet.cell(2, ap_mac_column).value == "-"
+    assert sheet.cell(2, ap_name_column).value == "-"
+    assert sheet.cell(2, ap_rx_column).value == "-"
+    assert sheet.cell(2, ap_tx_column).value == "-"
+    assert sheet.cell(2, alarm_column).value != "无光模块"
+    assert sheet.cell(3, alarm_column).value == "无光模块"
+
+
+def test_trackside_ap_page_formats_missing_ap_side_as_dash(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("zh_CN"), "demo", PathResolver(tmp_path))
+    page.trackside_rows = [
+        {
+            "site": "Station A",
+            "device_name": "HX_1",
+            "interface_name": "GigabitEthernet1/0/1",
+            "switch_optical_status": "normal",
+            "ap_mac": None,
+            "ap_name": None,
+            "ap_rx_power": None,
+            "ap_tx_power": None,
+            "ap_optical_status": "no_module",
+            "ap_side_has_data": False,
+        }
+    ]
+    page.apply_trackside_pagination()
+    fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]
+
+    assert page.trackside_table.item(0, fields.index("ap_mac")).text() == "-"
+    assert page.trackside_table.item(0, fields.index("ap_name")).text() == "-"
+    assert page.trackside_table.item(0, fields.index("ap_rx_power")).text() == "-"
+    assert page.trackside_table.item(0, fields.index("ap_optical_status")).text() == "-"
+    assert page.trackside_table.item(0, fields.index("ap_tx_power")).text() == "-"
+    assert page.trackside_table.item(0, 0).background().color().name() != "#f87171"
+
+
+def test_trackside_ap_business_export_uses_ac_online_overview_service_rows(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_overview.xlsx"
+    i18n = I18n("zh_CN")
+    trackside_rows = [
+        {"site": "Demo", "device_name": "SW-A", "interface_name": "GigabitEthernet1/0/1", "ap_uuid": "wrong-1", "ap_state": "online"},
+        {"site": "\u672a\u5f52\u5c5e", "device_name": "SW-A", "interface_name": "GigabitEthernet1/0/2", "ap_uuid": "wrong-2", "ap_state": "online"},
+    ]
+    plan_rows = [
+        *({"ap_uuid": f"p-a-{index}", "ap_name": f"AP-A-{index}", "site_name": "01小洋江站"} for index in range(30)),
+        *({"ap_uuid": f"p-b-{index}", "ap_name": f"AP-B-{index}", "site_name": "02云龙火车站站"} for index in range(918)),
+    ]
+    resources = [
+        *({"ap_uuid": f"p-a-{index}", "ap_name": f"AP-A-{index}", "site": "Demo", "state": "R/M"} for index in range(26)),
+        *({"ap_uuid": f"p-b-{index}", "ap_name": f"AP-B-{index}", "site": "体育中心站", "state": "R"} for index in range(747)),
+    ]
+    overview_rows = build_ap_online_overview_rows(
+        planned_aps=plan_rows,
+        fit_ap_resources=resources,
+        capacity_details={
+            "01小洋江站": {"ap_total": 30, "remark": "-"},
+            "02云龙火车站站": {"ap_total": 918, "remark": "-"},
+        },
+    )
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        trackside_rows,
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+        overview_rows,
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        [i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+    )
+
+    overview = load_workbook(export_path)["AP\u4e0a\u7ebf\u60c5\u51b5\u6982\u89c8"]
+    rows = [[cell.value for cell in row] for row in overview.iter_rows(values_only=False)]
+    assert rows[1] == ["01小洋江站", "30", "26", "4", "86.7%", "-"]
+    assert rows[-1] == ["\u5408\u8ba1", "948", "773", "175", "81.5%", "-"]
+    assert ["Demo", "1", "1", "0", "100.0%", "-"] not in rows
+
+
+def test_ac_overview_page_rows_match_trackside_export_overview_sheet(tmp_path):
+    from openpyxl import load_workbook
+
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac = device_repository.create(make_ac_device())
+    repository = AcRepository(database)
+    for index in range(3):
+        repository.upsert_fit_ap_metadata({"ap_uuid": f"plan-a-{index}", "ap_name": f"AP-A-{index}", "site_name": "Station A"})
+    for index in range(2):
+        repository.upsert_fit_ap_metadata({"ap_uuid": f"plan-b-{index}", "ap_name": f"AP-B-{index}", "site_name": "Station B"})
+    repository.replace_fit_ap_resources(
+        ac.device_uuid,
+        [
+            {"ap_uuid": "plan-a-0", "serial_number": "SNA0", "ap_name": "AP-A-0", "state": "R/M"},
+            {"ap_uuid": "plan-a-1", "serial_number": "SNA1", "ap_name": "AP-A-1", "state": "I"},
+            {"ap_uuid": "plan-b-0", "serial_number": "SNB0", "ap_name": "AP-B-0", "state": "online"},
+        ],
+    )
+    page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    overview_rows = page.current_overview_rows()
+    export_path = tmp_path / "trackside_same_overview.xlsx"
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        [],
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+        overview_rows,
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        [page.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+    )
+
+    overview = load_workbook(export_path)["AP\u4e0a\u7ebf\u60c5\u51b5\u6982\u89c8"]
+    exported_rows = [[cell.value for cell in row] for row in overview.iter_rows(values_only=False)]
+    assert exported_rows[1:] == [
+        ["Station A", "3", "1", "2", "33.3%", "-"],
+        ["Station B", "2", "1", "1", "50.0%", "-"],
+        ["\u5408\u8ba1", "5", "2", "3", "40.0%", "-"],
+    ]
+    forbidden_headers = {"RX Power", "TX Power", "Optical Alarm", "Temperature", "Voltage", "Bias Current"}
+    assert forbidden_headers.isdisjoint({cell.value for cell in overview[1]})
 
 
 def test_trackside_ap_business_internal_fields_remain_available_for_update(tmp_path, monkeypatch):
@@ -2605,7 +3252,7 @@ def test_trackside_ap_refresh_async_uses_background_loader_and_loading_state(tmp
     assert not page.dirty
     assert page.update_button.isEnabled()
     assert page.trackside_table.rowCount() == 1
-    assert page.status_label.text() == "Loaded 1 rows"
+    assert page.status_label.text() == "Loaded 1 rows; online AP 0, offline AP 0"
 
 
 def test_trackside_ap_generation_discards_stale_load_result(tmp_path, monkeypatch):

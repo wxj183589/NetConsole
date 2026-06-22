@@ -29,7 +29,7 @@ from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
-from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, trackside_row_status
+from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, format_trackside_display_value, trackside_row_status
 from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
@@ -97,7 +97,7 @@ OPTICAL_MODULE_COLUMNS = (
     ("details.collected_at", "collected_at"),
 )
 
-OPTICAL_STATUS_VALUES = {"normal", "notice", "warning", "alarm", "link_abnormal", "no_light", "skipped", "unknown"}
+OPTICAL_STATUS_VALUES = {"normal", "notice", "warning", "alarm", "link_abnormal", "no_light", "no_module", "skipped", "unknown"}
 
 LLDP_COLUMNS = (
     ("details.local_interface", "local_interface"),
@@ -119,6 +119,22 @@ def _login_protocol(device: Device) -> str:
     if device.telnet_enabled:
         protocols.append("Telnet")
     return "/".join(protocols) or "-"
+
+
+def _has_optical_module_data(row: dict[str, object | None]) -> bool:
+    module_fields = (
+        "rx_power",
+        "tx_power",
+        "module_model",
+        "module_serial_number",
+        "module_vendor",
+        "wavelength",
+        "transmission_distance",
+        "connector_type",
+        "rx_low_alarm",
+        "rx_low_warning",
+    )
+    return any(row.get(field) not in (None, "") for field in module_fields)
 
 
 class DeviceDetailDialog(QDialog):
@@ -350,6 +366,7 @@ class DeviceDetailDialog(QDialog):
             computed = dict(row)
             result = compute_optical_severity(
                 {
+                    "module_present": _has_optical_module_data(row),
                     "switch_rx_power": row.get("rx_power"),
                     "switch_port_status": row.get("port_status") or interface.get("link_status"),
                     "alarm_low": row.get("rx_low_alarm"),
@@ -416,7 +433,12 @@ class DeviceDetailDialog(QDialog):
                 elif history_kind == "trackside":
                     row_status = trackside_row_status(row)
                 for column_index, (_label_key, field) in enumerate(columns):
-                    item = QTableWidgetItem(self._format_table_value(field, row.get(field)))
+                    value = (
+                        format_trackside_display_value(field, row, self.i18n.language)
+                        if history_kind == "trackside"
+                        else self._format_table_value(field, row.get(field))
+                    )
+                    item = QTableWidgetItem(value)
                     item.setTextAlignment(Qt.AlignCenter)
                     self._apply_status_background(item, history_kind, row_status)
                     table.setItem(row_index, column_index, item)

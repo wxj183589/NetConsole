@@ -31,6 +31,7 @@ STATUS_COLOR_MAP = {
     "link_abnormal": "#fb7185",
     "link_down": "#fb7185",
     "no_light": "#6b7280",
+    "no_module": "#9ca3af",
     "skipped": "#374151",
     "not_collected": "#374151",
     "unknown": "#374151",

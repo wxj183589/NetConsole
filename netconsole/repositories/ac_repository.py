@@ -280,12 +280,15 @@ class AcRepository:
             rows = conn.execute(
                 """
                 SELECT r.*,
-                       m.site_name,
-                       m.mileage AS metadata_mileage,
-                       m.location_note AS metadata_location_note,
-                       m.direction AS metadata_direction
+                       COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
+                       COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
+                       COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
+                       COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
                 FROM ac_fit_ap_resources r
-                LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid
+                LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
+                LEFT JOIN ac_fit_ap_metadata m_name
+                    ON lower(trim(m_name.ap_name)) = lower(trim(r.ap_name))
+                   AND (m_uuid.ap_uuid IS NULL OR m_name.ap_uuid = m_uuid.ap_uuid)
                 ORDER BY r.ap_name, r.id
                 """
             ).fetchall()
@@ -724,12 +727,15 @@ class AcRepository:
             rows = conn.execute(
                 """
                 SELECT r.*,
-                       m.site_name,
-                       m.mileage AS metadata_mileage,
-                       m.location_note AS metadata_location_note,
-                       m.direction AS metadata_direction
+                       COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
+                       COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
+                       COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
+                       COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
                 FROM ac_fit_ap_resources r
-                LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid
+                LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
+                LEFT JOIN ac_fit_ap_metadata m_name
+                    ON lower(trim(m_name.ap_name)) = lower(trim(r.ap_name))
+                   AND (m_uuid.ap_uuid IS NULL OR m_name.ap_uuid = m_uuid.ap_uuid)
                 WHERE r.ac_device_uuid = ?
                 ORDER BY r.ap_name, r.id
                 """,
