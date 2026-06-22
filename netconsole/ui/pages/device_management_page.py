@@ -5,16 +5,19 @@ from pathlib import Path
 import platform
 import subprocess
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -93,6 +96,7 @@ def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResol
 
 class DeviceManagementPage(QWidget):
     groups_changed = Signal()
+    devices_changed = Signal()
 
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo") -> None:
         super().__init__()
@@ -102,7 +106,7 @@ class DeviceManagementPage(QWidget):
         self.group_service = DeviceGroupService(repository, self.group_repository) if self.group_repository is not None else None
         self.i18n = i18n
         self.site_name = site_name
-        self.service = DeviceImportExportService(repository)
+        self.service = DeviceImportExportService(repository, self.group_repository)
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
         self.group_dialog: DeviceGroupDialog | None = None
@@ -128,13 +132,25 @@ class DeviceManagementPage(QWidget):
         self.selection_label = QLabel()
         self.table = DeviceTable(i18n)
 
+        self.search_input.setMinimumWidth(240)
+        self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.vendor_filter.setFixedWidth(130)
+        self.type_filter.setFixedWidth(130)
+        self.group_filter.setFixedWidth(170)
+        self.selection_label.setMinimumWidth(130)
+        self.selection_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
         filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
         filters.addWidget(self.search_input, 1)
         filters.addWidget(self.vendor_filter)
         filters.addWidget(self.type_filter)
         filters.addWidget(self.group_filter)
 
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(6)
+        self.action_content = QWidget()
         for button in (
             self.add_button,
             self.detail_button,
@@ -152,12 +168,24 @@ class DeviceManagementPage(QWidget):
             self.invert_selection_button,
         ):
             actions.addWidget(button)
-        actions.addWidget(self.selection_label)
         actions.addStretch(1)
+        self.action_content.setLayout(actions)
+        self.action_scroll = QScrollArea()
+        self.action_scroll.setFrameShape(QFrame.NoFrame)
+        self.action_scroll.setWidgetResizable(False)
+        self.action_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.action_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.action_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.action_scroll.setWidget(self.action_content)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.addWidget(self.action_scroll, 1)
+        action_row.addWidget(self.selection_label)
 
         layout = QVBoxLayout()
         layout.addLayout(filters)
-        layout.addLayout(actions)
+        layout.addLayout(action_row)
         layout.addWidget(self.table, 1)
         self.setLayout(layout)
 
@@ -211,7 +239,12 @@ class DeviceManagementPage(QWidget):
         self.batch_delete_button.setObjectName("dangerButton")
         self._populate_filters()
         self.table.retranslate()
+        self._sync_action_scroll_width()
         self.update_selection_state()
+
+    def _sync_action_scroll_width(self) -> None:
+        self.action_content.adjustSize()
+        self.action_content.setMinimumWidth(self.action_content.sizeHint().width())
 
     def test_selected_device_connection(self) -> None:
         checked_ids = self.table.checked_device_ids()
@@ -415,6 +448,7 @@ class DeviceManagementPage(QWidget):
         self.clear_selection()
         self.refresh_groups()
         self.groups_changed.emit()
+        self.devices_changed.emit()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
@@ -422,7 +456,7 @@ class DeviceManagementPage(QWidget):
         self.group_repository = self._make_group_repository(repository, site_name)
         self.group_service = DeviceGroupService(repository, self.group_repository) if self.group_repository is not None else None
         self.site_name = site_name
-        self.service = DeviceImportExportService(repository)
+        self.service = DeviceImportExportService(repository, self.group_repository)
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs = {}
         self.group_dialog = None
@@ -525,6 +559,7 @@ class DeviceManagementPage(QWidget):
             return
         app_logger.log_info("DEVICE_CREATED", f"设备已新增: {created.name}")
         self.refresh()
+        self.devices_changed.emit()
         self._close_sender_dialog()
 
     def _update_device_from_dialog(self, device) -> None:
@@ -536,6 +571,7 @@ class DeviceManagementPage(QWidget):
             return
         app_logger.log_info("DEVICE_UPDATED", f"设备已编辑: {updated.name}")
         self.refresh()
+        self.devices_changed.emit()
         self._close_sender_dialog()
 
     def _close_sender_dialog(self) -> None:
@@ -557,6 +593,7 @@ class DeviceManagementPage(QWidget):
             self.repository.delete(device_id)
             app_logger.log_info("DEVICE_DELETED", f"设备已删除: {device.name}")
             self.refresh()
+            self.devices_changed.emit()
 
     def batch_delete_devices(self) -> None:
         device_ids = self.table.checked_device_ids()
@@ -572,6 +609,7 @@ class DeviceManagementPage(QWidget):
         delete_device_ids(self.repository, device_ids)
         app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
         self.refresh()
+        self.devices_changed.emit()
 
     def batch_refresh_details(self) -> None:
         device_ids = self.table.checked_device_ids()
@@ -648,7 +686,11 @@ class DeviceManagementPage(QWidget):
                 app_logger.log_error("CSV_IMPORT_FAILED", f"{Path(path).name}: {exc}")
                 QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
-            self.refresh()
+            self.refresh_groups()
+            if result.groups_created:
+                self.groups_changed.emit()
+            if result.created:
+                self.devices_changed.emit()
             app_logger.log_info("CSV_IMPORTED", f"{Path(path).name}: created={result.created}, skipped={result.skipped}")
             QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
 

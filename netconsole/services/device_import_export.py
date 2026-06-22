@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
 
@@ -20,6 +21,7 @@ TEMPLATE_FIELDS = [
     "IP地址",
     "厂商",
     "站点/位置",
+    "分组",
     "设备类型",
     "SSH启用",
     "SSH端口",
@@ -33,11 +35,11 @@ TEMPLATE_FIELDS = [
 ]
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "H3C", "控制中心", "SW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "SSH设备示例"],
-    ["接入交换机-示例", "192.168.1.2", "H3C", "车站A", "SW", "是", "22", "是", "23", "admin", "Admin@123", "admin", "Admin@123", "SSH+Telnet示例"],
-    ["无线控制器-示例", "192.168.1.10", "H3C", "控制中心", "AC", "是", "22", "否", "23", "admin", "Admin@123", "", "", "AC设备示例"],
-    ["FIT-AP-示例", "192.168.1.20", "H3C", "站台层", "FIT-AP", "否", "22", "是", "23", "", "Admin@123", " ", "Admin@123", "Telnet设备示例"],
-    ["防火墙-示例", "192.168.1.254", "H3C", "控制中心", "FW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "防火墙示例"],
+    ["核心交换机-示例", "192.168.1.1", "H3C", "控制中心", "COCC", "SW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "SSH设备示例"],
+    ["接入交换机-示例", "192.168.1.2", "H3C", "车站A", "车站", "SW", "是", "22", "是", "23", "admin", "Admin@123", "admin", "Admin@123", "SSH+Telnet示例"],
+    ["无线控制器-示例", "192.168.1.10", "H3C", "控制中心", "COCC", "AC", "是", "22", "否", "23", "admin", "Admin@123", "", "", "AC设备示例"],
+    ["FIT-AP-示例", "192.168.1.20", "H3C", "站台层", "车载", "FIT-AP", "否", "22", "是", "23", "", "Admin@123", " ", "Admin@123", "Telnet设备示例"],
+    ["防火墙-示例", "192.168.1.254", "H3C", "控制中心", "BOCC", "FW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "防火墙示例"],
 ]
 
 TEMPLATE_FIELD_MAP = {
@@ -45,6 +47,7 @@ TEMPLATE_FIELD_MAP = {
     "IP地址": "ip_address",
     "厂商": "device_vendor",
     "站点/位置": "station",
+    "分组": "group_name",
     "设备类型": "device_type",
     "SSH启用": "ssh_enabled",
     "SSH端口": "ssh_port",
@@ -107,11 +110,13 @@ class ImportResult:
     created: int
     skipped: int
     errors: list[str]
+    groups_created: int = 0
 
 
 class DeviceImportExportService:
-    def __init__(self, repository: DeviceRepository) -> None:
+    def __init__(self, repository: DeviceRepository, group_repository: DeviceGroupRepository | None = None) -> None:
         self.repository = repository
+        self.group_repository = group_repository
 
     def import_csv(self, path: Path) -> ImportResult:
         rows = self._read_csv_rows(Path(path))
@@ -153,6 +158,7 @@ class DeviceImportExportService:
     def _import_rows(self, rows: Iterable[tuple[int, dict[str, object | None]]]) -> ImportResult:
         created = 0
         skipped = 0
+        groups_created = 0
         errors: list[str] = []
         for line_number, payload in rows:
             if not payload.get("name") or not payload.get("ip_address"):
@@ -161,6 +167,8 @@ class DeviceImportExportService:
                 continue
             try:
                 compact_payload = {key: value for key, value in payload.items() if value is not None}
+                group_created = self._apply_group(compact_payload)
+                groups_created += group_created
                 self._apply_defaults(compact_payload)
                 self._validate_payload(compact_payload)
                 self.repository.create(Device.from_mapping(compact_payload))
@@ -168,7 +176,23 @@ class DeviceImportExportService:
             except Exception as exc:
                 skipped += 1
                 errors.append(f"Row {line_number}: {exc}")
-        return ImportResult(created=created, skipped=skipped, errors=errors)
+        return ImportResult(created=created, skipped=skipped, errors=errors, groups_created=groups_created)
+
+    def _apply_group(self, payload: dict[str, object]) -> int:
+        group_name = payload.pop("group_name", None)
+        if group_name is None:
+            return 0
+        group_text = str(group_name).strip()
+        if not group_text or self.group_repository is None:
+            payload.pop("group_id", None)
+            return 0
+        group = self.group_repository.find_by_name(group_text)
+        created = 0
+        if group is None:
+            group = self.group_repository.create(group_text)
+            created = 1
+        payload["group_id"] = group.id
+        return created
 
     def _apply_defaults(self, payload: dict[str, object]) -> None:
         payload.setdefault("device_vendor", "H3C")
@@ -263,11 +287,32 @@ class DeviceImportExportService:
     def _map_row(headers: list[str], values: list[object], mode: str) -> dict[str, object | None]:
         result: dict[str, object | None] = {}
         field_map = TEMPLATE_FIELD_MAP if mode == "template" else {field: field for field in EXPORT_FIELDS}
+        if mode == "template" and "分组" in headers and (
+            len(values) == len(headers) - 1 or DeviceImportExportService._looks_like_legacy_template_row(headers, values)
+        ):
+            values = list(values)
+            values.insert(headers.index("分组"), None)
         for index, header in enumerate(headers):
             field = field_map[header]
             value = values[index] if index < len(values) else None
             result[field] = DeviceImportExportService._clean_value(value)
         return result
+
+    @staticmethod
+    def _looks_like_legacy_template_row(headers: list[str], values: list[object]) -> bool:
+        if "分组" not in headers or len(values) != len(headers):
+            return False
+        telnet_port_index = headers.index("Telnet端口")
+        if telnet_port_index >= len(values):
+            return False
+        text = str(values[telnet_port_index] or "").strip()
+        if not text:
+            return False
+        try:
+            int(text)
+            return False
+        except ValueError:
+            return True
 
     @staticmethod
     def _clean_value(value: object) -> object | None:

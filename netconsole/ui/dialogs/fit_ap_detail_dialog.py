@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -55,6 +57,7 @@ class FitApDetailDialog(QWidget):
         self.repository = repository
         self.ac_device_uuid = ac_device_uuid
         self.settings = SettingsStore(PathResolver())
+        self.show_raw_fields_tab = True
         resource = self.repository.get_fit_ap_resource_by_uuid(ac_device_uuid, ap_uuid) or self.repository.get_fit_ap_resource(ac_device_uuid, ap_uuid) or {}
         self.ap_uuid = str(resource.get("ap_uuid") or ap_uuid)
         self.ap_name = str(resource.get("ap_name") or ap_uuid)
@@ -132,6 +135,7 @@ class FitApDetailDialog(QWidget):
         self.raw_fields_pagination.pageSizeChanged.connect(self.set_raw_fields_page_size)
         self.retranslate()
         self.refresh()
+        self.tabs.setCurrentWidget(self.raw_fields_tab)
         app_logger.log_info("FIT_AP_DETAIL_OPENED", f"ap_uuid={ap_uuid}, ap={self.ap_name}")
 
     def _build_basic_tab(self) -> None:
@@ -201,8 +205,9 @@ class FitApDetailDialog(QWidget):
         self.optical_tab.setLayout(layout)
 
     def _build_raw_fields_tab(self) -> None:
-        self.raw_fields_table.setColumnCount(3)
-        set_table_column_fields(self.raw_fields_table, ["type", "name", "value"])
+        self.raw_fields_table.setColumnCount(2)
+        self.raw_fields_table.setWordWrap(True)
+        set_table_column_fields(self.raw_fields_table, ["name", "value"])
         layout = QVBoxLayout()
         layout.addWidget(self.raw_fields_table, 1)
         layout.addWidget(self.raw_fields_pagination)
@@ -226,7 +231,8 @@ class FitApDetailDialog(QWidget):
         self.radio_table.setHorizontalHeaderLabels(["RID", self.i18n.t("ap.channel"), self.i18n.t("ap.bandwidth"), self.i18n.t("ap.tx_power")])
         self.lldp_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in LLDP_COLUMNS])
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in OPTICAL_COLUMNS])
-        self.raw_fields_table.setHorizontalHeaderLabels([self.i18n.t("field.type"), self.i18n.t("field.name"), self.i18n.t("field.value")])
+        field_header = "Field" if self.i18n.language.startswith("en") else "字段"
+        self.raw_fields_table.setHorizontalHeaderLabels([field_header, self.i18n.t("field.value")])
         self.raw_fields_pagination.retranslate()
 
     def refresh(self) -> None:
@@ -297,7 +303,8 @@ class FitApDetailDialog(QWidget):
             ("metadata", FIT_AP_METADATA_FIELDS, metadata),
             ("optical", FIT_AP_OPTICAL_FIELDS, optical),
         ):
-            rows.extend({"type": group, "name": field, "value": source.get(field)} for field in fields)
+            field_names = [*fields, *(field for field in source if field not in fields)]
+            rows.extend({"name": f"{group}.{field}", "value": source.get(field)} for field in field_names)
         self.raw_field_rows = rows
         self.raw_fields_page = 1
         self.refresh_raw_fields_page()
@@ -310,9 +317,10 @@ class FitApDetailDialog(QWidget):
         self.raw_fields_table.setSortingEnabled(False)
         self.raw_fields_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            for column_index, item_value in enumerate((row.get("type"), row.get("name"), row.get("value"))):
-                item = QTableWidgetItem(str(item_value) if item_value not in (None, "") else "-")
+            for column_index, item_value in enumerate((row.get("name"), _format_raw_field_value(row.get("value")))):
+                item = QTableWidgetItem(item_value if item_value not in (None, "") else "-")
                 item.setTextAlignment(Qt.AlignCenter)
+                item.setToolTip(item.text())
                 self.raw_fields_table.setItem(row_index, column_index, item)
         self.raw_fields_table.setSortingEnabled(False)
         self.raw_fields_table.setUpdatesEnabled(True)
@@ -389,6 +397,13 @@ class FitApDetailDialog(QWidget):
                 pass
         if self.settings.get_value("ac/ap_detail/window_maximized", False):
             self.showMaximized()
+
+def _format_raw_field_value(value: object) -> str:
+    if value in (None, ""):
+        return "-"
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    return str(value)
 
 
 def normalize_direction(value: str) -> str:

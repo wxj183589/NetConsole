@@ -145,6 +145,10 @@ class OnlineMrCollectionPage(QWidget):
         self.last_session_dir_by_device_id: dict[int, Path] = {}
         self.throttle = OnlineMrUiThrottle(500)
         self._updating_device_checks = False
+        self._first_show_refreshed = False
+        self._history_refresh_pending = False
+        self._tool_status_loaded = False
+        self._stale_sessions_checked_sites: set[str] = set()
 
         self.site_label = QLabel()
         self.available_device_count_label = QLabel()
@@ -240,8 +244,6 @@ class OnlineMrCollectionPage(QWidget):
 
         self._build_ui()
         self._connect_signals()
-        self.store.mark_stale_sessions_aborted(site_name)
-        self.refresh_all()
         self.refresh_timer.start()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
@@ -250,16 +252,27 @@ class OnlineMrCollectionPage(QWidget):
 
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
-        self.store.mark_stale_sessions_aborted(site_name)
-        self.refresh_all()
+        self._first_show_refreshed = False
+        self.refresh_all(defer_heavy=True)
 
-    def refresh_all(self) -> None:
+    def first_show_refresh(self) -> None:
+        if self.site_name not in self._stale_sessions_checked_sites:
+            self._stale_sessions_checked_sites.add(self.site_name)
+            QTimer.singleShot(0, lambda site_name=self.site_name: self.store.mark_stale_sessions_aborted(site_name))
+        self._first_show_refreshed = True
+        self.refresh_all(defer_heavy=True)
+
+    def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self.devices = self.repository.list()
         self._load_device_groups()
         self._fill_devices()
         self._fill_view_devices()
-        self._fill_history()
+        if defer_heavy:
+            self._schedule_history_refresh(refresh_tools=refresh_tools)
+        else:
+            self._fill_history()
+            self._refresh_tool_status_once(force=refresh_tools)
         self._update_action_state()
 
     def retranslate(self) -> None:
@@ -476,7 +489,7 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
         self.open_button.clicked.connect(self.open_selected_session_dir)
-        self.refresh_devices_button.clicked.connect(self.refresh_all)
+        self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
 
     def start_collection(self) -> None:
@@ -925,6 +938,7 @@ class OnlineMrCollectionPage(QWidget):
         self.view_device_combo.blockSignals(False)
 
     def _fill_history(self) -> None:
+        self._history_refresh_pending = False
         rows = self.store.list_sessions(self.site_name, None)
         self.history_table.setRowCount(0)
         for row_data in rows:
@@ -944,8 +958,24 @@ class OnlineMrCollectionPage(QWidget):
             ]
             for column, value in enumerate(values):
                 self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
+
+    def _schedule_history_refresh(self, refresh_tools: bool = False) -> None:
+        if self._history_refresh_pending:
+            return
+        self._history_refresh_pending = True
+
+        def run() -> None:
+            self._fill_history()
+            self._refresh_tool_status_once(force=refresh_tools)
+
+        QTimer.singleShot(0, run)
+
+    def _refresh_tool_status_once(self, force: bool = False) -> None:
+        if self._tool_status_loaded and not force:
+            return
         self._refresh_fping_tool_status()
         self._refresh_iperf_tool_status()
+        self._tool_status_loaded = True
 
     def _refresh_fping_tool_status(self) -> None:
         tool = find_fping_tool(self.paths)
