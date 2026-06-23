@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QComboBox,
     QSizePolicy,
@@ -130,6 +131,11 @@ class TracksideApServicePage(QWidget):
         self.trackside_search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.trackside_export_button = QPushButton()
         self.status_label = make_text_selectable(QLabel())
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 0)
+        self.update_progress.setTextVisible(False)
+        self.update_progress.setFixedHeight(6)
+        self.update_progress.setVisible(False)
         self.trackside_table = QTableWidget()
         self.trackside_pagination = PaginationWidget(self.i18n)
         self.search_debounce_timer = QTimer(self)
@@ -154,6 +160,7 @@ class TracksideApServicePage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(actions)
+        layout.addWidget(self.update_progress)
         layout.addWidget(self.trackside_table, 1)
         layout.addWidget(self.trackside_pagination)
 
@@ -195,6 +202,8 @@ class TracksideApServicePage(QWidget):
         self.trackside_pagination.retranslate()
         if self.is_loading:
             self.status_label.setText(self.i18n.t("trackside_ap.loading"))
+        elif self.collect_thread is not None:
+            self.update_button.setText(self.i18n.t("trackside_ap.updating"))
         elif self.collect_thread is None:
             self._update_idle_status()
         self.cancel_update_button.setEnabled(self.collect_thread is not None)
@@ -326,9 +335,7 @@ class TracksideApServicePage(QWidget):
     def start_optical_update(self) -> None:
         if self.collect_thread is not None or self.is_loading:
             return
-        self.update_button.setEnabled(False)
-        self.cancel_update_button.setEnabled(True)
-        self.status_label.setText(self.i18n.t("trackside_ap.collecting_progress", done=0, total=0))
+        self._set_collect_running(True, self.i18n.t("trackside_ap.stage_prepare"))
         self.collect_thread = TracksideOpticalCollectThread(
             self.device_repository,
             self.site_name,
@@ -337,6 +344,8 @@ class TracksideApServicePage(QWidget):
             DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
             self,
         )
+        if hasattr(self.collect_thread, "stage_changed"):
+            self.collect_thread.stage_changed.connect(self._update_stage)
         self.collect_thread.progress_changed.connect(self._update_progress)
         self.collect_thread.collect_finished.connect(self._finish_collect)
         self.collect_thread.collect_failed.connect(self._fail_collect)
@@ -348,12 +357,25 @@ class TracksideApServicePage(QWidget):
         if self.collect_thread is not None:
             self.collect_thread.cancel()
             self.cancel_update_button.setEnabled(False)
+            self.status_label.setText(self.i18n.t("trackside_ap.update_cancelled"))
+
+    def _set_collect_running(self, running: bool, message: str = "") -> None:
+        self.update_progress.setVisible(running)
+        self.update_button.setEnabled(not running)
+        self.update_button.setText(self.i18n.t("trackside_ap.updating") if running else self.i18n.t("trackside_ap.update"))
+        self.cancel_update_button.setEnabled(running)
+        self.trackside_export_button.setEnabled(not running)
+        if message:
+            self.status_label.setText(message)
+
+    def _update_stage(self, key: str) -> None:
+        self.status_label.setText(self.i18n.t(key) if key else "")
 
     def _update_progress(self, done: int, total: int) -> None:
         self.status_label.setText(self.i18n.t("trackside_ap.collecting_progress", done=done, total=total))
 
     def _finish_collect(self, result) -> None:
-        self.cancel_update_button.setEnabled(False)
+        self._set_collect_running(False)
         self.status_label.setText(
             self.i18n.t(
                 "trackside_ap.collection_summary",
@@ -363,11 +385,11 @@ class TracksideApServicePage(QWidget):
             )
         )
         self.mark_dirty()
+        self.status_label.setText(self.i18n.t("trackside_ap.stage_refresh_page"))
         self.refresh_async(force=True)
 
     def _fail_collect(self, message: str) -> None:
-        self.update_button.setEnabled(True)
-        self.cancel_update_button.setEnabled(False)
+        self._set_collect_running(False)
         self.status_label.setText(self.i18n.t("trackside_ap.collection_failed"))
         QMessageBox.warning(self, self.i18n.t("rail_transit.trackside_ap_service"), message)
 

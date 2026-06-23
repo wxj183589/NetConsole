@@ -4,6 +4,7 @@ from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device_model
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
+from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical, parse_fit_ap_transceiver
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
 from netconsole.parsers.h3c.transceiver_parser import (
     merge_transceiver_data,
@@ -385,6 +386,48 @@ GigabitEthernet2/0/1 transceiver diagnostic information:
     assert item["rx_high_warning"] == "-5.00"
     assert item["tx_low_warning"] == "-9.00"
     assert item["tx_high_warning"] == "-3.00"
+
+
+def test_fit_ap_transceiver_selects_ten2_when_ten1_is_absent():
+    parsed = parse_fit_ap_transceiver(
+        """
+Ten-GigabitEthernet1/0/1 transceiver diagnostic information:
+The transceiver is absent.
+
+Ten-GigabitEthernet1/0/2 transceiver diagnostic information:
+Current diagnostic parameters:
+Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+37 3.28 14.90 -9.24 -5.81
+"""
+    )
+
+    assert parsed["interface_name"] == "Ten-GigabitEthernet1/0/2"
+    assert parsed["rx_power"] == "-9.24"
+    assert parsed["tx_power"] == "-5.81"
+
+
+def test_fit_ap_optical_matches_lldp_xge_to_ten_gigabit_interface():
+    parsed = parse_fit_ap_optical(
+        """
+System Name Local Interface Chassis ID Port ID
+CJL-PIS-1 XGE1/0/2 6c87-207f-f4fe GigabitEthernet1/0/13
+""",
+        """
+Ten-GigabitEthernet1/0/1 transceiver diagnostic information:
+The transceiver is absent.
+
+Ten-GigabitEthernet1/0/2 transceiver diagnostic information:
+Current diagnostic parameters:
+Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+37 3.28 14.90 -9.24 -5.81
+""",
+    )
+
+    assert parsed["lldp_neighbor"] == "CJL-PIS-1"
+    assert parsed["interface_name"] == "Ten-GigabitEthernet1/0/2"
+    assert parsed["neighbor_interface"] == "GigabitEthernet1/0/13"
+    assert parsed["rx_power"] == "-9.24"
+    assert parsed["tx_power"] == "-5.81"
 
 
 def test_transceiver_parser_extracts_base_information_fields():

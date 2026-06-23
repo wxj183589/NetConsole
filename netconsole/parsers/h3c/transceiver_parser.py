@@ -4,7 +4,7 @@ import re
 
 from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
 
-INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|M-GigabitEthernet|XGE|GE)[\d/.:]+|InLoopBack\d+|LoopBack\d+|NULL\d+"
+INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|TenGigabitEthernet|Ten-GE|Ten|XGigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|M-GigabitEthernet|XGE|GE)[\d/.:]+|InLoopBack\d+|LoopBack\d+|NULL\d+"
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
 

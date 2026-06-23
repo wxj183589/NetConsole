@@ -19,15 +19,28 @@ def normalize_interface_name(value: object) -> str:
     >>> normalize_interface_name("GigabitEthernet1/0/1")
     'GigabitEthernet1/0/1'
     """
-    text = str(value or "").strip()
+    text = str(value or "").strip().rstrip(":")
+    if not text:
+        return ""
     lower = text.casefold()
+    if lower == "null0":
+        return "NULL0"
+    if lower.startswith("ten-gigabitethernet"):
+        return "Ten-GigabitEthernet" + text[len("Ten-GigabitEthernet") :]
     replacements = (
+        ("xgigabitethernet", "Ten-GigabitEthernet"),
+        ("tengigabitethernet", "Ten-GigabitEthernet"),
+        ("ten-ge", "Ten-GigabitEthernet"),
+        ("ten", "Ten-GigabitEthernet"),
         ("xge", "Ten-GigabitEthernet"),
+        ("gigabitethernet", "GigabitEthernet"),
         ("ge", "GigabitEthernet"),
         ("bagg", "Bridge-Aggregation"),
         ("vlan", "Vlan-interface"),
     )
     for prefix, full in replacements:
-        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)].isdigit():
-            return full + text[len(prefix):]
+        if lower.startswith(prefix):
+            suffix = text[len(prefix):]
+            if suffix and suffix[0].isdigit():
+                return full + suffix
     return text

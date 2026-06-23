@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 
 from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
+from netconsole.utils.interface_normalize import normalize_interface_name
 
 
 MAC_RE = re.compile(r"\b[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}\b", re.IGNORECASE)
-INTERFACE_RE = re.compile(r"\b(?:[A-Za-z]+Ethernet|GE|XGE|Ten-GigabitEthernet|GigabitEthernet)\S+\b", re.IGNORECASE)
+INTERFACE_RE = re.compile(r"\b(?:[A-Za-z]+Ethernet|GE|XGE|Ten-GigabitEthernet|TenGigabitEthernet|Ten-GE|Ten|XGigabitEthernet|GigabitEthernet)\S+\b", re.IGNORECASE)
 
 
 def parse_fit_ap_optical(
@@ -15,9 +16,17 @@ def parse_fit_ap_optical(
     transceiver_interface_output: str = "",
     transceiver_manuinfo_output: str = "",
 ) -> dict[str, object | None]:
+    lldp = parse_fit_ap_lldp(lldp_output)
+    transceiver = parse_fit_ap_transceiver(
+        transceiver_output,
+        transceiver_interface_output,
+        transceiver_manuinfo_output,
+        preferred_interface=lldp.get("interface_name"),
+    )
     return {
-        **parse_fit_ap_lldp(lldp_output),
-        **parse_fit_ap_transceiver(transceiver_output, transceiver_interface_output, transceiver_manuinfo_output),
+        **lldp,
+        **transceiver,
+        "interface_name": transceiver.get("interface_name") or lldp.get("interface_name"),
     }
 
 
@@ -30,9 +39,17 @@ def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
         if len(parts) >= 4:
             return {
                 "lldp_neighbor": parts[0],
-                "interface_name": parts[1],
-                "neighbor_interface": parts[3],
+                "interface_name": normalize_interface_name(parts[1]),
+                "neighbor_interface": normalize_interface_name(parts[3]),
                 "neighbor_mac": _first_mac(stripped) or parts[2],
+            }
+        tokens = stripped.split()
+        if len(tokens) >= 4 and _looks_like_interface(tokens[1]):
+            return {
+                "lldp_neighbor": tokens[0],
+                "interface_name": normalize_interface_name(tokens[1]),
+                "neighbor_interface": normalize_interface_name(tokens[3]),
+                "neighbor_mac": _first_mac(stripped) or tokens[2],
             }
 
     result: dict[str, object | None] = {"lldp_neighbor": None, "interface_name": None, "neighbor_interface": None, "neighbor_mac": None}
@@ -45,9 +62,9 @@ def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
             current_system = stripped.split(":", 1)[1].strip()
             result["lldp_neighbor"] = current_system
         elif re.search(r"Port\s+ID|Neighbor\s+interface", stripped, re.IGNORECASE) and ":" in stripped:
-            result["neighbor_interface"] = stripped.split(":", 1)[1].strip()
+            result["neighbor_interface"] = normalize_interface_name(stripped.split(":", 1)[1].strip())
         elif re.search(r"Local\s+interface", stripped, re.IGNORECASE) and ":" in stripped:
-            result["interface_name"] = stripped.split(":", 1)[1].strip()
+            result["interface_name"] = normalize_interface_name(stripped.split(":", 1)[1].strip())
         mac = _first_mac(stripped)
         if mac:
             result["neighbor_mac"] = mac
@@ -56,7 +73,12 @@ def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
     return result
 
 
-def parse_fit_ap_transceiver(output: str, interface_output: str = "", manuinfo_output: str = "") -> dict[str, object | None]:
+def parse_fit_ap_transceiver(
+    output: str,
+    interface_output: str = "",
+    manuinfo_output: str = "",
+    preferred_interface: object = None,
+) -> dict[str, object | None]:
     result: dict[str, object | None] = {
         "interface_name": None,
         "temperature": None,
@@ -82,8 +104,9 @@ def parse_fit_ap_transceiver(output: str, interface_output: str = "", manuinfo_o
         parse_transceivers(interface_output),
         parse_transceiver_manuinfo(manuinfo_output),
     )
-    if merged:
-        result.update({key: value for key, value in merged[0].items() if value is not None})
+    selected = _select_transceiver_module(merged, preferred_interface)
+    if selected:
+        result.update({key: value for key, value in selected.items() if value is not None})
         _normalize_numeric_fields(result)
         return result
 
@@ -91,12 +114,12 @@ def parse_fit_ap_transceiver(output: str, interface_output: str = "", manuinfo_o
     for line in lines:
         iface_match = re.search(r"^([A-Za-z][A-Za-z-]*Ethernet\S+)\s+transceiver diagnostic information", line, re.IGNORECASE)
         if iface_match:
-            result["interface_name"] = iface_match.group(1)
+            result["interface_name"] = normalize_interface_name(iface_match.group(1))
             continue
         if result["interface_name"] is None:
             generic = INTERFACE_RE.search(line)
             if generic and "diagnostic" in line.lower():
-                result["interface_name"] = generic.group(0).rstrip(":")
+                result["interface_name"] = normalize_interface_name(generic.group(0).rstrip(":"))
 
         inline = _parse_inline_value(line)
         if inline:
@@ -113,6 +136,43 @@ def parse_fit_ap_transceiver(output: str, interface_output: str = "", manuinfo_o
                     break
     _normalize_numeric_fields(result)
     return result
+
+
+def _select_transceiver_module(
+    modules: list[dict[str, object | None]],
+    preferred_interface: object = None,
+) -> dict[str, object | None] | None:
+    if not modules:
+        return None
+    preferred_key = normalize_interface_name(preferred_interface).casefold()
+    valid_modules = [module for module in modules if _has_optical_data(module)]
+    if preferred_key:
+        for module in valid_modules:
+            if normalize_interface_name(module.get("interface_name")).casefold() == preferred_key:
+                return module
+    if len(valid_modules) == 1:
+        return valid_modules[0]
+    if valid_modules:
+        return valid_modules[0]
+    if preferred_key:
+        for module in modules:
+            if normalize_interface_name(module.get("interface_name")).casefold() == preferred_key:
+                return module
+    return modules[0]
+
+
+def _has_optical_data(module: dict[str, object | None]) -> bool:
+    return any(
+        module.get(field) not in (None, "")
+        for field in (
+            "rx_power",
+            "tx_power",
+            "temperature",
+            "module_model",
+            "module_serial_number",
+            "module_vendor",
+        )
+    )
 
 
 def _parse_inline_value(line: str) -> dict[str, str | None] | None:
@@ -134,6 +194,10 @@ def _parse_inline_value(line: str) -> dict[str, str | None] | None:
 def _first_mac(text: str) -> str | None:
     match = MAC_RE.search(text or "")
     return match.group(0) if match else None
+
+
+def _looks_like_interface(value: object) -> bool:
+    return bool(INTERFACE_RE.search(str(value or "")))
 
 
 def _normalize_numeric_fields(result: dict[str, object | None]) -> None:

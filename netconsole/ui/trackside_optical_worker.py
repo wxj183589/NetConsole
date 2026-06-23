@@ -159,6 +159,7 @@ class TracksideApBusinessLoadThread(QThread):
 
 class TracksideOpticalCollectThread(QThread):
     progress_changed = Signal(int, int)
+    stage_changed = Signal(str)
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
@@ -184,6 +185,7 @@ class TracksideOpticalCollectThread(QThread):
 
     def run(self) -> None:
         try:
+            self.stage_changed.emit("trackside_ap.stage_prepare")
             result: TracksideOpticalSessionResult = collect_trackside_optical(
                 self.repository,
                 self.site_name,
@@ -192,8 +194,10 @@ class TracksideOpticalCollectThread(QThread):
                 self.concurrency,
                 self._cancel_event,
                 self.progress_changed.emit,
+                self.stage_changed.emit,
             )
         except Exception as exc:
             self.collect_failed.emit(str(exc))
             return
+        self.stage_changed.emit("trackside_ap.stage_done")
         self.collect_finished.emit(result)

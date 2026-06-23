@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -261,6 +260,42 @@ def build_site_filter_items(rows: list[dict[str, object | None]], all_label: str
     return [(all_label, ""), *[(site, site) for site in sites]]
 
 
+def _normalize_resource_search(value: object) -> str:
+    return "".join(char for char in str(value or "").casefold() if char.isalnum())
+
+
+def _resource_state_token(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.split("=", 1)[0].strip().casefold()
+
+
+def _resource_state_values(row: dict[str, object | None]) -> set[str]:
+    values: set[str] = set()
+    for field in ("state", "state_raw", "state_display"):
+        value = row.get(field)
+        text = str(value or "").strip()
+        token = _resource_state_token(value)
+        if text:
+            values.add(text.casefold())
+        if token:
+            values.add(token)
+    return values
+
+
+def _resource_state_matches(row: dict[str, object | None], selected: str) -> bool:
+    if selected == "__offline__":
+        return is_fit_ap_offline(row)
+    if selected == "__online__":
+        return not is_fit_ap_offline(row)
+    return selected.casefold() in _resource_state_values(row)
+
+
+def _resource_state_label(row: dict[str, object | None]) -> str:
+    return str(row.get("state_display") or row.get("state_raw") or row.get("state") or "").strip()
+
+
 def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
     """Return the overall optical status for a FIT-AP row via state_engine."""
     if neighbor_optical:
@@ -488,6 +523,7 @@ class AcManagementPage(QWidget):
         self.offline_cache_path = PathResolver().offline_ap_cache_path
         self._overview_uses_trackside_plan = False
         self.resource_rows: list[dict[str, object | None]] = []
+        self.selected_ap_keys: set[str] = set()
         self._device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] = {}
         self.resource_page = 1
         self.resource_page_size = DEFAULT_PAGE_SIZE
@@ -513,7 +549,6 @@ class AcManagementPage(QWidget):
         self.resources_table = QTableWidget()
         self.resources_pagination = PaginationWidget(self.i18n)
         self.batch_delete_button = QPushButton()
-        self.batch_edit_button = QPushButton()
         self.import_button = QPushButton()
         self.export_extension_template_button = QPushButton()
         self.export_extension_template_button.setObjectName("exportApExtensionTemplateButton")
@@ -521,6 +556,9 @@ class AcManagementPage(QWidget):
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
         self.selection_label = make_text_selectable(QLabel())
+        self.resource_search_input = QLineEdit()
+        self.resource_group_filter = QComboBox()
+        self.resource_state_filter = QComboBox()
         self.optical_table = QTableWidget()
         self.optical_pagination = PaginationWidget(self.i18n)
         self.refresh_optical_button = QPushButton()
@@ -610,7 +648,6 @@ class AcManagementPage(QWidget):
         for button in (
             self.refresh_button,
             self.batch_delete_button,
-            self.batch_edit_button,
             self.import_button,
             self.export_extension_template_button,
             self.export_button,
@@ -620,7 +657,12 @@ class AcManagementPage(QWidget):
             resource_actions.addWidget(button)
         resource_actions.addWidget(self.selection_label)
         resource_actions.addStretch(1)
+        resource_filters = QHBoxLayout()
+        resource_filters.addWidget(self.resource_search_input, 2)
+        resource_filters.addWidget(self.resource_group_filter)
+        resource_filters.addWidget(self.resource_state_filter)
         resources_layout.addLayout(resource_actions)
+        resources_layout.addLayout(resource_filters)
         resources_layout.addWidget(self.resources_table, 1)
         resources_layout.addWidget(self.resources_pagination)
         resources_tab.setLayout(resources_layout)
@@ -688,7 +730,6 @@ class AcManagementPage(QWidget):
         self.refresh_button.clicked.connect(self.refresh_ac_resources)
         self.cancel_update_button.clicked.connect(self.cancel_current_update)
         self.batch_delete_button.clicked.connect(self.batch_delete_aps)
-        self.batch_edit_button.clicked.connect(self.batch_edit_site)
         self.import_button.clicked.connect(self.import_metadata)
         self.export_extension_template_button.clicked.connect(self.export_ap_extension_template)
         self.export_button.clicked.connect(self.export_aps)
@@ -705,6 +746,9 @@ class AcManagementPage(QWidget):
         self.optical_site_filter.currentIndexChanged.connect(self.apply_optical_filters)
         self.trackside_site_filter.currentIndexChanged.connect(self.apply_trackside_filters)
         self.trackside_search_input.textChanged.connect(self.apply_trackside_filters)
+        self.resource_search_input.textChanged.connect(self.apply_resource_filters)
+        self.resource_group_filter.currentIndexChanged.connect(self.apply_resource_filters)
+        self.resource_state_filter.currentIndexChanged.connect(self.apply_resource_filters)
         self.resources_pagination.pageChanged.connect(self.set_resource_page)
         self.resources_pagination.pageSizeChanged.connect(self.set_resource_page_size)
         self.optical_pagination.pageChanged.connect(self.set_optical_page)
@@ -731,7 +775,6 @@ class AcManagementPage(QWidget):
         self.refresh_button.setText(self.i18n.t("details.refresh"))
         self.cancel_update_button.setText(self.i18n.t("ac.cancel_update"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
-        self.batch_edit_button.setText(self.i18n.t("ap.batch_edit"))
         self.import_button.setText(self.i18n.t("ap.import_metadata"))
         self.export_extension_template_button.setText(self.i18n.t("ap.export_extension_template"))
         self.export_button.setText(self.i18n.t("ap.export_info"))
@@ -744,6 +787,8 @@ class AcManagementPage(QWidget):
         self.view_overview_history_button.setText(self.i18n.t("ac.view_history"))
         self.trackside_export_button.setText(self.i18n.t("trackside.export"))
         self.trackside_search_input.setPlaceholderText(self.i18n.t("trackside.search"))
+        self.resource_search_input.setPlaceholderText(self.i18n.t("ap.resource_search_placeholder"))
+        self._set_resource_filter_items(self.resource_rows)
         self.resources_pagination.retranslate()
         self.optical_pagination.retranslate()
         self.trackside_pagination.retranslate()
@@ -815,6 +860,8 @@ class AcManagementPage(QWidget):
         if not ac_uuid:
             self._set_summary(None)
             self.resource_rows = []
+            self.selected_ap_keys.clear()
+            self._set_resource_filter_items([])
             self.apply_resource_pagination()
             self.optical_rows = []
             self.offline_ap_stats = {}
@@ -830,6 +877,9 @@ class AcManagementPage(QWidget):
         self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
         resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
         self.resource_rows = resources
+        valid_keys = {self._ap_selection_key(row) for row in resources}
+        self.selected_ap_keys.intersection_update({key for key in valid_keys if key})
+        self._set_resource_filter_items(resources)
         self.apply_resource_pagination()
         self._rebuild_device_optical_status_lookup()
         current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
@@ -942,7 +992,6 @@ class AcManagementPage(QWidget):
         self.refresh_button.setEnabled(not running)
         self.refresh_optical_button.setEnabled(not running)
         self.batch_delete_button.setEnabled(False if running else selected_count > 0)
-        self.batch_edit_button.setEnabled(False if running else selected_count > 0)
         self.import_button.setEnabled(not running)
         self.export_extension_template_button.setEnabled(not running)
         self.clear_selection_button.setEnabled(False if running else selected_count > 0)
@@ -1057,13 +1106,25 @@ class AcManagementPage(QWidget):
                 return device
         return None
 
-    def selected_ap_names(self) -> list[str]:
-        names: list[str] = []
+    def _ap_selection_key(self, row: dict[str, object | None]) -> str:
+        return str(row.get("ap_uuid") or row.get("ap_name") or "").strip()
+
+    def _sync_visible_resource_selection(self) -> None:
         for row in range(self.resources_table.rowCount()):
             item = self.resources_table.item(row, CHECK_COLUMN)
-            if item and item.checkState() == Qt.Checked:
-                names.append(str(item.data(Qt.UserRole)))
-        return names
+            if not item:
+                continue
+            key = str(item.data(Qt.UserRole) or "").strip()
+            if not key:
+                continue
+            if item.checkState() == Qt.Checked:
+                self.selected_ap_keys.add(key)
+            else:
+                self.selected_ap_keys.discard(key)
+
+    def selected_ap_names(self) -> list[str]:
+        self._sync_visible_resource_selection()
+        return sorted(self.selected_ap_keys)
 
     def checked_or_all_ap_rows(self) -> list[dict[str, object | None]]:
         ac_uuid = self.current_device_uuid()
@@ -1071,13 +1132,20 @@ class AcManagementPage(QWidget):
             return []
         rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
         selected = set(self.selected_ap_names())
-        return [row for row in rows if not selected or row.get("ap_uuid") in selected]
+        return [row for row in rows if not selected or self._ap_selection_key(row) in selected]
 
-    def update_selection_state(self) -> None:
+    def update_selection_state(self, *_args) -> None:
+        self._sync_visible_resource_selection()
         count = len(self.selected_ap_names())
-        self.selection_label.setText(self.i18n.t("ap.selected_count", count=count))
+        self.selection_label.setText(
+            self.i18n.t(
+                "ap.resource_filter_stats",
+                total=len(self.resource_rows),
+                visible=len(self.filtered_resource_rows()),
+                selected=count,
+            )
+        )
         self.batch_delete_button.setEnabled(count > 0)
-        self.batch_edit_button.setEnabled(count > 0)
         self.clear_selection_button.setEnabled(count > 0)
         self.invert_selection_button.setEnabled(self.resources_table.rowCount() > 0)
 
@@ -1091,10 +1159,17 @@ class AcManagementPage(QWidget):
             item = self.resources_table.item(row, CHECK_COLUMN)
             if item:
                 item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                key = str(item.data(Qt.UserRole) or "").strip()
+                if key:
+                    if checked:
+                        self.selected_ap_keys.add(key)
+                    else:
+                        self.selected_ap_keys.discard(key)
         self.resources_table.blockSignals(False)
         self.update_selection_state()
 
     def clear_selection(self) -> None:
+        self.selected_ap_keys.clear()
         self._set_all_checked(False)
 
     def invert_selection(self) -> None:
@@ -1102,7 +1177,14 @@ class AcManagementPage(QWidget):
         for row in range(self.resources_table.rowCount()):
             item = self.resources_table.item(row, CHECK_COLUMN)
             if item:
-                item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+                key = str(item.data(Qt.UserRole) or "").strip()
+                checked = item.checkState() != Qt.Checked
+                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                if key:
+                    if checked:
+                        self.selected_ap_keys.add(key)
+                    else:
+                        self.selected_ap_keys.discard(key)
         self.resources_table.blockSignals(False)
         self.update_selection_state()
 
@@ -1116,17 +1198,6 @@ class AcManagementPage(QWidget):
             return
         count = self.repository.delete_fit_aps(ac_uuid, names)
         app_logger.log_info("FIT_AP_BATCH_DELETE", f"ac={ac_uuid}, count={count}")
-        self.refresh_data()
-
-    def batch_edit_site(self) -> None:
-        names = self.selected_ap_names()
-        if not names:
-            return
-        site_name, accepted = QInputDialog.getText(self, self.i18n.t("ap.batch_edit"), self.i18n.t("ac.site"))
-        if not accepted:
-            return
-        count = self.repository.update_fit_ap_site(names, site_name.strip())
-        app_logger.log_info("FIT_AP_BATCH_EDIT_SITE", f"count={count}, site={site_name.strip()}")
         self.refresh_data()
 
     def import_metadata(self) -> None:
@@ -1198,11 +1269,42 @@ class AcManagementPage(QWidget):
         self.optical_page = 1
         self.apply_optical_pagination()
 
+    def current_resource_filters(self) -> dict[str, object | None]:
+        return {
+            "search": self.resource_search_input.text(),
+            "group": self.resource_group_filter.currentData(),
+            "state": self.resource_state_filter.currentData(),
+        }
+
+    def filtered_resource_rows(self) -> list[dict[str, object | None]]:
+        rows = self.resource_rows
+        filters = self.current_resource_filters()
+        search = _normalize_resource_search(filters.get("search"))
+        if search:
+            rows = [
+                row
+                for row in rows
+                if search in _normalize_resource_search(row.get("ap_name"))
+                or search in _normalize_resource_search(row.get("ap_mac"))
+            ]
+        group = str(filters.get("group") or "").strip()
+        if group:
+            rows = [row for row in rows if str(row.get("group_name") or "").strip() == group]
+        state = str(filters.get("state") or "").strip()
+        if state:
+            rows = [row for row in rows if _resource_state_matches(row, state)]
+        return rows
+
+    def apply_resource_filters(self) -> None:
+        self.resource_page = 1
+        self.apply_resource_pagination()
+
     def apply_resource_pagination(self) -> None:
-        rows, state = paginate_rows(self.resource_rows, self.resource_page_size, self.resource_page)
+        rows, state = paginate_rows(self.filtered_resource_rows(), self.resource_page_size, self.resource_page)
         self.resource_page = state.current_page
         self.resources_pagination.set_state(state)
         self._set_rows(self.resources_table, FIT_AP_RESOURCE_COLUMNS, rows)
+        self.update_selection_state()
 
     def set_resource_page(self, page: int) -> None:
         self.resource_page = page
@@ -1422,6 +1524,33 @@ class AcManagementPage(QWidget):
         self.optical_site_filter.setCurrentIndex(index if index >= 0 else 0)
         self.optical_site_filter.blockSignals(False)
 
+    def _set_resource_filter_items(self, rows: list[dict[str, object | None]]) -> None:
+        current_group = self.resource_group_filter.currentData()
+        current_state = self.resource_state_filter.currentData()
+        self.resource_group_filter.blockSignals(True)
+        self.resource_state_filter.blockSignals(True)
+        self.resource_group_filter.clear()
+        self.resource_state_filter.clear()
+        self.resource_group_filter.addItem(self.i18n.t("ap.group_filter_all"), "")
+        for group in sorted({str(row.get("group_name") or "").strip() for row in rows if str(row.get("group_name") or "").strip()}):
+            self.resource_group_filter.addItem(group, group)
+        self.resource_state_filter.addItem(self.i18n.t("ap.state_filter_all"), "")
+        self.resource_state_filter.addItem(self.i18n.t("ap.state_filter_online"), "__online__")
+        self.resource_state_filter.addItem(self.i18n.t("ap.state_filter_offline"), "__offline__")
+        added: set[str] = {"", "__online__", "__offline__"}
+        for label in sorted({_resource_state_label(row) for row in rows if _resource_state_label(row)}):
+            key = label.casefold()
+            if key in added:
+                continue
+            self.resource_state_filter.addItem(label, key)
+            added.add(key)
+        group_index = self.resource_group_filter.findData(current_group)
+        state_index = self.resource_state_filter.findData(current_state)
+        self.resource_group_filter.setCurrentIndex(group_index if group_index >= 0 else 0)
+        self.resource_state_filter.setCurrentIndex(state_index if state_index >= 0 else 0)
+        self.resource_group_filter.blockSignals(False)
+        self.resource_state_filter.blockSignals(False)
+
     def _set_trackside_site_filter_items(self, rows: list[dict[str, object | None]]) -> None:
         current = self.trackside_site_filter.currentData()
         self.trackside_site_filter.blockSignals(True)
@@ -1618,8 +1747,9 @@ class AcManagementPage(QWidget):
                     if field == "select":
                         item = QTableWidgetItem("")
                         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-                        item.setCheckState(Qt.Unchecked)
-                        item.setData(Qt.UserRole, row.get("ap_uuid") or row.get("ap_name"))
+                        key = self._ap_selection_key(row)
+                        item.setCheckState(Qt.Checked if key in self.selected_ap_keys else Qt.Unchecked)
+                        item.setData(Qt.UserRole, key)
                     else:
                         value = row.get(field)
                         if table is self.optical_table and field == "switch_optical_status":

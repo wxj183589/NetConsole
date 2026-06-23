@@ -258,8 +258,15 @@ def collect_trackside_optical(
     concurrency: int = DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
     cancel_event: Event | None = None,
     progress_callback=None,
+    stage_callback=None,
 ) -> TracksideOpticalSessionResult:
+    def stage(key: str) -> None:
+        if stage_callback is not None:
+            stage_callback(key)
+
+    stage("trackside_ap.stage_prepare")
     ac_repository = AcRepository(repository.database)
+    stage("trackside_ap.stage_collect_lldp")
     switch_targets, switch_skipped = build_station_switch_targets(repository, site_name)
     targets = dedupe_targets(switch_targets)
     skipped = [*switch_skipped]
@@ -279,8 +286,10 @@ def collect_trackside_optical(
     if progress_callback is not None:
         progress_callback(0, total_units)
     with ThreadPoolExecutor(max_workers=1) as branch_executor:
+        stage("trackside_ap.stage_refresh_fit_ap")
         fit_future = branch_executor.submit(_collect_fit_ap_optical_subtasks, repository, site_name, paths, concurrency, cancel_event)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            stage("trackside_ap.stage_collect_optical")
             futures = []
             for target in targets:
                 if cancel_event.is_set():
@@ -290,18 +299,22 @@ def collect_trackside_optical(
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
+                stage("trackside_ap.stage_write_database")
                 _persist_result(repository, ac_repository, result, parsed_dir / "trackside_update_results.sqlite")
                 completed += 1
                 if progress_callback is not None:
                     progress_callback(completed, max(total_units, 1))
+        stage("trackside_ap.stage_refresh_fit_ap_optical")
         fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
     skipped.extend(fit_ap_skipped)
+    stage("trackside_ap.stage_aggregate")
     fit_success = sum(max(int(result.optical_rows_updated or 0) - int(result.failed_aps or 0), 0) for result in fit_ap_results)
     fit_failed = sum(int(result.failed_aps or 0) for result in fit_ap_results)
     fit_failures = sum(1 for result in fit_ap_results if not result.success and not result.partial_success and int(result.optical_rows_updated or 0) == 0)
     total_units = fit_ap_total + len(targets)
     if progress_callback is not None:
         progress_callback(total_units, total_units)
+    stage("trackside_ap.stage_write_database")
     status = "CANCELLED" if cancel_event.is_set() else "DONE"
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)

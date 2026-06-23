@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import re
 
+from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.text_encoding import safe_decode
 
 
 INTERFACE_PATTERN = re.compile(
     r"^(?:"
-    r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Twenty-FiveGigE|HundredGigE|XGE|GE)\d+(?:/\d+){0,4}"
+    r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Twenty-FiveGigE|HundredGigE|XGE|GE|Ten-GE|Ten)\d+(?:/\d+){0,4}"
     r"|M-GigabitEthernet\d+/\d+/\d+"
     r"|InLoopBack\d+"
     r"|LoopBack\d+"
@@ -24,18 +25,7 @@ def normalize_interface(name: str) -> str:
     bracket = re.search(r"\[([^\]]+)\]", text)
     if bracket:
         text = bracket.group(1).strip()
-    if text.upper() == "NULL0":
-        return "NULL0"
-    aliases = {
-        "ge": "GigabitEthernet",
-        "xge": "Ten-GigabitEthernet",
-    }
-    match = re.match(r"^([A-Za-z-]+)([\d/.:]+)$", text)
-    if match:
-        prefix, suffix = match.groups()
-        normalized_prefix = aliases.get(prefix.casefold(), prefix)
-        text = f"{normalized_prefix}{suffix}"
-    return text
+    return normalize_interface_name(text)
 
 
 def classify_interface(name: str) -> str:

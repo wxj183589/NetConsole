@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.utils.interface_normalize import normalize_interface_name
 
 
 @dataclass(frozen=True)
@@ -159,18 +160,3 @@ def find_neighbor_optical_module(site_name: str, device_uuid: str | None, interf
 
 def _normalize_mac(value: str | None) -> str:
     return str(value or "").strip().lower().replace(":", "-")
-
-
-def normalize_interface_name(value: object) -> str:
-    text = str(value or "").strip()
-    lower = text.lower()
-    replacements = (
-        ("xge", "Ten-GigabitEthernet"),
-        ("ge", "GigabitEthernet"),
-        ("bagg", "Bridge-Aggregation"),
-        ("vlan", "Vlan-interface"),
-    )
-    for prefix, full in replacements:
-        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)].isdigit():
-            return full + text[len(prefix):]
-    return text

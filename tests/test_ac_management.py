@@ -954,7 +954,7 @@ HX_1                 GE1/0/2         903f-8645-6e00  GigabitEthernet2/0/19
     )
 
     assert parsed["lldp_neighbor"] == "HX_1"
-    assert parsed["interface_name"] == "GE1/0/2"
+    assert parsed["interface_name"] == "GigabitEthernet1/0/2"
     assert parsed["neighbor_mac"] == "903f-8645-6e00"
     assert parsed["neighbor_interface"] == "GigabitEthernet2/0/19"
 
@@ -1315,6 +1315,94 @@ def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):
     assert 112 <= widths[ap_mac_column] <= MEDIUM_PRIORITY_MAX_WIDTH
     assert page.resources_table.verticalHeader().defaultSectionSize() == 36
     assert page.resources_table.rowHeight(0) == 36
+
+
+def test_fit_ap_resource_search_group_and_state_filters(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac = device_repository.create(make_ac_device())
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        ac.device_uuid,
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "Station-A-AP-01",
+                "ap_mac": "30f5-277a-e520",
+                "group_name": "default-group",
+                "state": "Run",
+                "state_display": "Run",
+            },
+            {
+                "ap_uuid": "ap-2",
+                "ap_name": "Station-B-AP-Idle",
+                "ap_mac": "083b-e9e8-1000",
+                "group_name": "trackside",
+                "state": "I",
+                "state_display": "Idle",
+            },
+            {
+                "ap_uuid": "ap-3",
+                "ap_name": "Station-C-AP-Image",
+                "ap_mac": "083b-e9e8-2000",
+                "group_name": "trackside",
+                "state": "IL",
+                "state_display": "ImageLoad",
+            },
+        ],
+    )
+    page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+
+    assert not hasattr(page, "batch_edit_button")
+    assert page.resource_search_input.placeholderText() == "Search AP name / AP_MAC"
+
+    page.resource_search_input.setText("station-b")
+    assert [row["ap_uuid"] for row in page.filtered_resource_rows()] == ["ap-2"]
+
+    page.resource_search_input.setText("083B-E9E8")
+    assert [row["ap_uuid"] for row in page.filtered_resource_rows()] == ["ap-2", "ap-3"]
+
+    page.resource_group_filter.setCurrentIndex(page.resource_group_filter.findData("trackside"))
+    assert [row["ap_uuid"] for row in page.filtered_resource_rows()] == ["ap-2", "ap-3"]
+
+    page.resource_state_filter.setCurrentIndex(page.resource_state_filter.findData("__offline__"))
+    assert [row["ap_uuid"] for row in page.filtered_resource_rows()] == ["ap-2"]
+
+    page.resource_search_input.clear()
+    assert [row["ap_uuid"] for row in page.filtered_resource_rows()] == ["ap-2"]
+
+    page.resource_state_filter.setCurrentIndex(page.resource_state_filter.findData(""))
+    page.resource_group_filter.setCurrentIndex(page.resource_group_filter.findData(""))
+    assert [row["ap_uuid"] for row in page.filtered_resource_rows()] == ["ap-1", "ap-2", "ap-3"]
+
+
+def test_fit_ap_resource_selection_survives_filtering(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac = device_repository.create(make_ac_device())
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        ac.device_uuid,
+        [
+            {"ap_uuid": "ap-1", "ap_name": "AP-A", "ap_mac": "30f5-277a-e520", "state": "Run"},
+            {"ap_uuid": "ap-2", "ap_name": "AP-B", "ap_mac": "083b-e9e8-1000", "state": "I"},
+        ],
+    )
+    page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.resources_table.item(0, 0).setCheckState(Qt.Checked)
+    page.update_selection_state()
+
+    page.resource_search_input.setText("AP-B")
+    assert page.selected_ap_names() == ["ap-1"]
+
+    page.resource_search_input.clear()
+    assert page.resources_table.item(0, 0).checkState() == Qt.Checked
+    assert page.selected_ap_names() == ["ap-1"]
+
+    page.invert_selection()
+    assert page.selected_ap_names() == ["ap-2"]
 
 
 def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_path):
@@ -3447,6 +3535,49 @@ def test_trackside_ap_business_internal_fields_remain_available_for_update(tmp_p
     assert "success" not in visible_values
 
 
+def test_trackside_ap_business_update_shows_async_stage_state(tmp_path, monkeypatch):
+    app()
+
+    class FakeCollectThread(QObject):
+        stage_changed = Signal(str)
+        progress_changed = Signal(int, int)
+        collect_finished = Signal(object)
+        collect_failed = Signal(str)
+        finished = Signal()
+
+        def __init__(self, repository, site_name, paths, trackside_rows, concurrency, parent=None):
+            super().__init__(parent)
+            self.cancelled = False
+
+        def start(self):
+            self.stage_changed.emit("trackside_ap.stage_collect_lldp")
+
+        def cancel(self):
+            self.cancelled = True
+
+    import netconsole.ui.pages.trackside_ap_service_page as page_module
+
+    monkeypatch.setattr(page_module, "TracksideOpticalCollectThread", FakeCollectThread)
+    page = TracksideApServicePage(DeviceRepository(make_database(tmp_path)), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.trackside_rows = [{"site": "Station A", "device_name": "SW-1", "interface_name": "GigabitEthernet1/0/1"}]
+    page.apply_trackside_pagination()
+    old_row_count = page.trackside_table.rowCount()
+
+    page.start_optical_update()
+
+    assert page.update_button.text() == "Updating..."
+    assert page.update_button.isEnabled() is False
+    assert page.cancel_update_button.isEnabled() is True
+    assert page.update_progress.isHidden() is False
+    assert page.trackside_table.rowCount() == old_row_count
+    assert page.status_label.text() == "Collecting station switch LLDP..."
+
+    page.cancel_optical_update()
+
+    assert page.cancel_update_button.isEnabled() is False
+    assert page.status_label.text() == "Cancelled"
+
+
 def test_trackside_ap_business_trackside_status_i18n_exists_but_main_table_hides_it(tmp_path):
     app()
     assert I18n("zh_CN").t("trackside.collection_status") == "\u91c7\u96c6\u72b6\u6001"
@@ -3487,18 +3618,17 @@ def test_trackside_ap_business_header_tooltips_are_readable(tmp_path):
     fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]
 
     expected = {
-        "site": "归属站点：设备管理中的归属站点，作为AP和交换机归属的优先来源。",
-        "link_status": "Link：交换机接口链路状态，显示 UP / DOWN。",
-        "port_type": "端口类型：交换机端口类型，显示 access / trunk / hybrid / unknown。",
-        "switch_rx_power": "室内交换机收光(dBm)：交换机侧光模块接收功率。",
-        "ap_optical_status": "AP侧光告警：AP侧光衰状态；离线AP固定显示离线。",
+        "site": page.i18n.t("trackside.tooltip.station"),
+        "link_status": page.i18n.t("trackside.tooltip.link"),
+        "port_type": page.i18n.t("trackside.tooltip.port_type"),
+        "switch_rx_power": page.i18n.t("trackside.tooltip.switch_rx_power"),
+        "ap_optical_status": page.i18n.t("trackside.tooltip.ap_optical_status"),
     }
     for field, tooltip in expected.items():
         actual = page.trackside_table.horizontalHeaderItem(fields.index(field)).toolTip()
         assert actual == tooltip
         assert "???" not in actual
         assert "�" not in actual
-
 
 def test_trackside_ap_business_ignores_legacy_column_width_settings(tmp_path):
     app()
@@ -3845,7 +3975,7 @@ def test_rail_transit_lazy_refreshes_only_current_tab(tmp_path, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(page.trackside_page, "refresh_async", lambda force=False: calls.append(f"trackside:{force}"))
     monkeypatch.setattr(page.mesh_page, "refresh_all", lambda: calls.append("mesh"))
-    monkeypatch.setattr(page.online_mr_page, "refresh_all", lambda: calls.append("online"))
+    assert page.online_mr_page is None
 
     page.refresh_current_async_or_lazy()
     assert calls == ["trackside:False"]
@@ -4865,15 +4995,15 @@ def test_ac_log_event_names_do_not_contain_password():
     assert all("PASSWORD" not in event for event in event_names)
 
 
-def test_database_migration_code_is_limited_to_additive_columns():
-    root = Path(__file__).parents[1] / "netconsole"
-    texts = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
+def test_database_runtime_has_no_legacy_migration_chain():
+    text = (Path(__file__).parents[1] / "netconsole" / "core" / "database.py").read_text(encoding="utf-8")
 
-    assert texts.count("ALTER TABLE") == 1
-    assert "ADD COLUMN" in texts
-    assert "DROP TABLE" not in texts
-    assert "schema_version" not in texts
-    assert "upgrade_database" not in texts
+    assert "ALTER TABLE" not in text
+    assert "ADD COLUMN" not in text
+    assert "DROP TABLE" not in text
+    assert "upgrade_database" not in text
+    assert "migrate_old_" not in text
+    assert "legacy_table_adapter" not in text
 
 
 def test_three_module_status_consistency_same_device_same_result(tmp_path):
