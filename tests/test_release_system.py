@@ -24,9 +24,11 @@ def test_version_file_exposes_release_metadata():
     assert GIT_COMMIT
 
 
-def test_next_patch_version_uses_existing_v12_tags():
-    assert release.next_patch_version([]) == "v1.2.0"
-    assert release.next_patch_version(["v1.2.0", "v1.2.2", "v1.1.9", "bad"]) == "v1.2.3"
+def test_release_version_defaults_to_app_version_without_tag_scan():
+    assert release.get_release_version() == APP_VERSION
+    assert release.get_release_version("v9.9.9") == "v9.9.9"
+    assert not hasattr(release, "next_patch_version")
+    assert not hasattr(release, "get_next_version")
 
 
 def test_render_version_py_contains_single_version_source_fields():
@@ -38,8 +40,8 @@ def test_render_version_py_contains_single_version_source_fields():
     assert 'BUILD_TIME = "2026-06-17 12:00:00"' in text
     assert 'GIT_COMMIT = "abc1234"' in text
     assert 'APP_AUTHOR = "梦游"' in text
-    assert "https://nas.love-ok.com:3021/mengyou/NetConsole.git" in text
-    assert "https://github.com/wxj183589/NetConsole.git" in text
+    assert "ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git" in text
+    assert "git@github.com:wxj183589/NetConsole.git" in text
 
 
 def test_release_script_documents_gitea_https_authentication():
@@ -48,8 +50,8 @@ def test_release_script_documents_gitea_https_authentication():
 
     assert not (root / "release.py").exists()
     assert "self-hosted Gitea repository" in text
-    assert "Personal Access Token" in text
     assert "SSH key" in text
+    assert "SSH key authentication is required" in text
     assert "Release system should not block on auth failure" in text
 
 
@@ -58,11 +60,11 @@ def test_release_script_pushes_two_remotes_and_tags():
     text = (root / "project" / "release.py").read_text(encoding="utf-8")
 
     assert "def safe_run(cmd: list[str])" in text
-    assert "def check_git_remote()" in text
-    assert 'git", "push", "origin", "main"' in text
-    assert 'git", "push", "github", "main"' in text
-    assert 'git", "push", "origin", selected_version' in text
+    assert 'def check_git_remote(remote: str = "nas")' in text
+    assert 'git", "push", "github", "HEAD"' in text
+    assert 'git", "push", "nas", "HEAD"' in text
     assert 'git", "push", "github", selected_version' in text
+    assert 'git", "push", "nas", selected_version' in text
     assert 'git", "tag", "-a", selected_version' in text
 
 
@@ -71,7 +73,7 @@ def test_release_push_failures_do_not_interrupt_release(monkeypatch):
 
     monkeypatch.setattr(release, "write_release_files", lambda *args: None)
     monkeypatch.setattr(release, "ensure_remotes", lambda dry_run: None)
-    monkeypatch.setattr(release, "check_git_remote", lambda: False)
+    monkeypatch.setattr(release, "check_git_remote", lambda remote="nas": False)
     monkeypatch.setattr(
         release,
         "run_git",
@@ -91,14 +93,14 @@ def test_release_push_failures_do_not_interrupt_release(monkeypatch):
     assert result.build_success
     assert result.commit_success
     assert result.tag_success
-    assert not result.push_origin_success
+    assert not result.push_nas_success
     assert not result.push_github_success
     assert result.final_status == release.OFFLINE_RELEASE
-    assert ["git", "tag", "-a", "v1.0.9", "-m", "发布 v1.0.9"] in commands
-    assert ["git", "push", "origin", "main"] in commands
-    assert ["git", "push", "github", "main"] in commands
-    assert ["git", "push", "origin", "v1.0.9"] in commands
+    assert any(cmd[:4] == ["git", "tag", "-a", "v1.0.9"] and cmd[4] == "-m" and cmd[5].endswith("v1.0.9") for cmd in commands)
+    assert ["git", "push", "github", "HEAD"] in commands
+    assert ["git", "push", "nas", "HEAD"] in commands
     assert ["git", "push", "github", "v1.0.9"] in commands
+    assert ["git", "push", "nas", "v1.0.9"] in commands
 
 
 def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
@@ -106,7 +108,7 @@ def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
 
     monkeypatch.setattr(release, "write_release_files", lambda *args: None)
     monkeypatch.setattr(release, "ensure_remotes", lambda dry_run: None)
-    monkeypatch.setattr(release, "check_git_remote", lambda: True)
+    monkeypatch.setattr(release, "check_git_remote", lambda remote="nas": True)
     monkeypatch.setattr(
         release,
         "run_git",
@@ -125,12 +127,11 @@ def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
 
     assert result.build_success
     assert not result.tag_success
-    assert result.push_origin_success
+    assert result.push_nas_success
     assert result.push_github_success
     assert result.final_status == release.LOCAL_BUILD_ONLY
-    assert ["git", "push", "origin", "main"] in commands
-    assert ["git", "push", "github", "main"] in commands
-
+    assert ["git", "push", "github", "HEAD"] in commands
+    assert ["git", "push", "nas", "HEAD"] in commands
 
 def test_build_release_script_uses_project_output_and_release_zip():
     root = Path(__file__).resolve().parents[1]

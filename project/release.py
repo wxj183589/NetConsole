@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,11 +12,11 @@ PROJECT_DIR = Path(__file__).resolve().parent
 ROOT = PROJECT_DIR.parent
 VERSION_FILE = ROOT / "netconsole" / "core" / "version.py"
 VERSION_INFO_FILE = PROJECT_DIR / "version_info.txt"
-INTERNAL_REMOTE = "https://nas.love-ok.com:3021/mengyou/NetConsole.git"
-GITHUB_REMOTE = "https://github.com/wxj183589/NetConsole.git"
+INTERNAL_REMOTE = "ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git"
+GITHUB_REMOTE = "git@github.com:wxj183589/NetConsole.git"
 REMOTE_URLS = {
-    "origin": INTERNAL_REMOTE,
     "github": GITHUB_REMOTE,
+    "nas": INTERNAL_REMOTE,
 }
 APP_AUTHOR = "梦游"
 ONLINE_RELEASE = "ONLINE_RELEASE"
@@ -27,17 +26,14 @@ COMMIT_FAILED = "COMMIT_FAILED"
 RELEASE_STATUS = LOCAL_BUILD_ONLY
 
 GIT_AUTH_NOTE = """
-Remote origin is a self-hosted Gitea repository:
-https://nas.love-ok.com:3021/mengyou/NetConsole.git
+Remote nas is a self-hosted Gitea repository:
+ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git
 
-Authentication may require:
-- Personal Access Token (PAT)
-- or SSH key (recommended)
+Authentication requires:
+- SSH key
 
 Git push requires authentication:
-- Recommend SSH key authentication (preferred)
-- HTTPS may fail in non-interactive CI environments
-- Gitea HTTPS may require token-based authentication
+- SSH key authentication is required
 - Release system should not block on auth failure
 """
 
@@ -48,9 +44,9 @@ class ReleaseResult:
     build_success: bool
     commit_success: bool
     tag_success: bool
-    push_origin_success: bool
+    push_nas_success: bool
     push_github_success: bool
-    push_origin_tag_success: bool
+    push_nas_tag_success: bool
     push_github_tag_success: bool
     final_status: str
 
@@ -82,9 +78,9 @@ def safe_run(cmd: list[str]) -> bool:
         return False
 
 
-def check_git_remote() -> bool:
+def check_git_remote(remote: str = "nas") -> bool:
     try:
-        subprocess.run(["git", "ls-remote", "origin"], cwd=ROOT, check=True, env=_git_env(), stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "ls-remote", remote], cwd=ROOT, check=True, env=_git_env(), stdout=subprocess.DEVNULL)
         return True
     except Exception as exc:
         print("[WARN] Git remote check failed: Git remote authentication or network is unavailable")
@@ -92,18 +88,12 @@ def check_git_remote() -> bool:
         return False
 
 
-def next_patch_version(tags: list[str]) -> str:
-    max_patch = -1
-    for tag in tags:
-        match = re.fullmatch(r"v1\.2\.(\d+)", tag.strip())
-        if match:
-            max_patch = max(max_patch, int(match.group(1)))
-    return f"v1.2.{max_patch + 1 if max_patch >= 0 else 0}"
+def get_release_version(explicit_version: str | None = None) -> str:
+    if explicit_version:
+        return explicit_version
+    from netconsole.core.version import APP_VERSION
 
-
-def get_next_version() -> str:
-    output = run_git(["tag", "--list", "v1.2.*"])
-    return next_patch_version(output.splitlines())
+    return APP_VERSION
 
 
 def render_version_py(version: str, build_time: str, git_commit: str) -> str:
@@ -183,7 +173,7 @@ def ensure_remotes(dry_run: bool) -> None:
 
 def release(version: str | None = None, dry_run: bool = False) -> ReleaseResult:
     global RELEASE_STATUS
-    selected_version = version or get_next_version()
+    selected_version = get_release_version(version)
     build_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     git_commit = run_git(["rev-parse", "--short", "HEAD"]) or "unknown"
     if dry_run:
@@ -194,20 +184,20 @@ def release(version: str | None = None, dry_run: bool = False) -> ReleaseResult:
     ensure_remotes(dry_run)
     if dry_run:
         check_remote_success = True
-        print("DRY-RUN git ls-remote origin")
+        print("DRY-RUN git ls-remote nas")
     else:
-        check_remote_success = check_git_remote()
+        check_remote_success = check_git_remote("nas")
 
     commit_success = _run_required_git(["git", "add", "."], dry_run)
     commit_success = _run_required_git(["git", "commit", "--allow-empty", "-m", "自动发布：更新版本、更新日志与构建文件"], dry_run) and commit_success
     tag_success = _run_optional_git(["git", "tag", "-a", selected_version, "-m", f"发布 {selected_version}"], dry_run)
 
-    push_origin_success = _run_optional_git(["git", "push", "origin", "main"], dry_run)
-    push_github_success = _run_optional_git(["git", "push", "github", "main"], dry_run)
-    push_origin_tag_success = _run_optional_git(["git", "push", "origin", selected_version], dry_run)
+    push_github_success = _run_optional_git(["git", "push", "github", "HEAD"], dry_run)
+    push_nas_success = _run_optional_git(["git", "push", "nas", "HEAD"], dry_run)
     push_github_tag_success = _run_optional_git(["git", "push", "github", selected_version], dry_run)
+    push_nas_tag_success = _run_optional_git(["git", "push", "nas", selected_version], dry_run)
 
-    push_results = [push_origin_success, push_github_success, push_origin_tag_success, push_github_tag_success]
+    push_results = [push_github_success, push_nas_success, push_github_tag_success, push_nas_tag_success]
     if not commit_success:
         RELEASE_STATUS = COMMIT_FAILED
     elif tag_success and all(push_results):
@@ -222,9 +212,9 @@ def release(version: str | None = None, dry_run: bool = False) -> ReleaseResult:
         build_success=True,
         commit_success=commit_success,
         tag_success=tag_success,
-        push_origin_success=push_origin_success,
+        push_nas_success=push_nas_success,
         push_github_success=push_github_success,
-        push_origin_tag_success=push_origin_tag_success,
+        push_nas_tag_success=push_nas_tag_success,
         push_github_tag_success=push_github_tag_success,
         final_status=RELEASE_STATUS,
     )
@@ -249,10 +239,10 @@ def _run_optional_git(cmd: list[str], dry_run: bool) -> bool:
 def print_release_summary(result: ReleaseResult) -> None:
     print("Build:", "success" if result.build_success else "fail")
     print("Commit:", "success" if result.commit_success else "fail")
-    print("Push origin (Gitea):", "success" if result.push_origin_success else "fail")
     print("Push github:", "success" if result.push_github_success else "fail")
-    print("Push origin tag (Gitea):", "success" if result.push_origin_tag_success else "fail")
+    print("Push nas:", "success" if result.push_nas_success else "fail")
     print("Push github tag:", "success" if result.push_github_tag_success else "fail")
+    print("Push nas tag:", "success" if result.push_nas_tag_success else "fail")
     print("Tag:", "success" if result.tag_success else "fail")
     print("Final status:", result.final_status)
 
