@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.file_management_page: QWidget | None = None
         self.rail_transit_page: QWidget | None = None
         self.network_tools_page: QWidget | None = None
+        self.wifi_survey_page: QWidget | None = None
         self.ac_page: QWidget | None = None
         self.log_page: QWidget | None = None
         self.pages["devices"] = self.device_page
@@ -206,6 +207,11 @@ class MainWindow(QMainWindow):
 
             page = NetworkToolsPage(self.i18n, self.site.name, self.paths)
             self.network_tools_page = page
+        elif page_id == "wifi_survey":
+            from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
+
+            page = WifiSurveyPage(self.i18n, self.site.name, self.paths)
+            self.wifi_survey_page = page
         elif page_id == "logs":
             from netconsole.ui.pages.app_log_page import AppLogPage
 
@@ -252,6 +258,8 @@ class MainWindow(QMainWindow):
                 self.rail_transit_page.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
             elif page_id == "network_tools" and self.network_tools_page is not None:
                 self.network_tools_page.refresh_all()
+            elif page_id == "wifi_survey":
+                pass
         except Exception as exc:
             app_logger.log_error(f"PAGE_ACTIVATE_FAILED:{page_id}", str(exc))
         finally:
@@ -323,6 +331,8 @@ class MainWindow(QMainWindow):
             self.rail_transit_page.set_repository(self.repository, site.name)
         if self.network_tools_page is not None:
             self.network_tools_page.set_site(site.name)
+        if self.wifi_survey_page is not None:
+            self.wifi_survey_page.set_site(site.name)
         if self.ac_page is not None:
             self.ac_page.set_repository(self.repository, site.name)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")

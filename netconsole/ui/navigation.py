@@ -20,6 +20,7 @@ class Navigation(QListWidget):
             ("nav.devices", "devices"),
             ("nav.ac", "ac"),
             ("nav.rail_transit", "rail_transit"),
+            ("nav.wifi_survey", "wifi_survey"),
             ("nav.config_collection", "config_collection"),
             ("nav.file_management", "file_management"),
             ("nav.network_tools", "network_tools"),

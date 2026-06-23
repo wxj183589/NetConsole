@@ -2017,6 +2017,18 @@ TRANSLATIONS["en_US"].update(
 
 TRANSLATIONS["zh_CN"].update(
     {
+        "nav.wifi_survey": "\u65e0\u7ebf\u6d4b\u8bd5",
+    }
+)
+
+TRANSLATIONS["en_US"].update(
+    {
+        "nav.wifi_survey": "WiFi Survey",
+    }
+)
+
+TRANSLATIONS["zh_CN"].update(
+    {
         "ac.trackside_ap_plan": "\u8f68\u65c1AP\u89c4\u5212",
         "ac.trackside_plan.station_name": "\u8f66\u7ad9\u540d\u79f0",
         "ac.trackside_plan.ap_count": "AP\u6570\u91cf",
