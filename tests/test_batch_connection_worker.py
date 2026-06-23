@@ -9,13 +9,14 @@ def test_batch_connection_tests_call_tester_once_per_device():
 
     def tester(device):
         calls.append(device.name)
-        return ConnectionTestResult(True, "SSH", device.ip_address, 22, "ok", "<SW>", 12)
+        return ConnectionTestResult(True, "SSH", device.ip_address, 22, "ok", "<SW>", 12, "primary_direct")
 
     results = run_batch_connection_tests(devices, tester=tester, max_workers=2)
 
     assert sorted(calls) == ["A", "B"]
     assert all(item.success for item in results)
     assert {item.prompt for item in results} == {"<SW>"}
+    assert {item.method for item in results} == {"primary_direct"}
 
 
 def test_batch_connection_tests_single_failure_does_not_stop_others():
@@ -24,11 +25,13 @@ def test_batch_connection_tests_single_failure_does_not_stop_others():
     def tester(device):
         if device.name == "A":
             raise RuntimeError("failed")
-        return ConnectionTestResult(True, "SSH", device.ip_address, 22, "ok", "<B>", 10)
+        return ConnectionTestResult(True, "SSH", device.ip_address, 22, "ok", "<B>", 10, "backup_direct")
 
     results = run_batch_connection_tests(devices, tester=tester, max_workers=2)
     by_name = {item.device_name: item for item in results}
 
     assert by_name["A"].success is False
     assert by_name["A"].error_message == "failed"
+    assert by_name["A"].method == ""
     assert by_name["B"].success is True
+    assert by_name["B"].method == "backup_direct"

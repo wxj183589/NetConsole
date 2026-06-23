@@ -287,11 +287,12 @@ class DeviceDetailDialog(QDialog):
     def _device_overview_rows(self) -> list[tuple[str, str]]:
         return [
             ("field.name", str(self.device.name or "")),
-            ("field.sysname", str(self.device.sysname or "")),
+            ("field.system_name", str(self.device.system_name or "")),
             ("groups.group", self.group_names.get(int(self.device.group_id), self.i18n.t("groups.ungrouped")) if self.device.group_id else self.i18n.t("groups.ungrouped")),
             ("field.device_type", str(self.device.device_type or "")),
             ("field.station", str(self.device.station or "")),
-            ("field.ip_address", str(self.device.ip_address or "")),
+            ("field.primary_address", str(self.device.primary_address or "")),
+            ("field.backup_address", str(self.device.backup_address or "")),
             ("field.ssh_port", str(self.device.ssh_port or "")),
             ("details.login_protocol", _login_protocol(self.device)),
             ("field.remark", str(self.device.remark or "")),
@@ -300,7 +301,7 @@ class DeviceDetailDialog(QDialog):
 
     def _add_ac_web_rows(self, form: QFormLayout) -> None:
         port, source = effective_https_port(self.device.https_port)
-        url = build_https_url(self.device.ip_address, port)
+        url = build_https_url(self.device.primary_address, port)
         port_text = str(port) if source == "device" else self.i18n.t("ac.https_port_default", port=port)
         for label_key, text in (("field.https_port", port_text), ("details.web_address", url or self.i18n.t("common.not_collected"))):
             value = QLabel(text)
@@ -314,10 +315,10 @@ class DeviceDetailDialog(QDialog):
 
     def open_device_web(self) -> None:
         port, _source = effective_https_port(self.device.https_port)
-        if not build_https_url(self.device.ip_address, port):
+        if not build_https_url(self.device.primary_address, port):
             QMessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
             return
-        if not open_https_url(self.device.ip_address, port):
+        if not open_https_url(self.device.primary_address, port):
             QMessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
 
     def view_collect_log(self) -> None:

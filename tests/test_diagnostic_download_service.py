@@ -17,19 +17,16 @@ def test_diagnostic_download_writes_file_and_records_result(tmp_path, monkeypatc
     import netconsole.services.diagnostic_download_service as service_module
 
     commands: list[str] = []
-    disconnected = []
 
     class FakeConnection:
-        def disconnect(self):
-            disconnected.append(True)
+        pass
 
     def fake_send(_connection, command, **_kwargs):
         commands.append(command)
         return f"output:{command}"
 
     paths = PathResolver(tmp_path)
-    monkeypatch.setattr(service_module, "choose_connection_target", lambda _device: ConnectionTarget("SSH", "hp_comware", "192.0.2.10", 22, "u", "p"))
-    monkeypatch.setattr(service_module.netmiko_connection, "ConnectHandler", lambda **_kwargs: FakeConnection())
+    monkeypatch.setattr(service_module.netmiko_connection, "run_netmiko_with_retry", lambda device, operation: operation(FakeConnection(), ConnectionTarget("SSH", "hp_comware", "192.0.2.10", 22, "u", "p")))
     monkeypatch.setattr(service_module, "safe_send_command", fake_send)
     monkeypatch.setattr(service_module, "diagnostic_timestamp", lambda: "20260618_203010")
 
@@ -43,7 +40,6 @@ def test_diagnostic_download_writes_file_and_records_result(tmp_path, monkeypatc
     assert result.status == "success"
     assert result.file_path == "raw/diagnostic/核心交换机1_diag_20260618_203010.txt"
     assert commands == ["screen-length disable", "display diagnostic-information", "n"]
-    assert disconnected == [True]
     text = (paths.site_dir("demo") / result.file_path).read_text(encoding="utf-8")
     assert "output:display diagnostic-information" in text
 

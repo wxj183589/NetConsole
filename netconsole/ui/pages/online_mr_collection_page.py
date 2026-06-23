@@ -40,6 +40,7 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfResultStore, build_iperf_client_args, normalize_bandwidth_text
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
+from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
 from netconsole.ui.fping_worker import FpingProbeWorker
@@ -116,7 +117,7 @@ def natural_device_sort_key(device: Device) -> tuple[list[object], str, int]:
     parts: list[object] = []
     for part in re.split(r"(\d+)", str(device.name or "")):
         parts.append(int(part) if part.isdigit() else part.casefold())
-    return parts, str(device.ip_address or ""), int(device.id or 0)
+    return parts, str(device.primary_address or ""), int(device.id or 0)
 
 
 class OnlineMrCollectionPage(QWidget):
@@ -782,7 +783,7 @@ class OnlineMrCollectionPage(QWidget):
         if device.id is None:
             return None
         protocol, port, username, password = connection_fields_from_device(device)
-        host = str(device.ip_address or "").strip()
+        host = str(device.primary_address or "").strip()
         if not host or not username or not password:
             return None
         safe_name = safe_device_folder_name(device)
@@ -798,6 +799,7 @@ class OnlineMrCollectionPage(QWidget):
             port=int(port),
             username=username,
             password=password,
+            connection_targets=tuple(connection_targets(device)),
             intervals=OnlineMrIntervals(
                 self.mesh_interval.value(),
                 self.channel_interval.value(),
@@ -847,7 +849,7 @@ class OnlineMrCollectionPage(QWidget):
             protocol, port, username, _password = connection_fields_from_device(device)
             values = [
                 device.name,
-                device.ip_address,
+                device.primary_address,
                 protocol,
                 port,
                 username,
@@ -1016,9 +1018,14 @@ class OnlineMrCollectionPage(QWidget):
             self.summary_table.insertRow(row)
         worker = self.workers.get(snapshot.session_id)
         config = worker.collector.config if worker else None
+        host_text = ""
+        if config:
+            host_text = config.host
+            if config.connection_method:
+                host_text = f"{host_text} ({config.connection_method})"
         values = [
             config.device_name if config else "",
-            config.host if config else "",
+            host_text,
             snapshot.status,
             snapshot.active_peer,
             snapshot.local_rssi,

@@ -155,12 +155,12 @@ def build_station_switch_targets(repository: DeviceRepository, site_name: str) -
             continue
         target = choose_connection_target(device)
         if target is None or not target.host or not target.username or not target.password:
-            skipped.append(TracksideSkippedTarget(device.name, "SWITCH", "connection_incomplete", device.ip_address))
+            skipped.append(TracksideSkippedTarget(device.name, "SWITCH", "connection_incomplete", device.primary_address))
             continue
         try:
             commands = get_optical_diagnosis_commands(device.device_vendor, device.device_type)
         except UnsupportedVendor:
-            skipped.append(TracksideSkippedTarget(device.name, "SWITCH", UNSUPPORTED_VENDOR_REASON, device.ip_address))
+            skipped.append(TracksideSkippedTarget(device.name, "SWITCH", UNSUPPORTED_VENDOR_REASON, device.primary_address))
             continue
         device.ensure_device_uuid()
         targets.append(
@@ -209,12 +209,12 @@ def build_trackside_ap_targets(
             continue
         target = choose_connection_target(device)
         if target is None or not target.host or not target.username or not target.password:
-            skipped.append(TracksideSkippedTarget(name, "AP", "connection_incomplete", device.ip_address))
+            skipped.append(TracksideSkippedTarget(name, "AP", "connection_incomplete", device.primary_address))
             continue
         try:
             commands = get_optical_diagnosis_commands(device.device_vendor, device.device_type)
         except UnsupportedVendor:
-            skipped.append(TracksideSkippedTarget(name, "AP", UNSUPPORTED_VENDOR_REASON, device.ip_address))
+            skipped.append(TracksideSkippedTarget(name, "AP", UNSUPPORTED_VENDOR_REASON, device.primary_address))
             continue
         device.ensure_device_uuid()
         targets.append(
@@ -357,7 +357,7 @@ def _collect_fit_ap_optical_subtasks(
         resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths)
         _copy_ac_raw(paths, site_name, resource_result.collect_run_uuid, session_dir / "raw" / "ac_fit_ap_resource")
         if not resource_result.success:
-            skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.ip_address))
+            skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.primary_address))
             continue
         resources = ac_repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid or ""))
         total += len(resources)
@@ -551,10 +551,10 @@ def _find_related_device(ap: dict[str, object | None], devices: list[Device]) ->
     ap_ip = str(ap.get("ap_ip") or "").strip()
     ap_name = str(ap.get("ap_name") or "").strip().casefold()
     for device in devices:
-        if ap_ip and device.ip_address == ap_ip:
+        if ap_ip and device.primary_address == ap_ip:
             return device
     for device in devices:
-        if ap_name and ap_name in {str(device.name or "").strip().casefold(), str(device.sysname or "").strip().casefold()}:
+        if ap_name and ap_name in {str(device.name or "").strip().casefold(), str(device.system_name or "").strip().casefold()}:
             return device
     return None
 

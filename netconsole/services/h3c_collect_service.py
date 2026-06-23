@@ -19,7 +19,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, run_netmiko_with_retry, safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -206,7 +206,7 @@ def _parse_and_write(
         if any(value for key, value in facts.items() if key != "vendor"):
             repository.upsert_device_fact({"device_uuid": device.device_uuid, **facts, **metadata})
             if facts.get("sysname"):
-                DeviceRepository(repository.database).update_sysname_by_uuid(str(device.device_uuid or ""), str(facts["sysname"]))
+                DeviceRepository(repository.database).update_system_name_by_uuid(str(device.device_uuid or ""), str(facts["sysname"]))
             facts_updated = True
             app_logger.log_info("COLLECT_SAVE_FACTS", _detail(device, collect_run_uuid, error=f"sysname={facts.get('sysname') or ''}, raw_log_path={raw_log_path}"))
     except Exception as exc:
@@ -285,7 +285,7 @@ def _write_raw_files(
         f"Collect Time: {_now()}",
         f"Collect Run UUID: {collect_run_uuid}",
         f"Device Name: {device.name}",
-        f"Device IP: {device.ip_address}",
+        f"Primary Address: {device.primary_address}",
         f"Protocol: {protocol or target_protocol}",
         "",
     ]
@@ -336,7 +336,7 @@ def _finalize_failed(repository: DeviceFactRepository, collect_run_uuid: str, me
 
 
 def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str = "", raw_log_path: str = "") -> str:
-    parts = [f"device={device.name}", f"ip={device.ip_address}", f"collect_run_uuid={collect_run_uuid}"]
+    parts = [f"device={device.name}", f"primary_address={device.primary_address}", f"collect_run_uuid={collect_run_uuid}"]
     if command:
         parts.append(f"command={command}")
     if error:

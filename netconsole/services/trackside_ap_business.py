@@ -36,7 +36,6 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("details.pvid", "pvid"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
-    ("ac.indoor_switch_tx_power", "switch_tx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
@@ -54,7 +53,6 @@ TRACKSIDE_AP_DEVICE_COLUMNS = (
     ("details.pvid", "pvid"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
-    ("ac.indoor_switch_tx_power", "switch_tx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
@@ -209,7 +207,7 @@ def build_trackside_ap_business_rows(
     result: list[dict[str, object | None]] = []
     for device in devices:
         device_uuid = str(device.device_uuid or "")
-        device_names = {_normalize_name(device.name), _normalize_name(device.sysname)}
+        device_names = {_normalize_name(device.name), _normalize_name(device.system_name)}
         device_names.discard("")
         optical_index = optical_indexes.get(device_uuid, {})
         lldp_index = lldp_indexes.get(device_uuid, {})

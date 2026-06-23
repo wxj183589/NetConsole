@@ -406,7 +406,7 @@ def _collect_single_fit_ap_optical(
     temp_device = Device(
         name=ap_name,
         device_uuid=ac_device.device_uuid,
-        ip_address=ap_ip,
+        primary_address=ap_ip,
         ssh_enabled=0,
         telnet_enabled=1,
         telnet_port=23,
@@ -525,7 +525,7 @@ def _write_raw_files(
         f"Collect Time: {_now()}",
         f"Collect Run UUID: {collect_run_uuid}",
         f"Device Name: {device.name}",
-        f"Device IP: {device.ip_address}",
+        f"Primary Address: {device.primary_address}",
         "",
     ]
     for result in command_results:
@@ -562,7 +562,7 @@ def _disconnect(connection) -> None:
 
 
 def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str = "", count: int | None = None, ap: str = "") -> str:
-    parts = [f"device={device.name}", f"ip={device.ip_address}", f"collect_run_uuid={collect_run_uuid}"]
+    parts = [f"device={device.name}", f"primary_address={device.primary_address}", f"collect_run_uuid={collect_run_uuid}"]
     if ap:
         parts.append(f"ap={ap}")
     if command:

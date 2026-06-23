@@ -4,17 +4,39 @@ import sqlite3
 from pathlib import Path
 
 
+CURRENT_SCHEMA_VERSION = "2026.06.23.device_ap_rebuild"
+
+
+class DatabaseSchemaMismatchError(RuntimeError):
+    """Raised when an existing database is not on the current rebuild-only schema."""
+
+
+SCHEMA_METADATA_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 DEVICES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_uuid TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    sysname TEXT,
+    system_name TEXT,
     station TEXT,
+    location TEXT,
     group_id INTEGER,
     device_vendor TEXT NOT NULL DEFAULT 'H3C',
     device_type TEXT,
-    ip_address TEXT NOT NULL,
+    primary_address TEXT NOT NULL,
+    backup_address TEXT,
+    protocol TEXT DEFAULT 'SSH',
+    port INTEGER DEFAULT 22,
+    username TEXT,
+    password TEXT,
     ssh_enabled INTEGER DEFAULT 1,
     ssh_port INTEGER DEFAULT 22,
     telnet_enabled INTEGER DEFAULT 0,
@@ -23,6 +45,7 @@ CREATE TABLE IF NOT EXISTS devices (
     ssh_password TEXT,
     telnet_username TEXT,
     telnet_password TEXT,
+    snmp_version TEXT,
     snmp_v1_enabled INTEGER DEFAULT 0,
     snmp_v2c_enabled INTEGER DEFAULT 1,
     snmp_v3_enabled INTEGER DEFAULT 0,
@@ -35,6 +58,21 @@ CREATE TABLE IF NOT EXISTS devices (
     snmpv3_priv_protocol TEXT,
     snmpv3_priv_password TEXT,
     https_port INTEGER,
+    tunnel_enabled INTEGER DEFAULT 0,
+    tunnel1_enabled INTEGER DEFAULT 0,
+    tunnel1_host TEXT,
+    tunnel1_port INTEGER DEFAULT 22,
+    tunnel1_username TEXT,
+    tunnel1_password TEXT,
+    tunnel1_local_port_mode TEXT DEFAULT 'auto',
+    tunnel1_local_port INTEGER,
+    tunnel2_enabled INTEGER DEFAULT 0,
+    tunnel2_host TEXT,
+    tunnel2_port INTEGER DEFAULT 22,
+    tunnel2_username TEXT,
+    tunnel2_password TEXT,
+    tunnel2_local_port_mode TEXT DEFAULT 'auto',
+    tunnel2_local_port INTEGER,
     remark TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -517,6 +555,146 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
 );
 """
 
+AP_ENTITIES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ap_uuid TEXT NOT NULL UNIQUE,
+    site_id TEXT,
+    ac_device_uuid TEXT,
+    ap_name TEXT,
+    ap_mac TEXT,
+    ap_id TEXT,
+    ap_ip TEXT,
+    serial_number TEXT,
+    model TEXT,
+    group_name TEXT,
+    mode TEXT,
+    state TEXT,
+    state_raw TEXT,
+    state_display TEXT,
+    station TEXT,
+    milestone TEXT,
+    direction TEXT,
+    location_note TEXT,
+    first_seen_at TEXT,
+    last_seen_at TEXT,
+    last_online_at TEXT,
+    last_resource_update_at TEXT,
+    is_offline INTEGER DEFAULT 0,
+    source TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_mac
+    ON ap_entities(site_id, ap_mac)
+    WHERE ap_mac IS NOT NULL AND trim(ap_mac) != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_serial
+    ON ap_entities(site_id, serial_number)
+    WHERE serial_number IS NOT NULL AND trim(serial_number) != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_ac_apid
+    ON ap_entities(site_id, ac_device_uuid, ap_id)
+    WHERE ap_id IS NOT NULL AND trim(ap_id) != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_ac_name
+    ON ap_entities(site_id, ac_device_uuid, ap_name)
+    WHERE ap_name IS NOT NULL AND trim(ap_name) != '';
+"""
+
+AP_RESOURCE_SNAPSHOTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_resource_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_uuid TEXT NOT NULL UNIQUE,
+    ap_uuid TEXT NOT NULL,
+    ac_device_uuid TEXT,
+    collected_at TEXT,
+    ap_name TEXT,
+    ap_mac TEXT,
+    ap_id TEXT,
+    ap_ip TEXT,
+    serial_number TEXT,
+    model TEXT,
+    group_name TEXT,
+    state TEXT,
+    state_raw TEXT,
+    online_time TEXT,
+    clients TEXT,
+    mode TEXT,
+    station TEXT,
+    raw_source_type TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+AP_LLDP_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_lldp_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_uuid TEXT NOT NULL UNIQUE,
+    ap_uuid TEXT NOT NULL,
+    ap_mac TEXT,
+    ap_name TEXT,
+    serial_number TEXT,
+    neighbor_switch_uuid TEXT,
+    neighbor_switch_name TEXT,
+    neighbor_switch_sysname TEXT,
+    neighbor_switch_ip TEXT,
+    neighbor_interface TEXT,
+    collected_at TEXT,
+    source_device_uuid TEXT,
+    is_latest INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_lldp_history_latest
+    ON ap_lldp_history(ap_uuid, is_latest, collected_at);
+"""
+
+AP_OPTICAL_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_optical_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_uuid TEXT NOT NULL UNIQUE,
+    ap_uuid TEXT NOT NULL,
+    side TEXT,
+    device_uuid TEXT,
+    interface_name TEXT,
+    rx_power TEXT,
+    tx_power TEXT,
+    alarm_status TEXT,
+    collected_at TEXT,
+    data_source TEXT,
+    is_latest INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_history_latest
+    ON ap_optical_history(ap_uuid, side, is_latest, collected_at);
+"""
+
+TRACKSIDE_AP_VIEW_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS trackside_ap_view_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_uuid TEXT NOT NULL UNIQUE,
+    site_id TEXT,
+    station TEXT,
+    switch_uuid TEXT,
+    switch_name TEXT,
+    switch_sysname TEXT,
+    interface_name TEXT,
+    port_type TEXT,
+    port_description TEXT,
+    pvid TEXT,
+    vlan_list TEXT,
+    switch_rx_power TEXT,
+    switch_alarm_status TEXT,
+    ap_uuid TEXT,
+    ap_name TEXT,
+    ap_mac TEXT,
+    ap_rx_power TEXT,
+    ap_alarm_status TEXT,
+    ap_state TEXT,
+    last_collected_at TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trackside_ap_view_cache_interface
+    ON trackside_ap_view_cache(site_id, switch_uuid, interface_name);
+"""
+
 DEVICE_GROUPS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS device_groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -560,59 +738,93 @@ class Database:
         return conn
 
     def initialize(self) -> None:
-        with self.connect() as conn:
-            try:
-                conn.executescript(
-                    "\n".join(
-                        (
-                            DEVICES_SCHEMA,
-                            DEVICE_GROUPS_SCHEMA,
-                            COLLECT_RUNS_SCHEMA,
-                            DEVICE_FACTS_SCHEMA,
-                            DEVICE_INTERFACES_SCHEMA,
-                            DEVICE_OPTICAL_MODULES_SCHEMA,
-                            DEVICE_LLDP_NEIGHBORS_SCHEMA,
-                            DEVICE_FACTS_HISTORY_SCHEMA,
-                            DEVICE_INTERFACES_HISTORY_SCHEMA,
-                            DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
-                            DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
-                            AC_AP_SUMMARY_SCHEMA,
-                            AC_FIT_AP_RESOURCES_SCHEMA,
-                            AC_FIT_AP_METADATA_SCHEMA,
-                            AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
-                            AC_FIT_AP_OPTICAL_SCHEMA,
-                            AC_STATION_AP_CAPACITY_SCHEMA,
-                            AC_TRACKSIDE_AP_PLAN_SCHEMA,
-                            AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA,
-                            AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
-                            AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
-                            AC_FIT_AP_LLDP_HISTORY_SCHEMA,
-                            AC_FIT_AP_RADIO_HISTORY_SCHEMA,
-                            CONFIG_SNAPSHOTS_SCHEMA,
-                        )
+        existed = self.exists()
+        conn = self.connect()
+        try:
+            if existed:
+                self._assert_current_schema(conn)
+            conn.executescript(
+                "\n".join(
+                    (
+                        SCHEMA_METADATA_SCHEMA,
+                        DEVICES_SCHEMA,
+                        DEVICE_GROUPS_SCHEMA,
+                        COLLECT_RUNS_SCHEMA,
+                        DEVICE_FACTS_SCHEMA,
+                        DEVICE_INTERFACES_SCHEMA,
+                        DEVICE_OPTICAL_MODULES_SCHEMA,
+                        DEVICE_LLDP_NEIGHBORS_SCHEMA,
+                        DEVICE_FACTS_HISTORY_SCHEMA,
+                        DEVICE_INTERFACES_HISTORY_SCHEMA,
+                        DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
+                        DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
+                        AC_AP_SUMMARY_SCHEMA,
+                        AC_FIT_AP_RESOURCES_SCHEMA,
+                        AC_FIT_AP_METADATA_SCHEMA,
+                        AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
+                        AC_FIT_AP_OPTICAL_SCHEMA,
+                        AP_ENTITIES_SCHEMA,
+                        AP_RESOURCE_SNAPSHOTS_SCHEMA,
+                        AP_LLDP_HISTORY_SCHEMA,
+                        AP_OPTICAL_HISTORY_SCHEMA,
+                        TRACKSIDE_AP_VIEW_CACHE_SCHEMA,
+                        AC_STATION_AP_CAPACITY_SCHEMA,
+                        AC_TRACKSIDE_AP_PLAN_SCHEMA,
+                        AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA,
+                        AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
+                        AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
+                        AC_FIT_AP_LLDP_HISTORY_SCHEMA,
+                        AC_FIT_AP_RADIO_HISTORY_SCHEMA,
+                        CONFIG_SNAPSHOTS_SCHEMA,
                     )
                 )
-                _ensure_column(conn, "devices", "https_port", "INTEGER")
-                _ensure_column(conn, "devices", "group_id", "INTEGER")
-                conn.commit()
+            )
+            self._write_schema_version(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            try:
+                from netconsole.core import app_logger
+
+                app_logger.log_error("DATABASE_INITIALIZE_FAILED", f"path={self.path}")
             except Exception:
-                conn.rollback()
-                try:
-                    from netconsole.core import app_logger
+                pass
+            raise
+        finally:
+            conn.close()
 
-                    app_logger.log_error("DATABASE_INITIALIZE_FAILED", f"path={self.path}")
-                except Exception:
-                    pass
-                raise
+    def _assert_current_schema(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "schema_metadata"):
+            raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
+        row = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+        if row is None or str(row["value"]) != CURRENT_SCHEMA_VERSION:
+            raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
 
+    def _write_schema_version(self, conn: sqlite3.Connection) -> None:
+        now = __import__("datetime").datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO schema_metadata (key, value, created_at, updated_at)
+            VALUES ('schema_version', ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (CURRENT_SCHEMA_VERSION, now, now),
+        )
 
-def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return any(row["name"] == column_name for row in rows)
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        return row is not None
 
-
-def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_definition: str) -> None:
-    if _column_exists(conn, table_name, column_name):
-        return
-    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+    @staticmethod
+    def _schema_mismatch_message() -> str:
+        return (
+            "当前数据库结构与新版本不兼容。本次版本需要重建数据库。"
+            "请先备份旧 data 目录，然后使用数据库重建工具或清空旧数据后重新初始化。"
+        )
 

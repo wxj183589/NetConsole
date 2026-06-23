@@ -54,6 +54,7 @@ class OnlineMrSessionStore:
             host=config.host,
             protocol=config.protocol,
             port=int(config.port),
+            connection_method=config.connection_method,
             started_at=started,
             intervals=config.intervals.as_dict(),
             radio=config.radio.as_dict(),

@@ -32,9 +32,10 @@ from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
 from netconsole.ui.windowing import fit_default_window_size
 
 
-BASIC_FIELDS = ("name", "sysname", "group_id", "device_vendor", "device_type", "station", "remark")
+BASIC_FIELDS = ("name", "system_name", "group_id", "device_vendor", "device_type", "station", "remark")
 CONNECTION_FIELDS = (
-    "ip_address",
+    "primary_address",
+    "backup_address",
     "ssh_enabled",
     "ssh_port",
     "telnet_enabled",
@@ -43,6 +44,21 @@ CONNECTION_FIELDS = (
     "ssh_password",
     "telnet_username",
     "telnet_password",
+)
+TUNNEL_FIELDS = (
+    "tunnel_enabled",
+    "tunnel1_enabled",
+    "tunnel1_host",
+    "tunnel1_port",
+    "tunnel1_username",
+    "tunnel1_password",
+    "tunnel1_local_port",
+    "tunnel2_enabled",
+    "tunnel2_host",
+    "tunnel2_port",
+    "tunnel2_username",
+    "tunnel2_password",
+    "tunnel2_local_port",
 )
 SNMP_FIELDS = (
     "snmp_v1_enabled",
@@ -104,22 +120,46 @@ class DeviceDialog(QDialog):
         columns.addWidget(self.telnet_auth_group, 1)
 
         self._add_line(basic_form, "name")
-        self._add_line(basic_form, "sysname")
+        self._add_line(basic_form, "system_name")
         self._add_group_combo(basic_form)
         self._add_combo(basic_form, "device_vendor", DEVICE_VENDORS)
         self._add_combo(basic_form, "device_type", DEVICE_TYPES)
         self._add_line(basic_form, "station")
         self._add_text(basic_form, "remark")
 
+        self._add_line(connection_form, "primary_address")
+        self._add_line(connection_form, "backup_address")
         self._add_checkbox(connection_form, "ssh_enabled")
         self._add_spin(connection_form, "ssh_port", 1, 65535)
         self._add_checkbox(connection_form, "telnet_enabled")
         self._add_spin(connection_form, "telnet_port", 1, 65535)
-        self._add_line(connection_form, "ip_address")
         self._add_line(ssh_auth_form, "ssh_username")
         self._add_line(ssh_auth_form, "ssh_password", password=True)
         self._add_line(telnet_auth_form, "telnet_username")
         self._add_line(telnet_auth_form, "telnet_password", password=True)
+
+        self.tunnel_group = QGroupBox()
+        tunnel_layout = QHBoxLayout(self.tunnel_group)
+        tunnel_global_form = QFormLayout()
+        tunnel1_form = QFormLayout()
+        tunnel2_form = QFormLayout()
+        tunnel_layout.addLayout(tunnel_global_form, 1)
+        tunnel_layout.addLayout(tunnel1_form, 1)
+        tunnel_layout.addLayout(tunnel2_form, 1)
+        self._add_checkbox(tunnel_global_form, "tunnel_enabled")
+        self._add_checkbox(tunnel1_form, "tunnel1_enabled")
+        self._add_line(tunnel1_form, "tunnel1_host")
+        self._add_line(tunnel1_form, "tunnel1_port")
+        self._add_line(tunnel1_form, "tunnel1_username")
+        self._add_line(tunnel1_form, "tunnel1_password", password=True)
+        self._add_line(tunnel1_form, "tunnel1_local_port")
+        self._add_checkbox(tunnel2_form, "tunnel2_enabled")
+        self._add_line(tunnel2_form, "tunnel2_host")
+        self._add_line(tunnel2_form, "tunnel2_port")
+        self._add_line(tunnel2_form, "tunnel2_username")
+        self._add_line(tunnel2_form, "tunnel2_password", password=True)
+        self._add_line(tunnel2_form, "tunnel2_local_port")
+        scroll_layout.addWidget(self.tunnel_group)
 
         self.snmp_toggle = QToolButton()
         self.snmp_toggle.setCheckable(True)
@@ -238,6 +278,11 @@ class DeviceDialog(QDialog):
             "ssh_port": 22,
             "telnet_enabled": 0,
             "telnet_port": 23,
+            "tunnel_enabled": 0,
+            "tunnel1_enabled": 0,
+            "tunnel1_port": 22,
+            "tunnel2_enabled": 0,
+            "tunnel2_port": 22,
             "snmp_v1_enabled": 0,
             "snmp_v2c_enabled": 1,
             "snmp_v3_enabled": 0,
@@ -269,6 +314,7 @@ class DeviceDialog(QDialog):
         self.connection_group.setTitle(self.i18n.t("dialog.connection"))
         self.ssh_auth_group.setTitle(self.i18n.t("dialog.ssh_authentication"))
         self.telnet_auth_group.setTitle(self.i18n.t("dialog.telnet_authentication"))
+        self.tunnel_group.setTitle(self.i18n.t("dialog.ssh_tunnel"))
         self.snmp_toggle.setText(self.i18n.t("dialog.snmp_reserved"))
         self.cancel_button.setText(self.i18n.t("dialog.cancel"))
         self.test_button.setText(self.i18n.t("dialog.test_connection"))
@@ -278,7 +324,7 @@ class DeviceDialog(QDialog):
         if isinstance(group_widget, QComboBox) and group_widget.count():
             group_widget.setItemText(0, self.i18n.t("groups.ungrouped"))
         for field, label in self.labels.items():
-            suffix = " *" if field in {"name", "ip_address"} else ""
+            suffix = " *" if field in {"name", "primary_address"} else ""
             label.setText(self.i18n.t(f"field.{field}") + suffix)
 
     def accept(self) -> None:
@@ -291,7 +337,7 @@ class DeviceDialog(QDialog):
 
     def test_connection(self) -> None:
         device = self.device()
-        if not device.ip_address:
+        if not device.primary_address:
             QMessageBox.warning(self, self.windowTitle(), self.i18n.t("validation.host_required"))
             return
         self.test_button.setEnabled(False)
@@ -315,7 +361,7 @@ class DeviceDialog(QDialog):
                 elapsed=result.elapsed_ms if result.elapsed_ms is not None else "-",
             )
             if sysname:
-                message = f"{message}\n{self.i18n.t('field.sysname')}: {sysname}"
+                message = f"{message}\n{self.i18n.t('field.system_name')}: {sysname}"
             QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
         else:
             QMessageBox.warning(
@@ -325,10 +371,13 @@ class DeviceDialog(QDialog):
             )
 
     def apply_test_connection_sysname(self, result: ConnectionTestResult) -> str | None:
+        return self.apply_test_connection_system_name(result)
+
+    def apply_test_connection_system_name(self, result: ConnectionTestResult) -> str | None:
         sysname = extract_sysname_from_prompt(result.prompt or "")
         if not sysname:
             return None
-        widget = self.inputs["sysname"]
+        widget = self.inputs["system_name"]
         if isinstance(widget, QLineEdit):
             widget.setText(sysname)
         return sysname
@@ -344,14 +393,28 @@ class DeviceDialog(QDialog):
         data: dict[str, object | None] = {}
         if self.original:
             data.update(self.original.to_record())
-        for field in BASIC_FIELDS + CONNECTION_FIELDS + SNMP_FIELDS:
+        for field in BASIC_FIELDS + CONNECTION_FIELDS + TUNNEL_FIELDS + SNMP_FIELDS:
             widget = self.inputs[field]
             if isinstance(widget, (QLineEdit, QTextEdit, QComboBox)):
-                data[field] = widget.currentData() if field == "group_id" and isinstance(widget, QComboBox) else self._text(field) or None
+                if field == "group_id" and isinstance(widget, QComboBox):
+                    data[field] = widget.currentData()
+                elif field.endswith("_port"):
+                    data[field] = self._optional_int(field)
+                else:
+                    data[field] = self._text(field) or None
             elif isinstance(widget, QSpinBox):
                 data[field] = widget.value()
             elif isinstance(widget, QCheckBox):
                 data[field] = 1 if widget.isChecked() else 0
+        if data.get("ssh_enabled"):
+            data["protocol"] = "SSH"
+            data["port"] = data.get("ssh_port") or 22
+        elif data.get("telnet_enabled"):
+            data["protocol"] = "Telnet"
+            data["port"] = data.get("telnet_port") or 23
+        else:
+            data["protocol"] = None
+            data["port"] = None
         return data
 
     def device(self) -> Device:
@@ -387,3 +450,7 @@ class DeviceDialog(QDialog):
         if isinstance(widget, QComboBox):
             return widget.currentText().strip()
         return ""
+
+    def _optional_int(self, field: str) -> int | None:
+        text = self._text(field)
+        return int(text) if text else None

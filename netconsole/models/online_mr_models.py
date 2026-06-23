@@ -238,6 +238,8 @@ class OnlineMrConnectionConfig:
     max_reconnect: int | None = None
     command_timeout: int = 15
     duration_minutes: int | None = None
+    connection_targets: tuple[object, ...] = field(default_factory=tuple)
+    connection_method: str = ""
 
 
 @dataclass
@@ -276,6 +278,7 @@ class OnlineMrSessionMeta:
     protocol: str
     port: int
     started_at: datetime
+    connection_method: str = ""
     ended_at: datetime | None = None
     status: str = STATE_CREATED
     intervals: dict[str, int] = field(default_factory=dict)
@@ -296,6 +299,7 @@ class OnlineMrSessionMeta:
             "host": self.host,
             "protocol": self.protocol,
             "port": self.port,
+            "connection_method": self.connection_method,
             "started_at": self.started_at.isoformat(sep=" ", timespec="seconds"),
             "ended_at": self.ended_at.isoformat(sep=" ", timespec="seconds") if self.ended_at else None,
             "status": self.status,

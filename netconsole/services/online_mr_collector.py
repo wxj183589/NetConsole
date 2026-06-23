@@ -32,7 +32,13 @@ from netconsole.models.online_mr_models import (
 )
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text, summarize_active
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
-from netconsole.services.netmiko_connection import build_netmiko_params, normalize_command_output
+from netconsole.services.netmiko_connection import (
+    ConnectionTarget,
+    H3C_DEFAULT_ENCODING,
+    build_netmiko_params,
+    normalize_command_output,
+)
+from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 
 
 class ConnectionFactory(Protocol):
@@ -50,23 +56,23 @@ class NetmikoShellConnection(OnlineMrConnection):
             from netmiko import ConnectHandler
         except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency.
             raise OnlineMrConnectionError("netmiko is not installed") from exc
-        device_type = "hp_comware_telnet" if config.protocol.lower() == "telnet" else "hp_comware"
-        target = type(
-            "Target",
-            (),
-            {
-                "protocol": config.protocol,
-                "device_type": device_type,
-                "host": config.host,
-                "port": int(config.port),
-                "username": config.username,
-                "password": config.password,
-                "encoding": "gb2312",
-            },
-        )()
-        self.connection = ConnectHandler(**build_netmiko_params(target))
+        self.connection = None
+        self._tunnel_session: TunnelSession | None = None
+        last_error: Exception | None = None
+        for target in self._targets_from_config(config):
+            try:
+                prepared = self._prepare_target(target)
+                self.connection = ConnectHandler(**build_netmiko_params(prepared))
+                config.connection_method = prepared.method
+                return
+            except Exception as exc:
+                last_error = exc
+                self._close_tunnel()
+        raise OnlineMrConnectionError(str(last_error) if last_error else "all connection attempts failed")
 
     def send_command(self, command: str, timeout: int) -> str:
+        if self.connection is None:
+            raise OnlineMrConnectionError("connection is closed")
         output = self.connection.send_command_timing(
             command,
             read_timeout=timeout,
@@ -76,7 +82,51 @@ class NetmikoShellConnection(OnlineMrConnection):
         return normalize_command_output(output)
 
     def close(self) -> None:
-        self.connection.disconnect()
+        if self.connection is not None:
+            self.connection.disconnect()
+            self.connection = None
+        self._close_tunnel()
+
+    def _targets_from_config(self, config: OnlineMrConnectionConfig) -> tuple[ConnectionTarget, ...]:
+        if config.connection_targets:
+            return tuple(target for target in config.connection_targets if isinstance(target, ConnectionTarget))
+        device_type = "hp_comware_telnet" if config.protocol.lower() == "telnet" else "hp_comware"
+        return (
+            ConnectionTarget(
+                protocol=config.protocol,
+                device_type=device_type,
+                host=config.host,
+                port=int(config.port),
+                username=config.username,
+                password=config.password,
+                encoding=H3C_DEFAULT_ENCODING,
+                method="primary_direct",
+            ),
+        )
+
+    def _prepare_target(self, target: ConnectionTarget) -> ConnectionTarget:
+        if not target.via_tunnel:
+            return target
+        if target.tunnel is None:
+            raise OnlineMrConnectionError("Tunnel target is missing tunnel profile")
+        self._tunnel_session = TunnelManager().open_tunnel(target.tunnel, target.host, target.port)  # type: ignore[arg-type]
+        return ConnectionTarget(
+            protocol=target.protocol,
+            device_type=target.device_type,
+            host=self._tunnel_session.local_host,
+            port=self._tunnel_session.local_port,
+            username=target.username,
+            password=target.password,
+            encoding=target.encoding,
+            method=target.method,
+            via_tunnel=True,
+            tunnel=target.tunnel,
+        )
+
+    def _close_tunnel(self) -> None:
+        if self._tunnel_session is not None:
+            self._tunnel_session.close()
+            self._tunnel_session = None
 
 
 @dataclass
@@ -127,6 +177,9 @@ class OnlineMrCollector:
         self.session = self.store.create_session(self.config)
         self._set_status(STATE_CONNECTING)
         self.connection = self.connection_factory(self.config)
+        if self.config.connection_method:
+            self.session.meta.connection_method = self.config.connection_method
+            self.session.write_meta()
         self.initialize_connection()
         self._set_status(STATE_COLLECTING)
         return self.session.meta
@@ -292,6 +345,9 @@ class OnlineMrCollector:
         self._session().append_reconnect(f"reconnect_count={self.stats.reconnect_count}")
         self._session().append_event(EVENT_RECONNECT)
         self.connection = self.connection_factory(self.config)
+        if self.config.connection_method:
+            self._session().meta.connection_method = self.config.connection_method
+            self._session().write_meta()
         self.initialize_connection()
         self._set_status(STATE_COLLECTING)
 

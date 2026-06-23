@@ -425,7 +425,7 @@ class FileManagementPage(QWidget):
             self.device_combo.addItem(self.i18n.t("groups.no_devices_in_group"), None)
         for device in devices:
             if device.id is not None:
-                self.device_combo.addItem(str(device.name or device.sysname or device.ip_address), int(device.id))
+                self.device_combo.addItem(str(device.name or device.system_name or device.primary_address), int(device.id))
         index = self.device_combo.findData(current_id)
         self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.device_combo.count() else -1))
         new_id = self.device_combo.currentData()
@@ -470,7 +470,7 @@ class FileManagementPage(QWidget):
             self.type_label.setText("")
             return
         self.device_name_label.setText(f"{self.i18n.t('field.name')}: {device.name}")
-        self.ip_label.setText(f"{self.i18n.t('field.ip_address')}: {device.ip_address}")
+        self.ip_label.setText(f"{self.i18n.t('field.primary_address')}: {device.primary_address}")
         self.type_label.setText(f"{self.i18n.t('field.device_type')}: {device.device_type or '-'}")
 
     def update_connection_status(self, status_key: str) -> None:
@@ -478,7 +478,7 @@ class FileManagementPage(QWidget):
         self.connection_status_label.setText(f"{self.i18n.t('file_management.connection_status')}: {self.i18n.t(status_key)}")
 
     def default_local_dir(self, device: Device | None) -> Path:
-        name = safe_device_name(device.name or device.sysname or "device") if device is not None else "device"
+        name = safe_device_name(device.name or device.system_name or "device") if device is not None else "device"
         return self.paths.ensure_site_dirs(self.site_name) / "raw" / "files" / name
 
     def connect_sftp(self) -> None:

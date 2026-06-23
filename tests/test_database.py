@@ -1,5 +1,8 @@
 from netconsole.core.bootstrap import create_demo_context
-from netconsole.core.database import Database
+import pytest
+
+from netconsole.core.database import CURRENT_SCHEMA_VERSION, Database, DatabaseSchemaMismatchError
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -16,6 +19,7 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         interface_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_interfaces)").fetchall()]
         optical_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules)").fetchall()]
         optical_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules_history)").fetchall()]
+        schema_version = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()["value"]
 
     assert "collect_runs" in table_names
     assert "device_facts" in table_names
@@ -28,6 +32,11 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "device_lldp_neighbors_history" in table_names
     assert "ac_ap_summary" in table_names
     assert "ac_fit_ap_resources" in table_names
+    assert "ap_entities" in table_names
+    assert "ap_resource_snapshots" in table_names
+    assert "ap_lldp_history" in table_names
+    assert "ap_optical_history" in table_names
+    assert "trackside_ap_view_cache" in table_names
     assert "ac_fit_ap_optical" in table_names
     assert "config_snapshots" in table_names
     assert "device_groups" in table_names
@@ -54,6 +63,17 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "snmpv3_priv_password",
         "group_id",
         "https_port",
+        "system_name",
+        "primary_address",
+        "backup_address",
+        "protocol",
+        "port",
+        "username",
+        "password",
+        "snmp_version",
+        "tunnel_enabled",
+        "tunnel1_host",
+        "tunnel2_host",
     ):
         assert column in columns
     for removed_column in (
@@ -61,22 +81,20 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "auth_mode",
         "ssh_auth_mode",
         "telnet_auth_mode",
-        "username",
-        "password",
         "serial_port",
         "baudrate",
         "data_bits",
         "parity",
         "stop_bits",
-        "protocol",
-        "port",
-        "snmp_version",
+        "ip_address",
+        "sysname",
         "tags",
     ):
         assert removed_column not in columns
+    assert schema_version == CURRENT_SCHEMA_VERSION
 
 
-def test_database_initialize_adds_https_port_to_existing_devices_table(tmp_path):
+def test_database_initialize_rejects_old_schema_without_auto_migration(tmp_path):
     db = Database(tmp_path / "legacy.db")
     with db.connect() as conn:
         conn.execute(
@@ -100,15 +118,47 @@ def test_database_initialize_adds_https_port_to_existing_devices_table(tmp_path)
         )
         conn.commit()
 
-    db.initialize()
+    with pytest.raises(DatabaseSchemaMismatchError, match="数据库结构已变更|当前数据库结构"):
+        db.initialize()
 
     with db.connect() as conn:
-        columns = {row["name"]: row["type"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
-        row = conn.execute("SELECT device_uuid, name, ip_address, https_port FROM devices WHERE device_uuid = 'legacy-uuid'").fetchone()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
+        row = conn.execute("SELECT device_uuid, name, ip_address FROM devices WHERE device_uuid = 'legacy-uuid'").fetchone()
 
-    assert columns["https_port"].upper() == "INTEGER"
-    assert columns["group_id"].upper() == "INTEGER"
-    assert dict(row) == {"device_uuid": "legacy-uuid", "name": "AC-OLD", "ip_address": "10.122.100.10", "https_port": None}
+    assert "https_port" not in columns
+    assert "group_id" not in columns
+    assert dict(row) == {"device_uuid": "legacy-uuid", "name": "AC-OLD", "ip_address": "10.122.100.10"}
+
+
+def test_fit_ap_resource_update_writes_ap_entity_and_snapshot(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    repository = AcRepository(db)
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-idle",
+                "ap_name": "30f5-277a-15e0",
+                "serial_number": "SN-IDLE",
+                "state": "I",
+                "site": "Station A",
+            }
+        ],
+    )
+
+    entities = repository.list_ap_entities("ac-1")
+    with db.connect() as conn:
+        snapshots = conn.execute("SELECT * FROM ap_resource_snapshots WHERE ap_uuid = 'ap-idle'").fetchall()
+
+    assert len(entities) == 1
+    assert entities[0]["ap_uuid"] == "ap-idle"
+    assert entities[0]["ap_mac"] == "30f5-277a-15e0"
+    assert entities[0]["station"] == "Station A"
+    assert entities[0]["state_display"] == "Idle"
+    assert entities[0]["is_offline"] == 1
+    assert len(snapshots) == 1
 
 
 def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(tmp_path):

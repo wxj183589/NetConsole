@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import shutil
 import sys
+from datetime import datetime
+from pathlib import Path
 from time import perf_counter
+from time import sleep
 
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from netconsole.core.bootstrap import create_demo_context
+from netconsole.core.database import DatabaseSchemaMismatchError
 from netconsole.core.i18n import I18n
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
@@ -30,6 +35,63 @@ def build_window(started_at: float | None = None) -> MainWindow:
     return MainWindow(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
 
 
+def _site_database_paths(paths: PathResolver) -> list[Path]:
+    if not paths.sites_dir.exists():
+        return []
+    return sorted(paths.sites_dir.glob("*/db/*.db"))
+
+
+def _backup_site_databases(paths: PathResolver) -> list[Path]:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backups: list[Path] = []
+    for database_path in _site_database_paths(paths):
+        backup_dir = database_path.parents[1] / "db_backup"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"{database_path.stem}_{timestamp}{database_path.suffix}"
+        shutil.copy2(database_path, backup_path)
+        backups.append(backup_path)
+    return backups
+
+
+def _delete_site_databases(paths: PathResolver) -> None:
+    for database_path in _site_database_paths(paths):
+        for attempt in range(3):
+            try:
+                database_path.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                sleep(0.2)
+
+
+def _handle_schema_mismatch(exc: DatabaseSchemaMismatchError, paths: PathResolver) -> str:
+    message = QMessageBox()
+    message.setWindowTitle("数据库结构已变更")
+    message.setIcon(QMessageBox.Warning)
+    message.setText("当前数据库结构与新版本不兼容。")
+    message.setInformativeText(
+        f"{exc}\n\n"
+        "可以先备份旧数据库，然后重建为最新 schema。"
+        "重建不会迁移旧 AP / LLDP / 光衰历史数据。"
+    )
+    rebuild_button = message.addButton("备份并重建数据库", QMessageBox.AcceptRole)
+    backup_button = message.addButton("仅备份", QMessageBox.ActionRole)
+    message.addButton("取消", QMessageBox.RejectRole)
+    message.exec()
+    clicked = message.clickedButton()
+    if clicked is rebuild_button:
+        backups = _backup_site_databases(paths)
+        _delete_site_databases(paths)
+        app_logger.log_info("DATABASE_REBUILT", f"backups={len(backups)}")
+        return "rebuild"
+    if clicked is backup_button:
+        backups = _backup_site_databases(paths)
+        QMessageBox.information(None, "数据库已备份", f"已备份 {len(backups)} 个数据库文件。")
+        return "backup"
+    return "cancel"
+
+
 def run() -> int:
     started_at = perf_counter()
     app = QApplication(sys.argv)
@@ -42,15 +104,28 @@ def run() -> int:
     splash.show_message(i18n.t("app.starting"))
     splash.set_progress(15)
     app_logger.log_info("APP_START", _elapsed_detail(started_at))
-    startup_mode = SettingsStore(PathResolver()).startup_mode
+    paths = PathResolver()
+    startup_mode = SettingsStore(paths).startup_mode
     app_logger.log_info("STARTUP", f"mode={startup_mode}")
-    if startup_mode == "preload_all":
-        manager = StartupPreloadManager(i18n=i18n, splash=splash, started_at=started_at)
-        window = manager.run(startup_mode)
-    else:
-        splash.show_message(i18n.t("app.initializing_site"))
-        splash.set_progress(45)
-        window = build_window(started_at)
+    while True:
+        try:
+            if startup_mode == "preload_all":
+                manager = StartupPreloadManager(i18n=i18n, splash=splash, started_at=started_at)
+                window = manager.run(startup_mode)
+            else:
+                splash.show_message(i18n.t("app.initializing_site"))
+                splash.set_progress(45)
+                window = build_window(started_at)
+            break
+        except DatabaseSchemaMismatchError as exc:
+            splash.hide()
+            action = _handle_schema_mismatch(exc, paths)
+            if action == "rebuild":
+                splash.show_centered()
+                splash.show_message(i18n.t("app.initializing_site"))
+                splash.set_progress(35)
+                continue
+            return 1
     app_logger.log_info("MAIN_WINDOW_CREATED", _elapsed_detail(started_at))
     splash.show_message(i18n.t("startup.opening_main_window"))
     splash.set_progress(100 if startup_mode == "preload_all" else 80)

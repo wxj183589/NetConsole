@@ -99,6 +99,8 @@ class MainWindow(QMainWindow):
         self.about_button.setObjectName("aboutRepositoryButton")
         self.version_button = QPushButton()
         self.version_button.setObjectName("versionButton")
+        self.data_disk_button = QPushButton()
+        self.data_disk_dialog = None
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
         self.device_page.groups_changed.connect(self.refresh_group_filters)
@@ -112,6 +114,7 @@ class MainWindow(QMainWindow):
         self.dark_theme_button.clicked.connect(lambda: self.set_theme("dark"))
         self.about_button.clicked.connect(self.show_about_dialog)
         self.version_button.clicked.connect(self.show_changelog_dialog)
+        self.data_disk_button.clicked.connect(self.show_data_disk_manager)
 
         top_bar = QHBoxLayout()
         top_bar.addWidget(self.site_label)
@@ -388,6 +391,16 @@ class MainWindow(QMainWindow):
         self.changelog_dialog.raise_()
         self.changelog_dialog.activateWindow()
 
+    def show_data_disk_manager(self) -> None:
+        if self.data_disk_dialog is None:
+            from netconsole.ui.dialogs.data_disk_manager_dialog import DataDiskManagerDialog
+
+            self.data_disk_dialog = DataDiskManagerDialog(self.i18n, self.paths, self)
+            self.data_disk_dialog.destroyed.connect(lambda _=None: setattr(self, "data_disk_dialog", None))
+        self.data_disk_dialog.show()
+        self.data_disk_dialog.raise_()
+        self.data_disk_dialog.activateWindow()
+
     def set_always_on_top(self, enabled: bool) -> None:
         window_manager.apply_main_window_on_top(enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
@@ -449,6 +462,8 @@ class MainWindow(QMainWindow):
         self.about_button.setToolTip(self.i18n.t("about.title"))
         self.version_button.setText(version_info.APP_VERSION_DISPLAY)
         self.version_button.setToolTip(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        self.data_disk_button.setText(self.i18n.t("data_disk.button"))
+        self.data_disk_button.setToolTip(self.i18n.t("data_disk.title"))
         self._sync_theme_buttons()
         self.navigation.blockSignals(True)
         self.navigation.retranslate()
@@ -479,6 +494,7 @@ class MainWindow(QMainWindow):
         about_row.addWidget(self.version_button, 1)
         about_row.addWidget(self.about_button)
         layout.addLayout(about_row)
+        layout.addWidget(self.data_disk_button)
         return panel
 
     def _sync_theme_buttons(self) -> None:

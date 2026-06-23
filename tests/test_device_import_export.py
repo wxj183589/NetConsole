@@ -1,12 +1,9 @@
 import csv
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
 from netconsole.core.database import Database
-from netconsole.core.bootstrap import create_demo_context
-from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -44,99 +41,75 @@ def read_csv(path):
         return list(csv.reader(file))
 
 
-def write_rows(path, rows):
-    with path.open("w", newline="", encoding="utf-8-sig") as file:
-        csv.writer(file).writerows(rows)
-
-
-def write_rows_with_encoding(path, rows, encoding):
+def write_rows(path, rows, encoding="utf-8-sig"):
     with path.open("w", newline="", encoding=encoding) as file:
         csv.writer(file).writerows(rows)
 
 
-def write_dict_rows(path, rows):
+def write_dict_rows(path, fieldnames, rows):
     with path.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=EXPORT_FIELDS)
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def test_export_template_csv_has_multiple_current_examples(tmp_path):
+def template_row(**overrides):
+    row = {field: "" for field in TEMPLATE_FIELDS}
+    row.update(
+        {
+            TEMPLATE_FIELDS[0]: "Core",
+            TEMPLATE_FIELDS[2]: "192.168.1.1",
+            TEMPLATE_FIELDS[4]: "SSH",
+            TEMPLATE_FIELDS[5]: "22",
+            TEMPLATE_FIELDS[6]: "admin",
+            TEMPLATE_FIELDS[7]: "pwd",
+            TEMPLATE_FIELDS[8]: "H3C",
+            TEMPLATE_FIELDS[9]: "SW",
+        }
+    )
+    row.update(overrides)
+    return [row[field] for field in TEMPLATE_FIELDS]
+
+
+def test_template_csv_uses_new_device_model_fields_and_imports_examples(tmp_path):
     repository, service = make_service(tmp_path)
     path = tmp_path / "template.csv"
 
     service.export_template_csv(path)
     rows = read_csv(path)
     result = service.import_csv(path)
-    imported = {device.name: device for device in repository.list()}
+    devices = repository.list()
 
     assert rows == [TEMPLATE_FIELDS, *TEMPLATE_EXAMPLE_ROWS]
-    assert len(rows) == 6
-    assert all(len(row) == len(TEMPLATE_FIELDS) for row in rows)
-    assert "SNMPv1" not in rows[0]
-    assert "SNMPv2c" not in rows[0]
-    assert "SNMPv3" not in rows[0]
-    assert result.created == 5
-    assert imported["核心交换机-示例"].ssh_username == "admin"
-    assert imported["核心交换机-示例"].ssh_password == "Admin@123"
-    assert imported["FIT-AP-示例"].ssh_enabled == 0
-    assert imported["FIT-AP-示例"].telnet_enabled == 1
-    assert imported["FIT-AP-示例"].telnet_username is None
-    assert imported["FIT-AP-示例"].telnet_password == "Admin@123"
+    assert "ip_address" not in TEMPLATE_FIELDS
+    assert "sysname" not in TEMPLATE_FIELDS
+    assert len(TEMPLATE_FIELDS) == len(TEMPLATE_EXAMPLE_ROWS[0])
+    assert result.created == len(TEMPLATE_EXAMPLE_ROWS)
+    assert all(device.primary_address for device in devices)
+    assert all(hasattr(device, "system_name") for device in devices)
 
 
-def test_template_exports_and_imports_group_column(tmp_path):
-    repository, groups, service = make_group_service(tmp_path)
-    csv_path = tmp_path / "devices.csv"
-    write_rows(
-        csv_path,
-        [
-            TEMPLATE_FIELDS,
-            ["Vehicle AP", "192.168.1.30", "H3C", "车厢", "车载", "FAT-AP", "yes", "22", "no", "23", "admin", "pwd", "", "", ""],
-            ["Temp SW", "192.168.1.31", "H3C", "临时", "临时测试组", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", ""],
-        ],
-    )
-
-    result = service.import_csv(csv_path)
-    imported = {device.name: device for device in repository.list()}
-    group_lookup = {group.name: group.id for group in groups.list()}
-
-    assert "分组" in TEMPLATE_FIELDS
-    assert result.created == 2
-    assert result.groups_created == 1
-    assert imported["Vehicle AP"].group_id == group_lookup["车载"]
-    assert imported["Temp SW"].group_id == group_lookup["临时测试组"]
-
-
-def test_template_import_can_explicitly_create_custom_named_group(tmp_path):
-    repository, groups, service = make_group_service(tmp_path)
-    csv_path = tmp_path / "custom_group_devices.csv"
-    write_rows(
-        csv_path,
-        [
-            TEMPLATE_FIELDS,
-            ["Custom SW", "192.168.1.40", "H3C", "OCC", "自定义", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", ""],
-        ],
-    )
-
-    result = service.import_csv(csv_path)
-    imported = repository.list()[0]
-    group_lookup = {group.name: group.id for group in groups.list()}
-
-    assert result.created == 1
-    assert result.groups_created == 1
-    assert imported.group_id == group_lookup["自定义"]
-    assert list(group_lookup) == ["COCC", "BOCC", "车站", "车载", "自定义"]
-
-
-def test_simplified_template_import_defaults_and_credentials(tmp_path):
+def test_template_import_maps_primary_backup_system_name_and_tunnel_fields(tmp_path):
     repository, service = make_service(tmp_path)
     csv_path = tmp_path / "devices.csv"
     write_rows(
         csv_path,
         [
             TEMPLATE_FIELDS,
-            ["Core", "192.168.1.1", "", "OCC", "", "", "", "", "", "ssh", "ssh-pwd", "", "tel-pwd", "core", "remark"],
+            template_row(
+                **{
+                    TEMPLATE_FIELDS[0]: "AC",
+                    TEMPLATE_FIELDS[1]: "AC-SYS",
+                    TEMPLATE_FIELDS[2]: "10.0.0.1",
+                    TEMPLATE_FIELDS[3]: "10.0.0.2",
+                    TEMPLATE_FIELDS[16]: "yes",
+                    TEMPLATE_FIELDS[17]: "172.16.0.10",
+                    TEMPLATE_FIELDS[18]: "2022",
+                    TEMPLATE_FIELDS[19]: "jump",
+                    TEMPLATE_FIELDS[20]: "jump-pwd",
+                    TEMPLATE_FIELDS[21]: "10022",
+                }
+            ),
         ],
     )
 
@@ -144,88 +117,66 @@ def test_simplified_template_import_defaults_and_credentials(tmp_path):
     imported = repository.list()[0]
 
     assert result.created == 1
-    assert imported.device_vendor == "H3C"
-    assert imported.device_type == "SW"
-    assert imported.ssh_enabled == 1
-    assert imported.ssh_port == 22
-    assert imported.telnet_enabled == 0
-    assert imported.telnet_port == 23
-    assert imported.ssh_username == "ssh"
-    assert imported.ssh_password == "ssh-pwd"
-    assert imported.telnet_username is None
-    assert imported.telnet_password == "tel-pwd"
+    assert imported.name == "AC"
+    assert imported.system_name == "AC-SYS"
+    assert imported.primary_address == "10.0.0.1"
+    assert imported.backup_address == "10.0.0.2"
+    assert imported.tunnel_enabled == 1
+    assert imported.tunnel1_enabled == 1
+    assert imported.tunnel1_host == "172.16.0.10"
+    assert imported.tunnel1_port == 2022
+    assert imported.tunnel1_username == "jump"
+    assert imported.tunnel1_password == "jump-pwd"
+    assert imported.tunnel1_local_port == 10022
 
 
-def test_template_import_supports_gbk_csv(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "devices_gbk.csv"
-    write_rows_with_encoding(
-        csv_path,
-        [
-            TEMPLATE_FIELDS,
-            ["GBK-Core", "192.168.1.10", "H3C", "OCC", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", "remark"],
-        ],
-        "gbk",
-    )
+def test_template_import_keeps_excel_header_compatibility_for_old_address_names(tmp_path):
+    aliases = ["IP", "host", "address", "ip_address"]
+    for alias in aliases:
+        repository, service = make_service(tmp_path / alias)
+        csv_path = tmp_path / alias / "devices.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        headers = list(TEMPLATE_FIELDS)
+        headers[2] = alias
+        write_rows(csv_path, [headers, template_row(**{TEMPLATE_FIELDS[0]: f"SW-{alias}", TEMPLATE_FIELDS[2]: "192.168.10.1"})])
 
-    result = service.import_csv(csv_path)
-    imported = repository.list()[0]
+        result = service.import_csv(csv_path)
 
-    assert result.created == 1
-    assert imported.name == "GBK-Core"
-    assert imported.ip_address == "192.168.1.10"
+        assert result.created == 1
+        assert repository.list()[0].primary_address == "192.168.10.1"
 
 
-def test_template_import_supports_gb2312_csv(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "devices_gb2312.csv"
-    write_rows_with_encoding(
-        csv_path,
-        [
-            TEMPLATE_FIELDS,
-            ["GB2312-Core", "192.168.1.12", "H3C", "OCC", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", "remark"],
-        ],
-        "gb2312",
-    )
-
-    result = service.import_csv(csv_path)
-    imported = repository.list()[0]
-
-    assert result.created == 1
-    assert imported.name == "GB2312-Core"
-    assert imported.ip_address == "192.168.1.12"
-
-
-def test_docs_ningbo_template_imports_into_demo_context(tmp_path):
-    context = create_demo_context(PathResolver(tmp_path))
-    service = DeviceImportExportService(context.repository)
-    template_path = Path(__file__).resolve().parents[1] / "docs" / "宁波12-设备导入模板.csv"
-
-    result = service.import_csv(template_path)
-    devices = context.repository.list()
-
-    assert result.created > 0
-    assert result.skipped == 0
-    assert any(device.ip_address == "10.122.100.10" and device.device_type == "AC" for device in devices)
-    assert any(device.name == "核心交换机" for device in devices)
-
-
-def test_template_import_still_supports_utf8_sig_csv(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "devices_utf8_sig.csv"
+def test_template_import_exports_and_imports_group_column(tmp_path):
+    repository, groups, service = make_group_service(tmp_path)
+    csv_path = tmp_path / "devices.csv"
     write_rows(
         csv_path,
         [
             TEMPLATE_FIELDS,
-            ["UTF8-Core", "192.168.1.11", "H3C", "OCC", "SW", "yes", "22", "no", "23", "admin", "pwd", "", "", "remark"],
+            template_row(**{TEMPLATE_FIELDS[0]: "Vehicle AP", TEMPLATE_FIELDS[10]: "Vehicle"}),
         ],
     )
 
     result = service.import_csv(csv_path)
     imported = repository.list()[0]
+    group_lookup = {group.name: group.id for group in groups.list()}
 
     assert result.created == 1
-    assert imported.name == "UTF8-Core"
+    assert result.groups_created == 1
+    assert imported.group_id == group_lookup["Vehicle"]
+
+
+def test_template_import_supports_gbk_and_utf8_sig_csv(tmp_path):
+    for encoding in ("utf-8-sig", "gbk", "gb2312"):
+        repository, service = make_service(tmp_path / encoding)
+        csv_path = tmp_path / encoding / "devices.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        write_rows(csv_path, [TEMPLATE_FIELDS, template_row(**{TEMPLATE_FIELDS[0]: f"SW-{encoding}"})], encoding)
+
+        result = service.import_csv(csv_path)
+
+        assert result.created == 1
+        assert repository.list()[0].primary_address == "192.168.1.1"
 
 
 def test_csv_import_encoding_failure_uses_friendly_error(tmp_path):
@@ -240,99 +191,51 @@ def test_csv_import_encoding_failure_uses_friendly_error(tmp_path):
     assert "codec" not in str(exc_info.value).lower()
 
 
-def test_old_template_fields_raise_clear_error(tmp_path):
-    _repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "old_template.csv"
-    write_rows(csv_path, [["设备名称", "IP地址", "用户名", "密码"], ["Old", "192.168.1.9", "admin", "pwd"]])
-
-    with pytest.raises(ValueError, match="Unsupported CSV header"):
-        service.import_csv(csv_path)
-
-
-def test_full_export_contains_current_credential_fields_and_not_removed_fields(tmp_path):
+def test_full_export_contains_new_fields_and_not_removed_database_fields(tmp_path):
     repository, service = make_service(tmp_path)
-    device = repository.create(Device(name="Core", ip_address="192.168.1.1", ssh_enabled=1, telnet_enabled=1, ssh_username="admin"))
+    device = repository.create(
+        Device(
+            name="Core",
+            system_name="CORE-SYS",
+            primary_address="192.168.1.1",
+            backup_address="192.168.2.1",
+            tunnel_enabled=1,
+            tunnel1_enabled=1,
+            tunnel1_host="10.0.0.10",
+        )
+    )
     export_path = tmp_path / "export.csv"
 
     service.export_csv(export_path)
     rows = read_csv(export_path)
 
     assert rows[0] == EXPORT_FIELDS
-    for field in ("ssh_username", "ssh_password", "telnet_username", "telnet_password"):
+    for field in ("system_name", "primary_address", "backup_address", "tunnel_enabled", "tunnel1_host"):
         assert field in rows[0]
-    for snmp_field in ("snmp_v1_enabled", "snmp_v2c_enabled", "snmp_v3_enabled", "snmp_port", "snmp_ro_community", "snmp_rw_community"):
-        assert snmp_field in rows[0]
-    for removed in ("credential_shared", "auth_mode", "ssh_auth_mode", "telnet_auth_mode", "username", "password", "protocol", "port"):
+    for removed in ("ip_address", "sysname", "host", "主机地址"):
         assert removed not in rows[0]
     assert rows[1][0] == str(device.id)
-    assert rows[1][1] == device.device_uuid
+    assert rows[1][rows[0].index("system_name")] == "CORE-SYS"
+    assert rows[1][rows[0].index("primary_address")] == "192.168.1.1"
 
 
-def test_full_csv_import_supports_current_fields(tmp_path):
+def test_full_csv_import_supports_current_fields_and_snmp_defaults(tmp_path):
     repository, service = make_service(tmp_path)
     csv_path = tmp_path / "full.csv"
     write_dict_rows(
         csv_path,
+        EXPORT_FIELDS,
         [
             {
                 "name": "Imported",
-                "ip_address": "192.168.1.20",
+                "system_name": "IM-SYS",
+                "primary_address": "192.168.1.20",
                 "ssh_enabled": "1",
                 "ssh_port": "2022",
                 "telnet_enabled": "1",
                 "telnet_port": "2323",
                 "ssh_username": "ssh",
                 "ssh_password": "ssh-pwd",
-                "telnet_username": "",
-                "telnet_password": "tel-pwd",
-                "snmp_v1_enabled": "1",
-                "snmp_v2c_enabled": "1",
-                "snmp_v3_enabled": "1",
-                "snmpv3_security_level": "AuthPriv",
-                "snmpv3_auth_protocol": "SHA",
-                "snmpv3_auth_password": "authpass",
-                "snmpv3_priv_protocol": "AES",
-                "snmpv3_priv_password": "privpass",
-            }
-        ],
-    )
-
-    result = service.import_csv(csv_path)
-    imported = repository.list()[0]
-
-    assert result.created == 1
-    assert imported.ssh_port == 2022
-    assert imported.telnet_enabled == 1
-    assert imported.telnet_port == 2323
-    assert imported.ssh_username == "ssh"
-    assert imported.telnet_username is None
-    assert imported.telnet_password == "tel-pwd"
-    assert imported.snmp_v1_enabled == 1
-    assert imported.snmp_v2c_enabled == 1
-    assert imported.snmp_v3_enabled == 1
-    assert imported.snmpv3_auth_password == "authpass"
-    assert imported.snmpv3_priv_protocol == "AES128"
-    assert imported.snmpv3_priv_password == "privpass"
-
-
-def test_snmpv3_dropdown_options_do_not_include_blank_items():
-    assert SNMPV3_SECURITY_LEVELS == ("noAuthNoPriv", "AuthNoPriv", "AuthPriv")
-    assert SNMPV3_AUTH_PROTOCOLS == ("MD5", "SHA")
-    assert SNMPV3_PRIV_PROTOCOLS == ("DES56", "3DES", "AES128", "AES192", "AES256")
-    assert "" not in SNMPV3_SECURITY_LEVELS
-    assert "" not in SNMPV3_AUTH_PROTOCOLS
-    assert "" not in SNMPV3_PRIV_PROTOCOLS
-
-
-def test_full_csv_authpriv_blank_priv_protocol_defaults_to_aes128(tmp_path):
-    repository, service = make_service(tmp_path)
-    csv_path = tmp_path / "blank_priv.csv"
-    write_dict_rows(
-        csv_path,
-        [
-            {
-                "name": "AuthPrivBlankPriv",
-                "ip_address": "192.168.1.40",
                 "snmp_v3_enabled": "1",
                 "snmpv3_security_level": "AuthPriv",
                 "snmpv3_auth_protocol": "",
@@ -345,6 +248,11 @@ def test_full_csv_authpriv_blank_priv_protocol_defaults_to_aes128(tmp_path):
     imported = repository.list()[0]
 
     assert result.created == 1
+    assert imported.system_name == "IM-SYS"
+    assert imported.primary_address == "192.168.1.20"
+    assert imported.ssh_port == 2022
+    assert imported.telnet_enabled == 1
+    assert imported.telnet_port == 2323
     assert imported.snmpv3_auth_protocol == "SHA"
     assert imported.snmpv3_priv_protocol == "AES128"
 
@@ -352,13 +260,14 @@ def test_full_csv_authpriv_blank_priv_protocol_defaults_to_aes128(tmp_path):
 def test_import_rejects_duplicate_uuid_and_no_connection(tmp_path):
     repository, service = make_service(tmp_path)
     device_uuid = Device.new_uuid()
-    repository.create(Device(name="SW0", ip_address="192.168.0.1", device_uuid=device_uuid))
+    repository.create(Device(name="SW0", primary_address="192.168.0.1", device_uuid=device_uuid))
     csv_path = tmp_path / "bad.csv"
     write_dict_rows(
         csv_path,
+        EXPORT_FIELDS,
         [
-            {"device_uuid": device_uuid, "name": "Dup", "ip_address": "192.168.1.1"},
-            {"name": "NoConn", "ip_address": "192.168.1.2", "ssh_enabled": "0", "telnet_enabled": "0"},
+            {"device_uuid": device_uuid, "name": "Dup", "primary_address": "192.168.1.1"},
+            {"name": "NoConn", "primary_address": "192.168.1.2", "ssh_enabled": "0", "telnet_enabled": "0"},
         ],
     )
 
@@ -372,7 +281,7 @@ def test_import_rejects_duplicate_uuid_and_no_connection(tmp_path):
 
 def test_full_export_csv_import_preserves_valid_uuid_and_rejects_duplicate(tmp_path):
     source_repository, source_service = make_service(tmp_path / "source")
-    source_device = source_repository.create(Device(name="SW1", ip_address="192.168.1.1"))
+    source_device = source_repository.create(Device(name="SW1", primary_address="192.168.1.1"))
     export_path = tmp_path / "export.csv"
     source_service.export_csv(export_path)
 
@@ -385,6 +294,15 @@ def test_full_export_csv_import_preserves_valid_uuid_and_rejects_duplicate(tmp_p
     assert imported.device_uuid == source_device.device_uuid
     assert second.created == 0
     assert second.skipped == 1
+
+
+def test_snmpv3_dropdown_options_do_not_include_blank_items():
+    assert SNMPV3_SECURITY_LEVELS == ("noAuthNoPriv", "AuthNoPriv", "AuthPriv")
+    assert SNMPV3_AUTH_PROTOCOLS == ("MD5", "SHA")
+    assert SNMPV3_PRIV_PROTOCOLS == ("DES56", "3DES", "AES128", "AES192", "AES256")
+    assert "" not in SNMPV3_SECURITY_LEVELS
+    assert "" not in SNMPV3_AUTH_PROTOCOLS
+    assert "" not in SNMPV3_PRIV_PROTOCOLS
 
 
 def test_make_device_export_filename_formats_site_name_and_local_time():

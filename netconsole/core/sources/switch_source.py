@@ -17,14 +17,14 @@ def build_switch_data_lookup(
     """Build a lookup: ``(device_name_lower, interface_name_lower) -> optical_module_row``.
 
     Returns the **raw** optical module row (not a cached status).
-    Both ``device.name`` and ``device.sysname`` are indexed.
+    Both ``device.name`` and ``device.system_name`` are indexed.
     """
     lookup: dict[tuple[str, str], dict[str, object | None]] = {}
     device_names_by_uuid: dict[str, set[str]] = {}
 
     for device in devices:
         names: set[str] = set()
-        for raw in (device.name, device.sysname):
+        for raw in (device.name, device.system_name):
             normalized = str(raw or "").strip().casefold()
             if normalized:
                 names.add(normalized)

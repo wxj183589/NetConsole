@@ -18,37 +18,63 @@ SNMPV3_PRIV_PROTOCOLS = ("DES56", "3DES", "AES128", "AES192", "AES256")
 
 TEMPLATE_FIELDS = [
     "设备名称",
-    "IP地址",
+    "系统名称",
+    "主用地址",
+    "备用地址",
+    "协议",
+    "端口",
+    "用户名",
+    "密码",
     "厂商",
-    "站点/位置",
-    "分组",
     "设备类型",
-    "SSH启用",
-    "SSH端口",
-    "Telnet启用",
-    "Telnet端口",
-    "SSH用户名",
-    "SSH密码",
-    "Telnet用户名",
-    "Telnet密码",
+    "分组",
+    "站点/位置",
+    "SNMP版本",
+    "SNMP端口",
+    "只读团体字",
+    "读写团体字",
+    "是否启用SSH隧道",
+    "隧道主机1地址",
+    "隧道主机1端口",
+    "隧道主机1用户名",
+    "隧道主机1密码",
+    "隧道主机1本地端口",
+    "隧道主机2地址",
+    "隧道主机2端口",
+    "隧道主机2用户名",
+    "隧道主机2密码",
+    "隧道主机2本地端口",
     "备注",
 ]
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "H3C", "控制中心", "COCC", "SW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "SSH设备示例"],
-    ["接入交换机-示例", "192.168.1.2", "H3C", "车站A", "车站", "SW", "是", "22", "是", "23", "admin", "Admin@123", "admin", "Admin@123", "SSH+Telnet示例"],
-    ["无线控制器-示例", "192.168.1.10", "H3C", "控制中心", "COCC", "AC", "是", "22", "否", "23", "admin", "Admin@123", "", "", "AC设备示例"],
-    ["FIT-AP-示例", "192.168.1.20", "H3C", "站台层", "车载", "FIT-AP", "否", "22", "是", "23", "", "Admin@123", " ", "Admin@123", "Telnet设备示例"],
-    ["防火墙-示例", "192.168.1.254", "H3C", "控制中心", "BOCC", "FW", "是", "22", "否", "23", "admin", "Admin@123", "", "", "防火墙示例"],
+    ["核心交换机-示例", "CORE-SW", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "v2c", "161", "public", "private", "否", "", "", "", "", "", "", "", "", "", "", "SSH设备示例"],
+    ["无线控制器-示例", "AC-DEMO", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "v2c", "161", "public", "private", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "", "", "主备地址+隧道示例"],
 ]
 
 TEMPLATE_FIELD_MAP = {
     "设备名称": "name",
-    "IP地址": "ip_address",
+    "系统名称": "system_name",
+    "主用地址": "primary_address",
+    "备用地址": "backup_address",
+    "IP地址": "primary_address",
+    "主机地址": "primary_address",
+    "IP": "primary_address",
+    "host": "primary_address",
+    "address": "primary_address",
+    "ip_address": "primary_address",
     "厂商": "device_vendor",
     "站点/位置": "station",
     "分组": "group_name",
     "设备类型": "device_type",
+    "SNMP版本": "snmp_version",
+    "SNMP端口": "snmp_port",
+    "只读团体字": "snmp_ro_community",
+    "读写团体字": "snmp_rw_community",
+    "协议": "protocol",
+    "端口": "port",
+    "用户名": "username",
+    "密码": "password",
     "SSH启用": "ssh_enabled",
     "SSH端口": "ssh_port",
     "Telnet启用": "telnet_enabled",
@@ -57,6 +83,17 @@ TEMPLATE_FIELD_MAP = {
     "SSH密码": "ssh_password",
     "Telnet用户名": "telnet_username",
     "Telnet密码": "telnet_password",
+    "是否启用SSH隧道": "tunnel_enabled",
+    "隧道主机1地址": "tunnel1_host",
+    "隧道主机1端口": "tunnel1_port",
+    "隧道主机1用户名": "tunnel1_username",
+    "隧道主机1密码": "tunnel1_password",
+    "隧道主机1本地端口": "tunnel1_local_port",
+    "隧道主机2地址": "tunnel2_host",
+    "隧道主机2端口": "tunnel2_port",
+    "隧道主机2用户名": "tunnel2_username",
+    "隧道主机2密码": "tunnel2_password",
+    "隧道主机2本地端口": "tunnel2_local_port",
     "备注": "remark",
 }
 
@@ -64,11 +101,16 @@ EXPORT_FIELDS = [
     "id",
     "device_uuid",
     "name",
-    "sysname",
+    "system_name",
     "station",
     "device_vendor",
     "device_type",
-    "ip_address",
+    "primary_address",
+    "backup_address",
+    "protocol",
+    "port",
+    "username",
+    "password",
     "ssh_enabled",
     "ssh_port",
     "telnet_enabled",
@@ -89,6 +131,21 @@ EXPORT_FIELDS = [
     "snmpv3_priv_protocol",
     "snmpv3_priv_password",
     "https_port",
+    "tunnel_enabled",
+    "tunnel1_enabled",
+    "tunnel1_host",
+    "tunnel1_port",
+    "tunnel1_username",
+    "tunnel1_password",
+    "tunnel1_local_port_mode",
+    "tunnel1_local_port",
+    "tunnel2_enabled",
+    "tunnel2_host",
+    "tunnel2_port",
+    "tunnel2_username",
+    "tunnel2_password",
+    "tunnel2_local_port_mode",
+    "tunnel2_local_port",
     "remark",
     "created_at",
     "updated_at",
@@ -161,9 +218,9 @@ class DeviceImportExportService:
         groups_created = 0
         errors: list[str] = []
         for line_number, payload in rows:
-            if not payload.get("name") or not payload.get("ip_address"):
+            if not payload.get("name") or not payload.get("primary_address"):
                 skipped += 1
-                errors.append(f"Row {line_number}: name and ip_address are required")
+                errors.append(f"Row {line_number}: name and primary_address are required")
                 continue
             try:
                 compact_payload = {key: value for key, value in payload.items() if value is not None}
@@ -205,6 +262,26 @@ class DeviceImportExportService:
         payload.setdefault("snmp_v2c_enabled", 1)
         payload.setdefault("snmp_v3_enabled", 0)
         payload.setdefault("snmp_port", 161)
+        protocol_value = payload.get("protocol")
+        if protocol_value:
+            protocol = str(protocol_value).casefold()
+            if protocol == "telnet":
+                payload["telnet_enabled"] = 1
+                payload["ssh_enabled"] = 0
+                payload["telnet_port"] = int(payload.get("port") or payload.get("telnet_port") or 23)
+                payload["telnet_username"] = payload.get("username") or payload.get("telnet_username")
+                payload["telnet_password"] = payload.get("password") or payload.get("telnet_password")
+            else:
+                payload["ssh_enabled"] = 1
+                payload["telnet_enabled"] = int(payload.get("telnet_enabled") or 0)
+                payload["ssh_port"] = int(payload.get("port") or payload.get("ssh_port") or 22)
+                payload["ssh_username"] = payload.get("username") or payload.get("ssh_username")
+                payload["ssh_password"] = payload.get("password") or payload.get("ssh_password")
+        if payload.get("tunnel_enabled"):
+            if payload.get("tunnel1_host") and "tunnel1_enabled" not in payload:
+                payload["tunnel1_enabled"] = 1
+            if payload.get("tunnel2_host") and "tunnel2_enabled" not in payload:
+                payload["tunnel2_enabled"] = 1
 
     def _validate_payload(self, payload: dict[str, object]) -> None:
         device_uuid = payload.get("device_uuid")
@@ -216,12 +293,14 @@ class DeviceImportExportService:
             raise ValueError(f"Invalid device_vendor: {payload['device_vendor']}")
         if payload["device_type"] not in DEVICE_TYPES:
             raise ValueError(f"Invalid device_type: {payload['device_type']}")
-        for field in ("ssh_enabled", "telnet_enabled", "snmp_v1_enabled", "snmp_v2c_enabled", "snmp_v3_enabled"):
+        for field in ("ssh_enabled", "telnet_enabled", "snmp_v1_enabled", "snmp_v2c_enabled", "snmp_v3_enabled", "tunnel_enabled", "tunnel1_enabled", "tunnel2_enabled"):
+            if field not in payload:
+                continue
             payload[field] = self._parse_bool(payload[field])
         self._normalize_snmpv3_fields(payload)
         if not payload["ssh_enabled"] and not payload["telnet_enabled"]:
             raise ValueError("At least one of SSH or Telnet must be enabled")
-        for field in ("ssh_port", "telnet_port", "snmp_port", "https_port"):
+        for field in ("port", "ssh_port", "telnet_port", "snmp_port", "https_port", "tunnel1_port", "tunnel1_local_port", "tunnel2_port", "tunnel2_local_port"):
             if payload.get(field) is not None:
                 payload[field] = int(payload[field])
                 if field == "https_port" and not 1 <= int(payload[field]) <= 65535:
@@ -277,7 +356,7 @@ class DeviceImportExportService:
     def _detect_mode(headers: list[str]) -> str:
         if headers and all(header in TEMPLATE_FIELD_MAP for header in headers):
             fields = {TEMPLATE_FIELD_MAP[header] for header in headers}
-            if {"name", "ip_address"}.issubset(fields):
+            if {"name", "primary_address"}.issubset(fields):
                 return "template"
         if headers == EXPORT_FIELDS:
             return "export"
@@ -301,6 +380,8 @@ class DeviceImportExportService:
     @staticmethod
     def _looks_like_legacy_template_row(headers: list[str], values: list[object]) -> bool:
         if "分组" not in headers or len(values) != len(headers):
+            return False
+        if "Telnet端口" not in headers:
             return False
         telnet_port_index = headers.index("Telnet端口")
         if telnet_port_index >= len(values):

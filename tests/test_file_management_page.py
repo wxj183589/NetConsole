@@ -1,5 +1,7 @@
 import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,7 +11,7 @@ from PySide6.QtCore import Qt
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
-from netconsole.services.file_transfer_service import RemoteDeviceFile
+from netconsole.services.file_transfer_service import FileTransferService, RemoteDeviceFile
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.file_management_page import (
     FileManagementPage,
@@ -258,6 +260,95 @@ def test_meshlog_retry_does_not_duplicate_device_prefix(tmp_path, monkeypatch):
     page.retry_task(task)
 
     assert page.tasks[-1].local_path.name == "AC-1-2026_02_03-meshlog.log"
+
+
+def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_path, monkeypatch):
+    import netconsole.services.file_transfer_service as service_module
+
+    connect_hosts: list[str] = []
+    shell_commands: list[str] = []
+    closed: list[str] = []
+
+    class FakeShell:
+        def send(self, command):
+            shell_commands.append(command.strip())
+
+        def recv_ready(self):
+            return False
+
+        def close(self):
+            closed.append("shell")
+
+    class FakeSftp:
+        def listdir_attr(self, path):
+            if path == "flash:/":
+                return []
+            raise RuntimeError("missing root")
+
+        def close(self):
+            closed.append("sftp")
+
+    class FakeSSHClient:
+        open_count = 0
+
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **kwargs):
+            connect_hosts.append(str(kwargs["hostname"]))
+            if kwargs["hostname"] != "127.0.0.1":
+                raise RuntimeError("direct failed")
+
+        def open_sftp(self):
+            FakeSSHClient.open_count += 1
+            if FakeSSHClient.open_count == 1:
+                raise RuntimeError("sftp disabled")
+            return FakeSftp()
+
+        def invoke_shell(self):
+            return FakeShell()
+
+        def close(self):
+            closed.append("client")
+
+    class FakeTunnelSession:
+        local_host = "127.0.0.1"
+        local_port = 10022
+
+        def close(self):
+            closed.append("tunnel")
+
+    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setattr(service_module.TunnelManager, "open_tunnel", lambda *_args: FakeTunnelSession())
+
+    device = Device(
+        id=1,
+        name="MR",
+        primary_address="10.0.0.1",
+        backup_address="10.0.1.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+        tunnel_enabled=1,
+        tunnel1_enabled=1,
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+    )
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    root = service.connect(device)
+    service.disconnect()
+
+    assert root == "flash:/"
+    assert connect_hosts == ["10.0.0.1", "10.0.1.1", "127.0.0.1"]
+    assert shell_commands == [
+        "system-view",
+        "sftp server enable",
+        "ssh user admin service-type all authentication-type any",
+        "return",
+        "quit",
+    ]
+    assert "tunnel" in closed
 
 
 def test_download_summary_counts_only_current_batch(tmp_path, monkeypatch):

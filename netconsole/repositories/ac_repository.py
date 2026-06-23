@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from uuid import uuid4
 
 from netconsole.core.database import Database
@@ -222,6 +223,89 @@ FIT_AP_RADIO_HISTORY_FIELDS = (
     "created_at",
 )
 
+AP_ENTITY_FIELDS = (
+    "ap_uuid",
+    "site_id",
+    "ac_device_uuid",
+    "ap_name",
+    "ap_mac",
+    "ap_id",
+    "ap_ip",
+    "serial_number",
+    "model",
+    "group_name",
+    "mode",
+    "state",
+    "state_raw",
+    "state_display",
+    "station",
+    "milestone",
+    "direction",
+    "location_note",
+    "first_seen_at",
+    "last_seen_at",
+    "last_online_at",
+    "last_resource_update_at",
+    "is_offline",
+    "source",
+    "created_at",
+    "updated_at",
+)
+
+AP_RESOURCE_SNAPSHOT_FIELDS = (
+    "snapshot_uuid",
+    "ap_uuid",
+    "ac_device_uuid",
+    "collected_at",
+    "ap_name",
+    "ap_mac",
+    "ap_id",
+    "ap_ip",
+    "serial_number",
+    "model",
+    "group_name",
+    "state",
+    "state_raw",
+    "online_time",
+    "clients",
+    "mode",
+    "station",
+    "raw_source_type",
+    "created_at",
+)
+
+AP_LLDP_ENTITY_HISTORY_FIELDS = (
+    "history_uuid",
+    "ap_uuid",
+    "ap_mac",
+    "ap_name",
+    "serial_number",
+    "neighbor_switch_uuid",
+    "neighbor_switch_name",
+    "neighbor_switch_sysname",
+    "neighbor_switch_ip",
+    "neighbor_interface",
+    "collected_at",
+    "source_device_uuid",
+    "is_latest",
+    "created_at",
+)
+
+AP_OPTICAL_ENTITY_HISTORY_FIELDS = (
+    "history_uuid",
+    "ap_uuid",
+    "side",
+    "device_uuid",
+    "interface_name",
+    "rx_power",
+    "tx_power",
+    "alarm_status",
+    "collected_at",
+    "data_source",
+    "is_latest",
+    "created_at",
+)
+
 
 class AcRepository:
     def __init__(self, database: Database) -> None:
@@ -277,6 +361,8 @@ class AcRepository:
                     [payload[field] for field in FIT_AP_RESOURCE_FIELDS],
                 )
                 self._append_resource_history(conn, payload)
+                self._upsert_ap_entity(conn, payload)
+                self._append_ap_resource_snapshot(conn, payload)
                 self._append_radio_history(conn, payload)
             if current_uuids:
                 placeholders = ", ".join("?" for _ in current_uuids)
@@ -323,6 +409,40 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_ap_entities(self, ac_device_uuid: str | None = None) -> list[dict[str, object | None]]:
+        params: list[object] = []
+        where = ""
+        if ac_device_uuid:
+            where = "WHERE ac_device_uuid = ?"
+            params.append(ac_device_uuid)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ap_entities
+                {where}
+                ORDER BY ap_name, id
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_offline_ap_entities(self, ac_device_uuid: str | None = None) -> list[dict[str, object | None]]:
+        params: list[object] = []
+        where = "WHERE is_offline = 1"
+        if ac_device_uuid:
+            where += " AND ac_device_uuid = ?"
+            params.append(ac_device_uuid)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ap_entities
+                {where}
+                ORDER BY ap_name, id
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def replace_fit_ap_optical(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
         now = self._now()
         with self.database.connect() as conn:
@@ -361,6 +481,8 @@ class AcRepository:
                     f"INSERT INTO ac_fit_ap_lldp_history ({lldp_columns}) VALUES ({lldp_placeholders})",
                     [lldp_payload[field] for field in FIT_AP_LLDP_HISTORY_FIELDS],
                 )
+                self._append_ap_lldp_history(conn, lldp_payload)
+                self._append_ap_optical_history(conn, payload)
             conn.commit()
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -436,6 +558,19 @@ class AcRepository:
                 (ap_uuid, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_latest_ap_lldp_history(self, ap_uuid: str) -> dict[str, object | None] | None:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ap_lldp_history
+                WHERE ap_uuid = ?
+                ORDER BY is_latest DESC, collected_at DESC, id DESC
+                LIMIT 1
+                """,
+                (ap_uuid,),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def get_fit_ap_resource(self, ac_device_uuid: str, ap_name: str) -> dict[str, object | None] | None:
         rows = self.list_fit_ap_resources_with_metadata(ac_device_uuid)
@@ -833,6 +968,132 @@ class AcRepository:
         placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_HISTORY_FIELDS)
         conn.execute(f"INSERT INTO ac_fit_ap_resource_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_RESOURCE_HISTORY_FIELDS])
 
+    def _upsert_ap_entity(self, conn, payload: dict[str, object | None]) -> None:
+        now = self._now()
+        ap_uuid = str(payload.get("ap_uuid") or uuid4())
+        existing = conn.execute("SELECT * FROM ap_entities WHERE ap_uuid = ?", (ap_uuid,)).fetchone()
+        existing_data = dict(existing) if existing is not None else {}
+        state_display = payload.get("state_display") or self._state_display(payload.get("state") or payload.get("state_raw"))
+        is_offline = 1 if self._is_ap_offline(payload.get("state") or payload.get("state_raw") or state_display) else 0
+        row = self._payload(
+            AP_ENTITY_FIELDS,
+            {
+                **existing_data,
+                "ap_uuid": ap_uuid,
+                "site_id": existing_data.get("site_id") or payload.get("site_id") or "demo",
+                "ac_device_uuid": payload.get("ac_device_uuid") or existing_data.get("ac_device_uuid"),
+                "ap_name": self._non_empty(payload.get("ap_name"), existing_data.get("ap_name")),
+                "ap_mac": self._non_empty(self._normalized_ap_mac(payload), existing_data.get("ap_mac")),
+                "ap_id": self._non_empty(payload.get("apid") or payload.get("ap_id"), existing_data.get("ap_id")),
+                "ap_ip": self._non_empty(payload.get("ap_ip"), existing_data.get("ap_ip")),
+                "serial_number": self._non_empty(payload.get("serial_number"), existing_data.get("serial_number")),
+                "model": self._non_empty(payload.get("model"), existing_data.get("model")),
+                "group_name": self._non_empty(payload.get("group_name"), existing_data.get("group_name")),
+                "mode": self._non_empty(payload.get("mode"), existing_data.get("mode")),
+                "state": payload.get("state") or existing_data.get("state"),
+                "state_raw": payload.get("state_raw") or payload.get("state") or existing_data.get("state_raw"),
+                "state_display": state_display or existing_data.get("state_display"),
+                "station": self._non_empty(payload.get("site_name") or payload.get("site"), existing_data.get("station")),
+                "milestone": self._non_empty(payload.get("mileage"), existing_data.get("milestone")),
+                "direction": self._non_empty(payload.get("direction"), existing_data.get("direction")),
+                "location_note": self._non_empty(payload.get("location_note"), existing_data.get("location_note")),
+                "first_seen_at": existing_data.get("first_seen_at") or payload.get("collected_at") or now,
+                "last_seen_at": payload.get("collected_at") or now,
+                "last_online_at": (payload.get("collected_at") or now) if not is_offline else existing_data.get("last_online_at"),
+                "last_resource_update_at": payload.get("collected_at") or now,
+                "is_offline": is_offline,
+                "source": "fit_ap_resource",
+                "created_at": existing_data.get("created_at") or now,
+                "updated_at": now,
+            },
+        )
+        columns = ", ".join(AP_ENTITY_FIELDS)
+        placeholders = ", ".join("?" for _ in AP_ENTITY_FIELDS)
+        updates = ", ".join(f"{field} = excluded.{field}" for field in AP_ENTITY_FIELDS if field not in {"ap_uuid", "created_at"})
+        conn.execute(
+            f"""
+            INSERT INTO ap_entities ({columns})
+            VALUES ({placeholders})
+            ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
+            """,
+            [row[field] for field in AP_ENTITY_FIELDS],
+        )
+
+    def _append_ap_resource_snapshot(self, conn, payload: dict[str, object | None]) -> None:
+        now = self._now()
+        row = self._payload(
+            AP_RESOURCE_SNAPSHOT_FIELDS,
+            {
+                **payload,
+                "snapshot_uuid": str(uuid4()),
+                "ap_id": payload.get("apid") or payload.get("ap_id"),
+                "ap_mac": self._normalized_ap_mac(payload),
+                "station": payload.get("site_name") or payload.get("site"),
+                "raw_source_type": "fit_ap_resource",
+                "created_at": now,
+            },
+        )
+        row["collected_at"] = row.get("collected_at") or now
+        columns = ", ".join(AP_RESOURCE_SNAPSHOT_FIELDS)
+        placeholders = ", ".join("?" for _ in AP_RESOURCE_SNAPSHOT_FIELDS)
+        conn.execute(f"INSERT INTO ap_resource_snapshots ({columns}) VALUES ({placeholders})", [row[field] for field in AP_RESOURCE_SNAPSHOT_FIELDS])
+
+    def _append_ap_lldp_history(self, conn, payload: dict[str, object | None]) -> None:
+        ap_uuid = str(payload.get("ap_uuid") or "")
+        neighbor_name = payload.get("neighbor_device_name") or payload.get("lldp_neighbor")
+        neighbor_interface = payload.get("neighbor_interface")
+        if not ap_uuid or not (neighbor_name or neighbor_interface):
+            return
+        now = self._now()
+        conn.execute("UPDATE ap_lldp_history SET is_latest = 0 WHERE ap_uuid = ?", (ap_uuid,))
+        row = self._payload(
+            AP_LLDP_ENTITY_HISTORY_FIELDS,
+            {
+                "history_uuid": str(uuid4()),
+                "ap_uuid": ap_uuid,
+                "ap_mac": self._normalized_ap_mac(payload),
+                "ap_name": payload.get("ap_name"),
+                "serial_number": payload.get("serial_number"),
+                "neighbor_switch_name": neighbor_name,
+                "neighbor_switch_sysname": payload.get("lldp_neighbor"),
+                "neighbor_interface": neighbor_interface,
+                "collected_at": payload.get("collected_at") or now,
+                "source_device_uuid": payload.get("ac_device_uuid"),
+                "is_latest": 1,
+                "created_at": now,
+            },
+        )
+        columns = ", ".join(AP_LLDP_ENTITY_HISTORY_FIELDS)
+        placeholders = ", ".join("?" for _ in AP_LLDP_ENTITY_HISTORY_FIELDS)
+        conn.execute(f"INSERT INTO ap_lldp_history ({columns}) VALUES ({placeholders})", [row[field] for field in AP_LLDP_ENTITY_HISTORY_FIELDS])
+
+    def _append_ap_optical_history(self, conn, payload: dict[str, object | None]) -> None:
+        ap_uuid = str(payload.get("ap_uuid") or "")
+        if not ap_uuid or not any(payload.get(field) for field in ("rx_power", "tx_power", "optical_alarm_status")):
+            return
+        now = self._now()
+        conn.execute("UPDATE ap_optical_history SET is_latest = 0 WHERE ap_uuid = ? AND side = 'ap'", (ap_uuid,))
+        row = self._payload(
+            AP_OPTICAL_ENTITY_HISTORY_FIELDS,
+            {
+                "history_uuid": str(uuid4()),
+                "ap_uuid": ap_uuid,
+                "side": "ap",
+                "device_uuid": payload.get("ac_device_uuid"),
+                "interface_name": payload.get("interface_name"),
+                "rx_power": payload.get("rx_power"),
+                "tx_power": payload.get("tx_power"),
+                "alarm_status": payload.get("optical_alarm_status") or payload.get("status"),
+                "collected_at": payload.get("collected_at") or now,
+                "data_source": payload.get("data_source") or "fit_ap_optical",
+                "is_latest": 1,
+                "created_at": now,
+            },
+        )
+        columns = ", ".join(AP_OPTICAL_ENTITY_HISTORY_FIELDS)
+        placeholders = ", ".join("?" for _ in AP_OPTICAL_ENTITY_HISTORY_FIELDS)
+        conn.execute(f"INSERT INTO ap_optical_history ({columns}) VALUES ({placeholders})", [row[field] for field in AP_OPTICAL_ENTITY_HISTORY_FIELDS])
+
     def _resource_for_payload(self, conn, ac_device_uuid: str, row: dict[str, object | None]) -> dict[str, object | None]:
         if row.get("ap_uuid"):
             found = conn.execute(
@@ -895,6 +1156,49 @@ class AcRepository:
     @classmethod
     def _payload(cls, fields: tuple[str, ...], data: dict[str, object | None]) -> dict[str, object | None]:
         return {field: data.get(field) for field in fields}
+
+    @classmethod
+    def _normalized_ap_mac(cls, data: dict[str, object | None]) -> str:
+        for field in ("ap_mac", "mac", "ap_name"):
+            mac = cls._mac_from_text(data.get(field))
+            if mac:
+                return mac
+        return ""
+
+    @staticmethod
+    def _mac_from_text(value: object) -> str:
+        hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+        if len(hex_text) != 12:
+            return ""
+        hex_text = hex_text.casefold()
+        return f"{hex_text[0:4]}-{hex_text[4:8]}-{hex_text[8:12]}"
+
+    @staticmethod
+    def _non_empty(primary: object, fallback: object = None) -> object:
+        text = str(primary or "").strip()
+        if text and text not in {"-", "N/A", "n/a"}:
+            return primary
+        return fallback
+
+    @staticmethod
+    def _state_display(value: object) -> str:
+        token = str(value or "").split("=", 1)[0].strip().upper()
+        if token in {"I", "IDLE"}:
+            return "Idle"
+        if token in {"R", "RUN"}:
+            return "Online"
+        if token == "J":
+            return "Join"
+        if token == "JA":
+            return "JoinAck"
+        if token == "IL":
+            return "ImageLoad"
+        return str(value or "")
+
+    @staticmethod
+    def _is_ap_offline(value: object) -> bool:
+        token = str(value or "").split("=", 1)[0].strip().upper()
+        return token in {"I", "IDLE"}
 
     @staticmethod
     def _normalize_trackside_plan_mode(mode: str) -> str:

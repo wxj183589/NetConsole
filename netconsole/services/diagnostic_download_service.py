@@ -12,7 +12,7 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard, netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -45,21 +45,17 @@ class DiagnosticDownloadService:
         timestamp = diagnostic_timestamp()
         started = monotonic()
         output_parts: list[str] = []
-        target = choose_connection_target(device)
         file_path: Path | None = None
-        connection = None
-        if target is None:
-            message = "No SSH or Telnet connection is enabled."
-            app_logger.log_error("DIAGNOSTIC_DOWNLOAD_FAILED", self._detail(device, timestamp, error=message))
-            return DiagnosticDownloadResult(device.id, str(device.name or ""), timestamp, None, "failed", message, elapsed_ms(started))
         try:
             command_guard.validate_command_list(DIAGNOSTIC_COMMANDS, DIAGNOSTIC_CONTEXT)
-            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-            output_parts.append(self._run_command(connection, "screen-length disable", device, read_timeout=60))
-            output_parts.append(self._run_command(connection, "display diagnostic-information", device, read_timeout=120))
-            output_parts.append(self._run_command(connection, "n", device, read_timeout=600))
-            connection.disconnect()
-            connection = None
+            def operation(connection, _target):
+                return [
+                    self._run_command(connection, "screen-length disable", device, read_timeout=60),
+                    self._run_command(connection, "display diagnostic-information", device, read_timeout=120),
+                    self._run_command(connection, "n", device, read_timeout=600),
+                ]
+
+            output_parts.extend(netmiko_connection.run_netmiko_with_retry(device, operation))
             file_path = self._write_diagnostic_file(device, timestamp, "\n".join(output_parts))
             app_logger.log_info("DIAGNOSTIC_DOWNLOAD_SUCCESS", self._detail(device, timestamp, file_path=file_path))
             return DiagnosticDownloadResult(
@@ -75,12 +71,6 @@ class DiagnosticDownloadService:
             message = sanitize_sensitive_text(str(exc), device)
             app_logger.log_error("DIAGNOSTIC_DOWNLOAD_FAILED", self._detail(device, timestamp, error=message, file_path=file_path))
             return DiagnosticDownloadResult(device.id, str(device.name or ""), timestamp, self._relative_to_site(file_path) if file_path else None, "failed", message, elapsed_ms(started))
-        finally:
-            if connection is not None:
-                try:
-                    connection.disconnect()
-                except Exception:
-                    pass
 
     def _run_command(self, connection, command: str, device: Device, read_timeout: int) -> str:
         return clean_h3c_device_text(
@@ -97,7 +87,7 @@ class DiagnosticDownloadService:
     def _write_diagnostic_file(self, device: Device, timestamp: str, text: str) -> Path:
         directory = self.paths.ensure_site_dirs(self.site_name) / "raw" / "diagnostic"
         directory.mkdir(parents=True, exist_ok=True)
-        path = unique_path(directory / f"{safe_device_name(device.name or device.sysname or 'device')}_diag_{timestamp}.txt")
+        path = unique_path(directory / f"{safe_device_name(device.name or device.system_name or 'device')}_diag_{timestamp}.txt")
         path.write_text(clean_h3c_device_text(text), encoding="utf-8")
         return path
 
@@ -106,7 +96,7 @@ class DiagnosticDownloadService:
 
     @staticmethod
     def _detail(device: Device, timestamp: str, error: str = "", file_path: Path | None = None) -> str:
-        parts = [f"device={device.name}", f"ip={device.ip_address}", f"timestamp={timestamp}"]
+        parts = [f"device={device.name}", f"primary_address={device.primary_address}", f"timestamp={timestamp}"]
         if file_path:
             parts.append(f"file_path={file_path}")
         if error:
@@ -130,7 +120,7 @@ def run_batch_diagnostic_download(
                 results.append(future.result())
             except Exception as exc:
                 message = sanitize_sensitive_text(str(exc), device)
-                app_logger.log_error("DIAGNOSTIC_DOWNLOAD_FAILED", f"device={device.name}, ip={device.ip_address}, error={message}")
+                app_logger.log_error("DIAGNOSTIC_DOWNLOAD_FAILED", f"device={device.name}, primary_address={device.primary_address}, error={message}")
                 results.append(
                     DiagnosticDownloadResult(
                         device.id,

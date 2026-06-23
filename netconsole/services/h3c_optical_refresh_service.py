@@ -228,7 +228,7 @@ def _write_raw_files(
         f"Collect Time: {_now()}",
         f"Collect Run UUID: {collect_run_uuid}",
         f"Device Name: {device.name}",
-        f"Device IP: {device.ip_address}",
+        f"Primary Address: {device.primary_address}",
         f"Protocol: {protocol}",
         "",
     ]
@@ -282,7 +282,7 @@ def _detail(
     interface_count: int | None = None,
     optical_count: int | None = None,
 ) -> str:
-    parts = [f"device={device.name}", f"ip={device.ip_address}", f"collect_run_uuid={collect_run_uuid}"]
+    parts = [f"device={device.name}", f"primary_address={device.primary_address}", f"collect_run_uuid={collect_run_uuid}"]
     if command:
         parts.append(f"command={command}")
     if raw_log_path:

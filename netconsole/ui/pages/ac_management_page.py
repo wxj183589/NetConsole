@@ -174,7 +174,9 @@ class OfflineApLedgerLoadThread(QThread):
     def run(self) -> None:
         try:
             ac_repository = AcRepository(self.device_repository.database)
-            resources = ac_repository.list_fit_ap_resources_with_metadata(self.ac_device_uuid)
+            resources = ac_repository.list_ap_entities(self.ac_device_uuid)
+            if not resources:
+                resources = ac_repository.list_fit_ap_resources_with_metadata(self.ac_device_uuid)
             devices = self.device_repository.list()
             latest_lldp, _latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
             stats, ledger = build_offline_ap_ledger(

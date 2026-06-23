@@ -18,8 +18,9 @@ Tester = Callable[[Device], ConnectionTestResult]
 @dataclass(frozen=True)
 class BatchConnectionTestItemResult:
     device_name: str
-    ip_address: str
+    primary_address: str
     protocol: str
+    method: str
     success: bool
     prompt: str | None
     elapsed_ms: int | None
@@ -44,8 +45,9 @@ def run_batch_connection_tests(
                 result = future.result()
                 item = BatchConnectionTestItemResult(
                     device_name=str(device.name or ""),
-                    ip_address=str(device.ip_address or ""),
+                    primary_address=str(device.primary_address or ""),
                     protocol=result.protocol,
+                    method=result.method,
                     success=result.success,
                     prompt=result.prompt,
                     elapsed_ms=result.elapsed_ms if result.elapsed_ms is not None else fallback_elapsed,
@@ -54,8 +56,9 @@ def run_batch_connection_tests(
             except Exception as exc:
                 item = BatchConnectionTestItemResult(
                     device_name=str(device.name or ""),
-                    ip_address=str(device.ip_address or ""),
+                    primary_address=str(device.primary_address or ""),
                     protocol="",
+                    method="",
                     success=False,
                     prompt=None,
                     elapsed_ms=fallback_elapsed,
@@ -94,10 +97,10 @@ class BatchConnectionTestWorker(QThread):
             nonlocal success_count, failed_count
             if item.success:
                 success_count += 1
-                app_logger.log_info("BATCH_TEST_CONNECTION_DEVICE_SUCCESS", f"device={item.device_name} ip={item.ip_address} protocol={item.protocol}")
+                app_logger.log_info("BATCH_TEST_CONNECTION_DEVICE_SUCCESS", f"device={item.device_name} primary_address={item.primary_address} protocol={item.protocol} method={item.method}")
             else:
                 failed_count += 1
-                app_logger.log_error("BATCH_TEST_CONNECTION_DEVICE_FAILED", f"device={item.device_name} ip={item.ip_address} protocol={item.protocol} error={item.error_message or ''}")
+                app_logger.log_error("BATCH_TEST_CONNECTION_DEVICE_FAILED", f"device={item.device_name} primary_address={item.primary_address} protocol={item.protocol} method={item.method} error={item.error_message or ''}")
             self.device_finished.emit(item)
 
         run_batch_connection_tests(self.devices, max_workers=self.concurrency, result_callback=on_result)

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
@@ -37,7 +39,7 @@ from netconsole.services.fping_v3 import (
     parse_fping_summary,
 )
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
-from netconsole.services.online_mr_collector import RepeatSshSession
+from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrCollectionPage, is_fat_ap_device, natural_device_sort_key, safe_device_folder_name
 from netconsole.services.mesh_storage_service import MeshStorageService
@@ -579,12 +581,95 @@ def test_online_mr_builds_config_from_device_management_and_device_session_dir(t
     assert config.host == device.ip_address
     assert config.username == "admin"
     assert config.password == "secret"
+    assert [target.method for target in config.connection_targets] == ["primary_direct"]
     assert config.iperf.enabled is True
     assert config.iperf.target_bandwidth == "100M"
     assert config.safe_mr_name == safe_device_folder_name(device)
     session = OnlineMrSessionStore(page.paths).create_session(config)
     assert f"__{device.id}" in str(session.session_dir)
     assert "MR_01" in str(session.session_dir)
+
+
+def test_online_mr_config_includes_tunnel_targets_for_enabled_vehicle_device(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = repository.create(
+        Device(
+            name="MR-01",
+            group_id=onboard.id,
+            device_type="FAT-AP",
+            primary_address="10.0.0.1",
+            backup_address="10.0.1.1",
+            ssh_enabled=1,
+            ssh_username="admin",
+            ssh_password="secret",
+            tunnel_enabled=1,
+            tunnel1_enabled=1,
+            tunnel1_host="jump1",
+            tunnel1_username="jump",
+            tunnel2_enabled=1,
+            tunnel2_host="jump2",
+            tunnel2_username="jump",
+        )
+    )
+    page.refresh_all()
+
+    config = page._build_config_for_device(device)
+
+    assert config is not None
+    assert [target.method for target in config.connection_targets] == ["primary_direct", "backup_direct", "tunnel1", "tunnel2"]
+
+
+def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _paths, config = _config(tmp_path)
+    device = Device(
+        primary_address="10.0.0.1",
+        backup_address="10.0.1.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+        tunnel_enabled=1,
+        tunnel1_enabled=1,
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+    )
+    from netconsole.services.netmiko_connection import connection_targets
+
+    config.connection_targets = tuple(connection_targets(device))
+    calls: list[str] = []
+    closed: list[bool] = []
+
+    class FakeNetmiko:
+        def send_command_timing(self, command, **_kwargs):
+            return f"{command}\nOK"
+
+        def disconnect(self):
+            closed.append(True)
+
+    def fake_connect(**params):
+        calls.append(str(params["host"]))
+        if params["host"] != "127.0.0.1":
+            raise RuntimeError("direct failed")
+        return FakeNetmiko()
+
+    class FakeSession:
+        local_host = "127.0.0.1"
+        local_port = 10022
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setitem(sys.modules, "netmiko", SimpleNamespace(ConnectHandler=fake_connect))
+    monkeypatch.setattr("netconsole.services.online_mr_collector.TunnelManager.open_tunnel", lambda *_args: FakeSession())
+
+    connection = NetmikoShellConnection(config)
+    output = connection.send_command("display clock", 10)
+    connection.close()
+
+    assert output.endswith("OK")
+    assert config.connection_method == "tunnel1"
+    assert calls == ["10.0.0.1", "10.0.1.1", "127.0.0.1"]
+    assert closed == [True, True]
 
 
 def test_online_mr_skips_incomplete_connection_without_hiding_device(tmp_path: Path) -> None:

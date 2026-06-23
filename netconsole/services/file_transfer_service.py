@@ -13,7 +13,8 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard, netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -29,6 +30,19 @@ class TransferCancelled(RuntimeError):
 
 class TransferVerificationFailed(RuntimeError):
     pass
+
+
+def build_h3c_sftp_enable_commands(username: str) -> list[str]:
+    user = str(username or "").strip()
+    if not user:
+        raise ValueError("username is required")
+    return [
+        "system-view",
+        "sftp server enable",
+        f"ssh user {user} service-type all authentication-type any",
+        "return",
+        "quit",
+    ]
 
 
 @dataclass(frozen=True)
@@ -64,42 +78,83 @@ class FileTransferService:
         self._client = None
         self._sftp = None
         self._device: Device | None = None
+        self._tunnel_session: TunnelSession | None = None
         self._root_path = ""
         self._current_path = ""
 
     def connect(self, device: Device) -> str:
         self.disconnect()
-        target = choose_connection_target(device)
-        if target is None or target.protocol.casefold() != "ssh":
+        targets = [target for target in connection_targets(device) if target.protocol.casefold() == "ssh"]
+        if not targets:
             raise RuntimeError("SFTP requires SSH connection settings.")
-        try:
-            import paramiko
+        last_error = ""
+        import paramiko
 
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(
-                hostname=target.host,
-                port=target.port,
-                username=target.username,
-                password=target.password,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
-                look_for_keys=False,
-                allow_agent=False,
-            )
-            self._client = client
-            self._sftp = client.open_sftp()
-            self._device = device
-            self._root_path = self.detect_remote_root()
-            self._current_path = self._root_path
-            app_logger.log_info("SFTP_CONNECTED", f"device={device.name}, ip={device.ip_address}, root={self._root_path}")
-            return self._root_path
-        except Exception as exc:
-            self.disconnect()
-            message = sanitize_sensitive_text(str(exc), device)
-            app_logger.log_error("SFTP_CONNECT_FAILED", f"device={device.name}, ip={device.ip_address}, error={message}")
-            raise RuntimeError(message) from exc
+        for target in targets:
+            tunnel_session: TunnelSession | None = None
+            try:
+                prepared = target
+                if target.via_tunnel:
+                    if target.tunnel is None:
+                        raise RuntimeError("Tunnel target is missing tunnel profile")
+                    tunnel_session = TunnelManager().open_tunnel(target.tunnel, target.host, target.port)  # type: ignore[arg-type]
+                    prepared = type(target)(
+                        protocol=target.protocol,
+                        device_type=target.device_type,
+                        host=tunnel_session.local_host,
+                        port=tunnel_session.local_port,
+                        username=target.username,
+                        password=target.password,
+                        encoding=target.encoding,
+                        method=target.method,
+                        via_tunnel=True,
+                        tunnel=target.tunnel,
+                    )
+                client = paramiko.SSHClient()
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                client.connect(
+                    hostname=prepared.host,
+                    port=prepared.port,
+                    username=prepared.username,
+                    password=prepared.password,
+                    timeout=20,
+                    banner_timeout=20,
+                    auth_timeout=20,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+                self._client = client
+                self._tunnel_session = tunnel_session
+                try:
+                    self._sftp = client.open_sftp()
+                except Exception:
+                    self._enable_h3c_sftp(client, prepared.username)
+                    self._sftp = client.open_sftp()
+                self._device = device
+                self._root_path = self.detect_remote_root()
+                self._current_path = self._root_path
+                app_logger.log_info("SFTP_CONNECTED", f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, root={self._root_path}")
+                return self._root_path
+            except Exception as exc:
+                self.disconnect()
+                if tunnel_session is not None:
+                    tunnel_session.close()
+                last_error = sanitize_sensitive_text(str(exc), device)
+                app_logger.log_error("SFTP_CONNECT_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
+        raise RuntimeError(last_error or "SFTP connection failed.")
+
+    def _enable_h3c_sftp(self, client, username: str) -> None:
+        shell = client.invoke_shell()
+        try:
+            for command in build_h3c_sftp_enable_commands(username):
+                shell.send(command + "\n")
+                if hasattr(shell, "recv_ready") and shell.recv_ready():
+                    shell.recv(65535)
+        finally:
+            try:
+                shell.close()
+            except Exception:
+                pass
 
     def disconnect(self) -> None:
         if self._sftp is not None:
@@ -112,8 +167,14 @@ class FileTransferService:
                 self._client.close()
             except Exception:
                 pass
+        if self._tunnel_session is not None:
+            try:
+                self._tunnel_session.close()
+            except Exception:
+                pass
         self._client = None
         self._sftp = None
+        self._tunnel_session = None
         self._device = None
         self._root_path = ""
         self._current_path = ""
@@ -202,65 +263,67 @@ class FileTransferService:
         return self._sftp
 
     def list_files(self, device: Device) -> list[RemoteDeviceFile]:
-        target = choose_connection_target(device)
-        if target is None:
+        targets = connection_targets(device)
+        if not targets:
             raise RuntimeError("No SSH connection is enabled.")
-        if target.protocol.casefold() != "ssh":
+        ssh_targets = [target for target in targets if target.protocol.casefold() == "ssh"]
+        if not ssh_targets:
             raise RuntimeError("File management requires SSH.")
         command_guard.validate_command_list(FILE_LIST_COMMANDS, FILE_MANAGEMENT_CONTEXT)
-        connection = None
-        files: list[RemoteDeviceFile] = []
-        try:
-            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-            for command in FILE_LIST_COMMANDS:
-                output = safe_send_command(
-                    connection,
-                    command,
-                    read_timeout=120,
-                    strip_prompt=False,
-                    strip_command=False,
-                    use_timing=True,
-                )
-                files.extend(parse_dir_output(clean_h3c_device_text(output), command.removeprefix("dir ").strip()))
-            app_logger.log_info("FILE_LIST_REFRESHED", f"device={device.name}, ip={device.ip_address}, count={len(files)}")
-            return unique_remote_files(files)
-        except Exception as exc:
-            message = sanitize_sensitive_text(str(exc), device)
-            app_logger.log_error("FILE_LIST_REFRESH_FAILED", f"device={device.name}, ip={device.ip_address}, error={message}")
-            raise RuntimeError(message) from exc
-        finally:
-            if connection is not None:
-                try:
-                    connection.disconnect()
-                except Exception:
-                    pass
+        last_error = ""
+        for target in ssh_targets:
+            connection = None
+            files: list[RemoteDeviceFile] = []
+            try:
+                with prepared_connection_target(target) as prepared:
+                    connection = netmiko_connection.ConnectHandler(**build_netmiko_params(prepared))
+                    for command in FILE_LIST_COMMANDS:
+                        output = safe_send_command(
+                            connection,
+                            command,
+                            read_timeout=120,
+                            strip_prompt=False,
+                            strip_command=False,
+                            use_timing=True,
+                        )
+                        files.extend(parse_dir_output(clean_h3c_device_text(output), command.removeprefix("dir ").strip()))
+                    app_logger.log_info("FILE_LIST_REFRESHED", f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, count={len(files)}")
+                    return unique_remote_files(files)
+            except Exception as exc:
+                last_error = sanitize_sensitive_text(str(exc), device)
+                app_logger.log_error("FILE_LIST_REFRESH_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
+            finally:
+                if connection is not None:
+                    try:
+                        connection.disconnect()
+                    except Exception:
+                        pass
+        raise RuntimeError(last_error or "File list refresh failed.")
 
     def download_file(self, device: Device, remote_file: RemoteDeviceFile) -> FileDownloadResult:
         started = monotonic()
-        target = choose_connection_target(device)
-        if target is None:
+        targets = [target for target in connection_targets(device) if target.protocol.casefold() == "ssh"]
+        if not targets:
             message = "No SSH connection is enabled."
             app_logger.log_error("FILE_DOWNLOAD_FAILED", self._detail(device, remote_file, error=message))
             return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", message, elapsed_ms(started))
-        if target.protocol.casefold() != "ssh":
-            message = "File download requires SSH."
-            app_logger.log_error("FILE_DOWNLOAD_FAILED", self._detail(device, remote_file, error=message))
-            return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", message, elapsed_ms(started))
         local_path = self.local_path_for(device, remote_file)
-        try:
+        last_error = ""
+        for target in targets:
             try:
-                self._download_sftp(target, remote_file.remote_path, local_path)
-            except Exception as sftp_exc:
-                app_logger.log_error("FILE_DOWNLOAD_SFTP_FAILED", self._detail(device, remote_file, local_path, sanitize_sensitive_text(str(sftp_exc), device)))
-                self._download_scp(target, remote_file.remote_path, local_path)
-            app_logger.log_info("FILE_DOWNLOADED", self._detail(device, remote_file, local_path))
-            return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, self._relative_to_site(local_path), "success", None, elapsed_ms(started))
-        except Exception as exc:
-            message = sanitize_sensitive_text(str(exc), device)
-            app_logger.log_error("FILE_DOWNLOAD_FAILED", self._detail(device, remote_file, local_path, message))
-            if local_path.exists() and local_path.stat().st_size == 0:
-                local_path.unlink(missing_ok=True)
-            return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", message, elapsed_ms(started))
+                try:
+                    self._download_sftp(target, remote_file.remote_path, local_path)
+                except Exception as sftp_exc:
+                    app_logger.log_error("FILE_DOWNLOAD_SFTP_FAILED", self._detail(device, remote_file, local_path, sanitize_sensitive_text(str(sftp_exc), device)))
+                    self._download_scp(target, remote_file.remote_path, local_path)
+                app_logger.log_info("FILE_DOWNLOADED", self._detail(device, remote_file, local_path))
+                return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, self._relative_to_site(local_path), "success", None, elapsed_ms(started))
+            except Exception as exc:
+                last_error = sanitize_sensitive_text(str(exc), device)
+                app_logger.log_error("FILE_DOWNLOAD_ATTEMPT_FAILED", self._detail(device, remote_file, local_path, last_error))
+        if local_path.exists() and local_path.stat().st_size == 0:
+            local_path.unlink(missing_ok=True)
+        return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", last_error or "File download failed.", elapsed_ms(started))
 
     def local_device_dir(self, device: Device) -> Path:
         return self.paths.ensure_site_dirs(self.site_name) / "raw" / "files" / device_file_dir_name(device)
@@ -268,7 +331,7 @@ class FileTransferService:
     def local_path_for(self, device: Device, remote_file: RemoteDeviceFile) -> Path:
         directory = self.local_device_dir(device) / remote_file.category
         directory.mkdir(parents=True, exist_ok=True)
-        return unique_path(directory / f"{safe_device_name(device.name or device.sysname or 'device')}_{remote_file.name}")
+        return unique_path(directory / f"{safe_device_name(device.name or device.system_name or 'device')}_{remote_file.name}")
 
     def _download_sftp(self, target, remote_path: str, local_path: Path) -> None:
         import paramiko
@@ -276,22 +339,23 @@ class FileTransferService:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            client.connect(
-                hostname=target.host,
-                port=target.port,
-                username=target.username,
-                password=target.password,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
-                look_for_keys=False,
-                allow_agent=False,
-            )
-            sftp = client.open_sftp()
-            try:
-                sftp.get(remote_path, str(local_path))
-            finally:
-                sftp.close()
+            with prepared_connection_target(target) as prepared:
+                client.connect(
+                    hostname=prepared.host,
+                    port=prepared.port,
+                    username=prepared.username,
+                    password=prepared.password,
+                    timeout=20,
+                    banner_timeout=20,
+                    auth_timeout=20,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+                sftp = client.open_sftp()
+                try:
+                    sftp.get(remote_path, str(local_path))
+                finally:
+                    sftp.close()
         finally:
             client.close()
 
@@ -302,15 +366,16 @@ class FileTransferService:
             raise RuntimeError("SCP fallback is unavailable because netmiko file_transfer is not installed.") from exc
         connection = None
         try:
-            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-            file_transfer(
-                connection,
-                source_file=remote_path,
-                dest_file=str(local_path),
-                file_system="",
-                direction="get",
-                overwrite_file=True,
-            )
+            with prepared_connection_target(target) as prepared:
+                connection = netmiko_connection.ConnectHandler(**build_netmiko_params(prepared))
+                file_transfer(
+                    connection,
+                    source_file=remote_path,
+                    dest_file=str(local_path),
+                    file_system="",
+                    direction="get",
+                    overwrite_file=True,
+                )
         finally:
             if connection is not None:
                 try:
@@ -323,7 +388,7 @@ class FileTransferService:
 
     @staticmethod
     def _detail(device: Device, remote_file: RemoteDeviceFile, local_path: Path | None = None, error: str = "") -> str:
-        parts = [f"device={device.name}", f"ip={device.ip_address}", f"remote_path={remote_file.remote_path}"]
+        parts = [f"device={device.name}", f"primary_address={device.primary_address}", f"remote_path={remote_file.remote_path}"]
         if local_path:
             parts.append(f"local_path={local_path}")
         if error:
@@ -543,7 +608,7 @@ def safe_device_id(device: Device) -> str:
 
 
 def device_file_dir_name(device: Device) -> str:
-    return f"{safe_device_name(device.name or device.sysname or 'device')}__{safe_device_id(device)}"
+    return f"{safe_device_name(device.name or device.system_name or 'device')}__{safe_device_id(device)}"
 
 
 def unique_path(path: Path) -> Path:

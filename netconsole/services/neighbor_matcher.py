@@ -43,7 +43,7 @@ def match_neighbor_device(
                     """
                     SELECT d.device_uuid, d.name, d.station
                     FROM devices d
-                    WHERE d.sysname = ?
+                    WHERE d.system_name = ?
                     LIMIT 1
                     """,
                     (sysname,),

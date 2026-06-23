@@ -6,7 +6,7 @@ from netconsole.core.database import Database
 from netconsole.models.device import Device
 
 
-SEARCH_COLUMNS = ("name", "sysname", "ip_address", "station", "remark")
+SEARCH_COLUMNS = ("name", "system_name", "primary_address", "backup_address", "station", "remark")
 
 
 class DeviceRepository:
@@ -111,14 +111,17 @@ class DeviceRepository:
             conn.commit()
         return self.get(device_id)
 
-    def update_sysname_by_uuid(self, device_uuid: str, sysname: str) -> bool:
-        value = str(sysname or "").strip()
+    def update_system_name_by_uuid(self, device_uuid: str, system_name: str) -> bool:
+        value = str(system_name or "").strip()
         if not device_uuid or not value:
             return False
         with self.database.connect() as conn:
             cursor = conn.execute(
-                "UPDATE devices SET sysname = ?, updated_at = ? WHERE device_uuid = ?",
+                "UPDATE devices SET system_name = ?, updated_at = ? WHERE device_uuid = ?",
                 (value, datetime.now().isoformat(timespec="seconds"), device_uuid),
             )
             conn.commit()
         return cursor.rowcount > 0
+
+    def update_sysname_by_uuid(self, device_uuid: str, sysname: str) -> bool:
+        return self.update_system_name_by_uuid(device_uuid, sysname)

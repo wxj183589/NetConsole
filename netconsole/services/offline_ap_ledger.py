@@ -62,7 +62,7 @@ def build_device_lookup_by_name(devices: list[object]) -> dict[str, dict[str, ob
         payload = {
             "device_uuid": getattr(device, "device_uuid", None),
             "name": getattr(device, "name", None),
-            "sysname": getattr(device, "sysname", None),
+            "sysname": getattr(device, "system_name", None),
             "station": getattr(device, "station", None),
         }
         for value in (payload["name"], payload["sysname"]):
@@ -92,6 +92,7 @@ def build_offline_ap_ledger(
         switch_device = device_lookup.get(_normalize_name(switch_name), {}) if switch_name else {}
         switch_interface = _historical_switch_interface(lldp)
         has_lldp = bool(lldp)
+        site = resource.get("station") or switch_device.get("station") or UNASSIGNED_SITE_TEXT
         ledger.append(
             {
                 "ap_uuid": resource.get("ap_uuid"),
@@ -100,7 +101,7 @@ def build_offline_ap_ledger(
                 "ap_mac": _ap_mac(resource, lldp),
                 "ap_ip": resource.get("ap_ip"),
                 "ap_status": "Idle",
-                "site": switch_device.get("station") or UNASSIGNED_SITE_TEXT,
+                "site": site,
                 "device_uuid": switch_device.get("device_uuid"),
                 "historical_switch_name": switch_name,
                 "historical_switch_interface": switch_interface,
@@ -131,7 +132,9 @@ def build_latest_ap_history_indexes(
         ap_uuid = str(resource.get("ap_uuid") or "")
         if not key or not ap_uuid:
             continue
-        rows = repository.list_fit_ap_lldp_history_by_ap(ap_uuid, limit=1)
+        latest_getter = getattr(repository, "list_latest_ap_lldp_history", None)
+        latest_row = latest_getter(ap_uuid) if callable(latest_getter) else None
+        rows = [latest_row] if latest_row else repository.list_fit_ap_lldp_history_by_ap(ap_uuid, limit=1)
         if rows:
             lldp[key] = rows[0]
     return lldp, {}
@@ -286,7 +289,13 @@ def _normalize_name(value: object) -> str:
 
 
 def _historical_switch_name(lldp: dict[str, object | None]) -> object:
-    return lldp.get("neighbor_device_name") or lldp.get("lldp_neighbor") or lldp.get("neighbor_sysname")
+    return (
+        lldp.get("neighbor_switch_name")
+        or lldp.get("neighbor_switch_sysname")
+        or lldp.get("neighbor_device_name")
+        or lldp.get("lldp_neighbor")
+        or lldp.get("neighbor_sysname")
+    )
 
 
 def _historical_switch_interface(lldp: dict[str, object | None]) -> object:

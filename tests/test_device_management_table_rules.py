@@ -35,8 +35,10 @@ def test_main_table_columns_only_include_core_fields():
         "select",
         "name",
         "group",
+        "system_name",
         "station",
-        "ip_address",
+        "primary_address",
+        "backup_address",
         "protocols",
         "updated_at",
         "actions",
@@ -195,7 +197,7 @@ def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
     assert table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert table.columnWidth(table._column_index("select")) == DEVICE_COLUMN_WIDTHS["select"]
     assert table.columnWidth(table._column_index("name")) == DEVICE_COLUMN_WIDTHS["name"]
-    assert table.columnWidth(table._column_index("ip_address")) == DEVICE_COLUMN_WIDTHS["ip_address"]
+    assert table.columnWidth(table._column_index("primary_address")) == DEVICE_COLUMN_WIDTHS["primary_address"]
     assert action_widget.layout().spacing() == 6
     assert action_widget.layout().contentsMargins().left() == 0
     assert action_widget.layout().contentsMargins().top() == 0
@@ -238,7 +240,7 @@ def test_header_checkbox_selects_and_clears_current_devices():
 class PageRepository:
     def __init__(self):
         self.database = Database(":memory:")
-        self.devices = [Device(id=1, name="A", ip_address="10.0.0.1"), Device(id=2, name="B", ip_address="10.0.0.2")]
+        self.devices = [Device(id=1, name="A", primary_address="10.0.0.1"), Device(id=2, name="B", primary_address="10.0.0.2")]
 
     def list(self, **_kwargs):
         return list(self.devices)

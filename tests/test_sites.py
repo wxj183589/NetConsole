@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from netconsole.core.database import Database
+from netconsole.core.database import Database, DatabaseSchemaMismatchError
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.device import Device
@@ -127,7 +127,7 @@ def test_new_site_repository_reads_its_own_database(tmp_path):
     assert [device.name for device in repo_b.list()] == ["B-SW"]
 
 
-def test_existing_site_database_is_initialized_when_opened(tmp_path):
+def test_existing_site_database_requires_rebuild_when_opened(tmp_path):
     paths = PathResolver(tmp_path)
     site_root = paths.ensure_site_dirs("legacy")
     db = Database(site_root / "db" / "devices.db")
@@ -153,13 +153,14 @@ def test_existing_site_database_is_initialized_when_opened(tmp_path):
         )
         conn.commit()
 
-    site = SiteManager(paths).ensure_site("legacy")
+    with pytest.raises(DatabaseSchemaMismatchError):
+        SiteManager(paths).ensure_site("legacy")
 
-    with Database(site.database_path).connect() as conn:
+    with Database(site_root / "db" / "devices.db").connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
         count = conn.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"]
 
-    assert "https_port" in columns
+    assert "https_port" not in columns
     assert count == 1
 
 

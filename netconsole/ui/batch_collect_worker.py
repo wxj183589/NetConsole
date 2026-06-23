@@ -19,7 +19,7 @@ BATCH_CONCURRENCY = 50
 @dataclass(frozen=True)
 class BatchCollectItemResult:
     device_name: str
-    ip_address: str
+    primary_address: str
     success: bool
     result_text: str
     collect_run_uuid: str | None
@@ -46,7 +46,7 @@ def run_batch_collect(
                 collect_result = future.result()
                 item = BatchCollectItemResult(
                     device_name=str(device.name or ""),
-                    ip_address=str(device.ip_address or ""),
+                    primary_address=str(device.primary_address or ""),
                     success=bool(collect_result.success),
                     result_text=collect_result.error_message or ("success" if collect_result.success else "failed"),
                     collect_run_uuid=collect_result.collect_run_uuid,
@@ -56,7 +56,7 @@ def run_batch_collect(
             except Exception as exc:
                 item = BatchCollectItemResult(
                     device_name=str(device.name or ""),
-                    ip_address=str(device.ip_address or ""),
+                    primary_address=str(device.primary_address or ""),
                     success=False,
                     result_text=str(exc),
                     collect_run_uuid=None,
@@ -98,13 +98,13 @@ class BatchCollectWorker(QThread):
                 success_count += 1
                 app_logger.log_info(
                     "BATCH_COLLECT_DEVICE_SUCCESS",
-                    f"device={item.device_name} ip={item.ip_address} collect_run_uuid={item.collect_run_uuid or ''} raw_log_path={item.raw_log_path or ''}",
+                    f"device={item.device_name} primary_address={item.primary_address} collect_run_uuid={item.collect_run_uuid or ''} raw_log_path={item.raw_log_path or ''}",
                 )
             else:
                 failed_count += 1
                 app_logger.log_error(
                     "BATCH_COLLECT_DEVICE_FAILED",
-                    f"device={item.device_name} ip={item.ip_address} collect_run_uuid={item.collect_run_uuid or ''} raw_log_path={item.raw_log_path or ''}",
+                    f"device={item.device_name} primary_address={item.primary_address} collect_run_uuid={item.collect_run_uuid or ''} raw_log_path={item.raw_log_path or ''}",
                 )
             self.device_finished.emit(item)
 

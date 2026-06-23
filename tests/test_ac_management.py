@@ -50,6 +50,7 @@ from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
+    TRACKSIDE_AP_DEVICE_COLUMNS,
     TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS,
     build_trackside_ap_business_rows,
     description_contains_ap,
@@ -2801,13 +2802,16 @@ def test_device_detail_trackside_ap_business_tab_displays_joined_data(tmp_path):
     table = dialog.tabs.widget(4).findChild(QTableWidget)
 
     assert dialog.tabs.tabText(4) == "Trackside AP Business"
+    fields = [field for _key, field in TRACKSIDE_AP_DEVICE_COLUMNS]
     assert table.item(0, 0).text() == "GigabitEthernet2/0/10"
-    assert table.item(0, 7).text() == "-6.10"
-    assert table.item(0, 8).text() == "Unknown"
-    assert table.item(0, 9).text() == "bc5a-3457-cbe0"
-    assert table.item(0, 10).text() == "AP10"
-    assert table.item(0, 11).text() == "-14.35"
-    assert table.item(0, 12).text() == "Notice"
+    assert "switch_tx_power" not in fields
+    assert table.item(0, fields.index("port_type")).text() == "unknown"
+    assert table.item(0, fields.index("switch_rx_power")).text() == "-6.10"
+    assert table.item(0, fields.index("switch_optical_status")).text() == "Unknown"
+    assert table.item(0, fields.index("ap_mac")).text() == "bc5a-3457-cbe0"
+    assert table.item(0, fields.index("ap_name")).text() == "AP10"
+    assert table.item(0, fields.index("ap_rx_power")).text() == "-14.35"
+    assert table.item(0, fields.index("ap_optical_status")).text() == "Notice"
     assert table.item(0, 0).background().color().name() == "#fbbf24"
     assert table.item(0, 0).foreground().color().name() == "#111827"
 
@@ -2890,6 +2894,8 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert page.trackside_table.rowCount() == 2
     fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]
     assert "match_source" not in fields
+    assert "switch_rx_power" in fields
+    assert "switch_tx_power" not in fields
     assert page.trackside_table.item(0, fields.index("switch_rx_power")).text() == "-6.10"
     assert page.trackside_table.item(0, fields.index("switch_optical_status")).text() == "Unknown"
     assert page.trackside_table.item(0, fields.index("ap_mac")).text() == "bc5a-3457-cbe0"
@@ -2910,6 +2916,7 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert [cell.value for cell in sheet[1]] == [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS]
     assert "Switch Optical Status" in [cell.value for cell in sheet[1]]
     assert "AP Optical Alarm" in [cell.value for cell in sheet[1]]
+    assert "Indoor Switch TX Power(dBm)" not in [cell.value for cell in sheet[1]]
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
     assert sheet["A1"].alignment.horizontal == "center"

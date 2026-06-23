@@ -34,7 +34,7 @@ class BatchCollectProgressDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, total)
         self.table = QTableWidget(total, 6)
-        set_table_column_fields(self.table, ["device_name", "ip_address", "status", "elapsed", "raw_log_path", "error_message"])
+        set_table_column_fields(self.table, ["device_name", "primary_address", "status", "elapsed", "raw_log_path", "error_message"])
         configure_readonly_table(self.table)
         attach_table_context_menu(self.table, self.i18n.language, include_history=False)
         self.copy_button = QPushButton()
@@ -70,7 +70,7 @@ class BatchCollectProgressDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("field.device_name"),
-                self.i18n.t("field.ip_address"),
+                self.i18n.t("field.primary_address"),
                 self.i18n.t("field.status"),
                 self.i18n.t("batch_collect.elapsed"),
                 self.i18n.t("details.raw_log_path"),
@@ -81,10 +81,10 @@ class BatchCollectProgressDialog(QDialog):
         self.open_raw_button.setText(self.i18n.t("batch_collect.open_raw_log"))
         self.close_button.setText(self.i18n.t("dialog.close"))
 
-    def mark_running(self, row: int, device_name: str, ip_address: str) -> None:
+    def mark_running(self, row: int, device_name: str, primary_address: str) -> None:
         self.running += 1
         self.current_label.setText(self.i18n.t("batch_collect.current", device=device_name))
-        self._set_row(row, [device_name, ip_address, self.i18n.t("batch_collect.status.running"), "", "", ""])
+        self._set_row(row, [device_name, primary_address, self.i18n.t("batch_collect.status.running"), "", "", ""])
         self.update_summary()
 
     def add_result(self, row: int, item: BatchCollectItemResult) -> None:
@@ -97,7 +97,7 @@ class BatchCollectProgressDialog(QDialog):
             self.failed += 1
             status = self.i18n.t("batch_collect.status.failed")
         elapsed = f"{item.elapsed_ms}ms" if item.elapsed_ms is not None else ""
-        self._set_row(row, [item.device_name, item.ip_address, status, elapsed, item.raw_log_path or "", "" if item.success else item.result_text])
+        self._set_row(row, [item.device_name, item.primary_address, status, elapsed, item.raw_log_path or "", "" if item.success else item.result_text])
         self.progress.setValue(self.completed)
         self.current_label.setText(self.i18n.t("batch_collect.current", device=item.device_name))
         self.update_summary()

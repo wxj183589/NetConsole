@@ -108,11 +108,8 @@ def test_save_force_only_executes_save_force_and_writes_saved_status_snapshot(tm
     import netconsole.services.config_lifecycle_service as service_module
 
     commands: list[str] = []
-    disconnected = []
-
     class FakeConnection:
-        def disconnect(self):
-            disconnected.append(True)
+        pass
 
     def fake_send(_connection, command, **_kwargs):
         commands.append(command)
@@ -121,8 +118,7 @@ def test_save_force_only_executes_save_force_and_writes_saved_status_snapshot(tm
     paths = PathResolver(tmp_path)
     db = Database(paths.site_db_path("demo"))
     db.initialize()
-    monkeypatch.setattr(service_module, "choose_connection_target", lambda _device: ConnectionTarget("SSH", "hp_comware", "192.0.2.10", 22, "u", "p"))
-    monkeypatch.setattr(service_module.netmiko_connection, "ConnectHandler", lambda **_kwargs: FakeConnection())
+    monkeypatch.setattr(service_module.netmiko_connection, "run_netmiko_with_retry", lambda device, operation: operation(FakeConnection(), ConnectionTarget("SSH", "hp_comware", "192.0.2.10", 22, "u", "p")))
     monkeypatch.setattr(service_module, "safe_send_command", fake_send)
 
     device = Device(id=1, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
@@ -130,7 +126,6 @@ def test_save_force_only_executes_save_force_and_writes_saved_status_snapshot(tm
 
     assert result.success is True
     assert commands == ["save force"]
-    assert disconnected == [True]
     assert [snapshot.type for snapshot in result.snapshots] == ["saved"]
     text = (paths.site_dir("demo") / result.snapshots[0].file_path).read_text(encoding="utf-8")
     assert "save_force_status: success" in text
@@ -142,8 +137,7 @@ def test_fetch_configs_is_read_only_and_never_runs_save_force(tmp_path, monkeypa
     commands: list[str] = []
 
     class FakeConnection:
-        def disconnect(self):
-            pass
+        pass
 
     def fake_send(_connection, command, **_kwargs):
         commands.append(command)
@@ -156,8 +150,7 @@ def test_fetch_configs_is_read_only_and_never_runs_save_force(tmp_path, monkeypa
     paths = PathResolver(tmp_path)
     db = Database(paths.site_db_path("demo"))
     db.initialize()
-    monkeypatch.setattr(service_module, "choose_connection_target", lambda _device: ConnectionTarget("SSH", "hp_comware", "192.0.2.10", 22, "u", "p"))
-    monkeypatch.setattr(service_module.netmiko_connection, "ConnectHandler", lambda **_kwargs: FakeConnection())
+    monkeypatch.setattr(service_module.netmiko_connection, "run_netmiko_with_retry", lambda device, operation: operation(FakeConnection(), ConnectionTarget("SSH", "hp_comware", "192.0.2.10", 22, "u", "p")))
     monkeypatch.setattr(service_module, "safe_send_command", fake_send)
 
     device = Device(id=1, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")

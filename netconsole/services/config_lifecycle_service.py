@@ -19,7 +19,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 from netconsole.services import command_guard, netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -90,21 +90,17 @@ class ConfigLifecycleService:
         collect_uuid = str(uuid4())
         raw_log_file = self._raw_log_file(device, timestamp, collect_uuid)
         command_results: list[dict[str, object]] = []
-        connection = None
-        target = choose_connection_target(device)
-        if target is None:
-            message = "No SSH or Telnet connection is enabled."
-            self._write_raw_log(raw_log_file, device, timestamp, "", command_results, message)
-            app_logger.log_error("CONFIG_SAVE_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
-            return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
+        protocol = ""
         try:
             command_guard.validate_command_list([SAVE_FORCE_COMMAND], CONFIG_CONTEXT)
-            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-            save_result = self._run_command(connection, SAVE_FORCE_COMMAND, device, read_timeout=180)
+            def operation(connection, target):
+                nonlocal protocol
+                protocol = target.protocol
+                return self._run_command(connection, SAVE_FORCE_COMMAND, device, read_timeout=180)
+
+            save_result = netmiko_connection.run_netmiko_with_retry(device, operation)
             command_results.append(save_result)
-            connection.disconnect()
-            connection = None
-            self._write_raw_log(raw_log_file, device, timestamp, target.protocol, command_results)
+            self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results)
             if not bool(save_result["success"]):
                 message = str(save_result.get("error_message") or "save force failed")
                 app_logger.log_error("CONFIG_SAVE_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
@@ -115,15 +111,9 @@ class ConfigLifecycleService:
             return ConfigOperationResult(True, str(device.device_uuid), timestamp, [saved_snapshot], raw_log_path=str(raw_log_file))
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc), device)
-            self._write_raw_log(raw_log_file, device, timestamp, target.protocol, command_results, message)
+            self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results, message)
             app_logger.log_error("CONFIG_SAVE_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
             return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
-        finally:
-            if connection is not None:
-                try:
-                    connection.disconnect()
-                except Exception:
-                    pass
 
     def fetch_configs(self, device: Device) -> ConfigOperationResult:
         device.ensure_device_uuid()
@@ -131,23 +121,21 @@ class ConfigLifecycleService:
         collect_uuid = str(uuid4())
         raw_log_file = self._raw_log_file(device, timestamp, collect_uuid)
         command_results: list[dict[str, object]] = []
-        connection = None
-        target = choose_connection_target(device)
-        if target is None:
-            message = "No SSH or Telnet connection is enabled."
-            self._write_raw_log(raw_log_file, device, timestamp, "", command_results, message)
-            app_logger.log_error("CONFIG_FETCH_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
-            return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
+        protocol = ""
         try:
             command_guard.validate_command_list([SCREEN_LENGTH_COMMAND, RUNNING_COMMAND, SAVED_COMMAND], CONFIG_CONTEXT)
-            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-            command_results.append(self._run_command(connection, SCREEN_LENGTH_COMMAND, device))
-            running_result = self._run_command(connection, RUNNING_COMMAND, device, read_timeout=180)
-            saved_result = self._run_command(connection, SAVED_COMMAND, device, read_timeout=180)
+            def operation(connection, target):
+                nonlocal protocol
+                protocol = target.protocol
+                screen_result = self._run_command(connection, SCREEN_LENGTH_COMMAND, device)
+                running = self._run_command(connection, RUNNING_COMMAND, device, read_timeout=180)
+                saved = self._run_command(connection, SAVED_COMMAND, device, read_timeout=180)
+                return screen_result, running, saved
+
+            screen_result, running_result, saved_result = netmiko_connection.run_netmiko_with_retry(device, operation)
+            command_results.append(screen_result)
             command_results.extend([running_result, saved_result])
-            connection.disconnect()
-            connection = None
-            self._write_raw_log(raw_log_file, device, timestamp, target.protocol, command_results)
+            self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results)
             if not bool(running_result["success"]) or not bool(saved_result["success"]):
                 message = "; ".join(str(item.get("error_message") or item["command"]) for item in (running_result, saved_result) if not bool(item["success"]))
                 app_logger.log_error("CONFIG_FETCH_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
@@ -161,15 +149,9 @@ class ConfigLifecycleService:
             return ConfigOperationResult(True, str(device.device_uuid), timestamp, [running_snapshot, saved_snapshot, diff_snapshot], diff, str(raw_log_file))
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc), device)
-            self._write_raw_log(raw_log_file, device, timestamp, target.protocol, command_results, message)
+            self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results, message)
             app_logger.log_error("CONFIG_FETCH_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
             return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
-        finally:
-            if connection is not None:
-                try:
-                    connection.disconnect()
-                except Exception:
-                    pass
 
     def compare_snapshots(self, running_snapshot: ConfigSnapshot, saved_snapshot: ConfigSnapshot) -> ConfigDiffResult:
         running_text = self.snapshot_text(running_snapshot)
@@ -265,7 +247,7 @@ class ConfigLifecycleService:
         lines = [
             f"Config Snapshot Time: {timestamp}",
             f"Device Name: {device.name}",
-            f"Device IP: {device.ip_address}",
+            f"Primary Address: {device.primary_address}",
             f"Protocol: {protocol}",
             "",
         ]
@@ -303,7 +285,7 @@ class ConfigLifecycleService:
 
     @staticmethod
     def _detail(device: Device, error: str = "", raw_log_path: Path | str | None = None) -> str:
-        parts = [f"device={device.name}", f"ip={device.ip_address}"]
+        parts = [f"device={device.name}", f"primary_address={device.primary_address}"]
         if error:
             parts.append(f"error={error}")
         if raw_log_path:
@@ -408,7 +390,7 @@ def config_structure_keys(text: str) -> list[str]:
 
 def device_config_dir_name(device: Device) -> str:
     device.ensure_device_uuid()
-    name = safe_device_name(device.name or device.sysname or "device")
+    name = safe_device_name(device.name or device.system_name or "device")
     unique_id = safe_device_id(str(device.device_uuid or device.id or "unknown"))
     return f"{name}__{unique_id}"
 
