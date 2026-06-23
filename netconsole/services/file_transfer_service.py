@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Callable
 
 from netconsole.core import app_logger
@@ -22,6 +22,7 @@ FILE_MANAGEMENT_CONTEXT = "file_management"
 FILE_LIST_COMMANDS = ("dir flash:/", "dir flash:/diagfile/")
 FILE_TRANSFER_CONCURRENCY = 50
 FILE_TRANSFER_MAX_CONCURRENCY = 1
+SftpProgressCallback = Callable[[str], None]
 
 
 class TransferCancelled(RuntimeError):
@@ -43,6 +44,12 @@ def build_h3c_sftp_enable_commands(username: str) -> list[str]:
         "return",
         "quit",
     ]
+
+
+def build_sftp_enable_commands(vendor: str | None, username: str) -> list[str]:
+    if str(vendor or "").strip().casefold() == "h3c":
+        return build_h3c_sftp_enable_commands(username)
+    return []
 
 
 @dataclass(frozen=True)
@@ -82,13 +89,12 @@ class FileTransferService:
         self._root_path = ""
         self._current_path = ""
 
-    def connect(self, device: Device) -> str:
+    def connect(self, device: Device, progress_callback: SftpProgressCallback | None = None) -> str:
         self.disconnect()
         targets = [target for target in connection_targets(device) if target.protocol.casefold() == "ssh"]
         if not targets:
             raise RuntimeError("SFTP requires SSH connection settings.")
         last_error = ""
-        import paramiko
 
         for target in targets:
             tunnel_session: TunnelSession | None = None
@@ -110,25 +116,27 @@ class FileTransferService:
                         via_tunnel=True,
                         tunnel=target.tunnel,
                     )
-                client = paramiko.SSHClient()
-                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                client.connect(
-                    hostname=prepared.host,
-                    port=prepared.port,
-                    username=prepared.username,
-                    password=prepared.password,
-                    timeout=20,
-                    banner_timeout=20,
-                    auth_timeout=20,
-                    look_for_keys=False,
-                    allow_agent=False,
-                )
+                self._emit_progress(progress_callback, "file_management.status.sftp_trying")
+                client = self._connect_ssh_client(prepared)
+                self._emit_progress(progress_callback, "file_management.status.ssh_login_success")
                 self._client = client
                 self._tunnel_session = tunnel_session
                 try:
                     self._sftp = client.open_sftp()
-                except Exception:
-                    self._enable_h3c_sftp(client, prepared.username)
+                except Exception as sftp_exc:
+                    self._emit_progress(progress_callback, "file_management.status.sftp_failed_trying_ssh")
+                    app_logger.log_warning(
+                        "SFTP_INITIAL_OPEN_FAILED",
+                        f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, error={sanitize_sensitive_text(str(sftp_exc), device)}",
+                    )
+                    client = self._ensure_active_ssh_client(client, prepared, progress_callback)
+                    self._client = client
+                    self._enable_sftp_for_target(client, device, prepared.username, progress_callback)
+                    self._emit_progress(progress_callback, "file_management.status.sftp_reconnecting")
+                    self._close_client(client)
+                    self._client = None
+                    client = self._connect_ssh_client(prepared)
+                    self._client = client
                     self._sftp = client.open_sftp()
                 self._device = device
                 self._root_path = self.detect_remote_root()
@@ -139,22 +147,116 @@ class FileTransferService:
                 self.disconnect()
                 if tunnel_session is not None:
                     tunnel_session.close()
-                last_error = sanitize_sensitive_text(str(exc), device)
+                last_error = self._friendly_connect_error(exc, device)
                 app_logger.log_error("SFTP_CONNECT_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
         raise RuntimeError(last_error or "SFTP connection failed.")
 
+    def _connect_ssh_client(self, target):
+        import paramiko
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=target.host,
+            port=target.port,
+            username=target.username,
+            password=target.password,
+            timeout=20,
+            banner_timeout=20,
+            auth_timeout=20,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+        return client
+
+    def _ensure_active_ssh_client(self, client, target, progress_callback: SftpProgressCallback | None = None):
+        if self._is_ssh_transport_active(client):
+            return client
+        self._emit_progress(progress_callback, "file_management.status.ssh_session_reconnecting")
+        self._close_client(client)
+        return self._connect_ssh_client(target)
+
+    @staticmethod
+    def _is_ssh_transport_active(client) -> bool:
+        get_transport = getattr(client, "get_transport", None)
+        if not callable(get_transport):
+            return True
+        transport = get_transport()
+        return bool(transport is not None and transport.is_active())
+
+    @staticmethod
+    def _close_client(client) -> None:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _friendly_connect_error(exc: Exception, device: Device) -> str:
+        message = sanitize_sensitive_text(str(exc), device)
+        lowered = message.casefold()
+        if "ssh session not active" in lowered or "session not active" in lowered:
+            return "SSH login succeeded, but the SSH session became inactive before SFTP could be enabled. Please check the device SSH/SFTP service configuration."
+        if "not adapted for automatic sftp enabling" in lowered:
+            return message
+        if "automatic sftp enabling failed" in lowered:
+            return message
+        return message
+
     def _enable_h3c_sftp(self, client, username: str) -> None:
+        self._run_sftp_enable_commands(client, build_h3c_sftp_enable_commands(username))
+
+    def _enable_sftp_for_target(self, client, device: Device, username: str, progress_callback: SftpProgressCallback | None = None) -> None:
+        commands = build_sftp_enable_commands(device.device_vendor, username)
+        if not commands:
+            vendor = str(device.device_vendor or "Unknown")
+            raise RuntimeError(f"SSH login succeeded, but vendor {vendor} is not adapted for automatic SFTP enabling. Please enable SFTP manually.")
+        self._emit_progress(progress_callback, "file_management.status.sftp_enabling")
+        app_logger.log_info("SFTP_AUTO_ENABLE_STARTED", f"device={device.name}, vendor={device.device_vendor}")
+        try:
+            self._run_sftp_enable_commands(client, commands)
+        except Exception as exc:
+            message = sanitize_sensitive_text(str(exc), device)
+            raise RuntimeError(f"SSH login succeeded, but automatic SFTP enabling failed. Please verify device command support or enable SFTP manually. Detail: {message}") from exc
+        app_logger.log_info("SFTP_AUTO_ENABLE_FINISHED", f"device={device.name}, vendor={device.device_vendor}")
+
+    def _run_sftp_enable_commands(self, client, commands: list[str]) -> None:
+        if not self._is_ssh_transport_active(client):
+            raise RuntimeError("SSH session is not active before enabling SFTP.")
         shell = client.invoke_shell()
         try:
-            for command in build_h3c_sftp_enable_commands(username):
+            self._read_shell_output(shell, timeout=2)
+            for command in commands:
                 shell.send(command + "\n")
-                if hasattr(shell, "recv_ready") and shell.recv_ready():
-                    shell.recv(65535)
+                self._read_shell_output(shell, timeout=2)
         finally:
             try:
                 shell.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _read_shell_output(shell, timeout: float = 2.0) -> str:
+        output: list[str] = []
+        deadline = monotonic() + timeout
+        idle_deadline = monotonic() + min(0.2, timeout)
+        while monotonic() < deadline and monotonic() < idle_deadline:
+            recv_ready = getattr(shell, "recv_ready", None)
+            if callable(recv_ready) and recv_ready():
+                data = shell.recv(65535)
+                if isinstance(data, bytes):
+                    output.append(data.decode("utf-8", errors="ignore"))
+                else:
+                    output.append(str(data))
+                idle_deadline = monotonic() + 0.2
+                continue
+            sleep(0.05)
+        return "".join(output)
+
+    @staticmethod
+    def _emit_progress(progress_callback: SftpProgressCallback | None, status_key: str) -> None:
+        if progress_callback is not None:
+            progress_callback(status_key)
 
     def disconnect(self) -> None:
         if self._sftp is not None:
@@ -326,7 +428,7 @@ class FileTransferService:
         return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", last_error or "File download failed.", elapsed_ms(started))
 
     def local_device_dir(self, device: Device) -> Path:
-        return self.paths.ensure_site_dirs(self.site_name) / "raw" / "files" / device_file_dir_name(device)
+        return self.paths.ensure_site_dirs(self.site_name) / "downloads" / "files" / device_file_dir_name(device)
 
     def local_path_for(self, device: Device, remote_file: RemoteDeviceFile) -> Path:
         directory = self.local_device_dir(device) / remote_file.category

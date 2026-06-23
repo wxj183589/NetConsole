@@ -104,10 +104,13 @@ def test_dialog_system_name_overwrite_is_saved_to_repository_when_editing(tmp_pa
 
 def test_dialog_form_contains_new_connection_and_tunnel_fields():
     QApplication.instance() or QApplication([])
-    dialog = DeviceDialog(I18n("en_US"))
+    dialog = DeviceDialog(I18n("zh_CN"))
 
     assert "sysname" not in dialog.inputs
     assert "ip_address" not in dialog.inputs
+    assert "tunnel1_local_port" not in dialog.inputs
+    assert "tunnel2_local_port" not in dialog.inputs
     for field in ("system_name", "primary_address", "backup_address", "tunnel_enabled", "tunnel1_host", "tunnel2_host"):
         assert field in dialog.inputs
+    assert dialog.labels["station"].text() == "归属站点"
     dialog.close()

@@ -48,6 +48,7 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
 )
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
+from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_DEVICE_COLUMNS,
@@ -60,6 +61,7 @@ from netconsole.services.trackside_ap_business import (
     format_trackside_display_value,
     has_ap_side_optical_data,
     is_trackside_ap_interface,
+    normalize_link_state,
     normalize_vlan_text,
     parse_vlan_set,
     normalize_interface_name as normalize_trackside_interface_name,
@@ -553,6 +555,45 @@ def test_trackside_ap_plan_repository_unified_capacity_and_pvid_plan(tmp_path):
     assert updated_details["Station A"]["remark"] == "Keep this remark"
 
 
+def test_ap_entity_station_normalizes_aliases_and_preserves_existing_station(tmp_path):
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+    ac = make_ac_device()
+
+    repository.replace_fit_ap_resources(
+        ac.device_uuid,
+        [{"ap_uuid": "ap-1", "ap_name": "AP-1", "serial_number": "SN-AP-1", "site_name": "FIT Station", "state": "R/M"}],
+    )
+    with database.connect() as conn:
+        row = conn.execute("SELECT station FROM ap_entities WHERE ap_uuid = 'ap-1'").fetchone()
+    assert row["station"] == "FIT Station"
+
+    repository.replace_fit_ap_resources(
+        ac.device_uuid,
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-1",
+                "serial_number": "SN-AP-1",
+                "ap_station": "LLDP Station",
+                "site_name": "FIT Station 2",
+                "state": "I",
+            }
+        ],
+    )
+    with database.connect() as conn:
+        row = conn.execute("SELECT station FROM ap_entities WHERE ap_uuid = 'ap-1'").fetchone()
+    assert row["station"] == "FIT Station"
+
+
+def test_ap_and_trackside_station_headers_display_ownership_station():
+    i18n = I18n("zh_CN")
+
+    assert i18n.t("ac.station") == "归属站点"
+    assert i18n.t("field.station") == "归属站点"
+    assert [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS][0] == "归属站点"
+
+
 def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_trackside_ap_plan_rows(
@@ -997,7 +1038,8 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert result.fit_ap_resources_updated == 2
     assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS, "display ip https"]
     assert connection.disconnected is True
-    assert Path(result.raw_log_path).exists()
+    assert result.raw_log_path == ""
+    assert not (PathResolver(tmp_path).site_dir("demo") / "raw").exists()
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["total_aps"] == 2
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["cpu_usage"] == "16%"
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["memory_usage"] == "47%"
@@ -1643,7 +1685,7 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
 
 def test_ap_online_overview_uses_fit_ap_resource_site_capacity_and_unassigned():
     resources = [
-        {"ap_uuid": "ap-1", "site_name": "Metadata Station", "site": "Resource Station", "state": "R/M"},
+        {"ap_uuid": "ap-1", "site_name": "Metadata Station", "state": "R/M"},
         {"ap_uuid": "ap-2", "site": "", "state": "JA"},
     ]
     overview = build_ap_online_overview_rows(
@@ -2058,14 +2100,14 @@ def test_ap_online_overview_page_hides_new_online_section(tmp_path):
     assert not hasattr(page, "new_online_summary_table")
     assert not hasattr(page, "new_online_detail_table")
     assert [page.overview_table.horizontalHeaderItem(column).text() for column in range(page.overview_table.columnCount())] == [
-        "车站",
+        "归属站点",
         "AP总数量",
         "上线",
         "未上线",
         "上线率",
         "备注",
     ]
-    assert page.tabs.widget(3).findChild(PaginationWidget) is None
+    assert page.tabs.widget(1).findChild(PaginationWidget) is None
 
 
 def test_ap_online_overview_table_edit_rules_and_save(tmp_path):
@@ -2377,9 +2419,55 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
 
     assert [row["interface_name"] for row in rows] == ["GigabitEthernet2/0/1", "GigabitEthernet2/0/10"]
     assert rows[1]["switch_rx_power"] == "-6.10"
+    assert rows[1]["link_status"] == "UP"
+    assert format_trackside_display_value("link_status", rows[1]) == "UP"
+    assert format_trackside_display_value("port_type", rows[1]) == "trunk"
     assert rows[1]["ap_rx_power"] == "-14.35"
     assert rows[1]["ap_optical_status"] == "notice"
     assert rows[1]["ap_name"] == "AP10"
+
+
+def test_trackside_ap_business_link_and_port_type_are_separate():
+    assert normalize_link_state("up") == "UP"
+    assert normalize_link_state("Administratively DOWN") == "DOWN"
+    assert normalize_link_state("") == "-"
+    assert format_trackside_display_value("link_status", {"link_status": "DOWN", "port_type": "access"}) == "DOWN"
+    assert format_trackside_display_value("port_type", {"link_status": "DOWN", "port_type": "access"}) == "access"
+    assert format_trackside_display_value("port_type", {"port_type": "DOWN", "port_status": "UP"}) == "unknown"
+
+
+def test_trackside_ap_business_offline_ap_keeps_link_state():
+    rows = build_trackside_ap_business_rows(
+        [],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "link_status": "DOWN",
+                    "port_status": "access",
+                    "pvid": "921",
+                }
+            ]
+        },
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10"}]},
+        [],
+        offline_ap_ledger_rows=[
+            {
+                "site": "Station A",
+                "device_uuid": "sw-1",
+                "historical_switch_name": "HX_1",
+                "historical_switch_interface": "GigabitEthernet2/0/10",
+                "ap_mac": "30f5-277a-15e0",
+                "ap_name": "AP-IDLE",
+                "ap_status": "Idle",
+            }
+        ],
+    )
+
+    assert rows[0]["is_ap_offline"] is True
+    assert format_trackside_display_value("link_status", rows[0]) == "DOWN"
+    assert format_trackside_display_value("port_type", rows[0]) == "access"
+    assert format_trackside_display_value("ap_optical_status", rows[0]) == OFFLINE_AP_STATUS_TEXT
 
 
 def test_trackside_ap_business_matches_fit_ap_by_lldp_neighbor_mac():
@@ -2677,7 +2765,7 @@ def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(
     assert switch_targets[0].device_id == shared.id
 
 
-def test_trackside_optical_collection_runs_commands_saves_raw_and_continues_after_failure(tmp_path, monkeypatch):
+def test_trackside_optical_collection_runs_commands_writes_database_and_skips_raw_files(tmp_path, monkeypatch):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     groups = DeviceGroupRepository(database, "demo")
@@ -2693,12 +2781,7 @@ def test_trackside_optical_collection_runs_commands_saves_raw_and_continues_afte
     assert result.success_count == 1
     assert result.failed_count == 1
     assert any(connection.commands == list(TRACKSIDE_OPTICAL_COMMANDS) for connection in FakeOpticalConnection.instances)
-    raw_files = list((result.session_dir / "raw" / "station_switch_optical").glob("*.log"))
-    assert len(raw_files) == 2
-    assert any("screen-length disable" in path.read_text(encoding="utf-8") for path in raw_files)
-    assert (result.session_dir / "raw" / "ac_fit_ap_resource").exists()
-    assert (result.session_dir / "raw" / "ac_fit_ap_optical").exists()
-    assert (result.session_dir / "raw" / "station_switch_optical").exists()
+    assert not (result.session_dir / "raw").exists()
     assert (result.session_dir / "session_meta.json").exists()
     with sqlite3.connect(result.session_dir / "parsed" / "trackside_update_results.sqlite") as conn:
         rows = conn.execute("SELECT device_name, rx_power, error_message FROM optical_results").fetchall()
@@ -2768,9 +2851,7 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     assert result.failed_count == 0
     assert result.skipped_count == 1
     assert result.target_count == 4
-    assert (result.session_dir / "raw" / "ac_fit_ap_resource" / "resource-run" / "resource.log").exists()
-    assert (result.session_dir / "raw" / "ac_fit_ap_optical" / "fit-run" / "fit_ap" / "AP1.log").exists()
-    assert list((result.session_dir / "raw" / "station_switch_optical").glob("*.log"))
+    assert not (result.session_dir / "raw").exists()
     assert switch.id is not None
 
 
@@ -2896,6 +2977,12 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert "match_source" not in fields
     assert "switch_rx_power" in fields
     assert "switch_tx_power" not in fields
+    assert fields[fields.index("interface_name") + 1] == "link_status"
+    assert [key for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS][fields.index("link_status")] == "details.link"
+    assert page.trackside_table.horizontalHeaderItem(fields.index("link_status")).text() == "Link"
+    assert page.trackside_table.item(0, fields.index("link_status")).text() == "UP"
+    assert page.trackside_table.item(0, fields.index("port_type")).text() == "trunk"
+    assert page.trackside_table.item(0, fields.index("port_type")).text() not in {"UP", "DOWN"}
     assert page.trackside_table.item(0, fields.index("switch_rx_power")).text() == "-6.10"
     assert page.trackside_table.item(0, fields.index("switch_optical_status")).text() == "Unknown"
     assert page.trackside_table.item(0, fields.index("ap_mac")).text() == "bc5a-3457-cbe0"
@@ -2908,15 +2995,21 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     page.trackside_site_filter.setCurrentIndex(page.trackside_site_filter.findData("Station B"))
     assert page.trackside_table.rowCount() == 1
     assert page.trackside_table.item(0, 0).text() == "Station B"
+    assert page.trackside_table.item(0, fields.index("link_status")).text() == "DOWN"
+    assert page.trackside_table.item(0, fields.index("port_type")).text() == "unknown"
 
     export_path = tmp_path / "trackside.xlsx"
     export_trackside_ap_business_xlsx(export_path, page.filtered_trackside_rows(), TRACKSIDE_AP_BUSINESS_COLUMNS, [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
     workbook = load_workbook(export_path)
     sheet = workbook["轨旁AP业务"]
-    assert [cell.value for cell in sheet[1]] == [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS]
-    assert "Switch Optical Status" in [cell.value for cell in sheet[1]]
-    assert "AP Optical Alarm" in [cell.value for cell in sheet[1]]
-    assert "Indoor Switch TX Power(dBm)" not in [cell.value for cell in sheet[1]]
+    headers = [cell.value for cell in sheet[1]]
+    assert headers == [page.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS]
+    assert headers[headers.index("Interface Name") + 1] == "Link"
+    assert "Switch Optical Status" in headers
+    assert "AP Optical Alarm" in headers
+    assert "Indoor Switch TX Power(dBm)" not in headers
+    assert sheet.cell(2, headers.index("Link") + 1).value == "DOWN"
+    assert sheet.cell(2, headers.index("Port Type") + 1).value == "unknown"
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
     assert sheet["A1"].alignment.horizontal == "center"
@@ -4254,37 +4347,14 @@ def test_ap_optical_history_detail_and_column_width_persist(tmp_path):
     assert split_reopened.splitter.sizes()[0] > split_reopened.splitter.sizes()[1]
 
 
-def test_ap_optical_history_open_raw_log_folder(tmp_path, monkeypatch):
-    qt_app = app()
+def test_ap_optical_history_dialog_hides_raw_log_actions(tmp_path):
     from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog
-    import netconsole.ui.dialogs.ap_optical_history_dialog as dialog_module
 
-    raw_file = tmp_path / "raw" / "ap.log"
-    raw_file.parent.mkdir()
-    raw_file.write_text("raw", encoding="utf-8")
-    opened: list[str] = []
-    rows = [{"collected_at": "2026-01-02T00:00:00", "interface_name": "GE1/0/1", "raw_log_path": str(raw_file)}]
-    monkeypatch.setattr(dialog_module.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
+    rows = [{"collected_at": "2026-01-02T00:00:00", "interface_name": "GE1/0/1", "raw_log_path": "raw/ap.log"}]
     dialog = ApOpticalHistoryDialog(I18n("en_US"), "ap-a", rows, SettingsStore(PathResolver(tmp_path)))
 
-    dialog.open_raw_log_folder()
-    qt_app.processEvents()
-
-    assert [Path(value) for value in opened] == [raw_file.parent]
-
-
-def test_ap_optical_history_open_raw_log_without_path_shows_message(tmp_path, monkeypatch):
-    from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog
-    import netconsole.ui.dialogs.ap_optical_history_dialog as dialog_module
-
-    messages: list[str] = []
-    rows = [{"collected_at": "2026-01-02T00:00:00", "interface_name": "GE1/0/1"}]
-    monkeypatch.setattr(dialog_module.QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
-    dialog = ApOpticalHistoryDialog(I18n("en_US"), "ap-a", rows, SettingsStore(PathResolver(tmp_path)))
-
-    dialog.open_raw_log_folder()
-
-    assert messages == ["No raw log path is available for the selected record"]
+    assert not hasattr(dialog, "open_raw_button")
+    assert "raw_log_path" not in [field for _key, field in AP_OPTICAL_HISTORY_COLUMNS]
 
 
 def test_ap_optical_history_export_contains_full_history(tmp_path, monkeypatch):
@@ -4317,7 +4387,6 @@ def test_ap_history_column_sets_cover_lldp_and_optical():
         "neighbor_interface",
         "neighbor_mac",
         "neighbor_device_name",
-        "raw_log_path",
     ]
     optical_fields = [field for _key, field in AP_OPTICAL_HISTORY_COLUMNS]
     for field in (
@@ -4336,9 +4405,9 @@ def test_ap_history_column_sets_cover_lldp_and_optical():
         "wavelength",
         "transmission_distance",
         "connector_type",
-        "raw_log_path",
     ):
         assert field in optical_fields
+    assert "raw_log_path" not in optical_fields
 
 
 def test_ap_detail_metadata_site_falls_back_to_optical_site(tmp_path):

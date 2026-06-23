@@ -59,7 +59,6 @@ OVERVIEW_FIELDS = (
     ("details.vendor", "vendor"),
     ("details.uptime", "uptime"),
     ("details.collected_at", "collected_at"),
-    ("details.raw_log_path", "raw_log_path"),
 )
 
 COLLECT_LOG_NOT_FOUND = "未找到采集日志"
@@ -155,7 +154,6 @@ class DeviceDetailDialog(QDialog):
         self.group_names = dict(group_names or {})
         self.collect_thread: DeviceCollectThread | None = None
         self.history_dialogs: list[HistoryDataDialog] = []
-        self.collect_log_dialogs: list[CollectLogDialog] = []
         self.optical_refresh_thread: OpticalRefreshThread | None = None
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(False)
@@ -166,12 +164,10 @@ class DeviceDetailDialog(QDialog):
         self.always_on_top_button = QPushButton()
         self.refresh_button = QPushButton()
         self.refresh_optical_button = QPushButton()
-        self.view_collect_log_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.refresh_button.clicked.connect(self.refresh_device_details)
         self.refresh_optical_button.clicked.connect(self.refresh_device_optical)
-        self.view_collect_log_button.clicked.connect(self.view_collect_log)
         self.tabs = QTabWidget()
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -179,7 +175,6 @@ class DeviceDetailDialog(QDialog):
         header.addStretch(1)
         header.addWidget(self.refresh_button)
         header.addWidget(self.refresh_optical_button)
-        header.addWidget(self.view_collect_log_button)
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
@@ -191,7 +186,6 @@ class DeviceDetailDialog(QDialog):
         self.title_label.setText(title)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
         self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
-        self.view_collect_log_button.setText(self.i18n.t("details.view_collect_log"))
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
         self.reload_tabs()
 
@@ -320,23 +314,6 @@ class DeviceDetailDialog(QDialog):
             return
         if not open_https_url(self.device.primary_address, port):
             QMessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
-
-    def view_collect_log(self) -> None:
-        try:
-            path, text = self._load_collect_log()
-        except FileNotFoundError:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.collect_log_not_found"))
-            return
-        dialog = CollectLogDialog(self.i18n.t("details.collect_log_title"), str(path), text, self)
-        self.collect_log_dialogs.append(dialog)
-        dialog.destroyed.connect(lambda _=None, window=dialog: self._remove_collect_log_dialog(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _load_collect_log(self) -> tuple[Path, str]:
-        raw_log_path = self.repository.get_latest_raw_log_path(str(self.device.device_uuid or ""))
-        return read_collect_log_text(raw_log_path, PathResolver().get_site_root(self.site_name))
 
     def _interfaces_tab(self) -> QWidget:
         rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))
@@ -521,10 +498,6 @@ class DeviceDetailDialog(QDialog):
     def _remove_history_dialog(self, dialog: HistoryDataDialog) -> None:
         if dialog in self.history_dialogs:
             self.history_dialogs.remove(dialog)
-
-    def _remove_collect_log_dialog(self, dialog: "CollectLogDialog") -> None:
-        if dialog in self.collect_log_dialogs:
-            self.collect_log_dialogs.remove(dialog)
 
     def _empty_tab(self, note_key: str) -> QWidget:
         widget = QWidget()

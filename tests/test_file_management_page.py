@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QHeaderView
@@ -11,7 +13,11 @@ from PySide6.QtCore import Qt
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
-from netconsole.services.file_transfer_service import FileTransferService, RemoteDeviceFile
+from netconsole.services.file_transfer_service import (
+    FileTransferService,
+    RemoteDeviceFile,
+    build_sftp_enable_commands,
+)
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.file_management_page import (
     FileManagementPage,
@@ -262,6 +268,17 @@ def test_meshlog_retry_does_not_duplicate_device_prefix(tmp_path, monkeypatch):
     assert page.tasks[-1].local_path.name == "AC-1-2026_02_03-meshlog.log"
 
 
+def test_file_management_default_local_dir_uses_downloads_not_raw(tmp_path):
+    app()
+    page = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", PathResolver(tmp_path))
+    device = page.current_device()
+
+    relative_path = page.default_local_dir(device).relative_to(page.paths.site_dir("demo")).as_posix()
+
+    assert relative_path.startswith("downloads/files/")
+    assert "/raw/" not in f"/{relative_path}/"
+
+
 def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_path, monkeypatch):
     import netconsole.services.file_transfer_service as service_module
 
@@ -320,6 +337,7 @@ def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_pat
 
     monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
     monkeypatch.setattr(service_module.TunnelManager, "open_tunnel", lambda *_args: FakeTunnelSession())
+    monkeypatch.setattr(service_module, "sleep", lambda _seconds: None)
 
     device = Device(
         id=1,
@@ -340,7 +358,7 @@ def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_pat
     service.disconnect()
 
     assert root == "flash:/"
-    assert connect_hosts == ["10.0.0.1", "10.0.1.1", "127.0.0.1"]
+    assert connect_hosts == ["10.0.0.1", "10.0.1.1", "127.0.0.1", "127.0.0.1"]
     assert shell_commands == [
         "system-view",
         "sftp server enable",
@@ -349,6 +367,258 @@ def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_pat
         "quit",
     ]
     assert "tunnel" in closed
+
+
+def test_sftp_enable_command_builder_uses_vendor_and_username():
+    assert build_sftp_enable_commands("H3C", "ops") == [
+        "system-view",
+        "sftp server enable",
+        "ssh user ops service-type all authentication-type any",
+        "return",
+        "quit",
+    ]
+    assert build_sftp_enable_commands("Cisco", "ops") == []
+
+
+def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_continues(tmp_path, monkeypatch):
+    import netconsole.services.file_transfer_service as service_module
+
+    connect_hosts: list[str] = []
+    shell_commands: list[str] = []
+
+    class FakeShell:
+        def send(self, command):
+            shell_commands.append(command.strip())
+
+        def close(self):
+            pass
+
+    class FakeSftp:
+        def listdir_attr(self, path):
+            if path == "flash:/":
+                return []
+            raise RuntimeError("missing root")
+
+        def close(self):
+            pass
+
+    class FakeSSHClient:
+        def __init__(self):
+            self.hostname = ""
+
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **kwargs):
+            self.hostname = str(kwargs["hostname"])
+            connect_hosts.append(self.hostname)
+
+        def open_sftp(self):
+            if self.hostname == "10.0.0.1":
+                raise RuntimeError("sftp subsystem disabled")
+            return FakeSftp()
+
+        def invoke_shell(self):
+            return FakeShell()
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+
+    device = Device(
+        id=1,
+        name="Cisco-SW",
+        device_vendor="Cisco",
+        primary_address="10.0.0.1",
+        backup_address="10.0.1.1",
+        ssh_enabled=1,
+        ssh_username="ops",
+        ssh_password="secret",
+    )
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    root = service.connect(device)
+    service.disconnect()
+
+    assert root == "flash:/"
+    assert connect_hosts == ["10.0.0.1", "10.0.1.1"]
+    assert shell_commands == []
+
+
+def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(tmp_path, monkeypatch):
+    import netconsole.services.file_transfer_service as service_module
+
+    connect_hosts: list[str] = []
+    shell_commands: list[str] = []
+    closed: list[str] = []
+    invoked_on_clients: list[int] = []
+    client_index = 0
+
+    class FakeTransport:
+        def __init__(self, active: bool):
+            self.active = active
+
+        def is_active(self):
+            return self.active
+
+    class FakeShell:
+        def send(self, command):
+            shell_commands.append(command.strip())
+
+        def recv_ready(self):
+            return False
+
+        def close(self):
+            closed.append("shell")
+
+    class FakeSftp:
+        def listdir_attr(self, path):
+            if path == "flash:/":
+                return []
+            raise RuntimeError("missing root")
+
+        def close(self):
+            closed.append("sftp")
+
+    class FakeSSHClient:
+        def __init__(self):
+            nonlocal client_index
+            client_index += 1
+            self.index = client_index
+
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **kwargs):
+            connect_hosts.append(str(kwargs["hostname"]))
+
+        def get_transport(self):
+            return FakeTransport(self.index != 1)
+
+        def open_sftp(self):
+            if self.index == 1:
+                raise RuntimeError("SSH session not active")
+            if self.index == 2:
+                raise RuntimeError("sftp disabled")
+            return FakeSftp()
+
+        def invoke_shell(self):
+            invoked_on_clients.append(self.index)
+            return FakeShell()
+
+        def close(self):
+            closed.append(f"client-{self.index}")
+
+    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setattr(service_module, "sleep", lambda _seconds: None)
+
+    device = Device(
+        id=1,
+        name="H3C-SW",
+        device_vendor="H3C",
+        primary_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    root = service.connect(device)
+    service.disconnect()
+
+    assert root == "flash:/"
+    assert connect_hosts == ["10.0.0.1", "10.0.0.1", "10.0.0.1"]
+    assert invoked_on_clients == [2]
+    assert shell_commands == [
+        "system-view",
+        "sftp server enable",
+        "ssh user admin service-type all authentication-type any",
+        "return",
+        "quit",
+    ]
+
+
+def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(tmp_path, monkeypatch):
+    class FakeSSHClient:
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **_kwargs):
+            pass
+
+        def get_transport(self):
+            return SimpleNamespace(is_active=lambda: True)
+
+        def open_sftp(self):
+            raise RuntimeError("SSH session not active")
+
+        def invoke_shell(self):
+            raise AssertionError("unsupported vendor should not run shell commands")
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+    device = Device(
+        id=1,
+        name="Huawei-SW",
+        device_vendor="Huawei",
+        primary_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        service.connect(device)
+
+    message = str(excinfo.value)
+    assert "vendor Huawei is not adapted" in message
+    assert "SSH session not active" not in message
+
+
+def test_sftp_connect_worker_emits_auto_enable_statuses(tmp_path, monkeypatch):
+    import netconsole.ui.pages.file_management_page as page_module
+
+    app()
+    statuses: list[str] = []
+    connected: list[tuple[object, str]] = []
+
+    class FakeService:
+        def __init__(self, site_name, paths):
+            self.site_name = site_name
+            self.paths = paths
+            self.disconnected = False
+
+        def connect(self, _device, progress_callback=None):
+            for key in (
+                "file_management.status.sftp_trying",
+                "file_management.status.ssh_login_success",
+                "file_management.status.sftp_enabling",
+                "file_management.status.sftp_reconnecting",
+            ):
+                progress_callback(key)
+            return "flash:/"
+
+        def disconnect(self):
+            self.disconnected = True
+
+    monkeypatch.setattr(page_module, "FileTransferService", FakeService)
+    worker = page_module.SftpConnectWorker("demo", Device(id=1, name="SW-A"), PathResolver(tmp_path))
+    worker.status_changed.connect(statuses.append)
+    worker.connected.connect(lambda service, root: connected.append((service, root)))
+
+    worker.run()
+
+    assert statuses == [
+        "file_management.status.sftp_trying",
+        "file_management.status.ssh_login_success",
+        "file_management.status.sftp_enabling",
+        "file_management.status.sftp_reconnecting",
+    ]
+    assert connected[0][1] == "flash:/"
 
 
 def test_download_summary_counts_only_current_batch(tmp_path, monkeypatch):

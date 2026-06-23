@@ -31,8 +31,9 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.site_dir() == site
     assert paths.site_db_path() == site / "db" / "devices.db"
     assert paths.site_metrics_dir() == site / "metrics"
-    for dirname in ("db", "raw", "parsed", "reports", "backups", "tasks", "metrics"):
+    for dirname in ("db", "parsed", "reports", "backups", "tasks", "metrics"):
         assert (site / dirname).is_dir()
+    assert not (site / "raw").exists()
 
 
 def test_path_resolver_creates_project_dirs(tmp_path):

@@ -121,8 +121,8 @@ class DataDiskManagerDialog(QDialog):
             if 0 <= index.row() < len(self.categories)
         }
         if not selected:
-            selected = {"raw_logs", "debug_logs", "runtime_cache"}
-        cleanable = selected & {"raw_logs", "debug_logs", "runtime_cache"}
+            selected = {"legacy_debug_data", "debug_logs", "runtime_cache"}
+        cleanable = selected & {"legacy_debug_data", "debug_logs", "runtime_cache"}
         if not cleanable:
             QMessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.no_cleanable_selected"))
             return

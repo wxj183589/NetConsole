@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from netconsole.services.ap_online_overview import is_fit_ap_online
+from netconsole.utils.station_normalize import normalize_station_value
 
 
 OFFLINE_AP_STATUS_TEXT = "离线"
@@ -92,7 +93,7 @@ def build_offline_ap_ledger(
         switch_device = device_lookup.get(_normalize_name(switch_name), {}) if switch_name else {}
         switch_interface = _historical_switch_interface(lldp)
         has_lldp = bool(lldp)
-        site = resource.get("station") or switch_device.get("station") or UNASSIGNED_SITE_TEXT
+        site = normalize_station_value(switch_device) or normalize_station_value(resource) or UNASSIGNED_SITE_TEXT
         ledger.append(
             {
                 "ap_uuid": resource.get("ap_uuid"),

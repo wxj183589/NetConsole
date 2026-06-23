@@ -18,7 +18,6 @@ SNMPV3_PRIV_PROTOCOLS = ("DES56", "3DES", "AES128", "AES192", "AES256")
 
 TEMPLATE_FIELDS = [
     "设备名称",
-    "系统名称",
     "主用地址",
     "备用地址",
     "协议",
@@ -28,49 +27,32 @@ TEMPLATE_FIELDS = [
     "厂商",
     "设备类型",
     "分组",
-    "站点/位置",
-    "SNMP版本",
-    "SNMP端口",
-    "只读团体字",
-    "读写团体字",
+    "归属站点",
     "是否启用SSH隧道",
     "隧道主机1地址",
     "隧道主机1端口",
     "隧道主机1用户名",
     "隧道主机1密码",
-    "隧道主机1本地端口",
     "隧道主机2地址",
     "隧道主机2端口",
     "隧道主机2用户名",
     "隧道主机2密码",
-    "隧道主机2本地端口",
     "备注",
 ]
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "CORE-SW", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "v2c", "161", "public", "private", "否", "", "", "", "", "", "", "", "", "", "", "SSH设备示例"],
-    ["无线控制器-示例", "AC-DEMO", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "v2c", "161", "public", "private", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "", "", "主备地址+隧道示例"],
+    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "SSH设备示例"],
+    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "主备地址+隧道示例"],
 ]
 
 TEMPLATE_FIELD_MAP = {
     "设备名称": "name",
-    "系统名称": "system_name",
     "主用地址": "primary_address",
     "备用地址": "backup_address",
-    "IP地址": "primary_address",
-    "主机地址": "primary_address",
-    "IP": "primary_address",
-    "host": "primary_address",
-    "address": "primary_address",
-    "ip_address": "primary_address",
     "厂商": "device_vendor",
-    "站点/位置": "station",
+    "归属站点": "station",
     "分组": "group_name",
     "设备类型": "device_type",
-    "SNMP版本": "snmp_version",
-    "SNMP端口": "snmp_port",
-    "只读团体字": "snmp_ro_community",
-    "读写团体字": "snmp_rw_community",
     "协议": "protocol",
     "端口": "port",
     "用户名": "username",
@@ -88,68 +70,14 @@ TEMPLATE_FIELD_MAP = {
     "隧道主机1端口": "tunnel1_port",
     "隧道主机1用户名": "tunnel1_username",
     "隧道主机1密码": "tunnel1_password",
-    "隧道主机1本地端口": "tunnel1_local_port",
     "隧道主机2地址": "tunnel2_host",
     "隧道主机2端口": "tunnel2_port",
     "隧道主机2用户名": "tunnel2_username",
     "隧道主机2密码": "tunnel2_password",
-    "隧道主机2本地端口": "tunnel2_local_port",
     "备注": "remark",
 }
 
-EXPORT_FIELDS = [
-    "id",
-    "device_uuid",
-    "name",
-    "system_name",
-    "station",
-    "device_vendor",
-    "device_type",
-    "primary_address",
-    "backup_address",
-    "protocol",
-    "port",
-    "username",
-    "password",
-    "ssh_enabled",
-    "ssh_port",
-    "telnet_enabled",
-    "telnet_port",
-    "ssh_username",
-    "ssh_password",
-    "telnet_username",
-    "telnet_password",
-    "snmp_v1_enabled",
-    "snmp_v2c_enabled",
-    "snmp_v3_enabled",
-    "snmp_port",
-    "snmp_ro_community",
-    "snmp_rw_community",
-    "snmpv3_security_level",
-    "snmpv3_auth_protocol",
-    "snmpv3_auth_password",
-    "snmpv3_priv_protocol",
-    "snmpv3_priv_password",
-    "https_port",
-    "tunnel_enabled",
-    "tunnel1_enabled",
-    "tunnel1_host",
-    "tunnel1_port",
-    "tunnel1_username",
-    "tunnel1_password",
-    "tunnel1_local_port_mode",
-    "tunnel1_local_port",
-    "tunnel2_enabled",
-    "tunnel2_host",
-    "tunnel2_port",
-    "tunnel2_username",
-    "tunnel2_password",
-    "tunnel2_local_port_mode",
-    "tunnel2_local_port",
-    "remark",
-    "created_at",
-    "updated_at",
-]
+EXPORT_FIELDS = list(TEMPLATE_FIELDS)
 
 CSV_IMPORT_ENCODINGS = TEXT_ENCODINGS
 CSV_ENCODING_ERROR = FILE_ENCODING_ERROR
@@ -200,17 +128,32 @@ class DeviceImportExportService:
 
     def export_csv(self, path: Path, devices: Iterable[Device] | None = None) -> None:
         devices = list(devices if devices is not None else self.repository.list())
+        group_names = self._group_names_by_id()
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
             writer.writerow(EXPORT_FIELDS)
             for device in devices:
-                writer.writerow([getattr(device, field) or "" for field in EXPORT_FIELDS])
+                writer.writerow([self._export_value(device, field, group_names) for field in EXPORT_FIELDS])
 
     def export_template_csv(self, path: Path) -> None:
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
             writer.writerow(TEMPLATE_FIELDS)
             writer.writerows(TEMPLATE_EXAMPLE_ROWS)
+
+    def _group_names_by_id(self) -> dict[int, str]:
+        if self.group_repository is None:
+            return {}
+        return {int(group.id): group.name for group in self.group_repository.list() if group.id is not None}
+
+    @staticmethod
+    def _export_value(device: Device, field: str, group_names: dict[int, str]) -> object:
+        mapped = TEMPLATE_FIELD_MAP[field]
+        if mapped == "group_name":
+            return group_names.get(int(device.group_id or 0), "")
+        if mapped == "tunnel_enabled":
+            return "是" if getattr(device, mapped) else "否"
+        return getattr(device, mapped) or ""
 
     def _import_rows(self, rows: Iterable[tuple[int, dict[str, object | None]]]) -> ImportResult:
         created = 0
@@ -300,7 +243,7 @@ class DeviceImportExportService:
         self._normalize_snmpv3_fields(payload)
         if not payload["ssh_enabled"] and not payload["telnet_enabled"]:
             raise ValueError("At least one of SSH or Telnet must be enabled")
-        for field in ("port", "ssh_port", "telnet_port", "snmp_port", "https_port", "tunnel1_port", "tunnel1_local_port", "tunnel2_port", "tunnel2_local_port"):
+        for field in ("port", "ssh_port", "telnet_port", "snmp_port", "https_port", "tunnel1_port", "tunnel2_port"):
             if payload.get(field) is not None:
                 payload[field] = int(payload[field])
                 if field == "https_port" and not 1 <= int(payload[field]) <= 65535:
@@ -354,46 +297,19 @@ class DeviceImportExportService:
 
     @staticmethod
     def _detect_mode(headers: list[str]) -> str:
-        if headers and all(header in TEMPLATE_FIELD_MAP for header in headers):
-            fields = {TEMPLATE_FIELD_MAP[header] for header in headers}
-            if {"name", "primary_address"}.issubset(fields):
-                return "template"
-        if headers == EXPORT_FIELDS:
-            return "export"
-        raise ValueError("Unsupported CSV header: use the current device template or full export CSV")
+        if headers == TEMPLATE_FIELDS:
+            return "template"
+        raise ValueError("当前版本使用全新设备模板，请下载最新模板后重新填写。")
 
     @staticmethod
     def _map_row(headers: list[str], values: list[object], mode: str) -> dict[str, object | None]:
         result: dict[str, object | None] = {}
-        field_map = TEMPLATE_FIELD_MAP if mode == "template" else {field: field for field in EXPORT_FIELDS}
-        if mode == "template" and "分组" in headers and (
-            len(values) == len(headers) - 1 or DeviceImportExportService._looks_like_legacy_template_row(headers, values)
-        ):
-            values = list(values)
-            values.insert(headers.index("分组"), None)
+        field_map = TEMPLATE_FIELD_MAP
         for index, header in enumerate(headers):
             field = field_map[header]
             value = values[index] if index < len(values) else None
             result[field] = DeviceImportExportService._clean_value(value)
         return result
-
-    @staticmethod
-    def _looks_like_legacy_template_row(headers: list[str], values: list[object]) -> bool:
-        if "分组" not in headers or len(values) != len(headers):
-            return False
-        if "Telnet端口" not in headers:
-            return False
-        telnet_port_index = headers.index("Telnet端口")
-        if telnet_port_index >= len(values):
-            return False
-        text = str(values[telnet_port_index] or "").strip()
-        if not text:
-            return False
-        try:
-            int(text)
-            return False
-        except ValueError:
-            return True
 
     @staticmethod
     def _clean_value(value: object) -> object | None:

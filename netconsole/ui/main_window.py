@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self.preload_failures: dict[str, str] = {}
         self.app_is_exiting = False
         self.tray_notice_shown_this_session = False
+        self.sidebar_collapsed = self._read_sidebar_collapsed_setting()
 
         self.navigation = Navigation(i18n)
         self.stack = QStackedWidget()
@@ -100,6 +101,8 @@ class MainWindow(QMainWindow):
         self.version_button = QPushButton()
         self.version_button.setObjectName("versionButton")
         self.data_disk_button = QPushButton()
+        self.sidebar_toggle_button = QPushButton()
+        self.sidebar_toggle_button.setObjectName("sidebarToggleButton")
         self.data_disk_dialog = None
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
@@ -115,6 +118,7 @@ class MainWindow(QMainWindow):
         self.about_button.clicked.connect(self.show_about_dialog)
         self.version_button.clicked.connect(self.show_changelog_dialog)
         self.data_disk_button.clicked.connect(self.show_data_disk_manager)
+        self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
 
         top_bar = QHBoxLayout()
         top_bar.addWidget(self.site_label)
@@ -130,12 +134,19 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.stack)
 
         root_layout = QHBoxLayout()
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        self.left_panel = QWidget()
+        self.left_panel.setObjectName("leftSidebar")
+        left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        toggle_row = QHBoxLayout()
+        toggle_row.setContentsMargins(6, 6, 6, 0)
+        toggle_row.addStretch(1)
+        toggle_row.addWidget(self.sidebar_toggle_button)
+        left_layout.addLayout(toggle_row)
         left_layout.addWidget(self.navigation, 1)
-        left_layout.addWidget(self._system_panel())
-        root_layout.addWidget(left_panel)
+        self.system_panel = self._system_panel()
+        left_layout.addWidget(self.system_panel)
+        root_layout.addWidget(self.left_panel)
         content = QWidget()
         content.setLayout(content_layout)
         root_layout.addWidget(content, 1)
@@ -148,6 +159,7 @@ class MainWindow(QMainWindow):
         self.apply_initial_geometry()
         self.apply_style(self.current_theme)
         self.retranslate()
+        self.set_sidebar_collapsed(self.sidebar_collapsed, persist=False)
         self._setup_tray()
         window_manager.set_main_window(self)
         app_logger.log_info("DEVICE_PAGE_OPENED", self.site.name)
@@ -401,6 +413,39 @@ class MainWindow(QMainWindow):
         self.data_disk_dialog.raise_()
         self.data_disk_dialog.activateWindow()
 
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar_collapsed(not self.sidebar_collapsed, persist=True)
+
+    def set_sidebar_collapsed(self, collapsed: bool, *, persist: bool = True) -> None:
+        self.sidebar_collapsed = bool(collapsed)
+        self._apply_sidebar_visual_state()
+        if persist:
+            self.settings.set_value("sidebar_collapsed", self.sidebar_collapsed)
+
+    def _read_sidebar_collapsed_setting(self) -> bool:
+        value = self.settings.get_value("sidebar_collapsed", False)
+        return value if isinstance(value, bool) else False
+
+    def _apply_sidebar_visual_state(self) -> None:
+        width = Navigation.COLLAPSED_WIDTH if self.sidebar_collapsed else Navigation.EXPANDED_WIDTH
+        self.left_panel.setFixedWidth(width)
+        self.navigation.set_collapsed(self.sidebar_collapsed)
+        self.sidebar_toggle_button.setText(">>" if self.sidebar_collapsed else "<<")
+        self.sidebar_toggle_button.setToolTip("Expand navigation" if self.sidebar_collapsed else "Collapse navigation")
+        if self.sidebar_collapsed:
+            self.light_theme_button.setText("L")
+            self.dark_theme_button.setText("D")
+            self.version_button.setText(version_info.APP_VERSION_DISPLAY)
+            self.data_disk_button.setText("Disk")
+        else:
+            self.light_theme_button.setText(self.i18n.t("theme.light"))
+            self.dark_theme_button.setText(self.i18n.t("theme.dark"))
+            self.version_button.setText(version_info.APP_VERSION_DISPLAY)
+            self.data_disk_button.setText(self.i18n.t("data_disk.button"))
+        self.light_theme_button.setToolTip(self.i18n.t("theme.light"))
+        self.dark_theme_button.setToolTip(self.i18n.t("theme.dark"))
+        self.data_disk_button.setToolTip(self.i18n.t("data_disk.title"))
+
     def set_always_on_top(self, enabled: bool) -> None:
         window_manager.apply_main_window_on_top(enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
@@ -472,6 +517,7 @@ class MainWindow(QMainWindow):
             retranslate = getattr(page, "retranslate", None)
             if callable(retranslate):
                 retranslate()
+        self._apply_sidebar_visual_state()
         self._update_tray_text()
 
     def apply_style(self, theme: str) -> None:

@@ -1,4 +1,6 @@
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +12,7 @@ from netconsole.services.device_import_export import DeviceImportExportService
 from netconsole.services.file_transfer_service import build_h3c_sftp_enable_commands
 from netconsole.services import netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, connection_targets, prepared_connection_target, test_device_connection
+from netconsole.services.ssh_tunnel import TunnelManager
 
 
 def _repository(tmp_path: Path) -> DeviceRepository:
@@ -42,19 +45,15 @@ def test_device_repository_uses_primary_backup_and_system_name(tmp_path):
     assert "sysname" not in columns
 
 
-def test_old_template_address_fields_map_to_primary_address(tmp_path):
+def test_old_template_address_fields_are_rejected(tmp_path):
     repository = _repository(tmp_path)
     service = DeviceImportExportService(repository)
     path = tmp_path / "old.csv"
     path.write_text("设备名称,IP,用户名,密码\nSW1,10.0.0.1,admin,pwd\n", encoding="utf-8-sig")
 
-    result = service.import_csv(path)
-    saved = repository.list()[0]
-
-    assert result.created == 1
-    assert saved.primary_address == "10.0.0.1"
-    assert saved.username == "admin"
-    assert saved.password == "pwd"
+    with pytest.raises(ValueError, match="最新模板"):
+        service.import_csv(path)
+    assert repository.list() == []
 
 
 def test_connection_manager_orders_primary_backup_then_complete_tunnels():
@@ -126,6 +125,27 @@ def test_connection_manager_includes_two_complete_tunnels_when_enabled():
     assert [attempt.via_tunnel for attempt in attempts] == [False, False, True, True]
 
 
+def test_connection_manager_ignores_persisted_tunnel_local_ports():
+    device = Device(
+        primary_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        tunnel_enabled=1,
+        tunnel1_enabled=1,
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+        tunnel1_local_port=10022,
+        tunnel2_enabled=1,
+        tunnel2_host="jump2",
+        tunnel2_username="jump",
+        tunnel2_local_port=10023,
+    )
+
+    tunnels = [attempt.tunnel for attempt in ConnectionManager().iter_attempts(device) if attempt.via_tunnel]
+
+    assert [tunnel.local_port for tunnel in tunnels if tunnel is not None] == [None, None]
+
+
 def test_connection_manager_prefers_ui_ssh_telnet_fields_over_compat_protocol_port():
     ssh_device = Device(
         primary_address="10.0.0.1",
@@ -193,6 +213,63 @@ def test_tunnel_target_prepares_local_netmiko_endpoint(monkeypatch):
     assert params["host"] == "127.0.0.1"
     assert params["port"] == 10022
     assert closed == [True]
+
+
+def test_tunnel_manager_binds_auto_local_port_and_closes(monkeypatch):
+    bound: list[tuple[str, int]] = []
+    closed: list[str] = []
+
+    class FakeClient:
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **_kwargs):
+            pass
+
+        def get_transport(self):
+            return object()
+
+        def close(self):
+            closed.append("client")
+
+    class FakeServer:
+        daemon_threads = False
+
+        def __init__(self, address, _handler):
+            bound.append(address)
+            self.server_address = ("127.0.0.1", 34567)
+
+        def serve_forever(self):
+            pass
+
+        def shutdown(self):
+            closed.append("shutdown")
+
+        def server_close(self):
+            closed.append("server")
+
+    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setattr("netconsole.services.ssh_tunnel.socketserver.ThreadingTCPServer", FakeServer)
+
+    profile = ConnectionManager().iter_attempts(
+        Device(
+            primary_address="10.0.0.1",
+            ssh_enabled=1,
+            ssh_username="admin",
+            tunnel_enabled=1,
+            tunnel1_enabled=1,
+            tunnel1_host="jump",
+            tunnel1_username="jump",
+            tunnel1_local_port=10022,
+        )
+    )[-1].tunnel
+
+    session = TunnelManager().open_tunnel(profile, "10.0.0.1", 22)
+    session.close()
+
+    assert bound == [("127.0.0.1", 0)]
+    assert session.local_port == 34567
+    assert {"shutdown", "server", "client"}.issubset(set(closed))
 
 
 def test_test_device_connection_stops_after_primary_direct_success(monkeypatch):

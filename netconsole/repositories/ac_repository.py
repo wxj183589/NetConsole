@@ -4,6 +4,8 @@ from datetime import datetime
 import re
 from uuid import uuid4
 
+from netconsole.utils.station_normalize import normalize_station_value
+
 from netconsole.core.database import Database
 from netconsole.services.trackside_ap_business import parse_vlan_set
 
@@ -344,7 +346,11 @@ class AcRepository:
                 serial_number = str(row.get("serial_number") or "").strip()
                 ap_uuid = str(row.get("ap_uuid") or uuid_by_serial.get(serial_number) or uuid4())
                 current_uuids.append(ap_uuid)
-                payload = self._payload(FIT_AP_RESOURCE_FIELDS, {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid})
+                resource_data = {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid}
+                station = normalize_station_value(resource_data)
+                if station and not str(resource_data.get("site") or "").strip():
+                    resource_data["site"] = station
+                payload = self._payload(FIT_AP_RESOURCE_FIELDS, resource_data)
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 columns = ", ".join(FIT_AP_RESOURCE_FIELDS)
@@ -993,7 +999,7 @@ class AcRepository:
                 "state": payload.get("state") or existing_data.get("state"),
                 "state_raw": payload.get("state_raw") or payload.get("state") or existing_data.get("state_raw"),
                 "state_display": state_display or existing_data.get("state_display"),
-                "station": self._non_empty(payload.get("site_name") or payload.get("site"), existing_data.get("station")),
+                "station": self._non_empty(existing_data.get("station"), normalize_station_value(payload)),
                 "milestone": self._non_empty(payload.get("mileage"), existing_data.get("milestone")),
                 "direction": self._non_empty(payload.get("direction"), existing_data.get("direction")),
                 "location_note": self._non_empty(payload.get("location_note"), existing_data.get("location_note")),
@@ -1028,7 +1034,7 @@ class AcRepository:
                 "snapshot_uuid": str(uuid4()),
                 "ap_id": payload.get("apid") or payload.get("ap_id"),
                 "ap_mac": self._normalized_ap_mac(payload),
-                "station": payload.get("site_name") or payload.get("site"),
+                "station": normalize_station_value(payload),
                 "raw_source_type": "fit_ap_resource",
                 "created_at": now,
             },

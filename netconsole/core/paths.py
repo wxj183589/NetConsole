@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SITE_DIRS = ("db", "raw", "parsed", "reports", "backups", "tasks", "metrics")
+SITE_DIRS = ("db", "parsed", "reports", "backups", "tasks", "metrics")
 
 
 def _default_app_root() -> Path:
@@ -192,7 +192,6 @@ class PathResolver:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
             (site_path / dirname).mkdir(parents=True, exist_ok=True)
-        (site_path / "raw" / "collect").mkdir(parents=True, exist_ok=True)
         self.site_mesh_root(site_name).mkdir(parents=True, exist_ok=True)
         self.trackside_ap_optical_sessions_root(site_name).mkdir(parents=True, exist_ok=True)
         self.trackside_ap_update_sessions_root(site_name).mkdir(parents=True, exist_ok=True)

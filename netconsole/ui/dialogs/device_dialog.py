@@ -52,13 +52,11 @@ TUNNEL_FIELDS = (
     "tunnel1_port",
     "tunnel1_username",
     "tunnel1_password",
-    "tunnel1_local_port",
     "tunnel2_enabled",
     "tunnel2_host",
     "tunnel2_port",
     "tunnel2_username",
     "tunnel2_password",
-    "tunnel2_local_port",
 )
 SNMP_FIELDS = (
     "snmp_v1_enabled",
@@ -152,13 +150,11 @@ class DeviceDialog(QDialog):
         self._add_line(tunnel1_form, "tunnel1_port")
         self._add_line(tunnel1_form, "tunnel1_username")
         self._add_line(tunnel1_form, "tunnel1_password", password=True)
-        self._add_line(tunnel1_form, "tunnel1_local_port")
         self._add_checkbox(tunnel2_form, "tunnel2_enabled")
         self._add_line(tunnel2_form, "tunnel2_host")
         self._add_line(tunnel2_form, "tunnel2_port")
         self._add_line(tunnel2_form, "tunnel2_username")
         self._add_line(tunnel2_form, "tunnel2_password", password=True)
-        self._add_line(tunnel2_form, "tunnel2_local_port")
         scroll_layout.addWidget(self.tunnel_group)
 
         self.snmp_toggle = QToolButton()

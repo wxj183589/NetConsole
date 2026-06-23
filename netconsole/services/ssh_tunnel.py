@@ -40,7 +40,7 @@ class TunnelManager:
         import paramiko
 
         local_host = "127.0.0.1"
-        local_port = int(tunnel.local_port or 0)
+        local_port = 0
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:

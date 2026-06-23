@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -103,7 +102,7 @@ class TracksideSkippedTarget:
 class TracksideDeviceCollectionResult:
     target: TracksideOpticalTarget
     success: bool
-    raw_log_path: str
+    raw_log_path: str = ""
     parsed_count: int = 0
     error_message: str | None = None
     rows: list[dict[str, object | None]] = field(default_factory=list)
@@ -266,13 +265,9 @@ def collect_trackside_optical(
     skipped = [*switch_skipped]
     session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     session_dir = paths.trackside_ap_update_session_dir(site_name, session_id)
-    raw_dir = session_dir / "raw"
-    fit_ap_resource_raw_dir = raw_dir / "ac_fit_ap_resource"
-    fit_ap_optical_raw_dir = raw_dir / "ac_fit_ap_optical"
-    station_switch_raw_dir = raw_dir / "station_switch_optical"
     parsed_dir = session_dir / "parsed"
     exports_dir = session_dir / "exports"
-    for directory in (fit_ap_resource_raw_dir, fit_ap_optical_raw_dir, station_switch_raw_dir, parsed_dir, exports_dir):
+    for directory in (parsed_dir, exports_dir):
         directory.mkdir(parents=True, exist_ok=True)
     started_at = _now()
     cancel_event = cancel_event or Event()
@@ -284,14 +279,14 @@ def collect_trackside_optical(
     if progress_callback is not None:
         progress_callback(0, total_units)
     with ThreadPoolExecutor(max_workers=1) as branch_executor:
-        fit_future = branch_executor.submit(_collect_fit_ap_optical_subtasks, repository, site_name, paths, session_dir, concurrency, cancel_event)
+        fit_future = branch_executor.submit(_collect_fit_ap_optical_subtasks, repository, site_name, paths, concurrency, cancel_event)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for target in targets:
                 if cancel_event.is_set():
                     skipped.append(TracksideSkippedTarget(target.name, target.target_type, "cancelled", target.host))
                     continue
-                futures.append(executor.submit(_collect_one_target, target, station_switch_raw_dir, session_dir))
+                futures.append(executor.submit(_collect_one_target, target))
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
@@ -343,7 +338,6 @@ def _collect_fit_ap_optical_subtasks(
     repository: DeviceRepository,
     site_name: str,
     paths: PathResolver,
-    session_dir: Path,
     concurrency: int,
     cancel_event: Event,
 ):
@@ -355,7 +349,6 @@ def _collect_fit_ap_optical_subtasks(
         if cancel_event.is_set():
             continue
         resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths)
-        _copy_ac_raw(paths, site_name, resource_result.collect_run_uuid, session_dir / "raw" / "ac_fit_ap_resource")
         if not resource_result.success:
             skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.primary_address))
             continue
@@ -371,49 +364,25 @@ def _collect_fit_ap_optical_subtasks(
             continue
         result = collect_h3c_fit_ap_optical(ac_device, site_name, repository=ac_repository, paths=paths, max_workers=concurrency)
         results.append(result)
-        _copy_ac_raw(paths, site_name, result.collect_run_uuid, session_dir / "raw" / "ac_fit_ap_optical")
     return results, total, skipped
 
 
-def _copy_ac_raw(paths: PathResolver, site_name: str, collect_run_uuid: str, target_root: Path) -> None:
-    source = paths.site_dir(site_name) / "raw" / "ac" / collect_run_uuid
-    target = target_root / collect_run_uuid
-    if not source.exists():
-        return
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(source, target)
-
-
-def _collect_one_target(target: TracksideOpticalTarget, raw_dir: Path, session_dir: Path) -> TracksideDeviceCollectionResult:
-    raw_log = raw_dir / f"{_safe_file_name(target.name)}__{target.device_id or target.host.replace('.', '_')}.log"
+def _collect_one_target(target: TracksideOpticalTarget) -> TracksideDeviceCollectionResult:
     connection = None
     command_outputs: dict[str, str] = {}
-    lines = [
-        f"Device Name: {target.name}",
-        f"Device IP: {target.host}",
-        f"Device Type: {target.target_type}",
-        f"Protocol: {target.protocol}",
-        f"Collected At: {_now()}",
-        "",
-    ]
     try:
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(choose_connection_target(target.device)))  # type: ignore[arg-type]
         for command in target.commands:
             output = clean_h3c_device_text(safe_send_command(connection, command, read_timeout=120, strip_prompt=False, strip_command=False, use_timing=True))
             command_outputs[command] = output
-            lines.extend([f"===== COMMAND: {command} =====", output, ""])
         interfaces = parse_interfaces(command_outputs.get("display interface", ""))
         parsed = parse_transceiver_diagnosis(command_outputs.get("display transceiver diagnosis interface", ""))
         lldp_rows = parse_lldp_neighbors(command_outputs.get("display lldp neighbor-information list", ""))
-        rows = [_result_row(target, row, session_dir, raw_log) for row in parsed]
-        raw_log.write_text("\n".join(lines), encoding="utf-8")
-        return TracksideDeviceCollectionResult(target, True, str(raw_log), len(rows), rows=rows, interfaces=interfaces, lldp_rows=lldp_rows)
+        rows = [_result_row(target, row) for row in parsed]
+        return TracksideDeviceCollectionResult(target, True, "", len(rows), rows=rows, interfaces=interfaces, lldp_rows=lldp_rows)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), target.device)
-        lines.extend(["===== ERROR =====", message, ""])
-        raw_log.write_text("\n".join(lines), encoding="utf-8")
-        return TracksideDeviceCollectionResult(target, False, str(raw_log), 0, message)
+        return TracksideDeviceCollectionResult(target, False, "", 0, message)
     finally:
         if connection is not None:
             try:
@@ -517,7 +486,7 @@ def _write_sqlite_rows(db_path: Path, result: TracksideDeviceCollectionResult) -
         conn.commit()
 
 
-def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None], session_dir: Path, raw_log: Path) -> dict[str, object | None]:
+def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None]) -> dict[str, object | None]:
     collected_at = _now()
     severity = compute_optical_severity(
         {
@@ -543,7 +512,7 @@ def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None]
         "tx_status": "unknown",
         "collected_at": collected_at,
         "updated_at": collected_at,
-        "raw_log_path": str(raw_log.relative_to(session_dir)),
+        "raw_log_path": "",
     }
 
 
@@ -561,11 +530,6 @@ def _find_related_device(ap: dict[str, object | None], devices: list[Device]) ->
 
 def _write_session_meta(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _safe_file_name(value: str) -> str:
-    text = re.sub(r'[\\/:*?"<>|]+', "_", value.strip())
-    return text or "device"
 
 
 def _now() -> str:

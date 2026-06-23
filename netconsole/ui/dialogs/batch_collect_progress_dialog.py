@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
@@ -33,22 +31,19 @@ class BatchCollectProgressDialog(QDialog):
         self.current_label = make_text_selectable(QLabel())
         self.progress = QProgressBar()
         self.progress.setRange(0, total)
-        self.table = QTableWidget(total, 6)
-        set_table_column_fields(self.table, ["device_name", "primary_address", "status", "elapsed", "raw_log_path", "error_message"])
+        self.table = QTableWidget(total, 5)
+        set_table_column_fields(self.table, ["device_name", "primary_address", "status", "elapsed", "error_message"])
         configure_readonly_table(self.table)
         attach_table_context_menu(self.table, self.i18n.language, include_history=False)
         self.copy_button = QPushButton()
-        self.open_raw_button = QPushButton()
         self.close_button = QPushButton()
         self.close_button.clicked.connect(self.close)
         self.copy_button.clicked.connect(self.copy_results)
-        self.open_raw_button.clicked.connect(self.open_selected_raw_log)
 
         buttons = QHBoxLayout()
         buttons.addWidget(QLabel(self.i18n.t("batch_collect.concurrency")))
         buttons.addWidget(self.concurrency_combo)
         buttons.addWidget(self.copy_button)
-        buttons.addWidget(self.open_raw_button)
         buttons.addStretch(1)
         buttons.addWidget(self.close_button)
 
@@ -73,18 +68,16 @@ class BatchCollectProgressDialog(QDialog):
                 self.i18n.t("field.primary_address"),
                 self.i18n.t("field.status"),
                 self.i18n.t("batch_collect.elapsed"),
-                self.i18n.t("details.raw_log_path"),
                 self.i18n.t("batch_collect.error_message"),
             ]
         )
         self.copy_button.setText(self.i18n.t("batch_collect.copy_results"))
-        self.open_raw_button.setText(self.i18n.t("batch_collect.open_raw_log"))
         self.close_button.setText(self.i18n.t("dialog.close"))
 
     def mark_running(self, row: int, device_name: str, primary_address: str) -> None:
         self.running += 1
         self.current_label.setText(self.i18n.t("batch_collect.current", device=device_name))
-        self._set_row(row, [device_name, primary_address, self.i18n.t("batch_collect.status.running"), "", "", ""])
+        self._set_row(row, [device_name, primary_address, self.i18n.t("batch_collect.status.running"), "", ""])
         self.update_summary()
 
     def add_result(self, row: int, item: BatchCollectItemResult) -> None:
@@ -97,7 +90,7 @@ class BatchCollectProgressDialog(QDialog):
             self.failed += 1
             status = self.i18n.t("batch_collect.status.failed")
         elapsed = f"{item.elapsed_ms}ms" if item.elapsed_ms is not None else ""
-        self._set_row(row, [item.device_name, item.primary_address, status, elapsed, item.raw_log_path or "", "" if item.success else item.result_text])
+        self._set_row(row, [item.device_name, item.primary_address, status, elapsed, "" if item.success else item.result_text])
         self.progress.setValue(self.completed)
         self.current_label.setText(self.i18n.t("batch_collect.current", device=item.device_name))
         self.update_summary()
@@ -121,17 +114,6 @@ class BatchCollectProgressDialog(QDialog):
             if any(values):
                 lines.append("\t".join(values))
         QApplication.clipboard().setText("\n".join(lines))
-
-    def open_selected_raw_log(self) -> None:
-        row = self.table.currentRow()
-        item = self.table.item(row, 4) if row >= 0 else None
-        if not item or not item.text():
-            return
-        path = Path(item.text())
-        if path.exists():
-            os.startfile(str(path))
-        else:
-            QApplication.clipboard().setText(item.text())
 
     def _set_row(self, row: int, values: list[str]) -> None:
         for column, value in enumerate(values):

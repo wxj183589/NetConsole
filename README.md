@@ -269,12 +269,7 @@ SW02  10.0.0.53    admin / Admin@123
 4. 打开 AC、SW01 或 SW02 的设备详情。
 5. 点击“刷新”。
 6. 确认概览、接口、光模块和 LLDP 邻居数据刷新。
-7. 确认原始日志生成在：
-
-```text
-data/sites/<site>/raw/collect/<collect_run_uuid>/<device_uuid>.log
-data/sites/<site>/raw/collect/<collect_run_uuid>/<device_uuid>_commands.jsonl
-```
+7. 默认不会生成采集回显文本文件；刷新结果写入 SQLite 历史表。仅在开发调试时显式设置 `NETCONSOLE_PERSIST_RAW_LOGS=1` 才会保留历史调试文件。
 
 H3C 详情刷新常用命令：
 

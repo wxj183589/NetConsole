@@ -25,7 +25,6 @@ INTERFACE_HISTORY_COLUMNS = (
     ("details.interface_ip", "ip_address"),
     ("details.mac_address", "mac_address"),
     ("details.vlan", "vlan"),
-    ("history.raw_log_path", "raw_log_path"),
 )
 
 OPTICAL_HISTORY_COLUMNS = (
@@ -42,7 +41,6 @@ OPTICAL_HISTORY_COLUMNS = (
     ("details.wavelength", "wavelength"),
     ("details.transmission_distance", "transmission_distance"),
     ("field.status", "status"),
-    ("history.raw_log_path", "raw_log_path"),
 )
 
 LLDP_HISTORY_COLUMNS = (
@@ -51,7 +49,6 @@ LLDP_HISTORY_COLUMNS = (
     ("details.neighbor_sysname", "neighbor_sysname"),
     ("details.neighbor_mac", "neighbor_mac"),
     ("details.neighbor_interface", "neighbor_interface"),
-    ("history.raw_log_path", "raw_log_path"),
 )
 
 
@@ -152,6 +149,5 @@ def _history_column_min_widths(columns: tuple[tuple[str, str], ...]) -> dict[int
         "module_model": 180,
         "module_serial_number": 180,
         "description": 180,
-        "raw_log_path": 220,
     }
     return {index: widths[field] for index, (_label_key, field) in enumerate(columns) if field in widths}

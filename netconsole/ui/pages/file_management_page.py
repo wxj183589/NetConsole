@@ -114,6 +114,7 @@ class CancelToken:
 class SftpConnectWorker(QThread):
     connected = Signal(object, str)
     failed = Signal(str)
+    status_changed = Signal(str)
 
     def __init__(self, site_name: str, device: Device, paths: PathResolver, parent=None) -> None:
         super().__init__(parent)
@@ -124,7 +125,7 @@ class SftpConnectWorker(QThread):
     def run(self) -> None:
         service = FileTransferService(self.site_name, self.paths)
         try:
-            root = service.connect(self.device)
+            root = service.connect(self.device, self.status_changed.emit)
             self.connected.emit(service, root)
         except Exception as exc:
             service.disconnect()
@@ -479,7 +480,7 @@ class FileManagementPage(QWidget):
 
     def default_local_dir(self, device: Device | None) -> Path:
         name = safe_device_name(device.name or device.system_name or "device") if device is not None else "device"
-        return self.paths.ensure_site_dirs(self.site_name) / "raw" / "files" / name
+        return self.paths.ensure_site_dirs(self.site_name) / "downloads" / "files" / name
 
     def connect_sftp(self) -> None:
         device = self.current_device()
@@ -490,6 +491,7 @@ class FileManagementPage(QWidget):
         self.update_connection_status("file_management.status.connecting")
         self.connect_button.setEnabled(False)
         self.connect_worker = SftpConnectWorker(self.site_name, device, self.paths, self)
+        self.connect_worker.status_changed.connect(self.update_connection_status)
         self.connect_worker.connected.connect(self.on_connected)
         self.connect_worker.failed.connect(self.on_connect_failed)
         self.connect_worker.finished.connect(self.connect_worker.deleteLater)

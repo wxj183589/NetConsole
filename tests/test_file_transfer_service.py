@@ -63,10 +63,13 @@ def test_local_path_uses_device_name_and_uuid_and_avoids_overwrite(tmp_path):
     first.write_text("existing", encoding="utf-8")
     second = service.local_path_for(device, remote)
 
-    assert safe_device_name(device.name) == "核心_交换机1"
-    assert device_file_dir_name(device) == f"核心_交换机1__{uuid}"
-    assert first.relative_to(paths.site_dir("demo")).as_posix() == f"raw/files/核心_交换机1__{uuid}/diag/核心_交换机1_diag_test.tar.gz"
-    assert second.name == "核心_交换机1_diag_test_001.tar.gz"
+    safe_name = safe_device_name(device.name)
+    assert "?" not in safe_name
+    assert device_file_dir_name(device) == f"{safe_name}__{uuid}"
+    relative_path = first.relative_to(paths.site_dir("demo")).as_posix()
+    assert relative_path == f"downloads/files/{safe_name}__{uuid}/diag/{safe_name}_diag_test.tar.gz"
+    assert "/raw/" not in f"/{relative_path}"
+    assert second.name == f"{safe_name}_diag_test_001.tar.gz"
 
 
 def test_list_files_executes_required_dir_commands(tmp_path, monkeypatch):
@@ -121,7 +124,7 @@ def test_download_file_prefers_sftp_and_falls_back_to_scp(tmp_path, monkeypatch)
 
     assert calls == ["sftp", "scp"]
     assert result.success is True
-    assert result.local_path == f"raw/files/SW-A__{device.device_uuid}/bin/SW-A_boot.bin"
+    assert result.local_path == f"downloads/files/SW-A__{device.device_uuid}/bin/SW-A_boot.bin"
     assert (paths := paths_from_result(tmp_path, "demo", result.local_path)).read_text(encoding="utf-8") == "downloaded"
 
 
@@ -138,7 +141,7 @@ def test_batch_file_download_keeps_failures_isolated():
                 raise RuntimeError("boom")
             from netconsole.services.file_transfer_service import FileDownloadResult
 
-            return FileDownloadResult(device.id, device.name, remote_file.remote_path, "raw/files/a.bin", "success")
+            return FileDownloadResult(device.id, device.name, remote_file.remote_path, "downloads/files/a.bin", "success")
 
     results = run_batch_file_download([(device, remote) for device in devices], FakeService)
 

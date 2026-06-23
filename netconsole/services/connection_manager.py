@@ -61,8 +61,8 @@ class ConnectionManager:
                 port=int(device.tunnel1_port or 22),
                 username=str(device.tunnel1_username or ""),
                 password=str(device.tunnel1_password or ""),
-                local_port_mode=str(device.tunnel1_local_port_mode or "auto"),
-                local_port=device.tunnel1_local_port,
+                local_port_mode="auto",
+                local_port=None,
             ),
             TunnelProfile(
                 label="tunnel2",
@@ -71,8 +71,8 @@ class ConnectionManager:
                 port=int(device.tunnel2_port or 22),
                 username=str(device.tunnel2_username or ""),
                 password=str(device.tunnel2_password or ""),
-                local_port_mode=str(device.tunnel2_local_port_mode or "auto"),
-                local_port=device.tunnel2_local_port,
+                local_port_mode="auto",
+                local_port=None,
             ),
         )
         return DeviceConnectionProfile(

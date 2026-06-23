@@ -22,7 +22,6 @@ AP_RADIO_HISTORY_COLUMNS = (
     ("ap.channel", "channel"),
     ("ap.bandwidth", "bandwidth"),
     ("ap.tx_power", "tx_power"),
-    ("history.raw_log_path", "raw_log_path"),
 )
 AP_LLDP_HISTORY_COLUMNS = (
     ("history.collected_at", "collected_at"),
@@ -31,7 +30,6 @@ AP_LLDP_HISTORY_COLUMNS = (
     ("ap.neighbor_interface", "neighbor_interface"),
     ("ap.neighbor_mac", "neighbor_mac"),
     ("ap.neighbor_device_name", "neighbor_device_name"),
-    ("history.raw_log_path", "raw_log_path"),
 )
 AP_OPTICAL_HISTORY_COLUMNS = (
     ("history.collected_at", "collected_at"),
@@ -56,7 +54,6 @@ AP_OPTICAL_HISTORY_COLUMNS = (
     ("details.wavelength", "wavelength"),
     ("details.transmission_distance", "transmission_distance"),
     ("details.connector_type", "connector_type"),
-    ("history.raw_log_path", "raw_log_path"),
 )
 OPTICAL_HISTORY_COLORS = {
     "normal": "#dcfce7",

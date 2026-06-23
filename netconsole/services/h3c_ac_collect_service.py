@@ -116,6 +116,7 @@ def collect_h3c_ac_resources(
     raw_log_file = run_dir / f"{ac_device.device_uuid}.log"
     commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
     relative_raw_log_path = f"raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log" if persist_raw_logs else ""
+    result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
 
     fact_repository.create_collect_run(
         {
@@ -135,7 +136,7 @@ def collect_h3c_ac_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
 
     target = choose_connection_target(ac_device)
     if target is None:
@@ -143,7 +144,7 @@ def collect_h3c_ac_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
 
     connection = None
     try:
@@ -179,7 +180,7 @@ def collect_h3c_ac_resources(
             status == "success",
             str(ac_device.device_uuid),
             collect_run_uuid,
-            str(raw_log_file),
+            result_raw_log_path,
             summary_updated,
             len(resources),
             https_port,
@@ -195,7 +196,7 @@ def collect_h3c_ac_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
     finally:
         if connection is not None:
             _disconnect(connection)

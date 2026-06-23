@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
-from netconsole.services.rail_transit.trackside_optical_history import TracksideOpticalHistoryService
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
@@ -26,7 +24,6 @@ INTERFACE_HISTORY_COLUMNS = (
     ("details.voltage", "voltage"),
     ("details.bias_current", "bias_current"),
     ("trackside_ap.optical_status", "optical_status"),
-    ("trackside_ap.raw_log", "raw_log_path"),
 )
 
 
@@ -53,7 +50,6 @@ class TracksideInterfaceHistoryDialog(QDialog):
 
         self.close_button = QPushButton()
         self.export_button = QPushButton()
-        self.open_raw_button = QPushButton()
         self.pin_button = QPushButton()
         self.pin_button.setCheckable(True)
         self.status_label = QLabel()
@@ -78,7 +74,6 @@ class TracksideInterfaceHistoryDialog(QDialog):
         actions = QHBoxLayout()
         actions.addWidget(self.close_button)
         actions.addWidget(self.export_button)
-        actions.addWidget(self.open_raw_button)
         actions.addWidget(self.pin_button)
         actions.addStretch(1)
         left = QWidget()
@@ -96,7 +91,6 @@ class TracksideInterfaceHistoryDialog(QDialog):
         self.table_state = TableColumnState(settings, self.table, "rail_transit/trackside_interface_history/table_column_widths", default_widths())
         self.detail_state = TableColumnState(settings, self.detail_table, "rail_transit/trackside_interface_history/detail_column_widths", {"name": 180, "value": 360})
         self.export_button.clicked.connect(self.export_history)
-        self.open_raw_button.clicked.connect(self.open_raw_log_folder)
         self.pin_button.toggled.connect(self.set_always_on_top)
         self.close_button.clicked.connect(self.close)
         self.pagination.pageChanged.connect(self.set_page)
@@ -110,7 +104,6 @@ class TracksideInterfaceHistoryDialog(QDialog):
     def retranslate(self) -> None:
         self.close_button.setText(self.i18n.t("dialog.close"))
         self.export_button.setText(self.i18n.t("trackside_ap.export_history"))
-        self.open_raw_button.setText(self.i18n.t("trackside_ap.open_raw_log_folder"))
         self.pin_button.setText(self.i18n.t("window.always_on_top"))
         self.table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in INTERFACE_HISTORY_COLUMNS])
         self.detail_table.setHorizontalHeaderLabels([self.i18n.t("trackside_ap.field_name"), self.i18n.t("trackside_ap.field_value")])
@@ -158,12 +151,6 @@ class TracksideInterfaceHistoryDialog(QDialog):
         self.page_size = page_size
         self.page = 1
         self.refresh_table()
-
-    def open_raw_log_folder(self) -> None:
-        record = self.current_record()
-        directory = TracksideOpticalHistoryService.raw_log_dir(record or {})
-        if directory is not None and directory.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def export_history(self) -> None:
         path = select_export_path(self, self.i18n.t("trackside_ap.export_history"), "interface_history.xlsx", EXCEL_FILTER)
@@ -237,5 +224,4 @@ def default_widths() -> dict[str, int]:
         "voltage": 100,
         "bias_current": 110,
         "optical_status": 130,
-        "raw_log_path": 260,
     }

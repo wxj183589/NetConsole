@@ -16,6 +16,7 @@ from netconsole.core.version import APP_AUTHOR, APP_VERSION, REPOSITORY_URLS
 from netconsole.ui.dialogs.about_dialog import AboutRepositoryDialog
 from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
 from netconsole.ui.main_window import MainWindow
+from netconsole.ui.navigation import Navigation
 from netconsole.ui.theme import stylesheet_for_theme
 from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, CollectLogDialog, collect_search_matches, read_collect_log_text
 from netconsole.ui.table_utils import make_text_selectable
@@ -171,6 +172,69 @@ def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
     assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
     window.app_is_exiting = True
     window.close()
+
+
+def test_main_window_sidebar_collapses_expands_and_preserves_selection(tmp_path):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    ac_row = next(index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "ac")
+    window.navigation.setCurrentRow(ac_row)
+    before_page = window.stack.currentWidget()
+
+    assert not window.sidebar_collapsed
+    assert window.left_panel.width() == Navigation.EXPANDED_WIDTH
+
+    window.sidebar_toggle_button.click()
+
+    assert window.sidebar_collapsed
+    assert window.left_panel.width() == Navigation.COLLAPSED_WIDTH
+    assert window.navigation.currentRow() == ac_row
+    assert window.stack.currentWidget() is before_page
+    assert window.navigation.item(ac_row).toolTip() == "AC Management"
+    assert window.navigation.item(ac_row).text() == "AC"
+
+    window.sidebar_toggle_button.click()
+
+    assert not window.sidebar_collapsed
+    assert window.left_panel.width() == Navigation.EXPANDED_WIDTH
+    assert window.navigation.currentRow() == ac_row
+    assert window.navigation.item(ac_row).text() == "AC Management"
+
+
+def test_main_window_sidebar_state_persists_and_survives_theme_switch(tmp_path):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    first = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+
+    first.set_sidebar_collapsed(True)
+    first.app_is_exiting = True
+    first.close()
+
+    reopened = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+
+    assert reopened.sidebar_collapsed
+    assert reopened.left_panel.width() == Navigation.COLLAPSED_WIDTH
+    reopened.set_theme("light")
+    assert reopened.sidebar_collapsed
+    assert reopened.left_panel.width() == Navigation.COLLAPSED_WIDTH
+
+
+def test_main_window_collapsed_sidebar_keeps_data_disk_entry_clickable(tmp_path):
+    QApplication.instance() or QApplication([])
+    i18n = I18n("en_US")
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, i18n, context.paths)
+    clicked: list[bool] = []
+
+    window.set_sidebar_collapsed(True)
+    window.data_disk_button.clicked.disconnect()
+    window.data_disk_button.clicked.connect(lambda: clicked.append(True))
+    window.data_disk_button.click()
+
+    assert window.data_disk_button.isEnabled()
+    assert window.data_disk_button.toolTip() == i18n.t("data_disk.title")
+    assert clicked == [True]
 
 
 def test_main_window_starts_with_only_default_page(tmp_path):

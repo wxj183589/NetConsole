@@ -3,13 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
-from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
 from netconsole.ui.dialogs.ap_history_dialog import AP_OPTICAL_HISTORY_COLUMNS, export_ap_history_xlsx
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
@@ -39,7 +37,6 @@ class ApOpticalHistoryDialog(QWidget):
         self.back_button = QPushButton()
         self.close_button = QPushButton()
         self.export_button = QPushButton()
-        self.open_raw_button = QPushButton()
         self.always_on_top_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
         self.empty_label = QLabel()
@@ -67,7 +64,6 @@ class ApOpticalHistoryDialog(QWidget):
         actions.addWidget(self.close_button)
         actions.addStretch(1)
         actions.addWidget(self.export_button)
-        actions.addWidget(self.open_raw_button)
         actions.addWidget(self.always_on_top_button)
 
         left = QWidget()
@@ -88,7 +84,6 @@ class ApOpticalHistoryDialog(QWidget):
         self.back_button.clicked.connect(self.return_to_parent)
         self.close_button.clicked.connect(self.close)
         self.export_button.clicked.connect(self.export_history)
-        self.open_raw_button.clicked.connect(self.open_raw_log_folder)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.pagination.pageChanged.connect(self.set_page)
         self.pagination.pageSizeChanged.connect(self.set_page_size)
@@ -101,7 +96,6 @@ class ApOpticalHistoryDialog(QWidget):
         self.back_button.setText(self.i18n.t("history.back"))
         self.close_button.setText(self.i18n.t("dialog.close"))
         self.export_button.setText(self.i18n.t("ac.export_table"))
-        self.open_raw_button.setText(self.i18n.t("ap_detail.open_raw_log_folder"))
         self.always_on_top_button.setText(self.i18n.t("window.always_on_top"))
         self.empty_label.setText(self.i18n.t("ap_detail.no_optical_history"))
         self.table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in AP_OPTICAL_HISTORY_COLUMNS])
@@ -157,13 +151,6 @@ class ApOpticalHistoryDialog(QWidget):
         export_ap_history_xlsx(Path(path), self.rows, AP_OPTICAL_HISTORY_COLUMNS, [self.i18n.t(key) for key, _field in AP_OPTICAL_HISTORY_COLUMNS], "optical_alarm_status")
         remember_export_path(path)
 
-    def open_raw_log_folder(self) -> None:
-        directory = ApOpticalHistoryService.raw_log_dir(self.current_record() or {})
-        if directory is not None and directory.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
-        else:
-            QMessageBox.information(self, self.i18n.t("ap_detail.open_raw_log_folder"), self.i18n.t("ap_detail.no_raw_log_path"))
-
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
@@ -212,5 +199,4 @@ def default_history_widths() -> dict[str, int]:
         "module_model": 150,
         "module_serial_number": 170,
         "module_vendor": 120,
-        "raw_log_path": 260,
     }

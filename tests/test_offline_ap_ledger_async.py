@@ -13,7 +13,6 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATUS_TEXT,
-    UNASSIGNED_SITE_TEXT,
     build_device_lookup_by_name,
     build_latest_ap_history_indexes,
     build_offline_ap_ledger,
@@ -104,7 +103,7 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
     assert "switch_rx_power" not in ledger[0]
 
 
-def test_offline_ledger_mac_fallback_and_unassigned_site_do_not_use_fit_ap_site(tmp_path):
+def test_offline_ledger_mac_fallback_and_fit_ap_site_fills_empty_device_station(tmp_path):
     repository = AcRepository(_database(tmp_path))
     repository.replace_fit_ap_resources(
         "ac-1",
@@ -115,7 +114,7 @@ def test_offline_ledger_mac_fallback_and_unassigned_site_do_not_use_fit_ap_site(
 
     assert stats["offline_aps"] == 1
     assert ledger[0]["ap_mac"] == "30f5-277a-15e0"
-    assert ledger[0]["site"] == UNASSIGNED_SITE_TEXT
+    assert ledger[0]["site"] == "FIT Site"
 
 
 def test_fit_ap_optical_idle_row_displays_offline_alarm():
@@ -185,8 +184,8 @@ def test_trackside_offline_row_uses_port_type_and_realtime_switch_optical():
     assert offline["switch_rx_power"] == "-6.10 dBm"
     assert offline["switch_tx_power"] == "-2.20 dBm"
     assert format_trackside_display_value("port_type", offline) == "access"
-    assert format_trackside_display_value("link_status", offline) == "access"
-    assert "DOWN" not in {format_trackside_display_value("port_type", offline), format_trackside_display_value("link_status", offline)}
+    assert format_trackside_display_value("link_status", offline) == "DOWN"
+    assert format_trackside_display_value("port_type", offline) not in {"UP", "DOWN"}
 
 
 def test_ac_management_offline_tab_starts_loader_without_ui_thread_build(tmp_path, monkeypatch):

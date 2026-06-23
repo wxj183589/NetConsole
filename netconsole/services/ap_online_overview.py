@@ -6,6 +6,7 @@ import re
 import unicodedata
 
 from netconsole.core import app_logger
+from netconsole.utils.station_normalize import normalize_station_value
 
 
 AP_ONLINE_OVERVIEW_COLUMNS = (
@@ -102,7 +103,7 @@ def normalize_optical_row(row: dict[str, object | None]) -> dict[str, object | N
     result["_match_name"] = _row_name(row)
     result["_match_name_compact"] = _row_name(row, compact=True)
     result["_match_uuid"] = _first_text(row, "ap_uuid", "uuid", "AP_UUID")
-    result["_station"] = str(row.get("site") or row.get("site_name") or "").strip()
+    result["_station"] = normalize_station_value(row)
     return result
 
 
@@ -422,32 +423,17 @@ def _metadata_row_has_data(row: dict[str, object | None]) -> bool:
         _row_mac(row)
         or _row_name(row)
         or _first_text(row, "ap_uuid", "uuid", "AP_UUID")
-        or str(
-            row.get("station")
-            or row.get("site_name")
-            or row.get("location_site")
-            or row.get("site")
-            or row.get("归属站点")
-            or row.get("站点")
-            or ""
-        ).strip()
+        or normalize_station_value(row)
+        or str(row.get("站点") or "").strip()
     )
 
 
 def _plan_site(row: dict[str, object | None]) -> str:
-    return str(
-        row.get("station")
-        or row.get("site_name")
-        or row.get("location_site")
-        or row.get("site")
-        or row.get("归属站点")
-        or row.get("站点")
-        or ""
-    ).strip() or UNASSIGNED_SITE_LABEL
+    return normalize_station_value(row) or str(row.get("站点") or "").strip() or UNASSIGNED_SITE_LABEL
 
 
 def _resource_site(row: dict[str, object | None]) -> str:
-    return str(row.get("site_name") or row.get("site") or "").strip()
+    return normalize_station_value(row)
 
 
 def _row_mac(row: dict[str, object | None]) -> str:

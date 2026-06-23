@@ -16,6 +16,7 @@ from netconsole.services.offline_ap_ledger import (
 )
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
+from netconsole.utils.station_normalize import normalize_station_value
 
 
 TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
@@ -31,6 +32,7 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("ac.station", "site"),
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
+    ("details.link", "link_status"),
     ("details.port_type", "port_type"),
     ("details.port_description", "description"),
     ("details.pvid", "pvid"),
@@ -48,6 +50,7 @@ TRACKSIDE_AP_BUSINESS_COLUMNS = TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS
 
 TRACKSIDE_AP_DEVICE_COLUMNS = (
     ("details.interface_name", "interface_name"),
+    ("details.link", "link_status"),
     ("details.port_type", "port_type"),
     ("details.port_description", "description"),
     ("details.pvid", "pvid"),
@@ -262,13 +265,13 @@ def build_trackside_ap_business_rows(
                 ap_status = ap_result.severity
             result.append(
                 {
-                    "site": device.station or fit_ap.get("site") or "",
+                    "site": device.station or normalize_station_value(fit_ap) or "",
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
                     "ap_uuid": fit_ap.get("ap_uuid"),
                     "device_uuid": device_uuid,
                     "device_name": device.name,
                     "interface_name": interface_name,
-                    "link_status": interface.get("link_status") or interface.get("link"),
+                    "link_status": normalize_link_state(interface.get("link_status") or interface.get("link")),
                     "protocol_status": interface.get("protocol_status") or interface.get("protocol"),
                     "description": interface.get("description"),
                     "port_type": _port_type(interface.get("port_status")),
@@ -331,8 +334,10 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
         return _match_source_label(row.get(field), language)
     if field == "port_type":
         return _port_type(row.get("port_type") or row.get("port_status"))
-    if field in {"link_status", "protocol_status"}:
-        return _port_type(row.get("port_type") or row.get("port_status"))
+    if field == "link_status":
+        return normalize_link_state(row.get("link_status") or row.get("link") or row.get("status"))
+    if field == "protocol_status":
+        return normalize_link_state(row.get("protocol_status") or row.get("protocol"))
     if field == "ap_optical_status":
         if bool(row.get("is_ap_offline")):
             return OFFLINE_AP_STATUS_TEXT
@@ -493,7 +498,7 @@ def _offline_ledger_to_trackside_rows(
                 "device_uuid": device_uuid or row.get("device_uuid"),
                 "device_name": row.get("historical_switch_name"),
                 "interface_name": row.get("historical_switch_interface"),
-                "link_status": interface.get("link_status"),
+                "link_status": normalize_link_state(interface.get("link_status") or interface.get("link")),
                 "protocol_status": interface.get("protocol_status"),
                 "description": interface.get("description") or row.get("offline_remark"),
                 "port_type": _port_type(interface.get("port_status")),
@@ -548,6 +553,19 @@ def _normalize_name(value: object) -> str:
 def _port_type(value: object) -> str:
     text = str(value or "").strip().casefold()
     return text if text in {"access", "trunk", "hybrid"} else "unknown"
+
+
+def normalize_link_state(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return "-"
+    if text in {"UP", "DOWN"}:
+        return text
+    if "DOWN" in text:
+        return "DOWN"
+    if "UP" in text:
+        return "UP"
+    return "-"
 
 
 def normalize_mac(value: object) -> str:

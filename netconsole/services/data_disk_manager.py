@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-PROTECTED_CATEGORIES = {"database", "reports", "backups", "exports", "config"}
-CLEANABLE_CATEGORIES = {"raw_logs", "runtime_cache", "debug_logs"}
+PROTECTED_CATEGORIES = {"database", "reports", "backups", "exports", "config", "file_downloads"}
+CLEANABLE_CATEGORIES = {"legacy_debug_data", "runtime_cache", "debug_logs"}
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,10 @@ def scan_data_disk(data_dir: Path, runtime_dir: Path | None = None) -> list[Disk
         DiskCategory("backups", data_root, _size_named_dirs(data_root, {"backups", "db_backup"}), False),
         DiskCategory("exports", data_root, _size_named_dirs(data_root, {"exports", "export"}), False),
         DiskCategory("config", data_root / "config", _dir_size(data_root / "config"), False),
-        DiskCategory("raw_logs", data_root, _size_named_dirs(data_root, {"raw"}), True),
+        DiskCategory("file_downloads", data_root, _size_named_dirs(data_root, {"downloads", "downloaded_files", "file_management"}), False),
+        DiskCategory("mesh_archives", data_root, _size_named_dirs(data_root, {"archive", "archives"}), False),
+        DiskCategory("online_mr_data", data_root, _size_named_dirs(data_root, {"online_mr"}), False),
+        DiskCategory("legacy_debug_data", data_root, _size_named_dirs(data_root, {"raw"}), True),
         DiskCategory("debug_logs", data_root, _size_named_dirs(data_root, {"debug", "logs"}), True),
         DiskCategory("runtime_cache", runtime_root / "cache", _dir_size(runtime_root / "cache"), True),
     ]
@@ -40,8 +43,8 @@ def clean_data_disk(data_dir: Path, runtime_dir: Path | None = None, categories:
     data_root = Path(data_dir)
     runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root.parent / "runtime"
     result: dict[str, int] = {}
-    if "raw_logs" in requested:
-        result["raw_logs"] = _remove_named_dirs(data_root, {"raw"})
+    if "legacy_debug_data" in requested:
+        result["legacy_debug_data"] = _remove_named_dirs(data_root, {"raw"})
     if "debug_logs" in requested:
         result["debug_logs"] = _remove_named_dirs(data_root, {"debug", "logs"})
     if "runtime_cache" in requested:
