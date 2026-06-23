@@ -449,6 +449,24 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def update_ap_entity_extension_by_mac(self, ap_mac: str, fields: dict[str, object | None]) -> int:
+        normalized_mac = self._mac_from_text(ap_mac)
+        if not normalized_mac:
+            return 0
+        allowed = {"station", "milestone", "location_note", "direction"}
+        values = {key: str(value or "").strip() for key, value in fields.items() if key in allowed}
+        if not values:
+            return 0
+        values["updated_at"] = self._now()
+        assignments = ", ".join(f"{field} = ?" for field in values)
+        with self.database.connect() as conn:
+            count = conn.execute(
+                f"UPDATE ap_entities SET {assignments} WHERE lower(ap_mac) = ?",
+                [*values.values(), normalized_mac.casefold()],
+            ).rowcount
+            conn.commit()
+        return int(count or 0)
+
     def replace_fit_ap_optical(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
         now = self._now()
         with self.database.connect() as conn:

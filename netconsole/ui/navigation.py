@@ -49,7 +49,7 @@ class Navigation(QListWidget):
             item.setData(256, page_id)
             item.setData(257, label)
             item.setToolTip(label)
-            item.setTextAlignment(Qt.AlignHCenter if self.collapsed else Qt.AlignLeft)
+            item.setTextAlignment(Qt.AlignCenter)
             self.addItem(item)
         index = self.find_page(current_page)
         self.setCurrentRow(index if index >= 0 else 0)

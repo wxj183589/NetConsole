@@ -32,7 +32,6 @@ def test_history_dialog_interface_columns_are_complete():
         "ip_address",
         "mac_address",
         "vlan",
-        "raw_log_path",
     ]
 
 
@@ -51,7 +50,6 @@ def test_history_dialog_optical_and_lldp_columns_are_complete():
         "wavelength",
         "transmission_distance",
         "status",
-        "raw_log_path",
     ]
     assert [field for _key, field in LLDP_HISTORY_COLUMNS] == [
         "collected_at",
@@ -59,7 +57,6 @@ def test_history_dialog_optical_and_lldp_columns_are_complete():
         "neighbor_sysname",
         "neighbor_mac",
         "neighbor_interface",
-        "raw_log_path",
     ]
 
 

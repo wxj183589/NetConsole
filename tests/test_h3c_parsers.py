@@ -11,7 +11,7 @@ from netconsole.parsers.h3c.transceiver_parser import (
     parse_transceiver_manuinfo,
     parse_transceivers,
 )
-from netconsole.parsers.h3c.version_parser import parse_version
+from netconsole.parsers.h3c.version_parser import normalize_device_mac, parse_version
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
@@ -32,7 +32,21 @@ def test_version_parser_extracts_sysname_version_and_uptime():
     assert parsed["software_version"] == "Version 7.1.070 Release 6607P20"
     assert parsed["uptime"] == "12 weeks, 3 days, 4 hours, 5 minutes"
     assert parsed["serial_number"] == "SN-SW01-0001"
+    assert parsed["mac_address"] == "105e-ae3e-0700"
     assert parsed["vendor"] == "H3C"
+
+
+def test_device_mac_normalizes_common_formats():
+    assert normalize_device_mac("105E-AE3E-0700") == "105e-ae3e-0700"
+    assert normalize_device_mac("105E:AE3E:0700") == "105e-ae3e-0700"
+    assert normalize_device_mac("105eae3e0700") == "105e-ae3e-0700"
+    assert normalize_device_mac("") is None
+
+
+def test_version_parser_extracts_mac_with_fullwidth_colon():
+    parsed = parse_version("", "", "MAC_ADDRESS：105E-AE3E-0700")
+
+    assert parsed["mac_address"] == "105e-ae3e-0700"
 
 
 def test_sysname_parser_extracts_sysname_line():

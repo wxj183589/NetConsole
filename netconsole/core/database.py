@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 
-CURRENT_SCHEMA_VERSION = "2026.06.23.device_ap_rebuild"
+CURRENT_SCHEMA_VERSION = "2026.06.23.device_ap_rebuild_mac"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS devices (
     device_uuid TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     system_name TEXT,
+    mac_address TEXT,
     station TEXT,
     location TEXT,
     group_id INTEGER,
@@ -100,6 +101,7 @@ CREATE TABLE IF NOT EXISTS device_facts (
     sysname TEXT,
     model TEXT,
     serial_number TEXT,
+    mac_address TEXT,
     software_version TEXT,
     bootrom_version TEXT,
     vendor TEXT,
@@ -192,6 +194,7 @@ CREATE TABLE IF NOT EXISTS device_facts_history (
     sysname TEXT,
     model TEXT,
     serial_number TEXT,
+    mac_address TEXT,
     software_version TEXT,
     bootrom_version TEXT,
     vendor TEXT,

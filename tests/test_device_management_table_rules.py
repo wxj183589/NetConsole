@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -43,6 +44,38 @@ def test_main_table_columns_only_include_core_fields():
         "updated_at",
         "actions",
     ]
+
+
+def test_user_visible_i18n_and_ui_text_do_not_contain_question_mark_mojibake():
+    root = Path(__file__).parents[1] / "netconsole"
+    checked_files = [
+        path
+        for path in root.rglob("*.py")
+        if path.relative_to(root).parts[:1] in {("core",), ("ui",), ("services",)}
+        and path.name not in {"text_encoding.py"}
+    ]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in checked_files)
+
+    assert "?????" not in text
+    assert "�" not in text
+    assert "站点/位置" not in text
+
+
+def test_device_table_header_tooltips_are_readable():
+    table = DeviceTable(I18n("zh_CN"))
+    fields = [field for field, _key in COLUMNS]
+
+    expected = {
+        "station": "归属站点：来自设备管理的站点归属字段，用于设备和AP归属匹配。",
+        "primary_address": "主用地址：设备优先使用的管理地址。",
+        "backup_address": "备用地址：主用地址不可用时使用的管理地址。",
+        "system_name": "系统名称：设备 sysname，由批量更新详情采集回填。",
+    }
+    for field, tooltip in expected.items():
+        actual = table.horizontalHeaderItem(fields.index(field)).toolTip()
+        assert actual == tooltip
+        assert "???" not in actual
+        assert "�" not in actual
 
 
 def test_delete_device_ids_deletes_multiple_devices():
@@ -440,6 +473,33 @@ def test_device_detail_dialog_inherits_dark_theme_without_local_white_background
     assert dialog.styleSheet() == ""
 
 
+def test_device_detail_overview_shows_device_mac_or_placeholder(tmp_path):
+    app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceFactRepository(database)
+
+    with_mac = DeviceDetailDialog(I18n("en_US"), repository, Device(name="MR", device_uuid="device-1", mac_address="105e-ae3e-0700"))
+    labels = [label.text() for label in with_mac.findChildren(QLabel)]
+    assert "MAC" in labels
+    assert "105e-ae3e-0700" in labels
+
+    without_mac = DeviceDetailDialog(I18n("en_US"), repository, Device(name="MR", device_uuid="device-2"))
+    labels = [label.text() for label in without_mac.findChildren(QLabel)]
+    assert "MAC" in labels
+    assert "-" in labels
+
+
+def test_checkbox_global_style_removes_widget_focus_frame():
+    qt_app = app()
+    apply_theme("dark")
+    stylesheet = qt_app.styleSheet()
+
+    assert "QCheckBox {\n    background-color: transparent;\n    color: #e5e7eb;\n    border: none;\n    spacing: 0px;" in stylesheet
+    assert "QCheckBox:focus {\n    border: none;\n    outline: none;" in stylesheet
+    assert "QCheckBox::indicator {\n    width: 18px;" in stylesheet
+
+
 def test_optical_status_labels_and_colors_are_mapped():
     i18n = I18n("zh_CN")
 
@@ -504,7 +564,6 @@ def test_device_detail_overview_fields_are_complete():
         "vendor",
         "uptime",
         "collected_at",
-        "raw_log_path",
     ]
 
 

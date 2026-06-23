@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 APP_NAME = "NetConsole"
-APP_VERSION = "v1.2.2"
+APP_VERSION = "v1.3"
 APP_VERSION_DISPLAY = APP_VERSION
 BUILD_TIME = "2026-06-22 20:58:52"
 GIT_COMMIT = "72b5fa85"

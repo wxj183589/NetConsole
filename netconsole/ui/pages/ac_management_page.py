@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QStandardPaths, Qt, QThread, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -41,6 +41,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_ap_business_rows,
     build_trackside_site_filter_items,
     export_trackside_ap_business_xlsx,
@@ -66,7 +67,7 @@ from netconsole.services.ap_online_overview import (
     export_ap_online_overview_xlsx,
     write_ap_online_overview_sheet as _write_ap_online_overview_sheet,
 )
-from netconsole.services.fit_ap_import_export import FitApImportExportService, make_fit_ap_export_filename
+from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
@@ -499,6 +500,13 @@ class AcManagementPage(QWidget):
         self.device_combo = QComboBox()
         self.open_web_button = QPushButton()
         self.refresh_button = QPushButton()
+        self.cancel_update_button = QPushButton()
+        self.cancel_update_button.setVisible(False)
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 0)
+        self.update_progress.setTextVisible(False)
+        self.update_progress.setFixedHeight(6)
+        self.update_progress.setVisible(False)
         self.status_label = make_text_selectable(QLabel())
         self.summary_labels: dict[str, QLabel] = {field: make_text_selectable(QLabel("-")) for _key, field in SUMMARY_FIELDS}
         self.tabs = QTabWidget()
@@ -507,6 +515,8 @@ class AcManagementPage(QWidget):
         self.batch_delete_button = QPushButton()
         self.batch_edit_button = QPushButton()
         self.import_button = QPushButton()
+        self.export_extension_template_button = QPushButton()
+        self.export_extension_template_button.setObjectName("exportApExtensionTemplateButton")
         self.export_button = QPushButton()
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
@@ -582,6 +592,7 @@ class AcManagementPage(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.device_combo, 1)
         top.addWidget(self.open_web_button)
+        top.addWidget(self.cancel_update_button)
         top.addWidget(self.status_label)
 
         summary = QGridLayout()
@@ -601,6 +612,7 @@ class AcManagementPage(QWidget):
             self.batch_delete_button,
             self.batch_edit_button,
             self.import_button,
+            self.export_extension_template_button,
             self.export_button,
             self.clear_selection_button,
             self.invert_selection_button,
@@ -666,6 +678,7 @@ class AcManagementPage(QWidget):
 
         layout = QVBoxLayout()
         layout.addLayout(top)
+        layout.addWidget(self.update_progress)
         layout.addLayout(summary)
         layout.addWidget(self.tabs, 1)
         self.setLayout(layout)
@@ -673,9 +686,11 @@ class AcManagementPage(QWidget):
         self.device_combo.currentIndexChanged.connect(self.refresh_data)
         self.open_web_button.clicked.connect(self.open_web)
         self.refresh_button.clicked.connect(self.refresh_ac_resources)
+        self.cancel_update_button.clicked.connect(self.cancel_current_update)
         self.batch_delete_button.clicked.connect(self.batch_delete_aps)
         self.batch_edit_button.clicked.connect(self.batch_edit_site)
         self.import_button.clicked.connect(self.import_metadata)
+        self.export_extension_template_button.clicked.connect(self.export_ap_extension_template)
         self.export_button.clicked.connect(self.export_aps)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.invert_selection_button.clicked.connect(self.invert_selection)
@@ -714,9 +729,11 @@ class AcManagementPage(QWidget):
     def retranslate(self) -> None:
         self.open_web_button.setText(self.i18n.t("ac.open_web"))
         self.refresh_button.setText(self.i18n.t("details.refresh"))
+        self.cancel_update_button.setText(self.i18n.t("ac.cancel_update"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
         self.batch_edit_button.setText(self.i18n.t("ap.batch_edit"))
         self.import_button.setText(self.i18n.t("ap.import_metadata"))
+        self.export_extension_template_button.setText(self.i18n.t("ap.export_extension_template"))
         self.export_button.setText(self.i18n.t("ap.export_info"))
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
@@ -762,6 +779,7 @@ class AcManagementPage(QWidget):
         self.offline_stats_table.setHorizontalHeaderLabels(offline_ap_headers(OFFLINE_AP_STATS_COLUMNS))
         self.offline_ledger_table.setHorizontalHeaderLabels(offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS))
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+        self._apply_trackside_header_tooltips()
         apply_table_style(self.resources_table)
         apply_table_style(self.optical_table)
         apply_table_style(self.overview_table)
@@ -770,6 +788,15 @@ class AcManagementPage(QWidget):
         apply_table_style(self.trackside_table)
         self.update_selection_state()
         self.update_open_web_button()
+
+    def _apply_trackside_header_tooltips(self) -> None:
+        for index, (label_key, field) in enumerate(TRACKSIDE_AP_BUSINESS_COLUMNS):
+            item = self.trackside_table.horizontalHeaderItem(index)
+            if item is None:
+                continue
+            tooltip_key = TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS.get(field)
+            label = self.i18n.t(label_key)
+            item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else self.i18n.t("trackside.tooltip.default", label=label))
 
     def refresh_devices(self) -> None:
         current_uuid = self.current_device_uuid()
@@ -906,14 +933,45 @@ class AcManagementPage(QWidget):
         self.open_web_button.setToolTip("" if enabled else self.i18n.t("ac.https_port_not_collected"))
         app_logger.log_info("AC_HTTPS_PORT_BUTTON_STATE", f"device={device.name if device else ''}, effective_port={port}, button_enabled={enabled}")
 
+    def _set_update_running(self, running: bool, message: str = "") -> None:
+        selected_count = len(self.selected_ap_names())
+        self.update_progress.setVisible(running)
+        self.cancel_update_button.setVisible(running)
+        self.cancel_update_button.setEnabled(running)
+        self.device_combo.setEnabled(not running)
+        self.refresh_button.setEnabled(not running)
+        self.refresh_optical_button.setEnabled(not running)
+        self.batch_delete_button.setEnabled(False if running else selected_count > 0)
+        self.batch_edit_button.setEnabled(False if running else selected_count > 0)
+        self.import_button.setEnabled(not running)
+        self.export_extension_template_button.setEnabled(not running)
+        self.clear_selection_button.setEnabled(False if running else selected_count > 0)
+        self.invert_selection_button.setEnabled(False if running else self.resources_table.rowCount() > 0)
+        self.optical_concurrency_combo.setEnabled(not running)
+        self.clear_optical_filters_button.setEnabled(not running)
+        if message:
+            self.status_label.setText(message)
+
+    def _set_update_progress(self, message: str) -> None:
+        self.update_progress.setVisible(True)
+        self.status_label.setText(message)
+
+    def cancel_current_update(self) -> None:
+        if self.resource_thread is not None and self.resource_thread.isRunning():
+            self.resource_thread.cancel()
+        if self.optical_thread is not None and self.optical_thread.isRunning():
+            self.optical_thread.cancel()
+        self.cancel_update_button.setEnabled(False)
+        self.status_label.setText(self.i18n.t("ac.update_cancelled"))
+
     def refresh_ac_resources(self) -> None:
         device = self.current_device()
         if device is None:
             QMessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
             return
-        self.refresh_button.setEnabled(False)
-        self.status_label.setText(self.i18n.t("ac.status.updating"))
+        self._set_update_running(True, self.i18n.t("ac.updating_resources"))
         self.resource_thread = AcResourceCollectThread(device, self.site_name, parent=self)
+        self.resource_thread.progress.connect(self._set_update_progress)
         self.resource_thread.collect_finished.connect(self._finish_resource_collect)
         self.resource_thread.collect_failed.connect(self._fail_resource_collect)
         self.resource_thread.finished.connect(self.resource_thread.deleteLater)
@@ -924,9 +982,9 @@ class AcManagementPage(QWidget):
         device = self.current_device()
         if device is None:
             return
-        self.refresh_optical_button.setEnabled(False)
-        self.status_label.setText(self.i18n.t("ac.status.updating"))
+        self._set_update_running(True, self.i18n.t("ac.updating_optical"))
         self.optical_thread = FitApOpticalCollectThread(device, self.site_name, int(self.optical_concurrency_combo.currentData() or 200), self)
+        self.optical_thread.progress.connect(self._set_update_progress)
         self.optical_thread.collect_finished.connect(self._finish_optical_collect)
         self.optical_thread.collect_failed.connect(self._fail_optical_collect)
         self.optical_thread.finished.connect(self.optical_thread.deleteLater)
@@ -934,10 +992,14 @@ class AcManagementPage(QWidget):
         self.optical_thread.start()
 
     def _finish_resource_collect(self, result) -> None:
-        self.refresh_button.setEnabled(True)
+        self._set_update_progress(self.i18n.t("ac.refreshing_page"))
+        self._set_update_running(False)
         if not result.success and result.error_message:
             self.status_label.setText(self.i18n.t("ac.status.failed"))
-            QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+            if result.error_message != "用户已取消更新":
+                QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+            else:
+                self.status_label.setText(self.i18n.t("ac.update_cancelled"))
             self.refresh_devices()
             return
         self.refresh_devices()
@@ -967,17 +1029,20 @@ class AcManagementPage(QWidget):
         self.update_open_web_button()
 
     def _fail_resource_collect(self, message: str) -> None:
-        self.refresh_button.setEnabled(True)
+        self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.failed"))
         QMessageBox.warning(self, self.i18n.t("ac.title"), message)
 
     def _finish_optical_collect(self, result) -> None:
-        self.refresh_optical_button.setEnabled(True)
+        self._set_update_progress(self.i18n.t("ac.refreshing_page"))
+        self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.done" if result.success else "ac.status.failed"))
+        if getattr(result, "error_message", None) == "用户已取消更新":
+            self.status_label.setText(self.i18n.t("ac.update_cancelled"))
         self.refresh_data()
 
     def _fail_optical_collect(self, message: str) -> None:
-        self.refresh_optical_button.setEnabled(True)
+        self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.failed"))
         QMessageBox.warning(self, self.i18n.t("ac.title"), message)
 
@@ -1065,12 +1130,47 @@ class AcManagementPage(QWidget):
         self.refresh_data()
 
     def import_metadata(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ap.import_metadata"), "", "CSV Files (*.csv)")
+        path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ap.import_metadata"), "", "Excel Files (*.xlsx);;CSV Files (*.csv)")
         if not path:
             return
-        result = self.import_export_service.import_metadata_csv(Path(path))
+        try:
+            result = self.import_export_service.import_metadata_file(Path(path))
+        except ValueError:
+            QMessageBox.warning(self, self.i18n.t("ap.import_metadata"), self.i18n.t("ap.metadata_template_unsupported"))
+            return
         app_logger.log_info("FIT_AP_IMPORT", f"updated={result.updated}, skipped={result.skipped}")
         self.refresh_data()
+
+    def export_ap_extension_template(self) -> None:
+        ac_uuid = self.current_device_uuid()
+        filename = make_ap_extension_template_filename(self._current_ac_export_name())
+        path = self._select_ap_extension_template_path(filename)
+        if not path:
+            return
+        rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else []
+        ap_entities = self.repository.list_ap_entities(ac_uuid) if ac_uuid else []
+        self.import_export_service.export_ap_extension_template_xlsx(path, rows, ap_entities)
+        remember_export_path(path)
+        message_key = "ap.extension_template_empty_exported" if not rows else "ap.extension_template_exported"
+        QMessageBox.information(self, self.i18n.t("ap.export_extension_template"), self.i18n.t(message_key, count=len(rows)))
+        app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"count={len(rows)}, file={path.name}")
+
+    def _current_ac_export_name(self) -> str:
+        device = self.current_device()
+        if device is None:
+            return self.site_name
+        return str(device.name or device.ip_address or self.site_name)
+
+    def _select_ap_extension_template_path(self, filename: str) -> Path | None:
+        desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+        base_dir = Path(desktop) if desktop else Path.home()
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            self.i18n.t("ap.export_extension_template"),
+            str(base_dir / filename),
+            EXCEL_FILTER,
+        )
+        return Path(selected) if selected else None
 
     def export_aps(self) -> None:
         path = select_export_path(self, self.i18n.t("ap.export_info"), make_fit_ap_export_filename(self.site_name), CSV_FILTER)

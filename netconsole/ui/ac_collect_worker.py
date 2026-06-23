@@ -9,6 +9,7 @@ from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY
 
 class AcResourceCollectThread(QThread):
     collect_started = Signal()
+    progress = Signal(str)
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
@@ -17,11 +18,20 @@ class AcResourceCollectThread(QThread):
         self.device = device
         self.site_name = site_name
         self.concurrency = int(max_workers if max_workers is not None else concurrency)
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
 
     def run(self) -> None:
         self.collect_started.emit()
         try:
-            result = collect_h3c_ac_resources(self.device, self.site_name)
+            result = collect_h3c_ac_resources(
+                self.device,
+                self.site_name,
+                progress=self.progress.emit,
+                should_cancel=lambda: self._cancel_requested,
+            )
         except Exception as exc:
             self.collect_failed.emit(str(exc))
             return
@@ -30,6 +40,7 @@ class AcResourceCollectThread(QThread):
 
 class FitApOpticalCollectThread(QThread):
     collect_started = Signal()
+    progress = Signal(str)
     collect_finished = Signal(object)
     collect_failed = Signal(str)
 
@@ -38,11 +49,21 @@ class FitApOpticalCollectThread(QThread):
         self.device = device
         self.site_name = site_name
         self.concurrency = int(max_workers if max_workers is not None else concurrency)
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
 
     def run(self) -> None:
         self.collect_started.emit()
         try:
-            result = collect_h3c_fit_ap_optical(self.device, self.site_name, max_workers=self.concurrency)
+            result = collect_h3c_fit_ap_optical(
+                self.device,
+                self.site_name,
+                max_workers=self.concurrency,
+                progress=self.progress.emit,
+                should_cancel=lambda: self._cancel_requested,
+            )
         except Exception as exc:
             self.collect_failed.emit(str(exc))
             return

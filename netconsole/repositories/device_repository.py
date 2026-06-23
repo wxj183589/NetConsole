@@ -125,3 +125,15 @@ class DeviceRepository:
 
     def update_sysname_by_uuid(self, device_uuid: str, sysname: str) -> bool:
         return self.update_system_name_by_uuid(device_uuid, sysname)
+
+    def update_mac_address_by_uuid(self, device_uuid: str, mac_address: str) -> bool:
+        value = str(mac_address or "").strip()
+        if not device_uuid or not value:
+            return False
+        with self.database.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE devices SET mac_address = ?, updated_at = ? WHERE device_uuid = ?",
+                (value, datetime.now().isoformat(timespec="seconds"), device_uuid),
+            )
+            conn.commit()
+        return cursor.rowcount > 0

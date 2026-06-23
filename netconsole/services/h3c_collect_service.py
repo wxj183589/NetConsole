@@ -205,8 +205,11 @@ def _parse_and_write(
         facts["bootrom_version"] = parse_boot_loader(outputs.get("display boot-loader", "")) or facts.get("bootrom_version")
         if any(value for key, value in facts.items() if key != "vendor"):
             repository.upsert_device_fact({"device_uuid": device.device_uuid, **facts, **metadata})
+            device_repository = DeviceRepository(repository.database)
             if facts.get("sysname"):
-                DeviceRepository(repository.database).update_system_name_by_uuid(str(device.device_uuid or ""), str(facts["sysname"]))
+                device_repository.update_system_name_by_uuid(str(device.device_uuid or ""), str(facts["sysname"]))
+            if facts.get("mac_address"):
+                device_repository.update_mac_address_by_uuid(str(device.device_uuid or ""), str(facts["mac_address"]))
             facts_updated = True
             app_logger.log_info("COLLECT_SAVE_FACTS", _detail(device, collect_run_uuid, error=f"sysname={facts.get('sysname') or ''}, raw_log_path={raw_log_path}"))
     except Exception as exc:

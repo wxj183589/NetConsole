@@ -35,6 +35,7 @@ from netconsole.services.rail_transit.trackside_optical_history import Trackside
 from netconsole.services.rail_transit.trackside_optical_collection import DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_site_filter_items,
     export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
@@ -189,6 +190,7 @@ class TracksideApServicePage(QWidget):
         self.trackside_export_button.setText(self.i18n.t("trackside.export"))
         self.trackside_search_input.setPlaceholderText(self.i18n.t("trackside.search"))
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+        self._apply_trackside_header_tooltips()
         self.column_state.restore()
         self.trackside_pagination.retranslate()
         if self.is_loading:
@@ -610,6 +612,15 @@ class TracksideApServicePage(QWidget):
         header = self.trackside_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
+
+    def _apply_trackside_header_tooltips(self) -> None:
+        for index, (label_key, field) in enumerate(TRACKSIDE_AP_BUSINESS_COLUMNS):
+            item = self.trackside_table.horizontalHeaderItem(index)
+            if item is None:
+                continue
+            tooltip_key = TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS.get(field)
+            label = self.i18n.t(label_key)
+            item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else self.i18n.t("trackside.tooltip.default", label=label))
 
     def ap_online_overview_rows(self) -> list[dict[str, object | None]]:
         capacity_details = self.ac_repository.list_active_trackside_plan_capacity_details()

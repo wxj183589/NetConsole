@@ -12,6 +12,7 @@ FACT_FIELDS = (
     "sysname",
     "model",
     "serial_number",
+    "mac_address",
     "software_version",
     "bootrom_version",
     "vendor",

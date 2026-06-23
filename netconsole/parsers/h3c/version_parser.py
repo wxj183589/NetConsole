@@ -10,6 +10,7 @@ def parse_version(version_output: str, device_output: str = "", manuinfo_output:
         "sysname": _first_match(version_output or "", r"^\s*([A-Za-z0-9_.-]+)\s+uptime is\b", re.MULTILINE),
         "model": chassis.get("model") or _parse_model_from_uptime(version_output or "") or _first_match(text, r"(?i)(?:Device|Chassis|Product)\s+(?:Model|Name)\s*[:：]\s*(.+)"),
         "serial_number": chassis.get("serial_number") or _first_match(text, r"(?i)(?:Serial Number|DEVICE_SERIAL_NUMBER|SN)\s*[:：]\s*(\S+)"),
+        "mac_address": chassis.get("mac_address") or normalize_device_mac(_first_match(text, r"(?i)MAC_ADDRESS\s*[:\uff1a]\s*([0-9A-Fa-f]{4}[-:][0-9A-Fa-f]{4}[-:][0-9A-Fa-f]{4}|[0-9A-Fa-f]{12})")),
         "software_version": _parse_comware_version(version_output or "") or _first_match(text, r"(?i)Software Version\s*[:：]\s*(.+)"),
         "bootrom_version": _first_match(text, r"(?i)Boot(?:Rom|Ware)?\s+(?:Version|version)\s*[:：]?\s*(.+)"),
         "vendor": chassis.get("vendor") or "H3C",
@@ -20,6 +21,14 @@ def parse_version(version_output: str, device_output: str = "", manuinfo_output:
 def _first_match(text: str, pattern: str, flags: int = 0) -> str | None:
     match = re.search(pattern, text, flags)
     return match.group(1).strip() if match else None
+
+
+def normalize_device_mac(value: object) -> str | None:
+    hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    if len(hex_text) != 12:
+        return None
+    hex_text = hex_text.casefold()
+    return f"{hex_text[0:4]}-{hex_text[4:8]}-{hex_text[8:12]}"
 
 
 def _parse_comware_version(version_output: str) -> str | None:
@@ -72,6 +81,10 @@ def _parse_chassis_manuinfo(manuinfo_output: str) -> dict[str, str]:
             result["model"] = value
         elif key == "DEVICE_SERIAL_NUMBER":
             result["serial_number"] = value
+        elif key == "MAC_ADDRESS":
+            normalized = normalize_device_mac(value)
+            if normalized:
+                result["mac_address"] = normalized
         elif key == "VENDOR_NAME":
             result["vendor"] = value
     return result

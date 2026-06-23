@@ -29,7 +29,7 @@ from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLA
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.fit_ap_import_export import FitApImportExportService
+from netconsole.services.fit_ap_import_export import AP_EXTENSION_TEMPLATE_FIELDS, FitApImportExportService
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
 from netconsole.services.device_web_service import build_https_url, effective_https_port, parse_https_port
@@ -94,7 +94,7 @@ from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage, read_trackside_plan_file, _dotted_netmask_to_prefix, _parse_mask_length
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
 from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
-from netconsole.ui.ac_collect_worker import FitApOpticalCollectThread
+from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.dialogs.ap_detail_dialog import ApDetailDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog, export_ap_history_xlsx
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FIT_AP_DETAIL_TABS, OPTICAL_COLUMNS, FitApDetailDialog
@@ -1046,6 +1046,27 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
 
 
+def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    messages: list[str] = []
+
+    result = collect_h3c_ac_resources(
+        make_ac_device(),
+        "demo",
+        repository=AcRepository(make_database(tmp_path)),
+        paths=PathResolver(tmp_path),
+        progress=messages.append,
+    )
+
+    assert result.success is True
+    assert any("正在连接AC" in message for message in messages)
+    assert any("display wlan ap all" in message for message in messages)
+    assert any("正在解析FIT-AP资源" in message for message in messages)
+    assert any("正在写入数据库" in message for message in messages)
+    assert any("更新完成" in message for message in messages)
+
+
 def test_h3c_ac_collect_service_saves_https_port(monkeypatch, tmp_path):
     connection = FakeConnection()
     monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
@@ -1348,6 +1369,44 @@ def test_fit_ap_optical_thread_accepts_concurrency():
     thread = FitApOpticalCollectThread(make_ac_device(), "demo", 200, None)
 
     assert thread.concurrency == 200
+
+
+def test_ac_collect_threads_expose_progress_and_cancel():
+    resource_thread = AcResourceCollectThread(make_ac_device(), "demo", parent=None)
+    optical_thread = FitApOpticalCollectThread(make_ac_device(), "demo", 200, parent=None)
+
+    resource_thread.cancel()
+    optical_thread.cancel()
+
+    assert resource_thread._cancel_requested is True
+    assert optical_thread._cancel_requested is True
+    assert hasattr(resource_thread, "progress")
+    assert hasattr(optical_thread, "progress")
+
+
+def test_ac_management_update_running_state_disables_mutating_buttons(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    device_repository.create(make_ac_device())
+    page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+
+    page._set_update_running(True, "Updating...")
+
+    assert not page.update_progress.isHidden()
+    assert not page.cancel_update_button.isHidden()
+    assert page.status_label.text() == "Updating..."
+    assert not page.refresh_button.isEnabled()
+    assert not page.refresh_optical_button.isEnabled()
+    assert not page.import_button.isEnabled()
+    assert not page.batch_delete_button.isEnabled()
+
+    page._set_update_running(False)
+
+    assert page.update_progress.isHidden()
+    assert page.cancel_update_button.isHidden()
+    assert page.refresh_button.isEnabled()
+    assert page.refresh_optical_button.isEnabled()
 
 
 def test_sort_fit_ap_optical_rows_orders_neighbor_and_interface_logically():
@@ -3422,6 +3481,25 @@ def test_trackside_ap_business_hidden_columns_stay_hidden_after_language_switch(
     assert "trackside.collection_status" not in en_headers + zh_headers
 
 
+def test_trackside_ap_business_header_tooltips_are_readable(tmp_path):
+    app()
+    page = TracksideApServicePage(DeviceRepository(make_database(tmp_path)), I18n("zh_CN"), "demo", PathResolver(tmp_path))
+    fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]
+
+    expected = {
+        "site": "归属站点：设备管理中的归属站点，作为AP和交换机归属的优先来源。",
+        "link_status": "Link：交换机接口链路状态，显示 UP / DOWN。",
+        "port_type": "端口类型：交换机端口类型，显示 access / trunk / hybrid / unknown。",
+        "switch_rx_power": "室内交换机收光(dBm)：交换机侧光模块接收功率。",
+        "ap_optical_status": "AP侧光告警：AP侧光衰状态；离线AP固定显示离线。",
+    }
+    for field, tooltip in expected.items():
+        actual = page.trackside_table.horizontalHeaderItem(fields.index(field)).toolTip()
+        assert actual == tooltip
+        assert "???" not in actual
+        assert "�" not in actual
+
+
 def test_trackside_ap_business_ignores_legacy_column_width_settings(tmp_path):
     app()
     paths = PathResolver(tmp_path)
@@ -4090,21 +4168,201 @@ def test_demo_data_contains_ac_management_rows(tmp_path):
 
 
 def test_import_and_export_fit_ap_metadata(tmp_path):
-    repository = AcRepository(make_database(tmp_path))
-    service = FitApImportExportService(repository)
-    import_path = tmp_path / "metadata.csv"
-    import_path.write_text("AP名称,归属站点,里程,点位说明,上下行\nap-a,体育中心站,K12+450,下行区间,CW\n", encoding="utf-8-sig")
+    from openpyxl import Workbook
 
-    result = service.import_metadata_csv(import_path)
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00", "serial_number": "SN-1"}])
+    service = FitApImportExportService(repository)
+    import_path = tmp_path / "metadata.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(AP_EXTENSION_TEMPLATE_FIELDS)
+    sheet.append(["renamed-ap", "30F5:277A:1B00", "Station X", "K12+450", "Platform", "上下行"])
+    workbook.save(import_path)
+
+    result = service.import_metadata_file(import_path)
 
     assert result.updated == 1
-    assert repository.get_fit_ap_metadata("ap-a")["direction"] == "上行"
+    assert result.skipped == 0
+    entity = repository.list_ap_entities("ac-1")[0]
+    assert entity["station"] == "Station X"
+    assert entity["milestone"] == "K12+450"
+    assert entity["location_note"] == "Platform"
+    assert entity["direction"] == "上下行"
 
     export_path = tmp_path / "export.csv"
     service.export_ap_csv(export_path, [{"ap_name": "ap-a", "ap_ip": "10.0.0.1", "state_display": "运行(主)", "site": "体育中心站"}])
     text = export_path.read_text(encoding="utf-8-sig")
     assert "AP名称" in text
     assert "ap-a" in text
+
+
+def test_import_ap_extension_metadata_skips_empty_or_unmatched_mac(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00"}])
+    service = FitApImportExportService(repository)
+
+    result = service.import_metadata_rows(
+        AP_EXTENSION_TEMPLATE_FIELDS,
+        [
+            ["ap-a", "", "Empty Station", "", "", ""],
+            ["ap-a", "ffff-ffff-ffff", "Unknown Station", "", "", ""],
+        ],
+    )
+
+    assert result.updated == 0
+    assert result.skipped == 2
+    assert any("AP_MAC is empty or invalid" in error for error in result.errors)
+    assert any("not matched" in error for error in result.errors)
+    assert repository.list_ap_entities("ac-1")[0]["station"] == ""
+
+
+def test_import_ap_extension_metadata_rejects_legacy_matching_headers(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00"}])
+    service = FitApImportExportService(repository)
+
+    with pytest.raises(ValueError, match="Unsupported AP metadata template header"):
+        service.import_metadata_rows(["AP名称", "归属站点", "里程", "点位说明", "上下行"], [["ap-a", "Legacy Station", "", "", ""]])
+
+    assert repository.list_ap_entities("ac-1")[0]["station"] == ""
+
+
+def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_station(tmp_path):
+    from openpyxl import load_workbook
+
+    service = FitApImportExportService(AcRepository(make_database(tmp_path)))
+    export_path = tmp_path / "ap_extension_template.xlsx"
+
+    service.export_ap_extension_template_xlsx(
+        export_path,
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-1",
+                "apid": "101",
+                "ap_ip": "10.0.0.10",
+                "ap_mac": "0011-2233-4455",
+                "model": "WA6338",
+                "serial_number": "SN-001",
+                "state_display": "Idle",
+                "site": "Resource Station",
+            }
+        ],
+        [{"ap_uuid": "ap-1", "ap_mac": "0011-2233-4455", "station": "Entity Station", "direction": "uplink", "milestone": "K12+450", "location_note": "platform"}],
+    )
+
+    sheet = load_workbook(export_path).active
+    headers = [cell.value for cell in sheet[1]]
+
+    assert headers == AP_EXTENSION_TEMPLATE_FIELDS
+    assert "归属站点" in headers
+    for forbidden in ("AP_IP", "APID", "SN", "型号", "状态", "AP状态", "AP组", "在线时长", "更新时间", "备注"):
+        assert forbidden not in headers
+    assert "站点/位置" not in headers
+    assert "site" not in headers
+    assert "site_name" not in headers
+    assert "station" not in headers
+    assert sheet.max_row == 2
+    assert sheet["A2"].value == "AP-1"
+    assert sheet["B2"].value == "0011-2233-4455"
+    assert sheet["C2"].value == "Entity Station"
+    assert sheet["D2"].value == "K12+450"
+    assert sheet["E2"].value == "platform"
+    assert sheet["F2"].value == "uplink"
+    assert sheet["A1"].font.bold
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref == "A1:F2"
+
+
+def test_export_ap_extension_template_xlsx_allows_empty_template(tmp_path):
+    from openpyxl import load_workbook
+
+    service = FitApImportExportService(AcRepository(make_database(tmp_path)))
+    export_path = tmp_path / "empty_ap_extension_template.xlsx"
+
+    service.export_ap_extension_template_xlsx(export_path, [], [])
+
+    sheet = load_workbook(export_path).active
+    assert [cell.value for cell in sheet[1]] == AP_EXTENSION_TEMPLATE_FIELDS
+    assert sheet.max_row == 1
+
+
+def test_ac_management_page_exports_ap_extension_template(tmp_path, monkeypatch):
+    from openpyxl import load_workbook
+    import netconsole.ui.pages.ac_management_page as page_module
+
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    ac = device_repository.create(make_ac_device())
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        ac.device_uuid,
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-1",
+                "apid": "101",
+                "ap_ip": "10.0.0.10",
+                "ap_mac": "0011-2233-4455",
+                "model": "WA6338",
+                "serial_number": "SN-001",
+                "state_display": "Idle",
+                "site": "Resource Station",
+            }
+        ],
+    )
+    with database.connect() as conn:
+        conn.execute("UPDATE ap_entities SET station = ? WHERE ap_uuid = ?", ("Entity Station", "ap-1"))
+        conn.commit()
+    export_path = tmp_path / "selected_template.xlsx"
+    messages: list[str] = []
+
+    monkeypatch.setattr(page_module.QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (str(export_path), ""))
+    monkeypatch.setattr(page_module.QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
+
+    page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
+
+    assert page.export_extension_template_button.text() == "导出AP扩展信息模板"
+    page.export_extension_template_button.click()
+
+    sheet = load_workbook(export_path).active
+    assert [cell.value for cell in sheet[1]] == AP_EXTENSION_TEMPLATE_FIELDS
+    assert sheet.max_row == 2
+    assert sheet["C2"].value == "Entity Station"
+    assert messages[-1] == "已导出 AP扩展信息模板，共 1 条。"
+
+
+def test_ac_management_page_exports_empty_ap_extension_template_with_desktop_default(tmp_path, monkeypatch):
+    import netconsole.ui.pages.ac_management_page as page_module
+
+    app()
+    database = make_database(tmp_path)
+    device_repository = DeviceRepository(database)
+    device_repository.create(make_ac_device())
+    selected_defaults: list[str] = []
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    export_path = tmp_path / "empty_template.xlsx"
+    messages: list[str] = []
+
+    monkeypatch.setattr(page_module.QStandardPaths, "writableLocation", lambda _location: str(desktop))
+    monkeypatch.setattr(
+        page_module.QFileDialog,
+        "getSaveFileName",
+        lambda _parent, _title, default_path, _filter: selected_defaults.append(default_path) or (str(export_path), ""),
+    )
+    monkeypatch.setattr(page_module.QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
+
+    page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
+    page.export_ap_extension_template()
+
+    assert selected_defaults
+    assert Path(selected_defaults[0]).parent == desktop
+    assert "AP扩展信息模板_AC_" in Path(selected_defaults[0]).name
+    assert export_path.exists()
+    assert messages[-1] == "当前没有FIT-AP资源数据，已导出空模板。"
 
 
 def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):

@@ -36,6 +36,10 @@ QListWidget::item {
     padding-left: 10px;
     border-radius: 4px;
 }
+#navigation::item {
+    padding-left: 0px;
+    padding-right: 0px;
+}
 QListWidget::item:selected {
     background-color: #e8f1ff;
     color: #1459b3;
@@ -98,6 +102,12 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QTextEdit:disabled, Q
 QCheckBox {
     background-color: transparent;
     color: #1f2933;
+    border: none;
+    spacing: 0px;
+}
+QCheckBox:focus {
+    border: none;
+    outline: none;
 }
 QCheckBox::indicator {
     width: 18px;
@@ -228,6 +238,10 @@ QListWidget::item {
     border-radius: 4px;
     color: #e5e7eb;
 }
+#navigation::item {
+    padding-left: 0px;
+    padding-right: 0px;
+}
 QListWidget::item:selected {
     background-color: rgba(37, 99, 235, 0.28);
     color: #ffffff;
@@ -290,6 +304,12 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QTextEdit:disabled, Q
 QCheckBox {
     background-color: transparent;
     color: #e5e7eb;
+    border: none;
+    spacing: 0px;
+}
+QCheckBox:focus {
+    border: none;
+    outline: none;
 }
 QCheckBox::indicator {
     width: 18px;

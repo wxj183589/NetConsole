@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from netconsole.core import app_logger
@@ -63,6 +64,12 @@ FIT_AP_OPTICAL_COMMANDS = (
     "display transceiver manuinfo interface",
 )
 BATCH_CONCURRENCY = 50
+ProgressCallback = Callable[[str], None]
+CancelCheck = Callable[[], bool]
+
+
+class CollectionCancelled(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -104,7 +111,11 @@ def collect_h3c_ac_resources(
     site_name: str,
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> AcResourceCollectResult:
+    progress = progress or (lambda _message: None)
+    should_cancel = should_cancel or (lambda: False)
     paths = paths or PathResolver()
     repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
     fact_repository = DeviceFactRepository(repository.database)
@@ -130,6 +141,7 @@ def collect_h3c_ac_resources(
     )
     app_logger.log_info("AC_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     app_logger.log_info("REAL_DEVICE_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
+    progress("正在连接AC...")
     command_results: list[CommandResult] = []
     if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
         message = "AC resource collection only supports H3C AC devices"
@@ -149,19 +161,26 @@ def collect_h3c_ac_resources(
     connection = None
     try:
         command_guard.validate_command_list(["screen-length disable", *RESOURCE_COMMANDS, *HTTPS_PORT_COMMANDS], "ac_collect")
+        _raise_if_cancelled(should_cancel)
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         command_results.append(_run_command(connection, "screen-length disable", ac_device, collect_run_uuid, context="ac_collect"))
         outputs: dict[str, str] = {}
         for command in RESOURCE_COMMANDS:
+            _raise_if_cancelled(should_cancel)
+            progress(f"正在执行 {command}...")
             result = _run_command(connection, command, ac_device, collect_run_uuid, context="ac_collect")
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
+        progress("正在采集 HTTPS 端口...")
         https_port, https_results = collect_https_port(connection, ac_device, collect_run_uuid)
         command_results.extend(https_results)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
+        _raise_if_cancelled(should_cancel)
+        progress("正在解析FIT-AP资源...")
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
         summary_updated = any(value is not None for key, value in summary.items() if key != "ac_device_uuid")
+        progress("正在写入数据库...")
         if summary_updated:
             repository.upsert_ac_ap_summary(summary)
         persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port)
@@ -176,6 +195,7 @@ def collect_h3c_ac_resources(
         else:
             app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
             app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
+        progress(f"更新完成：FIT-AP资源 {len(resources)} 条")
         return AcResourceCollectResult(
             status == "success",
             str(ac_device.device_uuid),
@@ -190,6 +210,12 @@ def collect_h3c_ac_resources(
             error_message or None,
             command_results,
         )
+    except CollectionCancelled:
+        message = "用户已取消更新"
+        fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
+        app_logger.log_warning("AC_COLLECT_CANCELLED", _detail(ac_device, collect_run_uuid))
+        progress("已取消")
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
@@ -208,7 +234,11 @@ def collect_h3c_fit_ap_optical(
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
     max_workers: int = BATCH_CONCURRENCY,
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> FitApOpticalCollectResult:
+    progress = progress or (lambda _message: None)
+    should_cancel = should_cancel or (lambda: False)
     paths = paths or PathResolver()
     repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
     fact_repository = DeviceFactRepository(repository.database)
@@ -229,13 +259,22 @@ def collect_h3c_fit_ap_optical(
         }
     )
     app_logger.log_info("FIT_AP_OPTICAL_STARTED", _detail(ac_device, collect_run_uuid))
+    progress("\u51c6\u5907\u66f4\u65b0FIT-AP\u5149\u8870...")
     try:
         app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_STARTED", _detail(ac_device, collect_run_uuid))
+        _raise_if_cancelled(should_cancel)
+        progress("\u6b63\u5728\u8fde\u63a5AC\u5e76\u542f\u7528AP\u63a7\u5236\u53f0...")
         enable_results = _enable_fit_ap_console(ac_device, collect_run_uuid)
         _write_raw_files(run_dir / f"{ac_device.device_uuid}.log", run_dir / f"{ac_device.device_uuid}_commands.jsonl", ac_device, collect_run_uuid, enable_results)
         if any(not result.success for result in enable_results):
             raise RuntimeError(_command_error_summary(enable_results) or "AC enable AP console failed")
         app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_SUCCESS", _detail(ac_device, collect_run_uuid))
+    except CollectionCancelled:
+        message = "\u7528\u6237\u5df2\u53d6\u6d88\u66f4\u65b0"
+        app_logger.log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
+        fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
+        progress("\u5df2\u53d6\u6d88")
+        return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
         app_logger.log_error("FIT_AP_OPTICAL_AC_ENABLE_FAILED", _detail(ac_device, collect_run_uuid, error=message))
@@ -243,17 +282,37 @@ def collect_h3c_fit_ap_optical(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
 
+    progress("\u6b63\u5728\u7b5b\u9009\u5728\u7ebfAP...")
     resources = [row for row in repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid)) if row.get("ap_ip")]
     rows: list[dict[str, object | None]] = []
     worker_count = max(1, min(int(max_workers or BATCH_CONCURRENCY), 1000))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
-            for row in resources
-        }
-        for future in as_completed(futures):
-            rows.append(future.result())
-    repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows)
+    total = len(resources)
+    completed = 0
+    progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a0/{total}")
+    try:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
+                for row in resources
+            }
+            for future in as_completed(futures):
+                if should_cancel():
+                    for pending in futures:
+                        pending.cancel()
+                    raise CollectionCancelled()
+                rows.append(future.result())
+                completed += 1
+                progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a{completed}/{total}")
+        progress("\u6b63\u5728\u89e3\u6790\u5149\u6a21\u5757\u6570\u636e...")
+        _raise_if_cancelled(should_cancel)
+        progress("\u6b63\u5728\u5199\u5165\u6570\u636e\u5e93...")
+        repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows)
+    except CollectionCancelled:
+        message = "\u7528\u6237\u5df2\u53d6\u6d88\u66f4\u65b0"
+        app_logger.log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
+        fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
+        progress("\u5df2\u53d6\u6d88")
+        return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, len(rows), 0, message)
     app_logger.log_info("FIT_AP_OPTICAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
     failed = sum(1 for row in rows if row.get("status") != "success")
     status = "failed" if rows and failed == len(rows) else "partial_success" if failed else "success"
@@ -267,6 +326,7 @@ def collect_h3c_fit_ap_optical(
         app_logger.log_warning("FIT_AP_OPTICAL_PARTIAL_SUCCESS", _detail(ac_device, collect_run_uuid, count=len(rows), error=error_message or ""))
     else:
         app_logger.log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no AP resources"))
+    progress(f"\u66f4\u65b0\u5b8c\u6210\uff1a\u6210\u529f {len(rows) - failed}\uff0c\u5931\u8d25 {failed}\uff0c\u79bb\u7ebf 0")
     return FitApOpticalCollectResult(status != "failed", status == "partial_success", str(ac_device.device_uuid), collect_run_uuid, len(rows), failed, error_message)
 
 
@@ -549,6 +609,11 @@ def _write_raw_files(
 
 def _persist_raw_logs() -> bool:
     return str(os.environ.get("NETCONSOLE_PERSIST_RAW_LOGS") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _raise_if_cancelled(should_cancel: CancelCheck) -> None:
+    if should_cancel():
+        raise CollectionCancelled()
 
 
 def _command_error_summary(command_results: list[CommandResult]) -> str:

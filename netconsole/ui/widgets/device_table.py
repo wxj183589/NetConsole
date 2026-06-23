@@ -43,6 +43,13 @@ COLUMNS = (
     ("actions", "field.actions"),
 )
 
+DEVICE_HEADER_TOOLTIPS = {
+    "system_name": "field.tooltip.system_name",
+    "station": "field.tooltip.station",
+    "primary_address": "field.tooltip.primary_address",
+    "backup_address": "field.tooltip.backup_address",
+}
+
 
 def protocol_label(ssh_enabled: object, telnet_enabled: object) -> str:
     ssh = bool(ssh_enabled)
@@ -79,11 +86,20 @@ class DeviceTable(QTableWidget):
 
     def retranslate(self) -> None:
         self.setHorizontalHeaderLabels([self.i18n.t(key) if key else "" for _, key in COLUMNS])
+        self._apply_header_tooltips()
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
         apply_action_column(self)
         self._apply_column_layout()
         self._refresh_action_buttons()
+
+    def _apply_header_tooltips(self) -> None:
+        for column, (field, key) in enumerate(COLUMNS):
+            item = self.horizontalHeaderItem(column)
+            if item is None:
+                continue
+            tooltip_key = DEVICE_HEADER_TOOLTIPS.get(field)
+            item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else (self.i18n.t(key) if key else ""))
 
     def set_devices(self, devices: list[Device]) -> None:
         self._updating_checks = True

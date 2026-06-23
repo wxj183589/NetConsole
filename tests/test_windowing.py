@@ -184,6 +184,7 @@ def test_main_window_sidebar_collapses_expands_and_preserves_selection(tmp_path)
 
     assert not window.sidebar_collapsed
     assert window.left_panel.width() == Navigation.EXPANDED_WIDTH
+    assert window.navigation.item(ac_row).textAlignment() == Qt.AlignCenter
 
     window.sidebar_toggle_button.click()
 
@@ -193,6 +194,7 @@ def test_main_window_sidebar_collapses_expands_and_preserves_selection(tmp_path)
     assert window.stack.currentWidget() is before_page
     assert window.navigation.item(ac_row).toolTip() == "AC Management"
     assert window.navigation.item(ac_row).text() == "AC"
+    assert window.navigation.item(ac_row).textAlignment() == Qt.AlignCenter
 
     window.sidebar_toggle_button.click()
 

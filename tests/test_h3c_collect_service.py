@@ -92,6 +92,7 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     fact = repository.get_device_fact("11111111-1111-4111-8111-111111111111")
     assert fact["sysname"] == "SW01"
     assert fact["model"] == "S6850"
+    assert fact["mac_address"] == "105e-ae3e-0700"
     assert "当前:" in fact["bootrom_version"]
     assert "主用:" in fact["bootrom_version"]
     assert "备用:" in fact["bootrom_version"]
@@ -119,6 +120,7 @@ def test_collect_service_writes_sysname_back_to_device_table(monkeypatch, tmp_pa
 
     assert result.success is True
     assert device_repository.get(device.id).sysname == "SW01"
+    assert device_repository.get(device.id).mac_address == "105e-ae3e-0700"
 
 
 def test_collect_service_persists_raw_log_when_debug_enabled(monkeypatch, tmp_path):

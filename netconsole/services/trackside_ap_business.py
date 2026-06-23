@@ -48,6 +48,14 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
 
 TRACKSIDE_AP_BUSINESS_COLUMNS = TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS
 
+TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS = {
+    "site": "trackside.tooltip.station",
+    "link_status": "trackside.tooltip.link",
+    "port_type": "trackside.tooltip.port_type",
+    "switch_rx_power": "trackside.tooltip.switch_rx_power",
+    "ap_optical_status": "trackside.tooltip.ap_optical_status",
+}
+
 TRACKSIDE_AP_DEVICE_COLUMNS = (
     ("details.interface_name", "interface_name"),
     ("details.link", "link_status"),

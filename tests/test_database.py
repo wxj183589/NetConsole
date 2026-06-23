@@ -15,6 +15,8 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     with db.connect() as conn:
         table_names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         columns = [row["name"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()]
+        fact_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_facts)").fetchall()]
+        fact_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_facts_history)").fetchall()]
         config_snapshot_columns = [row["name"] for row in conn.execute("PRAGMA table_info(config_snapshots)").fetchall()]
         interface_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_interfaces)").fetchall()]
         optical_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules)").fetchall()]
@@ -46,6 +48,8 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     for column in ("rx_low_warning", "rx_high_warning", "tx_low_warning", "tx_high_warning"):
         assert column in optical_columns
         assert column in optical_history_columns
+    assert "mac_address" in fact_columns
+    assert "mac_address" in fact_history_columns
 
     for column in (
         "ssh_enabled",
@@ -64,6 +68,7 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "group_id",
         "https_port",
         "system_name",
+        "mac_address",
         "primary_address",
         "backup_address",
         "protocol",

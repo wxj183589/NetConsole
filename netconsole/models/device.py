@@ -14,6 +14,7 @@ class Device:
     device_uuid: str | None = None
     name: str = ""
     system_name: str | None = None
+    mac_address: str | None = None
     station: str | None = None
     location: str | None = None
     group_id: int | None = None
