@@ -7,6 +7,13 @@ from netconsole.core.optical_severity_engine import compute_optical_severity, di
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.models.device import Device
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, write_ap_online_overview_sheet
+from netconsole.services.offline_ap_ledger import (
+    OFFLINE_AP_LEDGER_COLUMNS,
+    OFFLINE_AP_STATS_COLUMNS,
+    OFFLINE_AP_STATUS_TEXT,
+    write_offline_ap_ledger_sheet,
+    write_offline_ap_stats_sheet,
+)
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 
@@ -24,12 +31,12 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("ac.station", "site"),
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
-    ("details.link", "link_status"),
+    ("details.port_type", "port_type"),
     ("details.port_description", "description"),
-    ("details.port_status", "port_status"),
     ("details.pvid", "pvid"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
+    ("ac.indoor_switch_tx_power", "switch_tx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
@@ -42,13 +49,12 @@ TRACKSIDE_AP_BUSINESS_COLUMNS = TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS
 
 TRACKSIDE_AP_DEVICE_COLUMNS = (
     ("details.interface_name", "interface_name"),
-    ("details.link", "link_status"),
-    ("details.protocol", "protocol_status"),
+    ("details.port_type", "port_type"),
     ("details.port_description", "description"),
-    ("details.port_status", "port_status"),
     ("details.pvid", "pvid"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
+    ("ac.indoor_switch_tx_power", "switch_tx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
@@ -67,6 +73,7 @@ TRACKSIDE_OPTICAL_COLOR_RGB = {
     "no_light": "E5E7EB",
     "no_module": "F3F4F6",
     "skipped": "F3F4F6",
+    "offline": "E5E7EB",
 }
 
 AP_SIDE_DISPLAY_FIELDS = {"ap_mac", "ap_name", "ap_rx_power", "ap_tx_power"}
@@ -170,6 +177,7 @@ def build_trackside_ap_business_rows(
     fit_ap_resource_rows: list[dict[str, object | None]] | None = None,
     device_optical_status_lookup: dict[tuple[str, str], str] | None = None,
     trackside_ap_plan: dict | None = None,
+    offline_ap_ledger_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {
         device_uuid: {normalize_interface_name(row.get("interface_name")).casefold(): row for row in rows}
@@ -265,11 +273,13 @@ def build_trackside_ap_business_rows(
                     "link_status": interface.get("link_status") or interface.get("link"),
                     "protocol_status": interface.get("protocol_status") or interface.get("protocol"),
                     "description": interface.get("description"),
+                    "port_type": _port_type(interface.get("port_status")),
                     "port_status": interface.get("port_status"),
                     "pvid": interface.get("pvid"),
                     "match_source": match_source,
                     "vlan": interface.get("vlan"),
                     "switch_rx_power": optical.get("rx_power"),
+                    "switch_tx_power": optical.get("tx_power"),
                     "switch_optical_status": switch_status,
                     "ap_mac": ap_candidate["ap_mac"] if ap_side_has_data else None,
                     "ap_name": ap_candidate["ap_name"] if ap_side_has_data else None,
@@ -285,10 +295,13 @@ def build_trackside_ap_business_rows(
                     "collection_status": fit_ap.get("status") or ("success" if optical else "not_collected"),
                 }
             )
+    result.extend(_offline_ledger_to_trackside_rows(offline_ap_ledger_rows or [], interfaces_by_device, optical_by_device))
     return sorted(result, key=lambda row: (str(row.get("site") or ""), str(row.get("device_name") or ""), interface_sort_key(row.get("interface_name"))))
 
 
 def trackside_row_status(row: dict[str, object | None]) -> str:
+    if bool(row.get("is_ap_offline")):
+        return "offline"
     switch_status = str(row.get("switch_optical_status") or "")
     ap_status = str(row.get("ap_optical_status") or "") if has_ap_side_optical_data(row) else ""
     return worse_optical_severity(switch_status, ap_status)
@@ -297,6 +310,8 @@ def trackside_row_status(row: dict[str, object | None]) -> str:
 def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
     if not row:
         return False
+    if bool(row.get("is_ap_offline")):
+        return True
     if "ap_side_has_data" in row:
         return bool(row.get("ap_side_has_data"))
     if _explicit_no_module(row):
@@ -316,7 +331,13 @@ def format_ap_side_alarm(row: dict[str, object | None], language: str = "zh") ->
 def format_trackside_display_value(field: str, row: dict[str, object | None], language: str = "zh") -> str:
     if field == "match_source":
         return _match_source_label(row.get(field), language)
+    if field == "port_type":
+        return _port_type(row.get("port_type") or row.get("port_status"))
+    if field in {"link_status", "protocol_status"}:
+        return _port_type(row.get("port_type") or row.get("port_status"))
     if field == "ap_optical_status":
+        if bool(row.get("is_ap_offline")):
+            return OFFLINE_AP_STATUS_TEXT
         return format_ap_side_alarm(row, language)
     if field in AP_SIDE_DISPLAY_FIELDS and not has_ap_side_optical_data(row):
         return AP_SIDE_MISSING_DISPLAY
@@ -365,6 +386,10 @@ def export_trackside_ap_business_xlsx(
     ap_online_overview_rows: list[dict[str, object | None]] | None = None,
     ap_online_overview_columns: tuple[tuple[str, str], ...] | None = None,
     ap_online_overview_headers: list[str] | None = None,
+    offline_ap_stats: dict[str, object | None] | None = None,
+    offline_ap_ledger_rows: list[dict[str, object | None]] | None = None,
+    offline_ap_stats_headers: list[str] | None = None,
+    offline_ap_ledger_headers: list[str] | None = None,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -401,6 +426,11 @@ def export_trackside_ap_business_xlsx(
         ap_online_overview_columns,
         ap_online_overview_headers,
     )
+    if offline_ap_stats is not None and offline_ap_ledger_rows is not None:
+        stats_sheet = workbook.create_sheet("AP离线情况")
+        write_offline_ap_stats_sheet(stats_sheet, offline_ap_stats, offline_ap_stats_headers or [key for key, _field in OFFLINE_AP_STATS_COLUMNS])
+        ledger_sheet = workbook.create_sheet("离线AP台账")
+        write_offline_ap_ledger_sheet(ledger_sheet, offline_ap_ledger_rows, offline_ap_ledger_headers or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS])
     _append_switch_optical_summary_sheet(workbook, rows, alignment, border, header_font)
     for worksheet in workbook.worksheets:
         apply_worksheet_autofit(worksheet, maximum=60)
@@ -427,6 +457,74 @@ def _merge_resource_with_optical(resource: dict[str, object | None] | None, opti
     return {**resource, **optical}
 
 
+def _offline_ledger_to_trackside_rows(
+    rows: list[dict[str, object | None]],
+    interfaces_by_device: dict[str, list[dict[str, object | None]]] | None = None,
+    optical_by_device: dict[str, list[dict[str, object | None]]] | None = None,
+) -> list[dict[str, object | None]]:
+    result: list[dict[str, object | None]] = []
+    interface_indexes = {
+        device_uuid: {normalize_interface_name(item.get("interface_name")).casefold(): item for item in items}
+        for device_uuid, items in (interfaces_by_device or {}).items()
+    }
+    optical_indexes = {
+        device_uuid: {normalize_interface_name(item.get("interface_name")).casefold(): item for item in items}
+        for device_uuid, items in (optical_by_device or {}).items()
+    }
+    for row in rows:
+        device_uuid = str(row.get("device_uuid") or "")
+        interface_key = normalize_interface_name(row.get("historical_switch_interface")).casefold()
+        interface = interface_indexes.get(device_uuid, {}).get(interface_key, {})
+        optical = optical_indexes.get(device_uuid, {}).get(interface_key, {})
+        switch_result = compute_optical_severity(
+            {
+                "module_present": bool(_has_optical_module_data(optical)),
+                "switch_rx_power": optical.get("rx_power"),
+                "switch_port_status": optical.get("port_status"),
+                "alarm_low": optical.get("rx_low_alarm"),
+                "alarm_high": optical.get("rx_high_alarm"),
+                "warning_low": optical.get("rx_low_warning"),
+                "device_type": "switch",
+            }
+        )
+        result.append(
+            {
+                "site": row.get("site"),
+                "ac_device_uuid": row.get("ac_device_uuid"),
+                "ap_uuid": row.get("ap_uuid"),
+                "device_uuid": device_uuid or row.get("device_uuid"),
+                "device_name": row.get("historical_switch_name"),
+                "interface_name": row.get("historical_switch_interface"),
+                "link_status": interface.get("link_status"),
+                "protocol_status": interface.get("protocol_status"),
+                "description": interface.get("description") or row.get("offline_remark"),
+                "port_type": _port_type(interface.get("port_status")),
+                "port_status": interface.get("port_status"),
+                "pvid": interface.get("pvid"),
+                "match_source": "historical",
+                "vlan": interface.get("vlan"),
+                "switch_rx_power": optical.get("rx_power"),
+                "switch_tx_power": optical.get("tx_power"),
+                "switch_optical_status": switch_result.severity,
+                "ap_mac": row.get("ap_mac"),
+                "ap_name": row.get("ap_name"),
+                "ap_ip": row.get("ap_ip"),
+                "ap_state": "Idle",
+                "ap_state_display": row.get("ap_status"),
+                "ap_rx_power": None,
+                "ap_tx_power": None,
+                "ap_optical_status": "offline",
+                "ap_side_has_data": True,
+                "updated_at": row.get("last_lldp_at"),
+                "source_device": row.get("historical_switch_name"),
+                "collection_status": "historical",
+                "is_ap_offline": True,
+                "offline_remark": row.get("offline_remark"),
+            }
+        )
+    return result
+
+
 def summarize_trackside_ap_online_counts(rows: list[dict[str, object | None]]) -> tuple[int, int]:
     online = 0
     offline = 0
@@ -447,6 +545,11 @@ def summarize_trackside_ap_online_counts(rows: list[dict[str, object | None]]) -
 
 def _normalize_name(value: object) -> str:
     return str(value or "").strip().casefold()
+
+
+def _port_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return text if text in {"access", "trunk", "hybrid"} else "unknown"
 
 
 def normalize_mac(value: object) -> str:
@@ -591,6 +694,8 @@ def _ap_state(row: dict[str, object | None]) -> str:
     text = " ".join(str(row.get(field) or "") for field in ("ap_state", "ap_state_display", "state", "state_display")).strip().casefold()
     if not text:
         return ""
+    if "idle" in text or "offline" in text or "离线" in text:
+        return "offline"
     if any(token in text for token in ("online", "run", "up", "normal", "在线")):
         return "online"
     if any(token in text for token in ("offline", "down", "fault", "离线")):

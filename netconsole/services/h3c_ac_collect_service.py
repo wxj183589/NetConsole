@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -110,11 +111,11 @@ def collect_h3c_ac_resources(
     ac_device.ensure_device_uuid()
     collect_run_uuid = str(uuid4())
     started_at = _now()
+    persist_raw_logs = _persist_raw_logs()
     run_dir = paths.ensure_site_dirs(site_name) / "raw" / "ac" / collect_run_uuid
-    run_dir.mkdir(parents=True, exist_ok=True)
     raw_log_file = run_dir / f"{ac_device.device_uuid}.log"
     commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
-    relative_raw_log_path = f"raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log"
+    relative_raw_log_path = f"raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log" if persist_raw_logs else ""
 
     fact_repository.create_collect_run(
         {
@@ -122,7 +123,7 @@ def collect_h3c_ac_resources(
             "collect_type": "ac_resources",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/ac/{collect_run_uuid}",
+            "raw_log_dir": f"raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )
@@ -213,16 +214,16 @@ def collect_h3c_fit_ap_optical(
     ac_device.ensure_device_uuid()
     collect_run_uuid = str(uuid4())
     started_at = _now()
+    persist_raw_logs = _persist_raw_logs()
     run_dir = paths.ensure_site_dirs(site_name) / "raw" / "ac" / collect_run_uuid
     fit_ap_dir = run_dir / "fit_ap"
-    fit_ap_dir.mkdir(parents=True, exist_ok=True)
     fact_repository.create_collect_run(
         {
             "collect_run_uuid": collect_run_uuid,
             "collect_type": "fit_ap_optical",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/ac/{collect_run_uuid}",
+            "raw_log_dir": f"raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )
@@ -388,7 +389,7 @@ def _collect_single_fit_ap_optical(
     ap_ip = str(ap_row.get("ap_ip") or "")
     raw_log_file = fit_ap_dir / f"{_safe_filename(ap_name)}.log"
     commands_file = fit_ap_dir / f"{_safe_filename(ap_name)}_commands.jsonl"
-    relative_raw_log_path = f"raw/ac/{collect_run_uuid}/fit_ap/{_safe_filename(ap_name)}.log"
+    relative_raw_log_path = f"raw/ac/{collect_run_uuid}/fit_ap/{_safe_filename(ap_name)}.log" if _persist_raw_logs() else ""
     collected_at = _now()
     base = {
         "ac_device_uuid": ac_device.device_uuid,
@@ -517,6 +518,8 @@ def _write_raw_files(
     command_results: list[CommandResult],
     fatal_error: str | None = None,
 ) -> None:
+    if not _persist_raw_logs():
+        return
     raw_log_file.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"Collect Time: {_now()}",
@@ -541,6 +544,10 @@ def _write_raw_files(
     with commands_file.open("w", encoding="utf-8") as file:
         for result in command_results:
             file.write(json.dumps({"command": result.command, "success": result.success, "error_message": result.error_message}, ensure_ascii=False) + "\n")
+
+
+def _persist_raw_logs() -> bool:
+    return str(os.environ.get("NETCONSOLE_PERSIST_RAW_LOGS") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _command_error_summary(command_results: list[CommandResult]) -> str:

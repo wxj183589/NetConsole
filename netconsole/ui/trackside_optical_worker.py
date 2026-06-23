@@ -16,6 +16,7 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     TracksideOpticalSessionResult,
     collect_trackside_optical,
 )
+from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
 from netconsole.services.trackside_ap_business import is_trackside_ap_interface
 
@@ -49,6 +50,14 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
     fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
     active_plan = ac_repository.get_active_trackside_pvid_plan()
+    switch_lookup = build_switch_data_lookup(devices, optical_by_device)
+    latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, fit_ap_resource_rows)
+    _offline_stats, offline_ledger_rows = build_offline_ap_ledger(
+        fit_ap_resources=fit_ap_resource_rows,
+        latest_lldp_by_ap=latest_lldp,
+        latest_optical_by_ap=latest_optical,
+        device_lookup_by_name=build_device_lookup_by_name(devices),
+    )
     interface_count = sum(len(rows) for rows in interfaces_by_device.values())
     optical_count = sum(len(rows) for rows in optical_by_device.values())
     lldp_count = sum(len(rows) for rows in lldp_by_device.values())
@@ -68,8 +77,9 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
         fit_ap_optical_rows,
         lldp_by_device,
         fit_ap_resource_rows,
-        build_switch_data_lookup(devices, optical_by_device),
+        switch_lookup,
         active_plan,
+        offline_ledger_rows,
     )
     build_ms = int((perf_counter() - build_start) * 1000)
     row_count = len(rows)

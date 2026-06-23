@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
@@ -22,7 +24,7 @@ from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
 COLLECT_COMMANDS = (
-    "display current-configuration | in sysname",
+    "display current-configuration | include sysname",
     "display version",
     "display device",
     "display device manuinfo",
@@ -71,11 +73,12 @@ def collect_h3c_device_details(
     device.ensure_device_uuid()
     collect_run_uuid = str(uuid4())
     started_at = _now()
+    persist_raw_logs = _persist_raw_logs()
     run_dir = paths.ensure_site_dirs(site_name) / "raw" / "collect" / collect_run_uuid
-    run_dir.mkdir(parents=True, exist_ok=True)
     raw_log_file = run_dir / f"{device.device_uuid}.log"
     commands_file = run_dir / f"{device.device_uuid}_commands.jsonl"
-    relative_raw_log_path = f"raw/collect/{collect_run_uuid}/{device.device_uuid}.log"
+    relative_raw_log_path = f"raw/collect/{collect_run_uuid}/{device.device_uuid}.log" if persist_raw_logs else ""
+    result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
 
     repository.create_collect_run(
         {
@@ -83,7 +86,7 @@ def collect_h3c_device_details(
             "collect_type": "device_details",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/collect/{collect_run_uuid}",
+            "raw_log_dir": f"raw/collect/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )
@@ -98,7 +101,7 @@ def collect_h3c_device_details(
         _finalize_failed(repository, collect_run_uuid, message)
         app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
         _write_raw_files(raw_log_file, commands_file, device, "", collect_run_uuid, command_results, target_protocol="", disconnected_at=_now())
-        return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, 0, 0, message, command_results)
+        return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, 0, 0, message, command_results)
 
     try:
         command_guard.validate_command_list(["screen-length disable", *COLLECT_COMMANDS], "device_collect")
@@ -129,7 +132,7 @@ def collect_h3c_device_details(
             status != "failed",
             str(device.device_uuid),
             collect_run_uuid,
-            str(raw_log_file),
+            result_raw_log_path,
             bool(write_result["facts"]),
             int(write_result["interfaces"]),
             int(write_result["optical_modules"]),
@@ -143,7 +146,7 @@ def collect_h3c_device_details(
         _finalize_failed(repository, collect_run_uuid, message)
         app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
-        return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, 0, 0, message, command_results)
+        return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, 0, 0, message, command_results)
     finally:
         if connection is not None:
             try:
@@ -195,13 +198,15 @@ def _parse_and_write(
     try:
         facts = parse_device(outputs.get("display version", ""), outputs.get("display device", ""), outputs.get("display device manuinfo", ""))
         facts["sysname"] = (
-            parse_sysname(outputs.get("display current-configuration | in sysname", ""))
+            parse_sysname(outputs.get("display current-configuration | include sysname", ""))
             or facts.get("sysname")
             or _prompt_sysname(outputs)
         )
         facts["bootrom_version"] = parse_boot_loader(outputs.get("display boot-loader", "")) or facts.get("bootrom_version")
         if any(value for key, value in facts.items() if key != "vendor"):
             repository.upsert_device_fact({"device_uuid": device.device_uuid, **facts, **metadata})
+            if facts.get("sysname"):
+                DeviceRepository(repository.database).update_sysname_by_uuid(str(device.device_uuid or ""), str(facts["sysname"]))
             facts_updated = True
             app_logger.log_info("COLLECT_SAVE_FACTS", _detail(device, collect_run_uuid, error=f"sysname={facts.get('sysname') or ''}, raw_log_path={raw_log_path}"))
     except Exception as exc:
@@ -273,6 +278,9 @@ def _write_raw_files(
     fatal_error: str | None = None,
     disconnected_at: str | None = None,
 ) -> None:
+    if not _persist_raw_logs():
+        return
+    raw_log_file.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"Collect Time: {_now()}",
         f"Collect Run UUID: {collect_run_uuid}",
@@ -300,6 +308,10 @@ def _write_raw_files(
     with commands_file.open("w", encoding="utf-8") as file:
         for result in command_results:
             file.write(json.dumps({"command": result.command, "success": result.success, "error_message": result.error_message, "started_at": result.started_at, "ended_at": result.ended_at}, ensure_ascii=False) + "\n")
+
+
+def _persist_raw_logs() -> bool:
+    return str(os.environ.get("NETCONSOLE_PERSIST_RAW_LOGS") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _with_metadata(item: dict[str, object | None], metadata: dict[str, object | None]) -> dict[str, object | None]:

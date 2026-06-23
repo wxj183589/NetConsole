@@ -6,7 +6,7 @@ from netconsole.services.command_guard import CommandRejected, is_command_allowe
 def test_command_guard_allows_whitelist_commands():
     for command in (
         "screen-length disable",
-        "display current-configuration | in sysname",
+        "display current-configuration | include sysname",
         "display version",
         "display device",
         "display device manuinfo",

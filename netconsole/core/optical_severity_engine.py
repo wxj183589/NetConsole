@@ -11,6 +11,7 @@ SEVERITY_RANK = {
     "unknown": 0,
     "not_collected": 0,
     "skipped": 0,
+    "offline": 0,
     "no_module": 0,
     "": 0,
     "normal": 1,
@@ -32,6 +33,7 @@ STATUS_COLORS = {
     "no_light": "E5E7EB",
     "no_module": "F3F4F6",
     "skipped": "F3F4F6",
+    "offline": "E5E7EB",
     "not_collected": "F3F4F6",
     "unknown": "F3F4F6",
 }

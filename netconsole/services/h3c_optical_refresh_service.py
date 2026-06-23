@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -58,11 +59,12 @@ def refresh_h3c_device_optical(
     device.ensure_device_uuid()
     collect_run_uuid = str(uuid4())
     started_at = _now()
+    persist_raw_logs = _persist_raw_logs()
     run_dir = paths.ensure_site_dirs(site_name) / "raw" / "collect" / collect_run_uuid
-    run_dir.mkdir(parents=True, exist_ok=True)
     raw_log_file = run_dir / f"{device.device_uuid}.log"
     commands_file = run_dir / f"{device.device_uuid}_commands.jsonl"
-    relative_raw_log_path = f"raw/collect/{collect_run_uuid}/{device.device_uuid}.log"
+    relative_raw_log_path = f"raw/collect/{collect_run_uuid}/{device.device_uuid}.log" if persist_raw_logs else ""
+    result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
 
     repository.create_collect_run(
         {
@@ -70,7 +72,7 @@ def refresh_h3c_device_optical(
             "collect_type": "optical_refresh",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/collect/{collect_run_uuid}",
+            "raw_log_dir": f"raw/collect/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )
@@ -84,7 +86,7 @@ def refresh_h3c_device_optical(
         _write_raw_files(raw_log_file, commands_file, device, "", collect_run_uuid, command_results, fatal_error=message)
         repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("OPTICAL_REFRESH_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
-        return OpticalRefreshResult(False, str(device.device_uuid), collect_run_uuid, str(raw_log_file), 0, 0, message, command_results)
+        return OpticalRefreshResult(False, str(device.device_uuid), collect_run_uuid, result_raw_log_path, 0, 0, message, command_results)
 
     try:
         command_guard.validate_command_list(OPTICAL_REFRESH_COMMANDS, "optical_refresh")
@@ -119,7 +121,7 @@ def refresh_h3c_device_optical(
             status != "failed",
             str(device.device_uuid),
             collect_run_uuid,
-            str(raw_log_file),
+            result_raw_log_path,
             int(write_result["interfaces"]),
             int(write_result["optical_modules"]),
             error_message or None,
@@ -130,7 +132,7 @@ def refresh_h3c_device_optical(
         _write_raw_files(raw_log_file, commands_file, device, target.protocol if target else "", collect_run_uuid, command_results, fatal_error=message)
         repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("OPTICAL_REFRESH_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
-        return OpticalRefreshResult(False, str(device.device_uuid), collect_run_uuid, str(raw_log_file), 0, 0, message, command_results)
+        return OpticalRefreshResult(False, str(device.device_uuid), collect_run_uuid, result_raw_log_path, 0, 0, message, command_results)
     finally:
         if connection is not None:
             try:
@@ -218,6 +220,9 @@ def _write_raw_files(
     command_results: list[CommandResult],
     fatal_error: str | None = None,
 ) -> None:
+    if not _persist_raw_logs():
+        return
+    raw_log_file.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"Collect Type: optical_refresh",
         f"Collect Time: {_now()}",
@@ -255,9 +260,13 @@ def _write_raw_files(
                         "ended_at": result.ended_at,
                     },
                     ensure_ascii=False,
-                )
-                + "\n"
             )
+            + "\n"
+        )
+
+
+def _persist_raw_logs() -> bool:
+    return str(os.environ.get("NETCONSOLE_PERSIST_RAW_LOGS") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _command_error_summary(command_results: list[CommandResult]) -> str:

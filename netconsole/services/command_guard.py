@@ -8,7 +8,7 @@ from netconsole.core import app_logger
 SAFE_DEVICE_COMMANDS = {
     "screen-length d",
     "screen-length disable",
-    "display current-configuration | in sysname",
+    "display current-configuration | include sysname",
     "display version",
     "display device",
     "display device manuinfo",
@@ -121,7 +121,7 @@ DANGEROUS_PATTERNS = (
 )
 
 PIPE_ALLOWLIST = {
-    "display current-configuration | in sysname",
+    "display current-configuration | include sysname",
     "display ip https | include port",
 }
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {

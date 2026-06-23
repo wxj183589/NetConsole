@@ -34,6 +34,18 @@ class PathResolver:
         return self.app_root / "data"
 
     @property
+    def runtime_dir(self) -> Path:
+        return self.app_root / "runtime"
+
+    @property
+    def runtime_cache_dir(self) -> Path:
+        return self.runtime_dir / "cache"
+
+    @property
+    def offline_ap_cache_path(self) -> Path:
+        return self.runtime_cache_dir / "offline_ap_cache.json"
+
+    @property
     def tests_dir(self) -> Path:
         return self.app_root / "tests"
 
@@ -83,7 +95,7 @@ class PathResolver:
 
     @property
     def logs_dir(self) -> Path:
-        return self.data_dir / "logs"
+        return self.runtime_dir / "logs"
 
     @property
     def app_log_path(self) -> Path:
@@ -188,6 +200,8 @@ class PathResolver:
 
     def ensure_project_dirs(self) -> None:
         runtime_paths = (
+            self.runtime_dir,
+            self.runtime_cache_dir,
             self.data_dir,
             self.config_dir,
             self.sites_dir,

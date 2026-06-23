@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTabWidget,
     QTableWidget,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
+from netconsole.core.paths import PathResolver
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import (
     build_switch_data_lookup,
@@ -44,6 +46,18 @@ from netconsole.services.trackside_ap_business import (
     export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
     trackside_row_status,
+)
+from netconsole.services.offline_ap_ledger import (
+    OFFLINE_AP_LEDGER_COLUMNS,
+    OFFLINE_AP_STATS_COLUMNS,
+    OFFLINE_AP_STATUS_TEXT,
+    build_device_lookup_by_name,
+    build_latest_ap_history_indexes,
+    build_offline_ap_ledger,
+    is_fit_ap_offline,
+    load_offline_ap_cache,
+    offline_ap_headers,
+    save_offline_ap_cache,
 )
 from netconsole.services.ap_online_overview import (
     AP_ONLINE_OVERVIEW_COLUMNS,
@@ -145,6 +159,35 @@ OPTICAL_EXPORT_COLOR_RGB = {
     "skipped": "F3F4F6",
 }
 OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
+
+
+class OfflineApLedgerLoadThread(QThread):
+    load_finished = Signal(object)
+    load_failed = Signal(str)
+
+    def __init__(self, device_repository: DeviceRepository, ac_device_uuid: str, cache_path: Path, parent=None) -> None:
+        super().__init__(parent)
+        self.device_repository = device_repository
+        self.ac_device_uuid = ac_device_uuid
+        self.cache_path = cache_path
+
+    def run(self) -> None:
+        try:
+            ac_repository = AcRepository(self.device_repository.database)
+            resources = ac_repository.list_fit_ap_resources_with_metadata(self.ac_device_uuid)
+            devices = self.device_repository.list()
+            latest_lldp, _latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
+            stats, ledger = build_offline_ap_ledger(
+                fit_ap_resources=resources,
+                latest_lldp_by_ap=latest_lldp,
+                device_lookup_by_name=build_device_lookup_by_name(devices),
+            )
+            save_offline_ap_cache(self.cache_path, ac_device_uuid=self.ac_device_uuid, stats=stats, ledger_rows=ledger)
+            self.load_finished.emit({"stats": stats, "ledger_rows": ledger})
+        except Exception as exc:
+            self.load_failed.emit(str(exc))
+
+
 def sort_fit_ap_optical_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
     def key(row: dict[str, object | None]) -> tuple[int, str, tuple[object, ...], str]:
         name = str(row.get("neighbor_device_name") or "").strip()
@@ -167,6 +210,7 @@ def enrich_fit_ap_optical_rows(
         resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
         neighbor_name = None if _is_invalid_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name")
         switch_status = _lookup_switch_status(neighbor_name, row.get("neighbor_interface"), lookup)
+        is_offline = is_fit_ap_offline(resource) or bool(row.get("is_ap_offline"))
         result.append(
             {
                 **row,
@@ -174,6 +218,10 @@ def enrich_fit_ap_optical_rows(
                 "site": row.get("site") or resource.get("site_name") or resource.get("site") or "未归属",
                 "neighbor_device_name": neighbor_name,
                 "switch_optical_status": switch_status,
+                "is_ap_offline": is_offline,
+                "optical_alarm_status": OFFLINE_AP_STATUS_TEXT if is_offline else row.get("optical_alarm_status"),
+                "ap_optical_status": "offline" if is_offline else row.get("ap_optical_status"),
+                "data_source": "historical" if is_offline else row.get("data_source"),
             }
         )
     return result
@@ -226,6 +274,8 @@ def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: 
 
 def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
     """Evaluate AP side optical alarm status — delegates to ``ap_source.compute_ap_status``."""
+    if bool(row.get("is_ap_offline")):
+        return "offline"
     return _evaluate_ap_result(row).severity
 
 
@@ -303,6 +353,8 @@ def _fit_ap_optical_export_value(row: dict[str, object | None], field: str) -> s
     if field == "switch_optical_status":
         return display_optical_status(evaluate_fit_ap_switch_status(row))
     if field == "optical_alarm_status":
+        if bool(row.get("is_ap_offline")):
+            return OFFLINE_AP_STATUS_TEXT
         return display_optical_status(evaluate_fit_ap_ap_status(row))
     return _display_value(row.get(field))
 
@@ -317,6 +369,13 @@ def _to_float(value: object) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _normalize_mac_text(value: object) -> str:
+    import re
+
+    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return text.casefold() if len(text) == 12 else ""
 
 
 def _display_value(value: object) -> str:
@@ -419,6 +478,11 @@ class AcManagementPage(QWidget):
         self.detail_windows: list[FitApDetailDialog] = []
         self.optical_rows: list[dict[str, object | None]] = []
         self.trackside_rows: list[dict[str, object | None]] = []
+        self.offline_ap_stats: dict[str, object | None] = {}
+        self.offline_ap_ledger_rows: list[dict[str, object | None]] = []
+        self._offline_ap_context_loaded = False
+        self.offline_load_thread: OfflineApLedgerLoadThread | None = None
+        self.offline_cache_path = PathResolver().offline_ap_cache_path
         self._overview_uses_trackside_plan = False
         self.resource_rows: list[dict[str, object | None]] = []
         self._device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] = {}
@@ -454,6 +518,16 @@ class AcManagementPage(QWidget):
         self.optical_ap_filter = QLineEdit()
         self.optical_site_filter = QComboBox()
         self.overview_table = QTableWidget()
+        self.offline_stats_table = QTableWidget()
+        self.offline_ledger_table = QTableWidget()
+        self.overview_inner_tabs = QTabWidget()
+        self.offline_loading_spinner = QProgressBar()
+        self.offline_loading_spinner.setRange(0, 0)
+        self.offline_loading_spinner.setTextVisible(False)
+        self.offline_loading_spinner.setFixedHeight(6)
+        self.offline_loading_spinner.setVisible(False)
+        self.offline_loading_label = make_text_selectable(QLabel("正在加载离线AP数据..."))
+        self.offline_loading_label.setVisible(False)
         self.export_overview_button = QPushButton()
         self.save_overview_history_button = QPushButton()
         self.view_overview_history_button = QPushButton()
@@ -469,6 +543,8 @@ class AcManagementPage(QWidget):
         configure_readonly_table(self.resources_table)
         configure_readonly_table(self.optical_table)
         configure_readonly_table(self.overview_table)
+        configure_readonly_table(self.offline_stats_table)
+        configure_readonly_table(self.offline_ledger_table)
         configure_readonly_table(self.trackside_table)
         self.overview_table.setEditTriggers(
             QAbstractItemView.DoubleClicked
@@ -478,18 +554,24 @@ class AcManagementPage(QWidget):
         self.resources_table.setColumnCount(len(FIT_AP_RESOURCE_COLUMNS))
         self.optical_table.setColumnCount(len(FIT_AP_OPTICAL_COLUMNS))
         self.overview_table.setColumnCount(len(AP_ONLINE_OVERVIEW_COLUMNS))
+        self.offline_stats_table.setColumnCount(len(OFFLINE_AP_STATS_COLUMNS))
+        self.offline_ledger_table.setColumnCount(len(OFFLINE_AP_LEDGER_COLUMNS))
         self.trackside_table.setColumnCount(len(TRACKSIDE_AP_BUSINESS_COLUMNS))
         set_table_column_fields(self.resources_table, [field for _key, field in FIT_AP_RESOURCE_COLUMNS])
         set_table_column_fields(self.optical_table, [field for _key, field in FIT_AP_OPTICAL_COLUMNS])
         set_table_column_fields(self.overview_table, [field for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
+        set_table_column_fields(self.offline_stats_table, [field for _key, field in OFFLINE_AP_STATS_COLUMNS])
+        set_table_column_fields(self.offline_ledger_table, [field for _key, field in OFFLINE_AP_LEDGER_COLUMNS])
         set_table_column_fields(self.trackside_table, [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         self.overview_table.itemChanged.connect(self.save_overview_total)
+        self.overview_inner_tabs.currentChanged.connect(self.handle_overview_inner_tab_changed)
         self.resources_table.horizontalHeader().sectionClicked.connect(self._resource_header_clicked)
         self.resources_table.itemChanged.connect(self.update_selection_state)
         self.resources_table.doubleClicked.connect(lambda index: self.open_ap_detail(index.row()))
         self.resources_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.resources_table.customContextMenuRequested.connect(self.show_resource_context_menu)
         self.optical_table.doubleClicked.connect(lambda index: self.open_ap_detail_from_optical(index.row()))
+        self.offline_ledger_table.doubleClicked.connect(lambda index: self.open_ap_detail_from_offline_ledger(index.row()))
         self.optical_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.optical_table.customContextMenuRequested.connect(self.show_optical_context_menu)
         self.trackside_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -558,8 +640,13 @@ class AcManagementPage(QWidget):
         overview_actions.addWidget(self.save_overview_history_button)
         overview_actions.addWidget(self.view_overview_history_button)
         overview_actions.addStretch(1)
+        self.overview_inner_tabs.addTab(self.overview_table, "")
+        self.overview_inner_tabs.addTab(self.offline_stats_table, "")
+        self.overview_inner_tabs.addTab(self.offline_ledger_table, "")
         overview_layout.addLayout(overview_actions)
-        overview_layout.addWidget(self.overview_table, 1)
+        overview_layout.addWidget(self.offline_loading_spinner)
+        overview_layout.addWidget(self.offline_loading_label)
+        overview_layout.addWidget(self.overview_inner_tabs, 1)
         overview_tab.setLayout(overview_layout)
 
         mr_tab = QWidget()
@@ -662,15 +749,22 @@ class AcManagementPage(QWidget):
         self.tabs.setTabText(2, self.i18n.t("ac.fit_ap_resources"))
         self.tabs.setTabText(3, self.i18n.t("ac.fit_ap_optical"))
         self.tabs.setTabText(4, self.i18n.t("ac.online_vehicle_mr"))
+        self.overview_inner_tabs.setTabText(0, self.i18n.t("ac.ap_online_overview"))
+        self.overview_inner_tabs.setTabText(1, "AP离线情况")
+        self.overview_inner_tabs.setTabText(2, "离线AP台账")
         self.trackside_plan_page.retranslate()
         self.resources_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_RESOURCE_COLUMNS])
         self.resources_table.horizontalHeaderItem(CHECK_COLUMN).setText(self.i18n.t("ap.select_all"))
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS])
         self.overview_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
+        self.offline_stats_table.setHorizontalHeaderLabels(offline_ap_headers(OFFLINE_AP_STATS_COLUMNS))
+        self.offline_ledger_table.setHorizontalHeaderLabels(offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS))
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         apply_table_style(self.resources_table)
         apply_table_style(self.optical_table)
         apply_table_style(self.overview_table)
+        apply_table_style(self.offline_stats_table)
+        apply_table_style(self.offline_ledger_table)
         apply_table_style(self.trackside_table)
         self.update_selection_state()
         self.update_open_web_button()
@@ -694,10 +788,14 @@ class AcManagementPage(QWidget):
             self.resource_rows = []
             self.apply_resource_pagination()
             self.optical_rows = []
+            self.offline_ap_stats = {}
+            self.offline_ap_ledger_rows = []
+            self._offline_ap_context_loaded = False
             self._set_site_filter_items([])
             self.apply_optical_filters()
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
-            self.refresh_trackside_table()
+            self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
+            self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
             self.update_open_web_button()
             return
         self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
@@ -705,13 +803,87 @@ class AcManagementPage(QWidget):
         self.resource_rows = resources
         self.apply_resource_pagination()
         self._rebuild_device_optical_status_lookup()
-        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(self.repository.list_fit_ap_optical(ac_uuid), resources, self._device_optical_status_lookup))
+        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
+        self.offline_ap_stats = {}
+        self.offline_ap_ledger_rows = []
+        self._offline_ap_context_loaded = False
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
+        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(current_optical_rows, resources, self._device_optical_status_lookup))
         self._set_site_filter_items(self.optical_rows)
         self.apply_optical_filters()
         self.refresh_overview_table(resources)
-        self.refresh_trackside_table()
         self.update_selection_state()
         self.update_open_web_button()
+
+    def handle_overview_inner_tab_changed(self, index: int) -> None:
+        if index in {1, 2}:
+            self.ensure_offline_ap_context_loaded()
+
+    def ensure_offline_ap_context_loaded(self, force: bool = False) -> None:
+        ac_uuid = self.current_device_uuid()
+        if not ac_uuid:
+            return
+        if not force and self._offline_ap_context_loaded:
+            return
+        self._load_offline_ap_cache(ac_uuid)
+        self._start_offline_ap_async_load(ac_uuid, force=force)
+
+    def _load_offline_ap_cache(self, ac_uuid: str) -> None:
+        cached = load_offline_ap_cache(self.offline_cache_path, ac_uuid)
+        if not cached:
+            return
+        stats = cached.get("stats")
+        ledger = cached.get("ledger_rows")
+        if not isinstance(stats, dict) or not isinstance(ledger, list):
+            return
+        self.offline_ap_stats = stats
+        self.offline_ap_ledger_rows = ledger
+        self._offline_ap_context_loaded = True
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [stats])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, ledger)
+
+    def _start_offline_ap_async_load(self, ac_uuid: str, force: bool = False) -> None:
+        if self.offline_load_thread is not None and self.offline_load_thread.isRunning():
+            self.offline_loading_spinner.setVisible(True)
+            self.offline_loading_label.setVisible(True)
+            return
+        if self._offline_ap_context_loaded and not force:
+            return
+        self.offline_loading_label.setText("正在加载离线AP数据...")
+        self.offline_loading_spinner.setVisible(True)
+        self.offline_loading_label.setVisible(True)
+        thread = OfflineApLedgerLoadThread(self.device_repository, ac_uuid, self.offline_cache_path, self)
+        self.offline_load_thread = thread
+        thread.load_finished.connect(self._finish_offline_ap_load)
+        thread.load_failed.connect(self._fail_offline_ap_load)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: self._clear_offline_load_thread(thread))
+        thread.start()
+
+    def _finish_offline_ap_load(self, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        ledger = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+        self.offline_ap_stats = stats
+        self.offline_ap_ledger_rows = ledger
+        self._offline_ap_context_loaded = True
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [stats] if stats else [])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, ledger)
+        self.offline_loading_spinner.setVisible(False)
+        self.offline_loading_label.setText(f"离线AP数据已更新，共 {len(ledger)} 条")
+        self.offline_loading_label.setVisible(True)
+        app_logger.log_info("OFFLINE_AP_LEDGER_ASYNC_LOADED", f"count={len(ledger)}, cache={self.offline_cache_path}")
+
+    def _fail_offline_ap_load(self, message: str) -> None:
+        self.offline_loading_spinner.setVisible(False)
+        self.offline_loading_label.setText(f"离线AP数据计算失败：{message}")
+        self.offline_loading_label.setVisible(True)
+        app_logger.log_error("OFFLINE_AP_LEDGER_ASYNC_FAILED", message)
+
+    def _clear_offline_load_thread(self, thread: OfflineApLedgerLoadThread) -> None:
+        if self.offline_load_thread is thread:
+            self.offline_load_thread = None
 
     def open_web(self) -> None:
         device = self.current_device()
@@ -1016,8 +1188,17 @@ class AcManagementPage(QWidget):
         if not path:
             return
         self.refresh_overview_table()
+        self.ensure_offline_ap_context_loaded(force=True)
         rows = self.current_overview_rows()
-        export_ap_online_overview_xlsx(path, rows, [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
+        export_ap_online_overview_xlsx(
+            path,
+            rows,
+            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+            self.offline_ap_stats,
+            self.offline_ap_ledger_rows,
+            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+        )
         remember_export_path(path)
         app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")
 
@@ -1026,6 +1207,7 @@ class AcManagementPage(QWidget):
         if not path:
             return
         self.refresh_overview_table()
+        self.ensure_offline_ap_context_loaded(force=True)
         rows = self.filtered_trackside_rows()
         export_trackside_ap_business_xlsx(
             path,
@@ -1035,6 +1217,10 @@ class AcManagementPage(QWidget):
             self.current_overview_rows(),
             AP_ONLINE_OVERVIEW_COLUMNS,
             [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+            self.offline_ap_stats,
+            self.offline_ap_ledger_rows,
+            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
         )
         remember_export_path(path)
         app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={len(rows)}, file={path.name}")
@@ -1070,8 +1256,11 @@ class AcManagementPage(QWidget):
         ac_uuid = self.current_device_uuid()
         if not ac_uuid:
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
+            self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
+            self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
             return
         source_rows = resources if resources is not None else self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
         capacity_details = self.repository.list_active_trackside_plan_capacity_details()
         self._overview_uses_trackside_plan = bool(capacity_details)
         if not capacity_details:
@@ -1082,7 +1271,7 @@ class AcManagementPage(QWidget):
             ApOnlineOverviewService.build_rows(
                 metadata_rows=self.repository.list_fit_ap_metadata(),
                 fit_ap_resources=source_rows,
-                optical_rows=self.repository.list_fit_ap_optical(ac_uuid),
+                optical_rows=current_optical_rows,
                 capacity_details=capacity_details,
             ),
         )
@@ -1116,6 +1305,7 @@ class AcManagementPage(QWidget):
             self.repository.list_all_fit_ap_resources_with_metadata(),
             lookup,
             self.repository.get_active_trackside_pvid_plan(),
+            self.offline_ap_ledger_rows,
         )
         self._set_trackside_site_filter_items(self.trackside_rows)
         self.apply_trackside_filters()
@@ -1244,6 +1434,40 @@ class AcManagementPage(QWidget):
         dialog.raise_()
         dialog.activateWindow()
 
+    def open_ap_detail_from_offline_ledger(self, row: int) -> None:
+        ac_uuid = self.current_device_uuid()
+        if not ac_uuid or row < 0 or row >= len(self.offline_ap_ledger_rows):
+            return
+        offline = self.offline_ap_ledger_rows[row]
+        ap_uuid = self._resolve_fit_ap_uuid(
+            ac_uuid,
+            ap_uuid=offline.get("ap_uuid"),
+            ap_mac=offline.get("ap_mac"),
+            ap_name=offline.get("ap_name"),
+        )
+        target = ap_uuid or str(offline.get("ap_name") or offline.get("ap_mac") or "")
+        if not target:
+            return
+        dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, target)
+        self.detail_windows.append(dialog)
+        dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _resolve_fit_ap_uuid(self, ac_uuid: str, *, ap_uuid: object = None, ap_mac: object = None, ap_name: object = None) -> str:
+        uuid_text = str(ap_uuid or "").strip()
+        mac_text = _normalize_mac_text(ap_mac)
+        name_text = str(ap_name or "").strip()
+        for resource in self.repository.list_fit_ap_resources_with_metadata(ac_uuid):
+            if uuid_text and str(resource.get("ap_uuid") or "") == uuid_text:
+                return uuid_text
+            if mac_text and _normalize_mac_text(resource.get("ap_mac")) == mac_text:
+                return str(resource.get("ap_uuid") or "")
+            if name_text and str(resource.get("ap_name") or "") == name_text:
+                return str(resource.get("ap_uuid") or "")
+        return uuid_text
+
     def open_ap_detail_from_trackside(self, row: int) -> None:
         rows = self.current_trackside_page_rows()
         if row < 0 or row >= len(rows):
@@ -1299,7 +1523,7 @@ class AcManagementPage(QWidget):
                         if table is self.optical_table and field == "switch_optical_status":
                             value = display_optical_status(evaluate_fit_ap_switch_status(row), self.i18n.language)
                         elif table is self.optical_table and field == "optical_alarm_status":
-                            value = display_optical_status(evaluate_fit_ap_ap_status(row), self.i18n.language)
+                            value = OFFLINE_AP_STATUS_TEXT if bool(row.get("is_ap_offline")) else display_optical_status(evaluate_fit_ap_ap_status(row), self.i18n.language)
                         elif field in {"switch_optical_status", "ap_optical_status"}:
                             value = display_optical_status(str(value or ""), self.i18n.language) if value else value
                         item = QTableWidgetItem(str(value) if value not in (None, "") else "-")

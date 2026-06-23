@@ -41,6 +41,12 @@ from netconsole.services.trackside_ap_business import (
     format_trackside_display_value,
     trackside_row_status,
 )
+from netconsole.services.offline_ap_ledger import (
+    OFFLINE_AP_LEDGER_COLUMNS,
+    OFFLINE_AP_STATS_COLUMNS,
+    load_offline_ap_cache,
+    offline_ap_headers,
+)
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, ApOnlineOverviewService
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
@@ -405,6 +411,7 @@ class TracksideApServicePage(QWidget):
             self.ap_online_overview_rows(),
             AP_ONLINE_OVERVIEW_COLUMNS,
             [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+            *self.offline_ap_export_context(),
         )
         remember_export_path(path)
 
@@ -619,6 +626,17 @@ class TracksideApServicePage(QWidget):
         overview_rows = self.ap_online_overview_rows()
         total_row = next((row for row in overview_rows if str(row.get("site") or "") == "合计"), overview_rows[-1] if overview_rows else {})
         return int(total_row.get("online") or 0), int(total_row.get("offline") or 0)
+
+    def offline_ap_export_context(self):
+        cached = load_offline_ap_cache(PathResolver().offline_ap_cache_path)
+        stats = cached.get("stats") if cached and isinstance(cached.get("stats"), dict) else {}
+        ledger = cached.get("ledger_rows") if cached and isinstance(cached.get("ledger_rows"), list) else []
+        return (
+            stats,
+            ledger,
+            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+        )
 
 
 def trackside_export_default_filename(site_name: str) -> str:

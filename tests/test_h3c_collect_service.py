@@ -4,6 +4,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import h3c_collect_service
 from netconsole.services.h3c_collect_service import COLLECT_COMMANDS, collect_h3c_device_details
 from netconsole.services import h3c_optical_refresh_service
@@ -19,7 +20,7 @@ def fixture(name: str) -> str:
 
 OUTPUTS = {
     "screen-length disable": "",
-    "display current-configuration | in sysname": fixture("display_current_configuration_sysname.txt"),
+    "display current-configuration | include sysname": fixture("display_current_configuration_sysname.txt"),
     "display version": fixture("display_version.txt"),
     "display device": fixture("display_device.txt"),
     "display device manuinfo": fixture("display_device_manuinfo.txt"),
@@ -71,7 +72,7 @@ def make_device():
     )
 
 
-def test_collect_service_writes_raw_log_collect_run_and_repository_data(monkeypatch, tmp_path):
+def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(monkeypatch, tmp_path):
     connection = FakeConnection()
     monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
     repository = make_repository(tmp_path)
@@ -85,9 +86,8 @@ def test_collect_service_writes_raw_log_collect_run_and_repository_data(monkeypa
     assert result.lldp_neighbors_updated == 1
     assert connection.commands == ["screen-length disable", *COLLECT_COMMANDS]
     assert connection.disconnected is True
-    assert Path(result.raw_log_path).exists()
-    Path(result.raw_log_path).read_bytes().decode("utf-8")
-    assert Path(result.raw_log_path).with_name("11111111-1111-4111-8111-111111111111_commands.jsonl").exists()
+    assert result.raw_log_path == ""
+    assert not (tmp_path / "data" / "sites" / "demo" / "raw" / "collect" / result.collect_run_uuid).exists()
     assert repository.get_collect_run(result.collect_run_uuid)["status"] == "success"
     fact = repository.get_device_fact("11111111-1111-4111-8111-111111111111")
     assert fact["sysname"] == "SW01"
@@ -104,6 +104,35 @@ def test_collect_service_writes_raw_log_collect_run_and_repository_data(monkeypa
     assert len(repository.list_interface_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
     assert len(repository.list_optical_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
     assert len(repository.list_lldp_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
+
+
+def test_collect_service_writes_sysname_back_to_device_table(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = Database(tmp_path / "data" / "sites" / "demo" / "db" / "devices.db")
+    database.initialize()
+    device_repository = DeviceRepository(database)
+    device = device_repository.create(make_device())
+    repository = DeviceFactRepository(database)
+
+    result = collect_h3c_device_details(device, "demo", repository=repository, paths=PathResolver(tmp_path))
+
+    assert result.success is True
+    assert device_repository.get(device.id).sysname == "SW01"
+
+
+def test_collect_service_persists_raw_log_when_debug_enabled(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setenv("NETCONSOLE_PERSIST_RAW_LOGS", "1")
+    monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    repository = make_repository(tmp_path)
+
+    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+
+    assert result.raw_log_path
+    raw_path = tmp_path / "data" / "sites" / "demo" / result.raw_log_path
+    assert raw_path.exists()
+    assert raw_path.with_name("11111111-1111-4111-8111-111111111111_commands.jsonl").exists()
 
 
 def test_collect_service_continues_when_one_command_fails(monkeypatch, tmp_path):
@@ -189,10 +218,7 @@ def test_optical_refresh_service_runs_three_commands_and_writes_interfaces_optic
     assert result.success is True
     assert connection.commands == list(OPTICAL_REFRESH_COMMANDS)
     assert connection.disconnected is True
-    assert Path(result.raw_log_path).exists()
-    assert Path(result.raw_log_path).read_bytes().decode("utf-8")
-    commands_file = Path(result.raw_log_path).with_name(f"{device.device_uuid}_commands.jsonl")
-    assert commands_file.exists()
+    assert result.raw_log_path == ""
     assert result.interfaces_updated == 2
     assert result.optical_modules_updated == 1
     assert repository.list_device_interfaces(str(device.device_uuid))[0]["interface_name"] == "GigabitEthernet1/0/1"
@@ -200,7 +226,7 @@ def test_optical_refresh_service_runs_three_commands_and_writes_interfaces_optic
     assert optical["rx_power"] == "-3.21 dBm"
     assert optical["module_serial_number"] == "KEEP-SN-001"
     assert optical["module_model"] == "SFP-GE-LX-SM1310"
-    assert repository.get_latest_raw_log_path(str(device.device_uuid)) == f"raw/collect/{result.collect_run_uuid}/{device.device_uuid}.log"
+    assert repository.get_latest_raw_log_path(str(device.device_uuid)) is None
 
 
 def test_optical_refresh_service_validates_optical_context(monkeypatch, tmp_path):

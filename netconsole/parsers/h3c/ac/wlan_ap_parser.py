@@ -12,7 +12,7 @@ def parse_wlan_ap_summary(output: str) -> dict[str, object | None]:
     local_licenses = _int_after(output, r"Local\s+AP\s+licenses\s*:\s*(\d+)")
     remaining_licenses = _int_after(output, r"Remaining\s+local\s+AP\s+licenses\s*:\s*(\d+)")
     ap_rows = parse_wlan_ap_list(output)
-    offline_from_rows = sum(1 for row in ap_rows if str(row.get("state") or "").upper() == "I")
+    offline_from_rows = sum(1 for row in ap_rows if _is_idle_state(row.get("state") or row.get("state_display")))
     if online_aps is None and total_aps is not None:
         online_aps = max(total_aps - offline_from_rows, 0)
     offline_aps = offline_from_rows if ap_rows else (total_aps - online_aps if total_aps is not None and online_aps is not None else None)
@@ -54,7 +54,7 @@ def _percent_after(output: str, pattern: str) -> str | None:
 
 
 def _looks_like_state(value: str) -> bool:
-    text = value.strip().upper()
+    text = _state_token(value)
     if text in {"I", "J", "JA", "IL", "C", "DC", "R", "R/M", "R/B", "RUN", "ONLINE", "OFFLINE", "IDLE"}:
         return True
     states = {part for part in re.split(r"[/,]", text) if part}
@@ -79,7 +79,7 @@ def _is_noise_line(stripped: str) -> bool:
 
 def _parse_ap_row(stripped: str) -> dict[str, object | None] | None:
     tokens = stripped.split()
-    if len(tokens) < 5:
+    if len(tokens) < 2:
         return None
     apid_index = next(
         (
@@ -90,13 +90,15 @@ def _parse_ap_row(stripped: str) -> dict[str, object | None] | None:
         -1,
     )
     if apid_index < 1:
-        return None
+        return _parse_ap_row_without_apid(tokens, stripped)
     ap_name = " ".join(tokens[:apid_index]).strip()
-    state = tokens[apid_index + 1]
+    state = _state_token(tokens[apid_index + 1])
     model_index = apid_index + 2
     serial_index = apid_index + 3
-    if not ap_name or serial_index >= len(tokens):
+    if not ap_name:
         return None
+    model = tokens[model_index] if model_index < len(tokens) else None
+    serial_number = tokens[serial_index] if serial_index < len(tokens) else None
     tail = tokens[serial_index + 1 :]
     group_name, online_time = _parse_group_and_online_time(tail)
     return {
@@ -105,12 +107,51 @@ def _parse_ap_row(stripped: str) -> dict[str, object | None] | None:
         "state": state,
         "state_raw": state,
         "state_display": map_fit_ap_state(state),
-        "model": tokens[model_index],
-        "serial_number": tokens[serial_index],
+        "model": _empty_if_na(model),
+        "serial_number": _empty_if_na(serial_number),
         "group_name": group_name,
         "online_time": online_time,
         "raw_line": stripped,
     }
+
+
+def _parse_ap_row_without_apid(tokens: list[str], stripped: str) -> dict[str, object | None] | None:
+    state_index = next((index for index in range(1, len(tokens)) if _looks_like_state(tokens[index])), -1)
+    if state_index < 1:
+        return None
+    ap_name = " ".join(tokens[:state_index]).strip()
+    state = _state_token(tokens[state_index])
+    model = tokens[state_index + 1] if state_index + 1 < len(tokens) else None
+    serial_number = tokens[state_index + 2] if state_index + 2 < len(tokens) else None
+    group_name, online_time = _parse_group_and_online_time(tokens[state_index + 3 :])
+    return {
+        "ap_name": ap_name,
+        "apid": None,
+        "state": state,
+        "state_raw": state,
+        "state_display": map_fit_ap_state(state),
+        "model": _empty_if_na(model),
+        "serial_number": _empty_if_na(serial_number),
+        "group_name": group_name,
+        "online_time": online_time,
+        "raw_line": stripped,
+    }
+
+
+def _state_token(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.split("=", 1)[0].strip().upper()
+
+
+def _is_idle_state(value: object) -> bool:
+    return _state_token(value) in {"I", "IDLE"}
+
+
+def _empty_if_na(value: object) -> object | None:
+    text = str(value or "").strip()
+    return None if text.upper() in {"", "N/A", "NA", "-"} else value
 
 
 def _parse_group_and_online_time(tail: list[str]) -> tuple[str | None, str | None]:

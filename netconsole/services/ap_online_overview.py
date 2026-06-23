@@ -293,13 +293,32 @@ def is_fit_ap_online(row: dict[str, object | None]) -> bool:
     return state.upper() in ONLINE_STATES or state in ONLINE_STATES
 
 
-def export_ap_online_overview_xlsx(path: Path, rows: list[dict[str, object | None]], headers: list[str]) -> None:
+def export_ap_online_overview_xlsx(
+    path: Path,
+    rows: list[dict[str, object | None]],
+    headers: list[str],
+    offline_ap_stats: dict[str, object | None] | None = None,
+    offline_ap_ledger_rows: list[dict[str, object | None]] | None = None,
+    offline_ap_stats_headers: list[str] | None = None,
+    offline_ap_ledger_headers: list[str] | None = None,
+) -> None:
     from openpyxl import Workbook
+    from netconsole.services.offline_ap_ledger import (
+        OFFLINE_AP_LEDGER_COLUMNS,
+        OFFLINE_AP_STATS_COLUMNS,
+        write_offline_ap_ledger_sheet,
+        write_offline_ap_stats_sheet,
+    )
 
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "AP Online Overview"
     write_ap_online_overview_sheet(sheet, rows, headers)
+    if offline_ap_stats is not None and offline_ap_ledger_rows is not None:
+        stats_sheet = workbook.create_sheet("AP离线情况")
+        write_offline_ap_stats_sheet(stats_sheet, offline_ap_stats, offline_ap_stats_headers or [key for key, _field in OFFLINE_AP_STATS_COLUMNS])
+        ledger_sheet = workbook.create_sheet("离线AP台账")
+        write_offline_ap_ledger_sheet(ledger_sheet, offline_ap_ledger_rows, offline_ap_ledger_headers or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS])
     workbook.save(path)
 
 

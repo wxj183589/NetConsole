@@ -46,6 +46,7 @@ data/config/
 data/logs/
 data/*
 data/
+runtime/
 
 # Local config and secrets
 *.local
