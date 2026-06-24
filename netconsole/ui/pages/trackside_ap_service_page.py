@@ -333,9 +333,60 @@ class TracksideApServicePage(QWidget):
             self.load_thread = None
 
     def start_optical_update(self) -> None:
+        self._start_scoped_optical_update()
+
+    def start_station_update_from_trackside(self, row: int) -> None:
+        rows = self.current_trackside_page_rows()
+        if row < 0 or row >= len(rows):
+            station = str(self.trackside_site_filter.currentData() or "").strip()
+        else:
+            station = str(rows[row].get("site") or "").strip()
+        if not station:
+            QMessageBox.information(self, self.i18n.t("rail_transit.trackside_ap_service"), self.i18n.t("trackside_ap.no_station_selected"))
+            return
+        self._start_scoped_optical_update(target_station=station, message=self.i18n.t("trackside_ap.stage_station_update", station=station))
+
+    def start_ap_update_from_trackside(self, row: int) -> None:
+        rows = self.current_trackside_page_rows()
+        if row < 0 or row >= len(rows):
+            return
+        current_row = rows[row]
+        ap_uuid = str(current_row.get("ap_uuid") or "").strip()
+        ap_mac = str(current_row.get("ap_mac") or "").strip()
+        ap_name = str(current_row.get("ap_name") or "").strip()
+        if not any((ap_uuid, ap_mac, ap_name)):
+            QMessageBox.information(self, self.i18n.t("rail_transit.trackside_ap_service"), self.i18n.t("trackside_ap.no_ap_detail"))
+            return
+        label = ap_name or ap_mac or ap_uuid
+        self._start_scoped_optical_update(
+            target_ap_uuid=ap_uuid or None,
+            target_ap_mac=ap_mac or None,
+            target_ap_name=ap_name or None,
+            message=self.i18n.t("trackside_ap.stage_ap_update", ap=label),
+        )
+
+    def _start_scoped_optical_update(
+        self,
+        *,
+        target_station: str | None = None,
+        target_ap_uuid: str | None = None,
+        target_ap_mac: str | None = None,
+        target_ap_name: str | None = None,
+        message: str = "",
+    ) -> None:
         if self.collect_thread is not None or self.is_loading:
             return
-        self._set_collect_running(True, self.i18n.t("trackside_ap.stage_prepare"))
+        self._set_collect_running(True, message or self.i18n.t("trackside_ap.stage_prepare"))
+        scope_kwargs = {
+            key: value
+            for key, value in {
+                "target_station": target_station,
+                "target_ap_uuid": target_ap_uuid,
+                "target_ap_mac": target_ap_mac,
+                "target_ap_name": target_ap_name,
+            }.items()
+            if value
+        }
         self.collect_thread = TracksideOpticalCollectThread(
             self.device_repository,
             self.site_name,
@@ -343,6 +394,7 @@ class TracksideApServicePage(QWidget):
             self.trackside_rows,
             DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
             self,
+            **scope_kwargs,
         )
         if hasattr(self.collect_thread, "stage_changed"):
             self.collect_thread.stage_changed.connect(self._update_stage)
@@ -486,17 +538,32 @@ class TracksideApServicePage(QWidget):
     def build_trackside_context_menu(self, row: int, column: int) -> QMenu:
         menu = create_table_context_menu(self.trackside_table, row, column, self.i18n.language, include_history=False)
         first_action = menu.actions()[0] if menu.actions() else None
+        station_update = QAction(self.i18n.t("trackside_ap.update_station"), menu)
+        ap_update = QAction(self.i18n.t("trackside_ap.update_ap"), menu)
         device_detail = QAction(self.i18n.t("trackside.view_device_detail"), menu)
         ap_detail = QAction(self.i18n.t("trackside.view_ap_detail"), menu)
+        rows = self.current_trackside_page_rows()
+        current_row = rows[row] if 0 <= row < len(rows) else {}
+        has_station = bool(str(current_row.get("site") or self.trackside_site_filter.currentData() or "").strip())
+        has_ap = bool(str(current_row.get("ap_uuid") or current_row.get("ap_mac") or current_row.get("ap_name") or "").strip())
+        busy = self.collect_thread is not None or self.is_loading
+        station_update.setEnabled(has_station and not busy)
+        ap_update.setEnabled(has_ap and not busy)
         device_detail.setEnabled(row >= 0)
-        ap_detail.setEnabled(row >= 0)
+        ap_detail.setEnabled(row >= 0 and has_ap)
+        station_update.triggered.connect(lambda: self.start_station_update_from_trackside(row))
+        ap_update.triggered.connect(lambda: self.start_ap_update_from_trackside(row))
         device_detail.triggered.connect(lambda: self.open_device_detail_from_trackside(row))
         ap_detail.triggered.connect(lambda: self.open_ap_detail_from_trackside(row))
         if first_action:
+            menu.insertAction(first_action, station_update)
+            menu.insertAction(first_action, ap_update)
             menu.insertAction(first_action, device_detail)
             menu.insertAction(first_action, ap_detail)
             menu.insertSeparator(first_action)
         else:
+            menu.addAction(station_update)
+            menu.addAction(ap_update)
             menu.addAction(device_detail)
             menu.addAction(ap_detail)
         return menu

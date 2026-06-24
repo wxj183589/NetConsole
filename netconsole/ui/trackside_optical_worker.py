@@ -171,6 +171,10 @@ class TracksideOpticalCollectThread(QThread):
         trackside_rows: list[dict[str, object | None]],
         concurrency: int = DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
         parent=None,
+        target_station: str | None = None,
+        target_ap_uuid: str | None = None,
+        target_ap_mac: str | None = None,
+        target_ap_name: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.repository = repository
@@ -178,6 +182,10 @@ class TracksideOpticalCollectThread(QThread):
         self.paths = paths
         self.trackside_rows = trackside_rows
         self.concurrency = concurrency
+        self.target_station = target_station
+        self.target_ap_uuid = target_ap_uuid
+        self.target_ap_mac = target_ap_mac
+        self.target_ap_name = target_ap_name
         self._cancel_event = Event()
 
     def cancel(self) -> None:
@@ -195,6 +203,10 @@ class TracksideOpticalCollectThread(QThread):
                 self._cancel_event,
                 self.progress_changed.emit,
                 self.stage_changed.emit,
+                target_station=self.target_station,
+                target_ap_uuid=self.target_ap_uuid,
+                target_ap_mac=self.target_ap_mac,
+                target_ap_name=self.target_ap_name,
             )
         except Exception as exc:
             self.collect_failed.emit(str(exc))

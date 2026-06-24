@@ -28,18 +28,23 @@ from netconsole.services.device_web_service import matching_https_port_lines, pa
 from netconsole.services.h3c_collect_service import CommandResult
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
+from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 
 
-RESOURCE_COMMANDS = (
+FIT_AP_RESOURCE_COMMANDS = (
     "display wlan ap all",
     "display wlan ap all address",
     "display wlan ap all radio",
+)
+
+AC_OVERVIEW_COMMANDS = (
     "display cpu-usage",
     "display memory",
     "display version",
     "display device",
     "display device manuinfo",
 )
+RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_COMMANDS, *AC_OVERVIEW_COMMANDS)
 
 HTTPS_PORT_COMMANDS = (
     "display ip https",
@@ -113,6 +118,7 @@ def collect_h3c_ac_resources(
     paths: PathResolver | None = None,
     progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
+    refresh_ac_overview: bool = True,
 ) -> AcResourceCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -160,30 +166,38 @@ def collect_h3c_ac_resources(
 
     connection = None
     try:
-        command_guard.validate_command_list(["screen-length disable", *RESOURCE_COMMANDS, *HTTPS_PORT_COMMANDS], "ac_collect")
+        commands = list(FIT_AP_RESOURCE_COMMANDS)
+        if refresh_ac_overview:
+            commands.extend(AC_OVERVIEW_COMMANDS)
+        validate_commands = ["screen-length disable", *commands]
+        if refresh_ac_overview:
+            validate_commands.extend(HTTPS_PORT_COMMANDS)
+        command_guard.validate_command_list(validate_commands, "ac_collect")
         _raise_if_cancelled(should_cancel)
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         command_results.append(_run_command(connection, "screen-length disable", ac_device, collect_run_uuid, context="ac_collect"))
         outputs: dict[str, str] = {}
-        for command in RESOURCE_COMMANDS:
+        for command in commands:
             _raise_if_cancelled(should_cancel)
             progress(f"正在执行 {command}...")
             result = _run_command(connection, command, ac_device, collect_run_uuid, context="ac_collect")
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
-        progress("正在采集 HTTPS 端口...")
-        https_port, https_results = collect_https_port(connection, ac_device, collect_run_uuid)
-        command_results.extend(https_results)
+        https_port = None
+        if refresh_ac_overview:
+            progress("正在采集 HTTPS 端口...")
+            https_port, https_results = collect_https_port(connection, ac_device, collect_run_uuid)
+            command_results.extend(https_results)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         _raise_if_cancelled(should_cancel)
         progress("正在解析FIT-AP资源...")
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
-        summary_updated = any(value is not None for key, value in summary.items() if key != "ac_device_uuid")
+        summary_updated = refresh_ac_overview and any(value is not None for key, value in summary.items() if key != "ac_device_uuid")
         progress("正在写入数据库...")
         if summary_updated:
             repository.upsert_ac_ap_summary(summary)
-        persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port)
+        persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port) if refresh_ac_overview else HttpsPortPersistenceResult(None, False)
         repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
         status = "success" if summary_updated or resources else "failed"
         error_message = _command_error_summary(command_results)
@@ -236,6 +250,10 @@ def collect_h3c_fit_ap_optical(
     max_workers: int = BATCH_CONCURRENCY,
     progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
+    target_ap_uuids: list[str] | None = None,
+    target_ap_macs: list[str] | None = None,
+    target_ap_names: list[str] | None = None,
+    target_stations: list[str] | None = None,
 ) -> FitApOpticalCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -283,10 +301,24 @@ def collect_h3c_fit_ap_optical(
         return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
 
     progress("\u6b63\u5728\u7b5b\u9009\u5728\u7ebfAP...")
-    resources = [row for row in repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid)) if row.get("ap_ip")]
+    scoped_refresh = _is_scoped_fit_ap_refresh(target_ap_uuids, target_ap_macs, target_ap_names, target_stations)
+    all_resources = repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid))
+    resources = _filter_fit_ap_optical_targets(
+        all_resources,
+        target_ap_uuids=target_ap_uuids,
+        target_ap_macs=target_ap_macs,
+        target_ap_names=target_ap_names,
+        target_stations=target_stations,
+    )
+    resources = [row for row in resources if row.get("ap_ip") and not is_fit_ap_offline(row)]
     rows: list[dict[str, object | None]] = []
     worker_count = max(1, min(int(max_workers or BATCH_CONCURRENCY), 1000))
     total = len(resources)
+    if scoped_refresh and total == 0:
+        fact_repository.update_collect_run_status(collect_run_uuid, "success", error_message=None)
+        app_logger.log_info("FIT_AP_OPTICAL_SKIPPED_NO_CONNECTABLE_TARGET", _detail(ac_device, collect_run_uuid))
+        progress("\u66f4\u65b0\u5b8c\u6210\uff1a\u6210\u529f 0\uff0c\u5931\u8d25 0\uff0c\u79bb\u7ebf 0")
+        return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, None)
     completed = 0
     progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a0/{total}")
     try:
@@ -306,7 +338,12 @@ def collect_h3c_fit_ap_optical(
         progress("\u6b63\u5728\u89e3\u6790\u5149\u6a21\u5757\u6570\u636e...")
         _raise_if_cancelled(should_cancel)
         progress("\u6b63\u5728\u5199\u5165\u6570\u636e\u5e93...")
-        repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows)
+        if scoped_refresh:
+            existing_rows = repository.list_fit_ap_optical(str(ac_device.device_uuid))
+            rows_to_save = _merge_fit_ap_optical_rows(existing_rows, rows)
+        else:
+            rows_to_save = rows
+        repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows_to_save)
     except CollectionCancelled:
         message = "\u7528\u6237\u5df2\u53d6\u6d88\u66f4\u65b0"
         app_logger.log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
@@ -328,6 +365,80 @@ def collect_h3c_fit_ap_optical(
         app_logger.log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no AP resources"))
     progress(f"\u66f4\u65b0\u5b8c\u6210\uff1a\u6210\u529f {len(rows) - failed}\uff0c\u5931\u8d25 {failed}\uff0c\u79bb\u7ebf 0")
     return FitApOpticalCollectResult(status != "failed", status == "partial_success", str(ac_device.device_uuid), collect_run_uuid, len(rows), failed, error_message)
+
+
+def _is_scoped_fit_ap_refresh(*scopes: list[str] | None) -> bool:
+    return any(bool(scope) for scope in scopes)
+
+
+def _filter_fit_ap_optical_targets(
+    resources: list[dict[str, object | None]],
+    *,
+    target_ap_uuids: list[str] | None = None,
+    target_ap_macs: list[str] | None = None,
+    target_ap_names: list[str] | None = None,
+    target_stations: list[str] | None = None,
+) -> list[dict[str, object | None]]:
+    uuid_set = {str(value or "").strip() for value in target_ap_uuids or [] if str(value or "").strip()}
+    mac_set = {_normalize_mac_text(value) for value in target_ap_macs or [] if _normalize_mac_text(value)}
+    name_set = {str(value or "").strip().casefold() for value in target_ap_names or [] if str(value or "").strip()}
+    station_set = {str(value or "").strip().casefold() for value in target_stations or [] if str(value or "").strip()}
+    if not any((uuid_set, mac_set, name_set, station_set)):
+        return list(resources)
+    result: list[dict[str, object | None]] = []
+    for row in resources:
+        if uuid_set and str(row.get("ap_uuid") or "").strip() in uuid_set:
+            result.append(row)
+            continue
+        if mac_set and _normalize_mac_text(row.get("ap_mac")) in mac_set:
+            result.append(row)
+            continue
+        if name_set and str(row.get("ap_name") or "").strip().casefold() in name_set:
+            result.append(row)
+            continue
+        row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()
+        if station_set and row_station in station_set:
+            result.append(row)
+    return result
+
+
+def _merge_fit_ap_optical_rows(
+    existing_rows: list[dict[str, object | None]],
+    updated_rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    merged: dict[str, dict[str, object | None]] = {}
+    passthrough: list[dict[str, object | None]] = []
+    for row in existing_rows:
+        key = _fit_ap_optical_identity(row)
+        if key:
+            merged[key] = dict(row)
+        else:
+            passthrough.append(dict(row))
+    for row in updated_rows:
+        key = _fit_ap_optical_identity(row)
+        if key:
+            merged[key] = dict(row)
+        else:
+            passthrough.append(dict(row))
+    return [*merged.values(), *passthrough]
+
+
+def _fit_ap_optical_identity(row: dict[str, object | None]) -> str:
+    for field in ("ap_uuid", "ap_mac", "ap_name"):
+        if field == "ap_mac":
+            text = _normalize_mac_text(row.get(field))
+        else:
+            text = str(row.get(field) or "").strip().casefold()
+        if text:
+            return f"{field}:{text}"
+    return ""
+
+
+def _normalize_mac_text(value: object) -> str:
+    import re
+
+    hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return hex_text.casefold() if len(hex_text) == 12 else ""
 
 
 def parse_ac_resource_outputs(

@@ -1306,6 +1306,10 @@ class AcManagementPage(QWidget):
         self._set_rows(self.resources_table, FIT_AP_RESOURCE_COLUMNS, rows)
         self.update_selection_state()
 
+    def current_resource_page_rows(self) -> list[dict[str, object | None]]:
+        rows, _state = paginate_rows(self.filtered_resource_rows(), self.resource_page_size, self.resource_page)
+        return rows
+
     def set_resource_page(self, page: int) -> None:
         self.resource_page = page
         self.apply_resource_pagination()
@@ -1569,14 +1573,48 @@ class AcManagementPage(QWidget):
     def build_resource_context_menu(self, row: int, column: int) -> QMenu:
         menu = create_table_context_menu(self.resources_table, row, column, self.i18n.language, include_history=False)
         menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
+        refresh_ap = QAction(self.i18n.t("ap.refresh_optical_current"), menu)
         detail = QAction(self.i18n.t("ap.view_details"), menu)
         if menu.actions():
+            menu.insertAction(menu.actions()[0], refresh_ap)
             menu.insertAction(menu.actions()[0], detail)
         else:
+            menu.addAction(refresh_ap)
             menu.addAction(detail)
+        refresh_ap.setEnabled(row >= 0 and self.optical_thread is None and self.resource_thread is None)
         detail.setEnabled(row >= 0)
+        refresh_ap.triggered.connect(lambda: self.refresh_resource_ap_optical(row))
         detail.triggered.connect(lambda: self.open_ap_detail(row))
         return menu
+
+    def refresh_resource_ap_optical(self, row: int) -> None:
+        device = self.current_device()
+        rows = self.current_resource_page_rows()
+        if device is None or row < 0 or row >= len(rows):
+            return
+        current_row = rows[row]
+        ap_uuid = str(current_row.get("ap_uuid") or "").strip()
+        ap_mac = str(current_row.get("ap_mac") or "").strip()
+        ap_name = str(current_row.get("ap_name") or "").strip()
+        if not any((ap_uuid, ap_mac, ap_name)):
+            return
+        label = ap_name or ap_mac or ap_uuid
+        self._set_update_running(True, self.i18n.t("ap.refreshing_current_optical", ap=label))
+        self.optical_thread = FitApOpticalCollectThread(
+            device,
+            self.site_name,
+            int(self.optical_concurrency_combo.currentData() or 200),
+            self,
+            target_ap_uuids=[ap_uuid] if ap_uuid else None,
+            target_ap_macs=[ap_mac] if ap_mac else None,
+            target_ap_names=[ap_name] if ap_name else None,
+        )
+        self.optical_thread.progress.connect(self._set_update_progress)
+        self.optical_thread.collect_finished.connect(self._finish_optical_collect)
+        self.optical_thread.collect_failed.connect(self._fail_optical_collect)
+        self.optical_thread.finished.connect(self.optical_thread.deleteLater)
+        self.optical_thread.finished.connect(lambda: setattr(self, "optical_thread", None))
+        self.optical_thread.start()
 
     def show_optical_context_menu(self, position) -> None:
         index = self.optical_table.indexAt(position)

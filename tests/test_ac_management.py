@@ -33,7 +33,7 @@ from netconsole.services.fit_ap_import_export import AP_EXTENSION_TEMPLATE_FIELD
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
 from netconsole.services.device_web_service import build_https_url, effective_https_port, parse_https_port
-from netconsole.services.h3c_ac_collect_service import HTTPS_PORT_COMMANDS, RESOURCE_COMMANDS, collect_h3c_ac_resources
+from netconsole.services.h3c_ac_collect_service import FIT_AP_RESOURCE_COMMANDS, HTTPS_PORT_COMMANDS, RESOURCE_COMMANDS, collect_h3c_ac_resources
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
 from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
@@ -1046,6 +1046,32 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
 
 
+def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+
+    result = collect_h3c_ac_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        refresh_ac_overview=False,
+    )
+
+    assert result.success is True
+    assert result.summary_updated is False
+    assert result.https_port_collected is False
+    assert connection.commands == ["screen-length disable", *FIT_AP_RESOURCE_COMMANDS]
+    assert "display cpu-usage" not in connection.commands
+    assert "display memory" not in connection.commands
+    assert "display version" not in connection.commands
+    assert "display device" not in connection.commands
+    assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222") is None
+    assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
+
+
 def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
     connection = FakeConnection()
     monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
@@ -1554,6 +1580,20 @@ def test_optical_context_menu_contains_view_details_without_insert_action_error(
     assert "View Details" in captured
     assert "Copy Cell" in captured
     assert "Copy Row" in captured
+
+
+def test_resource_context_menu_contains_scoped_ap_optical_refresh(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page.resource_rows = [{"ap_uuid": "ap-1", "ap_name": "AP-A", "ap_mac": "0011-2233-4455"}]
+    page.apply_resource_pagination()
+
+    menu = page.build_resource_context_menu(0, 1)
+    captured = [action.text() for action in menu.actions() if action.text()]
+
+    assert "Update This AP Optical" in captured
+    assert "View Details" in captured
 
 
 def test_fit_ap_optical_filters_do_not_include_ap_mac(tmp_path):
@@ -2863,6 +2903,19 @@ def test_trackside_station_switch_target_filter_uses_station_group_and_switch_ty
     assert skipped == []
 
 
+def test_trackside_station_switch_target_filter_can_scope_station(tmp_path):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    station_group = DeviceGroupRepository(database, "demo").create("车站")
+    station_a = repository.create(Device(name="A", station="Station A", group_id=station_group.id, device_type="SW", device_vendor="H3C", ip_address="10.0.0.1", ssh_username="u", ssh_password="p"))
+    repository.create(Device(name="B", station="Station B", group_id=station_group.id, device_type="SW", device_vendor="H3C", ip_address="10.0.0.2", ssh_username="u", ssh_password="p"))
+
+    targets, skipped = build_station_switch_targets(repository, "demo", station="Station A")
+
+    assert [target.device_id for target in targets] == [station_a.id]
+    assert skipped == []
+
+
 def test_trackside_station_switch_target_skips_unsupported_vendor(tmp_path):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
@@ -2961,8 +3014,8 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     fit_calls = []
     resource_calls = []
 
-    def fake_resource_collect(ac_device, site_name, repository=None, paths=None):
-        resource_calls.append((ac_device.device_uuid, site_name))
+    def fake_resource_collect(ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True):
+        resource_calls.append((ac_device.device_uuid, site_name, refresh_ac_overview))
         run_dir = paths.site_dir(site_name) / "raw" / "ac" / "resource-run"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "resource.log").write_text("resource raw", encoding="utf-8")
@@ -2976,8 +3029,18 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         )
         return SimpleNamespace(success=True, collect_run_uuid="resource-run", error_message=None)
 
-    def fake_fit_collect(ac_device, site_name, repository=None, paths=None, max_workers=None):
-        fit_calls.append((ac_device.device_uuid, site_name, max_workers))
+    def fake_fit_collect(
+        ac_device,
+        site_name,
+        repository=None,
+        paths=None,
+        max_workers=None,
+        target_ap_uuids=None,
+        target_ap_macs=None,
+        target_ap_names=None,
+        target_stations=None,
+    ):
+        fit_calls.append((ac_device.device_uuid, site_name, max_workers, target_ap_uuids, target_ap_macs, target_ap_names, target_stations))
         run_dir = paths.site_dir(site_name) / "raw" / "ac" / "fit-run" / "fit_ap"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "AP1.log").write_text("fit raw", encoding="utf-8")
@@ -2990,8 +3053,8 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
 
     result = collect_trackside_optical(repository, "demo", paths, [], concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY)
 
-    assert resource_calls == [(ac.device_uuid, "demo")]
-    assert fit_calls == [(ac.device_uuid, "demo", 1000)]
+    assert resource_calls == [(ac.device_uuid, "demo", False)]
+    assert fit_calls == [(ac.device_uuid, "demo", 1000, None, None, None, None)]
     assert result.fit_ap_total == 3
     assert result.station_switch_total == 1
     assert result.success_count == 3
@@ -3194,6 +3257,32 @@ def test_trackside_ap_business_visible_columns_hide_internal_fields(tmp_path):
     assert "collection_status" in TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS
     assert all(field not in TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS)
     assert page.trackside_table.columnCount() == len(TRACKSIDE_AP_BUSINESS_COLUMNS)
+
+
+def test_trackside_context_menu_contains_station_and_ap_refresh(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.trackside_rows = [
+        {
+            "site": "Station A",
+            "device_name": "HX_1",
+            "interface_name": "GigabitEthernet1/0/1",
+            "ap_uuid": "ap-1",
+            "ap_name": "AP-A",
+            "ap_mac": "0011-2233-4455",
+        }
+    ]
+    page._set_trackside_site_filter_items(page.trackside_rows)
+    page.apply_trackside_pagination()
+
+    menu = page.build_trackside_context_menu(0, 0)
+    actions = {action.text(): action for action in menu.actions() if action.text()}
+
+    assert "Update This Station" in actions
+    assert "Update This AP" in actions
+    assert actions["Update This Station"].isEnabled()
+    assert actions["Update This AP"].isEnabled()
 
 
 def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):

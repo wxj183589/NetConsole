@@ -144,12 +144,15 @@ def is_connectable_device(device: Device) -> bool:
     return bool(target.host and target.username and target.password and target.port)
 
 
-def build_station_switch_targets(repository: DeviceRepository, site_name: str) -> tuple[list[TracksideOpticalTarget], list[TracksideSkippedTarget]]:
+def build_station_switch_targets(repository: DeviceRepository, site_name: str, station: str | None = None) -> tuple[list[TracksideOpticalTarget], list[TracksideSkippedTarget]]:
     groups = {group.id: group.name for group in DeviceGroupRepository(repository.database, site_name).list()}
+    station_text = str(station or "").strip()
     targets: list[TracksideOpticalTarget] = []
     skipped: list[TracksideSkippedTarget] = []
     for device in sorted(repository.list(), key=lambda item: str(item.name or "").casefold()):
         group_name = groups.get(device.group_id or -1, "")
+        if station_text and str(device.station or "").strip() != station_text:
+            continue
         if group_name != "车站" or not is_switch_device_type(device.device_type):
             continue
         target = choose_connection_target(device)
@@ -259,6 +262,10 @@ def collect_trackside_optical(
     cancel_event: Event | None = None,
     progress_callback=None,
     stage_callback=None,
+    target_station: str | None = None,
+    target_ap_uuid: str | None = None,
+    target_ap_mac: str | None = None,
+    target_ap_name: str | None = None,
 ) -> TracksideOpticalSessionResult:
     def stage(key: str) -> None:
         if stage_callback is not None:
@@ -267,7 +274,10 @@ def collect_trackside_optical(
     stage("trackside_ap.stage_prepare")
     ac_repository = AcRepository(repository.database)
     stage("trackside_ap.stage_collect_lldp")
-    switch_targets, switch_skipped = build_station_switch_targets(repository, site_name)
+    effective_station = str(target_station or "").strip()
+    if not effective_station and (target_ap_uuid or target_ap_mac or target_ap_name):
+        effective_station = _station_for_target_ap(ac_repository, target_ap_uuid, target_ap_mac, target_ap_name)
+    switch_targets, switch_skipped = build_station_switch_targets(repository, site_name, effective_station or None)
     targets = dedupe_targets(switch_targets)
     skipped = [*switch_skipped]
     session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
@@ -287,7 +297,18 @@ def collect_trackside_optical(
         progress_callback(0, total_units)
     with ThreadPoolExecutor(max_workers=1) as branch_executor:
         stage("trackside_ap.stage_refresh_fit_ap")
-        fit_future = branch_executor.submit(_collect_fit_ap_optical_subtasks, repository, site_name, paths, concurrency, cancel_event)
+        fit_future = branch_executor.submit(
+            _collect_fit_ap_optical_subtasks,
+            repository,
+            site_name,
+            paths,
+            concurrency,
+            cancel_event,
+            effective_station or None,
+            target_ap_uuid,
+            target_ap_mac,
+            target_ap_name,
+        )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             stage("trackside_ap.stage_collect_optical")
             futures = []
@@ -353,6 +374,10 @@ def _collect_fit_ap_optical_subtasks(
     paths: PathResolver,
     concurrency: int,
     cancel_event: Event,
+    target_station: str | None = None,
+    target_ap_uuid: str | None = None,
+    target_ap_mac: str | None = None,
+    target_ap_name: str | None = None,
 ):
     ac_repository = AcRepository(repository.database)
     results = []
@@ -361,11 +386,17 @@ def _collect_fit_ap_optical_subtasks(
     for ac_device in sorted(repository.list(vendor="H3C", device_type="AC"), key=lambda item: str(item.name or "").casefold()):
         if cancel_event.is_set():
             continue
-        resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths)
+        resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths, refresh_ac_overview=False)
         if not resource_result.success:
             skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.primary_address))
             continue
-        resources = ac_repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid or ""))
+        resources = _filter_scoped_fit_ap_resources(
+            ac_repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid or "")),
+            target_station=target_station,
+            target_ap_uuid=target_ap_uuid,
+            target_ap_mac=target_ap_mac,
+            target_ap_name=target_ap_name,
+        )
         total += len(resources)
         skipped.extend(
             TracksideSkippedTarget(str(row.get("ap_name") or row.get("ap_uuid") or "FIT-AP"), "FIT_AP", "connection_incomplete", str(row.get("ap_ip") or ""))
@@ -375,9 +406,68 @@ def _collect_fit_ap_optical_subtasks(
         if cancel_event.is_set():
             skipped.extend(TracksideSkippedTarget(str(row.get("ap_name") or row.get("ap_uuid") or "FIT-AP"), "FIT_AP", "cancelled", str(row.get("ap_ip") or "")) for row in resources if row.get("ap_ip"))
             continue
-        result = collect_h3c_fit_ap_optical(ac_device, site_name, repository=ac_repository, paths=paths, max_workers=concurrency)
+        result = collect_h3c_fit_ap_optical(
+            ac_device,
+            site_name,
+            repository=ac_repository,
+            paths=paths,
+            max_workers=concurrency,
+            target_ap_uuids=[target_ap_uuid] if target_ap_uuid else None,
+            target_ap_macs=[target_ap_mac] if target_ap_mac else None,
+            target_ap_names=[target_ap_name] if target_ap_name else None,
+            target_stations=[target_station] if target_station else None,
+        )
         results.append(result)
     return results, total, skipped
+
+
+def _station_for_target_ap(ac_repository: AcRepository, ap_uuid: str | None, ap_mac: str | None, ap_name: str | None) -> str:
+    rows = _filter_scoped_fit_ap_resources(
+        ac_repository.list_all_fit_ap_resources_with_metadata(),
+        target_ap_uuid=ap_uuid,
+        target_ap_mac=ap_mac,
+        target_ap_name=ap_name,
+    )
+    if not rows:
+        return ""
+    row = rows[0]
+    return str(row.get("site") or row.get("site_name") or row.get("station") or "").strip()
+
+
+def _filter_scoped_fit_ap_resources(
+    rows: list[dict[str, object | None]],
+    *,
+    target_station: str | None = None,
+    target_ap_uuid: str | None = None,
+    target_ap_mac: str | None = None,
+    target_ap_name: str | None = None,
+) -> list[dict[str, object | None]]:
+    station = str(target_station or "").strip().casefold()
+    ap_uuid = str(target_ap_uuid or "").strip()
+    ap_mac = _normalize_mac_text(target_ap_mac)
+    ap_name = str(target_ap_name or "").strip().casefold()
+    if not any((station, ap_uuid, ap_mac, ap_name)):
+        return list(rows)
+    result: list[dict[str, object | None]] = []
+    for row in rows:
+        if ap_uuid and str(row.get("ap_uuid") or "").strip() == ap_uuid:
+            result.append(row)
+            continue
+        if ap_mac and _normalize_mac_text(row.get("ap_mac")) == ap_mac:
+            result.append(row)
+            continue
+        if ap_name and str(row.get("ap_name") or "").strip().casefold() == ap_name:
+            result.append(row)
+            continue
+        row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()
+        if station and row_station == station:
+            result.append(row)
+    return result
+
+
+def _normalize_mac_text(value: object) -> str:
+    hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return hex_text.casefold() if len(hex_text) == 12 else ""
 
 
 def _collect_one_target(target: TracksideOpticalTarget) -> TracksideDeviceCollectionResult:
