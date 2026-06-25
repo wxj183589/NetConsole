@@ -4,6 +4,7 @@ from datetime import datetime
 import re
 from uuid import uuid4
 
+from netconsole.core import app_logger
 from netconsole.utils.station_normalize import normalize_station_value
 
 from netconsole.core.database import Database
@@ -338,31 +339,29 @@ class AcRepository:
 
     def replace_fit_ap_resources(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
         now = self._now()
+        rows = self._dedupe_fit_ap_resource_rows(rows)
+        self._warn_duplicate_apid_identities(ac_device_uuid, rows)
         with self.database.connect() as conn:
-            existing_rows = conn.execute("SELECT ap_uuid, serial_number FROM ac_fit_ap_resources WHERE ac_device_uuid = ?", (ac_device_uuid,)).fetchall()
-            uuid_by_serial = {str(row["serial_number"]): str(row["ap_uuid"]) for row in existing_rows if row["serial_number"]}
             current_uuids: list[str] = []
             for row in rows:
-                serial_number = str(row.get("serial_number") or "").strip()
-                ap_uuid = str(row.get("ap_uuid") or uuid_by_serial.get(serial_number) or uuid4())
+                ap_uuid = self._resolve_fit_ap_entity_uuid(conn, ac_device_uuid, row)
                 current_uuids.append(ap_uuid)
                 resource_data = {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid}
                 station = normalize_station_value(resource_data)
                 if station and not str(resource_data.get("site") or "").strip():
                     resource_data["site"] = station
                 payload = self._payload(FIT_AP_RESOURCE_FIELDS, resource_data)
+                payload["serial_number"] = self._clean_identity_value(payload.get("serial_number")) or None
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 columns = ", ".join(FIT_AP_RESOURCE_FIELDS)
                 placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_FIELDS)
-                updates = ", ".join(f"{field} = excluded.{field}" for field in FIT_AP_RESOURCE_FIELDS if field not in {"ac_device_uuid", "ap_uuid", "serial_number"})
+                updates = ", ".join(f"{field} = excluded.{field}" for field in FIT_AP_RESOURCE_FIELDS if field not in {"ac_device_uuid", "ap_uuid"})
                 conn.execute(
                     f"""
                     INSERT INTO ac_fit_ap_resources ({columns})
                     VALUES ({placeholders})
-                    ON CONFLICT(ac_device_uuid, serial_number) DO UPDATE SET
-                        ap_uuid = ac_fit_ap_resources.ap_uuid,
-                        {updates}
+                    ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
                     """,
                     [payload[field] for field in FIT_AP_RESOURCE_FIELDS],
                 )
@@ -992,6 +991,54 @@ class AcRepository:
         placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_HISTORY_FIELDS)
         conn.execute(f"INSERT INTO ac_fit_ap_resource_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_RESOURCE_HISTORY_FIELDS])
 
+    def _resolve_fit_ap_entity_uuid(self, conn, ac_device_uuid: str, row: dict[str, object | None]) -> str:
+        site_id = str(row.get("site_id") or "demo")
+        requested_uuid = str(row.get("ap_uuid") or "").strip()
+        if requested_uuid:
+            found = conn.execute("SELECT ap_uuid FROM ap_entities WHERE ap_uuid = ?", (requested_uuid,)).fetchone()
+            if found and found["ap_uuid"]:
+                return str(found["ap_uuid"])
+
+        normalized_mac = self._normalized_explicit_ap_mac(row)
+        if normalized_mac:
+            found = conn.execute(
+                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND ap_mac = ? ORDER BY id DESC LIMIT 1",
+                (site_id, normalized_mac),
+            ).fetchone()
+            if found and found["ap_uuid"]:
+                return str(found["ap_uuid"])
+
+        serial_number = self._clean_identity_value(row.get("serial_number"))
+        if serial_number:
+            found = conn.execute(
+                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND serial_number = ? ORDER BY id DESC LIMIT 1",
+                (site_id, serial_number),
+            ).fetchone()
+            if found and found["ap_uuid"]:
+                return str(found["ap_uuid"])
+
+        ap_name = str(row.get("ap_name") or "").strip()
+        if ap_name:
+            matches = conn.execute(
+                """
+                SELECT ap_uuid FROM ap_entities
+                WHERE site_id = ? AND ac_device_uuid = ? AND ap_name = ?
+                ORDER BY id DESC
+                """,
+                (site_id, ac_device_uuid, ap_name),
+            ).fetchall()
+            if len(matches) == 1 and matches[0]["ap_uuid"]:
+                return str(matches[0]["ap_uuid"])
+            if len(matches) > 1:
+                app_logger.log_warning(
+                    "FIT_AP_ENTITY_NAME_AMBIGUOUS",
+                    f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, ap_name={ap_name}, count={len(matches)}",
+                )
+
+        if requested_uuid:
+            return requested_uuid
+        return str(uuid4())
+
     def _upsert_ap_entity(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()
         ap_uuid = str(payload.get("ap_uuid") or uuid4())
@@ -1018,9 +1065,9 @@ class AcRepository:
                 "state_raw": payload.get("state_raw") or payload.get("state") or existing_data.get("state_raw"),
                 "state_display": state_display or existing_data.get("state_display"),
                 "station": self._non_empty(existing_data.get("station"), normalize_station_value(payload)),
-                "milestone": self._non_empty(payload.get("mileage"), existing_data.get("milestone")),
-                "direction": self._non_empty(payload.get("direction"), existing_data.get("direction")),
-                "location_note": self._non_empty(payload.get("location_note"), existing_data.get("location_note")),
+                "milestone": self._non_empty(existing_data.get("milestone"), payload.get("mileage")),
+                "direction": self._non_empty(existing_data.get("direction"), payload.get("direction")),
+                "location_note": self._non_empty(existing_data.get("location_note"), payload.get("location_note")),
                 "first_seen_at": existing_data.get("first_seen_at") or payload.get("collected_at") or now,
                 "last_seen_at": payload.get("collected_at") or now,
                 "last_online_at": (payload.get("collected_at") or now) if not is_offline else existing_data.get("last_online_at"),
@@ -1061,6 +1108,43 @@ class AcRepository:
         columns = ", ".join(AP_RESOURCE_SNAPSHOT_FIELDS)
         placeholders = ", ".join("?" for _ in AP_RESOURCE_SNAPSHOT_FIELDS)
         conn.execute(f"INSERT INTO ap_resource_snapshots ({columns}) VALUES ({placeholders})", [row[field] for field in AP_RESOURCE_SNAPSHOT_FIELDS])
+
+    def _dedupe_fit_ap_resource_rows(self, rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+        keyed: dict[tuple[str, str], dict[str, object | None]] = {}
+        passthrough: list[dict[str, object | None]] = []
+        for row in rows:
+            normalized_mac = self._normalized_explicit_ap_mac(row)
+            serial_number = self._clean_identity_value(row.get("serial_number"))
+            ap_name = str(row.get("ap_name") or "").strip()
+            key: tuple[str, str] | None = None
+            if normalized_mac:
+                key = ("mac", normalized_mac)
+            elif serial_number:
+                key = ("serial", serial_number)
+            elif ap_name:
+                key = ("name", ap_name)
+            if key is None:
+                passthrough.append(dict(row))
+            else:
+                keyed[key] = dict(row)
+        return [*keyed.values(), *passthrough]
+
+    def _warn_duplicate_apid_identities(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
+        identities_by_apid: dict[str, set[tuple[str, str]]] = {}
+        for row in rows:
+            apid = str(row.get("apid") or row.get("ap_id") or "").strip()
+            if not apid:
+                continue
+            identity = (self._normalized_explicit_ap_mac(row), self._clean_identity_value(row.get("serial_number")))
+            if not any(identity):
+                continue
+            identities_by_apid.setdefault(apid, set()).add(identity)
+        for apid, identities in identities_by_apid.items():
+            if len(identities) > 1:
+                app_logger.log_warning(
+                    "FIT_AP_DUPLICATE_APID_IDENTITY",
+                    f"ac_device_uuid={ac_device_uuid}, apid={apid}, identity_count={len(identities)}",
+                )
 
     def _append_ap_lldp_history(self, conn, payload: dict[str, object | None]) -> None:
         ap_uuid = str(payload.get("ap_uuid") or "")
@@ -1189,6 +1273,14 @@ class AcRepository:
                 return mac
         return ""
 
+    @classmethod
+    def _normalized_explicit_ap_mac(cls, data: dict[str, object | None]) -> str:
+        for field in ("ap_mac", "mac"):
+            mac = cls._mac_from_text(data.get(field))
+            if mac:
+                return mac
+        return ""
+
     @staticmethod
     def _mac_from_text(value: object) -> str:
         hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
@@ -1203,6 +1295,13 @@ class AcRepository:
         if text and text not in {"-", "N/A", "n/a"}:
             return primary
         return fallback
+
+    @staticmethod
+    def _clean_identity_value(value: object) -> str:
+        text = str(value or "").strip()
+        if text and text not in {"-", "N/A", "n/a"}:
+            return text
+        return ""
 
     @staticmethod
     def _state_display(value: object) -> str:

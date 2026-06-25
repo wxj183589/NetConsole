@@ -188,6 +188,18 @@ class PathResolver:
     def wireless_scan_export_dir(self, site_name: str = "demo") -> Path:
         return self.wireless_scan_root(site_name) / "exports"
 
+    @property
+    def shared_runtime_dir(self) -> Path:
+        return self.data_dir / "runtime"
+
+    @property
+    def network_profiles_path(self) -> Path:
+        return self.shared_runtime_dir / "network_profiles.json"
+
+    @property
+    def route_profiles_path(self) -> Path:
+        return self.shared_runtime_dir / "route_profiles.json"
+
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
@@ -202,6 +214,7 @@ class PathResolver:
             self.runtime_dir,
             self.runtime_cache_dir,
             self.data_dir,
+            self.shared_runtime_dir,
             self.config_dir,
             self.sites_dir,
             self.logs_dir,

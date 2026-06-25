@@ -9,10 +9,13 @@ from PySide6.QtCore import QThread, Signal
 
 from netconsole.core import app_logger
 from netconsole.models.device import Device
-from netconsole.services.netmiko_connection import ConnectionTestResult, test_device_connection
+from netconsole.services.netmiko_connection import ConnectionTestResult, extract_cli_prompt, test_device_connection
 
 
 Tester = Callable[[Device], ConnectionTestResult]
+BATCH_CONNECTION_DEFAULT_CONCURRENCY = 50
+BATCH_CONNECTION_MAX_CONCURRENCY = 200
+BATCH_CONNECTION_CONCURRENCY_OPTIONS = (10, 20, 50, 100, 200)
 
 
 @dataclass(frozen=True)
@@ -30,11 +33,11 @@ class BatchConnectionTestItemResult:
 def run_batch_connection_tests(
     devices: list[Device],
     tester: Tester = test_device_connection,
-    max_workers: int = 20,
+    max_workers: int = BATCH_CONNECTION_DEFAULT_CONCURRENCY,
     result_callback: Callable[[BatchConnectionTestItemResult], None] | None = None,
 ) -> list[BatchConnectionTestItemResult]:
     results: list[BatchConnectionTestItemResult] = []
-    worker_count = max(1, min(int(max_workers or 1), 100, len(devices) or 1))
+    worker_count = max(1, min(int(max_workers or 1), BATCH_CONNECTION_MAX_CONCURRENCY, len(devices) or 1))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {executor.submit(tester, device): device for device in devices}
         started_at = {future: monotonic() for future in futures}
@@ -49,7 +52,7 @@ def run_batch_connection_tests(
                     protocol=result.protocol,
                     method=result.method,
                     success=result.success,
-                    prompt=result.prompt,
+                    prompt=extract_cli_prompt(result.prompt or "") or None,
                     elapsed_ms=result.elapsed_ms if result.elapsed_ms is not None else fallback_elapsed,
                     error_message=None if result.success else result.message,
                 )
@@ -78,14 +81,14 @@ class BatchConnectionTestWorker(QThread):
         self,
         devices: list[Device],
         site_name: str | None = None,
-        concurrency: int = 20,
+        concurrency: int = BATCH_CONNECTION_DEFAULT_CONCURRENCY,
         parent=None,
         max_workers: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.devices = list(devices)
         self.site_name = site_name
-        self.concurrency = int(max_workers if max_workers is not None else concurrency)
+        self.concurrency = max(1, min(int(max_workers if max_workers is not None else concurrency), BATCH_CONNECTION_MAX_CONCURRENCY))
         self.max_workers = self.concurrency
 
     def run(self) -> None:

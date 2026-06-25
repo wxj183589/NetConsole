@@ -395,8 +395,9 @@ def test_wireless_external_tool_path_and_network_tools_tab(tmp_path, monkeypatch
     app = QApplication.instance() or QApplication([])
     assert app is not None
     page = NetworkToolsPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert page.tabs.count() == 2
+    assert page.tabs.count() == 3
     assert page.tabs.tabText(1) == "Wireless Scan"
+    assert page.tabs.tabText(2) == "Local Adapter / Route Manager"
 
 
 def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path, monkeypatch):

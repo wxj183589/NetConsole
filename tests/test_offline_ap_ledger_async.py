@@ -188,6 +188,123 @@ def test_trackside_offline_row_uses_port_type_and_realtime_switch_optical():
     assert format_trackside_display_value("port_type", offline) not in {"UP", "DOWN"}
 
 
+def test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run():
+    switch = Device(name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "link_status": "UP",
+                    "port_status": "access",
+                    "pvid": "201",
+                    "vlan": "201",
+                    "description": "Trackside AP",
+                    "switch_collection_status": "offline",
+                }
+            ]
+        },
+        {},
+        [],
+        {},
+        [{"ap_name": "AP-RUN", "ap_mac": "0011-2233-4455", "state": "Run"}],
+        {},
+        None,
+        [
+            {
+                "site": "Station A",
+                "device_uuid": "sw-1",
+                "historical_switch_name": "SW-1",
+                "historical_switch_interface": "GigabitEthernet1/0/1",
+                "ap_name": "AP-RUN",
+                "ap_mac": "0011-2233-4455",
+                "ap_status": "Run",
+            }
+        ],
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["offline_reason"] == "switch_offline"
+    assert row["status_reason"] == "室内交换机离线，轨旁AP跟随离线"
+    assert row["switch_collection_status"] == "offline"
+    assert format_trackside_display_value("switch_optical_status", row) == "交换机离线"
+    assert format_trackside_display_value("ap_optical_status", row) == OFFLINE_AP_STATUS_TEXT
+    assert format_trackside_display_value("link_status", row) == "DOWN"
+    assert format_trackside_display_value("port_type", row) == "access"
+    assert format_trackside_display_value("port_type", row) != "DOWN"
+
+
+def test_trackside_ac_idle_marks_ap_offline_when_switch_online():
+    switch = Device(name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/2",
+                    "link_status": "UP",
+                    "port_status": "trunk",
+                    "description": "Trackside AP",
+                }
+            ]
+        },
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/2", "rx_power": "-6.1", "port_status": "up"}]},
+        [{"neighbor_device_name": "SW-1", "neighbor_interface": "GigabitEthernet1/0/2", "ap_name": "AP-IDLE", "ap_mac": "0011-2233-5566", "state": "Idle"}],
+    )
+
+    row = rows[0]
+    assert row["offline_reason"] == "ac_idle"
+    assert format_trackside_display_value("ap_optical_status", row) == OFFLINE_AP_STATUS_TEXT
+    assert format_trackside_display_value("link_status", row) == "UP"
+    assert format_trackside_display_value("port_type", row) == "trunk"
+
+
+def test_trackside_same_interface_merges_current_and_historical_rows():
+    switch = Device(name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/3",
+                    "link_status": "DOWN",
+                    "port_status": "hybrid",
+                    "pvid": "203",
+                    "vlan": "203",
+                    "description": "Trackside AP",
+                }
+            ]
+        },
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/3", "rx_power": "-7.1", "port_status": "down"}]},
+        [],
+        {},
+        [],
+        {},
+        None,
+        [
+            {
+                "site": "Station A",
+                "device_uuid": "sw-1",
+                "historical_switch_name": "SW-1",
+                "historical_switch_interface": "GigabitEthernet1/0/3",
+                "ap_name": "AP-HIST",
+                "ap_mac": "0011-2233-6677",
+                "ap_status": "Idle",
+            }
+        ],
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["ap_name"] == "AP-HIST"
+    assert row["ap_mac"] == "0011-2233-6677"
+    assert row["port_type"] == "hybrid"
+    assert row["pvid"] == "203"
+    assert format_trackside_display_value("port_type", row) not in {"UP", "DOWN"}
+
+
 def test_ac_management_offline_tab_starts_loader_without_ui_thread_build(tmp_path, monkeypatch):
     _app()
     database = _database(tmp_path)

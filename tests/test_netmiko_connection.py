@@ -6,6 +6,7 @@ from netconsole.services.netmiko_connection import (
     H3C_DEFAULT_ENCODING,
     choose_connection_target,
     encoding_for_vendor,
+    extract_cli_prompt,
     extract_sysname_from_prompt,
     safe_send_command,
     sanitize_sensitive_text,
@@ -26,6 +27,24 @@ def test_extract_sysname_from_square_prompt():
 def test_extract_sysname_from_invalid_prompt_returns_none():
     assert extract_sysname_from_prompt("") is None
     assert extract_sysname_from_prompt("invalid") is None
+
+
+def test_extract_cli_prompt_ignores_screen_length_echo():
+    assert extract_cli_prompt("screen-length disable\nsc d\n<YunLongCLD-2>\n") == "<YunLongCLD-2>"
+
+
+def test_extract_cli_prompt_handles_timestamped_h3c_prompt():
+    output = "[23:48:10]<NBDT12HX-WX3540X-AC1>screen-length disable\n[23:48:10]<NBDT12HX-WX3540X-AC1>\n"
+
+    assert extract_cli_prompt(output) == "<NBDT12HX-WX3540X-AC1>"
+
+
+def test_extract_cli_prompt_rejects_command_echo_only():
+    assert extract_cli_prompt("sc d\n") == ""
+
+
+def test_extract_cli_prompt_accepts_probe_prompt():
+    assert extract_cli_prompt("[H3C-probe]\n") == "[H3C-probe]"
 
 
 def test_h3c_encoding_policy_defaults_to_gb2312():
@@ -134,16 +153,22 @@ def test_sanitize_sensitive_text_masks_passwords():
 
 def test_connect_handler_called_with_netmiko_params(monkeypatch):
     calls = {}
+    prompts = ["sc d", "<SW01>"]
+    commands = []
 
     class FakeConnection:
         def find_prompt(self):
-            return "<SW01>"
+            return prompts.pop(0)
 
         def send_command(self, command, read_timeout=None, encoding=None):
-            calls["command"] = command
+            commands.append(command)
             calls["read_timeout"] = read_timeout
             calls["encoding"] = encoding
             return "clock"
+
+        def send_command_timing(self, command, **_kwargs):
+            commands.append(command)
+            return "screen-length disable\n<SW01>\n"
 
         def disconnect(self):
             calls["disconnect"] = True
@@ -182,7 +207,7 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
         "session_log": None,
         "global_delay_factor": 1,
     }
-    assert calls["command"] == "display clock"
+    assert commands == ["screen-length disable", "display clock"]
     assert calls["read_timeout"] == 10
     assert calls["encoding"] == "gb2312"
     assert calls["disconnect"] is True

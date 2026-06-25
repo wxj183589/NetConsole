@@ -26,6 +26,10 @@ TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
     "ap_ip",
     "source_device",
     "collection_status",
+    "offline_reason",
+    "status_reason",
+    "data_source",
+    "switch_collection_status",
 }
 
 TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
@@ -249,15 +253,32 @@ def build_trackside_ap_business_rows(
                 }
             )
             switch_status = switch_result.severity
+            switch_collection_status = _switch_collection_status(device, interface, optical)
+            switch_offline = _is_switch_collection_offline(switch_collection_status)
             ap_candidate = {
                 "ap_mac": normalize_mac(fit_ap.get("ap_mac")) or neighbor_mac,
                 "ap_name": fit_ap.get("ap_name"),
                 "ap_rx_power": fit_ap.get("rx_power"),
                 "ap_tx_power": fit_ap.get("tx_power"),
             }
-            ap_side_has_data = _has_ap_side_optical_data(fit_ap, ap_candidate)
+            ac_idle = _is_ac_idle(fit_ap)
+            ap_identity_known = any(ap_candidate.get(field) for field in ("ap_mac", "ap_name"))
+            ap_side_has_data = _has_ap_side_optical_data(fit_ap, ap_candidate) or ac_idle or (switch_offline and ap_identity_known)
             ap_status = ""
-            if ap_side_has_data:
+            offline_reason = ""
+            status_reason = ""
+            data_source = "current"
+            if switch_offline:
+                switch_status = "offline"
+                ap_status = "offline"
+                offline_reason = "switch_offline"
+                status_reason = "室内交换机离线，轨旁AP跟随离线"
+                data_source = "mixed" if ap_identity_known else "stale"
+            elif ac_idle:
+                ap_status = "offline"
+                offline_reason = "ac_idle"
+                status_reason = "AC FIT-AP状态为Idle，轨旁AP离线"
+            elif ap_side_has_data:
                 ap_result = compute_optical_severity(
                     {
                         "module_present": bool(_has_optical_module_data(fit_ap)) or _explicit_no_module(fit_ap),
@@ -279,7 +300,7 @@ def build_trackside_ap_business_rows(
                     "device_uuid": device_uuid,
                     "device_name": device.name,
                     "interface_name": interface_name,
-                    "link_status": normalize_link_state(interface.get("link_status") or interface.get("link")),
+                    "link_status": "DOWN" if switch_offline else normalize_link_state(interface.get("link_status") or interface.get("link")),
                     "protocol_status": interface.get("protocol_status") or interface.get("protocol"),
                     "description": interface.get("description"),
                     "port_type": _port_type(interface.get("port_status")),
@@ -290,26 +311,32 @@ def build_trackside_ap_business_rows(
                     "switch_rx_power": optical.get("rx_power"),
                     "switch_tx_power": optical.get("tx_power"),
                     "switch_optical_status": switch_status,
-                    "ap_mac": ap_candidate["ap_mac"] if ap_side_has_data else None,
-                    "ap_name": ap_candidate["ap_name"] if ap_side_has_data else None,
+                    "ap_mac": ap_candidate["ap_mac"] if ap_side_has_data or switch_offline else None,
+                    "ap_name": ap_candidate["ap_name"] if ap_side_has_data or switch_offline else None,
                     "ap_ip": fit_ap.get("ap_ip"),
                     "ap_state": fit_ap.get("state"),
                     "ap_state_display": fit_ap.get("state_display") or fit_ap.get("state_raw"),
-                    "ap_rx_power": ap_candidate["ap_rx_power"] if ap_side_has_data else None,
-                    "ap_tx_power": ap_candidate["ap_tx_power"] if ap_side_has_data else None,
+                    "ap_rx_power": ap_candidate["ap_rx_power"] if ap_side_has_data and not switch_offline else None,
+                    "ap_tx_power": ap_candidate["ap_tx_power"] if ap_side_has_data and not switch_offline else None,
                     "ap_optical_status": ap_status,
                     "ap_side_has_data": ap_side_has_data,
                     "updated_at": fit_ap.get("updated_at") or optical.get("updated_at") or interface.get("updated_at") or interface.get("collected_at"),
                     "source_device": fit_ap.get("device_name") or fit_ap.get("neighbor_device_name") or device.name,
                     "collection_status": fit_ap.get("status") or ("success" if optical else "not_collected"),
+                    "switch_collection_status": switch_collection_status,
+                    "offline_reason": offline_reason,
+                    "status_reason": status_reason,
+                    "data_source": data_source,
+                    "is_ap_offline": bool(offline_reason),
                 }
             )
     result.extend(_offline_ledger_to_trackside_rows(offline_ap_ledger_rows or [], interfaces_by_device, optical_by_device))
+    result = _merge_duplicate_trackside_rows(result)
     return sorted(result, key=lambda row: (str(row.get("site") or ""), str(row.get("device_name") or ""), interface_sort_key(row.get("interface_name"))))
 
 
 def trackside_row_status(row: dict[str, object | None]) -> str:
-    if bool(row.get("is_ap_offline")):
+    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
         return "offline"
     switch_status = str(row.get("switch_optical_status") or "")
     ap_status = str(row.get("ap_optical_status") or "") if has_ap_side_optical_data(row) else ""
@@ -347,13 +374,15 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
     if field == "protocol_status":
         return normalize_link_state(row.get("protocol_status") or row.get("protocol"))
     if field == "ap_optical_status":
-        if bool(row.get("is_ap_offline")):
+        if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
             return OFFLINE_AP_STATUS_TEXT
         return format_ap_side_alarm(row, language)
     if field in AP_SIDE_DISPLAY_FIELDS and not has_ap_side_optical_data(row):
         return AP_SIDE_MISSING_DISPLAY
     value = row.get(field)
     if field == "switch_optical_status" and value:
+        if row.get("offline_reason") == "switch_offline" or _is_switch_collection_offline(row.get("switch_collection_status")):
+            return "交换机离线" if not language.startswith("en") else "Switch Offline"
         return display_optical_status(str(value), language)
     if field == "ap_optical_status" and value:
         return display_optical_status(str(value), language)
@@ -530,6 +559,10 @@ def _offline_ledger_to_trackside_rows(
                 "source_device": row.get("historical_switch_name"),
                 "collection_status": "historical",
                 "is_ap_offline": True,
+                "offline_reason": row.get("offline_reason") or "ac_idle",
+                "status_reason": row.get("status_reason") or "AC FIT-AP状态为Idle，轨旁AP离线",
+                "data_source": row.get("data_source") or "historical",
+                "switch_collection_status": row.get("switch_collection_status") or interface.get("switch_collection_status") or interface.get("collection_status"),
                 "offline_remark": row.get("offline_remark"),
             }
         )
@@ -584,6 +617,112 @@ def normalize_mac(value: object) -> str:
         return str(value or "").strip().casefold()
     hex_text = hex_text.casefold()
     return f"{hex_text[0:4]}-{hex_text[4:8]}-{hex_text[8:12]}"
+
+
+def _switch_collection_status(device: Device, interface: dict[str, object | None], optical: dict[str, object | None]) -> str:
+    for source in (interface, optical):
+        for field in ("switch_collection_status", "collection_status", "collect_status"):
+            value = str(source.get(field) or "").strip()
+            if value:
+                return value
+    for field in ("switch_collection_status", "collection_status", "collect_status"):
+        value = str(getattr(device, field, "") or "").strip()
+        if value:
+            return value
+    return "success" if optical else "not_collected"
+
+
+def _is_switch_collection_offline(value: object) -> bool:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return False
+    return any(token in text for token in ("offline", "unreachable", "failed", "fail", "timeout", "不可达", "离线", "失败"))
+
+
+def _is_ac_idle(row: dict[str, object | None]) -> bool:
+    state = " ".join(str(row.get(field) or "") for field in ("state", "state_raw", "state_display", "ap_state", "ap_state_display")).strip().casefold()
+    if not state:
+        return False
+    token = state.split("=", 1)[0].strip()
+    return token in {"i", "idle"} or "idle" in state
+
+
+def _trackside_merge_key(row: dict[str, object | None]) -> tuple[str, str, str]:
+    site = str(row.get("site") or "").strip().casefold()
+    switch = str(row.get("device_uuid") or row.get("switch_uuid") or row.get("device_name") or row.get("switch_name") or "").strip().casefold()
+    interface = normalize_interface_name(row.get("interface_name")).casefold()
+    return site, switch, interface
+
+
+def _merge_duplicate_trackside_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+    merged: dict[tuple[str, str, str], dict[str, object | None]] = {}
+    passthrough: list[dict[str, object | None]] = []
+    for row in rows:
+        key = _trackside_merge_key(row)
+        if not all(key):
+            passthrough.append(row)
+            continue
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = dict(row)
+            continue
+        _merge_trackside_row(existing, row)
+    result = [*merged.values(), *passthrough]
+    for row in result:
+        _apply_trackside_offline_priority(row)
+    return result
+
+
+def _merge_trackside_row(target: dict[str, object | None], source: dict[str, object | None]) -> None:
+    prefer_source_fields = (
+        "ap_uuid",
+        "ap_mac",
+        "ap_name",
+        "ap_ip",
+        "ap_state",
+        "ap_state_display",
+        "ap_rx_power",
+        "ap_tx_power",
+        "offline_remark",
+    )
+    for field in prefer_source_fields:
+        if _is_missing_display(target.get(field)) and not _is_missing_display(source.get(field)):
+            target[field] = source.get(field)
+    for field, value in source.items():
+        if field not in target or _is_missing_display(target.get(field)):
+            target[field] = value
+    if bool(source.get("ap_side_has_data")):
+        target["ap_side_has_data"] = True
+    if bool(source.get("is_ap_offline")):
+        target["is_ap_offline"] = True
+    if source.get("offline_reason") == "switch_offline" or target.get("offline_reason") != "switch_offline":
+        for field in ("offline_reason", "status_reason", "data_source", "switch_collection_status"):
+            if source.get(field):
+                target[field] = source.get(field)
+    if normalize_link_state(source.get("link_status")) == "DOWN":
+        target["link_status"] = "DOWN"
+    target["port_type"] = _port_type(target.get("port_type") or source.get("port_type") or target.get("port_status") or source.get("port_status"))
+
+
+def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:
+    switch_offline = row.get("offline_reason") == "switch_offline" or _is_switch_collection_offline(row.get("switch_collection_status"))
+    ac_idle = _is_ac_idle(row) or row.get("offline_reason") == "ac_idle"
+    if switch_offline:
+        row["link_status"] = "DOWN"
+        row["switch_optical_status"] = "offline"
+        row["ap_optical_status"] = "offline"
+        row["ap_side_has_data"] = True
+        row["is_ap_offline"] = True
+        row["offline_reason"] = "switch_offline"
+        row["status_reason"] = "室内交换机离线，轨旁AP跟随离线"
+        row["data_source"] = row.get("data_source") or "mixed"
+    elif ac_idle:
+        row["ap_optical_status"] = "offline"
+        row["ap_side_has_data"] = True
+        row["is_ap_offline"] = True
+        row["offline_reason"] = "ac_idle"
+        row["status_reason"] = row.get("status_reason") or "AC FIT-AP状态为Idle，轨旁AP离线"
+    row["port_type"] = _port_type(row.get("port_type") or row.get("port_status"))
 
 
 def _export_value(field: str, row: dict[str, object | None]) -> str:

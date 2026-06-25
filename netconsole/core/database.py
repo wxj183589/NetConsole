@@ -346,8 +346,7 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
-    updated_at TEXT NOT NULL,
-    UNIQUE(ac_device_uuid, serial_number)
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -594,12 +593,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_mac
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_serial
     ON ap_entities(site_id, serial_number)
     WHERE serial_number IS NOT NULL AND trim(serial_number) != '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_ac_apid
-    ON ap_entities(site_id, ac_device_uuid, ap_id)
-    WHERE ap_id IS NOT NULL AND trim(ap_id) != '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_ac_name
-    ON ap_entities(site_id, ac_device_uuid, ap_name)
-    WHERE ap_name IS NOT NULL AND trim(ap_name) != '';
+DROP INDEX IF EXISTS idx_ap_entities_site_ac_apid;
+DROP INDEX IF EXISTS idx_ap_entities_site_ac_name;
+CREATE INDEX IF NOT EXISTS idx_ap_entities_site_ac_apid_lookup
+    ON ap_entities(site_id, ac_device_uuid, ap_id);
+CREATE INDEX IF NOT EXISTS idx_ap_entities_site_ac_name_lookup
+    ON ap_entities(site_id, ac_device_uuid, ap_name);
 """
 
 AP_RESOURCE_SNAPSHOTS_SCHEMA = """

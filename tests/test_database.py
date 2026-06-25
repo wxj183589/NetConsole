@@ -22,6 +22,15 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         optical_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules)").fetchall()]
         optical_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules_history)").fetchall()]
         schema_version = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()["value"]
+        ap_entity_indexes = {row["name"]: dict(row) for row in conn.execute("PRAGMA index_list(ap_entities)").fetchall()}
+        fit_ap_resource_indexes = [dict(row) for row in conn.execute("PRAGMA index_list(ac_fit_ap_resources)").fetchall()]
+        fit_ap_resource_index_columns = {
+            row["name"]: [
+                column["name"]
+                for column in conn.execute(f"PRAGMA index_info({row['name']})").fetchall()
+            ]
+            for row in fit_ap_resource_indexes
+        }
 
     assert "collect_runs" in table_names
     assert "device_facts" in table_names
@@ -42,6 +51,11 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "ac_fit_ap_optical" in table_names
     assert "config_snapshots" in table_names
     assert "device_groups" in table_names
+    assert "idx_ap_entities_site_ac_apid" not in ap_entity_indexes
+    assert "idx_ap_entities_site_ac_name" not in ap_entity_indexes
+    assert ap_entity_indexes["idx_ap_entities_site_ac_apid_lookup"]["unique"] == 0
+    assert ap_entity_indexes["idx_ap_entities_site_ac_name_lookup"]["unique"] == 0
+    assert ["ac_device_uuid", "serial_number"] not in fit_ap_resource_index_columns.values()
     assert "base" + "line" not in config_snapshot_columns
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns

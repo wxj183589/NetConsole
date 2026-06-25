@@ -22,7 +22,20 @@ H3C_NETMIKO_DEVICE_TYPE = "hp_comware"
 H3C_TELNET_NETMIKO_DEVICE_TYPE = "hp_comware_telnet"
 H3C_DEFAULT_ENCODING = "gb2312"
 H3C_FALLBACK_ENCODING = "utf-8"
+PROMPT_RE = re.compile(r"(?m)(<[^<>\r\n]+>|\[[^\[\]\r\n]+\])\s*$")
 PROMPT_SYSNAME_PATTERN = re.compile(r"^\s*[<\[]([^<>\[\]]+)[>\]]\s*$")
+PROMPT_TIMESTAMP_PREFIX_RE = re.compile(r"^\s*\[\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]\s*")
+INVALID_PROMPT_CANDIDATES = {
+    "sc d",
+    "screen-length disable",
+    "screen-length d",
+    "display version",
+    "display current-configuration | include sysname",
+    "quit",
+    "return",
+    "password:",
+    "the connection was closed by the remote host",
+}
 
 VENDOR_ENCODING_POLICY = {
     "H3C": H3C_DEFAULT_ENCODING,
@@ -86,6 +99,20 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
             with prepared_connection_target(target) as prepared:
                 connection = ConnectHandler(**_netmiko_params(prepared))
                 prompt = _safe_find_prompt(connection)
+                screen_output = ""
+                try:
+                    screen_output = safe_send_command(
+                        connection,
+                        "screen-length disable",
+                        read_timeout=10,
+                        strip_prompt=False,
+                        strip_command=False,
+                        use_timing=True,
+                        encoding=prepared.encoding,
+                    )
+                except Exception:
+                    screen_output = ""
+                prompt = _safe_find_prompt(connection) or extract_cli_prompt(screen_output) or prompt
                 message = "Connection succeeded"
                 try:
                     safe_send_command(connection, "display clock", read_timeout=10, encoding=prepared.encoding)
@@ -243,8 +270,27 @@ def normalize_command_output(output: object, encoding: str = H3C_DEFAULT_ENCODIN
     return text
 
 
+def extract_cli_prompt(output: str) -> str:
+    for raw_line in reversed(str(output or "").splitlines()):
+        line = PROMPT_TIMESTAMP_PREFIX_RE.sub("", raw_line.strip())
+        if not line or is_invalid_prompt_candidate(line):
+            continue
+        match = PROMPT_RE.search(line)
+        if not match:
+            continue
+        prompt = match.group(1).strip()
+        if prompt and not is_invalid_prompt_candidate(prompt):
+            return prompt
+    return ""
+
+
+def is_invalid_prompt_candidate(value: str) -> bool:
+    return str(value or "").strip().casefold() in INVALID_PROMPT_CANDIDATES
+
+
 def extract_sysname_from_prompt(prompt: str) -> str | None:
-    match = PROMPT_SYSNAME_PATTERN.match(prompt or "")
+    prompt = extract_cli_prompt(prompt)
+    match = PROMPT_SYSNAME_PATTERN.match(prompt)
     if not match:
         return None
     sysname = match.group(1).strip()
@@ -303,7 +349,8 @@ def _safe_find_prompt(connection: Any) -> str | None:
         prompt = connection.find_prompt()
     except Exception:
         return None
-    return str(prompt) if prompt is not None else None
+    parsed = extract_cli_prompt(str(prompt or ""))
+    return parsed or None
 
 
 def _elapsed_ms(started: float) -> int:

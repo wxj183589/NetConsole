@@ -335,6 +335,139 @@ def test_fit_ap_resources_match_by_serial_number_and_keep_ap_uuid(tmp_path):
     assert len(repository.list_fit_ap_resources("ac-1")) == 1
 
 
+def test_fit_ap_resources_reuse_ap_uuid_when_apid_changes(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "ap-a", "apid": "1346", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"}],
+    )
+    first = repository.list_fit_ap_resources("ac-1")[0]
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "ap-a", "apid": "2001", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"}],
+    )
+    second = repository.list_fit_ap_resources("ac-1")[0]
+    entity = repository.list_ap_entities("ac-1")[0]
+
+    assert second["ap_uuid"] == first["ap_uuid"]
+    assert second["apid"] == "2001"
+    assert entity["ap_uuid"] == first["ap_uuid"]
+    assert entity["ap_id"] == "2001"
+
+
+def test_fit_ap_resources_do_not_merge_different_identity_with_same_apid(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {"ap_name": "ap-a", "apid": "1346", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"},
+            {"ap_name": "ap-b", "apid": "1346", "ap_mac": "0011-2233-5566", "serial_number": "SN-002"},
+        ],
+    )
+
+    rows = repository.list_fit_ap_resources("ac-1")
+    assert len(rows) == 2
+    assert len({row["ap_uuid"] for row in rows}) == 2
+    assert len(repository.list_ap_entities("ac-1")) == 2
+
+
+def test_fit_ap_resources_same_name_hardware_replacement_inherits_business_fields(tmp_path):
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "ap-a",
+                "apid": "1346",
+                "ap_ip": "10.0.0.1",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-OLD",
+                "model": "old-model",
+                "state": "I",
+            }
+        ],
+    )
+    first = repository.list_fit_ap_resources("ac-1")[0]
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE ap_entities
+            SET station = ?, milestone = ?, direction = ?, location_note = ?
+            WHERE ap_uuid = ?
+            """,
+            ("Station A", "K1+100", "up", "old note", first["ap_uuid"]),
+        )
+        conn.commit()
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "ap-a",
+                "apid": "2001",
+                "ap_ip": "10.0.0.99",
+                "ap_mac": "0011-2233-9999",
+                "serial_number": "SN-NEW",
+                "model": "new-model",
+                "state": "R/M",
+            }
+        ],
+    )
+    second = repository.list_fit_ap_resources("ac-1")[0]
+    entity = repository.list_ap_entities("ac-1")[0]
+    history = repository.list_fit_ap_resource_history("ac-1")
+
+    assert second["ap_uuid"] == first["ap_uuid"]
+    assert entity["ap_uuid"] == first["ap_uuid"]
+    assert entity["ap_mac"] == "0011-2233-9999"
+    assert entity["serial_number"] == "SN-NEW"
+    assert entity["model"] == "new-model"
+    assert entity["ap_ip"] == "10.0.0.99"
+    assert entity["ap_id"] == "2001"
+    assert entity["state"] == "R/M"
+    assert entity["station"] == "Station A"
+    assert entity["milestone"] == "K1+100"
+    assert entity["direction"] == "up"
+    assert entity["location_note"] == "old note"
+    assert {row["serial_number"] for row in history} == {"SN-OLD", "SN-NEW"}
+
+
+def test_fit_ap_resources_allow_empty_or_repeated_apid_without_unique_failure(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {"ap_name": "ap-a", "apid": "", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"},
+            {"ap_name": "ap-b", "apid": "", "ap_mac": "0011-2233-5566", "serial_number": "SN-002"},
+            {"ap_name": "ap-c", "apid": "1346", "ap_mac": "0011-2233-6677", "serial_number": "SN-003"},
+            {"ap_name": "ap-d", "apid": "1346", "ap_mac": "0011-2233-7788", "serial_number": "SN-004"},
+        ],
+    )
+
+    rows = repository.list_fit_ap_resources("ac-1")
+    assert len(rows) == 4
+    assert len({row["ap_uuid"] for row in rows}) == 4
+
+
+def test_fit_ap_resources_repeated_update_is_idempotent(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    rows = [
+        {"ap_name": "ap-a", "apid": "1346", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"},
+        {"ap_name": "ap-b", "apid": "1346", "ap_mac": "0011-2233-5566", "serial_number": "SN-002"},
+    ]
+
+    repository.replace_fit_ap_resources("ac-1", rows)
+    first_uuids = [row["ap_uuid"] for row in repository.list_fit_ap_resources("ac-1")]
+    repository.replace_fit_ap_resources("ac-1", rows)
+    second_rows = repository.list_fit_ap_resources("ac-1")
+
+    assert [row["ap_uuid"] for row in second_rows] == first_uuids
+    assert len(second_rows) == 2
+    assert len(repository.list_ap_entities("ac-1")) == 2
+
+
 def test_fit_ap_optical_and_metadata_use_ap_uuid_association(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])

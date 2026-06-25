@@ -2525,6 +2525,46 @@ TRANSLATIONS["en_US"].update(
     }
 )
 
+TRANSLATIONS["zh_CN"].update(
+    {
+        "network_tools.local_network_manager": "\u672c\u5730\u7f51\u5361/\u8def\u7531\u7ba1\u7406",
+        "network_manager.title": "\u672c\u5730\u7f51\u5361/\u8def\u7531\u7ba1\u7406",
+        "network_manager.open_as_admin": "\u4ee5\u7ba1\u7406\u5458\u6743\u9650\u6253\u5f00\u7f51\u7edc\u7ba1\u7406",
+        "network_manager.open_connections": "\u6253\u5f00\u7f51\u7edc\u8fde\u63a5",
+        "network_manager.adapter_config": "\u672c\u5730\u7f51\u5361\u914d\u7f6e",
+        "network_manager.route_config": "\u8def\u7531\u914d\u7f6e",
+        "network_manager.save_profile": "\u4fdd\u5b58\u4e3a\u65b9\u6848",
+        "network_manager.apply": "\u5e94\u7528",
+        "network_manager.apply_profile": "\u5e94\u7528\u65b9\u6848",
+        "network_manager.reset_defaults": "\u6062\u590d\u9ed8\u8ba4\u7f51\u5361\u914d\u7f6e",
+        "network_manager.detect_vlan": "\u68c0\u6d4bVLAN",
+        "network_manager.save_route_profile": "\u4fdd\u5b58\u8def\u7531\u65b9\u6848",
+        "network_manager.apply_route": "\u5e94\u7528\u8def\u7531",
+        "network_manager.remove_route": "\u53d6\u6d88\u542f\u7528",
+        "network_manager.confirm": "\u786e\u8ba4\u64cd\u4f5c",
+    }
+)
+
+TRANSLATIONS["en_US"].update(
+    {
+        "network_tools.local_network_manager": "Local Adapter / Route Manager",
+        "network_manager.title": "Local Adapter / Route Manager",
+        "network_manager.open_as_admin": "Open Network Manager as Administrator",
+        "network_manager.open_connections": "Open Network Connections",
+        "network_manager.adapter_config": "Local Adapter Config",
+        "network_manager.route_config": "Route Config",
+        "network_manager.save_profile": "Save Profile",
+        "network_manager.apply": "Apply",
+        "network_manager.apply_profile": "Apply Profile",
+        "network_manager.reset_defaults": "Restore Defaults",
+        "network_manager.detect_vlan": "Detect VLAN",
+        "network_manager.save_route_profile": "Save Route Profile",
+        "network_manager.apply_route": "Apply Route",
+        "network_manager.remove_route": "Disable",
+        "network_manager.confirm": "Confirm Operation",
+    }
+)
+
 
 class I18n:
     def __init__(self, language: str = "zh_CN") -> None:

@@ -11,6 +11,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from netconsole.core.bootstrap import create_demo_context
+from netconsole.core.admin import ADMIN_NETWORK_MANAGER_ARG
 from netconsole.core.database import DatabaseSchemaMismatchError
 from netconsole.core.i18n import I18n
 from netconsole.core import app_logger
@@ -33,6 +34,17 @@ def build_window(started_at: float | None = None) -> MainWindow:
     app_logger.log_info("SITE_LOADED", f"site={context.site.name} {_elapsed_detail(started_at)}")
     i18n = I18n()
     return MainWindow(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
+
+
+def open_admin_network_manager(window: MainWindow) -> None:
+    index = window.navigation.find_page("network_tools")
+    if index >= 0:
+        window.navigation.setCurrentRow(index)
+    page = window.get_or_create_page("network_tools")
+    window.stack.setCurrentWidget(page)
+    tabs = getattr(page, "tabs", None)
+    if tabs is not None and tabs.count() >= 3:
+        tabs.setCurrentIndex(2)
 
 
 def _site_database_paths(paths: PathResolver) -> list[Path]:
@@ -130,6 +142,8 @@ def run() -> int:
     splash.show_message(i18n.t("startup.opening_main_window"))
     splash.set_progress(100 if startup_mode == "preload_all" else 80)
     window.show()
+    if ADMIN_NETWORK_MANAGER_ARG in sys.argv:
+        open_admin_network_manager(window)
     app_logger.log_info("MAIN_WINDOW_SHOWN", _elapsed_detail(started_at))
     splash.set_progress(100)
     splash.close_after_main_window_shown()

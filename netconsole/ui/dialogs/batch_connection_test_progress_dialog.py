@@ -4,7 +4,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from netconsole.core.i18n import I18n
-from netconsole.ui.batch_connection_worker import BatchConnectionTestItemResult
+from netconsole.ui.batch_connection_worker import (
+    BATCH_CONNECTION_CONCURRENCY_OPTIONS,
+    BATCH_CONNECTION_DEFAULT_CONCURRENCY,
+    BatchConnectionTestItemResult,
+)
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 
@@ -18,9 +22,9 @@ class BatchConnectionTestProgressDialog(QDialog):
         self.success = 0
         self.failed = 0
         self.concurrency_combo = QComboBox()
-        for value in (5, 10, 20, 50, 100):
+        for value in BATCH_CONNECTION_CONCURRENCY_OPTIONS:
             self.concurrency_combo.addItem(str(value), value)
-        self.concurrency_combo.setCurrentText("20")
+        self.concurrency_combo.setCurrentText(str(BATCH_CONNECTION_DEFAULT_CONCURRENCY))
         self.setMinimumSize(820, 500)
         self.resize(900, 540)
 

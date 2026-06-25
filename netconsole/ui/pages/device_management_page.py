@@ -33,7 +33,7 @@ from netconsole.services.device_import_export import DeviceImportExportService, 
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
 from netconsole.services.netmiko_connection import ConnectionTestResult
-from netconsole.ui.batch_connection_worker import BatchConnectionTestWorker
+from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.diagnostic_download_worker import DiagnosticDownloadWorker
@@ -269,7 +269,7 @@ class DeviceManagementPage(QWidget):
         for row, device in enumerate(devices):
             dialog.mark_waiting(row, str(device.name or ""), str(device.ip_address or ""))
         self.batch_connection_test_dialog = dialog
-        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, concurrency=int(dialog.concurrency_combo.currentData() or 20), parent=self)
+        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, concurrency=int(dialog.concurrency_combo.currentData() or BATCH_CONNECTION_DEFAULT_CONCURRENCY), parent=self)
 
         def on_device_finished(item) -> None:
             row = next(
