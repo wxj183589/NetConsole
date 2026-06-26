@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,7 +12,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 ROOT = PROJECT_DIR.parent
 VERSION_FILE = ROOT / "netconsole" / "core" / "version.py"
-VERSION_INFO_FILE = PROJECT_DIR / "version_info.txt"
+VERSION_INFO_FILE = ROOT / "release" / "_build" / "release" / "version_info.txt"
 INTERNAL_REMOTE = "ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git"
 GITHUB_REMOTE = "git@github.com:wxj183589/NetConsole.git"
 REMOTE_URLS = {

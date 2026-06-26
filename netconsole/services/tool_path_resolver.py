@@ -55,10 +55,11 @@ def resolve_tool_path(
         if resolved is not None:
             return resolved
 
-    for name in definition.path_names:
-        resolved = shutil.which(name)
-        if resolved:
-            return Path(resolved).resolve()
+    if not _is_compiled_runtime():
+        for name in definition.path_names:
+            resolved = shutil.which(name)
+            if resolved:
+                return Path(resolved).resolve()
     return None
 
 
@@ -97,16 +98,28 @@ def candidate_tool_paths(
     for tools_root in _internal_tool_roots(app_root):
         candidates.append(tools_root / definition.relative_path)
 
-    candidates.append((project_root or _development_project_root(app_root)) / "tools" / definition.relative_path)
-    candidates.append(app_root / "tools" / definition.relative_path)
+    if not _is_compiled_runtime():
+        candidates.append((project_root or _development_project_root(app_root)) / "tools" / definition.relative_path)
+        candidates.append(app_root / "tools" / definition.relative_path)
     return _deduplicate_paths(candidates)
 
 
 def _internal_tool_roots(app_root: Path) -> Iterable[Path]:
     yield app_root / "_internal" / "tools"
+    yield app_root / "tools"
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         yield Path(meipass) / "tools"
+    try:
+        package_root = Path(__file__).resolve().parents[2]
+        yield package_root / "tools"
+        yield package_root / "_internal" / "tools"
+    except OSError:
+        return
+
+
+def _is_compiled_runtime() -> bool:
+    return bool(getattr(sys, "frozen", False) or globals().get("__compiled__"))
 
 
 def _source_project_root() -> Path:

@@ -30,10 +30,8 @@ ROOT = Path(__file__).resolve().parent
 
 ALLOWED_DATA = [
     ("netconsole", "netconsole"),
-    ("data", "data"),
     ("tools", "tools"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
-    ("netconsole/docs", "netconsole/docs"),
 ]
 FORBIDDEN_DATA = [
     (item, item) for item in FORBIDDEN_DATAS
@@ -46,6 +44,13 @@ EXCLUDE_DIRS = [
 ]
 EXCLUDE_FILES = {"*.pyc", "*.pyo"}
 REQUIRED_TOOL_FILES = (
+    Path("tools") / "fping_v3" / "Fping_v3.exe",
+    Path("tools") / "iperf" / "iperf3.exe",
+    Path("tools") / "iperf" / "cygcrypto-3.dll",
+    Path("tools") / "iperf" / "cygwin1.dll",
+    Path("tools") / "iperf" / "cygz.dll",
+)
+REQUIRED_TOOL_EXECUTABLES = (
     Path("tools") / "fping_v3" / "Fping_v3.exe",
     Path("tools") / "iperf" / "iperf3.exe",
 )
@@ -61,6 +66,7 @@ TOOL_VERSION_MARKERS = {
     Path("tools") / "fping_v3" / "Fping_v3.exe": ("Fast pinger version 3.00", "Wouter Dhondt"),
     Path("tools") / "iperf" / "iperf3.exe": ("iperf 3.",),
 }
+VERSION_INFO_FILE = BUILD_ROOT / "version_info.txt"
 
 
 def scan_import_graph() -> list[str]:
@@ -99,7 +105,7 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
             datas.append((str(icon), "netconsole/ui/icons"))
     changelog = ROOT / "netconsole" / "docs" / "changelog.md"
     if changelog.is_file():
-        datas.append((str(changelog), "netconsole/docs"))
+        datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
         source_path = ROOT / source
         if (source == "tools" and source_path.is_dir()) or source_path.is_file():
@@ -193,6 +199,7 @@ def write_spec() -> Path:
     validate_allowed_runtime(ALLOWED_DATA)
     validate_tool_sources()
     SPEC_ROOT.mkdir(parents=True, exist_ok=True)
+    write_version_info_file()
     runtime_imports = scan_import_graph()
     runtime_datas = build_runtime_datas_from_import_graph()
     vc_runtime_binaries = collect_vc_runtime_dlls()
@@ -241,7 +248,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version={str(PROJECT_ROOT / "version_info.txt")!r},
+    version={str(VERSION_INFO_FILE)!r},
     icon=[{str(ICON_SOURCE)!r}],
     contents_directory='_internal',
 )
@@ -258,6 +265,15 @@ coll = COLLECT(
     validate_project_safety(ALLOWED_DATA, spec_text)
     SPEC_FILE.write_text(spec_text, encoding="utf-8")
     return SPEC_FILE
+
+
+def write_version_info_file() -> Path:
+    from netconsole.core.version import APP_VERSION
+    from project.release import render_version_info
+
+    VERSION_INFO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    VERSION_INFO_FILE.write_text(render_version_info(APP_VERSION), encoding="utf-8")
+    return VERSION_INFO_FILE
 
 
 def validate_dist() -> None:
@@ -278,6 +294,8 @@ def validate_tool_sources() -> None:
     missing = [path.as_posix() for path in REQUIRED_TOOL_FILES if not (ROOT / path).is_file()]
     if missing:
         raise CleanBuildLockError(f"required runtime tool is missing: {', '.join(missing)}")
+    if not (ROOT / "tools").is_dir():
+        raise CleanBuildLockError("required tools directory is missing")
 
 
 def collect_vc_runtime_dlls(search_roots: list[Path] | None = None, *, required: bool = True) -> list[tuple[str, str]]:
@@ -346,18 +364,26 @@ def _find_runtime_dll(dll_name: str, roots: list[Path]) -> Path | None:
 
 def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: bool = True) -> None:
     app_dist = Path(app_dist or DIST_ROOT / "NetConsole")
+    if run_version_check and _same_path(app_dist, DIST_ROOT / "NetConsole"):
+        source_files = sorted(path.relative_to(ROOT) for path in (ROOT / "tools").glob("**/*") if path.is_file())
+        missing_packaged = [relative for relative in source_files if not (app_dist / "_internal" / relative).is_file()]
+        if missing_packaged:
+            raise CleanBuildLockError(
+                "packaged tools directory is incomplete: "
+                + ", ".join(relative.as_posix() for relative in missing_packaged)
+            )
     for relative in REQUIRED_TOOL_FILES:
         packaged = app_dist / "_internal" / relative
         if not packaged.is_file():
             raise CleanBuildLockError(f"packaged runtime tool is missing: {packaged}")
         print(f"[OK] {relative.as_posix()} included")
-        if run_version_check:
+        if run_version_check and relative in REQUIRED_TOOL_EXECUTABLES:
             _check_tool_version(packaged, relative)
 
 
 def _check_tool_version(tool_path: Path, relative: Path) -> None:
     try:
-        completed = subprocess.run([str(tool_path), "-v"], capture_output=True, text=True, timeout=5)
+        completed = subprocess.run([str(tool_path), "-v"], cwd=tool_path.parent, capture_output=True, text=True, timeout=5)
     except Exception as exc:
         raise CleanBuildLockError(f"packaged runtime tool version check failed: {relative.as_posix()}: {exc}") from exc
     output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
@@ -366,6 +392,13 @@ def _check_tool_version(tool_path: Path, relative: Path) -> None:
         raise CleanBuildLockError(f"packaged runtime tool version output is invalid: {relative.as_posix()}")
     first_line = next((line.strip() for line in output.splitlines() if line.strip()), "version detected")
     print(f"[OK] {relative.as_posix()} version: {first_line}")
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
 
 
 def main() -> int:

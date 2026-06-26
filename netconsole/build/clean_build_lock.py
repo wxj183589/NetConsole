@@ -11,12 +11,13 @@ class CleanBuildLockError(Exception):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BUILD_PROJECT_ROOT = PROJECT_ROOT / "project"
-BUILD_ROOT = BUILD_PROJECT_ROOT / "build"
-DIST_ROOT = BUILD_PROJECT_ROOT / "dist"
-SPEC_ROOT = BUILD_PROJECT_ROOT / "spec"
+BUILD_PROJECT_ROOT = PROJECT_ROOT
+PYINSTALLER_BUILD_ROOT = PROJECT_ROOT / "release" / "_build" / "pyinstaller"
+BUILD_ROOT = PYINSTALLER_BUILD_ROOT / "build"
+DIST_ROOT = PYINSTALLER_BUILD_ROOT / "dist"
+SPEC_ROOT = PYINSTALLER_BUILD_ROOT / "spec"
 SPEC_FILE = SPEC_ROOT / "NetConsole.spec"
-ENTRY_FILE = BUILD_PROJECT_ROOT / "main.py"
+ENTRY_FILE = PROJECT_ROOT / "main.py"
 RUNTIME_ROOT = BUILD_ROOT / "clean_runtime"
 RUNTIME_MANIFEST = BUILD_ROOT / "clean_runtime_manifest.txt"
 
@@ -31,16 +32,20 @@ FORBIDDEN_DIST_DIRS = ("docs", "tests", "project", "build", "spec")
 FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "spec"}
 ALLOWED_RUNTIME = (
     "netconsole",
-    "data",
     "tools",
     "tools/fping_v3",
     "tools/fping_v3/fping_v3.exe",
+    "tools/fping_v3/fping说明.txt",
     "tools/iperf",
+    "tools/iperf/cygcrypto-3.dll",
+    "tools/iperf/cygwin1.dll",
+    "tools/iperf/cygz.dll",
     "tools/iperf/iperf3.exe",
     "netconsole/ui/icons",
-    "netconsole/docs",
+    "netconsole/assets",
+    "netconsole/assets/changelog.md",
 )
-ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "logs")
+ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "runtime")
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",
     "--windowed",
@@ -156,7 +161,7 @@ def _is_forbidden_dist_path(parts: tuple[str, ...]) -> bool:
         return True
     if any(part in {"tests", "project", "build", "spec", "__pycache__"} for part in lowered):
         return True
-    if "docs" in lowered and not lowered[:3] == (INTERNAL_DIR, "netconsole", "docs"):
+    if "docs" in lowered:
         return True
     return False
 

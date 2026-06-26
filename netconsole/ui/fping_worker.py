@@ -63,6 +63,7 @@ class FpingProbeWorker(QThread):
             stdin=subprocess.DEVNULL,
             text=True,
             creationflags=creationflags,
+            cwd=tool_path.parent,
         )
 
     def stop(self) -> None:

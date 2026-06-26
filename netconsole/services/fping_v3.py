@@ -64,7 +64,7 @@ def find_fping_tool(paths: PathResolver, settings: SettingsStore | None = None) 
 def detect_fping_version(path: Path, runner: Callable[..., subprocess.CompletedProcess] | None = None) -> FpingToolStatus:
     runner = runner or subprocess.run
     try:
-        completed = runner([str(path), "-v"], capture_output=True, text=True, timeout=5)
+        completed = runner([str(path), "-v"], cwd=path.parent, capture_output=True, text=True, timeout=5)
     except OSError as exc:
         return FpingToolStatus(path, False, output=str(exc))
     output = f"{getattr(completed, 'stdout', '') or ''}\n{getattr(completed, 'stderr', '') or ''}"
