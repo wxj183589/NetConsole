@@ -1,19 +1,12 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from pathlib import Path
 from statistics import quantiles
-from typing import Callable, Iterable
-
-from netconsole.core.paths import PathResolver
-from netconsole.core.settings import SettingsStore
-from netconsole.services.tool_path_resolver import resolve_tool_path
+from typing import Iterable
 
 
-FPING_SETTING_KEY = "online_mr.fping_path"
 SUCCESS_RE = re.compile(
     r"^(?P<time>\d{2}:\d{2}:\d{2}\.\d{1,3})\s*:\s*Reply\[(?P<seq>\d+)\]\s+from\s+"
     r"(?P<target>[^:]+):\s*bytes=(?P<bytes>\d+)\s+time=(?P<latency>[0-9.]+)\s*ms\s+TTL=(?P<ttl>\d+)",
@@ -31,15 +24,6 @@ SUMMARY_LATENCY_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class FpingToolStatus:
-    path: Path | None
-    found: bool
-    version: str = ""
-    unknown_version: bool = False
-    output: str = ""
-
-
 @dataclass
 class FpingSampleClock:
     session_date: date
@@ -55,44 +39,6 @@ class FpingSampleClock:
                 self.day_offset += 1
         self.last_time = current
         return datetime.combine(self.session_date + timedelta(days=self.day_offset), current)
-
-
-def find_fping_tool(paths: PathResolver, settings: SettingsStore | None = None) -> Path | None:
-    return resolve_tool_path("fping_v3", paths, settings=settings)
-
-
-def detect_fping_version(path: Path, runner: Callable[..., subprocess.CompletedProcess] | None = None) -> FpingToolStatus:
-    runner = runner or subprocess.run
-    try:
-        completed = runner([str(path), "-v"], cwd=path.parent, capture_output=True, text=True, timeout=5)
-    except OSError as exc:
-        return FpingToolStatus(path, False, output=str(exc))
-    output = f"{getattr(completed, 'stdout', '') or ''}\n{getattr(completed, 'stderr', '') or ''}"
-    if "Fast pinger version 3.00" in output or "Wouter Dhondt" in output:
-        return FpingToolStatus(path, True, version="3.00", output=output)
-    return FpingToolStatus(path, True, unknown_version=True, output=output)
-
-
-def build_fping_args(
-    fping_path: Path,
-    target_ip: str,
-    packet_size: int,
-    interval_ms: int,
-    loss_threshold_ms: int,
-    output_file: Path,
-    *,
-    continuous: bool = True,
-    write_file: bool = True,
-) -> list[str]:
-    packet_size = min(1472, max(1, int(packet_size)))
-    interval_ms = max(10, int(interval_ms))
-    loss_threshold_ms = min(60000, max(1, int(loss_threshold_ms)))
-    args = [str(fping_path), target_ip, "-s", str(packet_size), "-t", str(interval_ms), "-c", "-w", str(loss_threshold_ms)]
-    if continuous:
-        args.append("-T")
-    if write_file:
-        args.extend(["-L", str(output_file.resolve())])
-    return args
 
 
 def parse_fping_line(raw_line: str, clock: FpingSampleClock, default_target: str = "") -> dict[str, object] | None:

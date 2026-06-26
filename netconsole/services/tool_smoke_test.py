@@ -38,7 +38,7 @@ def run_tool_smoke_tests(paths: PathResolver | None = None) -> list[ToolSmokeRes
     set_windows_quiet_error_mode()
     paths = paths or PathResolver()
     checks = (
-        ("fping_v3", ("-v",), ("Fast pinger version 3.00", "Wouter Dhondt")),
+        ("fping_v5", ("-v",), ("Version 5.5", "fping")),
         ("iperf3", ("-v",), ("iperf 3.",)),
     )
     results: list[ToolSmokeResult] = []

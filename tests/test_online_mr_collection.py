@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QTableWidgetItem
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -31,24 +31,27 @@ from netconsole.models.online_mr_models import (
     OnlineMrIntervals,
     repeat_command_group,
 )
-from netconsole.services.fping_v3 import (
+from netconsole.core.ping.fping_v5_runner import build_fping_v5_args
+from netconsole.services.fping_legacy_parser import (
     aggregate_ping_for_active_segment,
-    build_fping_args,
-    detect_fping_version,
-    find_fping_tool,
     parse_fping_lines,
     parse_fping_summary,
 )
+from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text
+from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_MESH_SAMPLE, OnlineMrEvent
+from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator, build_realtime_state
+from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrCollectionPage, is_fat_ap_device, natural_device_sort_key, safe_device_folder_name
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
-from netconsole.ui.fping_worker import FpingProbeWorker
+from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
 
 
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
@@ -82,6 +85,9 @@ class FakeWheelEvent:
 
     def ignore(self) -> None:
         self.ignored = True
+
+    def type(self):
+        return QEvent.Wheel
 
 
 class Factory:
@@ -282,44 +288,44 @@ def test_run_forever_does_not_create_second_session_after_explicit_start(tmp_pat
 
 
 def test_fping_tool_discovery_from_project_tools(tmp_path: Path) -> None:
-    exe = tmp_path / "tools" / "fping_v3" / "Fping_v3.exe"
+    exe = tmp_path / "tools" / "fping_v5" / "fping.exe"
     exe.parent.mkdir(parents=True)
     exe.write_text("fake", encoding="utf-8")
+    (exe.parent / "cygwin1.dll").write_text("fake", encoding="utf-8")
     assert find_fping_tool(PathResolver(tmp_path)) == exe.resolve()
 
 
-def test_fping_version_accepts_nonzero_return_code(tmp_path: Path) -> None:
-    exe = tmp_path / "Fping_v3.exe"
+def test_fping_v5_version_detects_json_support(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exe = tmp_path / "fping.exe"
     exe.write_text("fake", encoding="utf-8")
+    (tmp_path / "cygwin1.dll").write_text("fake", encoding="utf-8")
 
     def runner(*args, **kwargs):
         class Result:
-            stdout = "Fast pinger version 3.00\nHost not found: -v error 11001"
+            stdout = "/fping_v5/fping: Version 5.5" if "-v" in args[0] else "-J, --json output in JSON format"
             stderr = ""
             returncode = 1
 
         return Result()
 
-    status = detect_fping_version(exe, runner=runner)
+    monkeypatch.setattr("netconsole.core.ping.fping_v5_runner.subprocess.run", runner)
+    status = detect_fping_version(exe)
     assert status.found is True
-    assert status.version == "3.00"
+    assert status.version == "5.5"
+    assert status.json_supported is True
 
 
 def test_fping_command_args_are_list_with_expected_parameters(tmp_path: Path) -> None:
-    args = build_fping_args(tmp_path / "Fping_v3.exe", "127.0.0.1", 64, 10, 100, tmp_path / "Fping.txt")
+    args = build_fping_v5_args(tmp_path / "fping.exe", "127.0.0.1", 10, 100)
     assert args == [
-        str(tmp_path / "Fping_v3.exe"),
-        "127.0.0.1",
-        "-s",
-        "64",
-        "-t",
+        str(tmp_path / "fping.exe"),
+        "-J",
+        "-l",
+        "-p",
         "10",
-        "-c",
-        "-w",
+        "-t",
         "100",
-        "-T",
-        "-L",
-        str((tmp_path / "Fping.txt").resolve()),
+        "127.0.0.1",
     ]
 
 
@@ -353,6 +359,113 @@ def test_fping_summary_parse() -> None:
     assert summary["lost"] == 785
     assert summary["loss_percent"] == 0.806
     assert summary["max_latency_ms"] == 534.4
+
+
+def test_mesh_parser_normalizes_active_variants() -> None:
+    line = LINE_A.replace("Active", "Active(ax)")
+
+    records, status, error = parse_mesh_link_text(line, datetime(2025, 12, 3, 10, 12, 33))
+
+    assert status == "OK"
+    assert error == ""
+    assert records[0].link_state == "ACTIVE"
+    assert records[0].metrics["local_rssi_db"] == 36
+
+
+def test_online_mesh_parser_accepts_peer_name_table_format() -> None:
+    records, status, error = parse_mesh_link_text(
+        " Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"
+        " bc5a-3457-7540         bc5a-3457-755f 51   74ad-cb9d-3321 WLAN-MeshLink694  Active(ax)       00h 36m 52s\n",
+        datetime(2026, 6, 27, 3, 23, 54),
+    )
+
+    assert status == "OK"
+    assert error == ""
+    assert len(records) == 1
+    assert records[0].link_state == "ACTIVE"
+    assert records[0].peer_mac_raw == "bc5a-3457-755f"
+    assert records[0].metrics["local_rssi_db"] == 51
+
+
+def test_channel_busy_parser_keeps_latest_table_row() -> None:
+    rows = parse_channel_busy_text(
+        "Date/Month/Year: 26/06/2026\n"
+        "      Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
+        "01     22:08:24          4          1          3          -\n"
+        "01     22:08:33          7          5          6          -\n"
+    )
+
+    assert rows == [
+        {
+            "radio": 1,
+            "tx_busy": 5,
+            "rx_busy": 6,
+            "raw_text": "01     22:08:33          7          5          6          -",
+            "sample_time": "2026-06-26 22:08:33",
+            "ctl_busy": 7,
+        }
+    ]
+
+
+def test_realtime_state_unifies_mesh_busy_and_ping_fields() -> None:
+    now = datetime(2026, 6, 27, 10, 0, 0)
+    events = [
+        OnlineMrEvent(now, "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_mac": "30f5-277a-5a2f", "mr_rssi": 36, "link_state": "ACTIVE"}),
+        OnlineMrEvent(now, "s1", 7, "ssh", "busy", EVENT_BUSY_SAMPLE, {"ctl_busy": 4, "tx_busy": 1, "rx_busy": 3}),
+        OnlineMrEvent(now, "s1", 7, "fping_v5", "fping", EVENT_FPING_V5_SAMPLE, {"loss_rate_percent": 0.5, "avg_rtt_ms": 2.5}),
+    ]
+
+    state = build_realtime_state(
+        device_id=7,
+        device_name="MR",
+        status="COLLECTING",
+        events=events,
+        sample_count=3,
+        resolve_peer=lambda _mac: {"peer_ap_name": "AP-01", "peer_site": "宁波站"},
+    )
+
+    assert state.peer_name == "AP-01"
+    assert state.peer_site == "宁波站"
+    assert state.peer_station == "宁波站"
+    assert state.mr_rssi == 36
+    assert state.ctl_busy == 4
+    assert state.loss == 0.5
+    assert state.rtt == 2.5
+
+
+def test_event_parser_extracts_simple_mesh_peer_fields() -> None:
+    parser = EventParserEngine()
+    event = OnlineMrEvent(
+        datetime(2026, 6, 27, 10, 0, 0),
+        "s1",
+        7,
+        "ssh",
+        "mesh",
+        EVENT_MESH_SAMPLE,
+        {},
+        raw="bc5a-3457-c8a0         bc5a-3457-c8bf 35 other columns",
+    )
+
+    parser.on_event(event)
+
+    latest = parser.latest("mesh")
+    assert latest is not None
+    assert latest["peer_name"] == "bc5a-3457-c8a0"
+    assert latest["peer_mac"] == "bc5a-3457-c8bf"
+    assert latest["mr_rssi"] == 35
+
+
+def test_realtime_aggregator_updates_stats_and_iperf_fields() -> None:
+    now = datetime(2026, 6, 27, 10, 0, 0)
+    aggregator = RealtimeAggregator(device_id=7, device_name="MR", status="COLLECTING")
+
+    aggregator.update(OnlineMrEvent(now, "s1", 7, "ssh", "stats", "STATS_SAMPLE", {"retry_count": 12}))
+    state = aggregator.update(OnlineMrEvent(now, "s1", 7, "iperf3", "iperf", "IPERF3_SAMPLE", {"throughput_mbps": 88.0, "retransmits": 2}))
+
+    assert state.retry_count == 12
+    assert state.retry == 12
+    assert state.iperf_mbps == 88.0
+    assert state.retrans == 2
 
 
 def test_active_segment_ping_aggregation() -> None:
@@ -433,7 +546,8 @@ def test_session_raw_directory_precreates_required_files(tmp_path: Path) -> None
         "ap_radio_statistics_raw.log",
         "switch_history_latest.log",
         "interface_rate_raw.log",
-        "Fping.txt",
+        "fping_v5_raw.log",
+        "fping_v5_samples.jsonl",
     }.issubset(raw_names)
     assert "iperf_client_raw.log" not in raw_names
 
@@ -442,11 +556,11 @@ def test_disabled_fping_worker_writes_non_empty_summary(tmp_path: Path) -> None:
     _qt_app()
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)
-    worker = FpingProbeWorker(session, FpingConfig(enabled=False), tmp_path / "Fping_v3.exe")
+    worker = FpingV5ProbeWorker(session, FpingConfig(enabled=False), tmp_path / "fping.exe")
 
     worker.run()
 
-    summary = session.session_dir / "raw" / "Fping_final_summary.txt"
+    summary = session.session_dir / "raw" / "fping_v5_final_summary.json"
     assert summary.read_text(encoding="utf-8").strip()
 
 
@@ -490,13 +604,66 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.enable_iperf_check.isChecked() is False
     assert page.iperf_bandwidth_unit_combo.currentText() == "M"
     assert page.iperf_bandwidth_hint_label.text()
-    assert page.summary_table.maximumHeight() <= 180
+    assert page.connection_box.maximumHeight() <= 76
+    assert page.connection_box.layout().count() >= 10
+    assert page.page_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert page.available_device_count_label.parentWidget() is None
+    assert page.available_metric_label.text()
+    top_layout = page.connection_box.layout()
+    assert top_layout.itemAt(top_layout.count() - 1).widget() is page.status_label
+    assert top_layout.indexOf(page.refresh_devices_button) < top_layout.indexOf(page.status_label)
+    assert page.start_button.minimumWidth() >= 86
+    assert page.start_button.minimumHeight() >= 28
+    assert page.status_label.minimumWidth() >= 72
+    assert page.status_label.maximumWidth() <= 96
+    assert page.fping_status_label_1.parentWidget() is None
+    assert page.fping_status_label_2.parentWidget() is None
+    page._refresh_collection_animation()
+    assert page.collect_status_label_1.text().find("Ping 1") >= 0
+    assert page.collect_status_label_1.text().find("Ping 2") >= 0
+    assert page.collect_param_box.minimumHeight() >= 220
+    assert page.collect_param_box.maximumHeight() <= 280
+    assert page.advanced_box.minimumWidth() >= 260
+    assert page.advanced_box.maximumWidth() <= 320
+    assert page.advanced_box.minimumHeight() >= 190
+    assert page.advanced_box.maximumHeight() <= 240
+    assert page.period_box.layout().columnStretch(1) == 1
+    assert page.collect_status_box.title() == "实时采集状态"
+    assert page.collect_status_box.minimumHeight() >= 140
+    assert page.collect_status_box.maximumHeight() <= 190
+    assert page.collect_card_1.parentWidget() is page.collect_status_box
+    assert page.collect_card_2.parentWidget() is page.collect_status_box
+    assert not page.collect_progress_1.isVisible()
+    assert page.device_table.minimumHeight() >= 260
+    assert page.device_table.maximumHeight() <= 330
+    assert page.device_table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
+    assert page.device_table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel
+    assert page.main_work_panel.layout().columnStretch(0) == 6
+    assert page.main_work_panel.layout().columnStretch(1) == 4
+    assert page.device_panel.minimumHeight() >= 280
+    assert page.right_control_scroll.minimumWidth() >= 520
+    assert page.right_control_scroll.maximumWidth() <= 620
+    assert page.ping_box.minimumHeight() >= 230
+    assert page.ping_box.maximumHeight() <= 300
+    assert page.fping_device_combo_1.minimumWidth() >= 300
+    assert page.fping_device_combo_1.maximumWidth() <= 420
+    assert page.fping_target_label_1.minimumWidth() >= 220
+    assert page.fping_target_label_1.maximumWidth() <= 360
+    assert page.summary_table.minimumHeight() >= 120
+    assert page.summary_table.maximumHeight() <= 150
     assert page.tabs.minimumHeight() >= 260
     assert page.tabs.count() == 10
     assert page.tabs.tabText(4)
     assert page.tabs.tabText(7)
     assert page.tabs.tabText(8)
     assert not page.advanced_detail.isVisible()
+
+    wheel = FakeWheelEvent()
+    assert page._no_wheel_filter.eventFilter(page.mesh_interval, wheel) is True
+    assert wheel.ignored is True
+    combo_wheel = FakeWheelEvent()
+    assert page._no_wheel_filter.eventFilter(page.radio_port, combo_wheel) is True
+    assert combo_wheel.ignored is True
 
 
 def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
@@ -512,15 +679,46 @@ def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
 
     assert page.fping_device_combo_1.currentData() == first.id
     assert page.fping_device_combo_2.currentData() == second.id
+    assert page.fping_target_label_1.isReadOnly()
+    assert page.fping_target_label_2.isReadOnly()
+    assert page.fping_target_label_1.text() == first.primary_address
+    assert page.fping_target_label_2.text() == second.primary_address
     combo_ids = {page.fping_device_combo_1.itemData(index) for index in range(page.fping_device_combo_1.count())}
     assert combo_ids == {None, first.id, second.id}
 
+    page.fping_target_edit.setText("203.0.113.250")
     first_config = page._build_config_for_device(first)
     second_config = page._build_config_for_device(second)
     assert first_config is not None
     assert second_config is not None
     assert first_config.fping.target == first.primary_address
     assert second_config.fping.target == second.primary_address
+
+
+def test_online_mr_summary_binds_station_and_ctl_busy(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, 19, QTableWidgetItem("7"))
+
+    now = datetime(2026, 6, 27, 10, 0, 0)
+    state = build_realtime_state(
+        device_id=7,
+        device_name="MR",
+        status="COLLECTING",
+        events=[
+            OnlineMrEvent(now, "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_mac": "30f5-277a-5a2f", "mr_rssi": 36}),
+            OnlineMrEvent(now, "s1", 7, "ssh", "busy", EVENT_BUSY_SAMPLE, {"ctl_busy": 4, "tx_busy": 1, "rx_busy": 3}),
+        ],
+        sample_count=2,
+        resolve_peer=lambda _mac: {"peer_ap_name": "AP-01", "peer_site": "宁波站"},
+    )
+
+    page._update_summary_from_state(state)
+
+    assert page.summary_table.columnCount() == 20
+    assert page.summary_table.item(0, 5).text() == "宁波站"
+    assert page.summary_table.item(0, 6).text() == "4.0"
+    assert page.summary_table.item(0, 19).text() == "7"
 
 
 def test_online_mr_iperf_controls_ignore_mouse_wheel(tmp_path: Path) -> None:
@@ -776,7 +974,7 @@ def test_online_mr_stop_updates_device_and_summary_status(tmp_path: Path) -> Non
     page.workers_by_device_id = {device.id: worker}
     page.manager.register_device(device.id, worker)
     page.summary_table.setRowCount(1)
-    page.summary_table.setItem(0, 18, QTableWidgetItem(str(device.id)))
+    page.summary_table.setItem(0, 19, QTableWidgetItem(str(device.id)))
     row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
     page.device_table.item(row, 0).setCheckState(Qt.Checked)
 

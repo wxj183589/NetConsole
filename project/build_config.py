@@ -36,7 +36,8 @@ class BuildConfig:
     @property
     def required_tool_files(self) -> tuple[Path, ...]:
         return (
-            self.tools_dir / "fping_v3" / "Fping_v3.exe",
+            self.tools_dir / "fping_v5" / "fping.exe",
+            self.tools_dir / "fping_v5" / "cygwin1.dll",
             self.tools_dir / "iperf" / "iperf3.exe",
         )
 

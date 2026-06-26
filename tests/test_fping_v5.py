@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
+from netconsole.core.ping.fping_v5_models import FpingV5Sample
 from netconsole.core.ping.fping_v5_runner import check_fping_v5_available, resolve_fping_v5_paths
 from netconsole.core.ping.fping_v5_stats import FpingV5Stats
+from netconsole.models.online_mr_models import FpingConfig
+from netconsole.services.network_tools.iperf_runner import IperfClientConfig
+from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_SAMPLE, OnlineMrEvent, OnlineMrEventBus
+from netconsole.services.online_mr.db.event_db_writer import OnlineMrEventDbWriter
+from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngine
+from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
+from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
+from netconsole.services.online_mr.session_adapter import SessionAdapter
+from netconsole.services.online_mr.offline.replay_engine import replay_session
+from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
+from netconsole.services.online_mr.workers.iperf3_worker import build_iperf3_json_args
+from netconsole.services.online_mr.workers.ssh_resilient_worker import SshResilientWorker
+from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
+from datetime import datetime
+import sqlite3
 
 
 def test_fping_v5_path_resolution_requires_exe_and_cygwin(tmp_path: Path) -> None:
@@ -93,3 +110,242 @@ def test_fping_v5_stats_counts_only_resp_and_timeout() -> None:
     assert stats.avg_rtt_ms == 0.2
     assert stats.min_rtt_ms == 0.1
     assert stats.max_rtt_ms == 0.3
+
+
+def test_online_mr_event_bus_writes_events_to_db(tmp_path: Path) -> None:
+    bus = OnlineMrEventBus()
+    writer = OnlineMrEventDbWriter(tmp_path / "events.sqlite")
+    bus.subscribe("*", writer.write_event_to_db)
+
+    bus.publish(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 6, 27, 10, 0, 0),
+            device_id=7,
+            session_id="s1",
+            source="fping_v5",
+            module="fping",
+            event_type=EVENT_FPING_V5_SAMPLE,
+            payload={"loss_rate_percent": 0.0},
+            raw='{"resp":{}}',
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "events.sqlite") as conn:
+        row = conn.execute("SELECT session_id, device_id, source, module, event_type FROM event_stream").fetchone()
+    assert row == ("s1", 7, "fping_v5", "fping", EVENT_FPING_V5_SAMPLE)
+
+
+def test_iperf3_json_args_enable_json_output(tmp_path: Path) -> None:
+    args = build_iperf3_json_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", interval_seconds=1))
+    assert "-J" in args
+    assert "--forceflush" in args
+
+
+def test_session_adapter_converts_fping_v5_jsonl_to_events(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session"
+    raw_dir = session_dir / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "fping_v5_samples.jsonl").write_text(
+        '{"ts":"2026-06-27T10:00:00.123","target":"127.0.0.1","seq":0,"ok":true,"rtt_ms":0.2,"timeout_ms":50,"size":64,"error":"","backend":"fping_v5_json","raw_type":"resp","raw":{"resp":{"host":"127.0.0.1","seq":0,"size":64,"rtt":0.2}}}\n',
+        encoding="utf-8",
+    )
+
+    events = list(SessionAdapter(session_dir, session_id="s1", device_id=7).iter_events())
+
+    assert len(events) == 1
+    assert events[0].event_type == EVENT_FPING_V5_SAMPLE
+    assert events[0].source == "fping_v5"
+
+
+def test_event_parser_derives_fping_quality_and_iperf_score() -> None:
+    parser = EventParserEngine()
+    parser.on_event(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 6, 27, 10, 0, 0),
+            session_id="s1",
+            device_id=7,
+            source="fping_v5",
+            module="fping",
+            event_type=EVENT_FPING_V5_SAMPLE,
+            payload={"loss_rate_percent": 2.5, "avg_rtt_ms": 10.0},
+        )
+    )
+    parser.on_event(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 6, 27, 10, 0, 1),
+            session_id="s1",
+            device_id=7,
+            source="iperf3",
+            module="iperf",
+            event_type=EVENT_IPERF3_SAMPLE,
+            payload={"end": {"sum_received": {"bits_per_second": 88_000_000}}},
+        )
+    )
+
+    assert parser.latest("fping")["link_quality"] == 97.5
+    assert parser.latest("fping")["latency_score"] == 90.0
+    assert parser.latest("iperf")["throughput_mbps"] == 88.0
+
+
+def test_diagnosis_engine_scores_fping_and_iperf() -> None:
+    engine = OnlineMrDiagnosisEngine(ping_loss_threshold_percent=1.0)
+    engine.on_event(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 6, 27, 10, 0, 0),
+            session_id="s1",
+            device_id=7,
+            source="fping_v5",
+            module="fping",
+            event_type=EVENT_FPING_V5_SAMPLE,
+            payload={"loss_rate_percent": 5.0},
+        )
+    )
+    engine.on_event(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 6, 27, 10, 0, 1),
+            session_id="s1",
+            device_id=7,
+            source="iperf3",
+            module="iperf",
+            event_type=EVENT_IPERF3_SAMPLE,
+            payload={"throughput_mbps": 80.0},
+        )
+    )
+
+    assert engine.module_scores["fping"] == 95.0
+    assert engine.module_scores["iperf"] == 80.0
+    assert engine.score < 100.0
+    assert engine.issues[0].issue_type == "PING_LOSS"
+
+
+def test_sliding_window_buffer_trims_old_events() -> None:
+    buffer = SlidingWindowBuffer(window_seconds=5)
+    old = OnlineMrEvent(datetime(2026, 6, 27, 10, 0, 0), "s1", 1, "ssh", "mesh", "MESH_SAMPLE")
+    new = OnlineMrEvent(datetime(2026, 6, 27, 10, 0, 10), "s1", 1, "ssh", "mesh", "MESH_SAMPLE")
+
+    buffer.add(old)
+    buffer.add(new)
+
+    rows = buffer.get_window()
+    assert rows[-1] == new
+    assert old not in rows
+
+
+def test_ssh_resilient_worker_reconnects_on_10054(monkeypatch) -> None:
+    calls = {"read": 0, "reconnect": 0}
+
+    def read_stream() -> None:
+        calls["read"] += 1
+        if calls["read"] == 1:
+            raise OSError("WinError 10054 connection reset")
+
+    def reconnect() -> None:
+        calls["reconnect"] += 1
+
+    monkeypatch.setattr("netconsole.services.online_mr.workers.ssh_resilient_worker.time.sleep", lambda _seconds: None)
+    worker = SshResilientWorker(read_stream, reconnect, max_reconnects=2)
+    worker.run()
+
+    assert calls == {"read": 2, "reconnect": 1}
+
+
+def test_offline_replay_engine_writes_fping_events_and_diagnosis(tmp_path: Path) -> None:
+    session_dir = _write_fping_only_session(tmp_path)
+
+    result = replay_session(session_dir, session_id="s1", device_id=7)
+
+    assert result.events == 1
+    assert result.fping["link_quality"] == 100.0
+    assert result.diagnosis_score == 100.0
+    with sqlite3.connect(session_dir / "parsed" / "online_diagnosis.sqlite") as conn:
+        row = conn.execute("SELECT source, module, event_type FROM event_stream").fetchone()
+    assert row == ("fping_v5", "fping", EVENT_FPING_V5_SAMPLE)
+
+
+def test_diagnosis_parser_creates_replay_segment_for_fping_only_session(tmp_path: Path) -> None:
+    session_dir = _write_fping_only_session(tmp_path)
+
+    summary = OnlineMrDiagnosisParser(session_dir).parse()
+
+    assert summary.ping_samples == 1
+    assert summary.active_segments == 1
+    with sqlite3.connect(session_dir / "parsed" / "online_diagnosis.sqlite") as conn:
+        row = conn.execute(
+            """
+            SELECT s.event_type, m.ping_loss_percent, m.avg_latency_ms
+            FROM active_segments s
+            JOIN active_segment_metrics m ON m.segment_id = s.id
+            """
+        ).fetchone()
+    assert row == ("EVENT_REPLAY", 0.0, 0.2)
+
+
+def test_fping_v5_worker_publishes_source_device_and_target(tmp_path: Path) -> None:
+    events = []
+    bus = OnlineMrEventBus()
+    bus.subscribe("*", events.append)
+    session = type("Session", (), {"meta": type("Meta", (), {"device_id": 7, "session_id": "s1"})()})()
+    worker = FpingV5ProbeWorker(
+        session,
+        FpingConfig(target="127.0.0.1"),
+        tmp_path / "fping.exe",
+        event_bus=bus,
+        source_device_id=7,
+    )
+
+    worker._handle_sample(
+        FpingV5Sample(
+            ts="2026-06-27T10:00:00.123",
+            target="127.0.0.1",
+            seq=1,
+            ok=True,
+            rtt_ms=0.2,
+            timeout_ms=100,
+            size=64,
+            error="",
+            backend="fping_v5_json",
+            raw_type="resp",
+            raw={"resp": {"host": "127.0.0.1"}},
+        )
+    )
+
+    assert events[0].device_id == 7
+    assert events[0].payload["source_device_id"] == 7
+    assert events[0].payload["target_ip"] == "127.0.0.1"
+
+
+def _write_fping_only_session(tmp_path: Path) -> Path:
+    session_dir = tmp_path / "session"
+    raw_dir = session_dir / "raw"
+    raw_dir.mkdir(parents=True)
+    (session_dir / "parsed").mkdir()
+    (session_dir / "session_meta.json").write_text(
+        json.dumps(
+            {
+                "session_id": "s1",
+                "site": "site",
+                "mr_id": "mr1",
+                "mr_name": "MR1",
+                "device_id": 7,
+                "device_name": "MR1",
+                "host": "127.0.0.1",
+                "protocol": "SSH",
+                "port": 22,
+                "connection_method": "",
+                "started_at": "2026-06-27 10:00:00",
+                "ended_at": None,
+                "status": "STOPPED",
+                "intervals": {},
+                "radio": {},
+                "fping": {"target": "127.0.0.1", "packet_size": 64, "interval_ms": 10, "loss_threshold_ms": 100},
+                "iperf": {},
+                "stats": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (raw_dir / "fping_v5_samples.jsonl").write_text(
+        '{"ts":"2026-06-27T10:00:00.123","target":"127.0.0.1","seq":0,"ok":true,"rtt_ms":0.2,"timeout_ms":50,"size":64,"error":"","backend":"fping_v5_json","raw_type":"resp","raw":{"resp":{"host":"127.0.0.1","seq":0,"size":64,"rtt":0.2}}}\n',
+        encoding="utf-8",
+    )
+    return session_dir

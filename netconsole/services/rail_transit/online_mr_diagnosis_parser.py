@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from netconsole.services.fping_v3 import parse_fping_lines
+from netconsole.services.fping_legacy_parser import parse_fping_lines
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines
 from netconsole.services.network_tools.iperf_runner import IperfResultStore
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text
@@ -56,6 +56,24 @@ class OnlineMrParseSummary:
     iperf_samples: int = 0
     active_segments: int = 0
     issues: int = 0
+
+
+def _float_or_none(*values: object) -> float | None:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _int_or_none(value: object) -> int | None:
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class OnlineMrRawBlockSplitter:
@@ -149,7 +167,10 @@ class OnlineMrDiagnosisParser:
         summary.interface_samples = self._parse_interface_rate(session)
         summary.ping_samples = self._parse_fping(session)
         summary.iperf_samples = self._parse_iperf()
+        replay = self._replay_events()
         summary.active_segments = OnlineMrTimelineFusionService(self.db_path, self.meta.session_id).rebuild()
+        if summary.active_segments == 0 and replay.events > 0:
+            summary.active_segments = self._insert_event_replay_segment(replay)
         summary.issues = self._issue_count()
         return summary
 
@@ -205,19 +226,67 @@ class OnlineMrDiagnosisParser:
         return count
 
     def _parse_fping(self, session: OnlineMrSession) -> int:
-        path = self.raw_dir / "Fping.txt"
-        if not path.exists():
-            self._issue("Fping.txt", "fping", "Fping.txt was not found", "")
+        v5_path = self.raw_dir / "fping_v5_samples.jsonl"
+        if v5_path.exists():
+            count = self._parse_fping_v5_jsonl(session, v5_path)
+            if count > 0 or not (self.raw_dir / "Fping.txt").exists():
+                return count
+        legacy_path = self.raw_dir / "Fping.txt"
+        if not legacy_path.exists():
+            self._issue("fping_v5_samples.jsonl", "fping", "fping v5 jsonl was not found", "")
             return 0
         try:
-            text = read_text_with_retry(path, retries=10, interval=0.3)
+            text = read_text_with_retry(legacy_path, retries=10, interval=0.3)
         except PermissionError as exc:
-            self._issue("Fping.txt", "fping", f"Fping.txt is locked by Fping_v3.exe; ping parsing was skipped: {exc}", "", severity="ERROR")
+            self._issue("Fping.txt", "fping", f"legacy Fping.txt is locked; ping parsing was skipped: {exc}", "", severity="ERROR")
             return 0
         rows = parse_fping_lines(text.splitlines(), self.meta.started_at, default_target=str(self.meta.fping.get("target") or ""))
         if rows:
             fping = self.meta.fping
             session.append_ping_samples(rows, int(fping.get("packet_size") or 64), int(fping.get("interval_ms") or 10), int(fping.get("loss_threshold_ms") or 100))
+        return len(rows)
+
+    def _parse_fping_v5_jsonl(self, session: OnlineMrSession, path: Path) -> int:
+        rows: list[dict[str, object]] = []
+        latencies: list[float] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                sample = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(sample, dict) or sample.get("raw_type") not in {"resp", "timeout"}:
+                continue
+            rows.append(
+                {
+                    "collected_at": sample.get("ts") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds"),
+                    "seq": sample.get("seq"),
+                    "target_ip": sample.get("target") or self.meta.fping.get("target"),
+                    "success": bool(sample.get("ok")),
+                    "latency_ms": sample.get("rtt_ms"),
+                    "ttl": None,
+                    "bytes": sample.get("size"),
+                    "raw_line": json.dumps(sample.get("raw") or sample, ensure_ascii=False),
+                }
+            )
+            if sample.get("ok") and sample.get("rtt_ms") is not None:
+                latencies.append(float(sample["rtt_ms"]))
+        if rows:
+            fping = self.meta.fping
+            session.append_ping_samples(rows, int(fping.get("packet_size") or 64), int(fping.get("interval_ms") or 10), int(fping.get("loss_threshold_ms") or 100))
+            sent = len(rows)
+            success = sum(1 for row in rows if row.get("success"))
+            session.append_ping_summary(
+                {
+                    "target_ip": rows[-1].get("target_ip") or self.meta.fping.get("target"),
+                    "sent": sent,
+                    "received": success,
+                    "lost": sent - success,
+                    "loss_percent": ((sent - success) / sent * 100.0) if sent else 0.0,
+                    "min_latency_ms": min(latencies) if latencies else None,
+                    "max_latency_ms": max(latencies) if latencies else None,
+                    "avg_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
+                }
+            )
         return len(rows)
 
     def _parse_iperf(self) -> int:
@@ -241,6 +310,128 @@ class OnlineMrDiagnosisParser:
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS live_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    collected_at TEXT NOT NULL,
+                    device_clock TEXT,
+                    command_group TEXT NOT NULL,
+                    raw_file TEXT NOT NULL,
+                    raw_offset_start INTEGER NOT NULL,
+                    raw_offset_end INTEGER NOT NULL,
+                    parse_status TEXT NOT NULL,
+                    error_message TEXT DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS live_mesh_links (
+                    sample_id INTEGER NOT NULL,
+                    radio INTEGER,
+                    link_state TEXT,
+                    peer_mac_raw TEXT,
+                    peer_mac_normalized TEXT,
+                    establish_time TEXT,
+                    duration_seconds INTEGER,
+                    link_count INTEGER,
+                    local_rssi_db INTEGER,
+                    peer_rssi_db INTEGER,
+                    local_noise_dbm INTEGER,
+                    peer_noise_dbm INTEGER,
+                    local_signal_dbm INTEGER,
+                    peer_signal_dbm INTEGER,
+                    local_tx_busy INTEGER,
+                    peer_tx_busy INTEGER,
+                    local_rx_busy INTEGER,
+                    peer_rx_busy INTEGER,
+                    local_rate_raw INTEGER,
+                    peer_rate_raw INTEGER,
+                    local_retry INTEGER,
+                    peer_retry INTEGER,
+                    local_err INTEGER,
+                    peer_err INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS live_channel_busy (
+                    sample_id INTEGER NOT NULL,
+                    radio INTEGER,
+                    tx_busy INTEGER,
+                    rx_busy INTEGER,
+                    raw_text TEXT
+                );
+                CREATE TABLE IF NOT EXISTS live_interface_rates (
+                    sample_id INTEGER NOT NULL,
+                    collected_at TEXT,
+                    device_clock TEXT,
+                    direction TEXT,
+                    interface_name TEXT,
+                    usage_percent REAL,
+                    total_pps INTEGER,
+                    broadcast_pps INTEGER,
+                    multicast_pps INTEGER,
+                    raw_line TEXT,
+                    raw_text TEXT
+                );
+                CREATE TABLE IF NOT EXISTS ping_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    collected_at TEXT NOT NULL,
+                    target_ip TEXT,
+                    seq INTEGER,
+                    success INTEGER NOT NULL,
+                    latency_ms REAL,
+                    ttl INTEGER,
+                    packet_size INTEGER,
+                    interval_ms INTEGER,
+                    loss_threshold_ms INTEGER,
+                    raw_line TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ping_summary (
+                    session_id TEXT NOT NULL,
+                    target_ip TEXT,
+                    sent INTEGER,
+                    received INTEGER,
+                    lost INTEGER,
+                    loss_percent REAL,
+                    min_latency_ms REAL,
+                    max_latency_ms REAL,
+                    avg_latency_ms REAL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS iperf_runs (
+                    run_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    device_id INTEGER,
+                    mode TEXT NOT NULL,
+                    protocol TEXT,
+                    server_ip TEXT,
+                    port INTEGER,
+                    direction TEXT,
+                    parallel INTEGER,
+                    target_bandwidth TEXT,
+                    started_at TEXT,
+                    ended_at TEXT,
+                    status TEXT,
+                    command_json TEXT,
+                    log_file TEXT,
+                    raw_file TEXT
+                );
+                CREATE TABLE IF NOT EXISTS iperf_intervals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    session_id TEXT,
+                    collector_time TEXT,
+                    interval_start_sec REAL,
+                    interval_end_sec REAL,
+                    interval_center_time TEXT,
+                    transfer_bytes REAL,
+                    bitrate_mbps REAL,
+                    retransmits INTEGER,
+                    cwnd TEXT,
+                    role TEXT,
+                    jitter_ms REAL,
+                    lost_packets INTEGER,
+                    total_packets INTEGER,
+                    loss_percent REAL,
+                    raw_line TEXT
+                );
                 CREATE TABLE IF NOT EXISTS online_parse_issues (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
@@ -289,6 +480,10 @@ class OnlineMrDiagnosisParser:
 
     def _reset_parsed_tables(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
+            existing_tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
             for table in (
                 "live_samples",
                 "live_mesh_links",
@@ -302,7 +497,10 @@ class OnlineMrDiagnosisParser:
                 "active_segment_metrics",
                 "online_parse_issues",
             ):
-                conn.execute(f"DELETE FROM {table}")
+                if table in existing_tables:
+                    conn.execute(f"DELETE FROM {table}")
+            if "event_stream" in existing_tables:
+                conn.execute("DELETE FROM event_stream")
 
     def _issue(self, raw_file: str, issue_type: str, message: str, raw_text: str, severity: str = "WARNING") -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -314,6 +512,94 @@ class OnlineMrDiagnosisParser:
     def _issue_count(self) -> int:
         with sqlite3.connect(self.db_path) as conn:
             return int(conn.execute("SELECT COUNT(*) FROM online_parse_issues").fetchone()[0])
+
+    def _replay_events(self):
+        from netconsole.services.online_mr.offline.replay_engine import replay_session
+
+        return replay_session(self.session_dir, session_id=self.meta.session_id, device_id=getattr(self.meta, "device_id", None))
+
+    def _insert_event_replay_segment(self, replay) -> int:
+        start = replay.first_event_time or getattr(self.meta, "started_at", datetime.now())
+        end = replay.last_event_time or start
+        fping = replay.fping if isinstance(replay.fping, dict) else {}
+        iperf = replay.iperf if isinstance(replay.iperf, dict) else {}
+        sent, success, lost, loss_percent = self._event_replay_ping_metrics(fping)
+        avg_latency = _float_or_none(fping.get("avg_rtt_ms"), fping.get("rtt_ms"))
+        max_latency = _float_or_none(fping.get("max_rtt_ms"), fping.get("rtt_ms"))
+        mbps = _float_or_none(iperf.get("throughput_mbps"), iperf.get("bitrate_mbps"))
+        retransmits = _int_or_none(iperf.get("retransmits"))
+        details = {
+            "source": "event_replay",
+            "events": replay.events,
+            "diagnosis_score": replay.diagnosis_score,
+            "issues": replay.issues,
+            "fping": fping,
+            "iperf": iperf,
+        }
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO active_segments (
+                    session_id, radio, active_peer_mac, start_time, end_time, sample_count,
+                    avg_mr_rssi, min_mr_rssi, max_mr_rssi, event_type, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.meta.session_id,
+                    None,
+                    "",
+                    start.isoformat(sep=" ", timespec="milliseconds"),
+                    end.isoformat(sep=" ", timespec="milliseconds"),
+                    replay.events,
+                    None,
+                    None,
+                    None,
+                    "EVENT_REPLAY",
+                    json.dumps(details, ensure_ascii=False, default=str),
+                ),
+            )
+            segment_id = int(cursor.lastrowid)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO active_segment_metrics (
+                    segment_id, ping_sent, ping_success, ping_lost, ping_loss_percent, avg_latency_ms,
+                    max_latency_ms, iperf_sample_count, avg_mbps, min_mbps, max_mbps, p95_mbps,
+                    total_retransmits, avg_tx_busy, max_tx_busy, avg_rx_busy, max_rx_busy
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    segment_id,
+                    sent,
+                    success,
+                    lost,
+                    loss_percent,
+                    avg_latency,
+                    max_latency,
+                    1 if mbps is not None else 0,
+                    mbps,
+                    mbps,
+                    mbps,
+                    mbps,
+                    retransmits,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+        return 1
+
+    @staticmethod
+    def _event_replay_ping_metrics(fping: dict[str, object]) -> tuple[int, int, int, float | None]:
+        ok = fping.get("ok")
+        if ok is True:
+            return 1, 1, 0, 0.0
+        if ok is False:
+            return 1, 0, 1, 100.0
+        loss = _float_or_none(fping.get("loss_rate_percent"), fping.get("loss_percent"))
+        if loss is not None:
+            return 1, 1 if loss <= 0 else 0, 0 if loss <= 0 else 1, loss
+        return 0, 0, 0, None
 
 
 class OnlineMrTimelineFusionService:

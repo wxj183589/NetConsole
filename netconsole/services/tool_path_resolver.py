@@ -18,10 +18,10 @@ class ToolDefinition:
 
 
 TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
-    "fping_v3": ToolDefinition(
-        relative_path=Path("fping_v3") / "Fping_v3.exe",
+    "fping_v5": ToolDefinition(
+        relative_path=Path("fping_v5") / "fping.exe",
         setting_keys=("online_mr.fping_path",),
-        path_names=("Fping_v3.exe", "Fping.exe"),
+        path_names=("fping.exe", "fping"),
     ),
     "iperf3": ToolDefinition(
         relative_path=Path("iperf") / "iperf3.exe",

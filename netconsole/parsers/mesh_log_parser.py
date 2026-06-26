@@ -133,7 +133,7 @@ class MeshLogParser:
             issues.append(ParseIssue(str(path), line_number, "字段数量不足", "记录行缺少Radio字段", raw_line))
             return None, issues
         state_raw = parts[1]
-        state = VALID_STATES.get(state_raw)
+        state = parse_link_state(state_raw)
         if state is None:
             issues.append(ParseIssue(str(path), line_number, "无法识别链路状态", state_raw, raw_line))
             return None, issues
@@ -214,6 +214,15 @@ def normalize_mac(value: str) -> str | None:
 
 def normalize_peer_mac(value: str) -> str | None:
     return normalize_mac(value)
+
+
+def parse_link_state(raw: str) -> str | None:
+    text = str(raw or "").strip().casefold()
+    if "active" in text:
+        return LINK_STATE_ACTIVE
+    if "standby" in text or "standy" in text:
+        return LINK_STATE_STANDBY
+    return VALID_STATES.get(str(raw or "").strip())
 
 
 def parse_pair_token(token: str, percent: bool = False) -> tuple[int | None, int | None, bool]:

@@ -77,6 +77,8 @@ def run_fping_v5_json(
         if process.stdout is None:
             return
         for line in process.stdout:
+            if stop_event.is_set():
+                break
             received_ts = datetime.now().isoformat(timespec="milliseconds")
             if raw_file is not None:
                 raw_file.write(f"{received_ts} {line}")
@@ -90,8 +92,6 @@ def run_fping_v5_json(
                 yield sample
                 if count_json is not None and parsed_count >= int(count_json):
                     break
-            if stop_event.is_set():
-                break
     finally:
         if process is not None:
             _stop_process(process)

@@ -44,14 +44,15 @@ EXCLUDE_DIRS = [
 ]
 EXCLUDE_FILES = {"*.pyc", "*.pyo"}
 REQUIRED_TOOL_FILES = (
-    Path("tools") / "fping_v3" / "Fping_v3.exe",
+    Path("tools") / "fping_v5" / "fping.exe",
+    Path("tools") / "fping_v5" / "cygwin1.dll",
     Path("tools") / "iperf" / "iperf3.exe",
     Path("tools") / "iperf" / "cygcrypto-3.dll",
     Path("tools") / "iperf" / "cygwin1.dll",
     Path("tools") / "iperf" / "cygz.dll",
 )
 REQUIRED_TOOL_EXECUTABLES = (
-    Path("tools") / "fping_v3" / "Fping_v3.exe",
+    Path("tools") / "fping_v5" / "fping.exe",
     Path("tools") / "iperf" / "iperf3.exe",
 )
 REQUIRED_VC_RUNTIME_DLLS = (
@@ -63,7 +64,7 @@ REQUIRED_VC_RUNTIME_DLLS = (
     "msvcp140_2.dll",
 )
 TOOL_VERSION_MARKERS = {
-    Path("tools") / "fping_v3" / "Fping_v3.exe": ("Fast pinger version 3.00", "Wouter Dhondt"),
+    Path("tools") / "fping_v5" / "fping.exe": ("Version 5.5", "fping"),
     Path("tools") / "iperf" / "iperf3.exe": ("iperf 3.",),
 }
 VERSION_INFO_FILE = BUILD_ROOT / "version_info.txt"

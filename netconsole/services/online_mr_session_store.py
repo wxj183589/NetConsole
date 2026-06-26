@@ -29,7 +29,7 @@ RAW_FILES = {
     TASK_AP_RADIO_STATISTICS: "ap_radio_statistics_raw.log",
     TASK_SWITCH_HISTORY: "switch_history_latest.log",
     TASK_INTERFACE_RATE: "interface_rate_raw.log",
-    TASK_FPING: "Fping.txt",
+    TASK_FPING: "fping_v5_raw.log",
     "reconnect": "reconnect.log",
 }
 
@@ -276,7 +276,7 @@ class OnlineMrSession:
             )
 
     def ensure_raw_files(self) -> None:
-        for raw_name in set(RAW_FILES.values()) | {"Fping_final_summary.txt"}:
+        for raw_name in set(RAW_FILES.values()) | {"fping_v5_samples.jsonl", "fping_v5_final_summary.json"}:
             path = self.session_dir / "raw" / raw_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(exist_ok=True)
@@ -293,7 +293,7 @@ class OnlineMrSession:
         self.write_meta()
 
     def write_fping_final_summary(self, message: str) -> Path:
-        path = self.session_dir / "raw" / "Fping_final_summary.txt"
+        path = self.session_dir / "raw" / "fping_v5_final_summary.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         text = str(message or "").strip() or "未采集到 fping 数据"
         path.write_text(f"{text}\n", encoding="utf-8")
