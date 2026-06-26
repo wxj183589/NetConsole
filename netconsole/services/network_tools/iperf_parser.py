@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from statistics import quantiles
 
 
@@ -21,6 +23,15 @@ UDP_RE = re.compile(
     r"(?P<lost>\d+)\s*/\s*(?P<total>\d+)\s+\((?P<loss>\d+(?:\.\d+)?)%\)",
     re.IGNORECASE,
 )
+
+
+def read_iperf_text(path: Path) -> str:
+    data = Path(path).read_bytes()
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        return data.decode("utf-16", errors="replace")
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 def transfer_to_bytes(value: float, unit: str) -> float:
@@ -74,12 +85,92 @@ def parse_iperf_line(line: str, started_at: datetime | None = None, collector_ti
 
 
 def parse_iperf_lines(lines: list[str], started_at: datetime | None = None) -> list[dict[str, object]]:
+    text = "\n".join(lines).strip()
+    if text.startswith("{"):
+        rows = parse_iperf_json_text(text, started_at)
+        if rows:
+            return rows
     rows: list[dict[str, object]] = []
     for line in lines:
         row = parse_iperf_line(line, started_at)
         if row:
             rows.append(row)
     return rows
+
+
+def parse_iperf_json_text(text: str, started_at: datetime | None = None) -> list[dict[str, object]]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    rows: list[dict[str, object]] = []
+    for interval in payload.get("intervals") or []:
+        if not isinstance(interval, dict):
+            continue
+        streams = interval.get("streams") if isinstance(interval.get("streams"), list) else []
+        summary = interval.get("sum") if isinstance(interval.get("sum"), dict) else None
+        source = summary or (streams[0] if streams and isinstance(streams[0], dict) else None)
+        if not source:
+            continue
+        row = _iperf_json_row(source, started_at)
+        if row:
+            rows.append(row)
+    end = payload.get("end")
+    if isinstance(end, dict):
+        for key in ("sum", "sum_sent", "sum_received"):
+            source = end.get(key)
+            if isinstance(source, dict):
+                row = _iperf_json_row(source, started_at, role=key)
+                if row:
+                    rows.append(row)
+                break
+    return rows
+
+
+def _iperf_json_row(source: dict[str, object], started_at: datetime | None, role: str = "interval") -> dict[str, object] | None:
+    bps = _float_or_none(source.get("bits_per_second"))
+    if bps is None:
+        return None
+    start = _float_or_none(source.get("start")) or 0.0
+    end = _float_or_none(source.get("end"))
+    if end is None:
+        seconds = _float_or_none(source.get("seconds"))
+        end = start + seconds if seconds is not None else start
+    row: dict[str, object] = {
+        "interval_start_sec": start,
+        "interval_end_sec": end,
+        "collector_time": datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+        "transfer_bytes": _float_or_none(source.get("bytes")),
+        "bitrate_mbps": bps / 1_000_000.0,
+        "retransmits": int(_float_or_none(source.get("retransmits")) or 0),
+        "cwnd": str(source.get("snd_cwnd") or source.get("cwnd") or ""),
+        "role": role,
+        "jitter_ms": _float_or_none(source.get("jitter_ms")),
+        "lost_packets": _int_or_none(source.get("lost_packets")),
+        "total_packets": _int_or_none(source.get("packets")),
+        "loss_percent": _float_or_none(source.get("lost_percent")),
+        "raw_line": json.dumps(source, ensure_ascii=False),
+    }
+    if started_at is not None:
+        center = started_at + timedelta(seconds=(start + end) / 2)
+        row["interval_center_time"] = center.isoformat(sep=" ", timespec="milliseconds")
+    return row
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: object) -> int | None:
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def aggregate_iperf_for_segment(rows: list[dict[str, object]], segment_start: datetime, segment_end: datetime) -> dict[str, object]:

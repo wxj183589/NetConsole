@@ -41,6 +41,7 @@ from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text
 from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_MESH_SAMPLE, OnlineMrEvent
 from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator, build_realtime_state
@@ -387,7 +388,7 @@ def test_online_mesh_parser_accepts_peer_name_table_format() -> None:
     assert records[0].metrics["local_rssi_db"] == 51
 
 
-def test_channel_busy_parser_keeps_latest_table_row() -> None:
+def test_channel_busy_parser_uses_first_01_table_row() -> None:
     rows = parse_channel_busy_text(
         "Date/Month/Year: 26/06/2026\n"
         "      Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
@@ -398,13 +399,26 @@ def test_channel_busy_parser_keeps_latest_table_row() -> None:
     assert rows == [
         {
             "radio": 1,
-            "tx_busy": 5,
-            "rx_busy": 6,
-            "raw_text": "01     22:08:33          7          5          6          -",
-            "sample_time": "2026-06-26 22:08:33",
-            "ctl_busy": 7,
+            "tx_busy": 1,
+            "rx_busy": 3,
+            "raw_text": "01     22:08:24          4          1          3          -",
+            "sample_time": "2026-06-26 22:08:24",
+            "ctl_busy": 4,
         }
     ]
+
+
+def test_channel_busy_parser_does_not_allow_02_to_override_01() -> None:
+    rows = parse_channel_busy_text(
+        "Date/Month/Year: 27/06/2026\n"
+        "      Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
+        "01     02:22:52          7          4          3          -\n"
+        "02     02:22:43          4          1          3          -\n"
+    )
+
+    assert rows[0]["ctl_busy"] == 7
+    assert rows[0]["tx_busy"] == 4
+    assert rows[0]["rx_busy"] == 3
 
 
 def test_realtime_state_unifies_mesh_busy_and_ping_fields() -> None:
@@ -433,6 +447,20 @@ def test_realtime_state_unifies_mesh_busy_and_ping_fields() -> None:
     assert state.rtt == 2.5
 
 
+def test_realtime_state_does_not_let_standby_override_active_peer() -> None:
+    now = datetime(2026, 6, 27, 10, 0, 0)
+    events = [
+        OnlineMrEvent(now, "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_name": "active-peer", "peer_mac": "30f5-277a-5a2f", "mr_rssi": 36, "link_state": "ACTIVE"}),
+        OnlineMrEvent(now + timedelta(seconds=1), "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_name": "standby-peer", "peer_mac": "30f5-277a-5a3f", "mr_rssi": 10, "link_state": "STANDBY"}),
+    ]
+
+    state = build_realtime_state(device_id=7, device_name="MR", status="COLLECTING", events=events)
+
+    assert state.peer_name == "active-peer"
+    assert state.peer_mac == "30f5-277a-5a2f"
+    assert state.mr_rssi == 36
+
+
 def test_event_parser_extracts_simple_mesh_peer_fields() -> None:
     parser = EventParserEngine()
     event = OnlineMrEvent(
@@ -443,7 +471,7 @@ def test_event_parser_extracts_simple_mesh_peer_fields() -> None:
         "mesh",
         EVENT_MESH_SAMPLE,
         {},
-        raw="bc5a-3457-c8a0         bc5a-3457-c8bf 35 other columns",
+        raw="bc5a-3457-c8a0         bc5a-3457-c8bf 35   74ad-cb9d-317f WLAN-MeshLink774  Active(ax)       00h 05m 28s",
     )
 
     parser.on_event(event)
@@ -453,6 +481,9 @@ def test_event_parser_extracts_simple_mesh_peer_fields() -> None:
     assert latest["peer_name"] == "bc5a-3457-c8a0"
     assert latest["peer_mac"] == "bc5a-3457-c8bf"
     assert latest["mr_rssi"] == 35
+    assert latest["bssid"] == "74ad-cb9d-317f"
+    assert latest["interface"] == "WLAN-MeshLink774"
+    assert latest["link_state"] == "ACTIVE"
 
 
 def test_realtime_aggregator_updates_stats_and_iperf_fields() -> None:
@@ -466,6 +497,58 @@ def test_realtime_aggregator_updates_stats_and_iperf_fields() -> None:
     assert state.retry == 12
     assert state.iperf_mbps == 88.0
     assert state.retrans == 2
+
+
+def test_iperf_json_parser_extracts_udp_1m_result() -> None:
+    rows = parse_iperf_lines(
+        [
+            json.dumps(
+                {
+                    "intervals": [
+                        {
+                            "sum": {
+                                "start": 0,
+                                "end": 1,
+                                "seconds": 1,
+                                "bytes": 125000,
+                                "bits_per_second": 1000000,
+                                "jitter_ms": 0.12,
+                                "lost_packets": 0,
+                                "packets": 86,
+                                "lost_percent": 0,
+                            }
+                        }
+                    ],
+                    "end": {
+                        "sum": {
+                            "start": 0,
+                            "end": 10,
+                            "seconds": 10,
+                            "bytes": 1250000,
+                            "bits_per_second": 1000000,
+                            "jitter_ms": 0.2,
+                            "lost_packets": 0,
+                            "packets": 860,
+                            "lost_percent": 0,
+                        }
+                    },
+                }
+            )
+        ]
+    )
+
+    assert rows
+    assert rows[0]["bitrate_mbps"] == 1.0
+    assert rows[-1]["loss_percent"] == 0.0
+
+
+def test_iperf_text_reader_accepts_powershell_utf16_json(tmp_path: Path) -> None:
+    path = tmp_path / "iperf_client_raw.json"
+    path.write_text('{"end":{"sum":{"bits_per_second":1000000}}}', encoding="utf-16")
+
+    rows = parse_iperf_lines(read_iperf_text(path).splitlines())
+
+    assert rows[-1]["bitrate_mbps"] == 1.0
 
 
 def test_active_segment_ping_aggregation() -> None:
@@ -641,14 +724,14 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.main_work_panel.layout().columnStretch(0) == 6
     assert page.main_work_panel.layout().columnStretch(1) == 4
     assert page.device_panel.minimumHeight() >= 280
-    assert page.right_control_scroll.minimumWidth() >= 520
-    assert page.right_control_scroll.maximumWidth() <= 620
-    assert page.ping_box.minimumHeight() >= 230
-    assert page.ping_box.maximumHeight() <= 300
-    assert page.fping_device_combo_1.minimumWidth() >= 300
-    assert page.fping_device_combo_1.maximumWidth() <= 420
-    assert page.fping_target_label_1.minimumWidth() >= 220
-    assert page.fping_target_label_1.maximumWidth() <= 360
+    assert page.right_control_scroll.minimumWidth() >= 560
+    assert page.right_control_scroll.maximumWidth() <= 700
+    assert page.ping_box.minimumHeight() >= 300
+    assert page.ping_box.maximumHeight() <= 380
+    assert page.fping_device_combo_1.minimumWidth() >= 220
+    assert page.fping_device_combo_1.maximumWidth() <= 360
+    assert page.fping_target_label_1.minimumWidth() >= 160
+    assert page.fping_target_label_1.maximumWidth() <= 260
     assert page.summary_table.minimumHeight() >= 120
     assert page.summary_table.maximumHeight() <= 150
     assert page.tabs.minimumHeight() >= 260
@@ -706,7 +789,7 @@ def test_online_mr_summary_binds_station_and_ctl_busy(tmp_path: Path) -> None:
         device_name="MR",
         status="COLLECTING",
         events=[
-            OnlineMrEvent(now, "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_mac": "30f5-277a-5a2f", "mr_rssi": 36}),
+            OnlineMrEvent(now, "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_mac": "30f5-277a-5a2f", "mr_rssi": 36, "link_state": "ACTIVE"}),
             OnlineMrEvent(now, "s1", 7, "ssh", "busy", EVENT_BUSY_SAMPLE, {"ctl_busy": 4, "tx_busy": 1, "rx_busy": 3}),
         ],
         sample_count=2,

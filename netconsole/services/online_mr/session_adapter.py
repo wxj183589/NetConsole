@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
+from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
 from netconsole.services.online_mr.core.event_model import (
     EVENT_BUSY_SAMPLE,
     EVENT_FPING_V5_SAMPLE,
@@ -78,21 +79,35 @@ class SessionAdapter:
             )
 
     def _iter_iperf3_events(self) -> Iterable[OnlineMrEvent]:
-        for filename in ("iperf3.json", "iperf_client_raw.json"):
+        for filename in ("iperf3.json", "iperf_client_raw.json", "iperf_client_raw.log"):
             path = self.raw_dir / filename
             if not path.exists():
                 continue
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8", errors="replace") or "{}")
-            except json.JSONDecodeError:
+            text = read_iperf_text(path)
+            if path.suffix.lower() == ".json":
+                try:
+                    payload = json.loads(text or "{}")
+                except json.JSONDecodeError:
+                    continue
+                yield OnlineMrEvent(
+                    timestamp=datetime.now(),
+                    session_id=self.session_id,
+                    device_id=self.device_id,
+                    source="iperf3",
+                    module="iperf",
+                    event_type=EVENT_IPERF3_SAMPLE,
+                    payload=payload if isinstance(payload, dict) else {"value": payload},
+                    raw=text,
+                )
                 continue
-            yield OnlineMrEvent(
-                timestamp=datetime.now(),
-                session_id=self.session_id,
-                device_id=self.device_id,
-                source="iperf3",
-                module="iperf",
-                event_type=EVENT_IPERF3_SAMPLE,
-                payload=payload if isinstance(payload, dict) else {"value": payload},
-                raw=None,
-            )
+            for row in parse_iperf_lines(text.splitlines()):
+                yield OnlineMrEvent(
+                    timestamp=datetime.now(),
+                    session_id=self.session_id,
+                    device_id=self.device_id,
+                    source="iperf3",
+                    module="iperf",
+                    event_type=EVENT_IPERF3_SAMPLE,
+                    payload=row,
+                    raw=str(row.get("raw_line") or ""),
+                )

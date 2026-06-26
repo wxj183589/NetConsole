@@ -9,7 +9,7 @@ from netconsole.parsers.mesh_log_parser import normalize_peer_mac, parse_link_st
 
 CHANNEL_BUSY_RE = re.compile(r"(?P<key>ctlbusy|txbusy|rxbusy|ctl\s*busy|tx\s*busy|rx\s*busy)\D+(?P<value>\d+)", re.IGNORECASE)
 CHANNEL_BUSY_ROW_RE = re.compile(
-    r"^\s*\d+\s+"
+    r"^\s*(?P<idx>\d+)\s+"
     r"(?P<time>\d{2}:\d{2}:\d{2})\s+"
     r"(?P<ctl>\d+|-)\s+"
     r"(?P<tx>\d+|-)\s+"
@@ -17,13 +17,21 @@ CHANNEL_BUSY_ROW_RE = re.compile(
     r"(?P<ext>\d+|-)"
 )
 CHANNEL_BUSY_DATE_RE = re.compile(r"Date/Month/Year:\s*(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})", re.IGNORECASE)
+INTERFACE_RATE_ROW_RE = re.compile(
+    r"^\s*(?P<interface>\S+)\s+"
+    r"(?P<usage>\d+(?:\.\d+)?|-)\s+"
+    r"(?P<total>\d+|-)\s+"
+    r"(?P<broadcast>\d+|-)\s+"
+    r"(?P<multicast>\d+|-)\s*$"
+)
 MESH_PEER_TABLE_RE = re.compile(
     r"^\s*(?P<peer_name>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<rssi>-?\d{1,3})\s+"
     r"(?P<bssid>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<interface>\S+)\s+"
-    r"(?P<link_state>\S+)"
+    r"(?P<link_state>\S+(?:\([^)]+\))?)\s*"
+    r"(?P<online_time>.*)?$"
 )
 
 
@@ -46,7 +54,7 @@ def _parse_mesh_peer_table(raw_text: str, collected_at: datetime) -> list[MeshLo
         match = MESH_PEER_TABLE_RE.match(line)
         if not match:
             continue
-        state = parse_link_state(match.group("link_state")) or "UNKNOWN"
+        state = _normalize_online_link_state(match.group("link_state"))
         peer_mac_raw = match.group("peer_mac")
         peer_mac = normalize_peer_mac(peer_mac_raw)
         rssi = _busy_int(match.group("rssi"))
@@ -68,6 +76,10 @@ def _parse_mesh_peer_table(raw_text: str, collected_at: datetime) -> list[MeshLo
                 duration_seconds=None,
                 link_count=None,
                 metrics={
+                    "peer_name": match.group("peer_name"),
+                    "bssid": match.group("bssid"),
+                    "interface": match.group("interface"),
+                    "online_time": (match.group("online_time") or "").strip(),
                     "local_rssi_db": rssi,
                     "peer_rssi_db": None,
                     "local_retry": None,
@@ -100,10 +112,14 @@ def parse_channel_busy_text(raw_text: str) -> list[dict[str, int | str | None]]:
                 "raw_text": line.strip(),
                 "sample_time": sample_time,
                 "ctl_busy": _busy_int(row.group("ctl")),
+                "idx": int(row.group("idx")),
             }
         )
     if table_rows:
-        return table_rows[-1:]
+        latest_rows = [row for row in table_rows if row.get("idx") == 1]
+        selected = latest_rows[0] if latest_rows else table_rows[0]
+        selected.pop("idx", None)
+        return [selected]
     values: dict[str, int] = {}
     for match in CHANNEL_BUSY_RE.finditer(raw_text):
         key = match.group("key").lower().replace(" ", "")
@@ -114,6 +130,50 @@ def parse_channel_busy_text(raw_text: str) -> list[dict[str, int | str | None]]:
 
 def _busy_int(value: str) -> int | None:
     return None if value == "-" else int(value)
+
+
+def _normalize_online_link_state(value: str) -> str:
+    normalized = parse_link_state(value)
+    if normalized:
+        return normalized
+    lowered = (value or "").casefold()
+    if "active" in lowered:
+        return LINK_STATE_ACTIVE
+    if "standby" in lowered:
+        return "STANDBY"
+    return "UNKNOWN"
+
+
+def parse_interface_rate_text(raw_text: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    direction = ""
+    for line in raw_text.splitlines():
+        lowered = line.lower()
+        if "inbound interface" in lowered:
+            direction = "inbound"
+            continue
+        if "outbound interface" in lowered:
+            direction = "outbound"
+            continue
+        match = INTERFACE_RATE_ROW_RE.match(line)
+        if not match or not direction:
+            continue
+        rows.append(
+            {
+                "direction": direction,
+                "interface_name": match.group("interface"),
+                "usage_percent": _float_or_none(match.group("usage")),
+                "total_pps": _busy_int(match.group("total")),
+                "broadcast_pps": _busy_int(match.group("broadcast")),
+                "multicast_pps": _busy_int(match.group("multicast")),
+                "raw_line": line.strip(),
+            }
+        )
+    return rows
+
+
+def _float_or_none(value: str) -> float | None:
+    return None if value == "-" else float(value)
 
 
 def summarize_active(records: list[MeshLogRecord]) -> MeshLogRecord | None:

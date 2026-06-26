@@ -83,7 +83,7 @@ class RailTransitPage(QWidget):
             self.online_mr_page.set_site(site_name)
 
     def retranslate(self) -> None:
-        self.tabs.setTabText(0, "在线车载MR")
+        self.tabs.setTabText(0, self.i18n.t("ac.online_vehicle_mr"))
         self.tabs.setTabText(1, self.i18n.t("rail_transit.trackside_ap_service"))
         self.tabs.setTabText(2, self.i18n.t("mesh_analysis.title"))
         self.tabs.setTabText(ONLINE_MR_COLLECTION_TAB_INDEX, self.i18n.t("rail_transit.online_mr_collection"))

@@ -19,6 +19,7 @@ from netconsole.models.online_mr_models import (
     OnlineMrConnectionConfig,
     OnlineMrSessionMeta,
 )
+from netconsole.services.online_mr_parser import parse_interface_rate_text
 
 
 RAW_FILES = {
@@ -420,7 +421,34 @@ class OnlineMrSession:
             )
 
     def append_interface_rates(self, sample_id: int, collected_at: datetime, raw_text: str) -> None:
+        rows = parse_interface_rate_text(raw_text)
         with self._connect() as conn:
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO live_interface_rates (
+                        sample_id, collected_at, device_clock, direction, interface_name, usage_percent,
+                        total_pps, broadcast_pps, multicast_pps, raw_line, raw_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            sample_id,
+                            collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                            None,
+                            row.get("direction"),
+                            row.get("interface_name"),
+                            row.get("usage_percent"),
+                            row.get("total_pps"),
+                            row.get("broadcast_pps"),
+                            row.get("multicast_pps"),
+                            row.get("raw_line"),
+                            raw_text,
+                        )
+                        for row in rows
+                    ],
+                )
+                return
             conn.execute(
                 """
                 INSERT INTO live_interface_rates (

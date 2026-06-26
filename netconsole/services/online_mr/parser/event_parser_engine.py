@@ -30,11 +30,16 @@ class EventParserEngine:
             records, _status, _error = parse_mesh_link_text(event.raw, event.timestamp)
             active = summarize_active(records)
             if active is not None:
+                peer_fields = _extract_mesh_peer_fields(active.raw_line)
                 payload.update(
                     {
                         "link_state": active.link_state,
+                        "peer_name": active.metrics.get("peer_name") or peer_fields.get("peer_name"),
                         "peer_mac": active.peer_mac_h3c(),
                         "peer_mac_normalized": active.peer_mac_normalized,
+                        "bssid": active.metrics.get("bssid") or peer_fields.get("bssid"),
+                        "interface": active.metrics.get("interface") or peer_fields.get("interface"),
+                        "online_time": active.metrics.get("online_time") or peer_fields.get("online_time"),
                         "mr_rssi": active.metrics.get("local_rssi_db"),
                         "local_rssi": active.metrics.get("local_rssi_db"),
                         "peer_rssi": active.metrics.get("peer_rssi_db"),
@@ -50,7 +55,7 @@ class EventParserEngine:
         if event.raw:
             rows = parse_channel_busy_text(event.raw)
             if rows:
-                payload.update(rows[-1])
+                payload.update(rows[0])
         return payload
 
     def parse_fping_v5(self, event: OnlineMrEvent) -> dict[str, Any]:
@@ -103,7 +108,11 @@ def _extract_iperf_mbps(payload: dict[str, Any]) -> float | None:
 MESH_PEER_FIELD_RE = re.compile(
     r"(?P<peer_name>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
-    r"(?P<rssi>-?\d{1,3})\b"
+    r"(?P<rssi>-?\d{1,3})\s+"
+    r"(?P<bssid>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
+    r"(?P<interface>\S+)\s+"
+    r"(?P<link_state>\S+(?:\([^)]+\))?)\s+"
+    r"(?P<online_time>\S+(?:\s+\S+)*)?"
 )
 
 
@@ -116,6 +125,18 @@ def _extract_mesh_peer_fields(raw_text: str) -> dict[str, Any]:
             "peer_name": match.group("peer_name"),
             "peer_mac": match.group("peer_mac"),
             "mr_rssi": int(match.group("rssi")),
-            "link_state": "ACTIVE" if "active" in line.casefold() else "",
+            "bssid": match.group("bssid") or "",
+            "interface": match.group("interface") or "",
+            "link_state": _normalize_mesh_link_state(match.group("link_state")),
+            "online_time": (match.group("online_time") or "").strip(),
         }
     return {}
+
+
+def _normalize_mesh_link_state(value: str) -> str:
+    lowered = (value or "").casefold()
+    if "active" in lowered:
+        return "ACTIVE"
+    if "standby" in lowered:
+        return "STANDBY"
+    return "UNKNOWN"

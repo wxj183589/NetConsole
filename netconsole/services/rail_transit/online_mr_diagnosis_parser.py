@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.services.fping_legacy_parser import parse_fping_lines
-from netconsole.services.network_tools.iperf_parser import parse_iperf_lines
+from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
 from netconsole.services.network_tools.iperf_runner import IperfResultStore
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text
 from netconsole.services.online_mr_session_store import OnlineMrSession
@@ -171,6 +171,8 @@ class OnlineMrDiagnosisParser:
         summary.active_segments = OnlineMrTimelineFusionService(self.db_path, self.meta.session_id).rebuild()
         if summary.active_segments == 0 and replay.events > 0:
             summary.active_segments = self._insert_event_replay_segment(replay)
+        if summary.active_segments == 0 and self._has_any_valid_data(summary):
+            summary.active_segments = self._insert_normal_data_segment(summary)
         summary.issues = self._issue_count()
         return summary
 
@@ -254,7 +256,12 @@ class OnlineMrDiagnosisParser:
                 sample = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(sample, dict) or sample.get("raw_type") not in {"resp", "timeout"}:
+            if not isinstance(sample, dict):
+                continue
+            raw_type = sample.get("raw_type")
+            if raw_type is not None and raw_type not in {"resp", "timeout"}:
+                continue
+            if raw_type is None and not any(key in sample for key in ("ok", "rtt_ms", "target", "seq", "error", "timeout_ms")):
                 continue
             rows.append(
                 {
@@ -290,11 +297,22 @@ class OnlineMrDiagnosisParser:
         return len(rows)
 
     def _parse_iperf(self) -> int:
-        path = self.raw_dir / "iperf_client_raw.log"
-        if not path.exists():
-            return 0
-        rows = parse_iperf_lines(path.read_text(encoding="utf-8", errors="replace").splitlines(), self.meta.started_at)
-        if not rows:
+        candidates = (
+            self.raw_dir / "iperf3.json",
+            self.raw_dir / "iperf_client_raw.json",
+            self.raw_dir / "iperf_client_raw.log",
+        )
+        path: Path | None = None
+        rows: list[dict[str, object]] = []
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            candidate_rows = parse_iperf_lines(read_iperf_text(candidate).splitlines(), self.meta.started_at)
+            if candidate_rows:
+                path = candidate
+                rows = candidate_rows
+                break
+        if path is None or not rows:
             return 0
         store = IperfResultStore(self.db_path)
         run_id = f"parsed_{self.meta.session_id}"
@@ -513,6 +531,19 @@ class OnlineMrDiagnosisParser:
         with sqlite3.connect(self.db_path) as conn:
             return int(conn.execute("SELECT COUNT(*) FROM online_parse_issues").fetchone()[0])
 
+    @staticmethod
+    def _has_any_valid_data(summary: OnlineMrParseSummary) -> bool:
+        return any(
+            value > 0
+            for value in (
+                summary.mesh_samples,
+                summary.channel_samples,
+                summary.interface_samples,
+                summary.ping_samples,
+                summary.iperf_samples,
+            )
+        )
+
     def _replay_events(self):
         from netconsole.services.online_mr.offline.replay_engine import replay_session
 
@@ -588,6 +619,176 @@ class OnlineMrDiagnosisParser:
                 ),
             )
         return 1
+
+    def _insert_normal_data_segment(self, summary: OnlineMrParseSummary) -> int:
+        start = getattr(self.meta, "started_at", datetime.now())
+        end = getattr(self.meta, "ended_at", None) or start
+        metrics = self._normal_fallback_metrics()
+        details = {
+            "source": "parsed_data_fallback",
+            "status": "正常",
+            "mesh_samples": summary.mesh_samples,
+            "channel_samples": summary.channel_samples,
+            "interface_samples": summary.interface_samples,
+            "ping_samples": summary.ping_samples,
+            "iperf_samples": summary.iperf_samples,
+            "interface_rate": metrics["interface_rate"],
+        }
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO active_segments (
+                    session_id, radio, active_peer_mac, start_time, end_time, sample_count,
+                    avg_mr_rssi, min_mr_rssi, max_mr_rssi, event_type, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.meta.session_id,
+                    None,
+                    metrics["active_peer_mac"] or "",
+                    start.isoformat(sep=" ", timespec="milliseconds"),
+                    end.isoformat(sep=" ", timespec="milliseconds"),
+                    summary.mesh_samples + summary.channel_samples + summary.interface_samples + summary.ping_samples + summary.iperf_samples,
+                    metrics["avg_mr_rssi"],
+                    metrics["min_mr_rssi"],
+                    metrics["max_mr_rssi"],
+                    "NORMAL",
+                    json.dumps(details, ensure_ascii=False),
+                ),
+            )
+            segment_id = int(cursor.lastrowid)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO active_segment_metrics (
+                    segment_id, ping_sent, ping_success, ping_lost, ping_loss_percent, avg_latency_ms,
+                    max_latency_ms, iperf_sample_count, avg_mbps, min_mbps, max_mbps, p95_mbps,
+                    total_retransmits, avg_tx_busy, max_tx_busy, avg_rx_busy, max_rx_busy
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    segment_id,
+                    metrics["ping_sent"],
+                    metrics["ping_success"],
+                    metrics["ping_lost"],
+                    metrics["ping_loss_percent"],
+                    metrics["avg_latency_ms"],
+                    metrics["max_latency_ms"],
+                    metrics["iperf_sample_count"],
+                    metrics["avg_mbps"],
+                    metrics["min_mbps"],
+                    metrics["max_mbps"],
+                    metrics["p95_mbps"],
+                    metrics["total_retransmits"],
+                    metrics["avg_tx_busy"],
+                    metrics["max_tx_busy"],
+                    metrics["avg_rx_busy"],
+                    metrics["max_rx_busy"],
+                ),
+            )
+        return 1
+
+    def _normal_fallback_metrics(self) -> dict[str, object]:
+        metrics: dict[str, object] = {
+            "active_peer_mac": "",
+            "avg_mr_rssi": None,
+            "min_mr_rssi": None,
+            "max_mr_rssi": None,
+            "ping_sent": 0,
+            "ping_success": 0,
+            "ping_lost": 0,
+            "ping_loss_percent": None,
+            "avg_latency_ms": None,
+            "max_latency_ms": None,
+            "iperf_sample_count": 0,
+            "avg_mbps": None,
+            "min_mbps": None,
+            "max_mbps": None,
+            "p95_mbps": None,
+            "total_retransmits": None,
+            "avg_tx_busy": None,
+            "max_tx_busy": None,
+            "avg_rx_busy": None,
+            "max_rx_busy": None,
+            "interface_rate": {},
+        }
+        with sqlite3.connect(self.db_path) as conn:
+            mesh = conn.execute(
+                """
+                SELECT peer_mac_normalized, peer_mac_raw, AVG(local_rssi_db), MIN(local_rssi_db), MAX(local_rssi_db)
+                FROM live_mesh_links
+                WHERE UPPER(link_state) = 'ACTIVE'
+                GROUP BY peer_mac_normalized, peer_mac_raw
+                ORDER BY COUNT(*) DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if mesh:
+                metrics["active_peer_mac"] = mesh[0] or mesh[1] or ""
+                metrics["avg_mr_rssi"] = mesh[2]
+                metrics["min_mr_rssi"] = mesh[3]
+                metrics["max_mr_rssi"] = mesh[4]
+            ping_summary = conn.execute(
+                """
+                SELECT sent, received, lost, loss_percent, avg_latency_ms, max_latency_ms
+                FROM ping_summary
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if ping_summary:
+                metrics["ping_sent"] = int(ping_summary[0] or 0)
+                metrics["ping_success"] = int(ping_summary[1] or 0)
+                metrics["ping_lost"] = int(ping_summary[2] or 0)
+                metrics["ping_loss_percent"] = ping_summary[3]
+                metrics["avg_latency_ms"] = ping_summary[4]
+                metrics["max_latency_ms"] = ping_summary[5]
+            else:
+                ping = conn.execute(
+                    """
+                    SELECT COUNT(*), SUM(success), AVG(latency_ms), MAX(latency_ms)
+                    FROM ping_samples
+                    """
+                ).fetchone()
+                sent = int(ping[0] or 0)
+                success = int(ping[1] or 0)
+                lost = sent - success
+                metrics["ping_sent"] = sent
+                metrics["ping_success"] = success
+                metrics["ping_lost"] = lost
+                metrics["ping_loss_percent"] = (lost / sent * 100.0) if sent else None
+                metrics["avg_latency_ms"] = ping[2]
+                metrics["max_latency_ms"] = ping[3]
+            busy = conn.execute(
+                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM live_channel_busy"
+            ).fetchone()
+            if busy:
+                metrics["avg_tx_busy"] = busy[0]
+                metrics["max_tx_busy"] = busy[1]
+                metrics["avg_rx_busy"] = busy[2]
+                metrics["max_rx_busy"] = busy[3]
+            iperf = conn.execute(
+                "SELECT COUNT(*), AVG(bitrate_mbps), MIN(bitrate_mbps), MAX(bitrate_mbps), SUM(retransmits) FROM iperf_intervals"
+            ).fetchone()
+            if iperf:
+                metrics["iperf_sample_count"] = int(iperf[0] or 0)
+                metrics["avg_mbps"] = iperf[1]
+                metrics["min_mbps"] = iperf[2]
+                metrics["max_mbps"] = iperf[3]
+                metrics["p95_mbps"] = iperf[3]
+                metrics["total_retransmits"] = iperf[4]
+            interface = conn.execute(
+                """
+                SELECT direction, AVG(total_pps), MAX(total_pps)
+                FROM live_interface_rates
+                WHERE direction IS NOT NULL
+                GROUP BY direction
+                """
+            ).fetchall()
+            metrics["interface_rate"] = {
+                str(row[0]): {"avg_pps": row[1], "max_pps": row[2]}
+                for row in interface
+            }
+        return metrics
 
     @staticmethod
     def _event_replay_ping_metrics(fping: dict[str, object]) -> tuple[int, int, int, float | None]:
@@ -712,6 +913,36 @@ class OnlineMrTimelineFusionService:
         sent = int(ping[0] or 0)
         success = int(ping[1] or 0)
         lost = sent - success
+        loss_percent = (lost / sent * 100) if sent else None
+        avg_latency = ping[2]
+        max_latency = ping[3]
+        if sent == 0:
+            ping_summary = conn.execute(
+                """
+                SELECT sent, received, lost, loss_percent, avg_latency_ms, max_latency_ms
+                FROM ping_summary
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if ping_summary:
+                sent = int(ping_summary[0] or 0)
+                success = int(ping_summary[1] or 0)
+                lost = int(ping_summary[2] or max(sent - success, 0))
+                loss_percent = ping_summary[3]
+                avg_latency = ping_summary[4]
+                max_latency = ping_summary[5]
+        if not iperf or int(iperf[0] or 0) == 0:
+            iperf = conn.execute(
+                """
+                SELECT COUNT(*) sample_count, AVG(bitrate_mbps), MIN(bitrate_mbps), MAX(bitrate_mbps), SUM(retransmits)
+                FROM iperf_intervals
+                """
+            ).fetchone()
+        if not busy or all(value is None for value in busy):
+            busy = conn.execute(
+                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM live_channel_busy"
+            ).fetchone()
         conn.execute(
             """
             INSERT OR REPLACE INTO active_segment_metrics (
@@ -725,9 +956,9 @@ class OnlineMrTimelineFusionService:
                 sent,
                 success,
                 lost,
-                (lost / sent * 100) if sent else None,
-                ping[2],
-                ping[3],
+                loss_percent,
+                avg_latency,
+                max_latency,
                 iperf[0],
                 iperf[1],
                 iperf[2],

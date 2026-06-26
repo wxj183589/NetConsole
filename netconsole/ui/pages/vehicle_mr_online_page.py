@@ -80,7 +80,7 @@ class VehicleMrOnlinePage(QWidget):
         self._event_widths_initialized = False
         self._last_valid_interval = 10
 
-        self.title_label = QLabel("在线车载MR")
+        self.title_label = QLabel("列车在线情况")
         self.title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         self.ac_combo = QComboBox()
         self.interval_spin = QSpinBox()
@@ -175,16 +175,16 @@ class VehicleMrOnlinePage(QWidget):
         self._update_buttons()
 
     def retranslate(self) -> None:
-        self.title_label.setText("在线车载MR")
+        self.title_label.setText("列车在线情况")
 
     def start_collection(self) -> None:
         ac = self.ac_combo.currentData()
         if not isinstance(ac, Device):
-            QMessageBox.warning(self, "在线车载MR", "请先选择无线控制器 AC。")
+            QMessageBox.warning(self, "列车在线情况", "请先选择无线控制器 AC。")
             return
         config = self._build_connection_config(ac)
         if config is None:
-            QMessageBox.warning(self, "在线车载MR", "AC 连接信息不完整。")
+            QMessageBox.warning(self, "列车在线情况", "AC 连接信息不完整。")
             return
         self.store.merge_duplicate_current_states_by_train_no(self.registered_trains)
         self._set_collection_status("连接中")
@@ -668,7 +668,7 @@ class VehicleMrHistoryQueryDialog(QDialog):
         self.query()
 
     def export(self) -> None:
-        default = Path.home() / "Desktop" / f"在线车载MR_{self.train.display_name}_历史记录_{QDateTime.currentDateTime().toString('yyyyMMdd')}.xlsx"
+        default = Path.home() / "Desktop" / f"列车在线情况_{self.train.display_name}_历史记录_{QDateTime.currentDateTime().toString('yyyyMMdd')}.xlsx"
         if not default.parent.exists():
             default = Path.home() / default.name
         path, _filter = QFileDialog.getSaveFileName(self, "导出历史记录", str(default), "Excel (*.xlsx)")

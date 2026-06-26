@@ -190,6 +190,7 @@ class OnlineMrCollectionPage(QWidget):
         self.realtime_buffers: dict[str, SlidingWindowBuffer] = {}
         self.diagnosis_engines: dict[str, OnlineMrDiagnosisEngine] = {}
         self.event_parsers: dict[str, EventParserEngine] = {}
+        self._raw_tail_offsets: dict[tuple[str, str], int] = {}
         self.realtime_states_by_device_id: dict[int, RealtimeMRState] = {}
         self.peer_station_cache: dict[str, dict[str, object]] = {}
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
@@ -570,8 +571,8 @@ class OnlineMrCollectionPage(QWidget):
             collect_layout.addWidget(card)
         control_panel = QWidget()
         self.control_panel = control_panel
-        control_panel.setMinimumWidth(520)
-        control_panel.setMaximumWidth(620)
+        control_panel.setMinimumWidth(560)
+        control_panel.setMaximumWidth(680)
         control_layout = QVBoxLayout(control_panel)
         control_layout.setContentsMargins(0, 0, 0, 0)
         control_layout.setSpacing(10)
@@ -584,8 +585,8 @@ class OnlineMrCollectionPage(QWidget):
         right_scroll.setWidgetResizable(True)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        right_scroll.setMinimumWidth(520)
-        right_scroll.setMaximumWidth(620)
+        right_scroll.setMinimumWidth(560)
+        right_scroll.setMaximumWidth(700)
         right_scroll.setWidget(control_panel)
         self._install_no_wheel_filter_for_controls(control_panel)
         main_grid.addWidget(device_panel, 0, 0)
@@ -837,7 +838,15 @@ class OnlineMrCollectionPage(QWidget):
         rows = self._load_diagnosis_results(session_dir)
         self.tabs.setCurrentWidget(self.diagnosis_table)
         if rows == 0:
-            message = "Parse completed, but no diagnosis results were generated. Check whether raw logs match the parser format."
+            message = (
+                "解析完成，但没有生成诊断结果。\n"
+                f"已检查：\n"
+                f"mesh-link：{getattr(summary, 'mesh_samples', 0)} 条\n"
+                f"channelbusy：{getattr(summary, 'channel_samples', 0)} 条\n"
+                f"fping：{getattr(summary, 'ping_samples', 0)} 条\n"
+                f"interface-rate：{getattr(summary, 'interface_samples', 0)} 条\n"
+                "请检查 raw 文件格式。"
+            )
             self.log_text.append(message)
             QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
         self.parse_worker = None
@@ -870,7 +879,7 @@ class OnlineMrCollectionPage(QWidget):
             self.diagnosis_table.insertRow(row)
             values = list(row_data[:2]) + [row_data[2], row_data[3], row_data[4], row_data[5], row_data[6], row_data[8], row_data[9], row_data[10], row_data[11], "", "", row_data[12]]
             for column, value in enumerate(values):
-                self.diagnosis_table.setItem(row, column, QTableWidgetItem("" if value is None else str(value)))
+                self.diagnosis_table.setItem(row, column, QTableWidgetItem("-" if value in {None, ""} else str(value)))
         return len(rows)
 
     def _worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
@@ -910,6 +919,7 @@ class OnlineMrCollectionPage(QWidget):
         self.realtime_buffers.pop(session_id, None)
         self.diagnosis_engines.pop(session_id, None)
         self.event_parsers.pop(session_id, None)
+        self._clear_raw_tail_offsets(session_id)
         self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
         self.running_count_label.setText(str(self.manager.running_count()))
         self._refresh_top_metrics()
@@ -931,6 +941,7 @@ class OnlineMrCollectionPage(QWidget):
                 self.realtime_buffers.pop(session_id, None)
                 self.diagnosis_engines.pop(session_id, None)
                 self.event_parsers.pop(session_id, None)
+                self._clear_raw_tail_offsets(session_id)
         self._set_status("FAILED" if not self.workers_by_device_id else "COLLECTING")
         self.running_count_label.setText(str(self.manager.running_count()))
         self._refresh_top_metrics()
@@ -1097,6 +1108,7 @@ class OnlineMrCollectionPage(QWidget):
                 return
             bus = self._ensure_event_pipeline(snapshot.session_id, session_dir)
         timestamp = _snapshot_time(snapshot.last_collection_time)
+        self._publish_realtime_raw_tail(snapshot, bus, device_id, timestamp)
         if snapshot.active_peer:
             peer_info = self._resolve_peer_cached(snapshot.active_peer) or {}
             bus.publish(
@@ -1134,6 +1146,82 @@ class OnlineMrCollectionPage(QWidget):
                     raw=None,
                 )
             )
+
+    def _publish_realtime_raw_tail(
+        self,
+        snapshot: OnlineMrSnapshot,
+        bus: OnlineMrEventBus,
+        device_id: int | None,
+        timestamp: datetime,
+    ) -> None:
+        session_dir = self.session_dirs.get(snapshot.session_id)
+        if session_dir is None:
+            return
+        raw_dir = session_dir / "raw"
+        if not raw_dir.exists():
+            return
+        parser = self.event_parsers.get(snapshot.session_id)
+        if parser is None:
+            parser = EventParserEngine()
+            self.event_parsers[snapshot.session_id] = parser
+        specs = (
+            ("mesh_link_raw.log", "mesh", EVENT_MESH_SAMPLE, parser.parse_mesh),
+            ("channel_busy_raw.log", "busy", EVENT_BUSY_SAMPLE, parser.parse_busy),
+        )
+        for filename, module, event_type, parse in specs:
+            raw = self._read_raw_tail(snapshot.session_id, filename, raw_dir / filename)
+            if not raw.strip():
+                continue
+            base_event = OnlineMrEvent(
+                timestamp=timestamp,
+                session_id=snapshot.session_id,
+                device_id=device_id,
+                source="ssh",
+                module=module,
+                event_type=event_type,
+                payload={},
+                raw=raw,
+            )
+            payload = parse(base_event)
+            bus.publish(
+                OnlineMrEvent(
+                    timestamp=timestamp,
+                    session_id=snapshot.session_id,
+                    device_id=device_id,
+                    source="ssh",
+                    module=module,
+                    event_type=event_type,
+                    payload=payload,
+                    raw=raw,
+                )
+            )
+
+    def _read_raw_tail(self, session_id: str, filename: str, path: Path) -> str:
+        if not path.exists():
+            return ""
+        key = (session_id, filename)
+        try:
+            size = path.stat().st_size
+            offset = self._raw_tail_offsets.get(key, 0)
+            if size < offset:
+                offset = 0
+            if size == offset:
+                return ""
+            read_from = offset
+            if size - offset > 131072:
+                read_from = max(0, size - 131072)
+            with path.open("rb") as file:
+                file.seek(read_from)
+                data = file.read()
+            self._raw_tail_offsets[key] = size
+            return data.decode("utf-8", errors="replace")
+        except OSError as exc:
+            self.log_text.append(f"Raw tail read failed: {filename}: {exc}")
+            return ""
+
+    def _clear_raw_tail_offsets(self, session_id: str) -> None:
+        for key in [key for key in self._raw_tail_offsets if key[0] == session_id]:
+            self._raw_tail_offsets.pop(key, None)
 
     def _refresh_realtime_view(self) -> None:
         now = datetime.now()
@@ -2068,65 +2156,68 @@ class OnlineMrCollectionPage(QWidget):
 
     def _ping_box(self) -> QGroupBox:
         box = QGroupBox()
-        box.setMinimumHeight(230)
-        box.setMaximumHeight(300)
+        box.setMinimumHeight(300)
+        box.setMaximumHeight(380)
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        grid = QGridLayout(box)
-        grid.setContentsMargins(10, 10, 10, 10)
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        layout.addWidget(self.enable_fping_check)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(10)
+        cards.addWidget(self._ping_endpoint_box("Ping 1", self.fping_device_combo_1, self.fping_target_label_1), 1)
+        cards.addWidget(self._ping_endpoint_box("Ping 2", self.fping_device_combo_2, self.fping_target_label_2), 1)
+        layout.addLayout(cards)
+
+        grid = QGridLayout()
         grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(8)
-        grid.addWidget(self.enable_fping_check, 0, 0, 1, 3)
-        ping1_title = QLabel("Ping 1")
-        ping1_title.setStyleSheet("font-weight: 600;")
-        grid.addWidget(ping1_title, 1, 0, 1, 3)
-        ping1_device_label = QLabel("设备")
-        ping1_device_label.setMinimumWidth(70)
-        ping1_device_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(ping1_device_label, 2, 0)
-        grid.addWidget(self.fping_device_combo_1, 2, 1, 1, 2)
-        ping1_target_label = QLabel("目标IP")
-        ping1_target_label.setMinimumWidth(70)
-        ping1_target_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(ping1_target_label, 3, 0)
-        grid.addWidget(self.fping_target_label_1, 3, 1, 1, 2)
-        ping2_title = QLabel("Ping 2")
-        ping2_title.setStyleSheet("font-weight: 600;")
-        grid.addWidget(ping2_title, 4, 0, 1, 3)
-        ping2_device_label = QLabel("设备")
-        ping2_device_label.setMinimumWidth(70)
-        ping2_device_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(ping2_device_label, 5, 0)
-        grid.addWidget(self.fping_device_combo_2, 5, 1, 1, 2)
-        ping2_target_label = QLabel("目标IP")
-        ping2_target_label.setMinimumWidth(70)
-        ping2_target_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(ping2_target_label, 6, 0)
-        grid.addWidget(self.fping_target_label_2, 6, 1, 1, 2)
+        grid.setVerticalSpacing(6)
         for row, (key, spin, unit) in enumerate(
             (
                 ("online_mr.packet_size", self.fping_packet_size, "online_mr.bytes"),
                 ("online_mr.ping_interval_ms", self.fping_interval_ms, "online_mr.milliseconds"),
                 ("online_mr.loss_threshold_ms", self.fping_loss_threshold_ms, "online_mr.milliseconds"),
             ),
-            start=7,
+            start=0,
         ):
             label = self._label(key)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            spin.setFixedWidth(76)
             grid.addWidget(label, row, 0)
             grid.addWidget(spin, row, 1)
             unit_label = self._text_label(unit)
             unit_label.setMinimumWidth(48)
             grid.addWidget(unit_label, row, 2)
-        grid.addWidget(self.fping_tool_label, 10, 0, 1, 3)
+        grid.setColumnStretch(3, 1)
+        layout.addLayout(grid)
+        layout.addWidget(self.fping_tool_label)
         for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
-            combo.setMinimumWidth(300)
-            combo.setMaximumWidth(420)
+            combo.setMinimumWidth(220)
+            combo.setMaximumWidth(360)
         for target in (self.fping_target_label_1, self.fping_target_label_2):
-            target.setMinimumWidth(220)
-            target.setMaximumWidth(360)
+            target.setMinimumWidth(160)
+            target.setMaximumWidth(260)
             target.setMinimumHeight(28)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(2, 0)
+            target.setReadOnly(True)
+        return box
+
+    def _ping_endpoint_box(self, title: str, combo: QComboBox, target: QLineEdit) -> QGroupBox:
+        box = QGroupBox(title)
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        form = QGridLayout(box)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(6)
+        device_label = QLabel("设备")
+        device_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        target_label = QLabel("目标IP")
+        target_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.addWidget(device_label, 0, 0)
+        form.addWidget(combo, 0, 1)
+        form.addWidget(target_label, 1, 0)
+        form.addWidget(target, 1, 1)
+        form.setColumnStretch(1, 1)
         return box
 
     def _iperf_box(self) -> QGroupBox:

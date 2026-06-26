@@ -96,19 +96,25 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
         state.last_time = event.timestamp
     payload = event.payload
     if event.module == "mesh":
+        link_state = _text(payload.get("link_state")) or state.link_state
+        state.link_state = link_state
+        if (link_state or "").upper() != "ACTIVE":
+            return
         peer_mac = _text(payload.get("peer_mac") or payload.get("active_peer") or payload.get("peer_mac_normalized"))
+        peer_name = _text(payload.get("peer_name") or payload.get("peer_ap_name"))
         state.peer_mac = peer_mac or state.peer_mac
-        state.peer_name = _text(payload.get("peer_name") or payload.get("peer_ap_name")) or state.peer_name
+        state.peer_name = peer_name or state.peer_name
         peer_site = _text(payload.get("peer_station") or payload.get("peer_site") or payload.get("site"))
         state.peer_station = peer_site or state.peer_station
         state.peer_site = peer_site or state.peer_site
-        state.link_state = _text(payload.get("link_state")) or state.link_state
-        state.mr_rssi = _int_or_none(payload.get("mr_rssi"), payload.get("local_rssi"), payload.get("local_rssi_db"), payload.get("rssi")) or state.mr_rssi
+        mr_rssi = _int_or_none(payload.get("mr_rssi"), payload.get("local_rssi"), payload.get("local_rssi_db"), payload.get("rssi"))
+        state.mr_rssi = mr_rssi if mr_rssi is not None else state.mr_rssi
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
         state.retry_count = retry if retry is not None else state.retry_count
         state.retry = retry if retry is not None else state.retry
-        if state.peer_mac and resolve_peer and (not state.peer_name or not state.peer_station):
-            resolved = resolve_peer(state.peer_mac) or {}
+        lookup_key = state.peer_mac or state.peer_name
+        if lookup_key and resolve_peer and (not state.peer_name or not state.peer_station):
+            resolved = resolve_peer(lookup_key) or {}
             state.peer_name = _text(resolved.get("peer_ap_name") or resolved.get("ap_name")) or state.peer_name
             resolved_site = _text(resolved.get("peer_site") or resolved.get("site"))
             state.peer_station = resolved_site or state.peer_station
