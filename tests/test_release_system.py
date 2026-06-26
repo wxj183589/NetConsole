@@ -9,6 +9,7 @@ from project import release
 from scripts.check_runtime_deps import check_runtime_deps
 from netconsole.build.clean_build_lock import (
     CleanBuildLockError,
+    validate_allowed_runtime,
     validate_datas,
     validate_dist_output,
     validate_project_safety,
@@ -137,17 +138,12 @@ def test_build_release_script_uses_project_output_and_release_zip():
     root = Path(__file__).resolve().parents[1]
     text = (root / "build_release.bat").read_text(encoding="utf-8")
 
-    assert "project\\release.py" in text
-    assert "PROJECT_ROOT=%ROOT%\\project" in text
-    assert "clean_build_spec.py --prepare --write-spec" in text
-    assert "PyInstaller --noconfirm --clean --distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" \"%SPEC_ROOT%\\NetConsole.spec\"" in text
-    assert "clean_build_spec.py --validate" in text
-    assert "Verify clean dist and runtime DLLs" in text
-    assert "%DIST_ROOT%\\NetConsole\\data" in text
-    assert "%DIST_ROOT%\\NetConsole\\logs" in text
-    assert "--finalize" not in text
+    assert "project\\build_release.py" in text
+    assert "--backend pyinstaller %*" in text
+    assert "project\\release.py" not in text
+    assert "PROJECT_ROOT=%ROOT%\\project" not in text
     assert "--add-data" not in text
-    assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in text
+    assert "project\\build_release.py\" --backend pyinstaller %*" in text
 
 
 def test_changelog_source_is_chinese_for_zh_ui():
@@ -190,10 +186,10 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("tests", "tests") in clean_build_spec.FORBIDDEN_DATA
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
-    assert ("data", "data") in clean_build_spec.ALLOWED_DATA
+    assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
     assert ("tools", "tools") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
-    assert ("netconsole/docs", "netconsole/docs") in clean_build_spec.ALLOWED_DATA
+    assert ("netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
     assert "docs" in clean_build_spec.EXCLUDE_DIRS
@@ -234,6 +230,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
     assert any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
+    assert all(destination != "data" for _source, destination in datas)
 
 
 def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
@@ -266,7 +263,7 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
     assert "('tools', 'tools')" in text or '("tools", "tools")' in text
-    assert "project\\\\main.py" in text or "project/main.py" in text
+    assert "main.py" in text
     assert "('.', '.')" not in text
     assert "('project', 'project')" not in text
     assert "('tests', 'tests')" not in text
@@ -289,8 +286,9 @@ def test_clean_build_lock_rejects_illegal_datas(datas):
         validate_datas(datas)
 
 
-def test_clean_build_lock_allows_netconsole_docs_runtime_path():
-    validate_datas([("netconsole/docs", "netconsole/docs")])
+def test_clean_build_lock_rejects_netconsole_docs_runtime_path():
+    with pytest.raises(CleanBuildLockError, match="Runtime data is not whitelisted"):
+        validate_allowed_runtime([("netconsole/docs", "netconsole/docs")])
 
 
 def test_clean_build_lock_rejects_illegal_spec_datas():
@@ -308,9 +306,9 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
         "--icon",
         str(root / "netconsole" / "ui" / "icons" / "love.ico"),
         "--distpath",
-        str(root / "project" / "dist"),
+        str(root / "release" / "_build" / "pyinstaller" / "dist"),
         "--workpath",
-        str(root / "project" / "build"),
+        str(root / "release" / "_build" / "pyinstaller" / "build"),
     ]
 
     validate_pyinstaller_command(args)
@@ -324,7 +322,7 @@ def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
     app_dist = tmp_path / "NetConsole"
     (app_dist / "_internal" / "netconsole").mkdir(parents=True)
     (app_dist / "data").mkdir()
-    (app_dist / "logs").mkdir()
+    (app_dist / "runtime" / "logs").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / forbidden).mkdir()
 
@@ -336,7 +334,7 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
     app_dist = tmp_path / "NetConsole"
     (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
     (app_dist / "data").mkdir()
-    (app_dist / "logs").mkdir()
+    (app_dist / "runtime" / "logs").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
 
@@ -346,7 +344,7 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
         "NetConsole.exe",
         "_internal",
         "data",
-        "logs",
+        "runtime",
     ]
     assert not (app_dist / "docs").exists()
     assert not (app_dist / "tests").exists()
@@ -364,6 +362,8 @@ def test_clean_build_packaged_tools_validation(tmp_path):
     (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+    for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
+        (app_dist / "_internal" / "tools" / "iperf" / dll_name).write_text("", encoding="utf-8")
 
     clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
 
@@ -407,7 +407,7 @@ def _make_packaged_runtime(tmp_path: Path) -> Path:
     (internal / "tools" / "fping_v3").mkdir(parents=True)
     (internal / "tools" / "iperf").mkdir(parents=True)
     (app_dist / "data").mkdir(parents=True)
-    (app_dist / "logs").mkdir(parents=True)
+    (app_dist / "runtime" / "logs").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     for name in ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "python310.dll"):
         (internal / "PySide6" / name).write_text("", encoding="utf-8")
@@ -465,6 +465,7 @@ def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
     assert "[OK] CONCRT140.dll found" in result.messages
     assert "[OK] tools/fping_v3/Fping_v3.exe found" in result.messages
     assert "[OK] tools/iperf/iperf3.exe found" in result.messages
+    assert "[OK] runtime/logs directory found" in result.messages
 
 
 def test_check_packaged_runtime_script_runs_from_repo_root(tmp_path):
@@ -499,6 +500,8 @@ def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_p
     (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
     (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+    for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
+        (app_dist / "_internal" / "tools" / "iperf" / dll_name).write_text("", encoding="utf-8")
 
     def fake_run(args, **kwargs):
         if str(args[0]).endswith("Fping_v3.exe"):
@@ -510,20 +513,25 @@ def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_p
     clean_build_spec.check_packaged_tools(app_dist)
 
 
-def test_changelog_path_uses_internal_netconsole_docs():
+def test_changelog_path_prefers_packaged_assets_and_keeps_source_fallback(tmp_path):
     base_dir = Path("dist") / "NetConsole" / "_internal"
+    fallback = get_changelog_path(base_dir)
 
-    path = get_changelog_path(base_dir)
+    assert fallback == base_dir / "netconsole" / "docs" / "changelog.md"
 
-    assert path == base_dir / "netconsole" / "docs" / "changelog.md"
-    assert "assets" not in path.parts
+    packaged_base = tmp_path / "_internal"
+    packaged = packaged_base / "netconsole" / "assets" / "changelog.md"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_text("changes", encoding="utf-8")
+
+    assert get_changelog_path(packaged_base) == packaged
 
 
 def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     root = Path(__file__).resolve().parents[1]
-    dist_root = root / "project" / "dist"
-    build_root = root / "project" / "build"
-    spec_root = root / "project" / "spec"
+    dist_root = root / "release" / "_build" / "pyinstaller" / "dist"
+    build_root = root / "release" / "_build" / "pyinstaller" / "build"
+    spec_root = root / "release" / "_build" / "pyinstaller" / "spec"
     app_dist = dist_root / "NetConsole"
 
     subprocess.run([sys.executable, "clean_build_spec.py", "--prepare", "--write-spec"], cwd=root, check=True)
@@ -544,7 +552,7 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
         check=True,
     )
     (app_dist / "data").mkdir(exist_ok=True)
-    (app_dist / "logs").mkdir(exist_ok=True)
+    (app_dist / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.executable, "clean_build_spec.py", "--validate"], cwd=root, check=True)
 
     validate_dist_output(app_dist)
@@ -553,12 +561,12 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     assert not (app_dist / "project").exists()
     assert not (app_dist / "netconsole").exists()
     assert (app_dist / "data").exists()
-    assert (app_dist / "logs").exists()
+    assert (app_dist / "runtime" / "logs").exists()
     assert (app_dist / "_internal" / "netconsole").exists()
     assert (app_dist / "_internal" / "tools" / "fping_v3" / "Fping_v3.exe").exists()
     assert (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").exists()
-    assert (app_dist / "_internal" / "netconsole" / "docs" / "changelog.md").exists()
-    assert not (app_dist / "_internal" / "assets" / "docs" / "changelog.md").exists()
+    assert (app_dist / "_internal" / "netconsole" / "assets" / "changelog.md").exists()
+    assert not (app_dist / "_internal" / "netconsole" / "docs").exists()
 
     env = os.environ.copy()
     env["NETCONSOLE_SMOKE_TEST"] = "1"

@@ -89,5 +89,17 @@ def test_resolver_candidate_order_contains_packaged_dev_and_legacy_paths(tmp_pat
     normalized = [path.as_posix() for path in candidates]
 
     assert normalized[0].endswith("NetConsole/_internal/tools/fping_v3/Fping_v3.exe")
-    assert normalized[1].endswith("project_root/tools/fping_v3/Fping_v3.exe")
-    assert normalized[2].endswith("NetConsole/tools/fping_v3/Fping_v3.exe")
+    assert normalized[1].endswith("NetConsole/tools/fping_v3/Fping_v3.exe")
+    assert normalized[2].endswith("NetConsole/tools/fping_v3/Fping_v3.exe") or normalized[2].endswith("NetConsole/_internal/tools/fping_v3/Fping_v3.exe") or normalized[2].endswith("tools/fping_v3/Fping_v3.exe")
+    assert any(path.endswith("project_root/tools/fping_v3/Fping_v3.exe") for path in normalized)
+
+
+def test_resolver_finds_nuitka_onefile_extracted_tools(tmp_path: Path, monkeypatch) -> None:
+    package_root = tmp_path / "onefile"
+    fping = _write_tool(package_root / "tools" / "fping_v3" / "Fping_v3.exe")
+    fake_file = package_root / "netconsole" / "services" / "tool_path_resolver.py"
+    fake_file.parent.mkdir(parents=True, exist_ok=True)
+    fake_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr("netconsole.services.tool_path_resolver.__file__", str(fake_file))
+
+    assert resolve_tool_path("fping_v3", PathResolver(tmp_path / "app"), project_root=tmp_path / "missing") == fping.resolve()

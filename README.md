@@ -297,3 +297,50 @@ display lldp neighbor-information verbose
 - 修改数据库结构时必须提供幂等迁移。
 - 修改 UI 时应补充 PySide6 相关测试或服务层测试。
 - 提交前至少运行相关测试；大范围改动应运行完整 `pytest`。
+## Packaging
+
+正式构建入口：
+
+```powershell
+.\build_release.bat --skip-install
+.\build_nuitka_release.bat --skip-install --jobs 8
+```
+
+两个 BAT 只负责定位项目根目录和 Python，并把公共参数原样传给 `project\build_release.py`。公共参数包括 `--skip-install`、`--no-smoke-test`、`--no-zip`、`--jobs N`。
+
+所有产物都写入 `release`，项目根目录不生成 `build`、`dist`、`*.spec`、`*.exe`、`*.zip` 或 `build_meta.env`。
+
+```text
+release/
+  _build/
+    pyinstaller/
+      build/
+      dist/
+      spec/
+    nuitka/
+      nuitka-report.xml
+      netconsole.nuitka-package.config.yml
+  v1.3.1/
+    pyinstaller/
+      NetConsole/
+        NetConsole.exe
+        _internal/
+          tools/
+            fping_v3/
+            iperf/
+        data/
+        runtime/
+          logs/
+      NetConsole_v1.3.1_pyinstaller.zip
+    nuitka/
+      NetConsole.exe
+      NetConsole_v1.3.1_nuitka.zip
+```
+
+PyInstaller 版本需要完整保留 `NetConsole` 目录。Nuitka 版本是 onefile，最终主产物是 `release\v1.3.1\nuitka\NetConsole.exe`，可直接双击运行。
+
+`tools` 目录会整体打包，保持 `tools\iperf\iperf3.exe` 与 `cygcrypto-3.dll`、`cygwin1.dll`、`cygz.dll` 位于同一目录。构建前后都会执行 `Fping_v3.exe -v` 和 `iperf3.exe -v`，缺失 DLL 或工具无法启动会导致构建失败。
+
+```powershell
+python scripts\check_packaged_runtime.py release\_build\pyinstaller\dist\NetConsole
+```

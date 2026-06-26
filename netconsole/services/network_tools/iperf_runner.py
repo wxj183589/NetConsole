@@ -282,6 +282,7 @@ class IperfProcessRunner:
             encoding="utf-8",
             errors="replace",
             creationflags=creationflags,
+            cwd=self.iperf_path.parent,
         )
         status = "DONE"
         try:

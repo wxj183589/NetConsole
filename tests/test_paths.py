@@ -1,6 +1,8 @@
 import sys
 
+from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import validate_runtime_write_path
 
 
 def test_path_resolver_creates_site_dirs(tmp_path):
@@ -9,7 +11,6 @@ def test_path_resolver_creates_site_dirs(tmp_path):
 
     assert site == tmp_path / "data" / "sites" / "demo"
     assert paths.app_root == tmp_path
-    assert paths.docs_dir == tmp_path / "docs"
     assert paths.data_dir == tmp_path / "data"
     assert paths.config_dir == tmp_path / "data" / "config"
     assert paths.app_config_path == tmp_path / "data" / "config" / "app.json"
@@ -19,14 +20,6 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.offline_ap_cache_path == tmp_path / "runtime" / "cache" / "offline_ap_cache.json"
     assert paths.logs_dir == tmp_path / "runtime" / "logs"
     assert paths.app_log_path == tmp_path / "runtime" / "logs" / "app.log"
-    assert paths.tests_dir == tmp_path / "tests"
-    assert paths.project_dir == tmp_path / "project"
-    assert paths.build_dir == tmp_path / "project" / "build"
-    assert paths.dist_dir == tmp_path / "project" / "dist"
-    assert paths.scripts_dir == tmp_path / "project" / "scripts"
-    assert paths.resources_dir == tmp_path / "project" / "resources"
-    assert paths.templates_dir == tmp_path / "project" / "resources" / "templates"
-    assert paths.icons_dir == tmp_path / "project" / "resources" / "icons"
     assert paths.sites_dir == tmp_path / "data" / "sites"
     assert paths.site_dir() == site
     assert paths.site_db_path() == site / "db" / "devices.db"
@@ -40,19 +33,13 @@ def test_path_resolver_creates_project_dirs(tmp_path):
     paths = PathResolver(tmp_path)
     paths.ensure_project_dirs()
 
-    assert paths.docs_dir.is_dir()
     assert paths.data_dir.is_dir()
     assert paths.config_dir.is_dir()
     assert paths.logs_dir.is_dir()
-    assert paths.tests_dir.is_dir()
-    assert paths.project_dir.is_dir()
     assert paths.sites_dir.is_dir()
-    assert paths.build_dir.is_dir()
-    assert paths.dist_dir.is_dir()
-    assert paths.scripts_dir.is_dir()
-    assert paths.resources_dir.is_dir()
-    assert paths.icons_dir.is_dir()
-    assert paths.templates_dir.is_dir()
+    assert not (tmp_path / "docs").exists()
+    assert not (tmp_path / "tests").exists()
+    assert not (tmp_path / "project").exists()
 
 
 def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):
@@ -68,6 +55,23 @@ def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):
     assert paths.site_db_path() == tmp_path / "data" / "sites" / "demo" / "db" / "devices.db"
 
 
+def test_path_resolver_uses_exe_dir_when_nuitka_compiled(tmp_path, monkeypatch):
+    exe_path = tmp_path / "NetConsole.exe"
+    exe_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "executable", str(exe_path))
+    monkeypatch.setattr(sys.modules["__main__"], "__compiled__", object(), raising=False)
+
+    paths = PathResolver()
+    paths.ensure_project_dirs()
+
+    assert paths.app_root == tmp_path
+    assert paths.data_dir == tmp_path / "data"
+    assert paths.runtime_dir == tmp_path / "runtime"
+    assert not (tmp_path / "docs").exists()
+    assert not (tmp_path / "tests").exists()
+    assert not (tmp_path / "project").exists()
+
+
 def test_path_resolver_does_not_create_development_dirs_when_frozen(tmp_path, monkeypatch):
     exe_path = tmp_path / "NetConsole.exe"
     exe_path.write_text("", encoding="utf-8")
@@ -81,6 +85,33 @@ def test_path_resolver_does_not_create_development_dirs_when_frozen(tmp_path, mo
     assert paths.config_dir.is_dir()
     assert paths.logs_dir.is_dir()
     assert paths.sites_dir.is_dir()
-    assert not paths.docs_dir.exists()
-    assert not paths.tests_dir.exists()
-    assert not paths.project_dir.exists()
+    assert not (tmp_path / "docs").exists()
+    assert not (tmp_path / "tests").exists()
+    assert not (tmp_path / "project").exists()
+
+
+def test_runtime_write_guard_rejects_development_dirs(tmp_path):
+    for name in ("docs", "tests", "project"):
+        try:
+            validate_runtime_write_path(tmp_path / name)
+        except RuntimeError as exc:
+            assert "invalid runtime write path" in str(exc)
+        else:
+            raise AssertionError(f"expected runtime guard to reject {name}")
+
+
+def test_nuitka_startup_context_does_not_create_development_dirs(tmp_path, monkeypatch):
+    exe_path = tmp_path / "NetConsole.exe"
+    exe_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "executable", str(exe_path))
+    monkeypatch.setattr(sys.modules["__main__"], "__compiled__", object(), raising=False)
+
+    context = create_demo_context()
+
+    assert context.paths.app_root == tmp_path
+    assert context.paths.data_dir.is_dir()
+    assert context.paths.runtime_dir.is_dir()
+    assert context.paths.logs_dir.is_dir()
+    assert not (tmp_path / "docs").exists()
+    assert not (tmp_path / "tests").exists()
+    assert not (tmp_path / "project").exists()

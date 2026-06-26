@@ -46,7 +46,7 @@ def check_runtime_deps(app_dir: Path | str) -> RuntimeCheckResult:
     require((app_dir / APP_EXE).is_file(), f"{APP_EXE} found", f"{APP_EXE} missing")
     require(internal_dir.is_dir(), "_internal found", "发布包不完整：缺少 _internal 目录，请完整复制 dist/NetConsole 目录，不要只复制 NetConsole.exe")
     require((app_dir / "data").is_dir(), "data directory found", "data directory missing")
-    require((app_dir / "logs").is_dir(), "logs directory found", "logs directory missing")
+    require((app_dir / "runtime" / "logs").is_dir(), "runtime/logs directory found", "runtime/logs directory missing")
     if not internal_dir.is_dir():
         messages.append("建议：重新打包，或完整解压整个 NetConsole 文件夹。")
         messages.append("如仍提示 QtGui DLL load failed，请安装 Microsoft Visual C++ 2015-2022 Redistributable x64。")
@@ -87,7 +87,12 @@ def _find_first(root: Path, pattern: str) -> Path | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check NetConsole packaged runtime dependencies")
-    parser.add_argument("app_dir", nargs="?", default=Path("project") / "dist" / "NetConsole", help="dist/NetConsole directory")
+    parser.add_argument(
+        "app_dir",
+        nargs="?",
+        default=Path("release") / "_build" / "pyinstaller" / "dist" / "NetConsole",
+        help="PyInstaller dist/NetConsole directory",
+    )
     args = parser.parse_args()
     result = check_runtime_deps(Path(args.app_dir))
     for message in result.messages:

@@ -1,41 +1,37 @@
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from netconsole.core.runtime_environment import app_root as default_app_root
+from netconsole.core.runtime_environment import ensure_runtime_dir
+from netconsole.core.runtime_environment import validate_runtime_write_path
 
 
 SITE_DIRS = ("db", "parsed", "reports", "backups", "tasks", "metrics")
 
 
 def _default_app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path.cwd().resolve()
-
-
-def _is_frozen() -> bool:
-    return bool(getattr(sys, "frozen", False))
+    return default_app_root()
 
 
 @dataclass(frozen=True)
 class PathResolver:
     app_root: Path | None = None
+    data_root: Path | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "app_root", Path(self.app_root or _default_app_root()).resolve())
-
-    @property
-    def docs_dir(self) -> Path:
-        return self.app_root / "docs"
+        resolved_app_root = Path(self.app_root or _default_app_root()).resolve()
+        object.__setattr__(self, "app_root", resolved_app_root)
+        object.__setattr__(self, "data_root", Path(self.data_root).resolve() if self.data_root else resolved_app_root)
 
     @property
     def data_dir(self) -> Path:
-        return self.app_root / "data"
+        return self.data_root / "data"
 
     @property
     def runtime_dir(self) -> Path:
-        return self.app_root / "runtime"
+        return self.data_root / "runtime"
 
     @property
     def runtime_cache_dir(self) -> Path:
@@ -44,38 +40,6 @@ class PathResolver:
     @property
     def offline_ap_cache_path(self) -> Path:
         return self.runtime_cache_dir / "offline_ap_cache.json"
-
-    @property
-    def tests_dir(self) -> Path:
-        return self.app_root / "tests"
-
-    @property
-    def project_dir(self) -> Path:
-        return self.app_root / "project"
-
-    @property
-    def build_dir(self) -> Path:
-        return self.project_dir / "build"
-
-    @property
-    def dist_dir(self) -> Path:
-        return self.project_dir / "dist"
-
-    @property
-    def scripts_dir(self) -> Path:
-        return self.project_dir / "scripts"
-
-    @property
-    def resources_dir(self) -> Path:
-        return self.project_dir / "resources"
-
-    @property
-    def templates_dir(self) -> Path:
-        return self.resources_dir / "templates"
-
-    @property
-    def icons_dir(self) -> Path:
-        return self.resources_dir / "icons"
 
     @property
     def sites_dir(self) -> Path:
@@ -203,10 +167,10 @@ class PathResolver:
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
-            (site_path / dirname).mkdir(parents=True, exist_ok=True)
-        self.site_mesh_root(site_name).mkdir(parents=True, exist_ok=True)
-        self.trackside_ap_optical_sessions_root(site_name).mkdir(parents=True, exist_ok=True)
-        self.trackside_ap_update_sessions_root(site_name).mkdir(parents=True, exist_ok=True)
+            ensure_runtime_dir(site_path / dirname)
+        ensure_runtime_dir(self.site_mesh_root(site_name))
+        ensure_runtime_dir(self.trackside_ap_optical_sessions_root(site_name))
+        ensure_runtime_dir(self.trackside_ap_update_sessions_root(site_name))
         return site_path
 
     def ensure_project_dirs(self) -> None:
@@ -219,17 +183,8 @@ class PathResolver:
             self.sites_dir,
             self.logs_dir,
         )
-        development_paths = (
-            self.docs_dir,
-            self.tests_dir,
-            self.project_dir,
-            self.build_dir,
-            self.dist_dir,
-            self.scripts_dir,
-            self.resources_dir,
-            self.icons_dir,
-            self.templates_dir,
-        )
-        paths = runtime_paths if _is_frozen() else (*runtime_paths, *development_paths)
-        for path in paths:
-            path.mkdir(parents=True, exist_ok=True)
+        for path in runtime_paths:
+            ensure_runtime_dir(path)
+
+    def validate_runtime_write_path(self, path: Path) -> Path:
+        return validate_runtime_write_path(path)

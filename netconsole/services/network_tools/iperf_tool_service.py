@@ -37,6 +37,7 @@ def detect_iperf_version(
             encoding="utf-8",
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            cwd=iperf_path.parent,
             timeout=5,
         )
     except Exception as exc:
