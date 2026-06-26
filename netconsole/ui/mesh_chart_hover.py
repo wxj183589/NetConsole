@@ -33,7 +33,7 @@ class MeshChartHoverController(QObject):
         self.content_cache = HoverContentCache()
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
-        self.timer.setInterval(16)
+        self.timer.setInterval(40)
         self.timer.timeout.connect(self._process_latest_event)
         self.vline = axis.axvline(0, color="#0f766e", linewidth=1.0, alpha=0.65, visible=False)
         self.popup = MeshChartHoverPopup()
@@ -103,19 +103,24 @@ class MeshChartHoverController(QObject):
         if not isinstance(timestamps, np.ndarray) or len(timestamps) == 0 or not math.isfinite(float(xdata)):
             return -1
         left, right = self.axis.get_xlim()
-        visible = timestamps[(timestamps >= min(left, right)) & (timestamps <= max(left, right))]
-        if len(visible) == 0:
+        lower = min(left, right)
+        upper = max(left, right)
+        visible_left = int(np.searchsorted(timestamps, lower, side="left"))
+        visible_right = int(np.searchsorted(timestamps, upper, side="right"))
+        if visible_left >= visible_right:
             return -1
         index = int(np.searchsorted(timestamps, xdata))
-        candidates = []
-        if index < len(timestamps):
-            candidates.append(index)
-        if index > 0:
-            candidates.append(index - 1)
-        if not candidates:
+        left_index = index - 1 if index > 0 else -1
+        right_index = index if index < len(timestamps) else -1
+        if left_index < 0 and right_index < 0:
             return -1
-        nearest = min(candidates, key=lambda item: abs(float(timestamps[item]) - float(xdata)))
-        if not (min(left, right) <= timestamps[nearest] <= max(left, right)):
+        if left_index < 0:
+            nearest = right_index
+        elif right_index < 0:
+            nearest = left_index
+        else:
+            nearest = left_index if abs(float(timestamps[left_index]) - float(xdata)) <= abs(float(timestamps[right_index]) - float(xdata)) else right_index
+        if not (lower <= timestamps[nearest] <= upper):
             return -1
         if pixel_x is not None:
             sample_pixel = self.axis.transData.transform((timestamps[nearest], 0))[0]
@@ -127,11 +132,19 @@ class MeshChartHoverController(QObject):
         labels = self.payload.get("timestamp_labels") or []
         sample_time = labels[index] if 0 <= index < len(labels) else ""
         peer = self._peer_for_index(index)
+        peer_ap_name = self._payload_value_for_index("active_peer_ap_names" if self.chart_key.startswith("active_") else "peer_ap_names", index)
+        peer_site = self._payload_value_for_index("active_peer_sites" if self.chart_key.startswith("active_") else "peer_sites", index)
+        peer_radio = self._payload_value_for_index("active_peer_radios" if self.chart_key.startswith("active_") else "peer_radios", index)
         state = self._state_for_index(index)
         lines = [
             f"{self.i18n.t('mesh_analysis.sample_time')}:",
             full_sample_time_label(sample_time),
-            f"{self.i18n.t('mesh_analysis.hover_peer')}: {format_mac_h3c(peer) if peer else '-'}",
+            "当前PEER AP名称:",
+            peer_ap_name or "-",
+            "归属站点:",
+            peer_site or "-",
+            f"PeerMac: {format_mac_h3c(peer) if peer else '-'}",
+            f"Radio: {peer_radio or '-'}",
             f"{self.i18n.t('mesh_analysis.state')}: {self._state_text(state)}",
             "",
         ]
@@ -211,18 +224,18 @@ class MeshChartHoverController(QObject):
         values = self._series_values(field)
         value = values[index] if values is not None and 0 <= index < len(values) else np.nan
         label = self.i18n.t(str(metadata.get("label_key") or field))
-        description = self.i18n.t(str(metadata.get("description_key") or "mesh_analysis.metric_description"))
         if np.isfinite(value):
             formatted = format_mesh_value(value, metadata)
         else:
             formatted = self.i18n.t("mesh_analysis.unavailable_counter_delta") if field.startswith("peer.delta_") else "-"
-        return [f"{label}: {formatted}", f"{self.i18n.t('mesh_analysis.metric_description')}: {description}"]
+        return [f"{label}: {formatted}"]
 
     def _current_active_rssi_lines(self, index: int) -> list[str]:
         active_peers = self.payload.get("active_peer_macs") or []
         if not (0 <= index < len(active_peers)) or not active_peers[index]:
             return [self.i18n.t("mesh_analysis.no_unique_active")]
-        lines = [self.i18n.t("mesh_analysis.current_active_link") + f": {format_mac_h3c(active_peers[index])}"]
+        peer_name = self._payload_value_for_index("active_peer_ap_names", index)
+        lines = ["当前PEER AP名称" + f": {peer_name or '-'}"]
         for field in ("active.active_local_rssi",):
             lines.extend(self._metric_lines(field, index)[:1])
         return lines
@@ -231,7 +244,8 @@ class MeshChartHoverController(QObject):
         active_peers = self.payload.get("active_peer_macs") or []
         if not (0 <= index < len(active_peers)) or not active_peers[index]:
             return [self.i18n.t("mesh_analysis.no_unique_active")]
-        lines = [self.i18n.t("mesh_analysis.current_active_link") + f": {format_mac_h3c(active_peers[index])}"]
+        peer_name = self._payload_value_for_index("active_peer_ap_names", index)
+        lines = ["当前PEER AP名称" + f": {peer_name or '-'}"]
         for field in ("active.active_local_tx_busy", "active.active_local_rx_busy"):
             lines.extend(self._metric_lines(field, index)[:1])
         return lines
@@ -246,7 +260,10 @@ class MeshChartHoverController(QObject):
             if event_type == "ACTIVE_SWITCH":
                 lines.extend(
                     [
-                        self.i18n.t("mesh_analysis.active_switch") + ":",
+                        "事件:",
+                        self.i18n.t("mesh_analysis.active_switch"),
+                        "切换时间:",
+                        str(event.get("event_time") or event.get("current_sample_time") or "-"),
                         f"{event.get('from_peer_mac') or '-'} -> {event.get('to_peer_mac') or '-'}",
                         f"{self.i18n.t('mesh_analysis.observed_window')}: {event.get('observed_window_ms') or '-'} ms",
                     ]
@@ -270,6 +287,10 @@ class MeshChartHoverController(QObject):
         else:
             peers = self.payload.get("peer_macs") or []
         return str(peers[index]) if 0 <= index < len(peers) else ""
+
+    def _payload_value_for_index(self, key: str, index: int) -> str:
+        values = self.payload.get(key) or []
+        return str(values[index]) if 0 <= index < len(values) and values[index] else ""
 
     def _state_for_index(self, index: int) -> str:
         states = self.payload.get("peer_link_states") or []

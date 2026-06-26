@@ -12,6 +12,7 @@ from netconsole.parsers.mesh_log_parser import MeshLogParser, make_imported_file
 from netconsole.services.mesh_log_analysis_service import (
     PARSER_VERSION,
 )
+from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
 
@@ -99,6 +100,12 @@ class MeshImportService:
             result.parsed_record_count += len(records)
             if progress:
                 progress(index, total, info.lines_read, result.parsed_record_count, info.skipped_count)
+        try:
+            mapped_count = MeshPeerMappingService(self.site_name, self.paths).refresh_repository(repo)
+            if mapped_count:
+                app_logger.log_info("MESH_PEER_MAPPING_REFRESHED", f"{profile.display_name}:{mapped_count}")
+        except Exception as exc:
+            app_logger.log_error("MESH_PEER_MAPPING_REFRESH_FAILED", str(exc))
         repo.rebuild_derived_analysis(should_cancel=should_cancel)
         self.storage.refresh_catalog_summary(profile)
         return result

@@ -42,7 +42,7 @@ class OnlineMrSessionStore:
         started = now or datetime.now()
         session_id = f"{started:%Y%m%d_%H%M%S}_{id(config) & 0xFFFFFF:06x}"
         session_dir = self.paths.online_mr_session_dir(config.site, config.safe_mr_name, session_id)
-        for relative in ("raw", "parsed", "logs", "exports"):
+        for relative in ("raw", "parsed", "view", "summary", "logs", "exports"):
             (session_dir / relative).mkdir(parents=True, exist_ok=True)
         meta = OnlineMrSessionMeta(
             session_id=session_id,
@@ -291,6 +291,13 @@ class OnlineMrSession:
         self.meta.ended_at = datetime.now()
         self.meta.stats = dict(stats)
         self.write_meta()
+
+    def write_fping_final_summary(self, message: str) -> Path:
+        path = self.session_dir / "raw" / "Fping_final_summary.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = str(message or "").strip() or "未采集到 fping 数据"
+        path.write_text(f"{text}\n", encoding="utf-8")
+        return path
 
     def write_meta(self) -> None:
         path = self.session_dir / "session_meta.json"

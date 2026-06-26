@@ -8,12 +8,15 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
+    QAbstractItemView,
     QFileDialog,
     QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -36,6 +39,7 @@ from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepositor
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker, MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
@@ -66,6 +70,8 @@ class MeshLogAnalysisPage(QWidget):
         self.peer_dialogs: list[MeshPeerDetailDialog] = []
         self.profiles: list[MeshMrProfile] = []
         self.current_profile: MeshMrProfile | None = None
+        self.current_source_file_id: int | None = None
+        self.current_source_file_name: str | None = None
         self.link_page = 1
         self.event_page = 1
         self.issue_page = 1
@@ -80,6 +86,7 @@ class MeshLogAnalysisPage(QWidget):
         self.create_mr_button = QPushButton()
         self.import_button = QPushButton()
         self.import_folder_button = QPushButton()
+        self.show_all_sources_button = QPushButton()
         self.cancel_button = QPushButton()
         self.refresh_button = QPushButton()
         self.open_folder_button = QPushButton()
@@ -88,8 +95,8 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_label = QLabel()
 
         self.mr_table = QTableWidget(0, 8)
-        self.source_table = QTableWidget(0, 13)
-        self.link_table = QTableWidget(0, 21)
+        self.source_table = QTableWidget(0, 15)
+        self.link_table = QTableWidget(0, 24)
         self.event_table = QTableWidget(0, 14)
         self.issue_table = QTableWidget(0, 7)
         self.issue_empty_widget = QWidget()
@@ -145,6 +152,8 @@ class MeshLogAnalysisPage(QWidget):
         self.repo_cache.clear()
         self.profile_by_id.clear()
         self.current_profile = None
+        self.current_source_file_id = None
+        self.current_source_file_name = None
         self.refresh_all()
 
     def retranslate(self) -> None:
@@ -152,13 +161,14 @@ class MeshLogAnalysisPage(QWidget):
         self.create_mr_button.setText(self.i18n.t("mesh_analysis.create_mr"))
         self.import_button.setText(self.i18n.t("mesh_analysis.import_logs"))
         self.import_folder_button.setText(self.i18n.t("mesh_analysis.import_folder"))
+        self.show_all_sources_button.setText("显示全部文件")
         self.cancel_button.setText(self.i18n.t("mesh_analysis.cancel"))
         self.refresh_button.setText(self.i18n.t("mesh_analysis.refresh"))
         self.open_folder_button.setText(self.i18n.t("mesh_analysis.open_folder"))
         self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
         self.radio_filter.setPlaceholderText("Radio")
         self.state_filter.setPlaceholderText(self.i18n.t("mesh_analysis.state"))
-        self.peer_filter.setPlaceholderText("PeerMac")
+        self.peer_filter.setPlaceholderText("PeerMac / AP名称 / 站点")
         self.keyword_filter.setPlaceholderText(self.i18n.t("mesh_analysis.keyword"))
         self.mr_table.setHorizontalHeaderLabels(
             [
@@ -175,7 +185,9 @@ class MeshLogAnalysisPage(QWidget):
         self.source_table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("mesh_analysis.file_name"),
+                "当前显示",
                 self.i18n.t("mesh_analysis.archived_path"),
+                "文件状态",
                 self.i18n.t("mesh_analysis.file_size"),
                 "SHA-256",
                 self.i18n.t("mesh_analysis.imported_at"),
@@ -195,6 +207,9 @@ class MeshLogAnalysisPage(QWidget):
                 "Radio",
                 self.i18n.t("mesh_analysis.state"),
                 "PeerMac",
+                "当前PEER AP名称",
+                "归属站点",
+                "PEER Radio",
                 self.i18n.t("mesh_analysis.establish_time"),
                 self.i18n.t("mesh_analysis.duration"),
                 "LinkCnt",
@@ -257,6 +272,7 @@ class MeshLogAnalysisPage(QWidget):
             self.create_mr_button,
             self.import_button,
             self.import_folder_button,
+            self.show_all_sources_button,
             self.cancel_button,
             self.refresh_button,
             self.open_folder_button,
@@ -319,6 +335,7 @@ class MeshLogAnalysisPage(QWidget):
         self.create_mr_button.clicked.connect(self.create_mr)
         self.import_button.clicked.connect(self.import_logs)
         self.import_folder_button.clicked.connect(self.import_folder)
+        self.show_all_sources_button.clicked.connect(self.show_all_source_files)
         self.cancel_button.clicked.connect(self.cancel_import)
         self.refresh_button.clicked.connect(lambda: self.refresh_all())
         self.open_folder_button.clicked.connect(self.open_mr_folder)
@@ -332,6 +349,9 @@ class MeshLogAnalysisPage(QWidget):
         self.mr_selection_timer.timeout.connect(self.select_current_mr)
         self.link_table.itemSelectionChanged.connect(self.show_link_detail)
         self.link_table.cellDoubleClicked.connect(self._open_peer_from_link_cell)
+        self.source_table.cellDoubleClicked.connect(self._open_source_file_links)
+        self.source_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.source_table.customContextMenuRequested.connect(self._show_source_context_menu)
         self.event_table.cellDoubleClicked.connect(self._open_peer_from_event_cell)
         self.source_pagination.pageChanged.connect(lambda page: self._set_page("source", page))
         self.link_pagination.pageChanged.connect(lambda page: self._set_page("link", page))
@@ -357,7 +377,7 @@ class MeshLogAnalysisPage(QWidget):
         profile = self._require_profile()
         if profile is None:
             return
-        files, _ = QFileDialog.getOpenFileNames(self, self.i18n.t("mesh_analysis.import_logs"), str(self.paths.ensure_site_dirs(self.site_name) / "raw" / "files"), FILE_FILTER)
+        files, _ = QFileDialog.getOpenFileNames(self, self.i18n.t("mesh_analysis.import_logs"), str(self._import_start_dir()), FILE_FILTER)
         if files:
             self._start_import(profile, [Path(file) for file in files])
 
@@ -365,11 +385,14 @@ class MeshLogAnalysisPage(QWidget):
         profile = self._require_profile()
         if profile is None:
             return
-        folder = QFileDialog.getExistingDirectory(self, self.i18n.t("mesh_analysis.import_folder"), str(self.paths.ensure_site_dirs(self.site_name) / "raw" / "files"))
+        folder = QFileDialog.getExistingDirectory(self, self.i18n.t("mesh_analysis.import_folder"), str(self._import_start_dir()))
         if not folder:
             return
         files = MeshImportService(self.site_name, self.paths).discover_mesh_logs(Path(folder))
         self._start_import(profile, files)
+
+    def _import_start_dir(self) -> Path:
+        return PathPreferenceService(self.paths).get_default_mesh_import_dir(self.site_name)
 
     def cancel_import(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -418,6 +441,8 @@ class MeshLogAnalysisPage(QWidget):
         else:
             self._suppress_mr_selection = False
             self.current_profile = None
+            self.current_source_file_id = None
+            self.current_source_file_name = None
             self.refresh_current_mr_data()
 
     def refresh_profiles(self, select_mr_id: str | None = None) -> None:
@@ -442,6 +467,8 @@ class MeshLogAnalysisPage(QWidget):
         self.current_profile = self.profile_by_id.get(mr_id) or self.catalog_repo.get_profile(mr_id)
         if self.current_profile is None:
             return
+        self.current_source_file_id = None
+        self.current_source_file_name = None
         self.mr_load_generation += 1
         generation = self.mr_load_generation
         app_logger.log_info("MESH_MR_LOAD_STARTED", f"mr_id={mr_id}, generation={generation}, tab={self._current_tab_name()}")
@@ -580,6 +607,7 @@ class MeshLogAnalysisPage(QWidget):
         if not files:
             QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.no_files"))
             return
+        PathPreferenceService(self.paths).remember_last_mesh_import_dir(files[0].parent)
         self.progress_bar.setValue(0)
         self.worker = MeshLogImportWorker(self.site_name, self.paths, profile, files)
         self.worker.progress.connect(self._on_progress)
@@ -624,7 +652,9 @@ class MeshLogAnalysisPage(QWidget):
         for row_index, row in enumerate(page_rows):
             values = [
                 row.get("archived_filename"),
+                "当前" if self.current_source_file_id is not None and int(row.get("id") or 0) == int(self.current_source_file_id) else "-",
                 row.get("archived_path"),
+                _source_file_status(row),
                 row.get("file_size"),
                 str(row.get("sha256") or "")[:12],
                 row.get("imported_at"),
@@ -637,16 +667,11 @@ class MeshLogAnalysisPage(QWidget):
                 row.get("issue_count"),
                 row.get("parser_version"),
             ]
-            _set_row(self.source_table, row_index, values)
+            _set_row(self.source_table, row_index, values, row)
         _end_table_update(self.source_table)
 
     def _render_links(self, repo: MeshMrRepository) -> None:
-        filters = {
-            "radio": int(self.radio_filter.text()) if self.radio_filter.text().strip().isdigit() else None,
-            "state": self.state_filter.text().strip().upper() or None,
-            "peer": self.peer_filter.text().strip().replace("-", "").replace(":", "").lower() or None,
-            "keyword": self.keyword_filter.text().strip() or None,
-        }
+        filters = self._current_link_filters()
         total, rows = repo.query_links(self.page_size, (self.link_page - 1) * self.page_size, filters)
         self.link_pagination.set_state(PaginationState(self.page_size, self.link_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
         _begin_table_update(self.link_table)
@@ -659,6 +684,9 @@ class MeshLogAnalysisPage(QWidget):
                 row.get("radio"),
                 row.get("link_state"),
                 peer,
+                row.get("peer_ap_name") or "-",
+                row.get("peer_site") or "-",
+                row.get("peer_radio") or row.get("peer_radio_label") or "-",
                 row.get("establish_time"),
                 row.get("duration_text"),
                 row.get("link_count"),
@@ -682,7 +710,7 @@ class MeshLogAnalysisPage(QWidget):
         self.restyle_visible_link_rows()
 
     def _render_events(self, repo: MeshMrRepository) -> None:
-        total, rows = repo.query_events(self.page_size, (self.event_page - 1) * self.page_size)
+        total, rows = repo.query_events(self.page_size, (self.event_page - 1) * self.page_size, self.current_source_file_id)
         self.event_pagination.set_state(PaginationState(self.page_size, self.event_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
         _begin_table_update(self.event_table)
         self.event_table.setRowCount(len(rows))
@@ -718,7 +746,7 @@ class MeshLogAnalysisPage(QWidget):
         self._render_issues(repo or self._repo())
 
     def _render_issues(self, repo: MeshMrRepository) -> None:
-        total, rows = repo.query_issues(self.page_size, (self.issue_page - 1) * self.page_size)
+        total, rows = repo.query_issues(self.page_size, (self.issue_page - 1) * self.page_size, self.current_source_file_id)
         self._set_issue_tab_count(total)
         if total <= 0:
             self.issue_table.setRowCount(0)
@@ -785,6 +813,115 @@ class MeshLogAnalysisPage(QWidget):
         self.dirty_tabs = {"source", "link", "event", "issue"}
         self.refresh_current_tab()
 
+    def show_all_source_files(self) -> None:
+        self.current_source_file_id = None
+        self.current_source_file_name = None
+        self.link_page = self.event_page = self.issue_page = 1
+        repo = self._repo() if self.current_profile is not None else None
+        if repo is None:
+            return
+        self._render_sources(repo)
+        self._render_links(repo)
+        self._render_events(repo)
+        self.refresh_parse_issues(repo)
+        self.progress_label.setText("当前显示：全部文件")
+
+    def _open_source_file_links(self, row: int, _column: int = 0) -> None:
+        item = self.source_table.item(row, 0) if row >= 0 else None
+        data = item.data(Qt.UserRole) if item else None
+        if not isinstance(data, dict):
+            return
+        self._show_source_file_links(data)
+
+    def _show_source_file_links(self, data: dict[str, object]) -> None:
+        source_file_id = int(data.get("id") or 0)
+        if source_file_id <= 0 or self.current_profile is None:
+            return
+        self.current_source_file_id = source_file_id
+        self.current_source_file_name = str(data.get("archived_filename") or data.get("original_filename") or source_file_id)
+        self.link_page = self.event_page = self.issue_page = 1
+        repo = self._repo()
+        self._render_sources(repo)
+        self.tabs.setCurrentIndex(1)
+        self._render_links(repo)
+        self._render_events(repo)
+        self.refresh_parse_issues(repo)
+        self.progress_label.setText(f"当前显示文件：{self.current_source_file_name}")
+
+    def jump_to_mesh_link_detail(self, target: dict[str, object]) -> None:
+        if self.current_profile is None:
+            return
+        repo = self._repo()
+        filters = self._current_link_filters()
+        position = repo.find_link_detail_row_position(
+            str(target.get("session_id") or ""),
+            str(target.get("sample_time") or ""),
+            str(target.get("peer_mac") or "") or None,
+            target.get("radio"),
+            str(target.get("state") or "") or None,
+            self.page_size,
+            filters,
+        )
+        if position is None:
+            filters = {}
+            self._clear_link_filters()
+            position = repo.find_link_detail_row_position(
+                str(target.get("session_id") or ""),
+                str(target.get("sample_time") or ""),
+                str(target.get("peer_mac") or "") or None,
+                target.get("radio"),
+                str(target.get("state") or "") or None,
+                self.page_size,
+                filters,
+            )
+        if position is None:
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), "Cannot locate the selected mesh link row.")
+            return
+        self.tabs.setCurrentIndex(1)
+        self.link_page = position.page_no
+        self._render_links(repo)
+        row = self._find_link_table_row_by_id(position.link_id)
+        if row < 0 and 0 <= position.index_in_page < self.link_table.rowCount():
+            row = position.index_in_page
+        if row < 0:
+            return
+        self.link_table.selectRow(row)
+        item = self.link_table.item(row, 0)
+        if item is not None:
+            self.link_table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+        self._highlight_link_row(row)
+
+    def _current_link_filters(self) -> dict[str, object]:
+        return {
+            "source_file_id": self.current_source_file_id,
+            "radio": int(self.radio_filter.text()) if self.radio_filter.text().strip().isdigit() else None,
+            "state": self.state_filter.text().strip().upper() or None,
+            "peer": self.peer_filter.text().strip() or None,
+            "keyword": self.keyword_filter.text().strip() or None,
+        }
+
+    def _clear_link_filters(self) -> None:
+        for widget in (self.radio_filter, self.state_filter, self.peer_filter, self.keyword_filter):
+            blocker = QSignalBlocker(widget)
+            widget.clear()
+            del blocker
+
+    def _find_link_table_row_by_id(self, link_id: int) -> int:
+        for row in range(self.link_table.rowCount()):
+            item = self.link_table.item(row, 0)
+            data = item.data(Qt.UserRole) if item else None
+            if isinstance(data, dict) and int(data.get("id") or 0) == int(link_id):
+                return row
+        return -1
+
+    def _highlight_link_row(self, row: int) -> None:
+        color = QColor("#fde68a")
+        for column in range(self.link_table.columnCount()):
+            item = self.link_table.item(row, column)
+            if item is not None:
+                item.setBackground(color)
+        QTimer.singleShot(1600, self.restyle_visible_link_rows)
+
     def restyle_visible_link_rows(self) -> None:
         base = self.link_table.palette().base()
         alternate = self.link_table.palette().alternateBase()
@@ -812,8 +949,8 @@ class MeshLogAnalysisPage(QWidget):
     def _setup_column_states(self) -> None:
         defaults = {
             "mr": [180, 180, 180, 90, 100, 120, 90, 180],
-            "source": [180, 320, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
-            "link": [190, 60, 90, 150, 180, 135, 70, 95, 95, 95, 95, 110, 110, 130, 130, 85, 85, 85, 85, 240, 70],
+            "source": [180, 90, 320, 100, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
+            "link": [190, 60, 90, 150, 180, 150, 90, 180, 135, 70, 95, 95, 95, 95, 110, 110, 130, 130, 85, 85, 85, 85, 240, 70],
             "event": [180, 60, 140, 150, 150, 120, 110, 110, 110, 110, 110, 110, 240, 70],
             "issue": [180, 70, 90, 140, 120, 240, 320],
         }
@@ -828,7 +965,7 @@ class MeshLogAnalysisPage(QWidget):
             state.restore()
 
     def _open_peer_from_link_cell(self, row: int, column: int) -> None:
-        if column != 3 or self.current_profile is None:
+        if column not in {3, 4} or self.current_profile is None:
             return
         item = self.link_table.item(row, 0)
         data = item.data(Qt.UserRole) if item else None
@@ -838,7 +975,7 @@ class MeshLogAnalysisPage(QWidget):
         if not peer:
             return
         link_id = int(data.get("id") or 0) or None
-        self._open_peer_dialog(str(peer), int(data.get("radio") or 0), str(data.get("session_id") or ""), link_id)
+        self._open_peer_dialog(str(peer), int(data.get("radio") or 0), str(data.get("session_id") or ""), link_id, self.current_source_file_id)
 
     def _open_peer_from_event_cell(self, row: int, column: int) -> None:
         if column not in {3, 4} or self.current_profile is None:
@@ -847,15 +984,223 @@ class MeshLogAnalysisPage(QWidget):
         peer = text.replace("-", "").replace(":", "").lower()
         if len(peer) == 12:
             radio = int(self.event_table.item(row, 1).text()) if self.event_table.item(row, 1) and self.event_table.item(row, 1).text().isdigit() else None
-            self._open_peer_dialog(peer, radio, "")
+            self._open_peer_dialog(peer, radio, "", None, self.current_source_file_id)
 
-    def _open_peer_dialog(self, peer_mac: str, radio: int | None, session_id: str, anchor_link_id: int | None = None) -> None:
+    def _open_peer_dialog(self, peer_mac: str, radio: int | None, session_id: str, anchor_link_id: int | None = None, source_file_id: int | None = None) -> None:
         if self.current_profile is None:
             return
-        dialog = MeshPeerDetailDialog(self.i18n, self.current_profile, self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name), peer_mac, radio, session_id, self, anchor_link_id=anchor_link_id)
+        dialog = MeshPeerDetailDialog(self.i18n, self.current_profile, self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name), peer_mac, radio, session_id, self, anchor_link_id=anchor_link_id, source_file_id=source_file_id)
         dialog.destroyed.connect(lambda _=None, d=dialog: self.peer_dialogs.remove(d) if d in self.peer_dialogs else None)
         self.peer_dialogs.append(dialog)
         dialog.show()
+
+    def _show_source_context_menu(self, pos) -> None:
+        row_index = self.source_table.rowAt(pos.y())
+        if row_index < 0:
+            return
+        item = self.source_table.item(row_index, 0)
+        data = item.data(Qt.UserRole) if item else None
+        if not isinstance(data, dict):
+            return
+        path = Path(str(data.get("archived_path") or data.get("original_path") or ""))
+        menu = QMenu(self)
+        show_file_action = menu.addAction("显示此文件链路明细")
+        show_all_action = menu.addAction("显示全部文件")
+        menu.addSeparator()
+        open_action = menu.addAction("打开所在目录")
+        copy_action = menu.addAction("复制文件路径")
+        menu.addSeparator()
+        delete_action = menu.addAction("删除本地源文件")
+        open_action.setEnabled(path.parent.exists())
+        copy_action.setEnabled(bool(str(path)))
+        delete_action.setEnabled(path.exists() and path.is_file() and not str(data.get("deleted_at") or ""))
+        selected = menu.exec(self.source_table.viewport().mapToGlobal(pos))
+        if selected is show_file_action:
+            self._show_source_file_links(data)
+        elif selected is show_all_action:
+            self.show_all_source_files()
+        elif selected is open_action:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+        elif selected is copy_action:
+            QApplication.clipboard().setText(str(path))
+        elif selected is delete_action:
+            self._delete_source_file(data)
+
+    def _delete_source_file(self, data: dict[str, object]) -> None:
+        source_file_id = int(data.get("id") or 0)
+        if source_file_id <= 0 or self.current_profile is None:
+            return
+        path = Path(str(data.get("archived_path") or ""))
+        if not path.exists():
+            self._repo().mark_source_file_missing(source_file_id)
+            self._render_sources(self._repo())
+            return
+        if not path.is_file():
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "只能删除本地源文件，不能删除目录。")
+            return
+        answer = QMessageBox.question(
+            self,
+            self.i18n.t("mesh_analysis.title"),
+            f"确定要删除本地源文件吗？\n\n路径：{path}\n\n此操作只删除磁盘上的源文件，不删除数据库中的解析结果。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        repo = self._repo()
+        try:
+            path.unlink()
+            repo.mark_source_file_deleted(source_file_id)
+        except OSError as exc:
+            repo.mark_source_file_delete_failed(source_file_id, str(exc))
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), str(exc))
+        self._render_sources(repo)
+
+    def _show_source_context_menu(self, pos) -> None:
+        row_index = self.source_table.rowAt(pos.y())
+        if row_index < 0:
+            return
+        item = self.source_table.item(row_index, 0)
+        data = item.data(Qt.UserRole) if item else None
+        if not isinstance(data, dict):
+            return
+        path = Path(str(data.get("archived_path") or data.get("original_path") or ""))
+        source_file_id = int(data.get("id") or 0)
+        repo = self._repo()
+        counts = repo.count_parsed_data_by_source_file(source_file_id) if source_file_id > 0 else {"links": 0, "events": 0, "issues": 0, "caches": 0}
+        has_parsed_data = any(int(counts.get(key, 0)) > 0 for key in ("links", "events", "issues", "caches"))
+        menu = QMenu(self)
+        show_file_action = menu.addAction("显示此文件链路明细")
+        show_all_action = menu.addAction("显示全部文件")
+        menu.addSeparator()
+        open_action = menu.addAction("打开所在目录")
+        copy_action = menu.addAction("复制文件路径")
+        menu.addSeparator()
+        delete_action = menu.addAction("删除本地源文件")
+        delete_parsed_action = menu.addAction("删除解析数据")
+        delete_all_action = menu.addAction("删除本地源文件和解析数据")
+        show_file_action.setEnabled(has_parsed_data)
+        open_action.setEnabled(path.parent.exists())
+        copy_action.setEnabled(bool(str(path)))
+        delete_action.setEnabled(path.exists() and path.is_file() and not str(data.get("deleted_at") or ""))
+        delete_parsed_action.setEnabled(source_file_id > 0 and has_parsed_data)
+        delete_all_action.setEnabled((path.exists() and path.is_file()) or (source_file_id > 0 and has_parsed_data))
+        selected = menu.exec(self.source_table.viewport().mapToGlobal(pos))
+        if selected is show_file_action:
+            self._show_source_file_links(data)
+        elif selected is show_all_action:
+            self.show_all_source_files()
+        elif selected is open_action:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+        elif selected is copy_action:
+            QApplication.clipboard().setText(str(path))
+        elif selected is delete_action:
+            self._delete_source_file(data)
+        elif selected is delete_parsed_action:
+            self._delete_parsed_data(data, delete_local_file=False)
+        elif selected is delete_all_action:
+            self._delete_parsed_data(data, delete_local_file=True)
+
+    def _delete_source_file(self, data: dict[str, object]) -> None:
+        source_file_id = int(data.get("id") or 0)
+        if source_file_id <= 0 or self.current_profile is None:
+            return
+        path = Path(str(data.get("archived_path") or ""))
+        repo = self._repo()
+        if not path.exists():
+            repo.mark_source_file_missing(source_file_id)
+            self._render_sources(repo)
+            self.progress_label.setText("文件不存在，已标记为文件缺失。")
+            return
+        if not path.is_file():
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "只能删除本地源文件，不能删除目录。")
+            return
+        answer = QMessageBox.question(
+            self,
+            self.i18n.t("mesh_analysis.title"),
+            f"确定要删除本地源文件吗？\n\n路径：{path}\n\n此操作只删除磁盘上的源文件，不删除数据库中的解析结果。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            path.unlink()
+            repo.mark_source_file_deleted(source_file_id)
+            self.progress_label.setText("已删除本地源文件，解析数据仍可查看。")
+        except OSError as exc:
+            repo.mark_source_file_delete_failed(source_file_id, str(exc))
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"删除失败：{exc}")
+        self._render_sources(repo)
+
+    def _delete_parsed_data(self, data: dict[str, object], delete_local_file: bool = False) -> None:
+        source_file_id = int(data.get("id") or 0)
+        if source_file_id <= 0 or self.current_profile is None:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "该源文件缺少有效 source_file_id，无法安全删除对应解析数据。")
+            return
+        repo = self._repo()
+        counts = repo.count_parsed_data_by_source_file(source_file_id)
+        file_name = str(data.get("archived_filename") or data.get("original_filename") or source_file_id)
+        path = Path(str(data.get("archived_path") or ""))
+        if delete_local_file:
+            message = (
+                "确定要删除本地源文件和对应解析数据吗？\n\n"
+                f"文件名：{file_name}\n"
+                f"路径：{path}\n"
+                f"链路明细：{counts['links']} 条\n"
+                f"事件：{counts['events']} 条\n"
+                f"解析问题：{counts['issues']} 条\n\n"
+                "此操作会删除本地文件，并删除数据库中的解析结果。"
+            )
+        else:
+            message = (
+                "确定要删除该源文件对应的解析数据吗？\n\n"
+                f"文件名：{file_name}\n"
+                f"源文件ID：{source_file_id}\n"
+                f"链路明细：{counts['links']} 条\n"
+                f"事件：{counts['events']} 条\n"
+                f"解析问题：{counts['issues']} 条\n\n"
+                "此操作只删除数据库中的解析结果，不删除本地源文件。\n"
+                "删除后该文件需要重新导入才会恢复解析数据。"
+            )
+        answer = QMessageBox.question(
+            self,
+            self.i18n.t("mesh_analysis.title"),
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        result = repo.delete_parsed_data_by_source_file(source_file_id)
+        if not result.ok:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), result.message or "删除解析数据失败")
+            return
+        local_delete_error = ""
+        if delete_local_file:
+            if path.exists() and path.is_file():
+                try:
+                    path.unlink()
+                    repo.mark_source_file_deleted(source_file_id)
+                except OSError as exc:
+                    local_delete_error = str(exc)
+                    repo.mark_source_file_delete_failed(source_file_id, local_delete_error)
+            elif path.exists() and not path.is_file():
+                local_delete_error = "路径是目录，已拒绝删除。"
+                repo.mark_source_file_delete_failed(source_file_id, local_delete_error)
+            else:
+                repo.mark_source_file_deleted(source_file_id)
+        if self.current_source_file_id == source_file_id:
+            self.current_source_file_id = None
+            self.current_source_file_name = None
+            self.link_page = self.event_page = self.issue_page = 1
+        current_id = self.current_profile.mr_id
+        self.refresh_all(select_mr_id=current_id)
+        if local_delete_error:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"解析数据已删除，但本地源文件删除失败：{local_delete_error}")
+        self.progress_label.setText(
+            f"已删除解析数据：链路 {result.deleted_links} 条，事件 {result.deleted_events} 条，解析问题 {result.deleted_issues} 条。当前已切换为全部文件。"
+        )
 
     def _find_mr_row(self, mr_id: str) -> int:
         for row in range(self.mr_table.rowCount()):
@@ -901,6 +1246,23 @@ def _display(value) -> str:
     if hasattr(value, "isoformat"):
         return value.isoformat(sep=" ", timespec="milliseconds")
     return str(value)
+
+
+def _source_file_status(row: dict[str, object]) -> str:
+    if str(row.get("parsed_delete_error") or "") or str(row.get("delete_error") or ""):
+        return "删除失败"
+    status = str(row.get("file_status") or "").strip().lower()
+    if status == "all_deleted" or (str(row.get("deleted_at") or "") and str(row.get("parsed_deleted_at") or "")):
+        return "源文件和解析数据已删除"
+    if status == "parsed_deleted" or str(row.get("parsed_deleted_at") or ""):
+        return "解析数据已删除"
+    if status == "deleted" or str(row.get("deleted_at") or ""):
+        return "已删除"
+    if status == "missing" or int(row.get("file_exists") or 0) == 0:
+        return "文件缺失"
+    if status in {"ok", "exists", ""}:
+        return "正常"
+    return status or "未知"
 
 
 def _set_row(table: QTableWidget, row_index: int, values: list[object], user_data: object | None = None) -> None:

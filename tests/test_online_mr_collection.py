@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import sqlite3
@@ -9,13 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import (
+    FpingConfig,
     INIT_COMMANDS,
     STATE_ABORTED,
     STATE_COLLECTING,
@@ -47,6 +48,7 @@ from netconsole.services.online_mr_collector import OnlineMrCollectionManager, O
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
+from netconsole.ui.fping_worker import FpingProbeWorker
 
 
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
@@ -373,22 +375,19 @@ def test_active_segment_ping_aggregation() -> None:
 
 def test_repeat_command_groups_match_required_sequences() -> None:
     assert repeat_command_group(TASK_MESH_LINK, interval=1) == (
-        "screen-length disable",
         "display clock",
         "display wlan mesh-link",
         "repeat 2 delay 1",
     )
     assert repeat_command_group(TASK_CHANNEL_BUSY, interval=9, radio_id=1) == (
-        "screen-length disable",
         "display clock",
         "display ar5drv 1 channelbusy",
         "repeat 2 delay 9",
     )
     assert "display ar5drv 3 channelbusy" in repeat_command_group(TASK_CHANNEL_BUSY, interval=9, radio_id=3)
-    assert repeat_command_group(TASK_AP_RADIO_STATISTICS, interval=10, radio_id=1)[2] == "display ar5drv 1 statistics"
+    assert repeat_command_group(TASK_AP_RADIO_STATISTICS, interval=10, radio_id=1)[1] == "display ar5drv 1 statistics"
     assert repeat_command_group(TASK_SWITCH_HISTORY, interval=300)[-1] == "repeat 2 delay 300"
     assert repeat_command_group(TASK_INTERFACE_RATE, interval=2) == (
-        "screen-length disable",
         "display clock",
         "dis counters rate inbound interface",
         "dis counters rate outbound interface",
@@ -439,6 +438,31 @@ def test_session_raw_directory_precreates_required_files(tmp_path: Path) -> None
     assert "iperf_client_raw.log" not in raw_names
 
 
+def test_disabled_fping_worker_writes_non_empty_summary(tmp_path: Path) -> None:
+    _qt_app()
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    worker = FpingProbeWorker(session, FpingConfig(enabled=False), tmp_path / "Fping_v3.exe")
+
+    worker.run()
+
+    summary = session.session_dir / "raw" / "Fping_final_summary.txt"
+    assert summary.read_text(encoding="utf-8").strip()
+
+
+def test_online_mr_open_dir_defaults_to_site_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    opened: list[str] = []
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.os.name", "nt")
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.os.startfile", lambda path: opened.append(str(path)), raising=False)
+
+    page.open_selected_session_dir()
+
+    expected = page.paths.online_mr_root("demo")
+    assert expected.exists()
+    assert opened == [str(expected)]
+
+
 def test_default_online_mr_intervals_and_radio() -> None:
     config = OnlineMrIntervals()
     assert config.mesh_link == 1
@@ -454,25 +478,49 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     page = OnlineMrCollectionPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
-    assert page.connection_box.title() == "车载MR在线收集"
-    assert page.period_box.title() == "采集周期"
-    assert page.radio_box.title() == "射频参数"
-    assert page.ping_box.title() == "高频Ping"
+    assert page.connection_box.title()
+    assert page.period_box.title()
+    assert page.radio_box.title()
+    assert page.ping_box.title()
     assert not hasattr(page, "profile_combo")
     assert not hasattr(page, "device_combo")
     assert not hasattr(page, "host_edit")
-    assert page.view_device_combo.maximumWidth() <= 320
+    assert page.view_device_combo.maximumWidth() <= 360
     assert page.device_table.columnCount() == 9
     assert page.enable_iperf_check.isChecked() is False
     assert page.iperf_bandwidth_unit_combo.currentText() == "M"
     assert page.iperf_bandwidth_hint_label.text()
     assert page.summary_table.maximumHeight() <= 180
-    assert page.tabs.minimumHeight() >= 300
+    assert page.tabs.minimumHeight() >= 260
     assert page.tabs.count() == 10
-    assert page.tabs.tabText(4) == "接口速率"
-    assert page.tabs.tabText(7) == "打流测试"
-    assert page.tabs.tabText(8) == "诊断结果"
+    assert page.tabs.tabText(4)
+    assert page.tabs.tabText(7)
+    assert page.tabs.tabText(8)
     assert not page.advanced_detail.isVisible()
+
+
+def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    first = _create_onboard_device(repository, onboard.id, "A")
+    second = _create_onboard_device(repository, onboard.id, "BBB")
+    page.refresh_all()
+
+    for target in (first.id, second.id):
+        row = next(row for row, device in enumerate(page.filtered_devices) if device.id == target)
+        page.device_table.item(row, 0).setCheckState(Qt.Checked)
+
+    assert page.fping_device_combo_1.currentData() == first.id
+    assert page.fping_device_combo_2.currentData() == second.id
+    combo_ids = {page.fping_device_combo_1.itemData(index) for index in range(page.fping_device_combo_1.count())}
+    assert combo_ids == {None, first.id, second.id}
+
+    first_config = page._build_config_for_device(first)
+    second_config = page._build_config_for_device(second)
+    assert first_config is not None
+    assert second_config is not None
+    assert first_config.fping.target == first.primary_address
+    assert second_config.fping.target == second.primary_address
 
 
 def test_online_mr_iperf_controls_ignore_mouse_wheel(tmp_path: Path) -> None:
@@ -523,8 +571,8 @@ def test_online_mr_page_table_widths_persist(tmp_path: Path) -> None:
 
 def test_online_mr_filters_current_site_onboard_fat_ap_type_variants(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
-    other = groups.create("车站")
+    onboard = groups.create("\u8f66\u8f7d")
+    other = groups.create("\u8f66\u7ad9")
     _create_onboard_device(repository, onboard.id, "A", "FAT-AP")
     _create_onboard_device(repository, onboard.id, "B", "FAT_AP")
     _create_onboard_device(repository, onboard.id, "C", "FAT AP")
@@ -540,7 +588,7 @@ def test_online_mr_filters_current_site_onboard_fat_ap_type_variants(tmp_path: P
 
 def test_online_mr_vehicle_device_sort_is_natural_name_host_id_order(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
+    onboard = groups.create("\u8f66\u8f7d")
     for name in ("256", "10-xxx", "02-xxx", "25ct", "01-xxx"):
         _create_onboard_device(repository, onboard.id, name)
     page.refresh_all()
@@ -550,7 +598,7 @@ def test_online_mr_vehicle_device_sort_is_natural_name_host_id_order(tmp_path: P
 
 def test_online_mr_blocks_selecting_more_than_two_devices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
+    onboard = groups.create("\u8f66\u8f7d")
     for name in ("A", "B", "C"):
         _create_onboard_device(repository, onboard.id, name)
     page.refresh_all()
@@ -566,7 +614,7 @@ def test_online_mr_blocks_selecting_more_than_two_devices(tmp_path: Path, monkey
 
 def test_online_mr_builds_config_from_device_management_and_device_session_dir(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
+    onboard = groups.create("\u8f66\u8f7d")
     device = _create_onboard_device(repository, onboard.id, 'MR/01:*?"<>|', "FAT AP")
     page.refresh_all()
     page.enable_iperf_check.setChecked(True)
@@ -592,7 +640,7 @@ def test_online_mr_builds_config_from_device_management_and_device_session_dir(t
 
 def test_online_mr_config_includes_tunnel_targets_for_enabled_vehicle_device(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
+    onboard = groups.create("\u8f66\u8f7d")
     device = repository.create(
         Device(
             name="MR-01",
@@ -674,7 +722,7 @@ def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_
 
 def test_online_mr_skips_incomplete_connection_without_hiding_device(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
+    onboard = groups.create("\u8f66\u8f7d")
     incomplete = repository.create(Device(name="NoPassword", group_id=onboard.id, device_type="FAT-AP", ip_address="192.0.2.50", ssh_enabled=1, ssh_username="admin", ssh_password=""))
     page.refresh_all()
 
@@ -684,7 +732,7 @@ def test_online_mr_skips_incomplete_connection_without_hiding_device(tmp_path: P
 
 def test_online_mr_stop_selected_and_stop_all_are_device_scoped(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
-    onboard = groups.create("车载")
+    onboard = groups.create("\u8f66\u8f7d")
     first = _create_onboard_device(repository, onboard.id, "A")
     second = _create_onboard_device(repository, onboard.id, "B")
     page.refresh_all()
@@ -709,6 +757,62 @@ def test_online_mr_stop_selected_and_stop_all_are_device_scoped(tmp_path: Path) 
     assert second_worker.cancelled is False
     page.stop_all()
     assert second_worker.cancelled is True
+
+
+def test_online_mr_stop_updates_device_and_summary_status(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    worker = FakeWorker()
+    page.workers_by_device_id = {device.id: worker}
+    page.manager.register_device(device.id, worker)
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, 18, QTableWidgetItem(str(device.id)))
+    row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
+    page.device_table.item(row, 0).setCheckState(Qt.Checked)
+
+    page.stop_selected()
+
+    assert worker.cancelled is True
+    assert page.status_value == "STOPPING"
+    assert "stopping" in page.summary_table.item(0, 2).text().lower()
+
+
+def test_online_mr_view_device_follows_checked_device(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    first = _create_onboard_device(repository, onboard.id, "A")
+    second = _create_onboard_device(repository, onboard.id, "B")
+    page.refresh_all()
+    row_for_second = next(row for row, device in enumerate(page.filtered_devices) if device.id == second.id)
+
+    page.device_table.item(row_for_second, 0).setCheckState(Qt.Checked)
+
+    assert page.view_device_combo.currentData() == second.id
+    assert page.view_device_combo.itemData(0) == second.id
+
+
+def test_online_mr_parse_prefers_current_view_device_session(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+    session = OnlineMrSessionStore(page.paths).create_session(config)
+    page.last_session_dir_by_device_id[int(device.id)] = session.session_dir
+    page._fill_view_devices(prefer_device_id=int(device.id))
+
+    assert page._selected_session_dir_for_parse() == session.session_dir
 
 
 def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) -> None:
@@ -749,3 +853,78 @@ def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) 
         assert conn.execute("SELECT COUNT(*) FROM iperf_intervals").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] >= 1
         assert conn.execute("SELECT COUNT(*) FROM active_segment_metrics").fetchone()[0] >= 1
+
+
+def test_online_mr_diagnosis_parser_accepts_stream_rx_raw(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2025-12-03 10:12:30 [collector=repeat] START commands:\n"
+        "display clock\n"
+        "display wlan mesh-link\n"
+        "repeat 2 delay 1\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX display clock\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX [MR-probe]display wlan mesh-link\n"
+        f"2025-12-03 10:12:31.001 [collector=repeat] RX {LINE_A}\n"
+        "2025-12-03 10:12:32.002 [collector=repeat] RX display clock\n"
+        "2025-12-03 10:12:32.002 [collector=repeat] RX [MR-probe]display wlan mesh-link\n"
+        f"2025-12-03 10:12:32.002 [collector=repeat] RX {LINE_A}\n",
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.mesh_samples == 2
+    with sqlite3.connect(session.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0] >= 2
+
+
+def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "channel_busy_raw.log").write_text(
+        "2025-12-03 10:12:30 [collector=repeat] START commands:\n"
+        "display clock\n"
+        "display ar5drv 1 channelbusy\n"
+        "repeat 2 delay 9\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX display clock\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX [MR-probe]display ar5drv 1 channelbusy\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX ChannelBusy information\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX  Date/Month/Year: 26/06/2026\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX        Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX  01     22:08:24          4          1          3          -\n",
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.channel_samples == 1
+    with sqlite3.connect(session.db_path) as conn:
+        assert conn.execute("SELECT tx_busy, rx_busy FROM live_channel_busy").fetchone() == (1, 3)
+
+
+def test_online_mr_diagnosis_parser_skips_locked_fping_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        f"2025-12-03 10:12:30 >>> display clock ; display wlan mesh-link\n{LINE_A}\n",
+        encoding="utf-8",
+    )
+    (session.session_dir / "raw" / "Fping.txt").write_text("locked", encoding="utf-8")
+
+    import netconsole.services.rail_transit.online_mr_diagnosis_parser as parser_module
+
+    original_reader = parser_module.read_text_with_retry
+
+    def fake_reader(path: Path, *args, **kwargs):
+        if path.name == "Fping.txt":
+            raise PermissionError("locked")
+        return original_reader(path, *args, **kwargs)
+
+    monkeypatch.setattr(parser_module, "read_text_with_retry", fake_reader)
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.mesh_samples == 1
+    assert summary.ping_samples == 0
+    assert summary.issues >= 1

@@ -18,9 +18,9 @@ class MeshChartHoverPopup(QFrame):
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.NoTextInteraction)
         self.label.setMinimumWidth(280)
-        self.label.setMaximumWidth(560)
+        self.label.setMaximumWidth(520)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(16, 14, 16, 14)
         layout.addWidget(self.label)
         self._last_text = ""
         self.apply_palette()
@@ -47,23 +47,19 @@ class MeshChartHoverPopup(QFrame):
         self._last_text = ""
 
     def apply_palette(self) -> None:
-        palette = QApplication.palette()
-        background = palette.toolTipBase().color()
-        foreground = palette.toolTipText().color()
-        border = palette.highlight().color()
         self.setStyleSheet(
-            f"""
+            """
             MeshChartHoverPopup {{
-                background: {background.name()};
-                color: {foreground.name()};
-                border: 1px solid {border.name()};
-                border-radius: 6px;
+                background: #111827;
+                color: #f9fafb;
+                border: 1px solid #38bdf8;
+                border-radius: 8px;
             }}
             QLabel {{
                 background: transparent;
-                color: {foreground.name()};
-                font-size: 12px;
-                line-height: 1.35;
+                color: #f9fafb;
+                font-size: 14px;
+                line-height: 1.45;
             }}
             """
         )
@@ -94,7 +90,7 @@ def _plain_text_to_html(text: str) -> str:
             blocks.append(f"<p style='margin:6px 0 2px 0;'><b>{safe}</b></p>")
         elif ":" in stripped:
             label, value = safe.split(":", 1)
-            blocks.append(f"<p style='margin:3px 0;'><b>{label}:</b>{value}</p>")
+            blocks.append(f"<p style='margin:3px 0;'><b>{label}:</b><b>{value}</b></p>")
         else:
-            blocks.append(f"<p style='margin:3px 0;'>{safe}</p>")
+            blocks.append(f"<p style='margin:3px 0;'><b>{safe}</b></p>")
     return "<div style='white-space:normal;'>" + "".join(blocks) + "</div>"

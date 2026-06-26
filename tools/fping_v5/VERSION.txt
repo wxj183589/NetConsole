@@ -1,0 +1,9 @@
+fping version: /cygdrive/d/study/fping/src/fping/src/fping: Version 5.5 
+build time: 2026-06-27 00:28:00 +0800
+build method: Cygwin x86_64
+source: schweikert/fping v5.5
+configure args: --disable-ipv6 --enable-safe-limits
+supports -J/--json: yes
+
+cygcheck dependency summary:
+- D:\study\fping\cygwin64\bin\cygwin1.dll

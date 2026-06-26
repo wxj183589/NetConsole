@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -24,8 +25,37 @@ from netconsole.repositories.mesh_catalog_repository import dt_text
 
 SCHEMA_VERSION = "1"
 SCHEMA_KEY = "schema_" + "version"
-DERIVED_ANALYSIS_VERSION = "2"
+DERIVED_ANALYSIS_VERSION = "4"
 DERIVED_ANALYSIS_KEY = "derived_analysis_version"
+_MESH_LINK_CHART_COLUMNS = (
+    "id, source_file_id, session_id, sample_time, radio, link_state, peer_mac_raw, peer_mac_normalized, "
+    "peer_ap_name, peer_site, peer_radio, peer_radio_label, establish_time, metrics_json, deltas_json"
+)
+_MESH_EVENT_CHART_COLUMNS = (
+    "id, event_time, event_type, radio, from_peer_mac, to_peer_mac, "
+    "current_sample_time, observed_window_ms, details_json"
+)
+
+
+@dataclass(frozen=True)
+class RowPosition:
+    row_index: int
+    page_no: int
+    index_in_page: int
+    link_id: int
+    total: int = 0
+    page_size: int = 1000
+
+
+@dataclass(frozen=True)
+class DeleteParsedDataResult:
+    ok: bool
+    source_file_id: str
+    deleted_links: int = 0
+    deleted_events: int = 0
+    deleted_issues: int = 0
+    deleted_caches: int = 0
+    message: str = ""
 
 
 class MeshMrRepository:
@@ -65,7 +95,13 @@ class MeshMrRepository:
                     records_skipped INTEGER DEFAULT 0,
                     duplicate_records INTEGER DEFAULT 0,
                     issue_count INTEGER DEFAULT 0,
-                    error_message TEXT DEFAULT ''
+                    error_message TEXT DEFAULT '',
+                    file_exists INTEGER DEFAULT 1,
+                    deleted_at TEXT DEFAULT '',
+                    delete_error TEXT DEFAULT '',
+                    file_status TEXT DEFAULT 'ok',
+                    parsed_deleted_at TEXT DEFAULT '',
+                    parsed_delete_error TEXT DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +136,15 @@ class MeshMrRepository:
                     link_state TEXT NOT NULL,
                     peer_mac_raw TEXT NOT NULL,
                     peer_mac_normalized TEXT NULL,
+                    peer_mac TEXT DEFAULT '',
+                    peer_ap_name TEXT DEFAULT '',
+                    peer_site TEXT DEFAULT '',
+                    peer_radio_id INTEGER NULL,
+                    peer_radio TEXT DEFAULT '',
+                    peer_radio_label TEXT DEFAULT '',
+                    peer_radio_mac TEXT DEFAULT '',
+                    peer_match_rule TEXT DEFAULT '',
+                    peer_resolve_source TEXT DEFAULT 'unresolved',
                     establish_time TEXT NULL,
                     duration_text TEXT NOT NULL,
                     duration_seconds INTEGER NULL,
@@ -144,6 +189,46 @@ class MeshMrRepository:
                     message TEXT NOT NULL,
                     raw_line TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS mesh_peer_mapping (
+                    peer_mac_normalized TEXT PRIMARY KEY,
+                    peer_ap_name TEXT DEFAULT '',
+                    peer_ap_mac TEXT DEFAULT '',
+                    peer_radio_id INTEGER NULL,
+                    peer_radio_label TEXT DEFAULT '',
+                    peer_site TEXT DEFAULT '',
+                    peer_location TEXT DEFAULT '',
+                    peer_direction TEXT DEFAULT '',
+                    match_rule TEXT DEFAULT '',
+                    match_confidence INTEGER DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS mesh_peer_resolve_cache (
+                    peer_mac TEXT PRIMARY KEY,
+                    peer_ap_name TEXT DEFAULT '',
+                    peer_site TEXT DEFAULT '',
+                    peer_radio TEXT DEFAULT '',
+                    peer_radio_mac TEXT DEFAULT '',
+                    source TEXT DEFAULT 'unresolved',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS mesh_link_aggregates (
+                    bucket_seconds INTEGER NOT NULL,
+                    bucket_time TEXT NOT NULL,
+                    radio INTEGER NOT NULL,
+                    peer_mac_normalized TEXT DEFAULT '',
+                    sample_count INTEGER DEFAULT 0,
+                    active_count INTEGER DEFAULT 0,
+                    avg_local_rssi REAL NULL,
+                    avg_peer_rssi REAL NULL,
+                    avg_local_tx_busy REAL NULL,
+                    avg_peer_tx_busy REAL NULL,
+                    avg_local_rx_busy REAL NULL,
+                    avg_peer_rx_busy REAL NULL,
+                    peer_ap_name TEXT DEFAULT '',
+                    peer_site TEXT DEFAULT '',
+                    peer_radio_label TEXT DEFAULT '',
+                    PRIMARY KEY(bucket_seconds, bucket_time, radio, peer_mac_normalized)
+                );
                 CREATE INDEX IF NOT EXISTS idx_samples_radio_time ON samples(radio, sample_time);
                 CREATE INDEX IF NOT EXISTS idx_samples_time ON samples(sample_time);
                 CREATE INDEX IF NOT EXISTS idx_links_sample ON mesh_links(sample_id);
@@ -152,7 +237,11 @@ class MeshMrRepository:
                 CREATE INDEX IF NOT EXISTS idx_mesh_links_peer_radio_time ON mesh_links(peer_mac_normalized, radio, sample_time);
                 CREATE INDEX IF NOT EXISTS idx_mesh_links_radio_time ON mesh_links(radio, sample_time);
                 CREATE INDEX IF NOT EXISTS idx_mesh_links_radio_time_state ON mesh_links(radio, sample_time, link_state);
+                CREATE INDEX IF NOT EXISTS idx_mesh_links_radio_session_time ON mesh_links(radio, session_id, sample_time);
+                CREATE INDEX IF NOT EXISTS idx_mesh_links_peer_radio_session_time ON mesh_links(peer_mac_normalized, radio, session_id, sample_time);
                 CREATE INDEX IF NOT EXISTS idx_mesh_links_session_time ON mesh_links(session_id, sample_time);
+                CREATE INDEX IF NOT EXISTS idx_mesh_links_source_file_time ON mesh_links(source_file_id, sample_time);
+                CREATE INDEX IF NOT EXISTS idx_mesh_links_session_source_file_time ON mesh_links(session_id, source_file_id, sample_time);
                 CREATE INDEX IF NOT EXISTS idx_links_state ON mesh_links(link_state);
                 CREATE INDEX IF NOT EXISTS idx_links_session ON mesh_links(session_id);
                 CREATE INDEX IF NOT EXISTS idx_sessions_peer ON mesh_sessions(radio, peer_mac_normalized);
@@ -161,12 +250,37 @@ class MeshMrRepository:
                 CREATE INDEX IF NOT EXISTS idx_events_type_time ON mesh_events(event_type, event_time);
                 CREATE INDEX IF NOT EXISTS idx_events_radio_time ON mesh_events(radio, event_time);
                 CREATE INDEX IF NOT EXISTS idx_mesh_events_radio_time ON mesh_events(radio, event_time);
+                CREATE INDEX IF NOT EXISTS idx_mesh_events_source_file_time ON mesh_events(source_file_id, event_time);
                 CREATE INDEX IF NOT EXISTS idx_events_from_peer ON mesh_events(from_peer_mac);
                 CREATE INDEX IF NOT EXISTS idx_events_to_peer ON mesh_events(to_peer_mac);
+                CREATE INDEX IF NOT EXISTS idx_parse_issues_source_file ON parse_issues(source_file_id);
                 CREATE INDEX IF NOT EXISTS idx_source_sha ON source_files(sha256);
                 CREATE INDEX IF NOT EXISTS idx_source_time ON source_files(first_sample_time, last_sample_time);
+                CREATE INDEX IF NOT EXISTS idx_mesh_peer_mapping_ap ON mesh_peer_mapping(peer_ap_name);
+                CREATE INDEX IF NOT EXISTS idx_mesh_peer_mapping_site ON mesh_peer_mapping(peer_site);
+                CREATE INDEX IF NOT EXISTS idx_mesh_peer_resolve_cache_ap ON mesh_peer_resolve_cache(peer_ap_name);
+                CREATE INDEX IF NOT EXISTS idx_mesh_peer_resolve_cache_site ON mesh_peer_resolve_cache(peer_site);
+                CREATE INDEX IF NOT EXISTS idx_mesh_link_aggregates_bucket ON mesh_link_aggregates(bucket_seconds, bucket_time);
                 """
             )
+            self._ensure_column(conn, "mesh_links", "peer_ap_name", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_site", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_mac", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_radio_id", "INTEGER NULL")
+            self._ensure_column(conn, "mesh_links", "peer_radio", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_radio_label", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_radio_mac", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_match_rule", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_resolve_source", "TEXT DEFAULT 'unresolved'")
+            self._ensure_column(conn, "source_files", "file_exists", "INTEGER DEFAULT 1")
+            self._ensure_column(conn, "source_files", "deleted_at", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "delete_error", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "file_status", "TEXT DEFAULT 'ok'")
+            self._ensure_column(conn, "source_files", "parsed_deleted_at", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "parsed_delete_error", "TEXT DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_ap ON mesh_links(peer_ap_name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_site ON mesh_links(peer_site)")
+            self._backfill_peer_columns(conn)
             if is_new_database:
                 conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)", (DERIVED_ANALYSIS_KEY, DERIVED_ANALYSIS_VERSION))
 
@@ -270,6 +384,15 @@ class MeshMrRepository:
                         record.link_state,
                         record.peer_mac_raw,
                         record.peer_mac_normalized,
+                        record.peer_mac_normalized or "",
+                        "",
+                        "",
+                        None,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "unresolved",
                         dt_text(record.establish_time),
                         record.duration_text,
                         record.duration_seconds,
@@ -283,18 +406,20 @@ class MeshMrRepository:
                         record.peer_noise_dbm,
                         record.local_signal_dbm,
                         record.peer_signal_dbm,
-                        record.duplicate_hash,
+                        f"{source_file_id}:{record.duplicate_hash}",
                     )
                 )
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO mesh_links (
                     sample_id, source_file_id, source_line_number, raw_line, radio, sample_time,
-                    link_state_raw, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
+                    link_state_raw, link_state, peer_mac_raw, peer_mac_normalized,
+                    peer_mac, peer_ap_name, peer_site, peer_radio_id, peer_radio, peer_radio_label, peer_match_rule,
+                    peer_radio_mac, peer_resolve_source, establish_time,
                     duration_text, duration_seconds, expected_duration_seconds, duration_deviation_seconds,
                     link_count, session_id, metrics_json, deltas_json, local_noise_dbm, peer_noise_dbm,
                     local_signal_dbm, peer_signal_dbm, record_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 link_rows,
             )
@@ -304,57 +429,302 @@ class MeshMrRepository:
     def list_source_files(self) -> list[dict[str, object]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM source_files ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC").fetchall()
-        return [dict(row) for row in rows]
+        result: list[dict[str, object]] = []
+        for row in rows:
+            data = dict(row)
+            path = Path(str(data.get("archived_path") or ""))
+            deleted = bool(str(data.get("deleted_at") or ""))
+            parsed_deleted = bool(str(data.get("parsed_deleted_at") or ""))
+            file_status = str(data.get("file_status") or "").strip()
+            exists = path.exists() if path else False
+            data["file_exists"] = 1 if exists and not deleted else 0
+            if str(data.get("delete_error") or ""):
+                data["file_status"] = "delete_failed"
+            elif deleted and parsed_deleted:
+                data["file_status"] = "all_deleted"
+            elif parsed_deleted or file_status == "parsed_deleted":
+                data["file_status"] = "parsed_deleted"
+            elif deleted or file_status == "deleted":
+                data["file_status"] = "deleted"
+            elif exists:
+                data["file_status"] = "ok"
+            else:
+                data["file_status"] = "missing"
+            result.append(data)
+        return result
+
+    def get_source_file(self, source_file_id: int) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM source_files WHERE id = ?", (source_file_id,)).fetchone()
+        return dict(row) if row else None
+
+    def mark_source_file_deleted(self, source_file_id: int, deleted_at: datetime | None = None) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT parsed_deleted_at FROM source_files WHERE id = ?", (source_file_id,)).fetchone()
+            status = "all_deleted" if row and str(row["parsed_deleted_at"] or "") else "deleted"
+            conn.execute(
+                "UPDATE source_files SET file_exists = 0, deleted_at = ?, delete_error = '', file_status = ? WHERE id = ?",
+                (dt_text(deleted_at or datetime.now()), status, source_file_id),
+            )
+
+    def mark_source_file_missing(self, source_file_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE source_files SET file_exists = 0, file_status = 'missing' WHERE id = ?", (source_file_id,))
+
+    def mark_source_file_delete_failed(self, source_file_id: int, error: str) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE source_files SET delete_error = ?, file_status = 'delete_failed' WHERE id = ?", (str(error), source_file_id))
+
+    def count_parsed_data_by_source_file(self, source_file_id: int | str) -> dict[str, int]:
+        if source_file_id in (None, ""):
+            return {"links": 0, "events": 0, "issues": 0, "caches": 0}
+        value = int(source_file_id)
+        with self._connect() as conn:
+            links = int(conn.execute("SELECT COUNT(*) AS count FROM mesh_links WHERE source_file_id = ?", (value,)).fetchone()["count"])
+            events = int(conn.execute("SELECT COUNT(*) AS count FROM mesh_events WHERE source_file_id = ?", (value,)).fetchone()["count"])
+            issues = int(conn.execute("SELECT COUNT(*) AS count FROM parse_issues WHERE source_file_id = ?", (value,)).fetchone()["count"])
+        return {"links": links, "events": events, "issues": issues, "caches": 0}
+
+    def delete_parsed_data_by_source_file(self, source_file_id: int | str) -> DeleteParsedDataResult:
+        if source_file_id in (None, ""):
+            return DeleteParsedDataResult(False, "", message="source_file_id 为空，拒绝删除解析数据")
+        value = int(source_file_id)
+        counts = self.count_parsed_data_by_source_file(value)
+        now = dt_text(datetime.now()) or ""
+        with self._connect() as conn:
+            row = conn.execute("SELECT deleted_at FROM source_files WHERE id = ?", (value,)).fetchone()
+            if row is None:
+                return DeleteParsedDataResult(False, str(value), message="源文件记录不存在，无法删除解析数据")
+            status = "all_deleted" if str(row["deleted_at"] or "") else "parsed_deleted"
+            try:
+                conn.execute("BEGIN")
+                conn.execute("DELETE FROM mesh_links WHERE source_file_id = ?", (value,))
+                conn.execute("DELETE FROM mesh_events WHERE source_file_id = ?", (value,))
+                conn.execute("DELETE FROM parse_issues WHERE source_file_id = ?", (value,))
+                conn.execute(
+                    """
+                    DELETE FROM samples
+                    WHERE source_file_id = ?
+                      AND NOT EXISTS (SELECT 1 FROM mesh_links WHERE mesh_links.sample_id = samples.id)
+                    """,
+                    (value,),
+                )
+                conn.execute("DELETE FROM mesh_deltas")
+                conn.execute("DELETE FROM mesh_sessions")
+                conn.execute("DELETE FROM mesh_events")
+                conn.execute("DELETE FROM mesh_link_aggregates")
+                self._rebuild_sessions_and_deltas(conn, None, None, 1000)
+                self._rebuild_active_events(conn, None, None, 1000)
+                self._rebuild_link_aggregates(conn, None)
+                conn.execute(
+                    """
+                    UPDATE source_files
+                    SET file_status = ?,
+                        parsed_deleted_at = ?,
+                        parsed_delete_error = ''
+                    WHERE id = ?
+                    """,
+                    (status, now, value),
+                )
+                conn.execute("COMMIT")
+            except Exception as exc:
+                conn.execute("ROLLBACK")
+                conn.execute(
+                    "UPDATE source_files SET parsed_delete_error = ?, file_status = 'delete_failed' WHERE id = ?",
+                    (str(exc), value),
+                )
+                return DeleteParsedDataResult(False, str(value), message=str(exc))
+        return DeleteParsedDataResult(
+            True,
+            str(value),
+            deleted_links=counts["links"],
+            deleted_events=counts["events"],
+            deleted_issues=counts["issues"],
+            deleted_caches=counts["caches"],
+            message="解析数据已删除",
+        )
 
     def query_links(self, limit: int, offset: int, filters: dict[str, object] | None = None) -> tuple[int, list[dict[str, object]]]:
         filters = filters or {}
         clauses: list[str] = []
         values: list[object] = []
+        if filters.get("source_file_id") not in (None, ""):
+            clauses.append("ml.source_file_id = ?")
+            values.append(int(filters["source_file_id"]))
         if filters.get("radio") is not None:
-            clauses.append("radio = ?")
+            clauses.append("ml.radio = ?")
             values.append(filters["radio"])
         if filters.get("state"):
-            clauses.append("link_state = ?")
+            clauses.append("ml.link_state = ?")
             values.append(filters["state"])
         if filters.get("peer"):
-            clauses.append("(peer_mac_normalized LIKE ? OR peer_mac_raw LIKE ?)")
-            peer = f"%{filters['peer']}%"
-            values.extend([peer, peer])
+            clauses.append("(ml.peer_mac_normalized LIKE ? OR ml.peer_mac_raw LIKE ? OR ml.peer_mac LIKE ? OR ml.peer_ap_name LIKE ? OR ml.peer_site LIKE ?)")
+            raw_peer = str(filters["peer"])
+            normalized_peer = "".join(character for character in raw_peer.lower() if character in "0123456789abcdef")
+            peer = f"%{raw_peer}%"
+            values.extend([f"%{normalized_peer or raw_peer}%", peer, peer, peer, peer])
         if filters.get("keyword"):
-            clauses.append("(raw_line LIKE ? OR peer_mac_raw LIKE ?)")
+            clauses.append("(ml.raw_line LIKE ? OR ml.peer_mac_raw LIKE ? OR ml.peer_ap_name LIKE ? OR ml.peer_site LIKE ?)")
             keyword = f"%{filters['keyword']}%"
-            values.extend([keyword, keyword])
+            values.extend([keyword, keyword, keyword, keyword])
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
-            total = conn.execute(f"SELECT COUNT(*) AS count FROM mesh_links{where}", values).fetchone()["count"]
+            total = conn.execute(f"SELECT COUNT(*) AS count FROM mesh_links ml{where}", values).fetchone()["count"]
             rows = conn.execute(
                 f"""
-                WITH filtered AS (
-                    SELECT ml.*,
-                           DENSE_RANK() OVER (ORDER BY ml.sample_time ASC, ml.radio ASC) - 1 AS sample_group_index
-                    FROM mesh_links ml
-                    {where}
-                )
-                SELECT filtered.*, sf.archived_filename, sf.archived_path
-                FROM filtered
-                LEFT JOIN source_files sf ON sf.id = filtered.source_file_id
-                ORDER BY filtered.sample_time ASC, filtered.radio ASC, filtered.id ASC
+                SELECT ml.*, sf.archived_filename, sf.archived_path
+                FROM mesh_links ml
+                LEFT JOIN source_files sf ON sf.id = ml.source_file_id
+                {where}
+                ORDER BY ml.sample_time ASC, ml.radio ASC, ml.id ASC
                 LIMIT ? OFFSET ?
                 """,
                 [*values, limit, offset],
             ).fetchall()
+        result: list[dict[str, object]] = []
+        group_indexes: dict[tuple[object, object], int] = {}
+        for row in rows:
+            data = dict(row)
+            key = (data.get("sample_time"), data.get("radio"))
+            if key not in group_indexes:
+                group_indexes[key] = len(group_indexes)
+            data["sample_group_index"] = group_indexes[key]
+            result.append(data)
+        return int(total), result
+
+    def find_sample_row_position(
+        self,
+        session_id: str,
+        sample_time: str,
+        peer_mac: str | None,
+        radio: str | int | None,
+        state: str | None,
+        filters: dict[str, object] | None = None,
+        page_size: int = 1000,
+    ) -> RowPosition | None:
+        target = self._find_target_link_id(session_id, sample_time, peer_mac, radio, state)
+        for candidate in (
+            (session_id, sample_time, peer_mac, radio, None),
+            (session_id, sample_time, peer_mac, None, state),
+            (session_id, sample_time, peer_mac, None, None),
+            (session_id, sample_time, None, radio, state),
+            (session_id, sample_time, None, None, None),
+            ("", sample_time, peer_mac, radio, state),
+            ("", sample_time, peer_mac, None, None),
+        ):
+            if target is not None:
+                break
+            target = self._find_target_link_id(*candidate)
+        if target is None:
+            return None
+        clauses, values = self._link_filter_clauses(filters or {})
+        target_clause = "ml.id = ?"
+        before_clause = "(ml.sample_time < ? OR (ml.sample_time = ? AND ml.radio < ?) OR (ml.sample_time = ? AND ml.radio = ? AND ml.id < ?))"
+        with self._connect() as conn:
+            target_row = conn.execute("SELECT sample_time, radio, id FROM mesh_links WHERE id = ?", (target,)).fetchone()
+            if target_row is None:
+                return None
+            filtered_target = conn.execute(
+                f"SELECT 1 FROM mesh_links ml{' WHERE ' + ' AND '.join([*clauses, target_clause]) if clauses else ' WHERE ' + target_clause}",
+                [*values, target],
+            ).fetchone()
+            if filtered_target is None:
+                return None
+            total = int(conn.execute(f"SELECT COUNT(*) AS count FROM mesh_links ml{' WHERE ' + ' AND '.join(clauses) if clauses else ''}", values).fetchone()["count"])
+            before_values = [
+                target_row["sample_time"],
+                target_row["sample_time"],
+                target_row["radio"],
+                target_row["sample_time"],
+                target_row["radio"],
+                target_row["id"],
+            ]
+            where = " WHERE " + " AND ".join([*clauses, before_clause]) if clauses else " WHERE " + before_clause
+            row_index = int(conn.execute(f"SELECT COUNT(*) AS count FROM mesh_links ml{where}", [*values, *before_values]).fetchone()["count"])
+        effective_page_size = max(1, int(page_size or 1000))
+        return RowPosition(row_index=row_index, page_no=row_index // effective_page_size + 1, index_in_page=row_index % effective_page_size, link_id=int(target), total=total, page_size=effective_page_size)
+
+    def find_link_detail_row_position(
+        self,
+        session_id: str,
+        sample_time: str,
+        peer_mac: str | None,
+        radio: str | int | None,
+        state: str | None,
+        page_size: int,
+        filters: dict[str, object] | None = None,
+    ) -> RowPosition | None:
+        return self.find_sample_row_position(session_id, sample_time, peer_mac, radio, state, filters, page_size)
+
+    def _find_target_link_id(self, session_id: str, sample_time: str, peer_mac: str | None, radio: str | int | None, state: str | None) -> int | None:
+        clauses = ["sample_time = ?"]
+        values: list[object] = [sample_time]
+        if session_id:
+            clauses.append("session_id = ?")
+            values.append(session_id)
+        if peer_mac:
+            peer = _canonical_mac(peer_mac)
+            clauses.append("(peer_mac_normalized = ? OR peer_mac = ? OR peer_mac_raw = ?)")
+            values.extend([peer, peer, peer_mac])
+        if radio not in (None, ""):
+            try:
+                clauses.append("radio = ?")
+                values.append(int(radio))
+            except (TypeError, ValueError):
+                pass
+        if state:
+            clauses.append("link_state = ?")
+            values.append(str(state).upper())
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT id FROM mesh_links WHERE {' AND '.join(clauses)} ORDER BY id ASC LIMIT 1", values).fetchone()
+        return int(row["id"]) if row else None
+
+    def _link_filter_clauses(self, filters: dict[str, object]) -> tuple[list[str], list[object]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if filters.get("source_file_id") not in (None, ""):
+            clauses.append("ml.source_file_id = ?")
+            values.append(int(filters["source_file_id"]))
+        if filters.get("radio") is not None:
+            clauses.append("ml.radio = ?")
+            values.append(filters["radio"])
+        if filters.get("state"):
+            clauses.append("ml.link_state = ?")
+            values.append(filters["state"])
+        if filters.get("peer"):
+            clauses.append("(ml.peer_mac_normalized LIKE ? OR ml.peer_mac_raw LIKE ? OR ml.peer_mac LIKE ? OR ml.peer_ap_name LIKE ? OR ml.peer_site LIKE ?)")
+            raw_peer = str(filters["peer"])
+            normalized_peer = "".join(character for character in raw_peer.lower() if character in "0123456789abcdef")
+            peer = f"%{raw_peer}%"
+            values.extend([f"%{normalized_peer or raw_peer}%", peer, peer, peer, peer])
+        if filters.get("keyword"):
+            clauses.append("(ml.raw_line LIKE ? OR ml.peer_mac_raw LIKE ? OR ml.peer_ap_name LIKE ? OR ml.peer_site LIKE ?)")
+            keyword = f"%{filters['keyword']}%"
+            values.extend([keyword, keyword, keyword, keyword])
+        return clauses, values
+
+    def query_events(self, limit: int, offset: int, source_file_id: int | str | None = None) -> tuple[int, list[dict[str, object]]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if source_file_id not in (None, ""):
+            clauses.append("source_file_id = ?")
+            values.append(int(source_file_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._connect() as conn:
+            total = conn.execute(f"SELECT COUNT(*) AS count FROM mesh_events{where}", values).fetchone()["count"]
+            rows = conn.execute(f"SELECT * FROM mesh_events{where} ORDER BY event_time ASC, id ASC LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
         return int(total), [dict(row) for row in rows]
 
-    def query_events(self, limit: int, offset: int) -> tuple[int, list[dict[str, object]]]:
+    def query_issues(self, limit: int, offset: int, source_file_id: int | str | None = None) -> tuple[int, list[dict[str, object]]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if source_file_id not in (None, ""):
+            clauses.append("source_file_id = ?")
+            values.append(int(source_file_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
-            total = conn.execute("SELECT COUNT(*) AS count FROM mesh_events").fetchone()["count"]
-            rows = conn.execute("SELECT * FROM mesh_events ORDER BY event_time ASC, id ASC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-        return int(total), [dict(row) for row in rows]
-
-    def query_issues(self, limit: int, offset: int) -> tuple[int, list[dict[str, object]]]:
-        with self._connect() as conn:
-            total = conn.execute("SELECT COUNT(*) AS count FROM parse_issues").fetchone()["count"]
-            rows = conn.execute("SELECT * FROM parse_issues ORDER BY source_file ASC, line_number ASC, id ASC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            total = conn.execute(f"SELECT COUNT(*) AS count FROM parse_issues{where}", values).fetchone()["count"]
+            rows = conn.execute(f"SELECT * FROM parse_issues{where} ORDER BY source_file ASC, line_number ASC, id ASC LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
         return int(total), [dict(row) for row in rows]
 
     def get_link_by_id(self, link_id: int) -> dict[str, object] | None:
@@ -394,20 +764,20 @@ class MeshMrRepository:
             rows = [
                 dict(row)
                 for row in conn.execute(
-                    """
-                    SELECT *
+                    f"""
+                    SELECT {_MESH_LINK_CHART_COLUMNS}
                     FROM mesh_links
-                    WHERE radio = ? AND sample_time >= ? AND sample_time <= ?
+                    WHERE radio = ? AND sample_time >= ? AND sample_time <= ? AND (? IS NULL OR session_id = ?)
                     ORDER BY sample_time ASC, id ASC
                     """,
-                    (anchor.get("radio"), start_time, end_time),
+                    (anchor.get("radio"), start_time, end_time, anchor.get("session_id"), anchor.get("session_id")),
                 ).fetchall()
             ]
             events = [
                 dict(row)
                 for row in conn.execute(
-                    """
-                    SELECT *
+                    f"""
+                    SELECT {_MESH_EVENT_CHART_COLUMNS}
                     FROM mesh_events
                     WHERE radio = ? AND (? IS NULL OR event_time >= ?) AND (? IS NULL OR event_time <= ?)
                     ORDER BY event_time ASC, id ASC
@@ -419,49 +789,113 @@ class MeshMrRepository:
         payload["events"] = events
         return payload
 
-    def query_peer_chart_segments(self, anchor_link_id: int) -> dict[str, object]:
-        anchor, start_time, end_time, interval, gap = self._locate_run_segment(anchor_link_id)
+    def query_peer_chart_segments(self, anchor_link_id: int, source_file_id: int | str | None = None) -> dict[str, object]:
+        anchor, start_time, end_time, interval, gap = self._locate_run_segment(anchor_link_id, source_file_id=source_file_id)
         if anchor is None or start_time is None or end_time is None:
             return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
+        return self._query_peer_chart_segments_in_range(anchor, start_time, end_time, interval, gap, partial=False, full_loading=False, source_file_id=source_file_id)
+
+    def query_peer_chart_initial_segments(self, anchor_link_id: int, visible_samples: int = 300, margin_samples: int = 60, source_file_id: int | str | None = None) -> dict[str, object]:
+        with self._connect() as conn:
+            anchor_row = conn.execute(f"SELECT {_MESH_LINK_CHART_COLUMNS} FROM mesh_links WHERE id = ?", (anchor_link_id,)).fetchone()
+            if anchor_row is None:
+                return {"anchor": None, "peer_segment": _segment_payload(None, [], None, None), "run_segment": _segment_payload(None, [], None, None)}
+            anchor = dict(anchor_row)
+            effective_source_file_id = int(source_file_id) if source_file_id not in (None, "") else anchor.get("source_file_id")
+            radio = int(anchor.get("radio") or 0)
+            session_id = anchor.get("session_id")
+            anchor_time = str(anchor.get("sample_time") or "")
+            interval, gap = self._estimate_local_interval(conn, radio, anchor_time)
+            radius = max(1, int(visible_samples or 300) // 2 + int(margin_samples or 60))
+            before = [
+                str(row["sample_time"])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT sample_time
+                    FROM mesh_links
+                    WHERE radio = ? AND sample_time <= ? AND (? IS NULL OR session_id = ?) AND (? IS NULL OR source_file_id = ?)
+                    ORDER BY sample_time DESC
+                    LIMIT ?
+                    """,
+                    (radio, anchor_time, session_id, session_id, effective_source_file_id, effective_source_file_id, radius + 1),
+                ).fetchall()
+            ]
+            after = [
+                str(row["sample_time"])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT sample_time
+                    FROM mesh_links
+                    WHERE radio = ? AND sample_time > ? AND (? IS NULL OR session_id = ?) AND (? IS NULL OR source_file_id = ?)
+                    ORDER BY sample_time ASC
+                    LIMIT ?
+                    """,
+                    (radio, anchor_time, session_id, session_id, effective_source_file_id, effective_source_file_id, radius),
+                ).fetchall()
+            ]
+        times = sorted(set(before + after))
+        if not times:
+            return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
+        return self._query_peer_chart_segments_in_range(anchor, times[0], times[-1], interval, gap, partial=True, full_loading=True, source_file_id=source_file_id)
+
+    def _query_peer_chart_segments_in_range(
+        self,
+        anchor: dict[str, object],
+        start_time: str,
+        end_time: str,
+        interval: float | None,
+        gap: float | None,
+        partial: bool,
+        full_loading: bool,
+        source_file_id: int | str | None = None,
+    ) -> dict[str, object]:
         peer_clauses = ["peer_mac_normalized = ?", "radio = ?", "sample_time >= ?", "sample_time <= ?"]
         peer_values: list[object] = [anchor.get("peer_mac_normalized"), anchor.get("radio"), start_time, end_time]
         if anchor.get("session_id"):
             peer_clauses.insert(2, "session_id = ?")
             peer_values.insert(2, anchor.get("session_id"))
+        effective_source_file_id = int(source_file_id) if source_file_id not in (None, "") else None
+        if effective_source_file_id is not None:
+            peer_clauses.append("source_file_id = ?")
+            peer_values.append(effective_source_file_id)
         with self._connect() as conn:
             peer_rows = [
                 dict(row)
                 for row in conn.execute(
-                    f"SELECT * FROM mesh_links WHERE {' AND '.join(peer_clauses)} ORDER BY sample_time ASC, id ASC",
+                    f"SELECT {_MESH_LINK_CHART_COLUMNS} FROM mesh_links WHERE {' AND '.join(peer_clauses)} ORDER BY sample_time ASC, id ASC",
                     peer_values,
                 ).fetchall()
             ]
             run_rows = [
                 dict(row)
                 for row in conn.execute(
-                    """
-                    SELECT *
+                    f"""
+                    SELECT {_MESH_LINK_CHART_COLUMNS}
                     FROM mesh_links
-                    WHERE radio = ? AND sample_time >= ? AND sample_time <= ?
+                    WHERE radio = ? AND sample_time >= ? AND sample_time <= ? AND (? IS NULL OR session_id = ?) AND (? IS NULL OR source_file_id = ?)
                     ORDER BY sample_time ASC, id ASC
                     """,
-                    (anchor.get("radio"), start_time, end_time),
+                    (anchor.get("radio"), start_time, end_time, anchor.get("session_id"), anchor.get("session_id"), effective_source_file_id, effective_source_file_id),
                 ).fetchall()
             ]
             events = [
                 dict(row)
                 for row in conn.execute(
-                    """
-                    SELECT *
+                    f"""
+                    SELECT {_MESH_EVENT_CHART_COLUMNS}
                     FROM mesh_events
-                    WHERE radio = ? AND event_time >= ? AND event_time <= ?
+                    WHERE radio = ? AND event_time >= ? AND event_time <= ? AND (? IS NULL OR source_file_id = ?)
                     ORDER BY event_time ASC, id ASC
                     """,
-                    (anchor.get("radio"), start_time, end_time),
+                    (anchor.get("radio"), start_time, end_time, effective_source_file_id, effective_source_file_id),
                 ).fetchall()
             ]
         peer_segment = _segment_payload(anchor, peer_rows, interval, gap)
         run_segment = _segment_payload(anchor, run_rows, interval, gap)
+        peer_segment["partial"] = partial
+        peer_segment["full_loading"] = full_loading
+        run_segment["partial"] = partial
+        run_segment["full_loading"] = full_loading
         run_segment["events"] = events
         return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
 
@@ -496,31 +930,32 @@ class MeshMrRepository:
             timeline.append({"sample_time": sample_time, "active": active, "next_active": next_row})
         return {"anchor": run.get("anchor"), "rows": timeline, "events": run.get("events", []), "anomalies": anomalies}
 
-    def _locate_run_segment(self, anchor_link_id: int, batch_size: int = 1000) -> tuple[dict[str, object] | None, str | None, str | None, float | None, float | None]:
+    def _locate_run_segment(self, anchor_link_id: int, batch_size: int = 1000, source_file_id: int | str | None = None) -> tuple[dict[str, object] | None, str | None, str | None, float | None, float | None]:
         with self._connect() as conn:
-            anchor_row = conn.execute("SELECT * FROM mesh_links WHERE id = ?", (anchor_link_id,)).fetchone()
+            anchor_row = conn.execute(f"SELECT {_MESH_LINK_CHART_COLUMNS} FROM mesh_links WHERE id = ?", (anchor_link_id,)).fetchone()
             if anchor_row is None:
                 return None, None, None, None, None
             anchor = dict(anchor_row)
             radio = anchor["radio"]
             anchor_time = anchor["sample_time"]
-            interval, gap = self._estimate_local_interval(conn, radio, anchor_time)
-            start_time = self._scan_segment_boundary(conn, radio, anchor_time, gap, "backward", batch_size)
-            end_time = self._scan_segment_boundary(conn, radio, anchor_time, gap, "forward", batch_size)
+            effective_source_file_id = int(source_file_id) if source_file_id not in (None, "") else None
+            interval, gap = self._estimate_local_interval(conn, radio, anchor_time, effective_source_file_id)
+            start_time = self._scan_segment_boundary(conn, radio, anchor_time, gap, "backward", batch_size, effective_source_file_id)
+            end_time = self._scan_segment_boundary(conn, radio, anchor_time, gap, "forward", batch_size, effective_source_file_id)
         return anchor, start_time, end_time, interval, gap
 
-    def _estimate_local_interval(self, conn: sqlite3.Connection, radio: int, anchor_time: str) -> tuple[float, float]:
+    def _estimate_local_interval(self, conn: sqlite3.Connection, radio: int, anchor_time: str, source_file_id: int | None = None) -> tuple[float, float]:
         before = [
             row["sample_time"]
             for row in conn.execute(
                 """
                 SELECT DISTINCT sample_time
                 FROM mesh_links
-                WHERE radio = ? AND sample_time <= ?
+                WHERE radio = ? AND sample_time <= ? AND (? IS NULL OR source_file_id = ?)
                 ORDER BY sample_time DESC
                 LIMIT 21
                 """,
-                (radio, anchor_time),
+                (radio, anchor_time, source_file_id, source_file_id),
             ).fetchall()
         ]
         after = [
@@ -529,17 +964,17 @@ class MeshMrRepository:
                 """
                 SELECT DISTINCT sample_time
                 FROM mesh_links
-                WHERE radio = ? AND sample_time >= ?
+                WHERE radio = ? AND sample_time >= ? AND (? IS NULL OR source_file_id = ?)
                 ORDER BY sample_time ASC
                 LIMIT 21
                 """,
-                (radio, anchor_time),
+                (radio, anchor_time, source_file_id, source_file_id),
             ).fetchall()
         ]
         interval, gap = _interval_and_threshold(sorted(set(before + after)))
         return interval or 1.0, gap
 
-    def _scan_segment_boundary(self, conn: sqlite3.Connection, radio: int, anchor_time: str, gap_seconds: float, direction: str, batch_size: int) -> str:
+    def _scan_segment_boundary(self, conn: sqlite3.Connection, radio: int, anchor_time: str, gap_seconds: float, direction: str, batch_size: int, source_file_id: int | None = None) -> str:
         current = anchor_time
         boundary = anchor_time
         operator = "<" if direction == "backward" else ">"
@@ -551,11 +986,11 @@ class MeshMrRepository:
                     f"""
                     SELECT DISTINCT sample_time
                     FROM mesh_links
-                    WHERE radio = ? AND sample_time {operator} ?
+                    WHERE radio = ? AND sample_time {operator} ? AND (? IS NULL OR source_file_id = ?)
                     ORDER BY sample_time {order}
                     LIMIT ?
                     """,
-                    (radio, current, batch_size),
+                    (radio, current, source_file_id, source_file_id, batch_size),
                 ).fetchall()
             ]
             if not rows:
@@ -576,9 +1011,13 @@ class MeshMrRepository:
         session_id: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
+        source_file_id: int | str | None = None,
     ) -> list[dict[str, object]]:
         clauses = ["peer_mac_normalized = ?"]
         values: list[object] = [peer_mac_normalized]
+        if source_file_id not in (None, ""):
+            clauses.append("source_file_id = ?")
+            values.append(int(source_file_id))
         if radio is not None:
             clauses.append("radio = ?")
             values.append(radio)
@@ -597,7 +1036,8 @@ class MeshMrRepository:
                 f"""
                 SELECT sample_time, radio, peer_mac_normalized, peer_mac_raw, session_id, link_state,
                        establish_time, duration_seconds, expected_duration_seconds, duration_deviation_seconds,
-                       local_signal_dbm, peer_signal_dbm, metrics_json, deltas_json, link_count
+                       local_signal_dbm, peer_signal_dbm, metrics_json, deltas_json, link_count,
+                       peer_ap_name, peer_site, peer_radio_label, peer_radio, peer_radio_mac, peer_resolve_source
                 FROM mesh_links
                 WHERE {where}
                 ORDER BY sample_time ASC, id ASC
@@ -611,8 +1051,10 @@ class MeshMrRepository:
             conn.execute("DELETE FROM mesh_deltas")
             conn.execute("DELETE FROM mesh_sessions")
             conn.execute("DELETE FROM mesh_events")
+            conn.execute("DELETE FROM mesh_link_aggregates")
             self._rebuild_sessions_and_deltas(conn, should_cancel, progress, batch_size)
             self._rebuild_active_events(conn, should_cancel, progress, batch_size)
+            self._rebuild_link_aggregates(conn, should_cancel)
             if should_cancel is None or not should_cancel():
                 conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)", (DERIVED_ANALYSIS_KEY, DERIVED_ANALYSIS_VERSION))
 
@@ -649,10 +1091,147 @@ class MeshMrRepository:
         return dict(row)
 
     def export_rows(self, table: str) -> list[dict[str, object]]:
-        if table not in {"mesh_links", "mesh_events", "mesh_sessions", "parse_issues", "source_files"}:
+        if table not in {"mesh_links", "mesh_events", "mesh_sessions", "parse_issues", "source_files", "mesh_peer_mapping", "mesh_peer_resolve_cache", "mesh_link_aggregates"}:
             raise ValueError(f"Unsupported export table: {table}")
         with self._connect() as conn:
             rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+        return [dict(row) for row in rows]
+
+    def distinct_peer_macs(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT peer_mac_normalized
+                FROM mesh_links
+                WHERE peer_mac_normalized IS NOT NULL AND trim(peer_mac_normalized) != ''
+                ORDER BY peer_mac_normalized
+                """
+            ).fetchall()
+        return [str(row["peer_mac_normalized"]) for row in rows]
+
+    def upsert_peer_mappings(self, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        now = dt_text(datetime.now()) or ""
+        values = [
+            (
+                row.get("peer_mac_normalized"),
+                row.get("peer_ap_name") or "",
+                row.get("peer_ap_mac") or "",
+                row.get("peer_radio_id"),
+                row.get("peer_radio_label") or "",
+                row.get("peer_radio_mac") or row.get("peer_ap_mac") or "",
+                row.get("peer_site") or "",
+                row.get("peer_location") or "",
+                row.get("peer_direction") or "",
+                row.get("match_rule") or "",
+                int(row.get("match_confidence") or 0),
+                now,
+            )
+            for row in rows
+            if row.get("peer_mac_normalized")
+        ]
+        if not values:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO mesh_peer_mapping (
+                    peer_mac_normalized, peer_ap_name, peer_ap_mac, peer_radio_id, peer_radio_label,
+                    peer_site, peer_location, peer_direction, match_rule, match_confidence, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(peer_mac_normalized) DO UPDATE SET
+                    peer_ap_name = excluded.peer_ap_name,
+                    peer_ap_mac = excluded.peer_ap_mac,
+                    peer_radio_id = excluded.peer_radio_id,
+                    peer_radio_label = excluded.peer_radio_label,
+                    peer_site = excluded.peer_site,
+                    peer_location = excluded.peer_location,
+                    peer_direction = excluded.peer_direction,
+                    match_rule = excluded.match_rule,
+                    match_confidence = excluded.match_confidence,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        value[0],
+                        value[1],
+                        value[2],
+                        value[3],
+                        value[4],
+                        value[6],
+                        value[7],
+                        value[8],
+                        value[9],
+                        value[10],
+                        value[11],
+                    )
+                    for value in values
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO mesh_peer_resolve_cache (
+                    peer_mac, peer_ap_name, peer_site, peer_radio, peer_radio_mac, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(peer_mac) DO UPDATE SET
+                    peer_ap_name = excluded.peer_ap_name,
+                    peer_site = excluded.peer_site,
+                    peer_radio = excluded.peer_radio,
+                    peer_radio_mac = excluded.peer_radio_mac,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        value[0],
+                        value[1],
+                        value[6],
+                        value[4],
+                        value[5],
+                        value[9] or "unresolved",
+                        value[11],
+                    )
+                    for value in values
+                ],
+            )
+
+    def refresh_peer_mapping_on_links(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE mesh_links
+                SET
+                    peer_mac = COALESCE(NULLIF(peer_mac_normalized, ''), peer_mac),
+                    peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
+                    peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_match_rule = COALESCE((SELECT match_rule FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_radio_mac = COALESCE((SELECT peer_radio_mac FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''),
+                    peer_resolve_source = COALESCE((SELECT source FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), 'unresolved')
+                WHERE peer_mac_normalized IS NOT NULL AND trim(peer_mac_normalized) != ''
+                """
+            )
+
+    def rebuild_link_aggregates(self, bucket_seconds: tuple[int, ...] = (1, 10, 30, 60), should_cancel=None) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM mesh_link_aggregates")
+            self._rebuild_link_aggregates(conn, should_cancel, bucket_seconds)
+
+    def query_link_aggregates(self, bucket_seconds: int = 10, limit: int = 5000, offset: int = 0) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM mesh_link_aggregates
+                WHERE bucket_seconds = ?
+                ORDER BY bucket_time ASC, radio ASC, peer_mac_normalized ASC
+                LIMIT ? OFFSET ?
+                """,
+                (bucket_seconds, limit, offset),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
@@ -664,6 +1243,75 @@ class MeshMrRepository:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA temp_store = MEMORY")
         return conn
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _backfill_peer_columns(conn: sqlite3.Connection) -> None:
+        now = dt_text(datetime.now()) or ""
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mesh_peer_resolve_cache (
+                peer_mac, peer_ap_name, peer_site, peer_radio, peer_radio_mac, source, updated_at
+            )
+            SELECT peer_mac_normalized, peer_ap_name, peer_site, peer_radio_label, peer_ap_mac, match_rule, ?
+            FROM mesh_peer_mapping
+            WHERE peer_mac_normalized IS NOT NULL AND trim(peer_mac_normalized) != ''
+            """,
+            (now,),
+        )
+        conn.execute(
+            """
+            UPDATE mesh_links
+            SET
+                peer_mac = COALESCE(NULLIF(peer_mac, ''), peer_mac_normalized, ''),
+                peer_ap_name = COALESCE(NULLIF((SELECT peer_ap_name FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_ap_name, ''),
+                peer_site = COALESCE(NULLIF((SELECT peer_site FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_site, ''),
+                peer_radio = COALESCE(NULLIF((SELECT peer_radio FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_radio, peer_radio_label, ''),
+                peer_radio_label = COALESCE(NULLIF(peer_radio_label, ''), peer_radio, ''),
+                peer_radio_mac = COALESCE(NULLIF((SELECT peer_radio_mac FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_radio_mac, ''),
+                peer_resolve_source = COALESCE(NULLIF((SELECT source FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_resolve_source, 'unresolved')
+            WHERE peer_mac_normalized IS NOT NULL AND trim(peer_mac_normalized) != ''
+            """
+        )
+
+    def _rebuild_link_aggregates(self, conn: sqlite3.Connection, should_cancel=None, bucket_seconds: tuple[int, ...] = (1, 10, 30, 60)) -> None:
+        for bucket in bucket_seconds:
+            if should_cancel and should_cancel():
+                return
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO mesh_link_aggregates (
+                    bucket_seconds, bucket_time, radio, peer_mac_normalized, sample_count, active_count,
+                    avg_local_rssi, avg_peer_rssi, avg_local_tx_busy, avg_peer_tx_busy,
+                    avg_local_rx_busy, avg_peer_rx_busy, peer_ap_name, peer_site, peer_radio_label
+                )
+                SELECT
+                    ? AS bucket_seconds,
+                    strftime('%Y-%m-%d %H:%M:%S', (CAST((s.sample_time_epoch_ms / 1000) / ? AS INTEGER) * ?), 'unixepoch') AS bucket_time,
+                    ml.radio,
+                    COALESCE(ml.peer_mac_normalized, '') AS peer_mac_normalized,
+                    COUNT(*) AS sample_count,
+                    SUM(CASE WHEN ml.link_state = ? THEN 1 ELSE 0 END) AS active_count,
+                    AVG(CAST(json_extract(ml.metrics_json, '$.local_rssi_db') AS REAL)) AS avg_local_rssi,
+                    AVG(CAST(json_extract(ml.metrics_json, '$.peer_rssi_db') AS REAL)) AS avg_peer_rssi,
+                    AVG(CAST(json_extract(ml.metrics_json, '$.local_tx_busy') AS REAL)) AS avg_local_tx_busy,
+                    AVG(CAST(json_extract(ml.metrics_json, '$.peer_tx_busy') AS REAL)) AS avg_peer_tx_busy,
+                    AVG(CAST(json_extract(ml.metrics_json, '$.local_rx_busy') AS REAL)) AS avg_local_rx_busy,
+                    AVG(CAST(json_extract(ml.metrics_json, '$.peer_rx_busy') AS REAL)) AS avg_peer_rx_busy,
+                    MAX(COALESCE(ml.peer_ap_name, '')) AS peer_ap_name,
+                    MAX(COALESCE(ml.peer_site, '')) AS peer_site,
+                    MAX(COALESCE(ml.peer_radio_label, '')) AS peer_radio_label
+                FROM mesh_links ml
+                JOIN samples s ON s.id = ml.sample_id
+                GROUP BY bucket_time, ml.radio, COALESCE(ml.peer_mac_normalized, '')
+                """,
+                (bucket, bucket, bucket, LINK_STATE_ACTIVE),
+            )
 
     def _rebuild_sessions_and_deltas(self, conn: sqlite3.Connection, should_cancel, progress, batch_size: int) -> None:
         cursor = conn.execute(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,26 @@ from netconsole.services.online_mr_session_store import OnlineMrSession
 
 
 RAW_BLOCK_RE = re.compile(r"(?m)^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) >>> (?P<command>.+)$")
+STREAM_START_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[collector=(?P<collector>[^\]]+)\] START commands:\s*$")
+RX_LINE_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?) \[collector=[^\]]+\] RX ?(?P<text>.*)$")
+
+
+def strip_stream_rx_prefix(line: str) -> str:
+    match = RX_LINE_RE.match(line)
+    return match.group("text") if match else line
+
+
+def read_text_with_retry(path: Path, retries: int = 10, interval: float = 0.3) -> str:
+    last_exc: PermissionError | None = None
+    for _ in range(max(1, retries)):
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except PermissionError as exc:
+            last_exc = exc
+            time.sleep(interval)
+    if last_exc is not None:
+        raise last_exc
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 @dataclass
@@ -41,9 +62,11 @@ class OnlineMrRawBlockSplitter:
     def split(self, raw_path: Path) -> list[RawBlock]:
         if not raw_path.exists():
             return []
-        text = raw_path.read_text(encoding="utf-8", errors="replace")
+        text = read_text_with_retry(raw_path, retries=2, interval=0.05)
         matches = list(RAW_BLOCK_RE.finditer(text))
         blocks: list[RawBlock] = []
+        if not matches:
+            return self._split_rx_stream(text)
         for index, match in enumerate(matches):
             body_start = match.end() + 1
             body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
@@ -54,6 +77,55 @@ class OnlineMrRawBlockSplitter:
                     text=text[body_start:body_end].strip(),
                     offset_start=match.start(),
                     offset_end=body_end,
+                )
+            )
+        return blocks
+
+    def _split_rx_stream(self, text: str) -> list[RawBlock]:
+        blocks: list[RawBlock] = []
+        current_lines: list[str] = []
+        current_stamp: datetime | None = None
+        current_offset = 0
+        current_command = "repeat stream"
+        position = 0
+        for line in text.splitlines():
+            line_start = text.find(line, position)
+            if line_start < 0:
+                line_start = position
+            position = line_start + len(line) + 1
+            match = RX_LINE_RE.match(line)
+            if not match:
+                continue
+            clean = match.group("text")
+            normalized = clean.strip().lower()
+            is_cycle_start = normalized == "display clock" or normalized.endswith("]display clock")
+            if is_cycle_start and current_lines and current_stamp is not None:
+                blocks.append(
+                    RawBlock(
+                        collected_at=current_stamp,
+                        command=current_command,
+                        text="\n".join(current_lines).strip(),
+                        offset_start=current_offset,
+                        offset_end=max(current_offset, line_start),
+                    )
+                )
+                current_lines = []
+            if current_stamp is None or is_cycle_start:
+                stamp = match.group("stamp").replace("T", " ")
+                current_stamp = datetime.fromisoformat(stamp)
+                current_offset = line_start
+                current_command = "repeat stream"
+            if normalized.startswith("display ") or "]display " in normalized:
+                current_command = clean.strip()
+            current_lines.append(clean)
+        if current_lines and current_stamp is not None:
+            blocks.append(
+                RawBlock(
+                    collected_at=current_stamp,
+                    command=current_command,
+                    text="\n".join(current_lines).strip(),
+                    offset_start=current_offset,
+                    offset_end=len(text),
                 )
             )
         return blocks
@@ -93,7 +165,10 @@ class OnlineMrDiagnosisParser:
 
     def _parse_mesh(self, session: OnlineMrSession) -> int:
         count = 0
-        for block in self.splitter.split(self.raw_dir / "mesh_link_raw.log"):
+        blocks = self.splitter.split(self.raw_dir / "mesh_link_raw.log")
+        if not blocks and (self.raw_dir / "mesh_link_raw.log").exists():
+            self._issue("mesh_link_raw.log", "mesh-link", "no parseable raw blocks found", "")
+        for block in blocks:
             records, status, error = parse_mesh_link_text(block.text, block.collected_at)
             sample_id = session.append_sample("mesh_link", block.collected_at, block.command, "raw/mesh_link_raw.log", block.offset_start, block.offset_end, status, error)
             if records:
@@ -132,8 +207,14 @@ class OnlineMrDiagnosisParser:
     def _parse_fping(self, session: OnlineMrSession) -> int:
         path = self.raw_dir / "Fping.txt"
         if not path.exists():
+            self._issue("Fping.txt", "fping", "Fping.txt was not found", "")
             return 0
-        rows = parse_fping_lines(path.read_text(encoding="utf-8", errors="replace").splitlines(), self.meta.started_at, default_target=str(self.meta.fping.get("target") or ""))
+        try:
+            text = read_text_with_retry(path, retries=10, interval=0.3)
+        except PermissionError as exc:
+            self._issue("Fping.txt", "fping", f"Fping.txt is locked by Fping_v3.exe; ping parsing was skipped: {exc}", "", severity="ERROR")
+            return 0
+        rows = parse_fping_lines(text.splitlines(), self.meta.started_at, default_target=str(self.meta.fping.get("target") or ""))
         if rows:
             fping = self.meta.fping
             session.append_ping_samples(rows, int(fping.get("packet_size") or 64), int(fping.get("interval_ms") or 10), int(fping.get("loss_threshold_ms") or 100))

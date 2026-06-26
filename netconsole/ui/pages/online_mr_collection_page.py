@@ -1,10 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
+import os
+import subprocess
+import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QDoubleValidator
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -76,7 +80,7 @@ STATUS_I18N_KEYS = {
 
 
 class OnlineMrUiThrottle:
-    def __init__(self, interval_ms: int = 500) -> None:
+    def __init__(self, interval_ms: int = 300) -> None:
         self.interval_ms = interval_ms
         self.pending_snapshot: OnlineMrSnapshot | None = None
         self.flush_count = 0
@@ -144,12 +148,16 @@ class OnlineMrCollectionPage(QWidget):
         self.latest_iperf_by_device_id: dict[int, dict[str, object]] = {}
         self.parse_worker: OnlineMrParseWorker | None = None
         self.last_session_dir_by_device_id: dict[int, Path] = {}
-        self.throttle = OnlineMrUiThrottle(500)
+        self.throttle = OnlineMrUiThrottle(300)
         self._updating_device_checks = False
         self._first_show_refreshed = False
         self._history_refresh_pending = False
         self._tool_status_loaded = False
+        self._device_refresh_pending = False
+        self._last_realtime_parse_at: dict[str, float] = {}
+        self.realtime_parse_worker: OnlineMrParseWorker | None = None
         self._stale_sessions_checked_sites: set[str] = set()
+        self._view_device_user_selected = False
 
         self.site_label = QLabel()
         self.available_device_count_label = QLabel()
@@ -172,8 +180,9 @@ class OnlineMrCollectionPage(QWidget):
         self.statistics_interval = self._interval_spin(1, 3600, 10)
         self.switch_interval = self._interval_spin(10, 86400, 300)
         self.interface_rate_interval = self._interval_spin(1, 3600, 2)
-        self.channel_radio = self._radio_combo()
-        self.statistics_radio = self._radio_combo()
+        self.radio_port = self._radio_combo()
+        self.channel_radio = self.radio_port
+        self.statistics_radio = self.radio_port
         self.auto_reconnect_check = QCheckBox()
         self.auto_reconnect_check.setChecked(True)
         self.reconnect_interval = self._interval_spin(1, 3600, 5)
@@ -187,6 +196,14 @@ class OnlineMrCollectionPage(QWidget):
         self.fping_loss_threshold_ms = self._interval_spin(1, 60000, 100)
         self.fping_tool_label = QLabel()
         self.fping_tool_label.setWordWrap(True)
+        self.fping_device_combo_1 = NoWheelComboBox()
+        self.fping_device_combo_2 = NoWheelComboBox()
+        self.fping_status_label_1 = QLabel("Ping 1: idle")
+        self.fping_status_label_2 = QLabel("Ping 2: idle")
+        self.collect_progress_1 = QProgressBar()
+        self.collect_progress_2 = QProgressBar()
+        self.collect_status_label_1 = QLabel("Device 1: idle")
+        self.collect_status_label_2 = QLabel("Device 2: idle")
         self.enable_iperf_check = QCheckBox()
         self.iperf_server_edit = QLineEdit()
         self.iperf_port_spin = self._no_wheel_spin(1, 65535, 5201)
@@ -254,14 +271,16 @@ class OnlineMrCollectionPage(QWidget):
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
         self._first_show_refreshed = False
-        self.refresh_all(defer_heavy=True)
+        self._schedule_device_refresh(refresh_tools=False)
 
     def first_show_refresh(self) -> None:
         if self.site_name not in self._stale_sessions_checked_sites:
             self._stale_sessions_checked_sites.add(self.site_name)
             QTimer.singleShot(0, lambda site_name=self.site_name: self.store.mark_stale_sessions_aborted(site_name))
         self._first_show_refreshed = True
-        self.refresh_all(defer_heavy=True)
+        self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
+        self.filter_hint_label.setText(self.i18n.t("app.loading"))
+        self._schedule_device_refresh(refresh_tools=False)
 
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
@@ -275,6 +294,17 @@ class OnlineMrCollectionPage(QWidget):
             self._fill_history()
             self._refresh_tool_status_once(force=refresh_tools)
         self._update_action_state()
+
+    def _schedule_device_refresh(self, refresh_tools: bool = False) -> None:
+        if self._device_refresh_pending:
+            return
+        self._device_refresh_pending = True
+
+        def run() -> None:
+            self._device_refresh_pending = False
+            self.refresh_all(defer_heavy=True, refresh_tools=refresh_tools)
+
+        QTimer.singleShot(0, run)
 
     def retranslate(self) -> None:
         if self.connection_box:
@@ -417,6 +447,10 @@ class OnlineMrCollectionPage(QWidget):
         form.addWidget(self.running_count_label, 0, 7)
         form.addWidget(self._label("online_mr.status"), 0, 8)
         form.addWidget(self.status_label, 0, 9)
+        ping_status = QHBoxLayout()
+        ping_status.addWidget(self.fping_status_label_1)
+        ping_status.addWidget(self.fping_status_label_2)
+        form.addLayout(ping_status, 0, 10, 1, 2)
         actions = QHBoxLayout()
         actions.addWidget(self.start_button)
         actions.addWidget(self.stop_selected_button)
@@ -424,41 +458,51 @@ class OnlineMrCollectionPage(QWidget):
         actions.addWidget(self.open_button)
         actions.addWidget(self.refresh_devices_button)
         actions.addStretch(1)
-        form.addLayout(actions, 1, 0, 1, 10)
-        form.addWidget(self.filter_hint_label, 2, 0, 1, 10)
+        form.addLayout(actions, 1, 0, 1, 8)
+        progress_row = QHBoxLayout()
+        for progress in (self.collect_progress_1, self.collect_progress_2):
+            progress.setRange(0, 0)
+            progress.setTextVisible(False)
+            progress.setMaximumHeight(12)
+        progress_row.addWidget(self.collect_status_label_1)
+        progress_row.addWidget(self.collect_progress_1)
+        progress_row.addWidget(self.collect_status_label_2)
+        progress_row.addWidget(self.collect_progress_2)
+        form.addLayout(progress_row, 1, 8, 1, 4)
+        form.addWidget(self.filter_hint_label, 2, 0, 1, 12)
         content_layout.addWidget(controls)
 
-        self.device_table.setMinimumHeight(150)
-        self.device_table.setMaximumHeight(220)
+        self.device_table.setMinimumHeight(170)
+        self.device_table.setMaximumHeight(210)
         self._configure_online_table(self.device_table)
         content_layout.addWidget(self.device_table)
 
         settings_row = QHBoxLayout()
-        left_settings = QVBoxLayout()
         self.period_box = self._period_box()
+        self.advanced_box = self._advanced_box()
         self.radio_box = self._radio_box()
-        left_settings.addWidget(self.period_box)
-        left_settings.addWidget(self.radio_box)
-        right_settings = QVBoxLayout()
         self.ping_box = self._ping_box()
         self.iperf_box = self._iperf_box()
-        self.advanced_box = self._advanced_box()
-        right_settings.addWidget(self.ping_box)
-        right_settings.addWidget(self.iperf_box)
-        right_settings.addWidget(self.advanced_box)
-        settings_row.addLayout(left_settings, 1)
-        settings_row.addLayout(right_settings, 1)
+        settings_row.addWidget(self.period_box, 2)
+        settings_row.addWidget(self.radio_box, 2)
+        settings_row.addWidget(self.ping_box, 2)
+        settings_row.addWidget(self.iperf_box, 2)
         content_layout.addLayout(settings_row)
 
         main_splitter = QSplitter(Qt.Vertical)
-        self.summary_table.setMinimumHeight(120)
-        self.summary_table.setMaximumHeight(180)
+        self.summary_table.setMinimumHeight(100)
+        self.summary_table.setMaximumHeight(140)
         main_splitter.addWidget(self.summary_table)
         view_row = QWidget()
+        view_row.setMinimumHeight(40)
+        view_row.setMaximumHeight(44)
         view_layout = QHBoxLayout(view_row)
-        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setContentsMargins(0, 4, 0, 4)
         view_layout.addWidget(self._text_label("online_mr.view_device"))
+        self.view_device_combo.setMinimumWidth(260)
+        self.view_device_combo.setMaximumWidth(360)
         view_layout.addWidget(self.view_device_combo)
+        self.parse_session_button.setMinimumWidth(140)
         view_layout.addWidget(self.parse_session_button)
         view_layout.addStretch(1)
         self.tabs.addTab(self.mesh_table, "")
@@ -471,21 +515,26 @@ class OnlineMrCollectionPage(QWidget):
         self.tabs.addTab(self.iperf_table, "")
         self.tabs.addTab(self.diagnosis_table, "")
         self.tabs.addTab(self.history_table, "")
-        self.tabs.setMinimumHeight(300)
+        self.tabs.setMinimumHeight(260)
         detail = QWidget()
+        detail.setMinimumHeight(320)
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(4)
         detail_layout.addWidget(view_row)
         detail_layout.addWidget(self.tabs)
         main_splitter.addWidget(detail)
         main_splitter.setStretchFactor(0, 0)
-        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setStretchFactor(1, 3)
+        main_splitter.setSizes([120, 420])
         content_layout.addWidget(main_splitter, 1)
         self.retranslate()
         self._load_all_table_widths()
 
     def _connect_signals(self) -> None:
         self.device_table.itemChanged.connect(self._device_item_changed)
+        self.device_table.currentCellChanged.connect(self._on_device_current_row_changed)
+        self.view_device_combo.currentIndexChanged.connect(self._view_device_changed)
         self.start_button.clicked.connect(self.start_collection)
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
@@ -541,13 +590,14 @@ class OnlineMrCollectionPage(QWidget):
             self._update_device_status(device.id, self.i18n.t("online_mr.status_connecting"))
         if skipped:
             QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), f"{self.i18n.t('online_mr.connection_incomplete')}: {', '.join(skipped)}")
-        if self.enable_fping_check.isChecked() and not self.fping_target_edit.text().strip():
+        if self.enable_fping_check.isChecked() and not self._selected_fping_device_ids() and not self.fping_target_edit.text().strip():
             self.log_text.append(self.i18n.t("online_mr.ping_target_empty"))
         if started:
             self._set_status("CONNECTING")
         self._update_action_state()
 
     def stop_selected(self) -> None:
+        stopped_any = False
         for device in self._selected_devices():
             if device.id is None:
                 continue
@@ -556,11 +606,16 @@ class OnlineMrCollectionPage(QWidget):
                 iperf_worker.stop()
             fping_worker = self.fping_workers_by_device_id.get(device.id)
             if fping_worker:
+                self._set_ping_status(device.id, "stopping")
                 fping_worker.stop()
             worker = self.workers_by_device_id.get(device.id)
             if worker:
                 worker.cancel()
                 self._update_device_status(device.id, self.i18n.t("online_mr.status_stopping"))
+                self._update_summary_status_by_device(device.id, "STOPPING")
+                stopped_any = True
+        if stopped_any:
+            self._set_status("STOPPING")
         self._update_action_state()
 
     def stop_all(self) -> None:
@@ -568,33 +623,85 @@ class OnlineMrCollectionPage(QWidget):
             worker.stop()
         for worker in list(self.fping_workers_by_device_id.values()):
             worker.stop()
+        for device_id in list(self.fping_workers_by_device_id.keys()):
+            self._set_ping_status(device_id, "stopping")
         for device_id, worker in list(self.workers_by_device_id.items()):
             worker.cancel()
             self._update_device_status(device_id, self.i18n.t("online_mr.status_stopping"))
+            self._update_summary_status_by_device(device_id, "STOPPING")
+        if self.workers_by_device_id:
+            self._set_status("STOPPING")
         self._update_action_state()
 
     def open_selected_session_dir(self) -> None:
         selected = self._selected_devices()
-        path = None
+        path: Path | None = None
         if len(selected) == 1 and selected[0].id in self.last_session_dir_by_device_id:
             path = self.last_session_dir_by_device_id.get(selected[0].id)
         else:
             row = self.summary_table.currentRow()
             session_id = self.summary_table.item(row, 17).text() if row >= 0 and self.summary_table.item(row, 17) else ""
             path = self.session_dirs.get(session_id)
-        if path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        if path is None:
+            path = self.paths.online_mr_root(self.site_name)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            QMessageBox.warning(self, self.i18n.t("online_mr.open_session_dir"), f"Open collection directory failed: {exc}")
+
+    def _selected_session_dir_for_parse(self) -> Path | None:
+        device_id = self.view_device_combo.currentData()
+        if device_id is not None:
+            parsed_device_id = int(device_id)
+            path = self.last_session_dir_by_device_id.get(parsed_device_id)
+            if path and path.exists():
+                return path
+            latest = self._latest_session_dir_for_device(parsed_device_id)
+            if latest is not None:
+                return latest
+
+        row = self.summary_table.currentRow()
+        if row >= 0:
+            session_item = self.summary_table.item(row, 17)
+            session_id = session_item.text() if session_item else ""
+            path = self.session_dirs.get(session_id)
+            if path is not None:
+                return path
+
+        row = self.history_table.currentRow()
+        if row >= 0:
+            item = self.history_table.item(row, 8)
+            if item is not None and item.text():
+                return Path(item.text())
+        return None
+
+    def _latest_session_dir_for_device(self, device_id: int) -> Path | None:
+        for row in self.store.list_sessions(self.site_name, None):
+            if int(row.get("device_id") or -1) != int(device_id):
+                continue
+            session_dir = row.get("session_dir")
+            if session_dir:
+                return Path(str(session_dir))
+        return None
 
     def parse_selected_session(self) -> None:
-        row = self.history_table.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), self.i18n.t("online_mr.select_history_session"))
+        session_dir = self._selected_session_dir_for_parse()
+        if session_dir is None:
+            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), "Please select a device or history session to parse.")
             return
-        item = self.history_table.item(row, 8)
-        if item is None or not item.text():
+        if not session_dir.exists():
+            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Collection directory does not exist: {session_dir}")
             return
-        session_dir = Path(item.text())
+        raw_dir = session_dir / "raw"
+        if not raw_dir.exists():
+            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Raw directory was not found: {raw_dir}")
+            return
         self.parse_session_button.setEnabled(False)
+        self.log_text.append(f"Start parsing collection data: {session_dir}")
         self.parse_worker = OnlineMrParseWorker(session_dir, parent=self)
         self.parse_worker.completed.connect(lambda summary, d=session_dir: self._parse_completed(d, summary))
         self.parse_worker.failed.connect(self._parse_failed)
@@ -603,16 +710,16 @@ class OnlineMrCollectionPage(QWidget):
     def _parse_completed(self, session_dir: Path, summary) -> None:
         self.parse_session_button.setEnabled(True)
         self.log_text.append(
-            self.i18n.t(
-                "online_mr.parse_done",
-                segments=summary.active_segments,
-                ping=summary.ping_samples,
-                iperf=summary.iperf_samples,
-                issues=summary.issues,
-            )
+            f"Parse completed: active_segments={summary.active_segments}, "
+            f"mesh_samples={getattr(summary, 'mesh_samples', 0)}, "
+            f"ping_samples={summary.ping_samples}, iperf_samples={summary.iperf_samples}, issues={summary.issues}"
         )
-        self._load_diagnosis_results(session_dir)
+        rows = self._load_diagnosis_results(session_dir)
         self.tabs.setCurrentWidget(self.diagnosis_table)
+        if rows == 0:
+            message = "Parse completed, but no diagnosis results were generated. Check whether raw logs match the parser format."
+            self.log_text.append(message)
+            QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
         self.parse_worker = None
 
     def _parse_failed(self, message: str) -> None:
@@ -620,13 +727,13 @@ class OnlineMrCollectionPage(QWidget):
         self.parse_worker = None
         QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), message)
 
-    def _load_diagnosis_results(self, session_dir: Path) -> None:
+    def _load_diagnosis_results(self, session_dir: Path) -> int:
         import sqlite3
 
         db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
         self.diagnosis_table.setRowCount(0)
         if not db_path.exists():
-            return
+            return 0
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
@@ -644,6 +751,7 @@ class OnlineMrCollectionPage(QWidget):
             values = list(row_data[:2]) + [row_data[2], row_data[3], row_data[4], row_data[5], row_data[6], row_data[8], row_data[9], row_data[10], row_data[11], "", "", row_data[12]]
             for column, value in enumerate(values):
                 self.diagnosis_table.setItem(row, column, QTableWidgetItem("" if value is None else str(value)))
+        return len(rows)
 
     def _worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
         self.manager.register(meta.session_id, worker)
@@ -661,7 +769,7 @@ class OnlineMrCollectionPage(QWidget):
         self._set_status(meta.status)
         if meta.device_id is not None:
             self._update_device_status(int(meta.device_id), self._status_text(meta.status))
-        self._fill_view_devices()
+        self._fill_view_devices(prefer_device_id=int(meta.device_id) if meta.device_id is not None else None)
         self._fill_history()
 
     def _worker_completed(self, session_id: str) -> None:
@@ -673,19 +781,23 @@ class OnlineMrCollectionPage(QWidget):
             self.fping_workers_by_device_id.pop(device_id, None)
             self.iperf_workers_by_device_id.pop(device_id, None)
             self._update_device_status(device_id, self.i18n.t("online_mr.status_stopped"))
+            self._update_summary_status_by_device(device_id, "STOPPED")
         self.workers.pop(session_id, None)
         self.fping_workers.pop(session_id, None)
         self.iperf_workers.pop(session_id, None)
         self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
-        self._fill_view_devices()
+        self.running_count_label.setText(str(self.manager.running_count()))
+        self._fill_view_devices(prefer_device_id=device_id)
         self._fill_history()
         self._update_action_state()
 
     def _worker_failed(self, message: str, device_id: int | None = None) -> None:
         if device_id is not None:
             self._update_device_status(device_id, self.i18n.t("online_mr.status_failed"))
+            self._update_summary_status_by_device(device_id, "FAILED")
             self.workers_by_device_id.pop(device_id, None)
             self.iperf_workers_by_device_id.pop(device_id, None)
+            self.fping_workers_by_device_id.pop(device_id, None)
             self.manager.unregister_device(device_id)
         self._set_status("FAILED" if not self.workers_by_device_id else "COLLECTING")
         self._update_action_state()
@@ -693,25 +805,40 @@ class OnlineMrCollectionPage(QWidget):
 
     def _start_fping_worker(self, meta, ssh_worker: OnlineMrCollectorWorker) -> None:
         config = ssh_worker.collector.config.fping.normalized()
-        if not config.enabled or not config.target or meta.session_dir is None:
+        if meta.session_dir is None:
+            return
+        session = OnlineMrSession(Path(meta.session_dir), meta)
+        if not config.enabled:
+            session.write_fping_final_summary("High frequency ping is disabled")
+            if meta.device_id is not None:
+                self._set_ping_status(int(meta.device_id), "disabled")
+            return
+        if not config.target:
+            session.write_fping_final_summary("High frequency ping failed: target is empty")
+            if meta.device_id is not None:
+                self._set_ping_status(int(meta.device_id), "empty target")
             return
         tool = find_fping_tool(self.paths)
         if tool is None:
             self.log_text.append(self.i18n.t("online_mr.fping_tool_missing"))
+            session.write_fping_final_summary("High frequency ping failed: Fping_v3.exe was not found")
+            if meta.device_id is not None:
+                self._set_ping_status(int(meta.device_id), "tool missing")
             return
-        session = OnlineMrSession(Path(meta.session_dir), meta)
         worker = FpingProbeWorker(session, config, tool, parent=self)
         worker.failed.connect(lambda message: self.log_text.append(f"Fping: {message}"))
         worker.completed.connect(lambda _status, session_id=meta.session_id, device_id=meta.device_id: self._fping_completed(session_id, device_id))
         self.fping_workers[meta.session_id] = worker
         if meta.device_id is not None:
             self.fping_workers_by_device_id[int(meta.device_id)] = worker
+            self._set_ping_status(int(meta.device_id), "running")
         worker.start()
 
     def _fping_completed(self, session_id: str, device_id: int | None) -> None:
         self.fping_workers.pop(session_id, None)
         if device_id is not None:
             self.fping_workers_by_device_id.pop(int(device_id), None)
+            self._set_ping_status(int(device_id), "stopped")
 
     def _start_iperf_worker(self, meta, ssh_worker: OnlineMrCollectorWorker) -> None:
         config = ssh_worker.collector.config.iperf.normalized()
@@ -770,6 +897,7 @@ class OnlineMrCollectionPage(QWidget):
             self.iperf_table.setItem(table_row, column, QTableWidgetItem(str(value)))
         if device_id is not None:
             self._update_summary_iperf(int(device_id), row)
+        self._trim_table(self.iperf_table)
 
     def _flush_snapshot(self) -> None:
         snapshot = self.throttle.flush()
@@ -778,6 +906,8 @@ class OnlineMrCollectionPage(QWidget):
         self._set_status(snapshot.status)
         self._upsert_summary(snapshot)
         self._append_mesh_snapshot(snapshot)
+        self._refresh_collection_animation()
+        self._maybe_parse_realtime(snapshot)
 
     def _build_config_for_device(self, device: Device) -> OnlineMrConnectionConfig | None:
         if device.id is None:
@@ -787,6 +917,7 @@ class OnlineMrCollectionPage(QWidget):
         if not host or not username or not password:
             return None
         safe_name = safe_device_folder_name(device)
+        fping_target = self._fping_target_for_device(device)
         return OnlineMrConnectionConfig(
             site=self.site_name,
             mr_id=str(device.id),
@@ -810,8 +941,8 @@ class OnlineMrCollectionPage(QWidget):
             ),
             radio=OnlineMrRadioConfig(int(self.channel_radio.currentData()), int(self.statistics_radio.currentData())),
             fping=FpingConfig(
-                enabled=self.enable_fping_check.isChecked(),
-                target=self.fping_target_edit.text().strip(),
+                enabled=self.enable_fping_check.isChecked() and bool(fping_target),
+                target=fping_target,
                 packet_size=self.fping_packet_size.value(),
                 interval_ms=self.fping_interval_ms.value(),
                 loss_threshold_ms=self.fping_loss_threshold_ms.value(),
@@ -838,34 +969,37 @@ class OnlineMrCollectionPage(QWidget):
         checked_ids = {device.id for device in self._selected_devices()}
         self.filtered_devices = sorted([device for device in self.devices if self._is_vehicle_fat_ap(device)], key=natural_device_sort_key)
         self._updating_device_checks = True
-        self.device_table.setRowCount(0)
-        for device in self.filtered_devices:
-            row = self.device_table.rowCount()
-            self.device_table.insertRow(row)
-            check_item = QTableWidgetItem("")
-            check_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-            check_item.setCheckState(Qt.Checked if device.id in checked_ids else Qt.Unchecked)
-            self.device_table.setItem(row, 0, check_item)
-            protocol, port, username, _password = connection_fields_from_device(device)
-            values = [
-                device.name,
-                device.primary_address,
-                protocol,
-                port,
-                username,
-                self.device_groups.get(int(device.group_id or 0), ""),
-                device.device_type or "",
-                self._device_runtime_status(device.id),
-            ]
-            for offset, value in enumerate(values, start=1):
-                item = QTableWidgetItem("" if value is None else str(value))
-                if offset in {3, 4, 8}:
-                    item.setTextAlignment(Qt.AlignCenter)
-                self.device_table.setItem(row, offset, item)
-        self._updating_device_checks = False
+        self.device_table.setUpdatesEnabled(False)
+        try:
+            self.device_table.setRowCount(len(self.filtered_devices))
+            for row, device in enumerate(self.filtered_devices):
+                check_item = QTableWidgetItem("")
+                check_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+                check_item.setCheckState(Qt.Checked if device.id in checked_ids else Qt.Unchecked)
+                self.device_table.setItem(row, 0, check_item)
+                protocol, port, username, _password = connection_fields_from_device(device)
+                values = [
+                    device.name,
+                    device.primary_address,
+                    protocol,
+                    port,
+                    username,
+                    self.device_groups.get(int(device.group_id or 0), ""),
+                    device.device_type or "",
+                    self._device_runtime_status(device.id),
+                ]
+                for offset, value in enumerate(values, start=1):
+                    item = QTableWidgetItem("" if value is None else str(value))
+                    if offset in {3, 4, 8}:
+                        item.setTextAlignment(Qt.AlignCenter)
+                    self.device_table.setItem(row, offset, item)
+        finally:
+            self.device_table.setUpdatesEnabled(True)
+            self._updating_device_checks = False
         self.available_device_count_label.setText(str(len(self.filtered_devices)))
         self.filter_hint_label.setText("" if self.filtered_devices else self.i18n.t("online_mr.no_vehicle_fat_ap"))
         self._update_selected_count()
+        self._refresh_fping_device_choices()
 
     def _load_device_groups(self) -> None:
         groups = DeviceGroupRepository(self.repository.database, self.site_name).list()
@@ -873,7 +1007,7 @@ class OnlineMrCollectionPage(QWidget):
 
     def _is_vehicle_fat_ap(self, device: Device) -> bool:
         group_name = self.device_groups.get(int(device.group_id or 0), "")
-        return group_name == "车载" and is_fat_ap_device(device.device_type)
+        return group_name == "\u8f66\u8f7d" and is_fat_ap_device(device.device_type)
 
     def _selected_devices(self) -> list[Device]:
         checked: list[Device] = []
@@ -886,14 +1020,37 @@ class OnlineMrCollectionPage(QWidget):
     def _device_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating_device_checks or item.column() != 0:
             return
+        changed_device_id: int | None = None
+        if 0 <= item.row() < len(self.filtered_devices):
+            device = self.filtered_devices[item.row()]
+            if device.id is not None and item.checkState() == Qt.Checked:
+                changed_device_id = int(device.id)
         selected = self._selected_devices()
         if len(selected) > 2:
             self._updating_device_checks = True
             item.setCheckState(Qt.Unchecked)
             self._updating_device_checks = False
             QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
+            changed_device_id = None
+        if changed_device_id is not None:
+            self._view_device_user_selected = False
+            self._fill_view_devices(prefer_device_id=changed_device_id)
         self._update_selected_count()
+        self._refresh_fping_device_choices()
         self._update_action_state()
+
+    def _on_device_current_row_changed(self, current_row: int, _current_column: int, _previous_row: int, _previous_column: int) -> None:
+        if self._updating_device_checks or self._view_device_user_selected:
+            return
+        if current_row < 0 or current_row >= len(self.filtered_devices):
+            return
+        device = self.filtered_devices[current_row]
+        if device.id is not None:
+            self._fill_view_devices(prefer_device_id=int(device.id))
+
+    def _view_device_changed(self, _index: int) -> None:
+        if not self.view_device_combo.signalsBlocked():
+            self._view_device_user_selected = True
 
     def _update_selected_count(self) -> None:
         self.selected_device_count_label.setText(str(len(self._selected_devices())))
@@ -907,7 +1064,145 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setEnabled(can_start)
         self.stop_selected_button.setEnabled(running_selected)
         self.stop_all_button.setEnabled(bool(self.workers_by_device_id))
+        self.open_button.setEnabled(True)
         self.running_count_label.setText(str(self.manager.running_count()))
+        self._refresh_collection_animation()
+
+    def _refresh_fping_device_choices(self) -> None:
+        selected = [device for device in self._selected_devices() if device.id is not None]
+        previous_1 = self.fping_device_combo_1.currentData()
+        previous_2 = self.fping_device_combo_2.currentData()
+        available_ids = {int(device.id) for device in selected if device.id is not None}
+
+        for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("-", None)
+            for device in selected:
+                host = str(device.primary_address or "").strip()
+                label = f"{device.name} ({host})" if host else device.name
+                combo.addItem(label, int(device.id))
+            combo.blockSignals(False)
+
+        defaults = [selected[0].id if selected else None, selected[1].id if len(selected) > 1 else (selected[0].id if selected else None)]
+        desired: list[int | None] = []
+        for previous, default in ((previous_1, defaults[0]), (previous_2, defaults[1])):
+            wanted = int(previous) if previous in available_ids else (int(default) if default is not None else None)
+            desired.append(wanted)
+        if len(selected) > 1 and desired[0] is not None and desired[0] == desired[1]:
+            desired[1] = int(selected[1].id)
+        for combo, wanted in (
+            (self.fping_device_combo_1, desired[0]),
+            (self.fping_device_combo_2, desired[1]),
+        ):
+            index = combo.findData(wanted)
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+        self._refresh_ping_status_labels()
+
+    def _selected_fping_device_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
+            value = combo.currentData()
+            if value is not None:
+                ids.add(int(value))
+        return ids
+
+    def _fping_target_for_device(self, device: Device) -> str:
+        manual_target = self.fping_target_edit.text().strip()
+        selected_ids = self._selected_fping_device_ids()
+        if device.id is not None and selected_ids:
+            if int(device.id) not in selected_ids:
+                return ""
+            return str(device.primary_address or "").strip() or manual_target
+        return str(device.primary_address or "").strip() or manual_target
+
+    def _set_ping_status(self, device_id: int | None, status: str) -> None:
+        if device_id is None:
+            return
+        for combo, label, name in (
+            (self.fping_device_combo_1, self.fping_status_label_1, "Ping 1"),
+            (self.fping_device_combo_2, self.fping_status_label_2, "Ping 2"),
+        ):
+            if combo.currentData() == device_id:
+                label.setText(f"{name}: {status}")
+
+    def _refresh_ping_status_labels(self) -> None:
+        for combo, label, name in (
+            (self.fping_device_combo_1, self.fping_status_label_1, "Ping 1"),
+            (self.fping_device_combo_2, self.fping_status_label_2, "Ping 2"),
+        ):
+            value = combo.currentData()
+            if value is None:
+                label.setText(f"{name}: idle")
+            elif int(value) in self.fping_workers_by_device_id:
+                label.setText(f"{name}: running")
+            else:
+                label.setText(f"{name}: ready")
+
+    def _refresh_collection_animation(self) -> None:
+        selected = [device for device in self._selected_devices() if device.id is not None][:2]
+        slots = [
+            (self.collect_status_label_1, self.collect_progress_1, "Device 1"),
+            (self.collect_status_label_2, self.collect_progress_2, "Device 2"),
+        ]
+        for index, (label, progress, fallback_name) in enumerate(slots):
+            if index >= len(selected):
+                label.setText(f"{fallback_name}: idle")
+                progress.setRange(0, 1)
+                progress.setValue(0)
+                continue
+            device = selected[index]
+            worker = self.workers_by_device_id.get(int(device.id))
+            if worker is None:
+                label.setText(f"{device.name}: ready")
+                progress.setRange(0, 1)
+                progress.setValue(0)
+                continue
+            collector = getattr(worker, "collector", None)
+            if collector is None:
+                label.setText(f"{device.name}: {self._status_text('COLLECTING')}")
+                progress.setRange(0, 0)
+                continue
+            snapshot = collector.snapshot()
+            modules = ["mesh", "busy", "stats"]
+            if int(device.id) in self.fping_workers_by_device_id:
+                modules.append("ping")
+            label.setText(f"{device.name}: {self._status_text(snapshot.status)} {snapshot.uptime_seconds}s {'/'.join(modules)}")
+            progress.setRange(0, 0)
+
+    def _maybe_parse_realtime(self, snapshot: OnlineMrSnapshot) -> None:
+        if self.realtime_parse_worker is not None or self.parse_worker is not None:
+            return
+        session_dir = self.session_dirs.get(snapshot.session_id)
+        if session_dir is None or not session_dir.exists():
+            return
+        raw_dir = session_dir / "raw"
+        if not raw_dir.exists():
+            return
+        now = time.monotonic()
+        if now - self._last_realtime_parse_at.get(snapshot.session_id, 0.0) < 30.0:
+            return
+        self._last_realtime_parse_at[snapshot.session_id] = now
+        worker = OnlineMrParseWorker(session_dir, parent=self)
+        self.realtime_parse_worker = worker
+        worker.completed.connect(lambda summary, d=session_dir: self._realtime_parse_completed(d, summary))
+        worker.failed.connect(self._realtime_parse_failed)
+        worker.start()
+
+    def _realtime_parse_completed(self, session_dir: Path, summary) -> None:
+        self.log_text.append(
+            f"Realtime parse completed: mesh_samples={getattr(summary, 'mesh_samples', 0)}, "
+            f"ping_samples={summary.ping_samples}, iperf_samples={summary.iperf_samples}"
+        )
+        if self.tabs.currentWidget() == self.diagnosis_table:
+            self._load_diagnosis_results(session_dir)
+        self.realtime_parse_worker = None
+
+    def _realtime_parse_failed(self, message: str) -> None:
+        self.log_text.append(f"Realtime parse failed: {message}")
+        self.realtime_parse_worker = None
 
     def _device_runtime_status(self, device_id: int | None) -> str:
         if device_id is not None and device_id in self.workers_by_device_id:
@@ -922,12 +1217,32 @@ class OnlineMrCollectionPage(QWidget):
                 self.device_table.setItem(row, 8, QTableWidgetItem(status))
                 break
 
-    def _fill_view_devices(self) -> None:
+    def _preferred_view_device_id(self) -> int | None:
+        selected = self._selected_devices()
+        if selected and selected[0].id is not None:
+            return int(selected[0].id)
+        row = self.device_table.currentRow()
+        if 0 <= row < len(self.filtered_devices):
+            device = self.filtered_devices[row]
+            if device.id is not None:
+                return int(device.id)
+        if self.workers_by_device_id:
+            return next(iter(self.workers_by_device_id.keys()))
         current = self.view_device_combo.currentData()
+        if current is not None:
+            return int(current)
+        return None
+
+    def _fill_view_devices(self, prefer_device_id: int | None = None) -> None:
+        if prefer_device_id is None:
+            prefer_device_id = self._preferred_view_device_id()
         self.view_device_combo.blockSignals(True)
         self.view_device_combo.clear()
         seen: set[int] = set()
-        for device in self.filtered_devices:
+        devices = list(self.filtered_devices)
+        if prefer_device_id is not None:
+            devices.sort(key=lambda device: 0 if device.id == prefer_device_id else 1)
+        for device in devices:
             if device.id is None:
                 continue
             seen.add(int(device.id))
@@ -935,31 +1250,33 @@ class OnlineMrCollectionPage(QWidget):
         for device_id in self.workers_by_device_id:
             if device_id not in seen:
                 self.view_device_combo.addItem(str(device_id), device_id)
-        index = self.view_device_combo.findData(current)
+        index = self.view_device_combo.findData(prefer_device_id)
         self.view_device_combo.setCurrentIndex(index if index >= 0 else 0)
         self.view_device_combo.blockSignals(False)
 
     def _fill_history(self) -> None:
         self._history_refresh_pending = False
         rows = self.store.list_sessions(self.site_name, None)
-        self.history_table.setRowCount(0)
-        for row_data in rows:
-            row = self.history_table.rowCount()
-            self.history_table.insertRow(row)
-            stats = row_data.get("stats") if isinstance(row_data.get("stats"), dict) else {}
-            values = [
-                row_data.get("session_id", ""),
-                row_data.get("started_at", ""),
-                row_data.get("ended_at", ""),
-                row_data.get("status", ""),
-                f"{stats.get('mesh_link_success', 0)}/{stats.get('mesh_link_failed', 0)}",
-                f"{stats.get('channel_busy_success', 0)}/{stats.get('channel_busy_failed', 0)}",
-                stats.get("reconnect_count", 0),
-                row_data.get("mr_name", ""),
-                row_data.get("session_dir", ""),
-            ]
-            for column, value in enumerate(values):
-                self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
+        self.history_table.setUpdatesEnabled(False)
+        try:
+            self.history_table.setRowCount(len(rows))
+            for row, row_data in enumerate(rows):
+                stats = row_data.get("stats") if isinstance(row_data.get("stats"), dict) else {}
+                values = [
+                    row_data.get("session_id", ""),
+                    row_data.get("started_at", ""),
+                    row_data.get("ended_at", ""),
+                    row_data.get("status", ""),
+                    f"{stats.get('mesh_link_success', 0)}/{stats.get('mesh_link_failed', 0)}",
+                    f"{stats.get('channel_busy_success', 0)}/{stats.get('channel_busy_failed', 0)}",
+                    stats.get("reconnect_count", 0),
+                    row_data.get("mr_name", ""),
+                    row_data.get("session_dir", ""),
+                ]
+                for column, value in enumerate(values):
+                    self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
+        finally:
+            self.history_table.setUpdatesEnabled(True)
 
     def _schedule_history_refresh(self, refresh_tools: bool = False) -> None:
         if self._history_refresh_pending:
@@ -1058,6 +1375,16 @@ class OnlineMrCollectionPage(QWidget):
         self.summary_table.setItem(row, 15, QTableWidgetItem(str(row_data.get("retransmits", 0))))
         self.summary_table.setItem(row, 16, QTableWidgetItem(self.i18n.t("online_mr.status_collecting")))
 
+    def _update_summary_status_by_device(self, device_id: int | None, status: str) -> None:
+        if device_id is None:
+            return
+        row = self._find_row(self.summary_table, str(device_id), column=18)
+        if row < 0:
+            return
+        item = QTableWidgetItem(self._status_text(status))
+        item.setTextAlignment(Qt.AlignCenter)
+        self.summary_table.setItem(row, 2, item)
+
     def _append_mesh_snapshot(self, snapshot: OnlineMrSnapshot) -> None:
         if not snapshot.active_peer:
             return
@@ -1066,6 +1393,11 @@ class OnlineMrCollectionPage(QWidget):
         values = [snapshot.last_collection_time, 1, "ACTIVE", snapshot.active_peer, snapshot.local_rssi, snapshot.peer_rssi, "", "", snapshot.local_tx_busy, snapshot.local_rx_busy, "", ""]
         for column, value in enumerate(values):
             self.mesh_table.setItem(row, column, QTableWidgetItem("" if value is None else str(value)))
+        self._trim_table(self.mesh_table)
+
+    def _trim_table(self, table: QTableWidget, max_rows: int = 5000) -> None:
+        while table.rowCount() > max_rows:
+            table.removeRow(0)
 
     def _find_row(self, table: QTableWidget, value: str, column: int = 0) -> int:
         for row in range(table.rowCount()):
@@ -1116,6 +1448,8 @@ class OnlineMrCollectionPage(QWidget):
         for widget, width in (
             (self.status_label, 140),
             (self.fping_target_edit, 260),
+            (self.fping_device_combo_1, 220),
+            (self.fping_device_combo_2, 220),
             (self.iperf_server_edit, 260),
             (self.iperf_bandwidth_edit, 140),
             (self.iperf_bandwidth_unit_combo, 80),
@@ -1151,10 +1485,12 @@ class OnlineMrCollectionPage(QWidget):
     def _radio_box(self) -> QGroupBox:
         box = QGroupBox()
         grid = QGridLayout(box)
-        grid.addWidget(self._label("online_mr.channel_busy_radio"), 0, 0)
-        grid.addWidget(self.channel_radio, 0, 1)
-        grid.addWidget(self._label("online_mr.statistics_radio"), 1, 0)
-        grid.addWidget(self.statistics_radio, 1, 1)
+        radio_label = QLabel("Radio")
+        radio_label.setMinimumWidth(72)
+        grid.addWidget(radio_label, 0, 0)
+        grid.addWidget(self.radio_port, 0, 1)
+        if self.advanced_box is not None:
+            grid.addWidget(self.advanced_box, 1, 0, 1, 3)
         grid.setColumnStretch(2, 1)
         return box
 
@@ -1162,21 +1498,25 @@ class OnlineMrCollectionPage(QWidget):
         box = QGroupBox()
         grid = QGridLayout(box)
         grid.addWidget(self.enable_fping_check, 0, 0, 1, 3)
-        grid.addWidget(self._label("online_mr.ping_target"), 1, 0)
-        grid.addWidget(self.fping_target_edit, 1, 1, 1, 2)
+        grid.addWidget(QLabel("Ping 1"), 1, 0)
+        grid.addWidget(self.fping_device_combo_1, 1, 1, 1, 2)
+        grid.addWidget(QLabel("Ping 2"), 2, 0)
+        grid.addWidget(self.fping_device_combo_2, 2, 1, 1, 2)
+        grid.addWidget(self._label("online_mr.ping_target"), 3, 0)
+        grid.addWidget(self.fping_target_edit, 3, 1, 1, 2)
         for row, (key, spin, unit) in enumerate(
             (
                 ("online_mr.packet_size", self.fping_packet_size, "online_mr.bytes"),
                 ("online_mr.ping_interval_ms", self.fping_interval_ms, "online_mr.milliseconds"),
                 ("online_mr.loss_threshold_ms", self.fping_loss_threshold_ms, "online_mr.milliseconds"),
             ),
-            start=2,
+            start=4,
         ):
             grid.addWidget(self._label(key), row, 0)
             grid.addWidget(spin, row, 1)
             grid.addWidget(self._text_label(unit), row, 2)
-        grid.addWidget(self._label("online_mr.tool_status"), 5, 0)
-        grid.addWidget(self.fping_tool_label, 5, 1, 1, 2)
+        grid.addWidget(self._label("online_mr.tool_status"), 7, 0)
+        grid.addWidget(self.fping_tool_label, 7, 1, 1, 2)
         return box
 
     def _iperf_box(self) -> QGroupBox:
@@ -1268,6 +1608,11 @@ class OnlineMrCollectionPage(QWidget):
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
         table.setMinimumHeight(250 if table is not self.summary_table else 120)
+        if table is self.device_table:
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+            table.setColumnWidth(0, 42)
+            for column, width in ((1, 240), (2, 130), (3, 70), (4, 70), (5, 90), (6, 80), (7, 90), (8, 100)):
+                table.setColumnWidth(column, width)
 
     def _load_all_table_widths(self) -> None:
         tables = {

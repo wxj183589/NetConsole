@@ -33,6 +33,9 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     count = len(master_times)
     peer_series = _empty_peer_series(count)
     peer_macs = [""] * count
+    peer_ap_names = [""] * count
+    peer_sites = [""] * count
+    peer_radios = [""] * count
     peer_link_states = [""] * count
     peer_establish_times = [""] * count
     peer_session_ids = [""] * count
@@ -43,6 +46,9 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
             continue
         session_id = str(row.get("session_id") or "")
         peer_macs[index] = str(row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "")
+        peer_ap_names[index] = str(row.get("peer_ap_name") or "")
+        peer_sites[index] = str(row.get("peer_site") or "")
+        peer_radios[index] = str(row.get("peer_radio") or row.get("peer_radio_label") or "")
         peer_link_states[index] = str(row.get("link_state") or "")
         peer_establish_times[index] = str(row.get("establish_time") or "")
         peer_session_ids[index] = session_id
@@ -65,10 +71,13 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     active_runs = build_active_runs(master_times, unique_active_by_index)
     active_series = _empty_active_series(count)
     active_peer_macs = [""] * count
+    active_peer_ap_names = [""] * count
+    active_peer_sites = [""] * count
+    active_peer_radios = [""] * count
     peer_change_indices = [run.start_sample_index for run in active_runs[1:]]
     rapid_flaps = detect_rapid_flaps(active_runs, master_times, peer_segment.get("estimated_interval_seconds") or run_segment.get("estimated_interval_seconds"))
     rapid_flap_indices = [int(item["return_sample_index"]) for item in rapid_flaps]
-    assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs)
+    assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs, active_peer_ap_names, active_peer_sites, active_peer_radios)
     events_by_index = _events_by_index(events, time_index)
     switch_indices = [index for index, items in events_by_index.items() if any(item.get("event_type") == "ACTIVE_SWITCH" for item in items)]
     anchor_index = _nearest_time_index(master_times, anchor_time)
@@ -84,6 +93,8 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
             "sample_count": count,
             "peer_sample_count": len(peer_rows),
             "backend": "matplotlib-cpu",
+            "partial": bool(peer_segment.get("partial") or run_segment.get("partial")),
+            "full_loading": bool(peer_segment.get("full_loading") or run_segment.get("full_loading")),
         },
         "timestamps": timestamps,
         "timestamp_labels": master_times,
@@ -91,7 +102,13 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         "peer_series": peer_series,
         "active_series": active_series,
         "active_peer_macs": active_peer_macs,
+        "active_peer_ap_names": active_peer_ap_names,
+        "active_peer_sites": active_peer_sites,
+        "active_peer_radios": active_peer_radios,
         "peer_macs": peer_macs,
+        "peer_ap_names": peer_ap_names,
+        "peer_sites": peer_sites,
+        "peer_radios": peer_radios,
         "peer_link_states": peer_link_states,
         "peer_establish_times": peer_establish_times,
         "peer_session_ids": peer_session_ids,
@@ -250,6 +267,9 @@ def assign_active_series(
     rows_by_time_and_peer: dict[str, dict[str, dict[str, object]]],
     active_series: dict[str, np.ndarray],
     active_peer_macs: list[str],
+    active_peer_ap_names: list[str],
+    active_peer_sites: list[str],
+    active_peer_radios: list[str],
 ) -> None:
     for run in active_runs:
         for sample_index in run.active_sample_indices:
@@ -257,6 +277,9 @@ def assign_active_series(
             active_row = rows_by_time_and_peer.get(sample_time, {}).get(run.peer_mac)
             active_peer_macs[sample_index] = run.peer_mac
             if active_row:
+                active_peer_ap_names[sample_index] = str(active_row.get("peer_ap_name") or "")
+                active_peer_sites[sample_index] = str(active_row.get("peer_site") or "")
+                active_peer_radios[sample_index] = str(active_row.get("peer_radio") or active_row.get("peer_radio_label") or "")
                 metrics = active_row.get("metrics") if isinstance(active_row.get("metrics"), dict) else {}
                 active_series["active_local_rssi"][sample_index] = _float(metrics.get("local_rssi_db"))
                 active_series["active_local_tx_busy"][sample_index] = _float(metrics.get("local_tx_busy"))

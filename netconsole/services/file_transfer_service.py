@@ -15,6 +15,7 @@ from netconsole.models.device import Device
 from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
+from netconsole.services.file_service import file_sha256
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -22,6 +23,8 @@ FILE_MANAGEMENT_CONTEXT = "file_management"
 FILE_LIST_COMMANDS = ("dir flash:/", "dir flash:/diagfile/")
 FILE_TRANSFER_CONCURRENCY = 50
 FILE_TRANSFER_MAX_CONCURRENCY = 1
+DOWNLOAD_STABLE_WAIT_SECONDS = 2.0
+DOWNLOAD_VERIFY_RETRIES = 3
 SftpProgressCallback = Callable[[str], None]
 
 
@@ -336,28 +339,36 @@ class FileTransferService:
         target = Path(local_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         part_path = target.with_name(f"{target.name}.part")
-        remote_size = int(sftp.stat(source).st_size)
-        downloaded = 0
-        try:
-            with sftp.open(source, "rb") as remote_file, part_path.open("wb") as local_file:
-                while True:
-                    if is_cancelled(cancel_token):
-                        raise TransferCancelled("Transfer cancelled.")
-                    chunk = remote_file.read(chunk_size)
-                    if not chunk:
-                        break
-                    local_file.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback is not None:
-                        progress_callback(downloaded, remote_size)
-            if part_path.stat().st_size != remote_size:
-                raise TransferVerificationFailed("File size verification failed.")
-            part_path.replace(target)
-            return target
-        except Exception:
-            if part_path.exists():
-                part_path.unlink(missing_ok=True)
-            raise
+        last_error: Exception | None = None
+        for _attempt in range(DOWNLOAD_VERIFY_RETRIES):
+            downloaded = 0
+            try:
+                remote_size = self._stable_remote_size(sftp, source)
+                with sftp.open(source, "rb") as remote_file, part_path.open("wb") as local_file:
+                    while True:
+                        if is_cancelled(cancel_token):
+                            raise TransferCancelled("Transfer cancelled.")
+                        chunk = remote_file.read(chunk_size)
+                        if not chunk:
+                            break
+                        local_file.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback is not None:
+                            progress_callback(downloaded, remote_size)
+                self._verify_downloaded_part(sftp, source, part_path, remote_size)
+                part_path.replace(target)
+                file_sha256(target)
+                return target
+            except TransferCancelled:
+                if part_path.exists():
+                    part_path.unlink(missing_ok=True)
+                raise
+            except Exception as exc:
+                last_error = exc
+                if part_path.exists():
+                    part_path.unlink(missing_ok=True)
+                sleep(min(1.0, DOWNLOAD_STABLE_WAIT_SECONDS))
+        raise TransferVerificationFailed(f"Download verification failed after retries: {last_error}") from last_error
 
     def _require_sftp(self):
         if self._sftp is None:
@@ -412,17 +423,24 @@ class FileTransferService:
         local_path = self.local_path_for(device, remote_file)
         last_error = ""
         for target in targets:
-            try:
+            for attempt in range(DOWNLOAD_VERIFY_RETRIES):
                 try:
-                    self._download_sftp(target, remote_file.remote_path, local_path)
-                except Exception as sftp_exc:
-                    app_logger.log_error("FILE_DOWNLOAD_SFTP_FAILED", self._detail(device, remote_file, local_path, sanitize_sensitive_text(str(sftp_exc), device)))
-                    self._download_scp(target, remote_file.remote_path, local_path)
-                app_logger.log_info("FILE_DOWNLOADED", self._detail(device, remote_file, local_path))
-                return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, self._relative_to_site(local_path), "success", None, elapsed_ms(started))
-            except Exception as exc:
-                last_error = sanitize_sensitive_text(str(exc), device)
-                app_logger.log_error("FILE_DOWNLOAD_ATTEMPT_FAILED", self._detail(device, remote_file, local_path, last_error))
+                    try:
+                        self._download_sftp(target, remote_file.remote_path, local_path)
+                    except Exception as sftp_exc:
+                        app_logger.log_error("FILE_DOWNLOAD_SFTP_FAILED", self._detail(device, remote_file, local_path, sanitize_sensitive_text(str(sftp_exc), device)))
+                        self._download_scp(target, remote_file.remote_path, local_path)
+                    if not local_path.exists() or local_path.stat().st_size == 0:
+                        raise TransferVerificationFailed("Downloaded file is empty or missing.")
+                    file_sha256(local_path)
+                    app_logger.log_info("FILE_DOWNLOADED", self._detail(device, remote_file, local_path))
+                    return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, self._relative_to_site(local_path), "success", None, elapsed_ms(started))
+                except Exception as exc:
+                    last_error = sanitize_sensitive_text(str(exc), device)
+                    app_logger.log_error("FILE_DOWNLOAD_ATTEMPT_FAILED", self._detail(device, remote_file, local_path, f"attempt={attempt + 1}, {last_error}"))
+                    if local_path.exists():
+                        local_path.unlink(missing_ok=True)
+                    sleep(min(1.0, DOWNLOAD_STABLE_WAIT_SECONDS))
         if local_path.exists() and local_path.stat().st_size == 0:
             local_path.unlink(missing_ok=True)
         return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", last_error or "File download failed.", elapsed_ms(started))
@@ -455,11 +473,47 @@ class FileTransferService:
                 )
                 sftp = client.open_sftp()
                 try:
-                    sftp.get(remote_path, str(local_path))
+                    source = normalize_remote_path(remote_path)
+                    remote_size = self._stable_remote_size(sftp, source)
+                    part_path = local_path.with_name(f"{local_path.name}.part")
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    with sftp.open(source, "rb") as remote_file, part_path.open("wb") as local_file:
+                        while True:
+                            chunk = remote_file.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            local_file.write(chunk)
+                    self._verify_downloaded_part(sftp, source, part_path, remote_size)
+                    part_path.replace(local_path)
+                    file_sha256(local_path)
                 finally:
                     sftp.close()
         finally:
             client.close()
+
+    def _stable_remote_size(self, sftp, remote_path: str) -> int:
+        size1 = int(sftp.stat(remote_path).st_size)
+        sleep(DOWNLOAD_STABLE_WAIT_SECONDS)
+        size2 = int(sftp.stat(remote_path).st_size)
+        if size1 != size2:
+            raise TransferVerificationFailed(f"Remote file is still being written: {size1} != {size2}")
+        return size2
+
+    def _verify_downloaded_part(self, sftp, remote_path: str, part_path: Path, expected_size: int) -> None:
+        local_size = part_path.stat().st_size if part_path.exists() else -1
+        if local_size != expected_size:
+            raise TransferVerificationFailed(f"File size verification failed: local={local_size}, remote={expected_size}")
+        tail_size = min(4096, expected_size)
+        if tail_size <= 0:
+            return
+        with sftp.open(remote_path, "rb") as remote_file:
+            remote_file.seek(expected_size - tail_size)
+            remote_tail = remote_file.read(tail_size)
+        with part_path.open("rb") as local_file:
+            local_file.seek(expected_size - tail_size)
+            local_tail = local_file.read(tail_size)
+        if remote_tail != local_tail:
+            raise TransferVerificationFailed("Tail verification failed.")
 
     def _download_scp(self, target, remote_path: str, local_path: Path) -> None:
         try:
@@ -573,11 +627,20 @@ def unique_remote_files(files: list[RemoteDeviceFile]) -> list[RemoteDeviceFile]
 
 def is_supported_remote_file(name: str) -> bool:
     lowered = name.casefold()
-    return lowered.endswith(".bin") or lowered.endswith(".zip") or lowered.endswith(".tar.gz") or lowered.startswith("diag_")
+    return (
+        lowered.endswith(".bin")
+        or lowered.endswith(".zip")
+        or lowered.endswith(".tar.gz")
+        or lowered.endswith("meshlog.log")
+        or lowered.endswith("meshlog.log.gz")
+        or lowered.startswith("diag_")
+    )
 
 
 def file_category(name: str, remote_path: str = "") -> str:
     lowered = f"{remote_path}/{name}".casefold()
+    if lowered.endswith("meshlog.log") or lowered.endswith("meshlog.log.gz"):
+        return "meshlog"
     if "/diagfile/" in lowered or Path(name).name.casefold().startswith("diag_"):
         return "diag"
     if lowered.endswith(".bin"):

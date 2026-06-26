@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -8,10 +9,10 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from PySide6.QtCore import QByteArray, QSignalBlocker, QTimer, Qt
+from PySide6.QtCore import QByteArray, QPoint, QSignalBlocker, QTimer, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollBar, QSizePolicy, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollBar, QSizePolicy, QTabWidget, QVBoxLayout, QWidget
 
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
@@ -30,6 +31,20 @@ from netconsole.ui.mesh_time_window_controller import MeshTimeWindowController
 DEFAULT_VISIBLE_SAMPLES = 120
 
 
+@dataclass(frozen=True)
+class MeshSelectedPoint:
+    index: int
+    session_id: str
+    sample_time: str
+    peer_mac: str
+    peer_ap_name: str
+    peer_site: str
+    radio: str
+    peer_radio: str
+    state: str
+    locked: bool = False
+
+
 class MeshPeerDetailDialog(QDialog):
     def __init__(
         self,
@@ -43,6 +58,7 @@ class MeshPeerDetailDialog(QDialog):
         auto_load: bool = True,
         anchor_link_id: int | None = None,
         initial_tab: str | None = None,
+        source_file_id: int | str | None = None,
     ) -> None:
         super().__init__(parent)
         flags = self.windowFlags()
@@ -57,6 +73,7 @@ class MeshPeerDetailDialog(QDialog):
         self.radio = radio
         self.initial_session_id = session_id or ""
         self.anchor_link_id = anchor_link_id
+        self.source_file_id = source_file_id
         self.initial_tab = initial_tab
         self.worker: MeshPeerSeriesWorker | None = None
         self.segment: dict[str, object] = {}
@@ -73,13 +90,25 @@ class MeshPeerDetailDialog(QDialog):
         self.settings = SettingsStore(PathResolver())
         self.current_session_id = ""
         self.interaction_state = "IDLE"
+        self.fast_pan_mode = False
+        self.locked_selected_point: MeshSelectedPoint | None = None
+        self.focus_peer_mac = ""
+        self.focus_peer_ap_name = ""
 
         self.summary_labels: dict[str, QLabel] = {}
         self.status_label = QLabel(self.i18n.t("mesh_analysis.loading_chart"))
+        self.lock_status_label = QLabel("")
+        self.focus_status_label = QLabel("")
         self.session_filter = QComboBox()
         self.session_filter_container = QWidget()
         self.session_filter_label = QLabel(self.i18n.t("mesh_analysis.session_filter"))
         self.visible_samples_combo = QComboBox()
+        self.show_switch_points_checkbox = QCheckBox("显示链路切换点")
+        self.show_switch_points_checkbox.setChecked(True)
+        self.unlock_point_button = QPushButton("解除锁定")
+        self.unlock_point_button.setEnabled(False)
+        self.clear_focus_button = QPushButton("取消聚焦")
+        self.clear_focus_button.setEnabled(False)
         self.center_button = QPushButton(self.i18n.t("mesh_analysis.center_selected_sample"))
         self.reset_button = QPushButton(self.i18n.t("mesh_analysis.reset_view"))
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
@@ -89,7 +118,7 @@ class MeshPeerDetailDialog(QDialog):
         self.canvases: dict[str, FigureCanvasQTAgg] = {}
         self.window_update_timer = QTimer(self)
         self.window_update_timer.setSingleShot(True)
-        self.window_update_timer.setInterval(16)
+        self.window_update_timer.setInterval(40)
         self.interaction_resume_timer = QTimer(self)
         self.interaction_resume_timer.setSingleShot(True)
         self.interaction_resume_timer.setInterval(100)
@@ -105,6 +134,9 @@ class MeshPeerDetailDialog(QDialog):
         self.setFocusPolicy(Qt.StrongFocus)
         self.session_filter.currentIndexChanged.connect(self._mark_all_dirty_and_render_current)
         self.visible_samples_combo.currentIndexChanged.connect(self._visible_samples_changed)
+        self.show_switch_points_checkbox.toggled.connect(self._mark_all_dirty_and_render_current)
+        self.unlock_point_button.clicked.connect(self.clear_locked_point)
+        self.clear_focus_button.clicked.connect(self.clear_focus_peer)
         self.center_button.clicked.connect(self.center_selected_sample)
         self.reset_button.clicked.connect(self.center_selected_sample)
         self.time_scrollbar.valueChanged.connect(self._scroll_changed)
@@ -144,6 +176,15 @@ class MeshPeerDetailDialog(QDialog):
             self.visible_samples_combo.addItem(self.i18n.t("mesh_analysis.all_samples") if value == 0 else str(value), value)
         self.visible_samples_combo.setCurrentIndex(2)
         layout.addWidget(self.visible_samples_combo)
+        layout.addWidget(self.show_switch_points_checkbox)
+        lock_layout = QHBoxLayout()
+        lock_layout.addWidget(self.lock_status_label, 1)
+        lock_layout.addWidget(self.unlock_point_button)
+        layout.addLayout(lock_layout)
+        focus_layout = QHBoxLayout()
+        focus_layout.addWidget(self.focus_status_label, 1)
+        focus_layout.addWidget(self.clear_focus_button)
+        layout.addLayout(focus_layout)
         layout.addWidget(self.center_button)
         layout.addWidget(self.reset_button)
         for key, title in self._chart_titles():
@@ -164,12 +205,21 @@ class MeshPeerDetailDialog(QDialog):
         layout.addWidget(self.time_scrollbar)
 
     def _load(self) -> None:
-        self.worker = MeshPeerSeriesWorker(self.db_path, self.peer_mac, self.radio, self.initial_session_id, self, self.anchor_link_id)
-        self.worker.loaded.connect(self._on_loaded)
+        self.status_label.setText("正在加载首屏图表...")
+        self.worker = MeshPeerSeriesWorker(self.db_path, self.peer_mac, self.radio, self.initial_session_id, self, self.anchor_link_id, self.source_file_id)
+        if self.anchor_link_id is None:
+            self.worker.loaded.connect(self._on_loaded)
+        else:
+            self.worker.loaded_initial.connect(self._on_loaded)
+            self.worker.loaded_full.connect(self._on_loaded)
         self.worker.failed.connect(self._on_failed)
         self.worker.start()
 
     def _on_loaded(self, payload: object) -> None:
+        kind = str(payload.get("kind") or "") if isinstance(payload, dict) else ""
+        was_partial = bool((self.chart_payload or {}).get("metadata", {}).get("partial")) if isinstance(self.chart_payload, dict) else False
+        preserve_center = kind == "full" and self.user_moved_window
+        center_label = self._visible_center_sample_time() if preserve_center else ""
         if isinstance(payload, dict) and "chart_payload" in payload:
             self.chart_payload = payload["chart_payload"]
             self.segment = dict(payload.get("peer_segment") or {})
@@ -181,16 +231,27 @@ class MeshPeerDetailDialog(QDialog):
             segment = {"anchor": rows[0] if rows else None, "rows": rows, "segment_start": rows[0].get("sample_time") if rows else None, "segment_end": rows[-1].get("sample_time") if rows else None}
             self.chart_payload = build_chart_payload(segment, {**segment, "events": []})
             self.segment = segment
-        self.status_label.setText("")
+        metadata = self.chart_payload.get("metadata", {}) if isinstance(self.chart_payload, dict) else {}
+        is_partial = bool(metadata.get("partial"))
+        if is_partial:
+            self.status_label.setText("正在后台加载完整链路数据...")
+        elif was_partial or kind == "full":
+            self.status_label.setText("完整数据已加载")
+        else:
+            self.status_label.setText("")
         self._populate_sessions()
         self._update_summary()
-        self._configure_scrollbar(center_anchor=True)
+        if preserve_center:
+            self._configure_scrollbar(center_anchor=False)
+            self._restore_visible_center(center_label)
+        else:
+            self._configure_scrollbar(center_anchor=True)
         self._mark_all_dirty_and_render_current()
         if self.initial_tab:
             index = self.tab_keys.index(self.initial_tab) if self.initial_tab in self.tab_keys else -1
             if index >= 0:
                 self.tabs.setCurrentIndex(index)
-        if self.worker is not None:
+        if self.worker is not None and not is_partial:
             self.worker.deleteLater()
             self.worker = None
 
@@ -239,8 +300,7 @@ class MeshPeerDetailDialog(QDialog):
         self.summary_labels["samples"].setText(str(metadata.get("sample_count") or 0))
         self.summary_labels["active"].setText(str(active_count))
         self.summary_labels["standby"].setText(str(standby_count))
-        anchor = metadata.get("anchor") if isinstance(metadata.get("anchor"), dict) else {}
-        self.setToolTip(f"{self.i18n.t('mesh_analysis.selected_sample')}: {metadata.get('anchor_sample_time') or '-'}\nPeerMac: {format_mac_h3c(anchor.get('peer_mac_normalized') or self.peer_mac)}")
+        self.setToolTip("")
 
     def _chart_titles(self) -> list[tuple[str, str]]:
         return [
@@ -302,7 +362,7 @@ class MeshPeerDetailDialog(QDialog):
         interaction.set_enabled(key == self._current_tab_key())
         self.interaction_controllers[key] = interaction
         apply_cjk_font(axis)
-        return {"axis": axis, "lines": lines, "anchor_line": anchor_line, "collections": [], "spans": [], "last_count": 0}
+        return {"axis": axis, "lines": lines, "anchor_line": anchor_line, "collections": [], "spans": [], "texts": [], "last_count": 0}
 
     def _update_chart_data(self, key: str, artists: dict[str, object]) -> None:
         payload = self.chart_payload or {}
@@ -348,6 +408,188 @@ class MeshPeerDetailDialog(QDialog):
     def _current_tab_key(self) -> str:
         return self.tab_keys[self.tabs.currentIndex()] if self.tab_keys else ""
 
+    def hit_test_chart_point(self, chart_key: str, event) -> MeshSelectedPoint | None:
+        payload = self.chart_payload or {}
+        timestamps = payload.get("timestamp_numeric")
+        if not isinstance(timestamps, np.ndarray) or len(timestamps) == 0 or event.xdata is None:
+            return None
+        axis = self.chart_artists.get(chart_key, {}).get("axis")
+        if axis is None:
+            return None
+        switch_indices = payload.get("switch_indices") if isinstance(payload.get("switch_indices"), np.ndarray) else np.asarray([], dtype=np.int32)
+        switch = self._nearest_switch_index(axis, timestamps, switch_indices, event)
+        if switch >= 0:
+            return self._selected_point_from_index(switch, chart_key)
+        index = int(np.searchsorted(timestamps, float(event.xdata)))
+        candidates = [candidate for candidate in (index - 1, index, index + 1) if 0 <= candidate < len(timestamps)]
+        best_index = -1
+        best_distance = 9999.0
+        for candidate in candidates:
+            pixel_x = axis.transData.transform((timestamps[candidate], 0))[0]
+            x_distance = abs(float(pixel_x) - float(event.x or 0))
+            if x_distance > 12:
+                continue
+            y_distance = self._nearest_series_pixel_distance(axis, chart_key, candidate, float(event.y or 0))
+            distance = max(x_distance, y_distance)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = candidate
+        return self._selected_point_from_index(best_index, chart_key) if best_index >= 0 else None
+
+    def toggle_locked_point_from_event(self, chart_key: str, event) -> None:
+        point = self.hit_test_chart_point(chart_key, event)
+        if point is None:
+            return
+        if self.locked_selected_point and self.locked_selected_point.index == point.index:
+            self.clear_locked_point()
+            return
+        self.locked_selected_point = MeshSelectedPoint(**{**point.__dict__, "locked": True})
+        self._update_lock_status()
+        self.center_on_index(point.index)
+        self._mark_all_dirty_and_render_current()
+
+    def show_chart_context_menu(self, chart_key: str, event) -> None:
+        point = self.hit_test_chart_point(chart_key, event)
+        if point is None:
+            return
+        menu = QMenu(self)
+        lock_action = menu.addAction("解除锁定" if self.locked_selected_point else "锁定当前采样点")
+        focus_action = menu.addAction("打开当前AP链路显示")
+        jump_action = menu.addAction("跳转到链路明细")
+        menu.addSeparator()
+        copy_peer_action = menu.addAction("复制 PeerMac")
+        copy_ap_action = menu.addAction("复制 AP名称")
+        focus_action.setEnabled(bool(point.peer_mac))
+        copy_peer_action.setEnabled(bool(point.peer_mac))
+        copy_ap_action.setEnabled(bool(point.peer_ap_name))
+        jump_action.setEnabled(bool(point.sample_time))
+        selected = menu.exec(self.canvases[chart_key].mapToGlobal(QPoint(int(event.x or 0), int(event.y or 0))))
+        if selected is lock_action:
+            if self.locked_selected_point:
+                self.clear_locked_point()
+            else:
+                self.locked_selected_point = MeshSelectedPoint(**{**point.__dict__, "locked": True})
+                self._update_lock_status()
+                self.center_on_index(point.index)
+                self._mark_all_dirty_and_render_current()
+        elif selected is focus_action:
+            self.focus_peer(point)
+        elif selected is jump_action:
+            self.jump_to_detail_row(point)
+        elif selected is copy_peer_action:
+            QApplication.clipboard().setText(format_mac_h3c(point.peer_mac))
+        elif selected is copy_ap_action:
+            QApplication.clipboard().setText(point.peer_ap_name)
+
+    def clear_locked_point(self) -> None:
+        self.locked_selected_point = None
+        self._update_lock_status()
+        self._mark_all_dirty_and_render_current()
+
+    def focus_peer(self, point: MeshSelectedPoint) -> None:
+        self.focus_peer_mac = point.peer_mac
+        self.focus_peer_ap_name = point.peer_ap_name
+        self._update_focus_status()
+        target = self.tab_keys.index("active_next_rssi") if "active_next_rssi" in self.tab_keys else self.tabs.currentIndex()
+        self.tabs.setCurrentIndex(target)
+        self.center_on_index(point.index)
+        self._mark_all_dirty_and_render_current()
+
+    def clear_focus_peer(self) -> None:
+        self.focus_peer_mac = ""
+        self.focus_peer_ap_name = ""
+        self._update_focus_status()
+        self._mark_all_dirty_and_render_current()
+
+    def jump_to_detail_row(self, point: MeshSelectedPoint) -> None:
+        parent = self.parent()
+        handler = getattr(parent, "jump_to_mesh_link_detail", None)
+        if callable(handler):
+            handler(
+                {
+                    "session_id": point.session_id,
+                    "sample_time": point.sample_time,
+                    "peer_mac": point.peer_mac,
+                    "radio": point.radio,
+                    "state": point.state,
+                }
+            )
+
+    def center_on_index(self, index: int) -> None:
+        self.user_moved_window = False
+        self.time_window_controller.center_on(index, self.visible_sample_count, "locked_point")
+
+    def _selected_point_from_index(self, index: int, chart_key: str) -> MeshSelectedPoint:
+        payload = self.chart_payload or {}
+        labels = payload.get("timestamp_labels") or []
+        session_ids = payload.get("peer_session_ids") or []
+        active = chart_key.startswith("active_")
+        peer_macs = payload.get("active_peer_macs" if active else "peer_macs") or []
+        ap_names = payload.get("active_peer_ap_names" if active else "peer_ap_names") or []
+        sites = payload.get("active_peer_sites" if active else "peer_sites") or []
+        radios = payload.get("active_peer_radios" if active else "peer_radios") or []
+        states = payload.get("peer_link_states") or []
+        mesh_radio = str(self.radio) if self.radio is not None else ""
+        return MeshSelectedPoint(
+            index=index,
+            session_id=str(session_ids[index]) if 0 <= index < len(session_ids) else self.current_session_id,
+            sample_time=str(labels[index]) if 0 <= index < len(labels) else "",
+            peer_mac=str(peer_macs[index]) if 0 <= index < len(peer_macs) else "",
+            peer_ap_name=str(ap_names[index]) if 0 <= index < len(ap_names) else "",
+            peer_site=str(sites[index]) if 0 <= index < len(sites) else "",
+            radio=mesh_radio,
+            peer_radio=str(radios[index]) if 0 <= index < len(radios) else "",
+            state=str(states[index]) if 0 <= index < len(states) and states[index] else ("ACTIVE" if active else ""),
+        )
+
+    def _nearest_switch_index(self, axis, timestamps: np.ndarray, switch_indices: np.ndarray, event) -> int:
+        if not self.show_switch_points_checkbox.isChecked() or len(switch_indices) == 0:
+            return -1
+        switch_times = timestamps[switch_indices]
+        pos = int(np.searchsorted(switch_times, float(event.xdata)))
+        candidates = [int(switch_indices[item]) for item in (pos - 1, pos, pos + 1) if 0 <= item < len(switch_indices)]
+        if not candidates:
+            return -1
+        y_values = dict(zip(candidates, self._switch_marker_y_values(candidates), strict=False))
+        best = -1
+        best_distance = 9999.0
+        for index in candidates:
+            px, py = axis.transData.transform((timestamps[index], y_values[index]))
+            distance = max(abs(float(px) - float(event.x or 0)), abs(float(py) - float(event.y or 0)))
+            if distance <= 12 and distance < best_distance:
+                best = index
+                best_distance = distance
+        return best
+
+    def _nearest_series_pixel_distance(self, axis, chart_key: str, index: int, pixel_y: float) -> float:
+        distances = []
+        for field, _label, _style in self._series_specs(chart_key):
+            values = self._series_values(field)
+            if values is None or not (0 <= index < len(values)) or not np.isfinite(values[index]):
+                continue
+            py = axis.transData.transform((0, float(values[index])))[1]
+            distances.append(abs(float(py) - pixel_y))
+        return min(distances) if distances else 0.0
+
+    def _update_lock_status(self) -> None:
+        if self.locked_selected_point is None:
+            self.lock_status_label.setText("")
+            self.unlock_point_button.setEnabled(False)
+            return
+        point = self.locked_selected_point
+        peer = format_mac_h3c(point.peer_mac) if point.peer_mac else "-"
+        self.lock_status_label.setText(f"已锁定采样点: {point.sample_time} / {peer}")
+        self.unlock_point_button.setEnabled(True)
+
+    def _update_focus_status(self) -> None:
+        if not self.focus_peer_mac:
+            self.focus_status_label.setText("")
+            self.clear_focus_button.setEnabled(False)
+            return
+        label = self.focus_peer_ap_name or format_mac_h3c(self.focus_peer_mac)
+        self.focus_status_label.setText(f"当前聚焦AP: {label}")
+        self.clear_focus_button.setEnabled(True)
+
     def _sync_active_controllers(self, active_key: str | None = None) -> None:
         key = active_key or self._current_tab_key()
         for tab_key, controller in self.hover_controllers.items():
@@ -388,6 +630,13 @@ class MeshPeerDetailDialog(QDialog):
             return values
         payload = self.chart_payload or {}
         rendered = values.astype(np.float32, copy=True)
+        if self.focus_peer_mac:
+            payload = self.chart_payload or {}
+            peers = payload.get("active_peer_macs" if field.startswith("active.") else "peer_macs")
+            if isinstance(peers, list) and len(peers) == len(rendered):
+                focus = "".join(character for character in self.focus_peer_mac.lower() if character in "0123456789abcdef")
+                mask = np.asarray(["".join(character for character in str(peer).lower() if character in "0123456789abcdef") == focus for peer in peers], dtype=bool)
+                rendered[~mask] = np.nan
         threshold = self._continuity_gap_seconds()
         labels = payload.get("timestamp_labels")
         if not isinstance(labels, list) or len(labels) != len(rendered):
@@ -499,8 +748,11 @@ class MeshPeerDetailDialog(QDialog):
             item.remove()
         for item in artists.get("spans", []):
             item.remove()
+        for item in artists.get("texts", []):
+            item.remove()
         artists["collections"] = []
         artists["spans"] = []
+        artists["texts"] = []
 
     def _draw_overlays(self, key: str, artists: dict[str, object], indices: np.ndarray) -> None:
         payload = self.chart_payload or {}
@@ -513,15 +765,102 @@ class MeshPeerDetailDialog(QDialog):
             artists["anchor_line"].set_xdata([timestamp_numeric[anchor_index], timestamp_numeric[anchor_index]])
         ymin, ymax = axis.get_ylim()
         switch_indices = payload.get("switch_indices") if isinstance(payload.get("switch_indices"), np.ndarray) else np.asarray([], dtype=np.int32)
-        visible_switches = [index for index in switch_indices if index in set(int(value) for value in indices)]
-        if visible_switches:
-            collection = axis.vlines(timestamp_numeric[visible_switches], ymin, ymax, color="#dc2626", alpha=0.35, linewidth=1)
+        if self.fast_pan_mode:
+            return
+        visible_switches: list[int] = []
+        if len(indices) and len(switch_indices):
+            visible_start = int(indices[0])
+            visible_end = int(indices[-1])
+            left = int(np.searchsorted(switch_indices, visible_start, side="left"))
+            right = int(np.searchsorted(switch_indices, visible_end, side="right"))
+            visible_index_set = set(int(value) for value in indices)
+            visible_switches = [int(index) for index in switch_indices[left:right] if int(index) in visible_index_set]
+        if visible_switches and self.show_switch_points_checkbox.isChecked():
+            y_values = self._switch_marker_y_values(visible_switches)
+            collection = axis.scatter(timestamp_numeric[visible_switches], y_values, s=34, marker="o", color="#dc2626", edgecolors="#ffffff", linewidths=0.7, alpha=0.92, zorder=5, label="链路切换")
             artists["collections"].append(collection)
+        if self.locked_selected_point and 0 <= self.locked_selected_point.index < len(timestamp_numeric):
+            locked_index = self.locked_selected_point.index
+            artists["collections"].append(axis.vlines(timestamp_numeric[locked_index], ymin, ymax, color="#f59e0b", alpha=0.75, linewidth=1.4))
+            locked_y = self._switch_marker_y_values([locked_index])[0]
+            artists["collections"].append(axis.scatter([timestamp_numeric[locked_index]], [locked_y], s=48, marker="o", color="#f59e0b", edgecolors="#111827", linewidths=0.8, zorder=6))
+        self._draw_station_labels(axis, artists, key, indices)
         if key == "signal":
             state = self._series_values("peer.state")
             if state is not None:
                 for start, end in _active_intervals(indices, state):
                     artists["spans"].append(axis.axvspan(timestamp_numeric[start], timestamp_numeric[end], color="#16a34a", alpha=0.10))
+
+    def _switch_marker_y_values(self, switch_indices: list[int]) -> list[float]:
+        values = self._series_values("active.active_local_rssi")
+        if values is None or len(values) == 0:
+            return [0.0 for _index in switch_indices]
+        finite_indices = np.flatnonzero(np.isfinite(values))
+        if len(finite_indices) == 0:
+            return [0.0 for _index in switch_indices]
+        result: list[float] = []
+        for index in switch_indices:
+            if 0 <= index < len(values) and np.isfinite(values[index]):
+                result.append(float(values[index]))
+                continue
+            position = int(np.searchsorted(finite_indices, index))
+            candidates = []
+            if position < len(finite_indices):
+                candidates.append(int(finite_indices[position]))
+            if position > 0:
+                candidates.append(int(finite_indices[position - 1]))
+            nearest = min(candidates, key=lambda item: abs(item - index)) if candidates else int(finite_indices[0])
+            result.append(float(values[nearest]))
+        return result
+
+    def _draw_station_labels(self, axis, artists: dict[str, object], key: str, indices: np.ndarray) -> None:
+        payload = self.chart_payload or {}
+        timestamp_numeric = payload.get("timestamp_numeric")
+        if not isinstance(timestamp_numeric, np.ndarray) or len(indices) == 0:
+            return
+        sites = payload.get("active_peer_sites" if key.startswith("active_") else "peer_sites")
+        if not isinstance(sites, list) or len(sites) != len(timestamp_numeric):
+            return
+        candidates: list[tuple[int, str, bool]] = []
+        previous_site = ""
+        for raw_index in indices:
+            index = int(raw_index)
+            site = str(sites[index] or "").strip()
+            if not site:
+                continue
+            important = self.locked_selected_point is not None and index == self.locked_selected_point.index
+            if site != previous_site or important:
+                candidates.append((index, site, important))
+            previous_site = site
+        if not candidates:
+            return
+        accepted: list[tuple[int, str, bool]] = []
+        accepted_pixels: list[float] = []
+        locked = [item for item in candidates if item[2]]
+        ordered = locked + [item for item in candidates if not item[2]]
+        for index, site, important in ordered:
+            pixel_x = axis.transData.transform((timestamp_numeric[index], 0))[0]
+            if not important and any(abs(pixel_x - used) < 120 for used in accepted_pixels):
+                continue
+            accepted.append((index, site, important))
+            accepted_pixels.append(pixel_x)
+        accepted.sort(key=lambda item: item[0])
+        for index, site, important in accepted:
+            label = _short_site_label(site)
+            text = axis.text(
+                timestamp_numeric[index],
+                0.02 if not important else 0.08,
+                label,
+                transform=axis.get_xaxis_transform(),
+                fontsize=9,
+                color="#f59e0b" if important else "#64748b",
+                ha="center",
+                va="bottom",
+                alpha=0.95 if important else 0.80,
+                clip_on=True,
+            )
+            text.set_gid(site)
+            artists["texts"].append(text)
 
     def _configure_scrollbar(self, center_anchor: bool = False) -> None:
         total = self._sample_count()
@@ -531,6 +870,28 @@ class MeshPeerDetailDialog(QDialog):
         else:
             self.time_window_controller.set_total_count(total, self.visible_sample_count, self.window_start_index, "payload")
         self._sync_time_controls()
+
+    def _visible_center_sample_time(self) -> str:
+        payload = self.chart_payload or {}
+        labels = payload.get("timestamp_labels") or []
+        if not labels:
+            return ""
+        center = self.window_start_index + max(self.effective_visible_sample_count(), 1) // 2
+        center = max(0, min(int(center), len(labels) - 1))
+        return str(labels[center])
+
+    def _restore_visible_center(self, sample_time: str) -> None:
+        if not sample_time:
+            return
+        payload = self.chart_payload or {}
+        labels = [str(value) for value in payload.get("timestamp_labels") or []]
+        if not labels:
+            return
+        index = _nearest_label_index(labels, sample_time)
+        visible = self.visible_sample_count
+        effective_visible = self.effective_visible_sample_count()
+        start = self._center_start_index(index, effective_visible, len(labels))
+        self.time_window_controller.set_time_window(start, visible, "payload")
 
     def _time_window_changed(self, start_index: int, visible_count: int, source: str) -> None:
         self.window_start_index = start_index
@@ -599,6 +960,7 @@ class MeshPeerDetailDialog(QDialog):
 
     def begin_pan_interaction(self) -> None:
         self.interaction_state = "PANNING"
+        self.fast_pan_mode = True
         self._pause_hover_controllers()
 
     def finish_pan_interaction_later(self) -> None:
@@ -606,6 +968,7 @@ class MeshPeerDetailDialog(QDialog):
 
     def begin_zoom_interaction(self) -> None:
         self.interaction_state = "ZOOMING"
+        self.fast_pan_mode = False
         self._pause_hover_controllers()
 
     def finish_zoom_interaction_later(self) -> None:
@@ -617,9 +980,11 @@ class MeshPeerDetailDialog(QDialog):
 
     def _resume_hover_after_interaction(self) -> None:
         self.interaction_state = "IDLE"
+        self.fast_pan_mode = False
         for controller in self.hover_controllers.values():
             controller.set_paused(False)
         self._sync_active_controllers()
+        self._render_current_tab()
 
     def _visible_samples_changed(self) -> None:
         old_center = self._anchor_index() if not self.user_moved_window else self.window_start_index + max(self.visible_sample_count, 1) // 2
@@ -749,6 +1114,33 @@ def _short_time(value: str) -> str:
         return datetime.fromisoformat(value).strftime("%H:%M:%S")
     except ValueError:
         return value
+
+
+def _short_site_label(value: str, max_chars: int = 10) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max(max_chars - 1, 1)] + "…"
+
+
+def _nearest_label_index(labels: list[str], sample_time: str) -> int:
+    if not labels:
+        return 0
+    try:
+        target = datetime.fromisoformat(sample_time)
+    except (TypeError, ValueError):
+        return min(range(len(labels)), key=lambda index: abs(index - len(labels) // 2))
+    best_index = 0
+    best_delta = float("inf")
+    for index, label in enumerate(labels):
+        try:
+            delta = abs((datetime.fromisoformat(label) - target).total_seconds())
+        except (TypeError, ValueError):
+            continue
+        if delta < best_delta:
+            best_delta = delta
+            best_index = index
+    return best_index
 
 
 def _seconds_between_labels(previous: str, current: str) -> float:

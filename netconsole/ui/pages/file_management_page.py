@@ -46,6 +46,7 @@ from netconsole.services.file_transfer_service import (
     safe_device_name,
 )
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
+from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 
@@ -691,6 +692,7 @@ class FileManagementPage(QWidget):
         task.downloaded = task.size
         task.status_key = "file_management.status.completed"
         task.speed = "-"
+        PathPreferenceService(self.paths).record_download_if_vehicle_mr(task.local_path, task.remote_file.name)
         self.refresh_queue()
         self.refresh_local(select_path=task.local_path)
         self.maybe_show_batch_summary(task.batch_id)

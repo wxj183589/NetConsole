@@ -1,0 +1,4 @@
+This fping.exe is a Cygwin x86_64 build, not a pure native Windows executable.
+It depends on cygwin1.dll and any other DLLs listed by cygcheck.
+When packaging for NetConsole, keep fping.exe, required DLLs, and license files together.
+This bundle is prepared for internal testing and should not be represented as a native Windows port.

@@ -35,11 +35,8 @@ TASK_FPING = "fping"
 INIT_COMMANDS: tuple[str, ...] = (
     "screen-length disable",
     "terminal logging level 7",
-    "terminal monitor",
     "system-view",
-    "user-interface vty 0 31",
-    "idle-timeout 1440 0",
-    "return",
+    "probe",
 )
 
 TASK_COMMANDS: dict[str, tuple[str, ...]] = {
@@ -52,21 +49,21 @@ TASK_COMMANDS: dict[str, tuple[str, ...]] = {
 
 
 def repeat_command_group(task_type: str, *, interval: int | None = None, radio_id: int = 1) -> tuple[str, ...]:
+    delay = max(1, int(interval or 1))
     if task_type == TASK_MESH_LINK:
-        return ("screen-length disable", "display clock", "display wlan mesh-link", f"repeat 2 delay {interval or 1}")
+        return ("display clock", "display wlan mesh-link", f"repeat 2 delay {delay}")
     if task_type == TASK_CHANNEL_BUSY:
-        return ("screen-length disable", "display clock", f"display ar5drv {radio_id} channelbusy", f"repeat 2 delay {interval or 9}")
+        return ("display clock", f"display ar5drv {radio_id} channelbusy", f"repeat 2 delay {delay}")
     if task_type == TASK_AP_RADIO_STATISTICS:
-        return ("screen-length disable", "display clock", f"display ar5drv {radio_id} statistics", f"repeat 2 delay {interval or 10}")
+        return ("display clock", f"display ar5drv {radio_id} statistics", f"repeat 2 delay {delay}")
     if task_type == TASK_SWITCH_HISTORY:
-        return ("screen-length disable", "display clock", "display wlan mesh-link switch-history", f"repeat 2 delay {interval or 300}")
+        return ("display clock", "display wlan mesh-link switch-history", f"repeat 2 delay {delay}")
     if task_type == TASK_INTERFACE_RATE:
         return (
-            "screen-length disable",
             "display clock",
             "dis counters rate inbound interface",
             "dis counters rate outbound interface",
-            f"repeat 3 delay {interval or 2}",
+            f"repeat 3 delay {delay}",
         )
     raise ValueError(f"unsupported repeat task: {task_type}")
 

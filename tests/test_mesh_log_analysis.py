@@ -5,11 +5,13 @@ import json
 import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
 from matplotlib.dates import date2num
 
+from netconsole.core.database import Database
 from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_ACTIVE, EVENT_NO_ACTIVE
 from netconsole.parsers import mesh_log_parser
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
@@ -156,6 +158,81 @@ def test_multiple_mrs_use_isolated_databases(tmp_path):
     assert rows2[0]["peer_mac_raw"] == "30f5-277a-5a3f"
 
 
+def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    first = tmp_path / "first-meshlog.log"
+    second = tmp_path / "second-meshlog.log"
+    first.write_text("[1] 2025/12/03 10:00:00.000\n" + LINE_A + "\n", encoding="utf-8")
+    second.write_text("[1] 2025/12/03 10:00:01.000\n" + LINE_A + "\n", encoding="utf-8")
+
+    MeshImportService("demo", paths).import_files(profile, [first, second])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    sources = repo.list_source_files()
+    assert len(sources) == 2
+
+    first_id = int(sources[0]["id"])
+    second_id = int(sources[1]["id"])
+    total_all, all_links = repo.query_links(100, 0)
+    total_first, first_links = repo.query_links(100, 0, {"source_file_id": first_id})
+    total_second, second_links = repo.query_links(100, 0, {"source_file_id": second_id})
+
+    assert total_all == 2
+    assert total_first == len(first_links) == 1
+    assert total_second == len(second_links) == 1
+    assert int(first_links[0]["source_file_id"]) == first_id
+    assert int(second_links[0]["source_file_id"]) == second_id
+
+    chart_first = repo.query_peer_chart_segments(int(first_links[0]["id"]), source_file_id=first_id)
+    chart_all = repo.query_peer_chart_segments(int(first_links[0]["id"]))
+    assert [row["sample_time"] for row in chart_first["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000"]
+    assert [row["sample_time"] for row in chart_all["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000", "2025-12-03 10:00:01.000"]
+
+    with sqlite3.connect(repo.path) as conn:
+        conn.execute(
+            """
+            INSERT INTO mesh_events (
+                event_type, event_time, radio, previous_sample_time, current_sample_time,
+                observed_window_ms, from_peer_mac, to_peer_mac, details_json, source_file_id, source_line_number
+            ) VALUES
+                ('ACTIVE_SWITCH', '2025-12-03 10:00:00.000', 1, NULL, '2025-12-03 10:00:00.000', NULL, NULL, NULL, '{}', ?, 2),
+                ('ACTIVE_SWITCH', '2025-12-03 10:00:01.000', 1, NULL, '2025-12-03 10:00:01.000', NULL, NULL, NULL, '{}', ?, 2)
+            """,
+            (first_id, second_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line)
+            VALUES (?, 'first.log', 9, 'ERROR', 'x', 'x', 'first', 'bad'), (?, 'second.log', 9, 'ERROR', 'x', 'x', 'second', 'bad')
+            """,
+            (first_id, second_id),
+        )
+
+    event_total, events = repo.query_events(100, 0, first_id)
+    issue_total, issues = repo.query_issues(100, 0, second_id)
+    assert event_total == len(events) == 1
+    assert int(events[0]["source_file_id"]) == first_id
+    assert issue_total == len(issues) == 1
+    assert int(issues[0]["source_file_id"]) == second_id
+
+    result = repo.delete_parsed_data_by_source_file(first_id)
+    assert result.ok
+    assert result.deleted_links == 1
+    assert repo.query_links(100, 0, {"source_file_id": first_id})[0] == 0
+    assert repo.query_links(100, 0, {"source_file_id": second_id})[0] == 1
+    assert repo.query_events(100, 0, first_id)[0] == 0
+    assert repo.query_issues(100, 0, first_id)[0] == 0
+    first_status = next(source for source in repo.list_source_files() if int(source["id"]) == first_id)
+    assert first_status["file_status"] == "parsed_deleted"
+
+    second_archive = Path(str(next(source for source in repo.list_source_files() if int(source["id"]) == second_id)["archived_path"]))
+    second_archive.unlink()
+    repo.mark_source_file_deleted(second_id)
+    assert repo.query_links(100, 0, {"source_file_id": second_id})[0] == 1
+    second_status = next(source for source in repo.list_source_files() if int(source["id"]) == second_id)
+    assert second_status["file_status"] == "deleted"
+
+
 def test_counter_reset_generates_event_without_negative_delta(tmp_path):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
@@ -242,6 +319,62 @@ def test_query_links_returns_stable_sample_group_index(tmp_path):
         groups_by_time.setdefault(row["sample_time"], set()).add(row["sample_group_index"])
     assert all(len(groups) == 1 for groups in groups_by_time.values())
     assert len({next(iter(groups)) for groups in groups_by_time.values()}) == 2
+
+
+def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
+    paths = PathResolver(tmp_path)
+    site_db = Database(paths.site_db_path("demo"))
+    site_db.initialize()
+    with site_db.connect() as conn:
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_resources (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site, collected_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("ac-1", "ap-1", "AP-01", "30f5-277a-5a3f", "Ningbo Station", now, now),
+        )
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    _, rows = repo.query_links(10, 0, {"peer": "AP-01"})
+    assert len(rows) == 1
+    assert rows[0]["peer_ap_name"] == "AP-01"
+    assert rows[0]["peer_site"] == "Ningbo Station"
+    assert rows[0]["peer_radio"] == "radio2"
+    assert rows[0]["peer_radio_label"] == "radio2"
+    assert rows[0]["peer_radio_mac"] == "30f5277a5a2f"
+    assert rows[0]["peer_resolve_source"] == "h3c_radio_2_nibble_minus_1"
+    cache_rows = repo.export_rows("mesh_peer_resolve_cache")
+    assert cache_rows[0]["peer_mac"] == "30f5277a5a2f"
+    assert cache_rows[0]["peer_ap_name"] == "AP-01"
+
+
+def test_mesh_repository_builds_downsampled_link_aggregates(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text(
+        "\n".join(
+            [
+                "[1] 2025/12/03 10:12:33.000",
+                LINE_A,
+                "[1] 2025/12/03 10:12:34.000",
+                LINE_A.replace("36/43", "38/45"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    rows = repo.query_link_aggregates(bucket_seconds=10)
+    assert len(rows) == 1
+    assert rows[0]["bucket_seconds"] == 10
+    assert rows[0]["sample_count"] == 2
+    assert rows[0]["avg_local_rssi"] == 37
 
 
 def _app():
@@ -583,7 +716,7 @@ def test_hover_snaps_to_nearest_master_sample_and_shows_signal_metrics(tmp_path)
     assert "Primary Link" in text
     assert "MR RSSI: 24" in text
     assert "Peer RSSI: 34" in text
-    assert "Raw RSSI margin" in text
+    assert "Raw RSSI margin" not in text
 
 
 def test_current_active_rssi_hover_shows_only_current_peer(tmp_path):
@@ -655,7 +788,7 @@ def test_hover_popup_positions_inside_screen_and_uses_wrapping():
     popup = MeshChartHoverPopup()
     popup.set_tooltip_text("Sample Time:\n2025-12-03 10:12:33.579\nPeerMac: <30f5-277a-5a2f>\n\nMR RSSI: 24\n" + "long text " * 30)
     assert popup.label.wordWrap()
-    assert popup.label.maximumWidth() == 560
+    assert popup.label.maximumWidth() == 520
     assert "&lt;30f5-277a-5a2f&gt;" in popup.label.text()
     screen = QGuiApplication.primaryScreen()
     available = screen.availableGeometry()

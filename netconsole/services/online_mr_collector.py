@@ -3,7 +3,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from threading import Lock
+from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Callable, Protocol
 
 from netconsole.models.online_mr_models import (
@@ -38,6 +39,7 @@ from netconsole.services.netmiko_connection import (
     build_netmiko_params,
     normalize_command_output,
 )
+from netconsole.core.mr_collect.scheduler import MRClientScheduler
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 
 
@@ -80,6 +82,43 @@ class NetmikoShellConnection(OnlineMrConnection):
             strip_command=False,
         )
         return normalize_command_output(output)
+
+    def run_repeat_stream(self, commands: tuple[str, ...], raw_path: Path, stop_event: Event, timeout: int) -> None:
+        if self.connection is None:
+            raise OnlineMrConnectionError("connection is closed")
+        writer = getattr(self.connection, "write_channel", None)
+        reader = getattr(self.connection, "read_channel", None)
+        if not callable(writer) or not callable(reader):
+            raise OnlineMrConnectionError("interactive shell is unavailable")
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        with raw_path.open("a", encoding="utf-8", errors="replace") as file:
+            file.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] START commands:\n")
+            for command in commands:
+                file.write(f"{command}\n")
+                writer(f"{command}\n")
+                file.flush()
+                time.sleep(0.05)
+            idle_started = time.monotonic()
+            while not stop_event.is_set():
+                chunk = reader()
+                if chunk:
+                    idle_started = time.monotonic()
+                    stamp = datetime.now().isoformat(sep=" ", timespec="milliseconds")
+                    for line in normalize_command_output(chunk).splitlines():
+                        file.write(f"{stamp} [collector=repeat] RX {line}\n")
+                    file.flush()
+                    continue
+                if time.monotonic() - idle_started > max(3, timeout):
+                    file.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] WARNING no output for {timeout}s\n")
+                    file.flush()
+                    idle_started = time.monotonic()
+                time.sleep(0.05)
+            try:
+                writer("\x03")
+                file.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] STOP Ctrl+C sent\n")
+                file.flush()
+            except Exception:
+                pass
 
     def close(self) -> None:
         if self.connection is not None:
@@ -136,13 +175,19 @@ class OnlineMrScheduler:
 
     def __post_init__(self) -> None:
         if not self.next_due:
-            self.next_due = {task: 0.0 for task in self.intervals}
+            now = time.monotonic()
+            self.next_due = {task: now for task in self.intervals}
 
     def due_tasks(self, now: float) -> list[str]:
         return [task for task in self.intervals if now >= self.next_due.get(task, 0.0)]
 
     def mark_ran(self, task: str, now: float) -> None:
-        self.next_due[task] = now + float(self.intervals[task])
+        previous = self.next_due.get(task, now)
+        interval = float(self.intervals[task])
+        next_due = previous + interval
+        if next_due <= now:
+            next_due = now + interval
+        self.next_due[task] = next_due
 
 
 class OnlineMrCollector:
@@ -167,11 +212,15 @@ class OnlineMrCollector:
             for task, interval in config.intervals.as_dict().items()
             if task in config.tasks.enabled_tasks()
         }
-        self.scheduler = OnlineMrScheduler(enabled_intervals)
+        self.scheduler = MRClientScheduler.from_intervals(enabled_intervals, clock=self.clock)
         self.cancelled = False
         self.status = "CREATED"
         self.started_monotonic = self.clock()
         self.latest_snapshot: OnlineMrSnapshot | None = None
+        self._uses_default_connection_factory = connection_factory is None
+        self._stream_stop = Event()
+        self._stream_threads: list[Thread] = []
+        self._stream_connections: list[OnlineMrConnection] = []
 
     def start(self) -> OnlineMrSessionMeta:
         self.session = self.store.create_session(self.config)
@@ -207,7 +256,7 @@ class OnlineMrCollector:
             if self.cancelled:
                 break
             self.run_once(task)
-            self.scheduler.mark_ran(task, current)
+            self.scheduler.mark_ran(task, current, current if now is not None else self.clock())
             ran.append(task)
         return ran
 
@@ -217,9 +266,10 @@ class OnlineMrCollector:
             self._reconnect()
         collected_at = datetime.now()
         raw_parts: list[str] = []
-        command_text = " ; ".join(TASK_COMMANDS[task_type])
+        commands = self._task_commands(task_type)
+        command_text = "\n".join(commands)
         try:
-            for command in TASK_COMMANDS[task_type]:
+            for command in commands:
                 raw_parts.append(self._send(command))
             raw_text = "\n".join(raw_parts)
             raw_file, start, end = session.append_raw(task_type, command_text, raw_text, collected_at)
@@ -239,6 +289,9 @@ class OnlineMrCollector:
         try:
             if self.session is None:
                 self.start()
+            if self._uses_default_connection_factory:
+                self._run_streaming_collectors(snapshot_callback)
+                return
             while not self.cancelled:
                 self.run_due_tasks()
                 if snapshot_callback and self.latest_snapshot is not None:
@@ -255,6 +308,16 @@ class OnlineMrCollector:
 
     def stop(self) -> None:
         self.cancelled = True
+        self._stream_stop.set()
+        for thread in list(self._stream_threads):
+            thread.join(timeout=3)
+        self._stream_threads.clear()
+        for stream_connection in list(self._stream_connections):
+            try:
+                stream_connection.close()
+            except Exception:
+                pass
+        self._stream_connections.clear()
         if self.session:
             self._set_status(STATE_STOPPING)
         if self.connection is not None:
@@ -327,6 +390,79 @@ class OnlineMrCollector:
         if self.connection is None:
             raise OnlineMrConnectionError("connection is closed")
         return self.connection.send_command(command, self.config.command_timeout)
+
+    def _task_commands(self, task_type: str) -> tuple[str, ...]:
+        radio = self.config.radio.normalized()
+        if task_type == TASK_CHANNEL_BUSY:
+            return ("display clock", f"display ar5drv {radio.channel_busy_radio} channelbusy")
+        if task_type == TASK_AP_RADIO_STATISTICS:
+            return ("display clock", f"display ar5drv {radio.ap_radio_statistics_radio} statistics")
+        return TASK_COMMANDS[task_type]
+
+    def _repeat_commands(self, task_type: str) -> tuple[str, ...]:
+        intervals = self.config.intervals.normalized()
+        radio = self.config.radio.normalized()
+        if task_type == TASK_CHANNEL_BUSY:
+            return repeat_command_group(task_type, interval=intervals.channel_busy, radio_id=radio.channel_busy_radio)
+        if task_type == TASK_AP_RADIO_STATISTICS:
+            return repeat_command_group(task_type, interval=intervals.ap_radio_statistics, radio_id=radio.ap_radio_statistics_radio)
+        if task_type == TASK_INTERFACE_RATE:
+            return repeat_command_group(task_type, interval=intervals.interface_rate)
+        if task_type == TASK_MESH_LINK:
+            return repeat_command_group(task_type, interval=intervals.mesh_link)
+        return repeat_command_group(task_type, interval=intervals.switch_history)
+
+    def _run_streaming_collectors(self, snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None) -> None:
+        stream_tasks = [
+            TASK_MESH_LINK,
+            TASK_CHANNEL_BUSY,
+            TASK_AP_RADIO_STATISTICS,
+            TASK_INTERFACE_RATE,
+        ]
+        enabled = self.config.tasks.enabled_tasks()
+        for task_type in stream_tasks:
+            if task_type in enabled:
+                self._start_repeat_thread(task_type)
+        while not self.cancelled:
+            if TASK_SWITCH_HISTORY in enabled:
+                for task in self.scheduler.due_tasks(self.clock()):
+                    if task == TASK_SWITCH_HISTORY:
+                        self.run_once(TASK_SWITCH_HISTORY)
+                        self.scheduler.mark_ran(task, self.clock(), self.clock())
+            if snapshot_callback:
+                snapshot_callback(self.snapshot())
+            self.sleeper(0.2)
+
+    def _start_repeat_thread(self, task_type: str) -> None:
+        session = self._session()
+        connection = self.connection_factory(self.config)
+        self._stream_connections.append(connection)
+        for command in INIT_COMMANDS:
+            try:
+                raw = connection.send_command(command, self.config.command_timeout)
+                session.append_raw("init", command, raw)
+            except Exception as exc:
+                self._record_command_failure("init", command, exc)
+        commands = self._repeat_commands(task_type)
+        raw_path = session.session_dir / "raw" / {
+            TASK_MESH_LINK: "mesh_link_raw.log",
+            TASK_CHANNEL_BUSY: "channel_busy_raw.log",
+            TASK_AP_RADIO_STATISTICS: "ap_radio_statistics_raw.log",
+            TASK_INTERFACE_RATE: "interface_rate_raw.log",
+        }[task_type]
+
+        def target() -> None:
+            try:
+                runner = getattr(connection, "run_repeat_stream", None)
+                if not callable(runner):
+                    raise OnlineMrConnectionError("interactive repeat stream is unavailable")
+                runner(commands, raw_path, self._stream_stop, self.config.command_timeout)
+            except Exception as exc:
+                self._record_command_failure(task_type, "\n".join(commands), exc)
+
+        thread = Thread(target=target, name=f"online-mr-{task_type}", daemon=True)
+        self._stream_threads.append(thread)
+        thread.start()
 
     def _reconnect(self) -> None:
         if not self.config.auto_reconnect:
