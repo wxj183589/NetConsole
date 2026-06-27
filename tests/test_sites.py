@@ -54,7 +54,7 @@ def test_default_device_groups_do_not_create_custom_group(tmp_path):
     site = SiteManager(PathResolver(tmp_path)).create_site("A")
     groups = DeviceGroupRepository(Database(site.database_path), "A")
 
-    assert [group.name for group in groups.list()] == ["COCC", "BOCC", "车站", "车载"]
+    assert [group.name for group in groups.list()] == [name for name, _sort_order in DEFAULT_DEVICE_GROUPS]
 
 
 def test_empty_legacy_custom_group_is_removed_on_site_init(tmp_path):
@@ -81,7 +81,7 @@ def test_legacy_custom_group_with_devices_is_kept_as_user_group(tmp_path):
 
     manager.ensure_site("legacy")
 
-    assert [group.name for group in groups.list()] == ["COCC", "BOCC", "车站", "车载", "自定义"]
+    assert [group.name for group in groups.list()] == [name for name, _sort_order in DEFAULT_DEVICE_GROUPS] + ["自定义"]
 
 
 @pytest.mark.parametrize("name", ["", "bad/name", "bad\\name", "bad:name", "bad*name", ".", ".."])

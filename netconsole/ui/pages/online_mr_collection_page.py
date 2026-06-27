@@ -141,7 +141,7 @@ def normalize_device_type(value: str | None) -> str:
 
 
 def is_fat_ap_device(value: str | None) -> bool:
-    return normalize_device_type(value) == "FATAP"
+    return normalize_device_type(value) in {"FATAP", "CLOUDAP"}
 
 
 def safe_device_folder_name(device: Device) -> str:
@@ -1507,6 +1507,9 @@ class OnlineMrCollectionPage(QWidget):
 
     def _is_vehicle_fat_ap(self, device: Device) -> bool:
         group_name = self.device_groups.get(int(device.group_id or 0), "")
+        has_vehicle_mr_group = any("车载-MR" in name for name in self.device_groups.values())
+        if has_vehicle_mr_group:
+            return "车载-MR" in group_name and is_fat_ap_device(device.device_type)
         return group_name == "\u8f66\u8f7d" and is_fat_ap_device(device.device_type)
 
     def _selected_devices(self) -> list[Device]:

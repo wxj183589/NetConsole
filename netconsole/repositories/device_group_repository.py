@@ -10,7 +10,8 @@ DEFAULT_DEVICE_GROUPS: tuple[tuple[str, int], ...] = (
     ("COCC", 10),
     ("BOCC", 20),
     ("车站", 30),
-    ("车载", 40),
+    ("车载-MR", 40),
+    ("车载-3SW", 50),
 )
 LEGACY_CUSTOM_GROUP_NAME = "自定义"
 
@@ -35,7 +36,9 @@ class DeviceGroupRepository:
                         WHEN LOWER(name) = LOWER('COCC') THEN 10
                         WHEN LOWER(name) = LOWER('BOCC') THEN 20
                         WHEN name = '车站' THEN 30
-                        WHEN name = '车载' THEN 40
+                        WHEN name = '车载-MR' THEN 40
+                        WHEN name = '车载-3SW' THEN 50
+                        WHEN name = '车载' THEN 60
                         ELSE 100000 + sort_order
                     END ASC,
                     name COLLATE NOCASE ASC

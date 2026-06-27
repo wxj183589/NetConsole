@@ -5,12 +5,13 @@ from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.ui.pages.car_network_diagnostic_page import CarNetworkDiagnosticPage
 from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
 from netconsole.ui.pages.vehicle_mr_online_page import VehicleMrOnlinePage
 
 
-ONLINE_MR_COLLECTION_TAB_INDEX = 3
+ONLINE_MR_COLLECTION_TAB_INDEX = 4
 
 
 class RailTransitPage(QWidget):
@@ -22,6 +23,7 @@ class RailTransitPage(QWidget):
         self.paths = paths
         self.tabs = QTabWidget()
         self.vehicle_mr_online_page = VehicleMrOnlinePage(repository, i18n, site_name, paths)
+        self.car_network_page = CarNetworkDiagnosticPage(repository, i18n, site_name, paths)
         self.trackside_page = TracksideApServicePage(repository, i18n, site_name, paths)
         self.mesh_page = MeshLogAnalysisPage(i18n, site_name, paths)
         self.online_mr_page = None
@@ -29,6 +31,7 @@ class RailTransitPage(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
         self.tabs.addTab(self.vehicle_mr_online_page, "")
+        self.tabs.addTab(self.car_network_page, "")
         self.tabs.addTab(self.trackside_page, "")
         self.tabs.addTab(self.mesh_page, "")
         self.tabs.addTab(self.online_mr_placeholder, "")
@@ -42,6 +45,8 @@ class RailTransitPage(QWidget):
     def refresh_current_async_or_lazy(self, force_if_empty: bool = False) -> None:
         if self.tabs.currentWidget() is self.vehicle_mr_online_page:
             self.vehicle_mr_online_page.refresh_all()
+        elif self.tabs.currentWidget() is self.car_network_page:
+            self.car_network_page.refresh_all()
         elif self.tabs.currentWidget() is self.trackside_page:
             force = force_if_empty and (
                 not self.trackside_page.has_loaded
@@ -69,6 +74,7 @@ class RailTransitPage(QWidget):
         self.repository = repository
         self.site_name = site_name
         self.vehicle_mr_online_page.set_repository(repository, site_name)
+        self.car_network_page.set_repository(repository, site_name)
         self.trackside_page.set_repository(repository, site_name)
         self.mesh_page.set_site(site_name)
         if self.online_mr_page is not None:
@@ -77,17 +83,20 @@ class RailTransitPage(QWidget):
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
         self.vehicle_mr_online_page.set_site(site_name)
+        self.car_network_page.set_site(site_name)
         self.trackside_page.set_site(site_name)
         self.mesh_page.set_site(site_name)
         if self.online_mr_page is not None:
             self.online_mr_page.set_site(site_name)
 
     def retranslate(self) -> None:
-        self.tabs.setTabText(0, self.i18n.t("ac.online_vehicle_mr"))
-        self.tabs.setTabText(1, self.i18n.t("rail_transit.trackside_ap_service"))
-        self.tabs.setTabText(2, self.i18n.t("mesh_analysis.title"))
+        self.tabs.setTabText(0, "在线车载MR")
+        self.tabs.setTabText(1, "车内通信检测")
+        self.tabs.setTabText(2, self.i18n.t("rail_transit.trackside_ap_service"))
+        self.tabs.setTabText(3, self.i18n.t("mesh_analysis.title"))
         self.tabs.setTabText(ONLINE_MR_COLLECTION_TAB_INDEX, self.i18n.t("rail_transit.online_mr_collection"))
         self.vehicle_mr_online_page.retranslate()
+        self.car_network_page.retranslate()
         self.trackside_page.retranslate()
         self.mesh_page.retranslate()
         if self.online_mr_page is not None:
@@ -102,6 +111,7 @@ class RailTransitPage(QWidget):
 
     def mark_devices_changed(self) -> None:
         self.vehicle_mr_online_page.refresh_all()
+        self.car_network_page.refresh_all()
         self.trackside_page.dirty = True
         if self.tabs.currentWidget() is self.trackside_page:
             self.trackside_page.refresh_async(force=False)

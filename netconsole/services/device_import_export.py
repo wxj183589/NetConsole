@@ -197,6 +197,8 @@ class DeviceImportExportService:
     def _apply_defaults(self, payload: dict[str, object]) -> None:
         payload.setdefault("device_vendor", "H3C")
         payload.setdefault("device_type", "SW")
+        if payload.get("device_type") == "FIT-AP":
+            payload["device_type"] = "Cloud-AP"
         payload.setdefault("ssh_enabled", 1)
         payload.setdefault("ssh_port", 22)
         payload.setdefault("telnet_enabled", 0)

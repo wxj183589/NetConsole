@@ -391,9 +391,13 @@ def train_sort_key(train: VehicleMrTrainState | tuple[str, str]) -> tuple[str, i
 def build_registered_trains(devices: list[Device], group_names: dict[int, str] | None = None) -> dict[str, VehicleMrTrainState]:
     result: dict[str, VehicleMrTrainState] = {}
     group_names = group_names or {}
+    has_vehicle_mr_group = any("车载-MR" in name for name in group_names.values())
     for device in devices:
         group_name = group_names.get(int(device.group_id or 0), "")
-        if "车载" not in group_name:
+        if has_vehicle_mr_group:
+            if "车载-MR" not in group_name:
+                continue
+        elif group_name != "车载":
             continue
         identity = parse_train_identity_from_device(device)
         if identity is None:

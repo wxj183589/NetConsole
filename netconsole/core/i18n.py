@@ -857,7 +857,7 @@ TRANSLATIONS = {
         "field.tooltip.device_mac": "MAC：设备自身管理MAC或设备MAC，由设备详情采集回填。",
         "field.group_id": "分组",
         "field.https_port": "HTTPS端口",
-        "field.station": "归属站点",
+        "field.station": "归属站点/位置",
         "field.device_vendor": "厂商",
         "field.device_type": "设备类型",
         "field.ip_address": "主机地址",

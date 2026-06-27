@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 
 DEVICE_VENDORS = ("H3C", "Huawei", "Ruijie", "Cisco", "Other")
-DEVICE_TYPES = ("AC", "SW", "FW", "Route", "FIT-AP", "FAT-AP", "Other")
+DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "Other")
 
 
 @dataclass(init=False)
@@ -77,6 +77,8 @@ class Device:
             kwargs["password"] = kwargs.get("ssh_password") or kwargs.get("telnet_password")
         if "port" not in kwargs:
             kwargs["port"] = kwargs.get("ssh_port") or kwargs.get("telnet_port") or 22
+        if kwargs.get("device_type") == "FIT-AP":
+            kwargs["device_type"] = "Cloud-AP"
         field_names = set(self.field_names())
         unknown = set(kwargs) - field_names
         if unknown:
