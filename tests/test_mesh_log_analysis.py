@@ -10,17 +10,24 @@ from pathlib import Path
 import numpy as np
 import pytest
 from matplotlib.dates import date2num
+from openpyxl import load_workbook
 
 from netconsole.core.database import Database
+from netconsole.models.device import Device
 from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_ACTIVE, EVENT_NO_ACTIVE
 from netconsole.parsers import mesh_log_parser
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
 from netconsole.core.paths import PathResolver
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
+from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 
 
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
@@ -124,6 +131,68 @@ def test_dynamic_same_filename_archives_without_overwrite(tmp_path):
     assert len({item.name for item in archived}) == 2
 
 
+def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    groups = DeviceGroupRepository(database, "demo")
+    onboard = groups.create(VEHICLE_MR_GROUP_NAME)
+    station = groups.create("车站")
+    repository.create(Device(name="MR10", primary_address="192.0.2.10", group_id=onboard.id))
+    mr2 = repository.create(Device(name="MR2", primary_address="192.0.2.2", group_id=onboard.id))
+    repository.create(Device(name="SW1", primary_address="192.0.2.20", group_id=station.id))
+
+    page = MeshLogAnalysisPage(repository, I18n("zh_CN"), "demo", PathResolver(tmp_path))
+
+    assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR2", "MR10"]
+    assert page.create_mr_button.parent() is None
+    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "raw").exists()
+    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "parsed").exists()
+    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "exports").exists()
+
+    repository.update_group(int(mr2.id), station.id)
+    page.refresh_all()
+
+    assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR10"]
+    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2").exists()
+
+
+def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, monkeypatch):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages import mesh_log_analysis_page as page_module
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("MR2")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    target = paths.mesh_mr_export_dir("demo", profile.safe_folder_name) / "MR2_链路明细.xlsx"
+    messages: list[str] = []
+    monkeypatch.setattr(page_module.QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (str(target), "Excel Files (*.xlsx)"))
+    monkeypatch.setattr(page_module.QMessageBox, "information", lambda *_args: messages.append(str(_args[-1])) or None)
+
+    page.export_link_details()
+
+    assert target.exists()
+    workbook = load_workbook(target)
+    sheet = workbook["链路明细"]
+    assert sheet["A1"].font.bold
+    assert sheet["A2"].alignment.horizontal == "center"
+    assert sheet["A2"].alignment.vertical == "center"
+    headers = [cell.value for cell in sheet[1]]
+    for header in ("时间", "Radio", "PeerMac", "LinkState", "EstablishTime", "DurationTime", "LinkCnt", "L_Rssi", "P_Rssi", "L_Cpu", "P_Cpu", "L_Mem", "P_Mem", "L_TxBusy", "L_RxBusy", "P_TxBusy", "P_RxBusy"):
+        assert header in headers
+    assert any("链路明细已导出" in message for message in messages)
+
+
 def test_duplicate_sha_is_skipped(tmp_path):
     paths = PathResolver(tmp_path)
     storage = MeshStorageService("demo", paths)
@@ -156,6 +225,109 @@ def test_multiple_mrs_use_isolated_databases(tmp_path):
     assert total1 == total2 == 1
     assert rows1[0]["peer_mac_raw"] == "30f5-277a-5a2f"
     assert rows2[0]["peer_mac_raw"] == "30f5-277a-5a3f"
+
+
+def test_mesh_links_keep_import_record_sequence_order(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    first = tmp_path / "first.log"
+    second = tmp_path / "second.log"
+    first.write_text("[1] 2025/12/03 10:00:03.000\n" + LINE_A + "\n", encoding="utf-8")
+    second.write_text("[1] 2025/12/03 10:00:01.000\n" + LINE_B + "\n", encoding="utf-8")
+
+    MeshImportService("demo", paths).import_files(profile, [first, second])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    _, links = repo.query_links(10, 0)
+
+    assert [link["peer_mac_raw"] for link in links] == ["30f5-277a-5a2f", "30f5-277a-5a3f"]
+    assert [link["record_seq"] for link in links] == [1, 2]
+    assert [link["source_file_order"] for link in links] == [1, 2]
+
+
+def test_mesh_query_sorts_record_seq_as_integer(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    lines = ["[1] 2025/12/03 10:00:00.000"]
+    for suffix in ("1f", "2f", "3f", "4f", "5f"):
+        lines.append(LINE_A.replace("30f5-277a-5a2f", f"30f5-277a-5a{suffix}"))
+    source.write_text("\n".join(lines), encoding="utf-8")
+
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    with sqlite3.connect(repo.path) as conn:
+        ids = [row[0] for row in conn.execute("SELECT id FROM mesh_links ORDER BY id ASC").fetchall()]
+        for link_id, seq in zip(ids, [1000, 10, 1, 100, 2], strict=True):
+            conn.execute("UPDATE mesh_links SET record_seq = ? WHERE id = ?", (seq, link_id))
+
+    _, rows = repo.query_links(10, 0)
+
+    assert [row["record_seq"] for row in rows] == [1, 2, 10, 100, 1000]
+
+
+def test_mesh_link_table_sorts_record_seq_as_integer():
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTableWidget
+
+    from netconsole.ui.pages.mesh_log_analysis_page import _set_row
+
+    _app()
+    table = QTableWidget(0, 1)
+    table.setSortingEnabled(True)
+    values = [1, 10, 100, 1000, 2]
+    table.setRowCount(len(values))
+    for row, value in enumerate(values):
+        _set_row(table, row, [value])
+
+    table.sortItems(0, Qt.AscendingOrder)
+
+    assert [int(table.item(row, 0).text()) for row in range(table.rowCount())] == [1, 2, 10, 100, 1000]
+
+
+def test_mesh_peer_mapping_keeps_ap_mac_and_radio_mac_separate(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+
+    repo.upsert_peer_mappings(
+        [
+            {
+                "peer_mac_normalized": "30f5277a5a2f",
+                "peer_ap_name": "AP-01",
+                "peer_ap_mac": "30f5277a5a3f",
+                "peer_radio_mac": "30f5277a5a2f",
+                "peer_radio_label": "radio2",
+                "peer_site": "站点",
+                "match_rule": "resolver",
+                "match_confidence": 90,
+            }
+        ]
+    )
+    repo.refresh_peer_mapping_on_links()
+    _, links = repo.query_links(10, 0)
+
+    assert links[0]["peer_mac_raw"] == "30f5-277a-5a2f"
+    assert links[0]["peer_ap_mac"] == "30f5277a5a3f"
+    assert links[0]["peer_radio_mac"] == "30f5277a5a2f"
+
+
+def test_mesh_peer_mapping_service_uses_h3c_radio_rule_fields(tmp_path):
+    paths = PathResolver(tmp_path)
+    service = MeshPeerMappingService("demo", paths)
+    service._resolver = TracksideApBssidResolver([{"ap_name": "AP-01", "ap_mac": "083b-e9ec-da40", "site_name": "S1"}])
+
+    resolved = service.resolve("083b-e9ec-da5f")
+
+    assert resolved is not None
+    assert resolved["peer_mac_normalized"] == "083be9ecda5f"
+    assert resolved["peer_radio_mac"] == "083be9ecda5f"
+    assert resolved["peer_ap_mac"] == "083be9ecda40"
+    assert resolved["peer_ap_name"] == "AP-01"
+    assert resolved["peer_site"] == "S1"
+    assert resolved["peer_radio_label"] == "radio2"
 
 
 def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
@@ -333,7 +505,7 @@ def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
                 ac_device_uuid, ap_uuid, ap_name, ap_mac, site, collected_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("ac-1", "ap-1", "AP-01", "30f5-277a-5a3f", "Ningbo Station", now, now),
+            ("ac-1", "ap-1", "AP-01", "30f5-277a-5a10", "Ningbo Station", now, now),
         )
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
     source = tmp_path / "meshlog.log"
@@ -347,7 +519,8 @@ def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
     assert rows[0]["peer_radio"] == "radio2"
     assert rows[0]["peer_radio_label"] == "radio2"
     assert rows[0]["peer_radio_mac"] == "30f5277a5a2f"
-    assert rows[0]["peer_resolve_source"] == "h3c_radio_2_nibble_minus_1"
+    assert rows[0]["peer_ap_mac"] == "30f5277a5a10"
+    assert rows[0]["peer_resolve_source"] == "h3c_radio_2_ap_mac_nibble_plus_1"
     cache_rows = repo.export_rows("mesh_peer_resolve_cache")
     assert cache_rows[0]["peer_mac"] == "30f5277a5a2f"
     assert cache_rows[0]["peer_ap_name"] == "AP-01"
@@ -408,6 +581,102 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     assert active_rows
     assert page.link_table.item(active_rows[0], 0).font().bold()
     assert page.link_table.item(active_rows[0], 0).foreground().color() != page.link_table.item(1 - active_rows[0], 0).foreground().color()
+
+
+def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
+    app = _app()
+    from PySide6.QtCore import Qt
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    first = tmp_path / "first-meshlog.log"
+    second = tmp_path / "second-meshlog.log"
+    first.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    second.write_text("[1] 2025/12/03 10:12:34.000\n" + LINE_B + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [first, second])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    sources = repo.list_source_files()
+    target_source_id = int(next(row["id"] for row in sources if row["original_filename"] == first.name))
+    page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
+    page.current_profile = profile
+    page._render_sources(repo)
+    row = _source_table_row(page, target_source_id)
+
+    page.source_table.cellDoubleClicked.emit(row, 0)
+    app.processEvents()
+    app.processEvents()
+
+    assert page.tabs.currentIndex() == 1
+    assert page.current_source_file_id == target_source_id
+    assert page.link_table.rowCount() == 2
+    record_seq = [int(page.link_table.item(index, 0).text()) for index in range(page.link_table.rowCount())]
+    assert record_seq == sorted(record_seq)
+    source_ids = {int(page.link_table.item(index, 0).data(Qt.UserRole)["source_file_id"]) for index in range(page.link_table.rowCount())}
+    assert source_ids == {target_source_id}
+
+    for _ in range(10):
+        page.source_table.cellDoubleClicked.emit(row, 0)
+        app.processEvents()
+    assert page.tabs.currentIndex() == 1
+    assert page.current_source_file_id == target_source_id
+
+
+def test_mesh_page_double_click_source_without_links_shows_empty_detail(tmp_path):
+    app = _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    empty = tmp_path / "empty-meshlog.log"
+    empty.write_text("", encoding="utf-8")
+    source_id = repo.insert_file_result(
+        profile.mr_id,
+        empty,
+        empty,
+        "empty-sha",
+        0,
+        None,
+        "test",
+        "ok",
+        None,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "",
+        [],
+        [],
+        [],
+    )
+    page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
+    page.current_profile = profile
+    page._render_sources(repo)
+
+    page.source_table.cellDoubleClicked.emit(_source_table_row(page, source_id), 0)
+    app.processEvents()
+    app.processEvents()
+
+    assert page.tabs.currentIndex() == 1
+    assert page.current_source_file_id == source_id
+    assert page.link_table.rowCount() == 0
+
+
+def _source_table_row(page, source_file_id: int) -> int:
+    from PySide6.QtCore import Qt
+
+    for row in range(page.source_table.rowCount()):
+        item = page.source_table.item(row, 0)
+        data = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(data, dict) and int(data.get("id") or 0) == int(source_file_id):
+            return row
+    raise AssertionError(f"source row not found: {source_file_id}")
 
 
 def test_peer_dialog_draws_signal_lines(tmp_path):
@@ -1333,7 +1602,7 @@ def test_aba_active_switch_events_are_not_merged_and_return_is_rapid_flap(tmp_pa
     assert details["rapid_flap_middle_peer"] == "30f5277a5a3f"
 
 
-def test_mesh_repository_lists_pages_in_time_ascending_order(tmp_path):
+def test_mesh_repository_lists_pages_in_record_sequence_order(tmp_path):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
     first = tmp_path / "first.log"
@@ -1343,7 +1612,8 @@ def test_mesh_repository_lists_pages_in_time_ascending_order(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [second, first])
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     _, links = repo.query_links(1, 0)
-    assert links[0]["sample_time"] == "2025-12-03 10:00:01.000"
+    assert links[0]["sample_time"] == "2025-12-03 10:00:03.000"
+    assert links[0]["source_file_order"] == 1
     _, events = repo.query_events(10, 0)
     assert [event["event_time"] for event in events if event["event_type"] == EVENT_ACTIVE_SWITCH] == ["2025-12-03 10:00:03.000"]
     sources = repo.list_source_files()
@@ -1589,12 +1859,14 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
                 dt = datetime.fromtimestamp(sample_time).strftime("%Y-%m-%d %H:%M:%S.000")
                 rows.append((link_id, 1, 1, dt, int(sample_time * 1000), ""))
                 links.append(
-                    (
-                        link_id,
-                        link_id,
-                        1,
-                        1,
-                        "raw",
+                        (
+                            link_id,
+                            link_id,
+                            1,
+                            1,
+                            link_id,
+                            1,
+                            "raw",
                         1,
                         dt,
                         "Active",
@@ -1614,12 +1886,12 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
         conn.executemany("INSERT INTO samples(id, source_file_id, radio, sample_time, sample_time_epoch_ms, timestamp_tag) VALUES (?, ?, ?, ?, ?, ?)", rows)
         conn.executemany(
             """
-            INSERT INTO mesh_links (
-                id, sample_id, source_file_id, source_line_number, raw_line, radio, sample_time,
-                link_state_raw, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
-                duration_text, duration_seconds, session_id, metrics_json, deltas_json, record_fingerprint
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+                INSERT INTO mesh_links (
+                    id, sample_id, source_file_id, source_file_order, record_seq, source_line_number, raw_line, radio, sample_time,
+                    link_state_raw, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
+                    duration_text, duration_seconds, session_id, metrics_json, deltas_json, record_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
             links,
         )
 

@@ -27,8 +27,8 @@ def test_nuitka_release_reads_unified_version() -> None:
     config = load_config()
 
     assert config.app_name == "NetConsole"
-    assert config.app_version == APP_VERSION == "v1.3.1"
-    assert config.zip_path("nuitka").name == "NetConsole_v1.3.1_nuitka.zip"
+    assert config.app_version == APP_VERSION == "v1.3.2"
+    assert config.zip_path("nuitka").name == "NetConsole_v1.3.2_nuitka.zip"
 
 
 def test_nuitka_command_uses_onefile_and_required_resources() -> None:

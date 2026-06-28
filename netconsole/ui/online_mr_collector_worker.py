@@ -9,6 +9,7 @@ from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 
 class OnlineMrCollectorWorker(QThread):
     snapshot = Signal(object)
+    raw_stream_event = Signal(object)
     started_session = Signal(object)
     completed = Signal(str)
     failed = Signal(str)
@@ -30,7 +31,10 @@ class OnlineMrCollectorWorker(QThread):
         try:
             meta = self.collector.start()
             self.started_session.emit(meta)
-            self.collector.run_forever(lambda snapshot: self.snapshot.emit(snapshot))
+            self.collector.run_forever(
+                lambda snapshot: self.snapshot.emit(snapshot),
+                lambda event: self.raw_stream_event.emit(event),
+            )
             self.completed.emit(meta.session_id)
         except Exception as exc:
             self.failed.emit(str(exc))

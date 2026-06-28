@@ -79,6 +79,30 @@ class MeshCatalogRepository:
             row = conn.execute("SELECT * FROM mr_profiles WHERE display_name = ?", (display_name,)).fetchone()
         return self._row_to_profile(row) if row else None
 
+    def get_by_linked_device_id(self, linked_device_id: int) -> MeshMrProfile | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM mr_profiles WHERE linked_device_id = ? LIMIT 1", (int(linked_device_id),)).fetchone()
+        return self._row_to_profile(row) if row else None
+
+    def update_profile_identity(self, profile: MeshMrProfile) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE mr_profiles
+                SET display_name = ?, safe_folder_name = ?, relative_folder_path = ?,
+                    linked_device_id = ?, updated_at = ?
+                WHERE mr_id = ?
+                """,
+                (
+                    profile.display_name,
+                    profile.safe_folder_name,
+                    profile.relative_folder_path,
+                    profile.linked_device_id,
+                    dt_text(profile.updated_at) or datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                    profile.mr_id,
+                ),
+            )
+
     def safe_folder_exists(self, safe_folder_name: str) -> bool:
         with self._connect() as conn:
             row = conn.execute("SELECT 1 FROM mr_profiles WHERE safe_folder_name = ?", (safe_folder_name,)).fetchone()

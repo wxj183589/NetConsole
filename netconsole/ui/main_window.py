@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
         self.about_dialog: AboutRepositoryDialog | None = None
         self.changelog_dialog: ChangelogDialog | None = None
         self.pages: dict[str, QWidget] = {}
+        self.detached_windows: list[QMainWindow] = []
         self.activated_pages: set[str] = set()
         self.preloaded_pages: set[str] = set()
         self.preload_failures: dict[str, str] = {}
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
         self.site_label = QLabel()
         self.new_site_button = QPushButton()
         self.switch_site_button = QPushButton()
+        self.detach_page_button = QPushButton()
         self.always_on_top_button = QPushButton()
         self.always_on_top_button.setCheckable(True)
         self.zh_button = QPushButton()
@@ -110,6 +112,7 @@ class MainWindow(QMainWindow):
         self.device_page.devices_changed.connect(self.refresh_device_dependents)
         self.new_site_button.clicked.connect(self.create_site)
         self.switch_site_button.clicked.connect(self.switch_site_dialog)
+        self.detach_page_button.clicked.connect(self.detach_current_page)
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.zh_button.clicked.connect(lambda: self.switch_language("zh_CN"))
         self.en_button.clicked.connect(lambda: self.switch_language("en_US"))
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.site_label)
         top_bar.addWidget(self.new_site_button)
         top_bar.addWidget(self.switch_site_button)
+        top_bar.addWidget(self.detach_page_button)
         top_bar.addStretch(1)
         top_bar.addWidget(self.always_on_top_button)
         top_bar.addWidget(self.zh_button)
@@ -239,6 +243,136 @@ class MainWindow(QMainWindow):
         app_logger.log_info(f"PAGE_CREATED:{page_id}", self._startup_elapsed_detail())
         return page
 
+    def create_detached_page(self, page_id: str) -> QWidget:
+        if page_id == "devices":
+            return DeviceManagementPage(self.repository, self.i18n, self.site.name)
+        if page_id == "ac":
+            from netconsole.ui.pages.ac_management_page import AcManagementPage
+
+            return AcManagementPage(self.repository, self.i18n, self.site.name)
+        if page_id == "config_collection":
+            from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
+
+            return ConfigCollectionCenterPage(self.repository, self.i18n, self.site.name, self.paths)
+        if page_id == "file_management":
+            from netconsole.ui.pages.file_management_page import FileManagementPage
+
+            return FileManagementPage(self.repository, self.i18n, self.site.name, self.paths)
+        if page_id == "rail_transit":
+            from netconsole.ui.pages.rail_transit_page import RailTransitPage
+
+            return RailTransitPage(self.repository, self.i18n, self.site.name, self.paths)
+        if page_id == "network_tools":
+            from netconsole.ui.pages.network_tools_page import NetworkToolsPage
+
+            return NetworkToolsPage(self.i18n, self.site.name, self.paths)
+        if page_id == "wifi_survey":
+            from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
+
+            return WifiSurveyPage(self.i18n, self.site.name, self.paths)
+        if page_id == "logs":
+            from netconsole.ui.pages.app_log_page import AppLogPage
+
+            return AppLogPage(self.i18n, auto_refresh=False)
+        return DeviceManagementPage(self.repository, self.i18n, self.site.name)
+
+    def detach_current_page(self) -> None:
+        row = self.navigation.currentRow()
+        item = self.navigation.item(row) if row >= 0 else None
+        if item is None:
+            return
+        page_id = str(item.data(256) or "devices")
+        title = item.text() or page_id
+        try:
+            page = self.create_detached_page(page_id)
+        except Exception as exc:
+            app_logger.log_error("DETACHED_PAGE_CREATE_FAILED", f"page={page_id}, error={exc}")
+            QMessageBox.warning(self, self.i18n.t("app.title"), str(exc))
+            return
+        window = QMainWindow(self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        window.setWindowTitle(f"NetConsole - {title}")
+        window.resize(1600, 900)
+        window.setMinimumSize(1100, 720)
+        window.setCentralWidget(page)
+        self.detached_windows.append(window)
+        window.destroyed.connect(lambda _=None, detached=window: self._remove_detached_window(detached))
+        window_manager.register_child_window(window)
+        window.show()
+        QTimer.singleShot(0, lambda page_id=page_id, page=page: self.activate_detached_page(page_id, page))
+
+    def activate_detached_page(self, page_id: str, page: QWidget) -> None:
+        try:
+            if page_id == "logs" and hasattr(page, "refresh"):
+                page.refresh()
+            elif page_id == "ac" and hasattr(page, "refresh_devices"):
+                page.refresh_devices()
+            elif page_id == "config_collection" and hasattr(page, "refresh"):
+                page.refresh()
+            elif page_id == "file_management" and hasattr(page, "refresh_devices"):
+                page.refresh_devices()
+            elif page_id == "rail_transit" and hasattr(page, "refresh_current_async_or_lazy"):
+                page.refresh_current_async_or_lazy(force_if_empty=True)
+            elif page_id == "network_tools" and hasattr(page, "refresh_all"):
+                page.refresh_all()
+        except Exception as exc:
+            app_logger.log_warning("DETACHED_PAGE_ACTIVATE_FAILED", f"page={page_id}, error={exc}")
+
+    def _remove_detached_window(self, window: QMainWindow) -> None:
+        if window in self.detached_windows:
+            self.detached_windows.remove(window)
+        window_manager.unregister_child_window(window)
+
+    def _sync_detached_pages_to_current_site(self) -> None:
+        for window in list(self.detached_windows):
+            page = window.centralWidget()
+            if page is not None:
+                self._set_page_context(page)
+
+    def _set_page_context(self, page: QWidget) -> None:
+        setter = getattr(page, "set_repository", None)
+        if callable(setter):
+            try:
+                setter(self.repository, self.site.name)
+                return
+            except TypeError:
+                pass
+        site_setter = getattr(page, "set_site", None)
+        if callable(site_setter):
+            site_setter(self.site.name)
+
+    def _refresh_detached_group_filters(self) -> None:
+        for window in list(self.detached_windows):
+            page = window.centralWidget()
+            if page is None:
+                continue
+            refresh_groups = getattr(page, "refresh_groups", None)
+            if callable(refresh_groups):
+                refresh_groups()
+            refresh_devices = getattr(page, "refresh_devices", None)
+            if callable(refresh_devices):
+                try:
+                    refresh_devices(trigger_device_change=False)
+                except TypeError:
+                    refresh_devices()
+
+    def _refresh_detached_device_dependents(self) -> None:
+        for window in list(self.detached_windows):
+            page = window.centralWidget()
+            if page is None:
+                continue
+            for method_name in ("mark_devices_changed", "refresh_devices", "refresh_all", "refresh"):
+                method = getattr(page, method_name, None)
+                if callable(method):
+                    try:
+                        if method_name == "refresh_devices":
+                            method(trigger_device_change=False)
+                        else:
+                            method()
+                    except TypeError:
+                        method()
+                    break
+
     def preload_page(self, page_id: str) -> QWidget:
         page = self.get_or_create_page(page_id)
         if page_id == "logs" and self.log_page is not None:
@@ -350,6 +484,7 @@ class MainWindow(QMainWindow):
             self.wifi_survey_page.set_site(site.name)
         if self.ac_page is not None:
             self.ac_page.set_repository(self.repository, site.name)
+        self._sync_detached_pages_to_current_site()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
 
     def refresh_group_filters(self) -> None:
@@ -361,6 +496,7 @@ class MainWindow(QMainWindow):
             self.file_management_page.refresh_devices(trigger_device_change=False)
         if self.rail_transit_page is not None and hasattr(self.rail_transit_page, "refresh_groups"):
             self.rail_transit_page.refresh_groups()
+        self._refresh_detached_group_filters()
 
     def refresh_device_dependents(self) -> None:
         if self.ac_page is not None:
@@ -371,6 +507,7 @@ class MainWindow(QMainWindow):
             self.file_management_page.refresh_devices(trigger_device_change=False)
         if self.rail_transit_page is not None and hasattr(self.rail_transit_page, "mark_devices_changed"):
             self.rail_transit_page.mark_devices_changed()
+        self._refresh_detached_device_dependents()
 
     def switch_language(self, language: str) -> None:
         self.i18n.set_language(language)
@@ -497,6 +634,8 @@ class MainWindow(QMainWindow):
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
         self.new_site_button.setText(self.i18n.t("site.new"))
         self.switch_site_button.setText(self.i18n.t("site.switch"))
+        self.detach_page_button.setText("弹出当前模块")
+        self.detach_page_button.setToolTip("在独立窗口打开当前功能模块")
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if self.always_on_top_button.isChecked() else "window.always_on_top"))
         self.zh_button.setText(self.i18n.t("language.zh"))
         self.en_button.setText(self.i18n.t("language.en"))

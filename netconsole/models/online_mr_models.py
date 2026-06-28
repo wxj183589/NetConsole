@@ -332,5 +332,8 @@ class OnlineMrConnection:
     def send_command(self, command: str, timeout: int) -> str:
         raise NotImplementedError
 
+    def run_repeat_stream(self, commands, raw_path, stop_event, timeout: int, line_callback=None) -> None:
+        raise NotImplementedError
+
     def close(self) -> None:
         raise NotImplementedError

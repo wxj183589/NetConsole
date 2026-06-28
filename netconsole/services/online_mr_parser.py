@@ -24,6 +24,28 @@ INTERFACE_RATE_ROW_RE = re.compile(
     r"(?P<broadcast>\d+|-)\s+"
     r"(?P<multicast>\d+|-)\s*$"
 )
+AP_RADIO_STAT_COUNTERS = (
+    "TxFrameAllCnt",
+    "TxFrameAllBytes",
+    "RxFrameAllCnt",
+    "RxFrameAllBytes",
+    "TxRetryFrmCnt",
+    "TxErrFrmCnt",
+    "TxDiscardFrmCnt",
+)
+AP_RADIO_STAT_RE = re.compile(
+    r"^\s*(?P<key>TxFrameAllCnt|TxFrameAllBytes|RxFrameAllCnt|RxFrameAllBytes|TxRetryFrmCnt|TxErrFrmCnt|TxDiscardFrmCnt)\s*:\s*(?P<values>[-\d\s]+)",
+    re.IGNORECASE,
+)
+SWITCH_HISTORY_ROW_RE = re.compile(
+    r"^\s*(?P<peer_name>(?:[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})?)\s+"
+    r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})(?:\((?P<role>[^)]+)\))?\s+"
+    r"(?P<reason>.+?)\s+"
+    r"(?P<in_rssi>-?\d+)\s*/\s*(?P<out_rssi>-?\d+)\s+"
+    r"(?P<switched_at>\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+"
+    r"(?P<active_time>\d{2}h\s+\d{2}m\s+\d{2}s)\s*$",
+    re.IGNORECASE,
+)
 MESH_PEER_TABLE_RE = re.compile(
     r"^\s*(?P<peer_name>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
@@ -170,6 +192,72 @@ def parse_interface_rate_text(raw_text: str) -> list[dict[str, object]]:
             }
         )
     return rows
+
+
+def parse_ap_radio_statistics_text(raw_text: str) -> dict[str, object]:
+    counters: dict[str, int] = {}
+    counter_values: dict[str, list[int]] = {}
+    canonical_keys = {key.lower(): key for key in AP_RADIO_STAT_COUNTERS}
+    for line in raw_text.splitlines():
+        match = AP_RADIO_STAT_RE.match(line)
+        if not match:
+            continue
+        key = canonical_keys.get(match.group("key").lower(), match.group("key"))
+        values = [int(value) for value in re.findall(r"-?\d+", match.group("values"))]
+        if not values:
+            continue
+        counter_values[key] = values
+        counters[key] = sum(values) if len(values) > 1 else values[0]
+    return {
+        "counters": counters,
+        "counter_values": counter_values,
+        "tx_frame_count": counters.get("TxFrameAllCnt"),
+        "tx_frame_bytes": counters.get("TxFrameAllBytes"),
+        "rx_frame_count": counters.get("RxFrameAllCnt"),
+        "rx_frame_bytes": counters.get("RxFrameAllBytes"),
+        "retry_count": counters.get("TxRetryFrmCnt"),
+        "error_count": counters.get("TxErrFrmCnt"),
+        "discard_count": counters.get("TxDiscardFrmCnt"),
+        "raw_text": raw_text,
+    }
+
+
+def parse_switch_history_text(raw_text: str, collected_at: datetime | None = None) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    year = collected_at.year if collected_at is not None else datetime.now().year
+    for line in raw_text.splitlines():
+        match = SWITCH_HISTORY_ROW_RE.match(line)
+        if not match:
+            continue
+        peer_name = (match.group("peer_name") or "").strip()
+        peer_mac_raw = match.group("peer_mac")
+        switch_time = _switch_history_time(year, match.group("switched_at"))
+        rows.append(
+            {
+                "switch_time": switch_time,
+                "radio": 1,
+                "from_peer_name": "",
+                "to_peer_name": peer_name,
+                "from_peer_mac": "",
+                "to_peer_mac": peer_mac_raw,
+                "to_peer_mac_normalized": normalize_peer_mac(peer_mac_raw),
+                "reason": (match.group("reason") or "").strip(),
+                "role": match.group("role") or "",
+                "in_rssi": int(match.group("in_rssi")),
+                "out_rssi": int(match.group("out_rssi")),
+                "active_time": match.group("active_time"),
+                "raw_line": line.strip(),
+            }
+        )
+    return rows
+
+
+def _switch_history_time(year: int, value: str) -> str:
+    try:
+        parsed = datetime.strptime(f"{year}-{value}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return value
+    return parsed.isoformat(sep=" ", timespec="seconds")
 
 
 def _float_or_none(value: str) -> float | None:

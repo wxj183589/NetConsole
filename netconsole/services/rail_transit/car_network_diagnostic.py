@@ -34,6 +34,7 @@ from netconsole.services.vehicle_mr_online import (
     load_group_names,
     normalize_train_no,
     parse_train_identity,
+    canonical_peer_name,
     train_sort_key,
 )
 
@@ -407,7 +408,7 @@ def build_car_network_trains(repository, site_name: str) -> list[CarNetworkTrain
         tc, _end = _device_tc_end(device)
         if classified is None or not train_no:
             continue
-        train_id = f"NBL12-LC{train_no}"
+        train_id = _device_train_id(device, train_no)
         entry = by_no.setdefault(
             train_no,
             {
@@ -567,12 +568,20 @@ def default_point_table(
     global_config: dict[str, object] | None = None,
 ) -> list[CarNetworkNode]:
     train_no = train_no or normalize_train_no(train_id)
-    base = _fallback_vehicle_prefix(train_no)
     config = merge_global_config(global_config)
-    vrrp = _build_host_ip(base, _srv_generation(config).get("vrrp_host", 254)) if base else ""
     mr_devices = mr_devices or {}
     tc1_device = mr_devices.get("TC1-MR")
     tc2_device = mr_devices.get("TC2-MR")
+    base = _vehicle_prefix_from_addresses(
+        [
+            tc1_device.primary_address if tc1_device else "",
+            tc1_device.backup_address if tc1_device else "",
+            tc2_device.primary_address if tc2_device else "",
+            tc2_device.backup_address if tc2_device else "",
+        ],
+        train_no or "",
+    )
+    vrrp = _build_host_ip(base, _srv_generation(config).get("vrrp_host", 254)) if base else ""
     display_name = f"{train_no}车" if train_no else train_id
     nodes = [
         CarNetworkNode(
@@ -668,7 +677,7 @@ def generate_point_table_from_devices(
         tc, end = _device_tc_end(device)
         if not tc:
             continue
-        train_id = f"NBL12-LC{train_no}"
+        train_id = _device_train_id(device, train_no)
         display_name = f"{train_no}车"
         node_name = f"{tc}-{node_suffix}"
         base_node = CarNetworkNode(
@@ -698,7 +707,7 @@ def generate_point_table_from_devices(
         train_nos.add(train_no)
 
     for train_no in sorted(train_nos, key=lambda value: train_sort_key((value, value))):
-        train_id = f"NBL12-LC{train_no}"
+        train_id = _train_id_for_no(train_no, [*existing_nodes, *generated])
         existing_for_train = [node for node in [*existing_nodes, *generated] if node.train_no == train_no or node.train_id == train_id]
         present = {node.node_name for node in existing_for_train}
         prefix = infer_vehicle_prefix(existing_for_train, train_no)
@@ -970,6 +979,35 @@ def _device_train_no_any(device: Device) -> str:
     return normalize_train_no(" ".join(str(value or "") for value in (device.name, device.system_name, device.station, device.remark)))
 
 
+def _device_train_id(device: Device, train_no: str) -> str:
+    text = canonical_peer_name(" ".join(str(value or "") for value in (device.name, device.system_name, device.station, device.remark)))
+    match = re.search(r"(?i)(?P<prefix>[^\s,;]*?LC\s*0*(?P<train_no>\d{1,3}))", text)
+    if match and normalize_train_no(match.group("train_no")) == train_no:
+        return re.sub(r"\s+", "", match.group("prefix"))
+    return _train_id_for_no(train_no, [])
+
+
+def _train_id_for_no(train_no: str, nodes: list[CarNetworkNode]) -> str:
+    for node in nodes:
+        if node.train_no == train_no and node.train_id:
+            return node.train_id
+    return train_no
+
+
+def _vehicle_prefix_from_addresses(addresses: Iterable[str], train_no: str = "") -> str:
+    prefixes = []
+    for address in addresses:
+        prefix = _ip_prefix(str(address or ""))
+        if prefix:
+            prefixes.append(prefix)
+    if not prefixes:
+        return ""
+    counts: dict[str, int] = {}
+    for prefix in prefixes:
+        counts[prefix] = counts.get(prefix, 0) + 1
+    return sorted(counts, key=lambda value: (-counts[value], value))[0]
+
+
 def _device_tc_end(device: Device) -> tuple[str, str]:
     text = " ".join(str(value or "") for value in (device.name, device.system_name, device.station, device.remark))
     upper = text.upper()
@@ -1017,13 +1055,7 @@ def _ip_prefix(ip: str) -> str:
 
 
 def _fallback_vehicle_prefix(train_no: str | None) -> str:
-    normalized = normalize_train_no(train_no or "")
-    if not normalized:
-        return ""
-    try:
-        return f"10.122.{int(normalized)}"
-    except ValueError:
-        return ""
+    return ""
 
 
 def _build_host_ip(prefix: str, host: object) -> str:
@@ -1253,8 +1285,8 @@ class CarNetworkDiagnosticService:
             emit("progress_meta", {"completed": completed_tasks, "total": total_tasks, "percent": int(completed_tasks * 100 / max(1, total_tasks)), "message": payload.get("message", "")})
 
         emit("progress_meta", {"completed": 0, "total": total_tasks, "percent": 0, "message": "准备检测"})
-        emit("stage", "获取在线车载MR状态 / AC mesh-link")
-        emit("task_started", {"task_id": "ac_status", "layer": "AC层", "status": "running", "message": "正在获取在线车载MR状态或查询 AC mesh-link"})
+        emit("stage", "获取列车在线情况 / AC mesh-link")
+        emit("task_started", {"task_id": "ac_status", "layer": "AC层", "status": "running", "message": "正在获取列车在线情况或查询 AC mesh-link"})
         train_ac_status = get_vehicle_mr_online_status_from_store(self.paths, self.site_name, _current_train_no(self.train, self.nodes))
         if train_ac_status is not None:
             ac_probe = AcProbeResult(enabled=True, query_success=True)
@@ -1700,9 +1732,9 @@ def _clean_ping_error(error: str) -> str:
 
 def _ac_task_message(status: TrainAcStatus) -> str:
     if status.tc1_mr_online and status.tc2_mr_online:
-        return "AC/在线车载MR发现双端 MR 在线，继续检测车内链路"
+        return "AC/列车在线情况发现双端 MR 在线，继续检测车内链路"
     if status.tc1_mr_online or status.tc2_mr_online:
-        return "AC/在线车载MR发现单端 MR 在线，继续检测车内链路"
+        return "AC/列车在线情况发现单端 MR 在线，继续检测车内链路"
     if status.both_mr_offline:
         return "AC mesh-link 未发现 TC1-MR 和 TC2-MR"
     return "AC mesh-link 查询失败或状态未知，继续通过 IP/SSH 辅助判断"
@@ -1968,7 +2000,7 @@ def match_train_mr_in_mesh_links(train: CarNetworkTrain | None, nodes: list[CarN
         suspected_lines.extend(_suspected_train_lines(controller.output, train_no, links))
         if parse_result.parse_status != "OK" or (suspected_lines and not links):
             parse_warning = True
-        LOGGER.info("[车内通信检测] AC %s(%s) mesh-link 查询成功，在线车载MR parser 解析 peer %s 条", controller.device_name, controller.host, len(links))
+        LOGGER.info("[车内通信检测] AC %s(%s) mesh-link 查询成功，列车在线情况 parser 解析 peer %s 条", controller.device_name, controller.host, len(links))
         for link in links:
             if not _mesh_status_online(link.status):
                 continue
@@ -1999,22 +2031,22 @@ def get_vehicle_mr_online_status_from_store(paths: PathResolver | None, site_nam
     train_no = normalize_train_no(train_no)
     if paths is None or not site_name or not train_no:
         return None
-    LOGGER.info("[车内通信检测] 尝试读取在线车载MR状态 site=%s train_no=%s", site_name, train_no)
+    LOGGER.info("[车内通信检测] 尝试读取列车在线情况 site=%s train_no=%s", site_name, train_no)
     try:
         store = VehicleMrOnlineStore(paths, site_name)
         states = store.list_current_states()
     except Exception as exc:
-        LOGGER.info("[车内通信检测] 读取在线车载MR当前状态失败：%s", exc)
+        LOGGER.info("[车内通信检测] 读取列车在线情况当前状态失败：%s", exc)
         return None
-    LOGGER.info("[车内通信检测] 在线车载MR当前状态数量=%s", len(states))
+    LOGGER.info("[车内通信检测] 列车在线情况当前状态数量=%s", len(states))
     state = next((item for item in states if _vehicle_mr_state_matches_train_no(item, train_no)), None)
     if state is None or _vehicle_mr_state_is_expired(state):
         if state is not None:
-            LOGGER.info("[车内通信检测] 在线车载MR状态已过期: train_no=%s tc1=%s tc2=%s status=%s", state.train_no, state.tc1.seen, state.tc2.seen, state.status)
+            LOGGER.info("[车内通信检测] 列车在线情况状态已过期: train_no=%s tc1=%s tc2=%s status=%s", state.train_no, state.tc1.seen, state.tc2.seen, state.status)
         return None
     tc1 = bool(state.tc1.seen)
     tc2 = bool(state.tc2.seen)
-    LOGGER.info("[车内通信检测] 匹配到在线车载MR状态: train_no=%s tc1=%s tc2=%s status=%s", state.train_no, tc1, tc2, state.status)
+    LOGGER.info("[车内通信检测] 匹配到列车在线情况状态: train_no=%s tc1=%s tc2=%s status=%s", state.train_no, tc1, tc2, state.status)
     online_statuses = {TRAIN_STATUS_ONLINE, TRAIN_STATUS_DUAL_ONLINE, TRAIN_STATUS_ABNORMAL_SINGLE, TRAIN_STATUS_UNEXPECTED_END}
     if not (tc1 or tc2 or state.status in online_statuses):
         return None

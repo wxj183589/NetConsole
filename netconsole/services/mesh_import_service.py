@@ -43,6 +43,7 @@ class MeshImportService:
         repo = self.storage.mr_repository(profile)
         result = MeshImportResult()
         total = len(files)
+        next_record_seq = 1
         for index, path in enumerate(files, start=1):
             if should_cancel and should_cancel():
                 break
@@ -68,6 +69,9 @@ class MeshImportService:
             for record in records:
                 record.source_label = profile.display_name
                 record.source_file = str(archived_path)
+                record.source_file_order = index
+                record.record_seq = next_record_seq
+                next_record_seq += 1
             for issue in issues:
                 issue.source_file = str(archived_path)
             result.files.append(info)

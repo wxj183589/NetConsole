@@ -34,6 +34,29 @@ def test_device_repository_crud_search_and_filters(tmp_path):
     assert repository.list() == []
 
 
+def test_device_repository_list_uses_name_natural_order(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.create(Device(name="LC10", primary_address="10.0.0.10"))
+    repository.create(Device(name="LC2", primary_address="10.0.0.2"))
+    repository.create(Device(name="LC1", primary_address="10.0.0.1"))
+
+    assert [device.name for device in repository.list()] == ["LC1", "LC2", "LC10"]
+
+
+def test_device_repository_search_includes_group_and_device_type(tmp_path):
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    groups = DeviceGroupRepository(database, "demo")
+    onboard = groups.create("车载-MR")
+    station = groups.create("车站")
+    mr = repository.create(Device(name="MR2", primary_address="192.0.2.10", group_id=onboard.id, device_type="AC"))
+    sw = repository.create(Device(name="SW1", primary_address="192.0.2.20", group_id=station.id, device_type="SW"))
+
+    assert [device.id for device in repository.list(search="车载-MR")] == [mr.id]
+    assert [device.id for device in repository.list(search="SW")] == [sw.id]
+
+
 def test_device_uuid_must_be_unique(tmp_path):
     repository = make_repository(tmp_path)
     device_uuid = Device.new_uuid()

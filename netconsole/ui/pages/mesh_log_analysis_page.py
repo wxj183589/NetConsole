@@ -35,18 +35,24 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.mesh_log_models import MeshMrProfile, format_mac_h3c
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_link_detail_export import export_mesh_link_details_xlsx
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.path_preference_service import PathPreferenceService
+from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker, MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
+from netconsole.ui.table.table_autosize_engine import apply_table_autosize
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
 from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+from netconsole.utils.natural_sort import natural_text_key
 
 
 FILE_FILTER = "MESH Logs (*.log *.log.gz *.txt);;Log Files (*.log *.log.gz);;Text Files (*.txt);;All Files (*.*)"
@@ -54,11 +60,27 @@ MESH_DEFAULT_PAGE_SIZE = 1000
 
 
 class MeshLogAnalysisPage(QWidget):
-    def __init__(self, i18n: I18n, site_name: str = "demo", paths: PathResolver | None = None) -> None:
+    def __init__(
+        self,
+        repository: DeviceRepository | I18n | None,
+        i18n: I18n | str | None = None,
+        site_name: str | PathResolver = "demo",
+        paths: PathResolver | None = None,
+    ) -> None:
         super().__init__()
-        self.i18n = i18n
-        self.site_name = site_name
+        if isinstance(repository, I18n):
+            legacy_i18n = repository
+            legacy_site_name = str(i18n or "demo")
+            legacy_paths = site_name if isinstance(site_name, PathResolver) else paths
+            repository = None
+            i18n = legacy_i18n
+            site_name = legacy_site_name
+            paths = legacy_paths
+        self.repository = repository if isinstance(repository, DeviceRepository) else None
+        self.i18n = i18n if isinstance(i18n, I18n) else I18n()
+        self.site_name = str(site_name)
         self.paths = paths or PathResolver()
+        self.group_repository = self._make_group_repository(self.repository, self.site_name)
         self.storage = MeshStorageService(site_name, self.paths)
         self.settings = SettingsStore(self.paths)
         self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
@@ -79,6 +101,8 @@ class MeshLogAnalysisPage(QWidget):
         self.page_size = MESH_DEFAULT_PAGE_SIZE
         self._populating_tables = False
         self._suppress_mr_selection = False
+        self._restoring_column_widths = False
+        self._link_column_widths_changed = False
         self.mr_load_generation = 0
         self.dirty_tabs: set[str] = {"source", "link", "event", "issue"}
 
@@ -91,12 +115,13 @@ class MeshLogAnalysisPage(QWidget):
         self.refresh_button = QPushButton()
         self.open_folder_button = QPushButton()
         self.generate_report_button = QPushButton()
+        self.export_link_button = QPushButton()
         self.progress_bar = QProgressBar()
         self.progress_label = QLabel()
 
         self.mr_table = QTableWidget(0, 8)
         self.source_table = QTableWidget(0, 15)
-        self.link_table = QTableWidget(0, 24)
+        self.link_table = QTableWidget(0, 27)
         self.event_table = QTableWidget(0, 14)
         self.issue_table = QTableWidget(0, 7)
         self.issue_empty_widget = QWidget()
@@ -114,6 +139,10 @@ class MeshLogAnalysisPage(QWidget):
             header.setSectionResizeMode(QHeaderView.Interactive)
             header.setStretchLastSection(False)
         self.link_table.setAlternatingRowColors(False)
+        self.link_table.setProperty("netconsole_center_cells", True)
+        self.mr_table.setProperty("netconsole_natural_sort_first_column", True)
+        self.mr_table.horizontalHeader().setSortIndicator(0, Qt.AscendingOrder)
+        self.link_table.horizontalHeader().sectionResized.connect(self._mark_link_column_width_changed)
 
         self.radio_filter = QLineEdit()
         self.state_filter = QLineEdit()
@@ -142,6 +171,11 @@ class MeshLogAnalysisPage(QWidget):
         self._setup_column_states()
         self.refresh_all()
 
+    def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
+        self.repository = repository
+        self.group_repository = self._make_group_repository(repository, site_name)
+        self.set_site(site_name)
+
     def set_site(self, site_name: str) -> None:
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
@@ -149,6 +183,8 @@ class MeshLogAnalysisPage(QWidget):
         self.storage = MeshStorageService(site_name, self.paths)
         self.settings = SettingsStore(self.paths)
         self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        if self.repository is not None:
+            self.group_repository = self._make_group_repository(self.repository, self.site_name)
         self.repo_cache.clear()
         self.profile_by_id.clear()
         self.current_profile = None
@@ -156,9 +192,13 @@ class MeshLogAnalysisPage(QWidget):
         self.current_source_file_name = None
         self.refresh_all()
 
+    @staticmethod
+    def _make_group_repository(repository: DeviceRepository | None, site_name: str) -> DeviceGroupRepository | None:
+        database = getattr(repository, "database", None)
+        return DeviceGroupRepository(database, site_name) if database is not None else None
+
     def retranslate(self) -> None:
         self.title_label.setText(self.i18n.t("mesh_analysis.title"))
-        self.create_mr_button.setText(self.i18n.t("mesh_analysis.create_mr"))
         self.import_button.setText(self.i18n.t("mesh_analysis.import_logs"))
         self.import_folder_button.setText(self.i18n.t("mesh_analysis.import_folder"))
         self.show_all_sources_button.setText("显示全部文件")
@@ -166,6 +206,7 @@ class MeshLogAnalysisPage(QWidget):
         self.refresh_button.setText(self.i18n.t("mesh_analysis.refresh"))
         self.open_folder_button.setText(self.i18n.t("mesh_analysis.open_folder"))
         self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
+        self.export_link_button.setText("导出链路明细")
         self.radio_filter.setPlaceholderText("Radio")
         self.state_filter.setPlaceholderText(self.i18n.t("mesh_analysis.state"))
         self.peer_filter.setPlaceholderText("PeerMac / AP名称 / 站点")
@@ -203,12 +244,15 @@ class MeshLogAnalysisPage(QWidget):
         )
         self.link_table.setHorizontalHeaderLabels(
             [
+                "序号",
                 self.i18n.t("mesh_analysis.sample_time"),
                 "Radio",
                 self.i18n.t("mesh_analysis.state"),
                 "PeerMac",
                 "当前PEER AP名称",
+                "AP MAC",
                 "归属站点",
+                "Peer Radio MAC",
                 "PEER Radio",
                 self.i18n.t("mesh_analysis.establish_time"),
                 self.i18n.t("mesh_analysis.duration"),
@@ -269,13 +313,13 @@ class MeshLogAnalysisPage(QWidget):
     def _build_layout(self) -> None:
         toolbar = QHBoxLayout()
         for button in (
-            self.create_mr_button,
             self.import_button,
             self.import_folder_button,
             self.show_all_sources_button,
             self.cancel_button,
             self.refresh_button,
             self.open_folder_button,
+            self.export_link_button,
             self.generate_report_button,
         ):
             toolbar.addWidget(button)
@@ -332,7 +376,6 @@ class MeshLogAnalysisPage(QWidget):
         layout.addWidget(splitter, 1)
 
     def _connect_signals(self) -> None:
-        self.create_mr_button.clicked.connect(self.create_mr)
         self.import_button.clicked.connect(self.import_logs)
         self.import_folder_button.clicked.connect(self.import_folder)
         self.show_all_sources_button.clicked.connect(self.show_all_source_files)
@@ -340,6 +383,7 @@ class MeshLogAnalysisPage(QWidget):
         self.refresh_button.clicked.connect(lambda: self.refresh_all())
         self.open_folder_button.clicked.connect(self.open_mr_folder)
         self.generate_report_button.clicked.connect(self.generate_report)
+        self.export_link_button.clicked.connect(self.export_link_details)
         self.mr_table.itemSelectionChanged.connect(self._schedule_current_mr_selection)
         self.radio_filter.textChanged.connect(self._schedule_link_refresh)
         self.state_filter.textChanged.connect(self._schedule_link_refresh)
@@ -394,6 +438,33 @@ class MeshLogAnalysisPage(QWidget):
     def _import_start_dir(self) -> Path:
         return PathPreferenceService(self.paths).get_default_mesh_import_dir(self.site_name)
 
+    def export_link_details(self) -> None:
+        profile = self._require_profile()
+        if profile is None:
+            return
+        repo = self._repo()
+        filters = self._current_link_filters()
+        total, _rows = repo.query_links(1, 0, filters)
+        if total <= 0:
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), "暂无可导出的链路明细数据")
+            return
+        _total, rows = repo.query_links(max(total, 1), 0, filters)
+        export_dir = self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        default_name = f"{_safe_filename(profile.display_name)}_链路明细_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        selected, _ = QFileDialog.getSaveFileName(self, "导出链路明细", str(export_dir / default_name), "Excel Files (*.xlsx)")
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.casefold() != ".xlsx":
+            path = path.with_suffix(".xlsx")
+        try:
+            export_mesh_link_details_xlsx(path, rows)
+        except Exception as exc:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"导出链路明细失败：{exc}")
+            return
+        QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), f"链路明细已导出：\n{path}")
+
     def cancel_import(self) -> None:
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
@@ -402,7 +473,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def refresh_all(self, select_mr_id: str | None = None) -> None:
         current_id = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
-        self.profiles = self.catalog_repo.list_profiles()
+        self.profiles = self._vehicle_mr_profiles()
         self.profile_by_id = {profile.mr_id: profile for profile in self.profiles}
         sorting = self.mr_table.isSortingEnabled()
         sort_column = self.mr_table.horizontalHeader().sortIndicatorSection()
@@ -443,7 +514,16 @@ class MeshLogAnalysisPage(QWidget):
             self.current_profile = None
             self.current_source_file_id = None
             self.current_source_file_name = None
-            self.refresh_current_mr_data()
+        self.refresh_current_mr_data()
+
+    def _vehicle_mr_profiles(self) -> list[MeshMrProfile]:
+        if self.repository is None or self.group_repository is None:
+            return self.catalog_repo.list_profiles()
+        group = self.group_repository.find_by_name(VEHICLE_MR_GROUP_NAME)
+        if group is None or group.id is None:
+            return []
+        devices = self.repository.list(group_filter=int(group.id))
+        return self.storage.sync_mr_profiles_from_devices(devices)
 
     def refresh_profiles(self, select_mr_id: str | None = None) -> None:
         self.refresh_all(select_mr_id)
@@ -680,12 +760,15 @@ class MeshLogAnalysisPage(QWidget):
             metrics = _json_dict(row.get("metrics_json"))
             peer = format_mac_h3c(row.get("peer_mac_normalized")) if row.get("peer_mac_normalized") else row.get("peer_mac_raw")
             values = [
+                row.get("record_seq") or row.get("source_line_number"),
                 row.get("sample_time"),
                 row.get("radio"),
                 row.get("link_state"),
-                peer,
+                row.get("peer_mac_raw") or peer,
                 row.get("peer_ap_name") or "-",
+                format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "-",
                 row.get("peer_site") or "-",
+                format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "-",
                 row.get("peer_radio") or row.get("peer_radio_label") or "-",
                 row.get("establish_time"),
                 row.get("duration_text"),
@@ -707,6 +790,13 @@ class MeshLogAnalysisPage(QWidget):
             ]
             _set_row(self.link_table, row_index, values, row)
         _end_table_update(self.link_table)
+        if not self._link_column_widths_changed and not isinstance(self.settings.get_value("mesh_analysis/column_widths/link", None), list):
+            self._restoring_column_widths = True
+            try:
+                apply_table_autosize(self.link_table)
+            finally:
+                self._restoring_column_widths = False
+        self.link_table.sortItems(0, Qt.AscendingOrder)
         self.restyle_visible_link_rows()
 
     def _render_events(self, repo: MeshMrRepository) -> None:
@@ -831,14 +921,34 @@ class MeshLogAnalysisPage(QWidget):
         data = item.data(Qt.UserRole) if item else None
         if not isinstance(data, dict):
             return
-        self._show_source_file_links(data)
+        payload = self._source_open_payload(data)
+        app_logger.log_info(
+            "MESH_SOURCE_DOUBLE_CLICK",
+            f"mr_id={payload['mr_id']} source_file_id={payload['source_file_id']} file_path={payload['file_path']} current_tab={payload['current_tab']}",
+        )
+        QTimer.singleShot(0, lambda payload=payload: self._open_link_detail_for_source(payload))
 
     def _show_source_file_links(self, data: dict[str, object]) -> None:
-        source_file_id = int(data.get("id") or 0)
+        self._open_link_detail_for_source(self._source_open_payload(data))
+
+    def _source_open_payload(self, data: dict[str, object]) -> dict[str, object]:
+        return {
+            "source_file_id": int(data.get("id") or 0),
+            "file_name": str(data.get("archived_filename") or data.get("original_filename") or data.get("id") or ""),
+            "file_path": str(data.get("archived_path") or data.get("original_path") or ""),
+            "mr_id": self.current_profile.mr_id if self.current_profile is not None else "",
+            "mr_name": self.current_profile.display_name if self.current_profile is not None else "",
+            "current_tab": self._current_tab_name(),
+        }
+
+    def _open_link_detail_for_source(self, payload: dict[str, object]) -> None:
+        source_file_id = int(payload.get("source_file_id") or 0)
         if source_file_id <= 0 or self.current_profile is None:
             return
+        if payload.get("mr_id") and str(payload.get("mr_id")) != self.current_profile.mr_id:
+            return
         self.current_source_file_id = source_file_id
-        self.current_source_file_name = str(data.get("archived_filename") or data.get("original_filename") or source_file_id)
+        self.current_source_file_name = str(payload.get("file_name") or source_file_id)
         self.link_page = self.event_page = self.issue_page = 1
         repo = self._repo()
         self._render_sources(repo)
@@ -946,11 +1056,16 @@ class MeshLogAnalysisPage(QWidget):
     def _schedule_link_refresh(self) -> None:
         self.filter_timer.start()
 
+    def _mark_link_column_width_changed(self, _section: int, _old_size: int, _new_size: int) -> None:
+        if self._restoring_column_widths or self._populating_tables:
+            return
+        self._link_column_widths_changed = True
+
     def _setup_column_states(self) -> None:
         defaults = {
             "mr": [180, 180, 180, 90, 100, 120, 90, 180],
             "source": [180, 90, 320, 100, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
-            "link": [190, 60, 90, 150, 180, 150, 90, 180, 135, 70, 95, 95, 95, 95, 110, 110, 130, 130, 85, 85, 85, 85, 240, 70],
+            "link": [90, 180, 70, 90, 180, 180, 140, 140, 150, 110, 140, 110, 80, 90, 90, 90, 90, 90, 90, 110, 110, 90, 90, 90, 90, 240, 80],
             "event": [180, 60, 140, 150, 150, 120, 110, 110, 110, 110, 110, 110, 240, 70],
             "issue": [180, 70, 90, 140, 120, 240, 320],
         }
@@ -958,11 +1073,19 @@ class MeshLogAnalysisPage(QWidget):
         for key, table in tables.items():
             state = MeshTableColumnState(self.settings, table, f"mesh_analysis/column_widths/{key}", defaults[key])
             self.column_states[key] = state
-            state.restore()
+            self._restoring_column_widths = True
+            try:
+                state.restore()
+            finally:
+                self._restoring_column_widths = False
 
     def _restore_column_widths(self) -> None:
-        for state in getattr(self, "column_states", {}).values():
-            state.restore()
+        self._restoring_column_widths = True
+        try:
+            for state in getattr(self, "column_states", {}).values():
+                state.restore()
+        finally:
+            self._restoring_column_widths = False
 
     def _open_peer_from_link_cell(self, row: int, column: int) -> None:
         if column not in {3, 4} or self.current_profile is None:
@@ -1265,16 +1388,32 @@ def _source_file_status(row: dict[str, object]) -> str:
     return status or "未知"
 
 
+class _SortableTableWidgetItem(QTableWidgetItem):
+    def __init__(self, text: str, sort_value: object | None = None) -> None:
+        super().__init__(text)
+        self.sort_value = sort_value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _SortableTableWidgetItem) and self.sort_value is not None and other.sort_value is not None:
+            return self.sort_value < other.sort_value
+        return self.text() < other.text()
+
+
 def _set_row(table: QTableWidget, row_index: int, values: list[object], user_data: object | None = None) -> None:
     row_height = max(table.fontMetrics().height() + 12, 32)
     table.setRowHeight(row_index, row_height)
     for column, value in enumerate(values):
         text = _display(value)
-        item = QTableWidgetItem(text)
+        sort_value = value if isinstance(value, int | float) else None
+        if sort_value is None and column == 0 and table.property("netconsole_natural_sort_first_column"):
+            sort_value = natural_text_key(value)
+        item = _SortableTableWidgetItem(text, sort_value)
         item.setToolTip(text)
         if column == 0 and user_data is not None:
             item.setData(Qt.UserRole, user_data)
-        if isinstance(value, int | float):
+        if table.property("netconsole_center_cells"):
+            item.setTextAlignment(Qt.AlignCenter)
+        elif isinstance(value, int | float):
             item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         elif column in {1, 2, 6, table.columnCount() - 1}:
             item.setTextAlignment(Qt.AlignCenter)
@@ -1283,11 +1422,14 @@ def _set_row(table: QTableWidget, row_index: int, values: list[object], user_dat
 
 def _begin_table_update(table: QTableWidget) -> None:
     table.setProperty("mesh_sorting_enabled", table.isSortingEnabled())
+    table.setProperty("mesh_signals_blocked", table.signalsBlocked())
+    table.blockSignals(True)
     table.setSortingEnabled(False)
 
 
 def _end_table_update(table: QTableWidget) -> None:
     table.setSortingEnabled(bool(table.property("mesh_sorting_enabled")))
+    table.blockSignals(bool(table.property("mesh_signals_blocked")))
 
 
 def _page(rows: list[dict[str, object]], current_page: int, page_size: int) -> tuple[int, list[dict[str, object]]]:

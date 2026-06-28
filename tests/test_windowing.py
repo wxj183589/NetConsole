@@ -751,13 +751,11 @@ def test_release_resources_and_build_script_are_configured():
     assert icon_path("love.ico").exists()
     assert icon_path("love.png").exists()
     assert changelog_path().exists()
-    assert "clean_build_spec.py --prepare --write-spec" in script
-    assert "PyInstaller --noconfirm --clean --distpath \"%DIST_ROOT%\" --workpath \"%BUILD_ROOT%\" \"%SPEC_ROOT%\\NetConsole.spec\"" in script
-    assert "clean_build_spec.py --validate" in script
+    assert "clean_build_spec.py\" --prepare --write-spec" in script
+    assert "project\\build_release.py\" --backend pyinstaller %*" in script
     assert "--finalize" not in script
     assert "--add-data" not in script
-    assert "PROJECT_ROOT=%ROOT%\\project" in script
-    assert "%RELEASE_ROOT%\\NetConsole_%APP_VERSION%.zip" in script
+    assert "PROJECT_ROOT=%ROOT%\\project" not in script
 
 
 def test_read_collect_log_text_reads_existing_file(tmp_path):

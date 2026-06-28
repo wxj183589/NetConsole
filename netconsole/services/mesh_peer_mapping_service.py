@@ -27,17 +27,19 @@ class MeshPeerMappingService:
         if not match.matched:
             return _unresolved(peer)
         radio_id = int(match.radio_id or 0) or None
+        radio_rule = str(match.match_rule or "")
+        peer_radio_mac = peer if radio_id or "radio" in radio_rule or "bssid" in radio_rule else ""
         return {
             "peer_mac_normalized": peer,
             "peer_ap_name": match.ap_name if match.ap_name != "-" else "",
             "peer_ap_mac": normalize_mac(match.ap_mac) or match.ap_mac,
             "peer_radio_id": radio_id,
             "peer_radio_label": f"radio{radio_id}" if radio_id else "",
-            "peer_radio_mac": peer,
+            "peer_radio_mac": peer_radio_mac,
             "peer_site": match.station,
             "peer_location": match.location,
             "peer_direction": match.direction,
-            "match_rule": match.match_rule or "h3c_rule",
+            "match_rule": radio_rule or "resolved",
             "match_confidence": int(match.confidence or 0),
         }
 

@@ -115,6 +115,8 @@ class MeshLogRecord:
     expected_duration_seconds: int | None = None
     duration_deviation_seconds: int | None = None
     deltas: dict[str, int | None] = field(default_factory=dict)
+    source_file_order: int = 0
+    record_seq: int = 0
 
     def peer_mac_h3c(self) -> str:
         return format_mac_h3c(self.peer_mac_normalized) if self.peer_mac_normalized else self.peer_mac_raw

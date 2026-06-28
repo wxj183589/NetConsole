@@ -51,6 +51,7 @@ ONLINE_POLICY_VALUES_BY_LABEL = {label: value for value, label in ONLINE_POLICY_
 class VehicleMrMeshLink:
     local_ap_name: str
     peer_name: str
+    peer_name_canonical: str = ""
     peer_mac: str = ""
     local_mac: str = ""
     status: str = ""
@@ -173,7 +174,7 @@ class H3CComwareV9VehicleMrMeshLinkParser(VehicleMrMeshLinkParser):
     _clock_date_re = re.compile(r"^\s*(?P<time>\d{1,2}:\d{2}:\d{2})\b.*?\b(?P<date>\d{1,2}/\d{1,2}/\d{4})\b")
     _ap_re = re.compile(r"^\s*AP\s+name\s*:\s*(?P<name>.+?)\s*$", re.IGNORECASE)
     _peer_re = re.compile(
-        r"^\s*(?P<peer>\S+)\s+"
+        r"^\s*(?P<peer>.+?)\s+"
         r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4})\s+"
         r"(?P<local_mac>[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4})\s+"
         r"(?P<status>\S+)\s+"
@@ -210,6 +211,7 @@ class H3CComwareV9VehicleMrMeshLinkParser(VehicleMrMeshLinkParser):
                     VehicleMrMeshLink(
                         local_ap_name=current_ap,
                         peer_name=match.group("peer").strip(),
+                        peer_name_canonical=canonical_peer_name(match.group("peer")),
                         peer_mac=normalize_mac(match.group("peer_mac")),
                         local_mac=normalize_mac(match.group("local_mac")),
                         status=match.group("status").strip(),
@@ -240,11 +242,18 @@ def parse_ac_clock_line(line: str, fallback: datetime | None = None) -> str:
     return f"{fallback:%Y-%m-%d} {time_text}"
 
 
-_MR_NAME_RE = re.compile(r"^(?P<train_id>.+?-LC(?P<train_no>\d+))-MR-(?P<end>CT|CW)$", re.IGNORECASE)
-_CN_MR_NAME_RE = re.compile(r"^列车(?P<train_no>\d+)-MR-(?P<end>CT|CW)$", re.IGNORECASE)
+_MR_NAME_RE = re.compile(r"^(?P<train_id>.+?-LC(?P<train_no>\d+))-(?:MR|AP)-(?P<end>CT|CW)$", re.IGNORECASE)
+_CN_MR_NAME_RE = re.compile(r"^列车(?P<train_no>\d+)-(?:MR|AP)-(?P<end>CT|CW)$", re.IGNORECASE)
 _STATION_END_RE = re.compile(r"(?P<train_no>\d+)车.*(?P<end>车头|车尾|CT|CW)", re.IGNORECASE)
 _TRAIN_NO_RE = re.compile(r"(?:LC|列车)?0*(?P<train_no>\d{1,3})车?", re.IGNORECASE)
 EMPTY_STATION_VALUES = {"", "-", "—", "未知", "unknown", "none", "null"}
+ONLINE_LINK_STATUSES = {"forwarding", "active", "up"}
+
+
+def canonical_peer_name(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    text = re.sub(r"(?i)\b(AP|MR)\s*-\s*(CT|CW)\b", lambda match: f"{match.group(1).upper()}-{match.group(2).upper()}", text)
+    return text
 
 
 def normalize_train_no(value: object) -> str:
@@ -336,7 +345,7 @@ def h3c_radio_mac_match_method(mac_a: object, mac_b: object) -> str:
 
 
 def parse_train_identity(peer_name: str) -> TrainIdentity | None:
-    text = str(peer_name or "").strip()
+    text = canonical_peer_name(peer_name)
     match = _MR_NAME_RE.match(text)
     if match:
         train_id = match.group("train_id")
@@ -350,7 +359,7 @@ def parse_train_identity(peer_name: str) -> TrainIdentity | None:
         train_id = f"列车{train_no}"
         end = match.group("end").upper()
     return TrainIdentity(
-        peer_name=peer_name,
+        peer_name=str(peer_name or "").strip(),
         train_id=train_id,
         train_no=train_no,
         car_end=end,
@@ -524,11 +533,15 @@ def _mapping_from_row(row: sqlite3.Row) -> VehicleMrTrainMapping:
 def choose_best_links(links: list[VehicleMrMeshLink]) -> dict[str, VehicleMrMeshLink]:
     best: dict[str, VehicleMrMeshLink] = {}
     for link in links:
+        status = str(link.status or "").strip().casefold()
+        if status and status not in ONLINE_LINK_STATUSES:
+            continue
         if link.rssi is None:
             continue
-        current = best.get(link.peer_name)
+        key = link.peer_name_canonical or canonical_peer_name(link.peer_name) or link.peer_name
+        current = best.get(key)
         if current is None or (current.rssi is None or link.rssi > current.rssi):
-            best[link.peer_name] = link
+            best[key] = link
     return best
 
 
@@ -557,7 +570,7 @@ def build_train_states(
     registered_by_no = {train.train_no: train_id for train_id, train in registered_trains.items() if train.train_no}
     best_links = choose_best_links(parse_result.links)
     for peer_name, link in best_links.items():
-        identity = mapping_lookup.get(peer_name) or parse_train_identity(peer_name)
+        identity = mapping_lookup.get(link.peer_name) or mapping_lookup.get(peer_name) or parse_train_identity(peer_name)
         if identity is None:
             continue
         canonical_train_id = registered_by_no.get(identity.train_no, identity.train_id)

@@ -86,7 +86,7 @@ def test_connection_manager_orders_primary_backup_then_complete_tunnels():
     assert attempts[2].tunnel and attempts[2].tunnel.host == "jump1"
 
 
-def test_connection_manager_skips_tunnels_when_device_tunnel_disabled():
+def test_connection_manager_uses_tunnel_host_when_global_tunnel_disabled():
     device = Device(
         primary_address="10.0.0.1",
         backup_address="10.0.1.1",
@@ -100,8 +100,8 @@ def test_connection_manager_skips_tunnels_when_device_tunnel_disabled():
 
     attempts = ConnectionManager().iter_attempts(device)
 
-    assert [attempt.label for attempt in attempts] == ["primary_direct", "backup_direct"]
-    assert all(not attempt.via_tunnel for attempt in attempts)
+    assert [attempt.label for attempt in attempts] == ["primary_direct", "backup_direct", "tunnel1"]
+    assert [attempt.via_tunnel for attempt in attempts] == [False, False, True]
 
 
 def test_connection_manager_includes_two_complete_tunnels_when_enabled():

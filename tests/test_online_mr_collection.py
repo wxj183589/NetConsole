@@ -42,11 +42,11 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
-from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text
-from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_MESH_SAMPLE, OnlineMrEvent
+from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
+from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_LINK_SWITCH, EVENT_MESH_SAMPLE, OnlineMrEvent
 from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator, build_realtime_state
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
-from netconsole.ui.pages.online_mr_collection_page import OnlineMrCollectionPage, is_fat_ap_device, natural_device_sort_key, safe_device_folder_name
+from netconsole.ui.pages.online_mr_collection_page import OnlineMrCollectionPage, SUMMARY_COL_DEVICE_ID, is_fat_ap_device, natural_device_sort_key, safe_device_folder_name
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
@@ -421,6 +421,48 @@ def test_channel_busy_parser_does_not_allow_02_to_override_01() -> None:
     assert rows[0]["rx_busy"] == 3
 
 
+def test_switch_history_parser_accepts_h3c_rows() -> None:
+    rows = parse_switch_history_text(
+        " Peer Name              Peer MAC          Reason            In/Out RSSI Switched At    ActiveTime\n"
+        " bc5a-3457-cde0         bc5a-3457-cdef(A) N/A               54/0        06-27 20:32:35 01h 07m 41s\n"
+        "                        0000-0000-0000(A) Link establish    0 /0        06-27 20:32:27 00h 00m 07s\n"
+        " bc5a-3457-cc60         bc5a-3457-cc7f(A) Active link fault 27/27       06-27 20:32:27 00h 00m 00s\n",
+        datetime(2026, 6, 27, 21, 40, 12),
+    )
+
+    assert len(rows) == 3
+    assert rows[0]["switch_time"] == "2026-06-27 20:32:35"
+    assert rows[0]["to_peer_name"] == "bc5a-3457-cde0"
+    assert rows[0]["to_peer_mac"] == "bc5a-3457-cdef"
+    assert rows[0]["to_peer_mac_normalized"] == "bc5a3457cdef"
+    assert rows[0]["reason"] == "N/A"
+    assert rows[0]["in_rssi"] == 54
+    assert rows[1]["to_peer_name"] == ""
+    assert rows[1]["reason"] == "Link establish"
+    assert rows[2]["reason"] == "Active link fault"
+
+
+def test_ap_radio_statistics_parser_extracts_required_counters() -> None:
+    parsed = parse_ap_radio_statistics_text(
+        "[Radio Statistics]\n"
+        " TxFrameAllCnt       : 3949759\n"
+        " TxFrameAllBytes     : 809134274\n"
+        " RxFrameAllCnt       : 4902715\n"
+        " RxFrameAllBytes     : 648170255\n"
+        " TxRetryFrmCnt       : 198448               0                    0                    157395\n"
+        " TxErrFrmCnt         : 162931               0                    12                   64835\n"
+        " TxDiscardFrmCnt     : 162099               0                    0                    64532\n"
+    )
+
+    counters = parsed["counters"]
+    assert counters["TxFrameAllCnt"] == 3949759
+    assert counters["RxFrameAllCnt"] == 4902715
+    assert counters["TxRetryFrmCnt"] == 355843
+    assert parsed["retry_count"] == 355843
+    assert parsed["error_count"] == 227778
+    assert parsed["discard_count"] == 226631
+
+
 def test_realtime_state_unifies_mesh_busy_and_ping_fields() -> None:
     now = datetime(2026, 6, 27, 10, 0, 0)
     events = [
@@ -735,10 +777,11 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.summary_table.minimumHeight() >= 120
     assert page.summary_table.maximumHeight() <= 150
     assert page.tabs.minimumHeight() >= 260
-    assert page.tabs.count() == 10
+    assert page.tabs.count() == 11
     assert page.tabs.tabText(4)
-    assert page.tabs.tabText(7)
+    assert page.tabs.tabText(5) == "分析图表"
     assert page.tabs.tabText(8)
+    assert page.tabs.tabText(9)
     assert not page.advanced_detail.isVisible()
 
     wheel = FakeWheelEvent()
@@ -778,10 +821,10 @@ def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
     assert second_config.fping.target == second.primary_address
 
 
-def test_online_mr_summary_binds_station_and_ctl_busy(tmp_path: Path) -> None:
+def test_online_mr_summary_binds_station_without_busy_columns(tmp_path: Path) -> None:
     page, _repository, _groups = _online_page_with_devices(tmp_path)
     page.summary_table.setRowCount(1)
-    page.summary_table.setItem(0, 19, QTableWidgetItem("7"))
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem("7"))
 
     now = datetime(2026, 6, 27, 10, 0, 0)
     state = build_realtime_state(
@@ -798,10 +841,83 @@ def test_online_mr_summary_binds_station_and_ctl_busy(tmp_path: Path) -> None:
 
     page._update_summary_from_state(state)
 
-    assert page.summary_table.columnCount() == 20
+    headers = [page.summary_table.horizontalHeaderItem(column).text() for column in range(page.summary_table.columnCount())]
+    assert page.summary_table.columnCount() == 16
+    assert "CtlBusy(%)" not in headers
+    assert "TxBusy(%)" not in headers
+    assert "RxBusy(%)" not in headers
+    assert "Status" not in headers[12:15]
     assert page.summary_table.item(0, 5).text() == "宁波站"
-    assert page.summary_table.item(0, 6).text() == "4.0"
-    assert page.summary_table.item(0, 19).text() == "7"
+    assert page.summary_table.item(0, 6).text() == "-"
+    assert page.summary_table.item(0, SUMMARY_COL_DEVICE_ID).text() == "7"
+
+
+def test_online_mr_stream_mesh_event_updates_summary_without_file_polling(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+    session = OnlineMrSessionStore(page.paths).create_session(config)
+    page.session_dirs[session.meta.session_id] = session.session_dir
+    page.session_to_device_id[session.meta.session_id] = int(device.id)
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
+
+    page._handle_raw_stream_event(
+        OnlineMrEvent(
+            datetime(2026, 6, 27, 10, 0, 0),
+            session.meta.session_id,
+            int(device.id),
+            "ssh_stream",
+            "mesh",
+            EVENT_MESH_SAMPLE,
+            {},
+            raw="bc5a-3457-c8a0         bc5a-3457-c8bf 35   74ad-cb9d-317f WLAN-MeshLink774  Active(ax)       00h 05m 28s",
+        )
+    )
+
+    assert not hasattr(page, "_read_raw_tail")
+    assert page.summary_table.item(0, 3).text() == "bc5a-3457-c8a0"
+    assert page.summary_table.item(0, 4).text() == "35"
+    assert page.summary_table.item(0, 11).text().startswith("2026-06-27 10:00:00")
+
+
+def test_online_mr_stream_mesh_active_change_writes_link_switch_event(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+    session = OnlineMrSessionStore(page.paths).create_session(config)
+    page.session_dirs[session.meta.session_id] = session.session_dir
+    page.session_to_device_id[session.meta.session_id] = int(device.id)
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
+
+    for offset, peer in enumerate(("bc5a-3457-c8bf", "bc5a-3457-a97f")):
+        page._handle_raw_stream_event(
+            OnlineMrEvent(
+                datetime(2026, 6, 27, 10, 0, offset),
+                session.meta.session_id,
+                int(device.id),
+                "ssh_stream",
+                "mesh",
+                EVENT_MESH_SAMPLE,
+                {},
+                raw=f"bc5a-3457-c8a0         {peer} 35   74ad-cb9d-317f WLAN-MeshLink774  Active(ax)       00h 05m 28s",
+            )
+        )
+
+    with sqlite3.connect(session.db_path) as conn:
+        row = conn.execute("SELECT event_type, payload_json FROM event_stream WHERE event_type = ?", (EVENT_LINK_SWITCH,)).fetchone()
+    assert row is not None
+    assert row[0] == EVENT_LINK_SWITCH
+    assert "bc5a3457c8bf" in row[1]
+    assert "bc5a3457a97f" in row[1]
+    assert "bc5a3457c8bf -> bc5a3457a97f" in page.switch_history_text.toPlainText()
 
 
 def test_online_mr_iperf_controls_ignore_mouse_wheel(tmp_path: Path) -> None:
@@ -1057,7 +1173,7 @@ def test_online_mr_stop_updates_device_and_summary_status(tmp_path: Path) -> Non
     page.workers_by_device_id = {device.id: worker}
     page.manager.register_device(device.id, worker)
     page.summary_table.setRowCount(1)
-    page.summary_table.setItem(0, 19, QTableWidgetItem(str(device.id)))
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
     row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
     page.device_table.item(row, 0).setCheckState(Qt.Checked)
 
@@ -1112,6 +1228,18 @@ def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) 
         "2025-12-03 10:12:33 >>> display clock ; dis counters rate inbound interface\ninterface raw\n",
         encoding="utf-8",
     )
+    (session.session_dir / "raw" / "ap_radio_statistics_raw.log").write_text(
+        "2025-12-03 10:12:34 >>> display clock ; display ar5drv 1 statistics\n"
+        "[Radio Statistics]\n"
+        " TxFrameAllCnt       : 100\n"
+        " TxFrameAllBytes     : 200\n"
+        " RxFrameAllCnt       : 300\n"
+        " RxFrameAllBytes     : 400\n"
+        " TxRetryFrmCnt       : 5 6 7 8\n"
+        " TxErrFrmCnt         : 1 2 3 4\n"
+        " TxDiscardFrmCnt     : 9 10 11 12\n",
+        encoding="utf-8",
+    )
     (session.session_dir / "raw" / "Fping.txt").write_text(
         "10:12:30.500 : Reply[6] from 10.62.90.252: bytes=64 time=4.9 ms TTL=255\n"
         "10:12:31.500 : Request timed out\n",
@@ -1125,6 +1253,7 @@ def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) 
     summary = OnlineMrDiagnosisParser(session.session_dir).parse()
 
     assert summary.mesh_samples == 1
+    assert summary.radio_stats_samples == 1
     assert summary.ping_samples == 2
     assert summary.iperf_samples == 1
     assert summary.active_segments >= 1
@@ -1132,6 +1261,7 @@ def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) 
         assert conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0] >= 1
         assert conn.execute("SELECT COUNT(*) FROM ping_samples").fetchone()[0] == 2
         assert conn.execute("SELECT COUNT(*) FROM iperf_intervals").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM live_events WHERE event_type = 'AP_RADIO_STATS'").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] >= 1
         assert conn.execute("SELECT COUNT(*) FROM active_segment_metrics").fetchone()[0] >= 1
 
@@ -1182,6 +1312,48 @@ def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: 
     assert summary.channel_samples == 1
     with sqlite3.connect(session.db_path) as conn:
         assert conn.execute("SELECT tx_busy, rx_busy FROM live_channel_busy").fetchone() == (1, 3)
+
+
+def test_online_mr_diagnosis_parser_groups_fping_v5_by_target(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "fping_v5_samples.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"ts": "2026-06-27T04:58:18.793", "target": "10.122.6.249", "seq": 0, "ok": True, "rtt_ms": 65.6, "timeout_ms": 100, "size": 64, "error": "", "backend": "fping_v5_json", "raw_type": "resp"}),
+                json.dumps({"ts": "2026-06-27T04:58:18.803", "target": "10.122.6.250", "seq": 0, "ok": False, "rtt_ms": None, "timeout_ms": 100, "size": 64, "error": "timeout", "backend": "fping_v5_json", "raw_type": "timeout"}),
+                json.dumps({"ts": "2026-06-27T04:58:19.793", "target": "10.122.6.249", "seq": 1, "ok": True, "rtt_ms": 70.0, "timeout_ms": 100, "size": 64, "error": "", "backend": "fping_v5_json", "raw_type": "resp"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.ping_samples == 3
+    with sqlite3.connect(session.db_path) as conn:
+        rows = conn.execute("SELECT target_ip, sent, received, lost, loss_percent, latest_latency_ms FROM ping_summary ORDER BY target_ip").fetchall()
+    assert rows == [
+        ("10.122.6.249", 2, 2, 0, 0.0, 70.0),
+        ("10.122.6.250", 1, 0, 1, 100.0, None),
+    ]
+
+
+def test_online_mr_diagnosis_parser_finds_alternate_switch_history_filename(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh-link switch-history.txt").write_text(
+        " Peer Name              Peer MAC          Reason            In/Out RSSI Switched At    ActiveTime\n"
+        " bc5a-3457-cde0         bc5a-3457-cdef(A) N/A               54/0        06-27 20:32:35 01h 07m 41s\n",
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.switch_history_samples == 1
+    with sqlite3.connect(session.db_path) as conn:
+        row = conn.execute("SELECT event_type, to_peer_mac FROM live_events WHERE event_type = 'SWITCH_HISTORY'").fetchone()
+    assert row == ("SWITCH_HISTORY", "bc5a-3457-cdef")
 
 
 def test_online_mr_diagnosis_parser_skips_locked_fping_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

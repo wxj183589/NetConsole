@@ -8,9 +8,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
+from netconsole.models.device import Device
 from netconsole.models.mesh_log_models import MeshMrProfile, dataclass_to_json_dict
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.utils.natural_sort import natural_text_key
 
 
 INVALID_FOLDER_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -29,7 +31,7 @@ class MeshStorageService:
         self.paths.ensure_site_dirs(site_name)
         self.catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(site_name))
 
-    def create_mr_profile(self, display_name: str, notes: str = "") -> MeshMrProfile:
+    def create_mr_profile(self, display_name: str, notes: str = "", linked_device_id: int | None = None) -> MeshMrProfile:
         name = display_name.strip()
         if not name:
             raise ValueError("MR name cannot be empty")
@@ -47,6 +49,7 @@ class MeshStorageService:
             display_name=name,
             safe_folder_name=safe,
             relative_folder_path=f"rail_transit/mesh/{safe}",
+            linked_device_id=linked_device_id,
             created_at=now,
             updated_at=now,
             notes=notes,
@@ -57,9 +60,51 @@ class MeshStorageService:
         MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
         return profile
 
+    def ensure_mr_profile_for_device(self, device: Device) -> MeshMrProfile:
+        if device.id is None:
+            raise ValueError("device id is required for MESH MR profile")
+        existing = self.catalog.get_by_linked_device_id(int(device.id))
+        if existing is not None:
+            self.ensure_mr_dirs(existing)
+            self.write_mr_json(existing)
+            MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, existing.safe_folder_name))
+            return existing
+        display_name = _device_display_name(device)
+        by_name = self.catalog.get_by_display_name(display_name)
+        if by_name is not None and by_name.linked_device_id in (None, 0):
+            linked = _replace_profile_link(by_name, int(device.id))
+            self.catalog.update_profile_identity(linked)
+            self.ensure_mr_dirs(linked)
+            self.write_mr_json(linked)
+            MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, linked.safe_folder_name))
+            return linked
+        if by_name is not None:
+            display_name = self._unique_auto_profile_name(display_name, int(device.id))
+        return self.create_mr_profile(display_name, linked_device_id=int(device.id))
+
+    def _unique_auto_profile_name(self, base_name: str, device_id: int) -> str:
+        candidate = f"{base_name}-{device_id}"
+        if self.catalog.get_by_display_name(candidate) is None:
+            return candidate
+        counter = 1
+        while True:
+            candidate = f"{base_name}-{device_id}-{counter}"
+            if self.catalog.get_by_display_name(candidate) is None:
+                return candidate
+            counter += 1
+
+    def sync_mr_profiles_from_devices(self, devices: list[Device]) -> list[MeshMrProfile]:
+        profiles: list[MeshMrProfile] = []
+        for device in sorted(devices, key=_vehicle_mr_device_sort_key):
+            if device.id is None:
+                continue
+            profiles.append(self.ensure_mr_profile_for_device(device))
+        return profiles
+
     def ensure_mr_dirs(self, profile: MeshMrProfile) -> Path:
         root = self.paths.mesh_mr_root(self.site_name, profile.safe_folder_name)
         self.paths.mesh_mr_raw_dir(self.site_name, profile.safe_folder_name).mkdir(parents=True, exist_ok=True)
+        self.paths.mesh_mr_parsed_dir(self.site_name, profile.safe_folder_name).mkdir(parents=True, exist_ok=True)
         self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name).mkdir(parents=True, exist_ok=True)
         return root
 
@@ -120,3 +165,38 @@ def _unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def _device_display_name(device: Device) -> str:
+    value = str(device.name or device.system_name or device.primary_address or device.device_uuid or "").strip()
+    return value or f"MR-{device.id}"
+
+
+def _replace_profile_link(profile: MeshMrProfile, linked_device_id: int) -> MeshMrProfile:
+    return MeshMrProfile(
+        mr_id=profile.mr_id,
+        display_name=profile.display_name,
+        safe_folder_name=profile.safe_folder_name,
+        relative_folder_path=profile.relative_folder_path,
+        linked_device_id=linked_device_id,
+        earliest_sample_time=profile.earliest_sample_time,
+        latest_sample_time=profile.latest_sample_time,
+        source_file_count=profile.source_file_count,
+        sample_count=profile.sample_count,
+        link_record_count=profile.link_record_count,
+        session_count=profile.session_count,
+        event_count=profile.event_count,
+        last_import_at=profile.last_import_at,
+        created_at=profile.created_at,
+        updated_at=datetime.now(),
+        notes=profile.notes,
+    )
+
+
+def _vehicle_mr_device_sort_key(device: Device) -> tuple[tuple[object, ...], tuple[object, ...], tuple[object, ...], int]:
+    return (
+        natural_text_key(device.name),
+        natural_text_key(device.system_name),
+        natural_text_key(device.primary_address),
+        int(device.id or 0),
+    )

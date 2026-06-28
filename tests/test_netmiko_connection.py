@@ -11,6 +11,7 @@ from netconsole.services.netmiko_connection import (
     safe_send_command,
     sanitize_sensitive_text,
     test_device_connection,
+    connection_targets,
 )
 
 
@@ -118,6 +119,52 @@ def test_telnet_selected_when_ssh_disabled():
     assert target.port == 2323
     assert target.username == "telnet_user"
     assert target.password == "telnet_password"
+
+
+def test_tunnel_hosts_enable_specific_tunnels_without_global_switch():
+    device = Device(
+        name="MR2",
+        ip_address="192.0.2.10",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+        tunnel_enabled=0,
+        tunnel1_enabled=0,
+        tunnel1_host="198.51.100.10",
+        tunnel1_username="jump",
+        tunnel1_password="jump-secret",
+        tunnel2_enabled=0,
+        tunnel2_host="198.51.100.11",
+        tunnel2_username="jump",
+        tunnel2_password="jump-secret",
+    )
+
+    targets = connection_targets(device)
+
+    tunnel_targets = [target for target in targets if target.via_tunnel]
+    assert [target.method for target in tunnel_targets] == ["tunnel1", "tunnel2"]
+    assert [target.tunnel.host for target in tunnel_targets if target.tunnel is not None] == ["198.51.100.10", "198.51.100.11"]
+
+
+def test_empty_tunnel_host_disables_specific_tunnel():
+    device = Device(
+        name="MR2",
+        ip_address="192.0.2.10",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+        tunnel_enabled=1,
+        tunnel1_enabled=1,
+        tunnel1_host="",
+        tunnel1_username="jump",
+        tunnel1_password="jump-secret",
+        tunnel2_enabled=1,
+        tunnel2_host="198.51.100.11",
+        tunnel2_username="jump",
+        tunnel2_password="jump-secret",
+    )
+
+    assert [target.method for target in connection_targets(device) if target.via_tunnel] == ["tunnel2"]
 
 
 def test_no_protocol_enabled_returns_failure():

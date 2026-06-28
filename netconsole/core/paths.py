@@ -77,6 +77,15 @@ class PathResolver:
     def site_metrics_dir(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "metrics"
 
+    def site_downloads_root(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "downloads"
+
+    def file_downloads_root(self, site_name: str = "demo") -> Path:
+        return self.site_downloads_root(site_name) / "files"
+
+    def device_file_download_dir(self, site_name: str, safe_device_name: str) -> Path:
+        return self.file_downloads_root(site_name) / safe_device_name
+
     def site_mesh_root(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "rail_transit" / "mesh"
 
@@ -91,6 +100,9 @@ class PathResolver:
 
     def mesh_mr_raw_dir(self, site_name: str, safe_mr_name: str) -> Path:
         return self.mesh_mr_root(site_name, safe_mr_name) / "raw"
+
+    def mesh_mr_parsed_dir(self, site_name: str, safe_mr_name: str) -> Path:
+        return self.mesh_mr_root(site_name, safe_mr_name) / "parsed"
 
     def mesh_mr_export_dir(self, site_name: str, safe_mr_name: str) -> Path:
         return self.mesh_mr_root(site_name, safe_mr_name) / "exports"
@@ -168,6 +180,7 @@ class PathResolver:
         site_path = self.site_dir(site_name)
         for dirname in SITE_DIRS:
             ensure_runtime_dir(site_path / dirname)
+        ensure_runtime_dir(self.file_downloads_root(site_name))
         ensure_runtime_dir(self.site_mesh_root(site_name))
         ensure_runtime_dir(self.trackside_ap_optical_sessions_root(site_name))
         ensure_runtime_dir(self.trackside_ap_update_sessions_root(site_name))

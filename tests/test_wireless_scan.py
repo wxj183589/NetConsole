@@ -83,20 +83,46 @@ def test_wireless_mac_normalization():
 
 
 def test_h3c_trackside_bssid_resolver_radio_rules_and_no_wrap():
+    resolver = TracksideApBssidResolver([{"ap_name": "AP-1", "ap_mac": "083b-e9ec-da5f", "site_name": "S1", "location_note": "K1", "direction": "up"}])
+    radio1 = resolver.resolve("083b-e9ec-da5f")
+    assert radio1.radio_id == 1
+    assert radio1.ap_mac == "083b-e9ec-da5f"
+    assert radio1.match_rule == "h3c_radio_1_ap_mac_prefix11"
+    radio2 = TracksideApBssidResolver([{"ap_name": "AP-2", "ap_mac": "083b-e9ec-da40", "site_name": "S2"}]).resolve("083b-e9ec-da5f")
+    assert radio2.radio_id == 2
+    assert radio2.ap_mac == "083b-e9ec-da40"
+    assert radio2.match_rule == "h3c_radio_2_ap_mac_nibble_plus_1"
+    second_vendor_sample = TracksideApBssidResolver([{"ap_name": "AP-3", "ap_mac": "94a7-482c-1140", "site_name": "S3"}]).resolve("94a7-482c-115f")
+    assert second_vendor_sample.radio_id == 2
+    assert second_vendor_sample.ap_mac == "94a7-482c-1140"
+    no_wrap = TracksideApBssidResolver([{"ap_name": "AP-Zero", "ap_mac": "083b-e9ec-daff"}])
+    assert no_wrap.resolve("083b-e9ec-da0f").match_status == "unmatched"
+
+
+def test_trackside_bssid_resolver_prefers_exact_collected_radio_mac():
     resolver = TracksideApBssidResolver(
         [
-            {"ap_name": "AP-1", "ap_mac": "30f5-277a-5a2f", "site_name": "S1", "location_note": "K1", "direction": "up"},
+            {"ap_name": "AP-1", "ap_mac": "083b-e9ec-da4f", "site_name": "S1", "radio2_mac": "083b-e9ec-da6f"},
         ]
     )
-    assert resolver.resolve("30f5-277a-5a2a").radio_id == 1
-    radio2 = resolver.resolve("30f5-277a-5a1f")
-    assert radio2.radio_id == 2
-    assert radio2.match_rule == "h3c_radio_2_nibble_minus_1"
-    radio3 = resolver.resolve("30f5-277a-5a0f")
-    assert radio3.radio_id == 3
-    assert radio3.match_rule == "h3c_radio_3_nibble_minus_2"
-    zero_resolver = TracksideApBssidResolver([{"ap_name": "AP-Zero", "ap_mac": "30f5-277a-5a0f"}])
-    assert zero_resolver.resolve("30f5-277a-5aff").match_status == "unmatched"
+    match = resolver.resolve("083b.e9ec.da6f")
+    assert match.matched
+    assert match.radio_id == 2
+    assert match.ap_name == "AP-1"
+    assert match.ap_mac == "083b-e9ec-da4f"
+    assert match.match_rule == "radio2_mac"
+
+
+def test_trackside_bssid_resolver_can_match_peer_name_to_ap_name():
+    resolver = TracksideApBssidResolver([{"ap_name": "AP-Name-01", "ap_mac": "083b-e9ec-da4f", "site_name": "S1"}])
+
+    match = resolver.resolve("1122-3344-5566", peer_name="AP-Name-01")
+
+    assert match.matched
+    assert match.ap_name == "AP-Name-01"
+    assert match.ap_mac == "083b-e9ec-da4f"
+    assert match.radio_id is None
+    assert match.match_rule == "mesh_peer_name_ap_name_exact"
 
 
 def test_trackside_bssid_resolver_multi_match_uses_status():

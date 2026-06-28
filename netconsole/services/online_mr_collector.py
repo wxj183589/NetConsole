@@ -40,6 +40,13 @@ from netconsole.services.netmiko_connection import (
     normalize_command_output,
 )
 from netconsole.core.mr_collect.scheduler import MRClientScheduler
+from netconsole.services.online_mr.core.event_model import (
+    EVENT_BUSY_SAMPLE,
+    EVENT_INTERFACE_SAMPLE,
+    EVENT_MESH_SAMPLE,
+    EVENT_STATS_SAMPLE,
+    OnlineMrEvent,
+)
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 
 
@@ -83,7 +90,14 @@ class NetmikoShellConnection(OnlineMrConnection):
         )
         return normalize_command_output(output)
 
-    def run_repeat_stream(self, commands: tuple[str, ...], raw_path: Path, stop_event: Event, timeout: int) -> None:
+    def run_repeat_stream(
+        self,
+        commands: tuple[str, ...],
+        raw_path: Path,
+        stop_event: Event,
+        timeout: int,
+        line_callback: Callable[[datetime, str], None] | None = None,
+    ) -> None:
         if self.connection is None:
             raise OnlineMrConnectionError("connection is closed")
         writer = getattr(self.connection, "write_channel", None)
@@ -103,9 +117,12 @@ class NetmikoShellConnection(OnlineMrConnection):
                 chunk = reader()
                 if chunk:
                     idle_started = time.monotonic()
-                    stamp = datetime.now().isoformat(sep=" ", timespec="milliseconds")
+                    stamp_dt = datetime.now()
+                    stamp = stamp_dt.isoformat(sep=" ", timespec="milliseconds")
                     for line in normalize_command_output(chunk).splitlines():
                         file.write(f"{stamp} [collector=repeat] RX {line}\n")
+                        if line_callback is not None:
+                            line_callback(stamp_dt, line)
                     file.flush()
                     continue
                 if time.monotonic() - idle_started > max(3, timeout):
@@ -217,6 +234,7 @@ class OnlineMrCollector:
         self.status = "CREATED"
         self.started_monotonic = self.clock()
         self.latest_snapshot: OnlineMrSnapshot | None = None
+        self._stream_event_callback: Callable[[OnlineMrEvent], None] | None = None
         self._uses_default_connection_factory = connection_factory is None
         self._stream_stop = Event()
         self._stream_threads: list[Thread] = []
@@ -285,10 +303,15 @@ class OnlineMrCollector:
                 self._reconnect()
             return -1
 
-    def run_forever(self, snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None) -> None:
+    def run_forever(
+        self,
+        snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
+        stream_event_callback: Callable[[OnlineMrEvent], None] | None = None,
+    ) -> None:
         try:
             if self.session is None:
                 self.start()
+            self._stream_event_callback = stream_event_callback
             if self._uses_default_connection_factory:
                 self._run_streaming_collectors(snapshot_callback)
                 return
@@ -456,13 +479,47 @@ class OnlineMrCollector:
                 runner = getattr(connection, "run_repeat_stream", None)
                 if not callable(runner):
                     raise OnlineMrConnectionError("interactive repeat stream is unavailable")
-                runner(commands, raw_path, self._stream_stop, self.config.command_timeout)
+                try:
+                    runner(
+                        commands,
+                        raw_path,
+                        self._stream_stop,
+                        self.config.command_timeout,
+                        line_callback=lambda stamp, line: self._publish_stream_line(task_type, stamp, line),
+                    )
+                except TypeError:
+                    runner(commands, raw_path, self._stream_stop, self.config.command_timeout)
             except Exception as exc:
                 self._record_command_failure(task_type, "\n".join(commands), exc)
 
         thread = Thread(target=target, name=f"online-mr-{task_type}", daemon=True)
         self._stream_threads.append(thread)
         thread.start()
+
+    def _publish_stream_line(self, task_type: str, timestamp: datetime, line: str) -> None:
+        if self._stream_event_callback is None or self.session is None:
+            return
+        module_event = {
+            TASK_MESH_LINK: ("mesh", EVENT_MESH_SAMPLE),
+            TASK_CHANNEL_BUSY: ("busy", EVENT_BUSY_SAMPLE),
+            TASK_AP_RADIO_STATISTICS: ("stats", EVENT_STATS_SAMPLE),
+            TASK_INTERFACE_RATE: ("interface_rate", EVENT_INTERFACE_SAMPLE),
+        }.get(task_type)
+        if module_event is None:
+            return
+        module, event_type = module_event
+        self._stream_event_callback(
+            OnlineMrEvent(
+                timestamp=timestamp,
+                session_id=self.session.meta.session_id,
+                device_id=self.config.device_id,
+                source="ssh_stream",
+                module=module,
+                event_type=event_type,
+                payload={"task_type": task_type, "line": line},
+                raw=line,
+            )
+        )
 
     def _reconnect(self) -> None:
         if not self.config.auto_reconnect:

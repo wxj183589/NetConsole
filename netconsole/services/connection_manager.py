@@ -56,7 +56,7 @@ class ConnectionManager:
         tunnels = (
             TunnelProfile(
                 label="tunnel1",
-                enabled=bool(device.tunnel_enabled and device.tunnel1_enabled),
+                enabled=_tunnel_host_enabled(device.tunnel1_host),
                 host=str(device.tunnel1_host or ""),
                 port=int(device.tunnel1_port or 22),
                 username=str(device.tunnel1_username or ""),
@@ -66,7 +66,7 @@ class ConnectionManager:
             ),
             TunnelProfile(
                 label="tunnel2",
-                enabled=bool(device.tunnel_enabled and device.tunnel2_enabled),
+                enabled=_tunnel_host_enabled(device.tunnel2_host),
                 host=str(device.tunnel2_host or ""),
                 port=int(device.tunnel2_port or 22),
                 username=str(device.tunnel2_username or ""),
@@ -84,7 +84,7 @@ class ConnectionManager:
             port=port,
             username=username,
             password=password,
-            tunnel_enabled=bool(device.tunnel_enabled),
+            tunnel_enabled=_tunnel_host_enabled(device.tunnel1_host) or _tunnel_host_enabled(device.tunnel2_host),
             tunnels=tunnels,
         )
 
@@ -148,3 +148,7 @@ def _device_password(device: Device, protocol: str) -> str:
     if protocol.casefold() == "ssh":
         return str(device.ssh_password or "")
     return str(device.password or "")
+
+
+def _tunnel_host_enabled(value: object) -> bool:
+    return bool(str(value or "").strip())

@@ -203,8 +203,16 @@ class DeviceDialog(QDialog):
 
         self.snmp_v3_checkbox.stateChanged.connect(self._update_snmpv3_visibility)
         self.snmpv3_security_combo.currentTextChanged.connect(self._update_snmpv3_visibility)
+        tunnel1_host_widget = self.inputs.get("tunnel1_host")
+        tunnel2_host_widget = self.inputs.get("tunnel2_host")
+        if isinstance(tunnel1_host_widget, QLineEdit):
+            tunnel1_host_widget.textChanged.connect(lambda _text: self._sync_tunnel_checkbox_from_host("tunnel1"))
+        if isinstance(tunnel2_host_widget, QLineEdit):
+            tunnel2_host_widget.textChanged.connect(lambda _text: self._sync_tunnel_checkbox_from_host("tunnel2"))
         self._load(device)
         self._update_snmpv3_visibility()
+        self._sync_tunnel_checkbox_from_host("tunnel1")
+        self._sync_tunnel_checkbox_from_host("tunnel2")
         self.retranslate()
 
     def apply_initial_geometry(self) -> None:
@@ -411,6 +419,11 @@ class DeviceDialog(QDialog):
         else:
             data["protocol"] = None
             data["port"] = None
+        tunnel1_has_host = bool(str(data.get("tunnel1_host") or "").strip())
+        tunnel2_has_host = bool(str(data.get("tunnel2_host") or "").strip())
+        data["tunnel1_enabled"] = 1 if tunnel1_has_host else 0
+        data["tunnel2_enabled"] = 1 if tunnel2_has_host else 0
+        data["tunnel_enabled"] = 1 if tunnel1_has_host or tunnel2_has_host else 0
         return data
 
     def device(self) -> Device:
@@ -450,3 +463,9 @@ class DeviceDialog(QDialog):
     def _optional_int(self, field: str) -> int | None:
         text = self._text(field)
         return int(text) if text else None
+
+    def _sync_tunnel_checkbox_from_host(self, prefix: str) -> None:
+        host_widget = self.inputs.get(f"{prefix}_host")
+        enabled_widget = self.inputs.get(f"{prefix}_enabled")
+        if isinstance(host_widget, QLineEdit) and isinstance(enabled_widget, QCheckBox):
+            enabled_widget.setChecked(bool(host_widget.text().strip()))

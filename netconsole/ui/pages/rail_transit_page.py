@@ -25,7 +25,7 @@ class RailTransitPage(QWidget):
         self.vehicle_mr_online_page = VehicleMrOnlinePage(repository, i18n, site_name, paths)
         self.car_network_page = CarNetworkDiagnosticPage(repository, i18n, site_name, paths)
         self.trackside_page = TracksideApServicePage(repository, i18n, site_name, paths)
-        self.mesh_page = MeshLogAnalysisPage(i18n, site_name, paths)
+        self.mesh_page = MeshLogAnalysisPage(repository, i18n, site_name, paths)
         self.online_mr_page = None
         self.online_mr_placeholder = QWidget()
         layout = QVBoxLayout(self)
@@ -76,7 +76,7 @@ class RailTransitPage(QWidget):
         self.vehicle_mr_online_page.set_repository(repository, site_name)
         self.car_network_page.set_repository(repository, site_name)
         self.trackside_page.set_repository(repository, site_name)
-        self.mesh_page.set_site(site_name)
+        self.mesh_page.set_repository(repository, site_name)
         if self.online_mr_page is not None:
             self.online_mr_page.set_repository(repository, site_name)
 
@@ -90,7 +90,7 @@ class RailTransitPage(QWidget):
             self.online_mr_page.set_site(site_name)
 
     def retranslate(self) -> None:
-        self.tabs.setTabText(0, "在线车载MR")
+        self.tabs.setTabText(0, "列车在线情况")
         self.tabs.setTabText(1, "车内通信检测")
         self.tabs.setTabText(2, self.i18n.t("rail_transit.trackside_ap_service"))
         self.tabs.setTabText(3, self.i18n.t("mesh_analysis.title"))
@@ -115,6 +115,7 @@ class RailTransitPage(QWidget):
         self.trackside_page.dirty = True
         if self.tabs.currentWidget() is self.trackside_page:
             self.trackside_page.refresh_async(force=False)
+        self.mesh_page.refresh_all()
         if self.online_mr_page is not None and self.tabs.currentWidget() is self.online_mr_page:
             self.online_mr_page.refresh_all(defer_heavy=True)
 

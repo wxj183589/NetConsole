@@ -222,11 +222,11 @@ class DeviceImportExportService:
                 payload["ssh_port"] = int(payload.get("port") or payload.get("ssh_port") or 22)
                 payload["ssh_username"] = payload.get("username") or payload.get("ssh_username")
                 payload["ssh_password"] = payload.get("password") or payload.get("ssh_password")
-        if payload.get("tunnel_enabled"):
-            if payload.get("tunnel1_host") and "tunnel1_enabled" not in payload:
-                payload["tunnel1_enabled"] = 1
-            if payload.get("tunnel2_host") and "tunnel2_enabled" not in payload:
-                payload["tunnel2_enabled"] = 1
+        tunnel1_has_host = bool(str(payload.get("tunnel1_host") or "").strip())
+        tunnel2_has_host = bool(str(payload.get("tunnel2_host") or "").strip())
+        payload["tunnel1_enabled"] = 1 if tunnel1_has_host else 0
+        payload["tunnel2_enabled"] = 1 if tunnel2_has_host else 0
+        payload["tunnel_enabled"] = 1 if tunnel1_has_host or tunnel2_has_host else 0
 
     def _validate_payload(self, payload: dict[str, object]) -> None:
         device_uuid = payload.get("device_uuid")

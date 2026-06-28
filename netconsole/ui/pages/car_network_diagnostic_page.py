@@ -85,7 +85,7 @@ POINT_TABLE_HEADER_LABELS = {
     "device_id": "设备ID",
     "device_name": "设备名称",
     "device_group": "设备分组",
-    "station": "归属站点/位置",
+    "station": "归属站点",
     "primary_address": "主用地址",
     "backup_address": "备用地址",
     "ip_vehicle": "车内IP",

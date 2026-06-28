@@ -122,7 +122,7 @@ class NetworkAdapterRoutePage(QWidget):
         self.prefix_edit.setPlaceholderText("例如：24 或 255.255.255.0")
         self.gateway_edit = QLineEdit()
         self.secondary_edit = QTextEdit()
-        self.secondary_edit.setPlaceholderText("10.122.100.200/24\n192.168.105.200/255.255.255.0")
+        self.secondary_edit.setPlaceholderText("192.168.1.200/24\n172.16.1.200/255.255.255.0")
         self.vlan_spin = QSpinBox()
         self.vlan_spin.setRange(0, 4094)
         self.profile_name_edit = QLineEdit()

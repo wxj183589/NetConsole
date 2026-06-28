@@ -73,6 +73,45 @@ def test_h3c_v9_vehicle_mr_mesh_link_parser_parses_sample() -> None:
     assert by_peer["NBL12-LC06-MR-CW"].tx_packets == 5412
 
 
+def test_h3c_v9_parser_keeps_peer_name_with_spaces_and_canonical_identity() -> None:
+    sample = """AP name: AP-TCC-16
+ Peer Name              Peer Mac       Local Mac      Status     RSSI Packets(Rx/Tx)
+ Nbl06-LC12-AP- CT      78a1-3e52-4d4f 30f5-277a-478f Forwarding 39   53157/270011
+ Nbl06-LC20-AP- CT      78a1-3e52-554f 30f5-277a-479f Forwarding 41   57/71
+
+AP name: AP-TCC-15
+ Peer Name              Peer Mac       Local Mac      Status     RSSI Packets(Rx/Tx)
+ Nbl06-LC14-AP-CW       eccd-4c04-b30f 30f5-277a-4e1f Forwarding 43   448470/1852345
+"""
+
+    result = H3CComwareV9VehicleMrMeshLinkParser().parse(sample)
+    identities = {link.peer_name: parse_train_identity(link.peer_name) for link in result.links}
+
+    assert result.parse_status == "OK"
+    assert [link.peer_name for link in result.links] == ["Nbl06-LC12-AP- CT", "Nbl06-LC20-AP- CT", "Nbl06-LC14-AP-CW"]
+    assert result.links[0].peer_name_canonical == "Nbl06-LC12-AP-CT"
+    assert identities["Nbl06-LC12-AP- CT"].train_no == "12"
+    assert identities["Nbl06-LC12-AP- CT"].car_end_label == "TC1"
+    assert identities["Nbl06-LC14-AP-CW"].car_end_label == "TC2"
+
+
+def test_vehicle_mr_online_uses_ap_names_and_status_filter() -> None:
+    result = VehicleMrMeshParseResult(
+        "2026-06-28 10:00:00",
+        [
+            VehicleMrMeshLink("AP-A", "Nbl06-LC14-AP-CW", rssi=37, status="Down"),
+            VehicleMrMeshLink("AP-B", "Nbl06-LC14-AP-CW", rssi=43, status="Forwarding"),
+            VehicleMrMeshLink("AP-C", "Nbl06-LC14-AP-CW", rssi=39, status="Active"),
+        ],
+    )
+
+    trains = build_train_states({"LC14": VehicleMrTrainState("LC14", "14", True)}, result, {})
+
+    assert trains[0].tc2.seen is True
+    assert trains[0].tc2.ap_name == "AP-B"
+    assert trains[0].status == "在线"
+
+
 def test_parse_ac_clock_line_full_datetime_and_fallback() -> None:
     fallback = __import__("datetime").datetime(2026, 6, 26, 1, 2, 3)
 
@@ -516,7 +555,8 @@ def test_rail_transit_first_tab_is_vehicle_mr_online(tmp_path: Path) -> None:
     database.initialize()
     page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
 
-    assert page.tabs.tabText(0) == "在线车载MR"
+    assert page.tabs.tabText(0) == "列车在线情况"
+    assert page.vehicle_mr_online_page.title_label.text() == "列车在线情况"
     assert page.vehicle_mr_online_page.interval_spin.value() == 10
     assert page.vehicle_mr_online_page.interval_spin.minimum() == 3
     assert page.vehicle_mr_online_page.interval_spin.maximum() == 300

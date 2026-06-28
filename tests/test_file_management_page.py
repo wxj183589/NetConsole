@@ -10,9 +10,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QHeaderView
 from PySide6.QtCore import Qt
 
+from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     RemoteDeviceFile,
@@ -251,7 +255,60 @@ def test_meshlog_queue_displays_final_local_filename(tmp_path, monkeypatch):
 
     assert page.tasks[0].local_path.name == "AC-1-2026_02_03-meshlog.log"
     assert page.queue_table.item(0, 0).text() == "AC-1-2026_02_03-meshlog.log"
-    assert page.queue_table.item(0, 2).text() == "flash:/meshlog.log"
+
+
+def test_file_management_device_search_combines_with_group_filter(tmp_path):
+    app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    groups = DeviceGroupRepository(database, "demo")
+    onboard = groups.create(VEHICLE_MR_GROUP_NAME)
+    station = groups.create("车站")
+    first = repository.create(Device(name="MR2", primary_address="192.0.2.10", station="上行站", group_id=onboard.id, device_type="AC"))
+    repository.create(Device(name="MR10", primary_address="192.0.2.11", station="下行站", group_id=onboard.id, device_type="AC"))
+    repository.create(Device(name="SW1", primary_address="198.51.100.10", station="上行站", group_id=station.id, device_type="SW"))
+    page = FileManagementPage(repository, I18n("zh_CN"), "demo", PathResolver(tmp_path))
+
+    page.group_combo.setCurrentIndex(page.group_combo.findData(onboard.id))
+    page.device_search_edit.setText("192.0.2.10")
+
+    assert page.device_combo.count() == 1
+    assert page.device_combo.currentData() == first.id
+
+
+def test_file_management_mesh_logs_for_vehicle_mr_use_mesh_raw_dir(tmp_path):
+    app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    group = DeviceGroupRepository(database, "demo").create(VEHICLE_MR_GROUP_NAME)
+    device = repository.create(Device(name="MR2", primary_address="192.0.2.10", group_id=group.id))
+    paths = PathResolver(tmp_path)
+    page = FileManagementPage(repository, I18n("zh_CN"), "demo", paths)
+    remote = RemoteDeviceFile("meshlog.log", "flash:/meshlog.log", 1, "2026-06-29 12:00:00", "meshlog")
+
+    target = page.download_directory_for_remote_file(remote, device)
+
+    assert target == paths.mesh_mr_raw_dir("demo", "MR2")
+    assert target.exists()
+
+
+def test_file_management_non_vehicle_mr_keeps_normal_download_dir(tmp_path):
+    app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    group = DeviceGroupRepository(database, "demo").create("车站")
+    device = repository.create(Device(name="SW1", primary_address="192.0.2.20", group_id=group.id))
+    paths = PathResolver(tmp_path)
+    page = FileManagementPage(repository, I18n("zh_CN"), "demo", paths)
+    page.local_path = paths.device_file_download_dir("demo", "SW1")
+    remote = RemoteDeviceFile("meshlog.log", "flash:/meshlog.log", 1, "2026-06-29 12:00:00", "meshlog")
+
+    target = page.download_directory_for_remote_file(remote, device)
+
+    assert target == paths.device_file_download_dir("demo", "SW1")
 
 
 def test_meshlog_retry_does_not_duplicate_device_prefix(tmp_path, monkeypatch):

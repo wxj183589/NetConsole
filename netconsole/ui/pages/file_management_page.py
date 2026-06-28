@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -45,8 +46,10 @@ from netconsole.services.file_transfer_service import (
     parent_remote_path,
     safe_device_name,
 )
+from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.path_preference_service import PathPreferenceService
+from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 
@@ -212,7 +215,7 @@ class FileManagementPage(QWidget):
         self.remote_files: list[RemoteDeviceFile] = []
         self.checked_remote_paths: set[str] = set()
         self._updating_remote_checks = False
-        self.local_path = self.paths.ensure_site_dirs(site_name) / "raw" / "files"
+        self.local_path = self.paths.file_downloads_root(site_name)
         self.tasks: list[TransferTask] = []
         self.batches: dict[str, DownloadBatch] = {}
         self.next_task_id = 1
@@ -223,6 +226,7 @@ class FileManagementPage(QWidget):
         self.site_label = QLabel()
         self.group_label = QLabel()
         self.group_combo = QComboBox()
+        self.device_search_edit = QLineEdit()
         self.device_combo = QComboBox()
         self.device_name_label = QLabel()
         self.ip_label = QLabel()
@@ -264,6 +268,7 @@ class FileManagementPage(QWidget):
             self.site_label,
             self.group_label,
             self.group_combo,
+            self.device_search_edit,
             self.device_combo,
             self.device_name_label,
             self.ip_label,
@@ -289,6 +294,7 @@ class FileManagementPage(QWidget):
         self.setLayout(layout)
 
         self.group_combo.currentIndexChanged.connect(self.on_group_filter_changed)
+        self.device_search_edit.textChanged.connect(lambda _text: self.refresh_devices())
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
         self.connect_button.clicked.connect(self.connect_sftp)
         self.disconnect_button.clicked.connect(self.disconnect_sftp)
@@ -349,6 +355,7 @@ class FileManagementPage(QWidget):
     def retranslate(self) -> None:
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self.group_label.setText(self.i18n.t("groups.group"))
+        self.device_search_edit.setPlaceholderText("搜索设备 / IP / 站点 / 分组 / 类型")
         self.connect_button.setText(self.i18n.t("file_management.connect"))
         self.disconnect_button.setText(self.i18n.t("file_management.disconnect"))
         self.local_title.setText(self.i18n.t("file_management.local_files"))
@@ -384,7 +391,7 @@ class FileManagementPage(QWidget):
         self.repository = repository
         self.site_name = site_name
         self.group_repository = self._make_group_repository(repository, site_name)
-        self.local_path = self.paths.ensure_site_dirs(site_name) / "raw" / "files"
+        self.local_path = self.paths.file_downloads_root(site_name)
         self.refresh_groups()
         self.refresh_devices()
         self.retranslate()
@@ -419,12 +426,13 @@ class FileManagementPage(QWidget):
         current_id = self.device_combo.currentData()
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
+        search_text = self.device_search_edit.text().strip()
         try:
-            devices = self.repository.list(group_filter=group_filter_to_repository_value(self.group_combo.currentData()))
+            devices = self.repository.list(search=search_text or None, group_filter=group_filter_to_repository_value(self.group_combo.currentData()))
         except TypeError:
             devices = self.repository.list()
         if not devices:
-            self.device_combo.addItem(self.i18n.t("groups.no_devices_in_group"), None)
+            self.device_combo.addItem("未找到匹配设备", None)
         for device in devices:
             if device.id is not None:
                 self.device_combo.addItem(str(device.name or device.system_name or device.primary_address), int(device.id))
@@ -481,7 +489,25 @@ class FileManagementPage(QWidget):
 
     def default_local_dir(self, device: Device | None) -> Path:
         name = safe_device_name(device.name or device.system_name or "device") if device is not None else "device"
-        return self.paths.ensure_site_dirs(self.site_name) / "downloads" / "files" / name
+        return self.paths.device_file_download_dir(self.site_name, name)
+
+    def download_directory_for_remote_file(self, remote_file: RemoteDeviceFile, device: Device) -> Path:
+        if is_mesh_log_file(remote_file.name) and self.is_vehicle_mr_device(device):
+            profile = MeshStorageService(self.site_name, self.paths).ensure_mr_profile_for_device(device)
+            target = self.paths.mesh_mr_raw_dir(self.site_name, profile.safe_folder_name)
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+        self.local_path.mkdir(parents=True, exist_ok=True)
+        return self.local_path
+
+    def is_vehicle_mr_device(self, device: Device) -> bool:
+        if device.group_id is None or self.group_repository is None:
+            return False
+        try:
+            group = self.group_repository.get(int(device.group_id))
+        except Exception:
+            return False
+        return group.name == VEHICLE_MR_GROUP_NAME
 
     def connect_sftp(self) -> None:
         device = self.current_device()
@@ -640,7 +666,8 @@ class FileManagementPage(QWidget):
         for remote_file in remote_files:
             if remote_file.is_dir or remote_file.remote_path in queued_paths:
                 continue
-            target = resolve_local_download_path(self.local_path, remote_file, device.name)
+            target_dir = self.download_directory_for_remote_file(remote_file, device)
+            target = resolve_local_download_path(target_dir, remote_file, device.name)
             task = TransferTask(self.allocate_task_id(), batch_id, device, remote_file, target, int(remote_file.size or 0))
             self.tasks.append(task)
             task_ids.append(task.id)
@@ -772,7 +799,7 @@ class FileManagementPage(QWidget):
             batch_id,
             task.device,
             task.remote_file,
-            resolve_local_download_path(self.local_path, task.remote_file, task.device.name),
+            resolve_local_download_path(self.download_directory_for_remote_file(task.remote_file, task.device), task.remote_file, task.device.name),
             int(task.remote_file.size or task.size or 0),
         )
         self.tasks.append(retry)
@@ -1063,7 +1090,7 @@ class FileManagementPage(QWidget):
             )
 
     def local_up(self) -> None:
-        root = self.paths.ensure_site_dirs(self.site_name) / "raw" / "files"
+        root = self.paths.file_downloads_root(self.site_name)
         if self.local_path.resolve() == root.resolve():
             return
         try:

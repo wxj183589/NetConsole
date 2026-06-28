@@ -215,6 +215,7 @@ class OnlineMrSession:
                     loss_percent REAL,
                     min_latency_ms REAL,
                     max_latency_ms REAL,
+                    latest_latency_ms REAL,
                     avg_latency_ms REAL,
                     created_at TEXT NOT NULL
                 );
@@ -492,8 +493,8 @@ class OnlineMrSession:
                 """
                 INSERT INTO ping_summary (
                     session_id, target_ip, sent, received, lost, loss_percent, min_latency_ms,
-                    max_latency_ms, avg_latency_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    max_latency_ms, latest_latency_ms, avg_latency_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.meta.session_id,
@@ -504,6 +505,7 @@ class OnlineMrSession:
                     summary.get("loss_percent"),
                     summary.get("min_latency_ms"),
                     summary.get("max_latency_ms"),
+                    summary.get("latest_latency_ms"),
                     summary.get("avg_latency_ms"),
                     datetime.now().isoformat(sep=" ", timespec="seconds"),
                 ),

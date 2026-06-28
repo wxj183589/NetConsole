@@ -5,7 +5,13 @@ from collections import defaultdict, deque
 from typing import Any
 
 from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_SAMPLE, OnlineMrEvent
-from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text, summarize_active
+from netconsole.services.online_mr_parser import (
+    parse_ap_radio_statistics_text,
+    parse_channel_busy_text,
+    parse_interface_rate_text,
+    parse_mesh_link_text,
+    summarize_active,
+)
 
 
 class EventParserEngine:
@@ -21,8 +27,10 @@ class EventParserEngine:
             self.samples["mesh"].append(self.parse_mesh(event))
         elif event.module == "busy":
             self.samples["busy"].append(self.parse_busy(event))
-        elif event.module in {"stats", "interface_rate"}:
-            self.samples[event.module].append({"timestamp": event.timestamp, "raw": event.raw, **event.payload})
+        elif event.module == "stats":
+            self.samples["stats"].append(self.parse_stats(event))
+        elif event.module == "interface_rate":
+            self.samples["interface_rate"].append(self.parse_interface_rate(event))
 
     def parse_mesh(self, event: OnlineMrEvent) -> dict[str, Any]:
         payload = {"timestamp": event.timestamp, "raw": event.raw, **event.payload}
@@ -50,12 +58,27 @@ class EventParserEngine:
                 payload.update(_extract_mesh_peer_fields(event.raw))
         return payload
 
+    def parse_mesh_line_stream(self, event: OnlineMrEvent) -> dict[str, Any]:
+        return self.parse_mesh(event)
+
     def parse_busy(self, event: OnlineMrEvent) -> dict[str, Any]:
         payload = {"timestamp": event.timestamp, "raw": event.raw, **event.payload}
         if event.raw:
             rows = parse_channel_busy_text(event.raw)
             if rows:
                 payload.update(rows[0])
+        return payload
+
+    def parse_stats(self, event: OnlineMrEvent) -> dict[str, Any]:
+        payload = {"timestamp": event.timestamp, "raw": event.raw, **event.payload}
+        if event.raw:
+            payload.update(parse_ap_radio_statistics_text(event.raw))
+        return payload
+
+    def parse_interface_rate(self, event: OnlineMrEvent) -> dict[str, Any]:
+        payload = {"timestamp": event.timestamp, "raw": event.raw, **event.payload}
+        if event.raw:
+            payload["rows"] = parse_interface_rate_text(event.raw)
         return payload
 
     def parse_fping_v5(self, event: OnlineMrEvent) -> dict[str, Any]:

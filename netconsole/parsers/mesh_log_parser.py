@@ -46,6 +46,7 @@ class MeshLogParser:
         current_tag: str | None = None
         skipped = 0
         read_lines = 0
+        record_seq = 0
         try:
             for line_number, line in enumerate(_iter_decoded_lines(path), start=1):
                 if should_cancel and should_cancel():
@@ -82,6 +83,8 @@ class MeshLogParser:
                 if parsed is None:
                     skipped += 1
                     continue
+                record_seq += 1
+                parsed.record_seq = record_seq
                 records.append(parsed)
                 if progress and read_lines % 200 == 0:
                     progress(read_lines, len(records), skipped)
@@ -269,6 +272,7 @@ def parse_mesh_link_table(
     current_sample_time = sample_time
     current_tag: str | None = None
     path = Path(source_file or "<online>")
+    record_seq = 0
     for line_number, line in enumerate(text.splitlines(), start=1):
         raw_line = line.rstrip("\r\n")
         stripped = raw_line.strip()
@@ -297,6 +301,8 @@ def parse_mesh_link_table(
         )
         issues.extend(row_issues)
         if parsed is not None:
+            record_seq += 1
+            parsed.record_seq = record_seq
             records.append(parsed)
     return records, issues
 

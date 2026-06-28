@@ -84,16 +84,27 @@ def _cross_ok() -> dict[str, SshResult]:
     }
 
 
+def _point_table_with_prefix(train_id: str = "LC06", train_no: str = "06", prefix: str = "10.122.6") -> list[CarNetworkNode]:
+    return default_point_table(
+        train_id,
+        train_no,
+        {
+            "TC1-MR": Device(name=f"LC{train_no}-MR-CT", primary_address=f"{prefix}.249"),
+            "TC2-MR": Device(name=f"LC{train_no}-MR-CW", primary_address=f"{prefix}.250"),
+        },
+    )
+
+
 def test_default_nodes_use_mr_names_and_dynamic_targets() -> None:
-    nodes = default_point_table("NBL12-LC17", "17")
+    nodes = _point_table_with_prefix("LC17", "17", "10.66.17")
 
     assert [node.node_name for node in nodes] == ["TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV"]
-    assert "10.122.17.251" in build_ping_targets(nodes)
-    assert "10.122.6.251" not in build_ping_targets(nodes)
+    assert "10.66.17.251" in build_ping_targets(nodes)
+    assert "10.122.17.251" not in build_ping_targets(nodes)
 
 
 def test_full_ok_outputs_mr_json_names() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     result = evaluate_diagnostic(nodes, _ok_ping(nodes), _cross_ok(), AcApStatus(True, True, True, True))
 
     payload = result.to_json_dict()
@@ -104,7 +115,7 @@ def test_full_ok_outputs_mr_json_names() -> None:
 
 
 def test_train_offline_requires_no_ac_no_ssh_and_all_configured_ping_failed() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     ping = {ip: PingResult(ip, False, 100) for ip in build_ping_targets(nodes)}
 
     result = evaluate_diagnostic(nodes, ping, {}, AcApStatus(selected=True))
@@ -114,7 +125,7 @@ def test_train_offline_requires_no_ac_no_ssh_and_all_configured_ping_failed() ->
 
 
 def test_vehicle_ping_loss_is_abnormal() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     ping = _ok_ping(nodes)
     ping["10.122.6.1"] = PingResult("10.122.6.1", True, 25.0, 4.0)
 
@@ -216,7 +227,7 @@ def test_address_role_all_import_aliases_normalize_to_internal_value() -> None:
 
 
 def test_ssh_connected_even_when_remote_ping_fails() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     mr_device = Device(name="列车06-MR-CT", primary_address="10.122.6.249", ssh_username="admin", ssh_password="pwd")
     service = CarNetworkDiagnosticService(
         nodes,
@@ -232,7 +243,7 @@ def test_ssh_connected_even_when_remote_ping_fails() -> None:
 
 
 def test_cross_ping_failure_after_ssh_success_reports_cross_link_abnormal() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     ping = _ok_ping(nodes)
     ssh = {
         "TC1-MR": SshResult(
@@ -270,7 +281,7 @@ def test_cross_ping_failure_after_ssh_success_reports_cross_link_abnormal() -> N
 
 
 def test_mr_remote_ping_uses_default_local_and_long_cross_commands() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     mr_device = Device(name="列车06-MR-CT", primary_address="10.122.6.249", ssh_username="admin", ssh_password="pwd")
     commands: list[str] = []
     service = CarNetworkDiagnosticService(
@@ -289,7 +300,7 @@ def test_mr_remote_ping_uses_default_local_and_long_cross_commands() -> None:
 
 
 def test_service_does_not_use_local_ping_for_main_diagnosis() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     uplinks = {"TC1-MR": "10.122.89.106", "TC1-SW": "10.122.89.6", "TC2-MR": "10.122.90.106", "TC2-SW": "10.122.90.6"}
     nodes = [CarNetworkNode(**{**node.__dict__, "ip_uplink": uplinks.get(node.node_name, node.ip_uplink)}) for node in nodes]
     mr_devices = {
@@ -453,6 +464,52 @@ NBL12-LC06-MR-CT       74ad-cb9d-3321 bc5a-3457-689f Forwarding 35   1/2
     assert matched[0]["node"] == "TC1-MR"
     assert matched[0]["match_mode"] == "train_no_end"
     assert matched[0]["source"] == "ac_realtime_parser"
+
+
+def test_ac_mesh_link_matches_ap_cw_peer_for_current_train() -> None:
+    nodes = [
+        CarNetworkNode("LC14", "TC1-MR", "MR", train_no="14", tc="TC1", end="CT"),
+        CarNetworkNode("LC14", "TC2-MR", "MR", train_no="14", tc="TC2", end="CW"),
+    ]
+    output = """AP name: AP-TCC-15
+ Peer Name              Peer Mac       Local Mac      Status     RSSI Packets(Rx/Tx)
+ Nbl06-LC14-AP-CW       eccd-4c04-b30f 30f5-277a-4e1f Forwarding 43   448470/1852345
+"""
+
+    status = match_train_mr_in_mesh_links(None, nodes, car_diag.AcProbeResult(True, True, [car_diag.AcControllerProbe("", "AC", "", True, output)]))
+
+    assert status.tc1_mr_online is False
+    assert status.tc2_mr_online is True
+    assert status.both_mr_offline is False
+    assert status.matched_details["TC2-MR"][0]["peer_name"] == "Nbl06-LC14-AP-CW"
+
+
+def test_generate_point_table_infers_non_default_vehicle_subnet_without_line_hardcode(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    groups = DeviceGroupRepository(database, "demo")
+    mr_group = groups.create("车载-MR")
+    sw_group = groups.create("车载-3SW")
+    repository.create(Device(name="Nbl06-LC14-AP-CT", group_id=mr_group.id, device_type="Cloud-AP", primary_address="172.20.14.249"))
+    repository.create(Device(name="Nbl06-LC14-TC1-SW", group_id=sw_group.id, device_type="Switch", primary_address="172.20.14.251"))
+
+    nodes = generate_point_table_from_devices(repository, "demo", [])
+
+    by_name = {node.node_name: node for node in nodes}
+    assert {node.train_id for node in nodes} == {"Nbl06-LC14"}
+    assert by_name["TC1-SRV"].ip_vehicle == "172.20.14.1"
+    assert by_name["TC2-SRV"].ip_vehicle == "172.20.14.2"
+    assert all("10.122" not in node.ip_vehicle for node in nodes)
+
+
+def test_default_point_table_leaves_server_ips_blank_when_prefix_unknown() -> None:
+    nodes = default_point_table("LC14", "14")
+
+    assert next(node for node in nodes if node.node_name == "TC1-SRV").ip_vehicle == ""
+    assert next(node for node in nodes if node.node_name == "TC2-SRV").ip_vehicle == ""
+    assert all("10.122" not in node.ip_vehicle for node in nodes)
 
 
 def test_real_h3c_mesh_output_matches_both_mr_ends() -> None:
@@ -684,7 +741,7 @@ def test_core_switch_discovery_can_use_device_identity_when_group_name_missing(t
 
 
 def test_mr_remote_ping_includes_peer_mr_long_ping() -> None:
-    nodes = default_point_table("NBL12-LC06", "06")
+    nodes = _point_table_with_prefix()
     mr_devices = {
         "TC1-MR": Device(name="列车06-MR-CT", primary_address="10.122.6.249", ssh_username="admin", ssh_password="pwd"),
         "TC2-MR": Device(name="列车06-MR-CW", primary_address="10.122.6.250", ssh_username="admin", ssh_password="pwd"),

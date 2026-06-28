@@ -24,7 +24,7 @@ class SlidingWindowBuffer:
 
     def get_window(self) -> list[OnlineMrEvent]:
         with self._lock:
-            self._trim_locked(datetime.now())
+            self._trim_locked(self.last_event_time or datetime.now())
             return list(self.buffer)
 
     def clear(self) -> None:

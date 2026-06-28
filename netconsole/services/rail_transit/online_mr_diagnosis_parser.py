@@ -11,7 +11,7 @@ from pathlib import Path
 from netconsole.services.fping_legacy_parser import parse_fping_lines
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
 from netconsole.services.network_tools.iperf_runner import IperfResultStore
-from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text
+from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
 from netconsole.services.online_mr_session_store import OnlineMrSession
 
 
@@ -51,9 +51,11 @@ class RawBlock:
 class OnlineMrParseSummary:
     mesh_samples: int = 0
     channel_samples: int = 0
+    radio_stats_samples: int = 0
     interface_samples: int = 0
     ping_samples: int = 0
     iperf_samples: int = 0
+    switch_history_samples: int = 0
     active_segments: int = 0
     issues: int = 0
 
@@ -164,7 +166,9 @@ class OnlineMrDiagnosisParser:
         session = OnlineMrSession(self.session_dir, self.meta)
         summary.mesh_samples = self._parse_mesh(session)
         summary.channel_samples = self._parse_channel_busy(session)
+        summary.radio_stats_samples = self._parse_radio_statistics(session)
         summary.interface_samples = self._parse_interface_rate(session)
+        summary.switch_history_samples = self._parse_switch_history()
         summary.ping_samples = self._parse_fping(session)
         summary.iperf_samples = self._parse_iperf()
         replay = self._replay_events()
@@ -219,6 +223,43 @@ class OnlineMrDiagnosisParser:
                 count += len(unique)
         return count
 
+    def _parse_radio_statistics(self, session: OnlineMrSession) -> int:
+        count = 0
+        for block in self.splitter.split(self.raw_dir / "ap_radio_statistics_raw.log"):
+            parsed = parse_ap_radio_statistics_text(block.text)
+            counters = parsed.get("counters") if isinstance(parsed, dict) else {}
+            status = "OK" if counters else "PARTIAL"
+            sample_id = session.append_sample(
+                "ap_radio_statistics",
+                block.collected_at,
+                block.command,
+                "raw/ap_radio_statistics_raw.log",
+                block.offset_start,
+                block.offset_end,
+                status,
+                "" if counters else "no AP radio counters parsed",
+            )
+            session.append_raw_index("live_radio_statistics_raw_index", sample_id, block.text)
+            if not counters:
+                continue
+            count += 1
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                        "AP_RADIO_STATS",
+                        1,
+                        None,
+                        None,
+                        json.dumps(parsed, ensure_ascii=False, default=str),
+                    ),
+                )
+        return count
+
     def _parse_interface_rate(self, session: OnlineMrSession) -> int:
         count = 0
         for block in self.splitter.split(self.raw_dir / "interface_rate_raw.log"):
@@ -226,6 +267,49 @@ class OnlineMrDiagnosisParser:
             session.append_interface_rates(sample_id, block.collected_at, block.text)
             count += 1
         return count
+
+    def _parse_switch_history(self) -> int:
+        path = self._find_switch_history_file()
+        if not path.exists():
+            return 0
+        text = read_text_with_retry(path, retries=2, interval=0.05)
+        collected_at = datetime.fromtimestamp(path.stat().st_mtime)
+        rows = parse_switch_history_text(text, collected_at)
+        if not rows:
+            self._issue("switch_history_latest.log", "switch-history", "no switch-history rows parsed", text[:500])
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("switch_time") or collected_at.isoformat(sep=" ", timespec="milliseconds")),
+                        "SWITCH_HISTORY",
+                        int(row.get("radio") or 1),
+                        row.get("from_peer_mac") or None,
+                        row.get("to_peer_mac") or None,
+                        json.dumps(row, ensure_ascii=False, default=str),
+                    )
+                    for row in rows
+                ],
+            )
+        return len(rows)
+
+    def _find_switch_history_file(self) -> Path:
+        preferred = self.raw_dir / "switch_history_latest.log"
+        if preferred.exists() and preferred.stat().st_size > 0:
+            return preferred
+        candidates: list[Path] = []
+        for path in self.raw_dir.iterdir() if self.raw_dir.exists() else []:
+            name = path.name.casefold()
+            if path == preferred or path.stat().st_size <= 0:
+                continue
+            if path.is_file() and ("switch-history" in name or "switch_history" in name or "mesh-link switch-history" in name or "主链路切换历史" in name):
+                candidates.append(path)
+        return sorted(candidates, key=lambda item: item.name.casefold())[0] if candidates else preferred
 
     def _parse_fping(self, session: OnlineMrSession) -> int:
         v5_path = self.raw_dir / "fping_v5_samples.jsonl"
@@ -250,7 +334,9 @@ class OnlineMrDiagnosisParser:
 
     def _parse_fping_v5_jsonl(self, session: OnlineMrSession, path: Path) -> int:
         rows: list[dict[str, object]] = []
-        latencies: list[float] = []
+        by_target: dict[str, list[dict[str, object]]] = {}
+        latencies_by_target: dict[str, list[float]] = {}
+        latest_by_target: dict[str, float] = {}
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 sample = json.loads(line)
@@ -263,37 +349,43 @@ class OnlineMrDiagnosisParser:
                 continue
             if raw_type is None and not any(key in sample for key in ("ok", "rtt_ms", "target", "seq", "error", "timeout_ms")):
                 continue
-            rows.append(
-                {
-                    "collected_at": sample.get("ts") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds"),
-                    "seq": sample.get("seq"),
-                    "target_ip": sample.get("target") or self.meta.fping.get("target"),
-                    "success": bool(sample.get("ok")),
-                    "latency_ms": sample.get("rtt_ms"),
-                    "ttl": None,
-                    "bytes": sample.get("size"),
-                    "raw_line": json.dumps(sample.get("raw") or sample, ensure_ascii=False),
-                }
-            )
+            target_ip = str(sample.get("target") or self.meta.fping.get("target") or "")
+            row = {
+                "collected_at": sample.get("ts") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds"),
+                "seq": sample.get("seq"),
+                "target_ip": target_ip,
+                "success": bool(sample.get("ok")),
+                "latency_ms": sample.get("rtt_ms"),
+                "ttl": None,
+                "bytes": sample.get("size"),
+                "raw_line": json.dumps(sample.get("raw") or sample, ensure_ascii=False),
+            }
+            rows.append(row)
+            by_target.setdefault(target_ip, []).append(row)
             if sample.get("ok") and sample.get("rtt_ms") is not None:
-                latencies.append(float(sample["rtt_ms"]))
+                rtt = float(sample["rtt_ms"])
+                latencies_by_target.setdefault(target_ip, []).append(rtt)
+                latest_by_target[target_ip] = rtt
         if rows:
             fping = self.meta.fping
             session.append_ping_samples(rows, int(fping.get("packet_size") or 64), int(fping.get("interval_ms") or 10), int(fping.get("loss_threshold_ms") or 100))
-            sent = len(rows)
-            success = sum(1 for row in rows if row.get("success"))
-            session.append_ping_summary(
-                {
-                    "target_ip": rows[-1].get("target_ip") or self.meta.fping.get("target"),
-                    "sent": sent,
-                    "received": success,
-                    "lost": sent - success,
-                    "loss_percent": ((sent - success) / sent * 100.0) if sent else 0.0,
-                    "min_latency_ms": min(latencies) if latencies else None,
-                    "max_latency_ms": max(latencies) if latencies else None,
-                    "avg_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
-                }
-            )
+            for target_ip, target_rows in by_target.items():
+                sent = len(target_rows)
+                success = sum(1 for row in target_rows if row.get("success"))
+                latencies = latencies_by_target.get(target_ip, [])
+                session.append_ping_summary(
+                    {
+                        "target_ip": target_ip or self.meta.fping.get("target"),
+                        "sent": sent,
+                        "received": success,
+                        "lost": sent - success,
+                        "loss_percent": ((sent - success) / sent * 100.0) if sent else 0.0,
+                        "min_latency_ms": min(latencies) if latencies else None,
+                        "max_latency_ms": max(latencies) if latencies else None,
+                        "latest_latency_ms": latest_by_target.get(target_ip),
+                        "avg_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
+                    }
+                )
         return len(rows)
 
     def _parse_iperf(self) -> int:
@@ -374,6 +466,10 @@ class OnlineMrDiagnosisParser:
                     rx_busy INTEGER,
                     raw_text TEXT
                 );
+                CREATE TABLE IF NOT EXISTS live_radio_statistics_raw_index (
+                    sample_id INTEGER NOT NULL,
+                    raw_text TEXT
+                );
                 CREATE TABLE IF NOT EXISTS live_interface_rates (
                     sample_id INTEGER NOT NULL,
                     collected_at TEXT,
@@ -410,6 +506,7 @@ class OnlineMrDiagnosisParser:
                     loss_percent REAL,
                     min_latency_ms REAL,
                     max_latency_ms REAL,
+                    latest_latency_ms REAL,
                     avg_latency_ms REAL,
                     created_at TEXT NOT NULL
                 );
@@ -460,6 +557,14 @@ class OnlineMrDiagnosisParser:
                     message TEXT,
                     raw_text TEXT
                 );
+                CREATE TABLE IF NOT EXISTS live_events (
+                    event_time TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    radio INTEGER,
+                    from_peer_mac TEXT,
+                    to_peer_mac TEXT,
+                    details_json TEXT DEFAULT '{}'
+                );
                 CREATE TABLE IF NOT EXISTS active_segments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
@@ -506,7 +611,9 @@ class OnlineMrDiagnosisParser:
                 "live_samples",
                 "live_mesh_links",
                 "live_channel_busy",
+                "live_radio_statistics_raw_index",
                 "live_interface_rates",
+                "live_events",
                 "ping_samples",
                 "ping_summary",
                 "iperf_runs",
@@ -538,7 +645,9 @@ class OnlineMrDiagnosisParser:
             for value in (
                 summary.mesh_samples,
                 summary.channel_samples,
+                summary.radio_stats_samples,
                 summary.interface_samples,
+                summary.switch_history_samples,
                 summary.ping_samples,
                 summary.iperf_samples,
             )
@@ -629,10 +738,13 @@ class OnlineMrDiagnosisParser:
             "status": "正常",
             "mesh_samples": summary.mesh_samples,
             "channel_samples": summary.channel_samples,
+            "radio_stats_samples": summary.radio_stats_samples,
             "interface_samples": summary.interface_samples,
+            "switch_history_samples": summary.switch_history_samples,
             "ping_samples": summary.ping_samples,
             "iperf_samples": summary.iperf_samples,
             "interface_rate": metrics["interface_rate"],
+            "ap_radio_statistics": metrics["ap_radio_statistics"],
         }
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
@@ -648,7 +760,13 @@ class OnlineMrDiagnosisParser:
                     metrics["active_peer_mac"] or "",
                     start.isoformat(sep=" ", timespec="milliseconds"),
                     end.isoformat(sep=" ", timespec="milliseconds"),
-                    summary.mesh_samples + summary.channel_samples + summary.interface_samples + summary.ping_samples + summary.iperf_samples,
+                    summary.mesh_samples
+                    + summary.channel_samples
+                    + summary.radio_stats_samples
+                    + summary.interface_samples
+                    + summary.switch_history_samples
+                    + summary.ping_samples
+                    + summary.iperf_samples,
                     metrics["avg_mr_rssi"],
                     metrics["min_mr_rssi"],
                     metrics["max_mr_rssi"],
@@ -710,6 +828,7 @@ class OnlineMrDiagnosisParser:
             "avg_rx_busy": None,
             "max_rx_busy": None,
             "interface_rate": {},
+            "ap_radio_statistics": {},
         }
         with sqlite3.connect(self.db_path) as conn:
             mesh = conn.execute(
@@ -788,6 +907,20 @@ class OnlineMrDiagnosisParser:
                 str(row[0]): {"avg_pps": row[1], "max_pps": row[2]}
                 for row in interface
             }
+            radio_stats = conn.execute(
+                """
+                SELECT details_json
+                FROM live_events
+                WHERE event_type = 'AP_RADIO_STATS'
+                ORDER BY event_time DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if radio_stats and radio_stats[0]:
+                try:
+                    metrics["ap_radio_statistics"] = json.loads(radio_stats[0])
+                except json.JSONDecodeError:
+                    metrics["ap_radio_statistics"] = {}
         return metrics
 
     @staticmethod

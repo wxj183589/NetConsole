@@ -101,7 +101,8 @@ class MeshMrRepository:
                     delete_error TEXT DEFAULT '',
                     file_status TEXT DEFAULT 'ok',
                     parsed_deleted_at TEXT DEFAULT '',
-                    parsed_delete_error TEXT DEFAULT ''
+                    parsed_delete_error TEXT DEFAULT '',
+                    source_file_order INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +129,8 @@ class MeshMrRepository:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sample_id INTEGER NOT NULL REFERENCES samples(id) ON DELETE CASCADE,
                     source_file_id INTEGER NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+                    source_file_order INTEGER NOT NULL,
+                    record_seq INTEGER NOT NULL,
                     source_line_number INTEGER NOT NULL,
                     raw_line TEXT NOT NULL,
                     radio INTEGER NOT NULL,
@@ -138,6 +141,7 @@ class MeshMrRepository:
                     peer_mac_normalized TEXT NULL,
                     peer_mac TEXT DEFAULT '',
                     peer_ap_name TEXT DEFAULT '',
+                    peer_ap_mac TEXT DEFAULT '',
                     peer_site TEXT DEFAULT '',
                     peer_radio_id INTEGER NULL,
                     peer_radio TEXT DEFAULT '',
@@ -264,6 +268,7 @@ class MeshMrRepository:
                 """
             )
             self._ensure_column(conn, "mesh_links", "peer_ap_name", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_ap_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_site", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_radio_id", "INTEGER NULL")
@@ -272,12 +277,15 @@ class MeshMrRepository:
             self._ensure_column(conn, "mesh_links", "peer_radio_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_match_rule", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_resolve_source", "TEXT DEFAULT 'unresolved'")
+            self._ensure_column(conn, "mesh_links", "source_file_order", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "mesh_links", "record_seq", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "source_files", "file_exists", "INTEGER DEFAULT 1")
             self._ensure_column(conn, "source_files", "deleted_at", "TEXT DEFAULT ''")
             self._ensure_column(conn, "source_files", "delete_error", "TEXT DEFAULT ''")
             self._ensure_column(conn, "source_files", "file_status", "TEXT DEFAULT 'ok'")
             self._ensure_column(conn, "source_files", "parsed_deleted_at", "TEXT DEFAULT ''")
             self._ensure_column(conn, "source_files", "parsed_delete_error", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "source_file_order", "INTEGER DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_ap ON mesh_links(peer_ap_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_site ON mesh_links(peer_site)")
             self._backfill_peer_columns(conn)
@@ -345,6 +353,8 @@ class MeshMrRepository:
                 ),
             )
             source_file_id = int(cursor.lastrowid)
+            file_order = min((int(record.source_file_order or 0) for record in records if int(record.source_file_order or 0) > 0), default=source_file_id)
+            conn.execute("UPDATE source_files SET source_file_order = ? WHERE id = ?", (file_order, source_file_id))
             sample_rows = {}
             for record in records:
                 sample_rows[(record.radio, dt_text(record.sample_time) or "")] = (
@@ -372,10 +382,13 @@ class MeshMrRepository:
                 sample_time = dt_text(record.sample_time)
                 record.sample_id = sample_ids.get((record.radio, sample_time))
                 record.source_file_id = source_file_id
+                record.source_file_order = int(record.source_file_order or file_order)
                 link_rows.append(
                     (
                         record.sample_id,
                         source_file_id,
+                        record.source_file_order,
+                        int(record.record_seq or record.source_line_number),
                         record.source_line_number,
                         record.raw_line,
                         record.radio,
@@ -385,6 +398,7 @@ class MeshMrRepository:
                         record.peer_mac_raw,
                         record.peer_mac_normalized,
                         record.peer_mac_normalized or "",
+                        "",
                         "",
                         "",
                         None,
@@ -412,14 +426,14 @@ class MeshMrRepository:
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO mesh_links (
-                    sample_id, source_file_id, source_line_number, raw_line, radio, sample_time,
+                    sample_id, source_file_id, source_file_order, record_seq, source_line_number, raw_line, radio, sample_time,
                     link_state_raw, link_state, peer_mac_raw, peer_mac_normalized,
-                    peer_mac, peer_ap_name, peer_site, peer_radio_id, peer_radio, peer_radio_label, peer_match_rule,
+                    peer_mac, peer_ap_name, peer_ap_mac, peer_site, peer_radio_id, peer_radio, peer_radio_label, peer_match_rule,
                     peer_radio_mac, peer_resolve_source, establish_time,
                     duration_text, duration_seconds, expected_duration_seconds, duration_deviation_seconds,
                     link_count, session_id, metrics_json, deltas_json, local_noise_dbm, peer_noise_dbm,
                     local_signal_dbm, peer_signal_dbm, record_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 link_rows,
             )
@@ -576,7 +590,7 @@ class MeshMrRepository:
                 FROM mesh_links ml
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
-                ORDER BY ml.sample_time ASC, ml.radio ASC, ml.id ASC
+                ORDER BY ml.record_seq ASC, ml.source_file_order ASC, ml.source_line_number ASC, ml.id ASC
                 LIMIT ? OFFSET ?
                 """,
                 [*values, limit, offset],
@@ -1120,7 +1134,7 @@ class MeshMrRepository:
                 row.get("peer_ap_mac") or "",
                 row.get("peer_radio_id"),
                 row.get("peer_radio_label") or "",
-                row.get("peer_radio_mac") or row.get("peer_ap_mac") or "",
+                row.get("peer_radio_mac") or "",
                 row.get("peer_site") or "",
                 row.get("peer_location") or "",
                 row.get("peer_direction") or "",
@@ -1204,6 +1218,7 @@ class MeshMrRepository:
                 SET
                     peer_mac = COALESCE(NULLIF(peer_mac_normalized, ''), peer_mac),
                     peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_ap_mac = COALESCE((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
                     peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
@@ -1258,7 +1273,7 @@ class MeshMrRepository:
             INSERT OR IGNORE INTO mesh_peer_resolve_cache (
                 peer_mac, peer_ap_name, peer_site, peer_radio, peer_radio_mac, source, updated_at
             )
-            SELECT peer_mac_normalized, peer_ap_name, peer_site, peer_radio_label, peer_ap_mac, match_rule, ?
+            SELECT peer_mac_normalized, peer_ap_name, peer_site, peer_radio_label, peer_mac_normalized, match_rule, ?
             FROM mesh_peer_mapping
             WHERE peer_mac_normalized IS NOT NULL AND trim(peer_mac_normalized) != ''
             """,
@@ -1270,6 +1285,7 @@ class MeshMrRepository:
             SET
                 peer_mac = COALESCE(NULLIF(peer_mac, ''), peer_mac_normalized, ''),
                 peer_ap_name = COALESCE(NULLIF((SELECT peer_ap_name FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_ap_name, ''),
+                peer_ap_mac = COALESCE(NULLIF((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''), peer_ap_mac, ''),
                 peer_site = COALESCE(NULLIF((SELECT peer_site FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_site, ''),
                 peer_radio = COALESCE(NULLIF((SELECT peer_radio FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_radio, peer_radio_label, ''),
                 peer_radio_label = COALESCE(NULLIF(peer_radio_label, ''), peer_radio, ''),

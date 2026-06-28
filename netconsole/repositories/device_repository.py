@@ -4,9 +4,10 @@ from datetime import datetime
 
 from netconsole.core.database import Database
 from netconsole.models.device import Device
+from netconsole.utils.natural_sort import natural_text_key
 
 
-SEARCH_COLUMNS = ("name", "system_name", "primary_address", "backup_address", "station", "remark")
+SEARCH_COLUMNS = ("d.name", "d.system_name", "d.primary_address", "d.backup_address", "d.station", "d.remark", "d.device_type", "d.device_vendor", "g.name")
 
 
 class DeviceRepository:
@@ -76,20 +77,30 @@ class DeviceRepository:
             clauses.append("(" + " OR ".join(f"{column} LIKE ?" for column in SEARCH_COLUMNS) + ")")
             params.extend([like] * len(SEARCH_COLUMNS))
         if vendor:
-            clauses.append("device_vendor = ?")
+            clauses.append("d.device_vendor = ?")
             params.append(vendor)
         if device_type:
-            clauses.append("device_type = ?")
+            clauses.append("d.device_type = ?")
             params.append(device_type)
         if group_filter == "__ungrouped__":
-            clauses.append("group_id IS NULL")
+            clauses.append("d.group_id IS NULL")
         elif group_filter is not None:
-            clauses.append("group_id = ?")
+            clauses.append("d.group_id = ?")
             params.append(int(group_filter))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.database.connect() as conn:
-            rows = conn.execute(f"SELECT * FROM devices {where} ORDER BY id DESC", params).fetchall()
-        return [Device.from_mapping(dict(row)) for row in rows]
+            rows = conn.execute(
+                f"""
+                SELECT d.*
+                FROM devices d
+                LEFT JOIN device_groups g ON g.id = d.group_id
+                {where}
+                ORDER BY d.name ASC, d.system_name ASC, d.primary_address ASC, d.id ASC
+                """,
+                params,
+            ).fetchall()
+        devices = [Device.from_mapping(dict(row)) for row in rows]
+        return sorted(devices, key=_device_natural_sort_key)
 
     def update_group(self, device_id: int, group_id: int | None) -> Device:
         with self.database.connect() as conn:
@@ -137,3 +148,12 @@ class DeviceRepository:
             )
             conn.commit()
         return cursor.rowcount > 0
+
+
+def _device_natural_sort_key(device: Device) -> tuple[tuple[object, ...], tuple[object, ...], tuple[object, ...], int]:
+    return (
+        natural_text_key(device.name),
+        natural_text_key(device.system_name),
+        natural_text_key(device.primary_address),
+        int(device.id or 0),
+    )

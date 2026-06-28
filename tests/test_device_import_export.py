@@ -129,6 +129,38 @@ def test_template_import_maps_primary_backup_and_tunnel_fields(tmp_path):
     assert imported.tunnel1_local_port is None
 
 
+def test_template_import_enables_tunnels_from_host_presence(tmp_path):
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "devices.csv"
+    write_dict_rows(
+        csv_path,
+        EXPORT_FIELDS,
+        [
+            {
+                "设备名称": "AC",
+                "主用地址": "10.0.0.1",
+                "协议": "SSH",
+                "端口": "22",
+                "用户名": "admin",
+                "密码": "pwd",
+                "厂商": "H3C",
+                "设备类型": "AC",
+                "是否启用SSH隧道": "否",
+                "隧道主机1地址": "172.16.0.10",
+                "隧道主机2地址": "",
+            }
+        ],
+    )
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+
+    assert result.created == 1
+    assert imported.tunnel_enabled == 1
+    assert imported.tunnel1_enabled == 1
+    assert imported.tunnel2_enabled == 0
+
+
 def test_template_import_rejects_old_headers(tmp_path):
     aliases = ["主机地址", "IP", "host", "address", "ip_address", "站点/位置"]
     for alias in aliases:

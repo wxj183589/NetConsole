@@ -446,7 +446,7 @@ class FileTransferService:
         return FileDownloadResult(device.id, str(device.name or ""), remote_file.remote_path, None, "failed", last_error or "File download failed.", elapsed_ms(started))
 
     def local_device_dir(self, device: Device) -> Path:
-        return self.paths.ensure_site_dirs(self.site_name) / "downloads" / "files" / device_file_dir_name(device)
+        return self.paths.device_file_download_dir(self.site_name, device_file_dir_name(device))
 
     def local_path_for(self, device: Device, remote_file: RemoteDeviceFile) -> Path:
         directory = self.local_device_dir(device) / remote_file.category
