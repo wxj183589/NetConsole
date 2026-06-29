@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QFileDialog,
-    QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -44,19 +43,19 @@ from netconsole.services.mesh_link_detail_export import export_mesh_link_details
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
-from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker, MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
+from netconsole.ui.mesh_log_workers import MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
 from netconsole.ui.table.table_autosize_engine import apply_table_autosize
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
-from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
 from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
 from netconsole.utils.natural_sort import natural_text_key
 
 
 FILE_FILTER = "MESH Logs (*.log *.log.gz *.txt);;Log Files (*.log *.log.gz);;Text Files (*.txt);;All Files (*.*)"
 MESH_DEFAULT_PAGE_SIZE = 1000
+MESH_ANALYSIS_REPORT_ENABLED = False
 
 
 class MeshLogAnalysisPage(QWidget):
@@ -87,7 +86,7 @@ class MeshLogAnalysisPage(QWidget):
         self.repo_cache: dict[str, MeshMrRepository] = {}
         self.profile_by_id: dict[str, MeshMrProfile] = {}
         self.worker: MeshLogImportWorker | None = None
-        self.report_worker: MeshAnalysisReportWorker | None = None
+        self.report_worker: object | None = None
         self.derived_worker: MeshDerivedAnalysisRebuildWorker | None = None
         self.peer_dialogs: list[MeshPeerDetailDialog] = []
         self.profiles: list[MeshMrProfile] = []
@@ -114,7 +113,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button = QPushButton()
         self.refresh_button = QPushButton()
         self.open_folder_button = QPushButton()
-        self.generate_report_button = QPushButton()
+        self.generate_report_button = QPushButton() if MESH_ANALYSIS_REPORT_ENABLED else None
         self.export_link_button = QPushButton()
         self.progress_bar = QProgressBar()
         self.progress_label = QLabel()
@@ -205,7 +204,8 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button.setText(self.i18n.t("mesh_analysis.cancel"))
         self.refresh_button.setText(self.i18n.t("mesh_analysis.refresh"))
         self.open_folder_button.setText(self.i18n.t("mesh_analysis.open_folder"))
-        self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
+        if self.generate_report_button is not None:
+            self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
         self.export_link_button.setText("导出链路明细")
         self.radio_filter.setPlaceholderText("Radio")
         self.state_filter.setPlaceholderText(self.i18n.t("mesh_analysis.state"))
@@ -320,9 +320,10 @@ class MeshLogAnalysisPage(QWidget):
             self.refresh_button,
             self.open_folder_button,
             self.export_link_button,
-            self.generate_report_button,
         ):
             toolbar.addWidget(button)
+        if self.generate_report_button is not None:
+            toolbar.addWidget(self.generate_report_button)
         toolbar.addStretch(1)
         progress = QHBoxLayout()
         progress.addWidget(self.progress_bar, 1)
@@ -382,7 +383,8 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button.clicked.connect(self.cancel_import)
         self.refresh_button.clicked.connect(lambda: self.refresh_all())
         self.open_folder_button.clicked.connect(self.open_mr_folder)
-        self.generate_report_button.clicked.connect(self.generate_report)
+        if self.generate_report_button is not None:
+            self.generate_report_button.clicked.connect(self.generate_report)
         self.export_link_button.clicked.connect(self.export_link_details)
         self.mr_table.itemSelectionChanged.connect(self._schedule_current_mr_selection)
         self.radio_filter.textChanged.connect(self._schedule_link_refresh)
@@ -635,12 +637,19 @@ class MeshLogAnalysisPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(path)))
 
     def generate_report(self) -> None:
+        if not MESH_ANALYSIS_REPORT_ENABLED:
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.disabled"))
+            return
         profile = self._require_profile()
         if profile is None:
             return
         if self.report_worker and self.report_worker.isRunning():
             QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.running"))
             return
+        from PySide6.QtWidgets import QDialog
+        from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
+        from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker
+
         dialog = MeshReportSettingsDialog(self.i18n, profile.display_name, self)
         if dialog.exec() != QDialog.Accepted:
             return

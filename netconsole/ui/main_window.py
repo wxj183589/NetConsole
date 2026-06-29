@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
             app_logger.log_error("DETACHED_PAGE_CREATE_FAILED", f"page={page_id}, error={exc}")
             QMessageBox.warning(self, self.i18n.t("app.title"), str(exc))
             return
-        window = QMainWindow(self)
+        window = QMainWindow()
         window.setAttribute(Qt.WA_DeleteOnClose, True)
         window.setWindowTitle(f"NetConsole - {title}")
         window.resize(1600, 900)
@@ -590,6 +590,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.app_is_exiting:
             background_task_manager.stop_all()
+            self._close_detached_windows()
             app_logger.log_info("APP_EXIT", "software closed")
             super().closeEvent(event)
             return
@@ -602,6 +603,7 @@ class MainWindow(QMainWindow):
         if behavior == "exit" and not has_tasks:
             self.app_is_exiting = True
             background_task_manager.stop_all()
+            self._close_detached_windows()
             app_logger.log_info("APP_EXIT", "software closed")
             super().closeEvent(event)
             return
@@ -612,10 +614,15 @@ class MainWindow(QMainWindow):
         elif choice == "exit":
             self.app_is_exiting = True
             background_task_manager.stop_all()
+            self._close_detached_windows()
             app_logger.log_info("APP_EXIT", "software closed")
             super().closeEvent(event)
         else:
             event.ignore()
+
+    def _close_detached_windows(self) -> None:
+        for window in list(self.detached_windows):
+            window.close()
 
     def apply_initial_geometry(self) -> None:
         screen = QApplication.primaryScreen()

@@ -25,10 +25,14 @@ class WindowManager:
 
     def set_child_on_top(self, window: QWidget, enabled: bool) -> None:
         self.register_child_window(window, enabled)
-        if self.main_window is not None and self.main_window.windowFlags() & Qt.WindowStaysOnTopHint:
-            enabled = False
+        if enabled and self.main_window is not None and self.main_window.windowFlags() & Qt.WindowStaysOnTopHint:
+            self.main_window.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+            self.main_window.show()
         window.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         window.show()
+        if enabled:
+            window.raise_()
+            window.activateWindow()
 
     def apply_main_window_on_top(self, enabled: bool) -> None:
         if self.main_window is None:
@@ -37,17 +41,16 @@ class WindowManager:
         if enabled:
             for child in list(self.child_windows):
                 child.setWindowFlag(Qt.WindowStaysOnTopHint, False)
-                child.show()
         else:
             self.restore_child_window_flags()
         self.main_window.show()
-        self.main_window.raise_()
-        self.main_window.activateWindow()
+        if enabled:
+            self.main_window.raise_()
+            self.main_window.activateWindow()
 
     def restore_child_window_flags(self) -> None:
         for child in list(self.child_windows):
             child.setWindowFlag(Qt.WindowStaysOnTopHint, self.child_on_top.get(child, False))
-            child.show()
 
 
 window_manager = WindowManager()

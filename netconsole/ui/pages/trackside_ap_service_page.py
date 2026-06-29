@@ -35,10 +35,12 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.trackside_optical_history import TracksideOpticalHistoryService
 from netconsole.services.rail_transit.trackside_optical_collection import DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
 from netconsole.services.trackside_ap_business import (
+    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_site_filter_items,
-    export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
     format_trackside_display_value,
     trackside_row_status,
@@ -53,13 +55,14 @@ from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, A
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
+from netconsole.ui.app_events import app_events
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.theme.contrast_engine import apply_status_item_contrast
-from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, TracksideApBusinessLoadThread, TracksideOpticalCollectThread
+from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThread, TracksideApBusinessLoadResult, TracksideApBusinessLoadThread, TracksideOpticalCollectThread
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 
 
@@ -109,6 +112,7 @@ class TracksideApServicePage(QWidget):
         self.trackside_page_size = DEFAULT_PAGE_SIZE
         self.collect_thread: TracksideOpticalCollectThread | None = None
         self.load_thread: TracksideApBusinessLoadThread | None = None
+        self.export_thread: TracksideApBusinessExportThread | None = None
         self.is_loading = False
         self.load_generation = 0
         self.dirty = True
@@ -437,6 +441,7 @@ class TracksideApServicePage(QWidget):
             )
         )
         self.mark_dirty()
+        app_events.ac_summary_changed.emit(self.site_name)
         self.status_label.setText(self.i18n.t("trackside_ap.stage_refresh_page"))
         self.refresh_async(force=True)
 
@@ -476,20 +481,59 @@ class TracksideApServicePage(QWidget):
         self.apply_trackside_pagination()
 
     def export_trackside_table(self) -> None:
+        if self.export_thread is not None:
+            self.status_label.setText(self.i18n.t("trackside.export.progress_write"))
+            return
         path = select_export_path(self, self.i18n.t("trackside.export"), trackside_export_default_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        export_trackside_ap_business_xlsx(
+        thread = TracksideApBusinessExportThread(
+            self.device_repository,
+            self.site_name,
             path,
-            self.filtered_trackside_rows(),
-            TRACKSIDE_AP_BUSINESS_COLUMNS,
-            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
-            self.ap_online_overview_rows(),
-            AP_ONLINE_OVERVIEW_COLUMNS,
+            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
             [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            *self.offline_ap_export_context(),
+            [self.i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
+            self.i18n.t("trackside.export.sheet_new_online_ap_overview"),
+            [self.i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
+            self.i18n.t("trackside.export.sheet_ap_optical_treatment"),
+            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+            self,
         )
-        remember_export_path(path)
+        self.export_thread = thread
+        self._set_export_running(True, self.i18n.t("trackside.export.progress_load"))
+        thread.stage_changed.connect(lambda key: self.status_label.setText(self.i18n.t(key)))
+        thread.export_finished.connect(self._finish_export)
+        thread.export_failed.connect(self._fail_export)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: self._clear_export_thread(thread))
+        thread.start()
+
+    def _set_export_running(self, running: bool, message: str = "") -> None:
+        self.update_progress.setVisible(running or self.collect_thread is not None)
+        self.trackside_export_button.setEnabled(not running and self.collect_thread is None)
+        self.update_button.setEnabled(not running and self.collect_thread is None and not self.is_loading)
+        if message:
+            self.status_label.setText(message)
+
+    def _finish_export(self, result: dict[str, object]) -> None:
+        self._set_export_running(False)
+        path = Path(result.get("path") or "")
+        if path:
+            remember_export_path(path)
+        count = int(result.get("row_count") or 0)
+        self.status_label.setText(self.i18n.t("trackside.loaded_count", count=count) if count else self.i18n.t("trackside.export"))
+        app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={count}, file={path.name if path else ''}")
+
+    def _fail_export(self, message: str) -> None:
+        self._set_export_running(False)
+        self.status_label.setText(self.i18n.t("trackside.export"))
+        QMessageBox.warning(self, self.i18n.t("trackside.export"), message)
+
+    def _clear_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
+        if self.export_thread is thread:
+            self.export_thread = None
 
     def handle_trackside_double_click(self, item: QTableWidgetItem) -> None:
         fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]

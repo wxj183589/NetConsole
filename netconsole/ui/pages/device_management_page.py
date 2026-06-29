@@ -474,7 +474,7 @@ class DeviceManagementPage(QWidget):
         if isinstance(existing, DeviceDialog):
             self._activate_window(existing)
             return
-        dialog = DeviceDialog(self.i18n, self, groups=self._list_groups())
+        dialog = DeviceDialog(self.i18n, None, groups=self._list_groups())
         self.dialog_registry.set_add_window(dialog)
         dialog.saved.connect(self._create_device_from_dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self.dialog_registry.remove_add_window(window))
@@ -497,7 +497,7 @@ class DeviceManagementPage(QWidget):
         if isinstance(existing, DeviceDialog):
             self._activate_window(existing)
             return
-        dialog = DeviceDialog(self.i18n, self, device, groups=self._list_groups())
+        dialog = DeviceDialog(self.i18n, None, device, groups=self._list_groups())
         self.dialog_registry.set_edit_window(device_uuid, dialog)
         dialog.saved.connect(self._update_device_from_dialog)
         dialog.destroyed.connect(lambda _=None, uuid=device_uuid, window=dialog: self.dialog_registry.remove_edit_window(uuid, window))
@@ -517,7 +517,7 @@ class DeviceManagementPage(QWidget):
             self.i18n,
             self.fact_repository,
             device,
-            self,
+            None,
             self.site_name,
             {int(group.id): group.name for group in self._list_groups() if group.id is not None},
         )

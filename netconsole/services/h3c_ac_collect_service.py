@@ -65,8 +65,7 @@ FIT_AP_OPTICAL_COMMANDS = (
     "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
-    "display transceiver interface",
-    "display transceiver manuinfo interface",
+    "display interface brief",
 )
 BATCH_CONCURRENCY = 50
 ProgressCallback = Callable[[str], None]
@@ -193,13 +192,35 @@ def collect_h3c_ac_resources(
         _raise_if_cancelled(should_cancel)
         progress("正在解析FIT-AP资源...")
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
+        dynamic_summary_updated = _can_update_dynamic_summary(command_results, summary)
         summary_updated = refresh_ac_overview and any(value is not None for key, value in summary.items() if key != "ac_device_uuid")
         progress("正在写入数据库...")
         if summary_updated:
             repository.upsert_ac_ap_summary(summary)
+        elif dynamic_summary_updated:
+            repository.upsert_ac_ap_dynamic_summary(str(ac_device.device_uuid), _dynamic_summary_payload(summary))
+        if dynamic_summary_updated:
+            app_logger.log_info(
+                "AC_AP_SUMMARY_DYNAMIC_UPDATED",
+                _detail(
+                    ac_device,
+                    collect_run_uuid,
+                    error=(
+                        f"total={summary.get('total_aps')}, online={summary.get('online_aps')}, "
+                        f"offline={summary.get('offline_aps')}"
+                    ),
+                ),
+            )
         persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port) if refresh_ac_overview else HttpsPortPersistenceResult(None, False)
-        repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
-        status = "success" if summary_updated or resources else "failed"
+        resource_commands_ok = all(
+            result.success
+            for result in command_results
+            if result.command in FIT_AP_RESOURCE_COMMANDS
+        )
+        resources_persisted = bool(resource_commands_ok and resources)
+        if resources_persisted:
+            repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+        status = "success" if summary_updated or dynamic_summary_updated or resources_persisted else "failed"
         error_message = _command_error_summary(command_results)
         fact_repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
         if status == "success":
@@ -209,14 +230,14 @@ def collect_h3c_ac_resources(
         else:
             app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
             app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
-        progress(f"更新完成：FIT-AP资源 {len(resources)} 条")
+        progress(f"更新完成：FIT-AP资源 {len(resources) if resources_persisted else 0} 条")
         return AcResourceCollectResult(
             status == "success",
             str(ac_device.device_uuid),
             collect_run_uuid,
             result_raw_log_path,
-            summary_updated,
-            len(resources),
+            summary_updated or dynamic_summary_updated,
+            len(resources) if resources_persisted else 0,
             https_port,
             https_port is not None,
             persistence.persisted,
@@ -343,7 +364,11 @@ def collect_h3c_fit_ap_optical(
             rows_to_save = _merge_fit_ap_optical_rows(existing_rows, rows)
         else:
             rows_to_save = rows
-        repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows_to_save)
+        successful_rows = [row for row in rows if row.get("status") == "success"]
+        if successful_rows:
+            repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows_to_save)
+        else:
+            app_logger.log_warning("FIT_AP_OPTICAL_DB_SAVE_SKIPPED", _detail(ac_device, collect_run_uuid, error="no successful AP optical rows; keeping previous data"))
     except CollectionCancelled:
         message = "\u7528\u6237\u5df2\u53d6\u6d88\u66f4\u65b0"
         app_logger.log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
@@ -483,6 +508,41 @@ def parse_ac_resource_outputs(
     return summary, resources
 
 
+def _can_update_dynamic_summary(command_results: list[CommandResult], summary: dict[str, object | None]) -> bool:
+    ap_all_success = any(result.command == "display wlan ap all" and result.success for result in command_results)
+    if not ap_all_success:
+        return False
+    return any(
+        summary.get(field) is not None
+        for field in (
+            "total_aps",
+            "online_aps",
+            "offline_aps",
+            "total_ap_licenses",
+            "local_ap_licenses",
+            "remaining_local_ap_licenses",
+        )
+    )
+
+
+def _dynamic_summary_payload(summary: dict[str, object | None]) -> dict[str, object | None]:
+    return {
+        field: summary.get(field)
+        for field in (
+            "total_aps",
+            "online_aps",
+            "offline_aps",
+            "total_ap_licenses",
+            "local_ap_licenses",
+            "remaining_local_ap_licenses",
+            "collected_at",
+            "collect_run_uuid",
+            "raw_log_path",
+            "updated_at",
+        )
+    }
+
+
 def collect_https_port(connection, ac_device: Device, collect_run_uuid: str) -> tuple[int | None, list[CommandResult]]:
     app_logger.log_info("AC_HTTPS_PORT_COMMAND_STARTED", _detail(ac_device, collect_run_uuid, error="command_executed=true"))
     results: list[CommandResult] = []
@@ -604,8 +664,8 @@ def _collect_single_fit_ap_optical(
         parsed = parse_fit_ap_optical(
             outputs.get("display lldp neighbor-information list", ""),
             outputs.get("display transceiver diagnosis interface", ""),
-            outputs.get("display transceiver interface", ""),
-            outputs.get("display transceiver manuinfo interface", ""),
+            "",
+            "",
         )
         if _is_invalid_lldp_neighbor(parsed.get("lldp_neighbor")):
             parsed["lldp_neighbor"] = None

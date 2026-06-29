@@ -39,11 +39,14 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.trackside_ap_business import (
+    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_ap_business_rows,
     build_trackside_site_filter_items,
-    export_trackside_ap_business_xlsx,
+    filter_station_switch_devices,
     filter_trackside_ap_business_rows,
     trackside_row_status,
 )
@@ -69,6 +72,7 @@ from netconsole.services.ap_online_overview import (
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
+from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
@@ -79,6 +83,7 @@ from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_statu
 from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
+from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThread
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.interface_sort import interface_sort_key
 
@@ -513,6 +518,8 @@ class AcManagementPage(QWidget):
         self.ac_devices: list[Device] = []
         self.resource_thread: AcResourceCollectThread | None = None
         self.optical_thread: FitApOpticalCollectThread | None = None
+        self.trackside_export_thread: TracksideApBusinessExportThread | None = None
+        app_events.ac_summary_changed.connect(self._handle_ac_summary_changed)
         self.detail_windows: list[FitApDetailDialog] = []
         self.optical_rows: list[dict[str, object | None]] = []
         self.trackside_rows: list[dict[str, object | None]] = []
@@ -587,7 +594,6 @@ class AcManagementPage(QWidget):
         self.trackside_search_input = QLineEdit()
         self.trackside_export_button = QPushButton()
         self.optical_legend_label = make_text_selectable(QLabel())
-        self.coming_soon_label = make_text_selectable(QLabel())
         self.trackside_plan_page = TracksideApPlanPage(self.repository, self.i18n, self.site_name)
 
         configure_readonly_table(self.resources_table)
@@ -705,17 +711,10 @@ class AcManagementPage(QWidget):
         overview_layout.addWidget(self.overview_inner_tabs, 1)
         overview_tab.setLayout(overview_layout)
 
-        mr_tab = QWidget()
-        mr_layout = QVBoxLayout()
-        self.coming_soon_label.setAlignment(Qt.AlignCenter)
-        mr_layout.addWidget(self.coming_soon_label, 1)
-        mr_tab.setLayout(mr_layout)
-
         self.tabs.addTab(self.trackside_plan_page, "")
         self.tabs.addTab(overview_tab, "")
         self.tabs.addTab(resources_tab, "")
         self.tabs.addTab(optical_tab, "")
-        self.tabs.addTab(mr_tab, "")
         # Trackside AP Service is mounted under Rail Transit.
 
         layout = QVBoxLayout()
@@ -803,7 +802,6 @@ class AcManagementPage(QWidget):
         self.optical_concurrency_combo.setCurrentIndex(index if index >= 0 else self.optical_concurrency_combo.findData(1000))
         self.optical_legend_label.setText(self.i18n.t("details.optical_color_legend"))
         self.status_label.setText(self.i18n.t("ac.status.not_collected"))
-        self.coming_soon_label.setText(self.i18n.t("ac.coming_soon"))
         for index, (key, _field) in enumerate(SUMMARY_FIELDS):
             label = self.findChild(QLabel, f"summary_label_{SUMMARY_FIELDS[index][1]}")
             if label is not None:
@@ -812,7 +810,6 @@ class AcManagementPage(QWidget):
         self.tabs.setTabText(1, self.i18n.t("ac.ap_online_overview"))
         self.tabs.setTabText(2, self.i18n.t("ac.fit_ap_resources"))
         self.tabs.setTabText(3, self.i18n.t("ac.fit_ap_optical"))
-        self.tabs.setTabText(4, self.i18n.t("ac.online_vehicle_mr"))
         self.overview_inner_tabs.setTabText(0, self.i18n.t("ac.ap_online_overview"))
         self.overview_inner_tabs.setTabText(1, "AP离线情况")
         self.overview_inner_tabs.setTabText(2, "离线AP台账")
@@ -1411,27 +1408,64 @@ class AcManagementPage(QWidget):
         app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def export_trackside_table(self) -> None:
-        path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_轨旁AP业务_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
+        if self.trackside_export_thread is not None:
+            self.status_label.setText(self.i18n.t("trackside.export.progress_write"))
+            return
+        path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_trackside_ap_business_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
         if not path:
             return
-        self.refresh_overview_table()
-        self.ensure_offline_ap_context_loaded(force=True)
-        rows = self.filtered_trackside_rows()
-        export_trackside_ap_business_xlsx(
+        thread = TracksideApBusinessExportThread(
+            self.device_repository,
+            self.site_name,
             path,
-            rows,
-            TRACKSIDE_AP_BUSINESS_COLUMNS,
-            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
-            self.current_overview_rows(),
-            AP_ONLINE_OVERVIEW_COLUMNS,
+            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
             [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            self.offline_ap_stats,
-            self.offline_ap_ledger_rows,
+            [self.i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
+            self.i18n.t("trackside.export.sheet_new_online_ap_overview"),
+            [self.i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
+            self.i18n.t("trackside.export.sheet_ap_optical_treatment"),
             offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
             offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+            self,
         )
-        remember_export_path(path)
-        app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={len(rows)}, file={path.name}")
+        self.trackside_export_thread = thread
+        self._set_trackside_export_running(True, self.i18n.t("trackside.export.progress_load"))
+        thread.stage_changed.connect(lambda key: self.status_label.setText(self.i18n.t(key)))
+        thread.export_finished.connect(self._finish_trackside_export)
+        thread.export_failed.connect(self._fail_trackside_export)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: self._clear_trackside_export_thread(thread))
+        thread.start()
+
+    def _set_trackside_export_running(self, running: bool, message: str = "") -> None:
+        self.update_progress.setVisible(running or self.resource_thread is not None or self.optical_thread is not None)
+        self.trackside_export_button.setEnabled(not running)
+        self.refresh_button.setEnabled(not running and self.resource_thread is None and self.optical_thread is None)
+        if message:
+            self.status_label.setText(message)
+
+    def _finish_trackside_export(self, result: dict[str, object]) -> None:
+        self._set_trackside_export_running(False)
+        path = Path(result.get("path") or "")
+        if path:
+            remember_export_path(path)
+        count = int(result.get("row_count") or 0)
+        self.status_label.setText(self.i18n.t("trackside.loaded_count", count=count))
+        app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={count}, file={path.name if path else ''}")
+
+    def _fail_trackside_export(self, message: str) -> None:
+        self._set_trackside_export_running(False)
+        self.status_label.setText(self.i18n.t("trackside.export"))
+        QMessageBox.warning(self, self.i18n.t("trackside.export"), message)
+
+    def _clear_trackside_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
+        if self.trackside_export_thread is thread:
+            self.trackside_export_thread = None
+
+    def _handle_ac_summary_changed(self, site_name: str) -> None:
+        if str(site_name or "") != str(self.site_name or ""):
+            return
+        self.refresh_devices()
 
     def save_overview_history_snapshot(self) -> None:
         count = self.repository.save_station_online_summary_history(self.current_overview_rows())
@@ -1499,7 +1533,7 @@ class AcManagementPage(QWidget):
         self._device_optical_status_lookup = build_switch_data_lookup(devices, optical_by_device)
 
     def refresh_trackside_table(self) -> None:
-        devices = self.device_repository.list()
+        devices = filter_station_switch_devices(self.device_repository.list(), self.device_repository.database, self.site_name)
         interfaces_by_device = {str(device.device_uuid or ""): self.fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
         optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
         lldp_by_device = {str(device.device_uuid or ""): self.fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}

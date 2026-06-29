@@ -6,12 +6,14 @@ from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
 from netconsole.utils.text_encoding import safe_decode
 
 
-INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|M-GigabitEthernet|XGE|GE)[\d/.:]+|Vlan-interface\d+|Bridge-Aggregation\d+|InLoopBack\d+|LoopBack\d+|NULL\d+"
+INTERFACE_NAME = r"(?:[A-Za-z][A-Za-z-]*Ethernet|FortyGigE|Ten-GigabitEthernet|Twenty-FiveGigE|HundredGigE|GigabitEthernet|M-GigabitEthernet|XGE|GE)[\d/.:]+|Vlan-interface\d+|Vlan\d+|Bridge-Aggregation\d+|BAGG\d+|InLoopBack\d+|InLoop\d+|LoopBack\d+|NULL\d+"
 INTERFACE_HEADER = re.compile(rf"^({INTERFACE_NAME})\s+current state:\s+(.+)$", re.IGNORECASE)
 INTERFACE_NAME_ONLY = re.compile(rf"^({INTERFACE_NAME})$", re.IGNORECASE)
 
 
 def parse_interfaces(output: str) -> list[dict[str, object | None]]:
+    if "Brief information on interfaces" in (output or ""):
+        return parse_interface_brief(output)
     interfaces: list[dict[str, object | None]] = []
     current: dict[str, object | None] | None = None
     pending_name: str | None = None
@@ -81,6 +83,90 @@ def parse_interfaces(output: str) -> list[dict[str, object | None]]:
     if current:
         interfaces.append(_finalize_interface(current))
     return interfaces
+
+
+def parse_interface_brief(output: str) -> list[dict[str, object | None]]:
+    interfaces: list[dict[str, object | None]] = []
+    section = ""
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        lower = line.casefold()
+        if not line:
+            continue
+        if "brief information on interfaces in route mode" in lower:
+            section = "route"
+            continue
+        if "brief information on interfaces in bridge mode" in lower:
+            section = "bridge"
+            continue
+        if not section or line.startswith("-") or lower.startswith("link:") or lower.startswith("speed or duplex"):
+            continue
+        if lower.startswith("interface ") or lower.startswith("interface\t"):
+            continue
+        if section == "route":
+            item = _parse_route_brief_line(line)
+        else:
+            item = _parse_bridge_brief_line(line)
+        if item:
+            interfaces.append(item)
+    return interfaces
+
+
+def _parse_route_brief_line(line: str) -> dict[str, object | None] | None:
+    parts = line.split(None, 4)
+    if len(parts) < 3:
+        return None
+    name = _normalize_brief_interface(parts[0])
+    if not name:
+        return None
+    item: dict[str, object | None] = {
+        "interface_name": name,
+        "link_status": parts[1],
+        "protocol_status": parts[2],
+        "interface_type": "三层",
+        "port_status": "route",
+    }
+    if len(parts) >= 4 and parts[3] != "--":
+        item["ip_address"] = parts[3]
+    if len(parts) >= 5 and parts[4] != "--":
+        item["description"] = safe_decode(parts[4])
+    return item
+
+
+def _parse_bridge_brief_line(line: str) -> dict[str, object | None] | None:
+    parts = line.split(None, 6)
+    if len(parts) < 6:
+        return None
+    name = _normalize_brief_interface(parts[0])
+    if not name:
+        return None
+    port_status = _brief_port_type(parts[4])
+    item: dict[str, object | None] = {
+        "interface_name": name,
+        "link_status": parts[1],
+        "speed": parts[2],
+        "duplex": parts[3],
+        "interface_type": "二层",
+        "port_status": port_status,
+        "pvid": None if parts[5] == "--" else parts[5],
+    }
+    if item["pvid"]:
+        item["vlan"] = item["pvid"]
+    if len(parts) >= 7 and parts[6] != "--":
+        item["description"] = safe_decode(parts[6])
+    return item
+
+
+def _normalize_brief_interface(value: str) -> str:
+    return normalize_interface(value.strip())
+
+
+def _brief_port_type(value: str) -> str:
+    return {
+        "A": "access",
+        "T": "trunk",
+        "H": "hybrid",
+    }.get(str(value or "").strip().upper(), str(value or "").strip())
 
 
 def _parse_internet_address(line: str) -> dict[str, object] | None:

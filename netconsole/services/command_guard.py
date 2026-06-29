@@ -14,6 +14,7 @@ SAFE_DEVICE_COMMANDS = {
     "display device manuinfo",
     "display boot-loader",
     "display interface",
+    "display interface brief",
     "display transceiver interface",
     "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",
@@ -36,16 +37,15 @@ SAFE_FIT_AP_COMMANDS = {
     "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
-    "display transceiver interface",
-    "display transceiver manuinfo interface",
+    "display interface brief",
 }
 
 SAFE_OPTICAL_REFRESH_COMMANDS = {
     "screen-length d",
     "screen-length disable",
-    "display interface",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
+    "display interface brief",
 }
 
 SAFE_CONFIG_LIFECYCLE_COMMANDS = {
@@ -127,6 +127,7 @@ PIPE_ALLOWLIST = {
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display boot-loader",
     "display interface",
+    "display interface brief",
     "display transceiver interface",
     "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",

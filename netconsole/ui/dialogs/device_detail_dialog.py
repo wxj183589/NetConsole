@@ -521,8 +521,6 @@ class DeviceDetailDialog(QDialog):
     def set_always_on_top(self, enabled: bool) -> None:
         window_manager.set_child_on_top(self, enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
-        self.raise_()
-        self.activateWindow()
 
 class CollectLogDialog(QDialog):
     def __init__(self, title: str, raw_log_path: str, text: str, parent=None) -> None:

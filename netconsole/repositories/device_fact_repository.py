@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from netconsole.core.database import Database
+from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 
 
@@ -180,7 +181,8 @@ class DeviceFactRepository:
                 "SELECT * FROM device_interfaces WHERE device_uuid = ?",
                 (device_uuid,),
             ).fetchall()
-        return sorted([dict(row) for row in rows], key=lambda row: interface_sort_key(row.get("interface_name")))
+        latest = _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
+        return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
 
     def append_interface_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(INTERFACE_HISTORY_FIELDS, data)
@@ -207,7 +209,8 @@ class DeviceFactRepository:
                 "SELECT * FROM device_optical_modules WHERE device_uuid = ?",
                 (device_uuid,),
             ).fetchall()
-        return sorted([dict(row) for row in rows], key=lambda row: interface_sort_key(row.get("interface_name")))
+        latest = _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
+        return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
 
     def append_optical_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(OPTICAL_MODULE_HISTORY_FIELDS, data)
@@ -234,7 +237,8 @@ class DeviceFactRepository:
                 "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
                 (device_uuid,),
             ).fetchall()
-        return sorted([dict(row) for row in rows], key=lambda row: (interface_sort_key(row.get("local_interface")), str(row.get("neighbor_sysname") or "")))
+        latest = _latest_rows_by_interface([dict(row) for row in rows], "local_interface")
+        return sorted(latest, key=lambda row: (interface_sort_key(row.get("local_interface")), str(row.get("neighbor_sysname") or "")))
 
     def append_lldp_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(LLDP_HISTORY_FIELDS, data)
@@ -259,6 +263,60 @@ class DeviceFactRepository:
             "device_uuid = ? AND interface_name = ?",
             (device_uuid, interface_name),
         )
+
+    def list_all_optical_history(self, device_uuids: list[str] | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
+        params: list[object] = []
+        where = ""
+        if device_uuids is not None:
+            device_uuids = [str(device_uuid) for device_uuid in device_uuids if str(device_uuid or "").strip()]
+            if not device_uuids:
+                return []
+        if device_uuids:
+            placeholders = ", ".join("?" for _ in device_uuids)
+            where = f"WHERE device_uuid IN ({placeholders})"
+            params.extend(device_uuids)
+        params.append(limit)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM device_optical_modules_history
+                {where}
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_previous_optical_history(
+        self,
+        device_uuid: str,
+        interface_name: str,
+        before_collected_at: str | None = None,
+    ) -> dict[str, object | None] | None:
+        if not device_uuid or not interface_name:
+            return None
+        params: list[object] = [device_uuid, interface_name]
+        before_clause = ""
+        if before_collected_at:
+            before_clause = "AND collected_at < ?"
+            params.append(before_collected_at)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT * FROM device_optical_modules_history
+                WHERE device_uuid = ?
+                  AND interface_name = ?
+                  {before_clause}
+                  AND (
+                    rx_power IS NOT NULL OR status IS NOT NULL OR rx_low_alarm IS NOT NULL OR rx_low_warning IS NOT NULL
+                  )
+                ORDER BY collected_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def list_lldp_history(self, device_uuid: str, local_interface: str) -> list[dict[str, object | None]]:
         return self._list_history(
@@ -347,3 +405,33 @@ class DeviceFactRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+
+def _latest_rows_by_interface(rows: list[dict[str, object | None]], field: str) -> list[dict[str, object | None]]:
+    latest: dict[str, dict[str, object | None]] = {}
+    passthrough: list[dict[str, object | None]] = []
+    for row in rows:
+        interface_name = normalize_interface_name(row.get(field))
+        key = interface_name.casefold()
+        if not key:
+            passthrough.append(row)
+            continue
+        current = latest.get(key)
+        if current is None or _latest_fact_score(row) >= _latest_fact_score(current):
+            latest[key] = row
+    return [*latest.values(), *passthrough]
+
+
+def _latest_fact_score(row: dict[str, object | None]) -> tuple[str, str, int]:
+    return (
+        str(row.get("collected_at") or ""),
+        str(row.get("updated_at") or ""),
+        _int_value(row.get("id")),
+    )
+
+
+def _int_value(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0

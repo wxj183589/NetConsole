@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
 from threading import Event
 from time import perf_counter
 
@@ -17,7 +19,18 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     collect_trackside_optical,
 )
 from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
-from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
+from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, ApOnlineOverviewService
+from netconsole.services.trackside_ap_business import (
+    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+    build_ap_optical_treatment_records,
+    build_new_online_ap_overview_rows,
+    build_trackside_ap_business_rows,
+    enrich_trackside_export_rows,
+    export_trackside_ap_business_xlsx,
+    filter_station_switch_devices,
+)
 from netconsole.services.trackside_ap_business import is_trackside_ap_interface
 
 
@@ -43,7 +56,7 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
     query_start = perf_counter()
     fact_repository = DeviceFactRepository(repository.database)
     ac_repository = AcRepository(repository.database)
-    devices = repository.list()
+    devices = filter_station_switch_devices(repository.list(), repository.database, site_name)
     interfaces_by_device = {str(device.device_uuid or ""): fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
     optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
     lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
@@ -155,6 +168,115 @@ class TracksideApBusinessLoadThread(QThread):
             self.load_failed.emit(self.generation, str(exc))
             return
         self.load_finished.emit(result)
+
+
+class TracksideApBusinessExportThread(QThread):
+    stage_changed = Signal(str)
+    export_finished = Signal(object)
+    export_failed = Signal(str)
+
+    def __init__(
+        self,
+        repository: DeviceRepository,
+        site_name: str,
+        path: Path,
+        headers: list[str],
+        overview_headers: list[str],
+        new_online_headers: list[str],
+        new_online_sheet_title: str,
+        optical_treatment_headers: list[str],
+        optical_treatment_sheet_title: str,
+        offline_stats_headers: list[str],
+        offline_ledger_headers: list[str],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.repository = repository
+        self.site_name = site_name
+        self.path = Path(path)
+        self.headers = headers
+        self.overview_headers = overview_headers
+        self.new_online_headers = new_online_headers
+        self.new_online_sheet_title = new_online_sheet_title
+        self.optical_treatment_headers = optical_treatment_headers
+        self.optical_treatment_sheet_title = optical_treatment_sheet_title
+        self.offline_stats_headers = offline_stats_headers
+        self.offline_ledger_headers = offline_ledger_headers
+
+    def run(self) -> None:
+        tmp_path = self.path.with_name(f"{self.path.stem}.tmp{self.path.suffix}")
+        try:
+            self.stage_changed.emit("trackside.export.progress_load")
+            snapshot = load_trackside_ap_business_snapshot(self.repository, self.site_name, generation=0)
+            ac_repository = AcRepository(self.repository.database)
+            fact_repository = DeviceFactRepository(self.repository.database)
+            resources = ac_repository.list_all_fit_ap_resources_with_metadata()
+            ac_device_names = {str(device.device_uuid or ""): device.name for device in self.repository.list() if str(device.device_uuid or "")}
+            resources = [
+                {
+                    **row,
+                    "ac_device_name": row.get("ac_device_name") or ac_device_names.get(str(row.get("ac_device_uuid") or "")),
+                }
+                for row in resources
+            ]
+            optical_rows = ac_repository.list_all_fit_ap_optical()
+            resource_history_rows = ac_repository.list_all_fit_ap_resource_history()
+            ap_optical_history_rows = ac_repository.list_all_ap_optical_history()
+            capacity_details = ac_repository.list_active_trackside_plan_capacity_details()
+            if not capacity_details:
+                capacity_details = ac_repository.list_station_ap_capacity_details()
+            overview_rows = ApOnlineOverviewService.build_rows(
+                metadata_rows=ac_repository.list_fit_ap_metadata(),
+                fit_ap_resources=resources,
+                optical_rows=optical_rows,
+                capacity_details=capacity_details,
+            )
+            latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
+            devices = filter_station_switch_devices(self.repository.list(), self.repository.database, self.site_name)
+            switch_optical_history_rows = fact_repository.list_all_optical_history([str(device.device_uuid or "") for device in devices])
+            offline_stats, offline_ledger_rows = build_offline_ap_ledger(
+                fit_ap_resources=resources,
+                latest_lldp_by_ap=latest_lldp,
+                latest_optical_by_ap=latest_optical,
+                device_lookup_by_name=build_device_lookup_by_name(devices),
+            )
+            rows = enrich_trackside_export_rows(snapshot.rows, fact_repository, ac_repository)
+            new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows)
+            optical_treatment_rows = build_ap_optical_treatment_records(rows, ap_optical_history_rows, switch_optical_history_rows)
+            self.stage_changed.emit("trackside.export.progress_write")
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            export_trackside_ap_business_xlsx(
+                tmp_path,
+                rows,
+                TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+                self.headers,
+                overview_rows,
+                AP_ONLINE_OVERVIEW_COLUMNS,
+                self.overview_headers,
+                new_online_ap_rows,
+                NEW_ONLINE_AP_OVERVIEW_COLUMNS,
+                self.new_online_headers,
+                self.new_online_sheet_title,
+                optical_treatment_rows,
+                AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+                self.optical_treatment_headers,
+                self.optical_treatment_sheet_title,
+                offline_stats,
+                offline_ledger_rows,
+                self.offline_stats_headers,
+                self.offline_ledger_headers,
+                progress_callback=self.stage_changed.emit,
+            )
+            os.replace(tmp_path, self.path)
+        except Exception as exc:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            self.export_failed.emit(str(exc))
+            return
+        self.export_finished.emit({"path": self.path, "row_count": len(rows)})
 
 
 class TracksideOpticalCollectThread(QThread):

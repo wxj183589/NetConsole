@@ -83,10 +83,13 @@ def build_offline_ap_ledger(
     resources = list(fit_ap_resources or [])
     lldp_index = latest_lldp_by_ap or {}
     device_lookup = device_lookup_by_name or {}
+    online_keys = {_ap_key(resource) for resource in resources if not is_fit_ap_offline(resource)}
 
     ledger: list[dict[str, object | None]] = []
     for resource in resources:
         if not is_fit_ap_offline(resource):
+            continue
+        if _ap_key(resource) in online_keys:
             continue
         lldp = lldp_index.get(_ap_key(resource), {})
         switch_name = _historical_switch_name(lldp)

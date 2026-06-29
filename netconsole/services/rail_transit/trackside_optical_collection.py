@@ -30,12 +30,33 @@ from netconsole.utils.text_encoding import clean_h3c_device_text
 
 TRACKSIDE_OPTICAL_COMMANDS = (
     "screen-length disable",
-    "display interface",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
+    "display interface brief",
 )
 DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY = 1000
 UNSUPPORTED_VENDOR_REASON = "vendor_not_supported"
+ACTIVE_AC_KEYWORDS = ("active", "master", "primary", "主用", "主控", "主")
+STANDBY_AC_KEYWORDS = ("standby", "backup", "secondary", "备机", "备用", "备")
+
+
+def rank_ac_device_for_trackside(device: Device, summary: dict[str, object | None] | None = None) -> tuple[int, int, str, str]:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            getattr(device, "name", ""),
+            getattr(device, "system_name", ""),
+            getattr(device, "remark", ""),
+        )
+    ).casefold()
+    active_rank = 0
+    if any(keyword.casefold() in text for keyword in ACTIVE_AC_KEYWORDS):
+        active_rank = -1
+    elif any(keyword.casefold() in text for keyword in STANDBY_AC_KEYWORDS):
+        active_rank = 1
+    online_count = _int_value((summary or {}).get("online_aps"))
+    updated_at = str((summary or {}).get("updated_at") or (summary or {}).get("collected_at") or "")
+    return active_rank, -online_count, "".join(chr(255 - ord(ch)) for ch in updated_at), str(device.name or "").casefold()
 
 
 class UnsupportedVendor(ValueError):
@@ -383,7 +404,8 @@ def _collect_fit_ap_optical_subtasks(
     results = []
     skipped: list[TracksideSkippedTarget] = []
     total = 0
-    for ac_device in sorted(repository.list(vendor="H3C", device_type="AC"), key=lambda item: str(item.name or "").casefold()):
+    summaries = {str(row.get("ac_device_uuid") or ""): row for row in ac_repository.list_ac_ap_summaries()}
+    for ac_device in sorted(repository.list(vendor="H3C", device_type="AC"), key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or "")))):
         if cancel_event.is_set():
             continue
         resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths, refresh_ac_overview=False)
@@ -470,6 +492,13 @@ def _normalize_mac_text(value: object) -> str:
     return hex_text.casefold() if len(hex_text) == 12 else ""
 
 
+def _int_value(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0
+
+
 def _collect_one_target(target: TracksideOpticalTarget) -> TracksideDeviceCollectionResult:
     connection = None
     command_outputs: dict[str, str] = {}
@@ -478,7 +507,7 @@ def _collect_one_target(target: TracksideOpticalTarget) -> TracksideDeviceCollec
         for command in target.commands:
             output = clean_h3c_device_text(safe_send_command(connection, command, read_timeout=120, strip_prompt=False, strip_command=False, use_timing=True))
             command_outputs[command] = output
-        interfaces = parse_interfaces(command_outputs.get("display interface", ""))
+        interfaces = parse_interfaces(command_outputs.get("display interface brief", "") or command_outputs.get("display interface", ""))
         parsed = parse_transceiver_diagnosis(command_outputs.get("display transceiver diagnosis interface", ""))
         lldp_rows = parse_lldp_neighbors(command_outputs.get("display lldp neighbor-information list", ""))
         rows = [_result_row(target, row) for row in parsed]

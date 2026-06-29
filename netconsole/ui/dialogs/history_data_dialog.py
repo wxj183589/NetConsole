@@ -135,8 +135,9 @@ class HistoryDataDialog(QDialog):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
         self.show()
-        self.raise_()
-        self.activateWindow()
+        if enabled:
+            self.raise_()
+            self.activateWindow()
 
 
 def _history_column_min_widths(columns: tuple[tuple[str, str], ...]) -> dict[int, int]:

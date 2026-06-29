@@ -15,7 +15,10 @@ def parse_wlan_ap_summary(output: str) -> dict[str, object | None]:
     offline_from_rows = sum(1 for row in ap_rows if _is_idle_state(row.get("state") or row.get("state_display")))
     if online_aps is None and total_aps is not None:
         online_aps = max(total_aps - offline_from_rows, 0)
-    offline_aps = offline_from_rows if ap_rows else (total_aps - online_aps if total_aps is not None and online_aps is not None else None)
+    if total_aps is not None and online_aps is not None:
+        offline_aps = max(total_aps - online_aps, 0)
+    else:
+        offline_aps = offline_from_rows if ap_rows else None
     return {
         "total_aps": total_aps,
         "online_aps": online_aps,

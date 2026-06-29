@@ -50,9 +50,15 @@ from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
 from netconsole.services.trackside_ap_business import (
+    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_DEVICE_COLUMNS,
     TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS,
+    TREATMENT_CLOSED_LABEL,
+    TREATMENT_OPEN_LABEL,
+    build_ap_optical_treatment_records,
+    build_new_online_ap_overview_rows,
     build_trackside_ap_business_rows,
     description_contains_ap,
     export_trackside_ap_business_xlsx,
@@ -91,6 +97,7 @@ from netconsole.ui.pages.ac_management_page import (
     sort_fit_ap_optical_rows,
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
+from netconsole.ui.pages.mesh_log_analysis_page import MESH_ANALYSIS_REPORT_ENABLED, MeshLogAnalysisPage
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage, read_trackside_plan_file, _dotted_netmask_to_prefix, _parse_mask_length
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
 from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
@@ -1194,15 +1201,95 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     )
 
     assert result.success is True
-    assert result.summary_updated is False
+    assert result.summary_updated is True
     assert result.https_port_collected is False
     assert connection.commands == ["screen-length disable", *FIT_AP_RESOURCE_COMMANDS]
     assert "display cpu-usage" not in connection.commands
     assert "display memory" not in connection.commands
     assert "display version" not in connection.commands
     assert "display device" not in connection.commands
-    assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222") is None
+    summary = repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")
+    assert summary["total_aps"] == 2
+    assert summary["online_aps"] == 2
+    assert summary["offline_aps"] == 0
+    assert summary["cpu_usage"] is None
+    assert summary["model"] is None
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
+
+
+def test_h3c_ac_resource_only_collect_preserves_static_summary_fields(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.upsert_ac_ap_summary(
+        {
+            "ac_device_uuid": ac_uuid,
+            "total_aps": 82,
+            "online_aps": 58,
+            "offline_aps": 24,
+            "cpu_usage": "16%",
+            "memory_usage": "47%",
+            "model": "WX-AC",
+            "serial_number": "SN-AC",
+            "software_version": "Version 7.1",
+        }
+    )
+
+    collect_h3c_ac_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        refresh_ac_overview=False,
+    )
+
+    summary = repository.get_ac_ap_summary(ac_uuid)
+    assert summary["total_aps"] == 2
+    assert summary["online_aps"] == 2
+    assert summary["offline_aps"] == 0
+    assert summary["cpu_usage"] == "16%"
+    assert summary["memory_usage"] == "47%"
+    assert summary["model"] == "WX-AC"
+    assert summary["serial_number"] == "SN-AC"
+    assert summary["software_version"] == "Version 7.1"
+
+
+def test_h3c_ac_resource_only_collect_does_not_overwrite_summary_when_ap_all_fails(monkeypatch, tmp_path):
+    connection = FakeConnection({"display wlan ap all": RuntimeError("command failed")})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.upsert_ac_ap_summary({"ac_device_uuid": ac_uuid, "total_aps": 82, "online_aps": 58, "offline_aps": 24})
+
+    result = collect_h3c_ac_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        refresh_ac_overview=False,
+    )
+
+    summary = repository.get_ac_ap_summary(ac_uuid)
+    assert result.success is False
+    assert summary["total_aps"] == 82
+    assert summary["online_aps"] == 58
+    assert summary["offline_aps"] == 24
+
+
+def test_wlan_ap_summary_derives_offline_from_total_minus_online():
+    summary = parse_wlan_ap_summary(
+        """
+Total number of APs: 882
+Total number of connected APs: 756
+"""
+    )
+
+    assert summary["total_aps"] == 882
+    assert summary["online_aps"] == 756
+    assert summary["offline_aps"] == 126
 
 
 def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
@@ -1440,7 +1527,8 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert page.tabs.tabText(1) == "AP Online Overview"
     assert page.tabs.tabText(2) == "FIT-AP Resources"
     assert page.tabs.tabText(3) == "FIT-AP Optical"
-    assert page.tabs.tabText(4) == "Online Vehicle MR"
+    assert page.tabs.count() == 4
+    assert "Online Vehicle MR" not in [page.tabs.tabText(index) for index in range(page.tabs.count())]
 
 
 def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
@@ -1452,6 +1540,169 @@ def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
     assert page.optical_table.item(0, 0).background().color().name() == "#6b7280"
     assert page.optical_table.item(0, 0).foreground().color().name() == "#ffffff"
     assert page.optical_table.item(0, 0).textAlignment() == Qt.AlignCenter
+
+
+def test_mesh_report_generation_hidden_and_guarded(tmp_path, monkeypatch):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    messages: list[str] = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
+
+    page = MeshLogAnalysisPage(context.repository, I18n("en_US"), "demo", PathResolver(tmp_path))
+
+    assert MESH_ANALYSIS_REPORT_ENABLED is False
+    assert page.generate_report_button is None
+    page.generate_report()
+    assert messages == ["Report generation is temporarily disabled."]
+    assert page.report_worker is None
+
+
+def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_resource_history():
+    current_resources = [
+        {
+            "collect_run_uuid": "run-2",
+            "collected_at": "2026-06-30 10:00:00",
+            "site": "Station A",
+            "ap_name": "AP-New",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "SN-NEW",
+            "state": "R/M",
+        },
+        {
+            "collect_run_uuid": "run-2",
+            "collected_at": "2026-06-30 10:00:00",
+            "site": "Station A",
+            "ap_name": "AP-Idle",
+            "ap_mac": "0011-2233-4466",
+            "serial_number": "SN-IDLE",
+            "state": "Idle",
+        },
+        {
+            "collect_run_uuid": "run-2",
+            "collected_at": "2026-06-30 10:00:00",
+            "site": "Station A",
+            "ap_name": "AP-Old-Apid-Changed",
+            "ap_mac": "0011-2233-4477",
+            "serial_number": "SN-OLD",
+            "state": "Run",
+            "apid": "999",
+        },
+    ]
+    history_rows = [
+        {
+            "collect_run_uuid": "run-1",
+            "collected_at": "2026-06-29 10:00:00",
+            "ap_name": "AP-Old",
+            "ap_mac": "0011-2233-4477",
+            "serial_number": "SN-OLD",
+            "apid": "1",
+        }
+    ]
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "AP-New",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "SN-NEW",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet1/0/1",
+        }
+    ]
+
+    rows = build_new_online_ap_overview_rows(current_resources, history_rows, trackside_rows)
+
+    assert [row["ap_name"] for row in rows] == ["AP-New"]
+    assert rows[0]["device_name"] == "SW-1"
+    assert rows[0]["interface_name"] == "GigabitEthernet1/0/1"
+    assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][-1] == "updated_at"
+
+
+def test_build_ap_optical_treatment_records_closes_and_opens_by_history():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_uuid": "ap-1",
+            "ap_name": "AP-1",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "SN-1",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet1/0/1",
+            "ap_rx_power": "-8.00",
+            "ap_optical_status": "normal",
+            "switch_rx_power": "-21.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        }
+    ]
+    ap_history = [
+        {"id": 1, "ap_uuid": "ap-1", "rx_power": "-22.00", "optical_alarm_status": "warning", "collected_at": "2026-06-30 09:00:00"},
+        {"id": 2, "ap_uuid": "ap-1", "rx_power": "-8.00", "optical_alarm_status": "normal", "collected_at": "2026-06-30 09:30:00"},
+        {"id": 3, "ap_uuid": "ap-2", "rx_power": "-24.00", "optical_alarm_status": "warning", "collected_at": "2026-06-30 09:00:00"},
+    ]
+    switch_history = [
+        {
+            "id": 1,
+            "device_uuid": "sw-1",
+            "interface_name": "GE1/0/1",
+            "rx_power": "-20.00",
+            "optical_alarm_status": "failed",
+            "collected_at": "2026-06-30 08:00:00",
+        }
+    ]
+
+    records = build_ap_optical_treatment_records(trackside_rows, ap_history, switch_history)
+
+    assert [field for _key, field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS][0] == "site"
+    assert len(records) == 2
+    closed = next(row for row in records if row["side"] == "AP侧")
+    open_record = next(row for row in records if row["side"] == "交换机侧")
+    assert closed["treatment_status"] == TREATMENT_CLOSED_LABEL
+    assert closed["fixed_at"] == "2026-06-30 09:30:00"
+    assert open_record["treatment_status"] == TREATMENT_OPEN_LABEL
+    assert open_record["first_found_at"] == "2026-06-30 10:00:00"
+
+
+def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_full_export.xlsx"
+    i18n = I18n("zh_CN")
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        [],
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+        ap_online_overview_rows=[],
+        ap_online_overview_columns=AP_ONLINE_OVERVIEW_COLUMNS,
+        ap_online_overview_headers=[i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+        new_online_ap_rows=[{"site": "Station A", "ap_name": "AP-New"}],
+        new_online_ap_columns=NEW_ONLINE_AP_OVERVIEW_COLUMNS,
+        new_online_ap_headers=[i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
+        new_online_ap_sheet_title=i18n.t("trackside.export.sheet_new_online_ap_overview"),
+        ap_optical_treatment_rows=[{"site": "Station A", "ap_name": "AP-1", "side": "AP侧", "treatment_status": TREATMENT_OPEN_LABEL}],
+        ap_optical_treatment_columns=AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+        ap_optical_treatment_headers=[i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
+        ap_optical_treatment_sheet_title=i18n.t("trackside.export.sheet_ap_optical_treatment"),
+        offline_ap_stats={field: 0 for _key, field in OFFLINE_AP_STATS_COLUMNS},
+        offline_ap_ledger_rows=[],
+        offline_ap_stats_headers=offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+        offline_ap_ledger_headers=offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+    )
+
+    workbook = load_workbook(export_path)
+    assert workbook.sheetnames == [
+        "轨旁AP业务",
+        "AP上线情况概览",
+        "新增上线AP概览",
+        "AP光衰处理记录",
+        "AP离线情况",
+        "离线AP台账",
+        "交换机光模块统计",
+    ]
+    assert workbook["新增上线AP概览"]["A2"].value == "Station A"
+    assert workbook["AP光衰处理记录"]["O2"].value == TREATMENT_OPEN_LABEL
 
 
 def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):

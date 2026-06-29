@@ -162,8 +162,9 @@ class TracksideInterfaceHistoryDialog(QDialog):
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         self.show()
-        self.raise_()
-        self.activateWindow()
+        if enabled:
+            self.raise_()
+            self.activateWindow()
 
     def closeEvent(self, event) -> None:
         self._save_window_state()

@@ -254,6 +254,18 @@ AP_ENTITY_FIELDS = (
     "created_at",
     "updated_at",
 )
+AC_AP_DYNAMIC_SUMMARY_FIELDS = (
+    "total_aps",
+    "online_aps",
+    "offline_aps",
+    "total_ap_licenses",
+    "local_ap_licenses",
+    "remaining_local_ap_licenses",
+    "collected_at",
+    "collect_run_uuid",
+    "raw_log_path",
+    "updated_at",
+)
 
 AP_RESOURCE_SNAPSHOT_FIELDS = (
     "snapshot_uuid",
@@ -332,10 +344,37 @@ class AcRepository:
             conn.commit()
         return self.get_ac_ap_summary(str(payload["ac_device_uuid"])) or payload
 
+    def upsert_ac_ap_dynamic_summary(self, ac_device_uuid: str, data: dict[str, object | None]) -> dict[str, object | None]:
+        if not ac_device_uuid:
+            raise ValueError("ac_device_uuid is required")
+        payload = self._payload(AC_AP_DYNAMIC_SUMMARY_FIELDS, data)
+        payload["ac_device_uuid"] = ac_device_uuid
+        self._set_time_defaults(payload)
+        fields = ("ac_device_uuid", *AC_AP_DYNAMIC_SUMMARY_FIELDS)
+        columns = ", ".join(fields)
+        placeholders = ", ".join("?" for _ in fields)
+        updates = ", ".join(f"{field} = excluded.{field}" for field in AC_AP_DYNAMIC_SUMMARY_FIELDS)
+        with self.database.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO ac_ap_summary ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT(ac_device_uuid) DO UPDATE SET {updates}
+                """,
+                [payload[field] for field in fields],
+            )
+            conn.commit()
+        return self.get_ac_ap_summary(ac_device_uuid) or payload
+
     def get_ac_ap_summary(self, ac_device_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM ac_ap_summary WHERE ac_device_uuid = ?", (ac_device_uuid,)).fetchone()
         return dict(row) if row is not None else None
+
+    def list_ac_ap_summaries(self) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute("SELECT * FROM ac_ap_summary ORDER BY updated_at DESC, ac_device_uuid").fetchall()
+        return [dict(row) for row in rows]
 
     def replace_fit_ap_resources(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
         now = self._now()
@@ -411,6 +450,18 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (ac_device_uuid, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_all_fit_ap_resource_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ac_fit_ap_resource_history
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -509,12 +560,18 @@ class AcRepository:
             conn.commit()
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
-        return self._list_rows("ac_fit_ap_optical", ac_device_uuid, "ap_name, id")
+        return sorted(
+            _latest_rows_by_ap_identity(self._list_rows("ac_fit_ap_optical", ac_device_uuid, "ap_name, id")),
+            key=lambda row: (str(row.get("ap_name") or ""), _int_value(row.get("id"))),
+        )
 
     def list_all_fit_ap_optical(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM ac_fit_ap_optical ORDER BY neighbor_device_name, neighbor_interface, ap_name, id").fetchall()
-        return [dict(row) for row in rows]
+        return sorted(
+            _latest_rows_by_ap_identity([dict(row) for row in rows]),
+            key=lambda row: (str(row.get("neighbor_device_name") or ""), str(row.get("neighbor_interface") or ""), str(row.get("ap_name") or "")),
+        )
 
     def get_fit_ap_optical_by_uuid(self, ac_device_uuid: str, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -581,6 +638,125 @@ class AcRepository:
                 (ap_uuid, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_all_ap_optical_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            entity_rows = conn.execute(
+                """
+                SELECT id, ap_uuid, NULL AS ap_name, NULL AS ap_mac, side, device_uuid,
+                       interface_name, rx_power, tx_power, alarm_status AS optical_alarm_status,
+                       collected_at, data_source, created_at
+                FROM ap_optical_history
+                WHERE side = 'ap'
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            fit_rows = conn.execute(
+                """
+                SELECT id, ap_uuid, ap_name, ap_mac, 'ap' AS side, ac_device_uuid AS device_uuid,
+                       interface_name, rx_power, tx_power,
+                       COALESCE(optical_alarm_status, status) AS optical_alarm_status,
+                       collected_at, 'ac_fit_ap_optical_history' AS data_source, created_at
+                FROM ac_fit_ap_optical_history
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows]
+
+    def get_previous_ap_optical_history(
+        self,
+        identity: dict[str, str],
+        before_collected_at: str | None = None,
+    ) -> dict[str, object | None] | None:
+        with self.database.connect() as conn:
+            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid",))
+            if clauses:
+                before_clause = ""
+                if before_collected_at:
+                    before_clause = "AND collected_at < ?"
+                    params.append(before_collected_at)
+                row = conn.execute(
+                    f"""
+                    SELECT * FROM ap_optical_history
+                    WHERE side = 'ap'
+                      AND ({' OR '.join(clauses)})
+                      {before_clause}
+                    ORDER BY collected_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    params,
+                ).fetchone()
+                if row is not None:
+                    return dict(row)
+            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "ap_name"))
+            if not clauses:
+                return None
+            before_clause = ""
+            if before_collected_at:
+                before_clause = "AND collected_at < ?"
+                params.append(before_collected_at)
+            row = conn.execute(
+                f"""
+                SELECT * FROM ac_fit_ap_optical_history
+                WHERE ({' OR '.join(clauses)})
+                  {before_clause}
+                  AND (
+                    rx_power IS NOT NULL OR optical_alarm_status IS NOT NULL OR status IS NOT NULL
+                  )
+                ORDER BY collected_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_previous_ap_lldp_history(
+        self,
+        identity: dict[str, str],
+        before_collected_at: str | None = None,
+    ) -> dict[str, object | None] | None:
+        clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "ap_name", "serial_number"))
+        if not clauses:
+            return None
+        before_clause = ""
+        if before_collected_at:
+            before_clause = "AND collected_at < ?"
+            params.append(before_collected_at)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT * FROM ap_lldp_history
+                WHERE ({' OR '.join(clauses)})
+                  {before_clause}
+                  AND neighbor_interface IS NOT NULL
+                ORDER BY collected_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is not None:
+                return dict(row)
+            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "ap_name"))
+            before_clause = ""
+            if before_collected_at:
+                before_clause = "AND collected_at < ?"
+                params.append(before_collected_at)
+            row = conn.execute(
+                f"""
+                SELECT * FROM ac_fit_ap_lldp_history
+                WHERE ({' OR '.join(clauses)})
+                  {before_clause}
+                  AND neighbor_interface IS NOT NULL
+                ORDER BY collected_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def list_latest_ap_lldp_history(self, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -999,20 +1175,20 @@ class AcRepository:
             if found and found["ap_uuid"]:
                 return str(found["ap_uuid"])
 
-        normalized_mac = self._normalized_explicit_ap_mac(row)
-        if normalized_mac:
-            found = conn.execute(
-                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND ap_mac = ? ORDER BY id DESC LIMIT 1",
-                (site_id, normalized_mac),
-            ).fetchone()
-            if found and found["ap_uuid"]:
-                return str(found["ap_uuid"])
-
         serial_number = self._clean_identity_value(row.get("serial_number"))
         if serial_number:
             found = conn.execute(
                 "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND serial_number = ? ORDER BY id DESC LIMIT 1",
                 (site_id, serial_number),
+            ).fetchone()
+            if found and found["ap_uuid"]:
+                return str(found["ap_uuid"])
+
+        normalized_mac = self._normalized_explicit_ap_mac(row)
+        if normalized_mac:
+            found = conn.execute(
+                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND ap_mac = ? ORDER BY id DESC LIMIT 1",
+                (site_id, normalized_mac),
             ).fetchone()
             if found and found["ap_uuid"]:
                 return str(found["ap_uuid"])
@@ -1265,6 +1441,20 @@ class AcRepository:
     def _payload(cls, fields: tuple[str, ...], data: dict[str, object | None]) -> dict[str, object | None]:
         return {field: data.get(field) for field in fields}
 
+    @staticmethod
+    def _ap_identity_clauses(identity: dict[str, str], allowed: tuple[str, ...]) -> tuple[list[str], list[object]]:
+        clauses: list[str] = []
+        params: list[object] = []
+        for field in ("ap_uuid", "serial_number", "ap_mac", "ap_name"):
+            if field not in allowed:
+                continue
+            value = str(identity.get(field) or "").strip()
+            if not value or value in {"-", "N/A", "n/a"}:
+                continue
+            clauses.append(f"lower(trim({field})) = lower(trim(?))")
+            params.append(value)
+        return clauses, params
+
     @classmethod
     def _normalized_ap_mac(cls, data: dict[str, object | None]) -> str:
         for field in ("ap_mac", "mac", "ap_name"):
@@ -1377,3 +1567,40 @@ class AcRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+
+def _latest_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+    latest: dict[tuple[str, str], dict[str, object | None]] = {}
+    passthrough: list[dict[str, object | None]] = []
+    for row in rows:
+        key = _ap_identity_key(row)
+        if not key:
+            passthrough.append(row)
+            continue
+        current = latest.get(key)
+        if current is None or _latest_row_score(row) >= _latest_row_score(current):
+            latest[key] = row
+    return [*latest.values(), *passthrough]
+
+
+def _ap_identity_key(row: dict[str, object | None]) -> tuple[str, str] | None:
+    for field in ("ap_uuid", "serial_number", "ap_mac", "ap_name"):
+        value = str(row.get(field) or "").strip()
+        if value and value not in {"-", "N/A", "n/a"}:
+            return field, value.casefold()
+    return None
+
+
+def _latest_row_score(row: dict[str, object | None]) -> tuple[str, str, int]:
+    return (
+        str(row.get("collected_at") or ""),
+        str(row.get("updated_at") or ""),
+        _int_value(row.get("id")),
+    )
+
+
+def _int_value(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0

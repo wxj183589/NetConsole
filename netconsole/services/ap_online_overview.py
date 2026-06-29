@@ -475,7 +475,6 @@ def _plan_unique_key(row: dict[str, object | None]) -> str:
         ("mac", "_match_mac"),
         ("uuid", "_match_uuid"),
         ("serial", "_match_serial"),
-        ("apid", "_match_apid"),
         ("name", "_match_name_compact"),
     ):
         value = str(row.get(field) or "")
@@ -489,7 +488,6 @@ def _resource_unique_key(row: dict[str, object | None]) -> str:
         ("mac", "_match_mac"),
         ("uuid", "_match_uuid"),
         ("serial", "_match_serial"),
-        ("apid", "_match_apid"),
         ("name", "_match_name_compact"),
     ):
         value = str(row.get(field) or "")
