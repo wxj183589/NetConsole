@@ -84,10 +84,12 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
     )
 
     assert [field for _key, field in OFFLINE_AP_LEDGER_COLUMNS] == [
+        "site",
         "ap_name",
         "ap_mac",
+        "serial_number",
         "ap_status",
-        "site",
+        "offline_at",
         "historical_switch_name",
         "historical_switch_interface",
     ]
@@ -101,6 +103,75 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
     assert ledger[0]["historical_switch_interface"] == "GE1/0/1"
     assert "ap_rx_power" not in ledger[0]
     assert "switch_rx_power" not in ledger[0]
+
+
+def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
+    resources = [
+        {
+            "ap_uuid": "ap-b",
+            "ap_name": "AP-B",
+            "ap_mac": "00aa-bbcc-0002",
+            "serial_number": "SN-B",
+            "state": "Idle",
+            "site": "B",
+            "updated_at": "2026-06-30 12:00:00",
+        },
+        {
+            "ap_uuid": "ap-a2",
+            "ap_name": "AP-A2",
+            "ap_mac": "00aa-bbcc-0003",
+            "serial_number": "SN-A2",
+            "state": "Idle",
+            "site": "A",
+            "updated_at": "2026-06-30 12:00:00",
+        },
+        {
+            "ap_uuid": "ap-a1",
+            "ap_name": "AP-A1",
+            "ap_mac": "00aa-bbcc-0001",
+            "serial_number": "SN-A1",
+            "state": "Idle",
+            "site": "A",
+            "updated_at": "2026-06-30 12:00:00",
+        },
+    ]
+    history = [
+        {"id": 1, "ap_name": "AP-A1", "ap_mac": "00aa-bbcc-0001", "serial_number": "SN-A1", "state_raw": "R/M", "collected_at": "2026-06-30 08:00:00"},
+        {"id": 2, "ap_name": "AP-A1", "ap_mac": "00aa-bbcc-0001", "serial_number": "SN-A1", "state_raw": "Idle", "collected_at": "2026-06-30 09:00:00"},
+        {"id": 3, "ap_name": "AP-A2", "ap_mac": "00aa-bbcc-0003", "serial_number": "SN-A2", "state_raw": "Idle", "collected_at": "2026-06-30 07:00:00"},
+        {"id": 4, "ap_name": "AP-B", "ap_mac": "00aa-bbcc-0002", "serial_number": "SN-B", "state_raw": "R/M", "collected_at": "2026-06-30 06:00:00"},
+        {"id": 5, "ap_name": "AP-B", "ap_mac": "00aa-bbcc-0002", "serial_number": "SN-B", "state_raw": "Idle", "collected_at": "2026-06-30 11:00:00"},
+    ]
+
+    stats, ledger = build_offline_ap_ledger(
+        fit_ap_resources=resources,
+        latest_lldp_by_ap={},
+        device_lookup_by_name={},
+        resource_history_rows=history,
+    )
+
+    assert stats["offline_aps"] == 3
+    assert [(row["site"], row["ap_name"], row["offline_at"]) for row in ledger] == [
+        ("A", "AP-A2", "2026-06-30 07:00:00"),
+        ("A", "AP-A1", "2026-06-30 09:00:00"),
+        ("B", "AP-B", "2026-06-30 11:00:00"),
+    ]
+
+
+def test_offline_ledger_offline_at_falls_back_to_current_fact_and_allows_blank():
+    stats, ledger = build_offline_ap_ledger(
+        fit_ap_resources=[
+            {"ap_name": "AP-TIME", "ap_mac": "00aa-bbcc-0001", "state": "down", "site": "A", "updated_at": "2026-06-30 12:00:00"},
+            {"ap_name": "AP-BLANK", "ap_mac": "00aa-bbcc-0002", "state": "offline", "site": "A"},
+        ],
+        latest_lldp_by_ap={},
+        device_lookup_by_name={},
+        resource_history_rows=[],
+    )
+
+    assert stats["offline_aps"] == 2
+    assert next(row for row in ledger if row["ap_name"] == "AP-TIME")["offline_at"] == "2026-06-30 12:00:00"
+    assert next(row for row in ledger if row["ap_name"] == "AP-BLANK")["offline_at"] == ""
 
 
 def test_offline_ledger_mac_fallback_and_fit_ap_site_fills_empty_device_station(tmp_path):

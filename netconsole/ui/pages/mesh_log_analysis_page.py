@@ -5,11 +5,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
+from PySide6.QtCore import QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -49,13 +50,59 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
 from netconsole.ui.table.table_autosize_engine import apply_table_autosize
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
-from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog, MeshPeerDetailDialog
 from netconsole.utils.natural_sort import natural_text_key
 
 
 FILE_FILTER = "MESH Logs (*.log *.log.gz *.txt);;Log Files (*.log *.log.gz);;Text Files (*.txt);;All Files (*.*)"
 MESH_DEFAULT_PAGE_SIZE = 1000
 MESH_ANALYSIS_REPORT_ENABLED = False
+
+
+class MeshLinkDetailExportWorker(QThread):
+    stageChanged = Signal(str)
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        db_path: Path,
+        output_path: Path,
+        filters: dict[str, object | None],
+        source_file_id: int | None,
+        radio: int | None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.db_path = Path(db_path)
+        self.output_path = Path(output_path)
+        self.filters = dict(filters)
+        self.source_file_id = source_file_id
+        self.radio = radio
+
+    def run(self) -> None:
+        tmp_path = self.output_path.with_name(f"{self.output_path.stem}.tmp{self.output_path.suffix}")
+        try:
+            repo = MeshMrRepository(self.db_path)
+            self.stageChanged.emit("mesh_analysis.export_progress_query_links")
+            total, _ = repo.query_links(1, 0, self.filters)
+            _total, rows = repo.query_links(max(total, 1), 0, self.filters)
+            self.stageChanged.emit("mesh_analysis.export_progress_query_build_order")
+            active_build_order_rows = repo.query_active_link_build_order(self.source_file_id, self.radio)
+            self.stageChanged.emit("mesh_analysis.export_progress_write_links")
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            export_mesh_link_details_xlsx(tmp_path, rows, active_build_order_rows)
+            self.stageChanged.emit("mesh_analysis.export_progress_save")
+            os.replace(tmp_path, self.output_path)
+        except Exception as exc:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(str(self.output_path))
 
 
 class MeshLogAnalysisPage(QWidget):
@@ -86,6 +133,7 @@ class MeshLogAnalysisPage(QWidget):
         self.repo_cache: dict[str, MeshMrRepository] = {}
         self.profile_by_id: dict[str, MeshMrProfile] = {}
         self.worker: MeshLogImportWorker | None = None
+        self.export_worker: MeshLinkDetailExportWorker | None = None
         self.report_worker: object | None = None
         self.derived_worker: MeshDerivedAnalysisRebuildWorker | None = None
         self.peer_dialogs: list[MeshPeerDetailDialog] = []
@@ -103,7 +151,7 @@ class MeshLogAnalysisPage(QWidget):
         self._restoring_column_widths = False
         self._link_column_widths_changed = False
         self.mr_load_generation = 0
-        self.dirty_tabs: set[str] = {"source", "link", "event", "issue"}
+        self.dirty_tabs: set[str] = {"source", "link", "active_build_order", "event", "issue"}
 
         self.title_label = QLabel()
         self.create_mr_button = QPushButton()
@@ -115,18 +163,20 @@ class MeshLogAnalysisPage(QWidget):
         self.open_folder_button = QPushButton()
         self.generate_report_button = QPushButton() if MESH_ANALYSIS_REPORT_ENABLED else None
         self.export_link_button = QPushButton()
+        self.open_full_active_chart_button = QPushButton()
         self.progress_bar = QProgressBar()
         self.progress_label = QLabel()
 
         self.mr_table = QTableWidget(0, 8)
         self.source_table = QTableWidget(0, 15)
         self.link_table = QTableWidget(0, 27)
+        self.active_build_order_table = QTableWidget(0, 18)
         self.event_table = QTableWidget(0, 14)
         self.issue_table = QTableWidget(0, 7)
         self.issue_empty_widget = QWidget()
         self.issue_empty_title = QLabel()
         self.issue_empty_description = QLabel()
-        for table in (self.mr_table, self.source_table, self.link_table, self.event_table, self.issue_table):
+        for table in (self.mr_table, self.source_table, self.link_table, self.active_build_order_table, self.event_table, self.issue_table):
             table.setProperty("netconsole_manual_column_widths", True)
             configure_readonly_table(table)
             table.setSortingEnabled(True)
@@ -144,7 +194,10 @@ class MeshLogAnalysisPage(QWidget):
         self.link_table.horizontalHeader().sectionResized.connect(self._mark_link_column_width_changed)
 
         self.radio_filter = QLineEdit()
-        self.state_filter = QLineEdit()
+        self.state_filter = QComboBox()
+        self.state_filter.addItem(self.i18n.t("mesh_analysis.state_default"), None)
+        self.state_filter.addItem(self.i18n.t("mesh_analysis.state_active"), "ACTIVE")
+        self.state_filter.addItem(self.i18n.t("mesh_analysis.state_standby"), "STANDBY")
         self.peer_filter = QLineEdit()
         self.keyword_filter = QLineEdit()
         self.detail_text = QTextEdit()
@@ -207,8 +260,11 @@ class MeshLogAnalysisPage(QWidget):
         if self.generate_report_button is not None:
             self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
         self.export_link_button.setText("导出链路明细")
+        self.open_full_active_chart_button.setText(self.i18n.t("mesh_analysis.open_full_active_chart"))
         self.radio_filter.setPlaceholderText("Radio")
-        self.state_filter.setPlaceholderText(self.i18n.t("mesh_analysis.state"))
+        self.state_filter.setItemText(0, self.i18n.t("mesh_analysis.state_default"))
+        self.state_filter.setItemText(1, self.i18n.t("mesh_analysis.state_active"))
+        self.state_filter.setItemText(2, self.i18n.t("mesh_analysis.state_standby"))
         self.peer_filter.setPlaceholderText("PeerMac / AP名称 / 站点")
         self.keyword_filter.setPlaceholderText(self.i18n.t("mesh_analysis.keyword"))
         self.mr_table.setHorizontalHeaderLabels(
@@ -273,6 +329,28 @@ class MeshLogAnalysisPage(QWidget):
                 self.i18n.t("mesh_analysis.line_number"),
             ]
         )
+        self.active_build_order_table.setHorizontalHeaderLabels(
+            [
+                "序号",
+                "Radio",
+                "Active PeerMac",
+                "当前PEER AP名称",
+                "归属站点",
+                "Peer Radio",
+                self.i18n.t("mesh_analysis.build_start_time"),
+                self.i18n.t("mesh_analysis.build_end_time"),
+                self.i18n.t("mesh_analysis.main_link_duration_seconds"),
+                self.i18n.t("mesh_analysis.reported_duration_seconds"),
+                self.i18n.t("mesh_analysis.samples"),
+                self.i18n.t("mesh_analysis.mr_rssi"),
+                self.i18n.t("mesh_analysis.min_rssi"),
+                self.i18n.t("mesh_analysis.max_rssi"),
+                "TxBusy",
+                "RxBusy",
+                self.i18n.t("mesh_analysis.build_result"),
+                self.i18n.t("mesh_analysis.file_name"),
+            ]
+        )
         self.event_table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("mesh_analysis.event_time"),
@@ -304,7 +382,8 @@ class MeshLogAnalysisPage(QWidget):
         )
         self.tabs.setTabText(0, self.i18n.t("mesh_analysis.source_files"))
         self.tabs.setTabText(1, self.i18n.t("mesh_analysis.link_details"))
-        self.tabs.setTabText(2, self.i18n.t("mesh_analysis.events"))
+        self.tabs.setTabText(2, self.i18n.t("mesh_analysis.active_build_order"))
+        self.tabs.setTabText(3, self.i18n.t("mesh_analysis.events"))
         self._set_issue_tab_count(0)
         self.issue_empty_title.setText(self.i18n.t("mesh_analysis.no_parse_issues"))
         self.issue_empty_description.setText(self.i18n.t("mesh_analysis.no_parse_issues_description"))
@@ -320,6 +399,7 @@ class MeshLogAnalysisPage(QWidget):
             self.refresh_button,
             self.open_folder_button,
             self.export_link_button,
+            self.open_full_active_chart_button,
         ):
             toolbar.addWidget(button)
         if self.generate_report_button is not None:
@@ -343,6 +423,9 @@ class MeshLogAnalysisPage(QWidget):
         links_layout.addWidget(self.link_table, 1)
         links_layout.addWidget(self.link_pagination)
         links_layout.addWidget(self.detail_text)
+        active_build_page = QWidget()
+        active_build_layout = QVBoxLayout(active_build_page)
+        active_build_layout.addWidget(self.active_build_order_table)
         event_page = QWidget()
         event_layout = QVBoxLayout(event_page)
         event_layout.addWidget(self.event_table)
@@ -361,6 +444,7 @@ class MeshLogAnalysisPage(QWidget):
         issue_layout.addWidget(self.issue_empty_widget, 1)
         self.tabs.addTab(source_page, "")
         self.tabs.addTab(links_page, "")
+        self.tabs.addTab(active_build_page, "")
         self.tabs.addTab(event_page, "")
         self.tabs.addTab(issue_page, "")
         right = QWidget()
@@ -386,9 +470,10 @@ class MeshLogAnalysisPage(QWidget):
         if self.generate_report_button is not None:
             self.generate_report_button.clicked.connect(self.generate_report)
         self.export_link_button.clicked.connect(self.export_link_details)
+        self.open_full_active_chart_button.clicked.connect(self.open_full_active_chart)
         self.mr_table.itemSelectionChanged.connect(self._schedule_current_mr_selection)
         self.radio_filter.textChanged.connect(self._schedule_link_refresh)
-        self.state_filter.textChanged.connect(self._schedule_link_refresh)
+        self.state_filter.currentIndexChanged.connect(self._schedule_link_refresh)
         self.peer_filter.textChanged.connect(self._schedule_link_refresh)
         self.keyword_filter.textChanged.connect(self._schedule_link_refresh)
         self.filter_timer.timeout.connect(self.refresh_link_table)
@@ -444,13 +529,16 @@ class MeshLogAnalysisPage(QWidget):
         profile = self._require_profile()
         if profile is None:
             return
+        if self.export_worker is not None and self.export_worker.isRunning():
+            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.progress_label.text())
+            return
         repo = self._repo()
         filters = self._current_link_filters()
         total, _rows = repo.query_links(1, 0, filters)
         if total <= 0:
             QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), "暂无可导出的链路明细数据")
             return
-        _total, rows = repo.query_links(max(total, 1), 0, filters)
+        radio = self._current_radio()
         export_dir = self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name)
         export_dir.mkdir(parents=True, exist_ok=True)
         default_name = f"{_safe_filename(profile.display_name)}_链路明细_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -460,12 +548,67 @@ class MeshLogAnalysisPage(QWidget):
         path = Path(selected)
         if path.suffix.casefold() != ".xlsx":
             path = path.with_suffix(".xlsx")
-        try:
-            export_mesh_link_details_xlsx(path, rows)
-        except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"导出链路明细失败：{exc}")
-            return
+        self.export_link_button.setEnabled(False)
+        self.progress_label.setText(self.i18n.t("mesh_analysis.export_progress_query_links"))
+        self.export_worker = MeshLinkDetailExportWorker(
+            self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name),
+            path,
+            filters,
+            self.current_source_file_id,
+            radio,
+            self,
+        )
+        self.export_worker.stageChanged.connect(lambda key: self.progress_label.setText(self.i18n.t(key)))
+        self.export_worker.completed.connect(self._on_link_export_completed)
+        self.export_worker.failed.connect(self._on_link_export_failed)
+        self.export_worker.completed.connect(lambda _path: self._cleanup_export_worker())
+        self.export_worker.failed.connect(lambda _error: self._cleanup_export_worker())
+        self.export_worker.start()
+
+    def _on_link_export_completed(self, path: str) -> None:
+        self.export_link_button.setEnabled(True)
+        self.progress_label.setText(f"链路明细已导出：{path}")
         QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), f"链路明细已导出：\n{path}")
+
+    def _on_link_export_failed(self, error: str) -> None:
+        self.export_link_button.setEnabled(True)
+        self.progress_label.setText(f"导出链路明细失败：{error}")
+        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"导出链路明细失败：{error}")
+
+    def _cleanup_export_worker(self) -> None:
+        if self.export_worker is not None:
+            self.export_worker.deleteLater()
+            self.export_worker = None
+
+    def open_full_active_chart(self) -> None:
+        profile = self._require_profile()
+        if profile is None:
+            return
+        radio = self._current_radio()
+        source_label = self.current_source_file_name or self.i18n.t("mesh_analysis.all_source_files")
+        dialog = MeshActiveLinkChartDialog(
+            self.i18n,
+            profile,
+            self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name),
+            radio,
+            self.current_source_file_id,
+            source_label,
+            parent=None,
+            owner_widget=self,
+            detail_jump_handler=self.jump_to_mesh_link_detail,
+        )
+        self.peer_dialogs.append(dialog)
+        dialog.finished.connect(lambda _result, dialog=dialog: self._remove_peer_dialog(dialog))
+        dialog.show()
+
+    def _current_radio(self) -> int | None:
+        text = self.radio_filter.text().strip()
+        return int(text) if text.isdigit() else None
+
+    def _remove_peer_dialog(self, dialog: MeshPeerDetailDialog) -> None:
+        if dialog in self.peer_dialogs:
+            self.peer_dialogs.remove(dialog)
+        dialog.deleteLater()
 
     def cancel_import(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -555,13 +698,13 @@ class MeshLogAnalysisPage(QWidget):
         generation = self.mr_load_generation
         app_logger.log_info("MESH_MR_LOAD_STARTED", f"mr_id={mr_id}, generation={generation}, tab={self._current_tab_name()}")
         self.source_page = self.link_page = self.event_page = self.issue_page = 1
-        self.dirty_tabs = {"source", "link", "event", "issue"}
+        self.dirty_tabs = {"source", "link", "active_build_order", "event", "issue"}
         self.refresh_current_tab(generation)
         app_logger.log_info("MESH_MR_LOAD_COMPLETED", f"mr_id={mr_id}, generation={generation}, tab={self._current_tab_name()}")
 
     def refresh_current_mr_data(self, current_tab_only: bool = False) -> None:
         if self.current_profile is None:
-            for table in (self.source_table, self.link_table, self.event_table, self.issue_table):
+            for table in (self.source_table, self.link_table, self.active_build_order_table, self.event_table, self.issue_table):
                 table.setRowCount(0)
             self.refresh_parse_issues()
             return
@@ -572,6 +715,7 @@ class MeshLogAnalysisPage(QWidget):
             return
         self._render_sources(repo)
         self.refresh_link_table()
+        self._render_active_build_order(repo)
         self._render_events(repo)
         self.refresh_parse_issues(repo)
         self.dirty_tabs.clear()
@@ -595,6 +739,8 @@ class MeshLogAnalysisPage(QWidget):
             self._render_sources(repo)
         elif tab == "link":
             self._render_links(repo)
+        elif tab == "active_build_order":
+            self._render_active_build_order(repo)
         elif tab == "event":
             self._render_events(repo)
         elif tab == "issue":
@@ -808,6 +954,39 @@ class MeshLogAnalysisPage(QWidget):
         self.link_table.sortItems(0, Qt.AscendingOrder)
         self.restyle_visible_link_rows()
 
+    def _render_active_build_order(self, repo: MeshMrRepository) -> None:
+        radio = int(self.radio_filter.text()) if self.radio_filter.text().strip().isdigit() else None
+        rows = repo.query_active_link_build_order(self.current_source_file_id, radio)
+        _begin_table_update(self.active_build_order_table)
+        self.active_build_order_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [
+                row.get("sequence"),
+                row.get("radio"),
+                format_mac_h3c(row.get("active_peer_mac")) if row.get("active_peer_mac") else "",
+                row.get("peer_ap_name"),
+                row.get("peer_site"),
+                row.get("peer_radio"),
+                row.get("build_start_time"),
+                row.get("build_end_time"),
+                row.get("main_link_duration_seconds"),
+                row.get("reported_duration_seconds"),
+                row.get("sample_count"),
+                row.get("avg_mr_rssi"),
+                row.get("min_mr_rssi"),
+                row.get("max_mr_rssi"),
+                row.get("avg_tx_busy"),
+                row.get("avg_rx_busy"),
+                self.i18n.t("mesh_analysis.build_result_normal") if row.get("build_result") == "normal" else self.i18n.t("mesh_analysis.build_result_short"),
+                row.get("source_file"),
+            ]
+            _set_row(self.active_build_order_table, row_index, values, row)
+        _end_table_update(self.active_build_order_table)
+        app_logger.log_info(
+            "MESH_ACTIVE_BUILD_ORDER_RENDERED",
+            f"source_file_id={self.current_source_file_id or 'ALL'}, radio={radio if radio is not None else 'ALL'}, rows={len(rows)}",
+        )
+
     def _render_events(self, repo: MeshMrRepository) -> None:
         total, rows = repo.query_events(self.page_size, (self.event_page - 1) * self.page_size, self.current_source_file_id)
         self.event_pagination.set_state(PaginationState(self.page_size, self.event_page, total, max((total + self.page_size - 1) // self.page_size, 1)))
@@ -866,8 +1045,8 @@ class MeshLogAnalysisPage(QWidget):
         _end_table_update(self.issue_table)
 
     def _set_issue_tab_count(self, count: int) -> None:
-        if self.tabs.count() >= 4:
-            self.tabs.setTabText(3, self.i18n.t("mesh_analysis.parse_issues_with_count", count=count))
+        if self.tabs.count() >= 5:
+            self.tabs.setTabText(4, self.i18n.t("mesh_analysis.parse_issues_with_count", count=count))
 
     def _ensure_current_derived_analysis(self, repo: MeshMrRepository) -> None:
         if self.derived_worker is not None and self.derived_worker.isRunning():
@@ -909,7 +1088,7 @@ class MeshLogAnalysisPage(QWidget):
     def _set_page_size(self, page_size: int) -> None:
         self.page_size = page_size
         self.source_page = self.link_page = self.event_page = self.issue_page = 1
-        self.dirty_tabs = {"source", "link", "event", "issue"}
+        self.dirty_tabs = {"source", "link", "active_build_order", "event", "issue"}
         self.refresh_current_tab()
 
     def show_all_source_files(self) -> None:
@@ -921,6 +1100,7 @@ class MeshLogAnalysisPage(QWidget):
             return
         self._render_sources(repo)
         self._render_links(repo)
+        self._render_active_build_order(repo)
         self._render_events(repo)
         self.refresh_parse_issues(repo)
         self.progress_label.setText("当前显示：全部文件")
@@ -963,6 +1143,7 @@ class MeshLogAnalysisPage(QWidget):
         self._render_sources(repo)
         self.tabs.setCurrentIndex(1)
         self._render_links(repo)
+        self._render_active_build_order(repo)
         self._render_events(repo)
         self.refresh_parse_issues(repo)
         self.progress_label.setText(f"当前显示文件：{self.current_source_file_name}")
@@ -1013,17 +1194,20 @@ class MeshLogAnalysisPage(QWidget):
     def _current_link_filters(self) -> dict[str, object]:
         return {
             "source_file_id": self.current_source_file_id,
-            "radio": int(self.radio_filter.text()) if self.radio_filter.text().strip().isdigit() else None,
-            "state": self.state_filter.text().strip().upper() or None,
+            "radio": self._current_radio(),
+            "state": str(self.state_filter.currentData()).strip().upper() if self.state_filter.currentData() not in (None, "") else None,
             "peer": self.peer_filter.text().strip() or None,
             "keyword": self.keyword_filter.text().strip() or None,
         }
 
     def _clear_link_filters(self) -> None:
-        for widget in (self.radio_filter, self.state_filter, self.peer_filter, self.keyword_filter):
+        for widget in (self.radio_filter, self.peer_filter, self.keyword_filter):
             blocker = QSignalBlocker(widget)
             widget.clear()
             del blocker
+        blocker = QSignalBlocker(self.state_filter)
+        self.state_filter.setCurrentIndex(0)
+        del blocker
 
     def _find_link_table_row_by_id(self, link_id: int) -> int:
         for row in range(self.link_table.rowCount()):
@@ -1062,7 +1246,8 @@ class MeshLogAnalysisPage(QWidget):
                 item.setFont(font)
                 item.setForeground(active_color if is_active else default_color)
 
-    def _schedule_link_refresh(self) -> None:
+    def _schedule_link_refresh(self, *_args: object) -> None:
+        self.link_page = 1
         self.filter_timer.start()
 
     def _mark_link_column_width_changed(self, _section: int, _old_size: int, _new_size: int) -> None:
@@ -1075,10 +1260,11 @@ class MeshLogAnalysisPage(QWidget):
             "mr": [180, 180, 180, 90, 100, 120, 90, 180],
             "source": [180, 90, 320, 100, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
             "link": [90, 180, 70, 90, 180, 180, 140, 140, 150, 110, 140, 110, 80, 90, 90, 90, 90, 90, 90, 110, 110, 90, 90, 90, 90, 240, 80],
+            "active_build_order": [70, 70, 160, 180, 140, 100, 180, 180, 130, 130, 90, 100, 100, 100, 90, 90, 100, 220],
             "event": [180, 60, 140, 150, 150, 120, 110, 110, 110, 110, 110, 110, 240, 70],
             "issue": [180, 70, 90, 140, 120, 240, 320],
         }
-        tables = {"mr": self.mr_table, "source": self.source_table, "link": self.link_table, "event": self.event_table, "issue": self.issue_table}
+        tables = {"mr": self.mr_table, "source": self.source_table, "link": self.link_table, "active_build_order": self.active_build_order_table, "event": self.event_table, "issue": self.issue_table}
         for key, table in tables.items():
             state = MeshTableColumnState(self.settings, table, f"mesh_analysis/column_widths/{key}", defaults[key])
             self.column_states[key] = state
@@ -1121,7 +1307,19 @@ class MeshLogAnalysisPage(QWidget):
     def _open_peer_dialog(self, peer_mac: str, radio: int | None, session_id: str, anchor_link_id: int | None = None, source_file_id: int | None = None) -> None:
         if self.current_profile is None:
             return
-        dialog = MeshPeerDetailDialog(self.i18n, self.current_profile, self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name), peer_mac, radio, session_id, self, anchor_link_id=anchor_link_id, source_file_id=source_file_id)
+        dialog = MeshPeerDetailDialog(
+            self.i18n,
+            self.current_profile,
+            self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name),
+            peer_mac,
+            radio,
+            session_id,
+            None,
+            anchor_link_id=anchor_link_id,
+            source_file_id=source_file_id,
+            owner_widget=self,
+            detail_jump_handler=self.jump_to_mesh_link_detail,
+        )
         dialog.destroyed.connect(lambda _=None, d=dialog: self.peer_dialogs.remove(d) if d in self.peer_dialogs else None)
         self.peer_dialogs.append(dialog)
         dialog.show()
@@ -1369,7 +1567,7 @@ class MeshLogAnalysisPage(QWidget):
         return repo
 
     def _current_tab_name(self) -> str:
-        return {0: "source", 1: "link", 2: "event", 3: "issue"}.get(self.tabs.currentIndex(), "source")
+        return {0: "source", 1: "link", 2: "active_build_order", 3: "event", 4: "issue"}.get(self.tabs.currentIndex(), "source")
 
 
 def _display(value) -> str:

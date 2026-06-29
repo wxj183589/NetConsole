@@ -102,13 +102,13 @@ AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("details.interface_name", "interface_name"),
     ("trackside.export.issue_type", "issue_type"),
     ("trackside.export.first_found_at", "first_found_at"),
-    ("trackside.export.fixed_at", "fixed_at"),
     ("trackside.export.first_rx_power", "first_rx_power"),
     ("trackside.export.fixed_rx_power", "fixed_rx_power"),
     ("trackside.export.current_rx_power", "current_rx_power"),
     ("trackside.export.current_status", "current_status"),
     ("trackside.export.treatment_status", "treatment_status"),
     ("trackside.export.remark", "remark"),
+    ("trackside.export.completed_at", "completed_at"),
 )
 
 OPTICAL_TREATMENT_ISSUE_STATUSES = {"notice", "warning", "alarm", "link_abnormal", "link_down", "no_light"}
@@ -159,6 +159,10 @@ TRACKSIDE_OPTICAL_COLOR_RGB = {
     "skipped": "F3F4F6",
     "offline": "E5E7EB",
 }
+TRACKSIDE_EXPORT_HEADER_FILL = "DBEAFE"
+TRACKSIDE_EXPORT_NORMAL_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["normal"]
+TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
+TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
 
 AP_SIDE_DISPLAY_FIELDS = {"ap_mac", "ap_name", "ap_rx_power", "ap_tx_power"}
 AP_SIDE_MISSING_DISPLAY = "-"
@@ -631,8 +635,10 @@ def build_ap_optical_treatment_records(
     trackside_rows: list[dict[str, object | None]],
     ap_optical_history_rows: list[dict[str, object | None]],
     switch_optical_history_rows: list[dict[str, object | None]],
+    fit_ap_resource_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
     records: list[dict[str, object | None]] = []
+    identity_lookup = _ap_identity_lookup([*(trackside_rows or []), *(ap_optical_history_rows or []), *(fit_ap_resource_rows or [])])
     trackside_by_identity = _trackside_rows_by_ap_identity(trackside_rows)
     for _key, current in trackside_by_identity.items():
         history = [row for row in ap_optical_history_rows or [] if _ap_optical_history_matches_trackside(row, current)]
@@ -643,7 +649,9 @@ def build_ap_optical_treatment_records(
             "optical_alarm_status": current.get("ap_optical_status"),
             "collected_at": current.get("updated_at"),
         }
-        records.extend(_build_treatment_records_for_series(AP_SIDE_LABEL, current, history, current_item))
+        for record in _build_treatment_records_for_series(AP_SIDE_LABEL, current, history, current_item):
+            _complete_treatment_record_ap_identity(record, identity_lookup)
+            records.append(record)
 
     switch_rows = _trackside_rows_by_switch_interface(trackside_rows)
     for key, current in switch_rows.items():
@@ -661,7 +669,9 @@ def build_ap_optical_treatment_records(
             "optical_alarm_status": current.get("switch_optical_status"),
             "collected_at": current.get("updated_at"),
         }
-        records.extend(_build_treatment_records_for_series(SWITCH_SIDE_LABEL, current, history, current_item))
+        for record in _build_treatment_records_for_series(SWITCH_SIDE_LABEL, current, history, current_item):
+            _complete_treatment_record_ap_identity(record, identity_lookup)
+            records.append(record)
     return sorted(records, key=lambda row: (str(row.get("first_found_at") or ""), str(row.get("site") or ""), str(row.get("ap_name") or "")))
 
 
@@ -691,7 +701,7 @@ def _build_treatment_records_for_series(
                 open_record = _new_treatment_record(side_label, trackside, item, status, collected_at, rx_power)
             continue
         if status == "normal" and open_record is not None:
-            open_record["fixed_at"] = collected_at
+            open_record["completed_at"] = collected_at
             open_record["fixed_rx_power"] = rx_power
             open_record["current_rx_power"] = rx_power
             open_record["current_status"] = display_optical_status("normal")
@@ -724,7 +734,7 @@ def _new_treatment_record(
         "interface_name": trackside.get("interface_name"),
         "issue_type": _optical_issue_type(status),
         "first_found_at": collected_at,
-        "fixed_at": "",
+        "completed_at": "",
         "first_rx_power": rx_power,
         "fixed_rx_power": "",
         "current_rx_power": rx_power,
@@ -756,10 +766,6 @@ def _optical_issue_type(status: str) -> str:
 
 
 def _ap_optical_history_matches_trackside(row: dict[str, object | None], trackside: dict[str, object | None]) -> bool:
-    row_uuid = str(row.get("ap_uuid") or "").strip()
-    current_uuid = str(trackside.get("ap_uuid") or "").strip()
-    if row_uuid and current_uuid:
-        return row_uuid == current_uuid
     row_serial = str(row.get("serial_number") or "").strip()
     current_serial = str(trackside.get("serial_number") or "").strip()
     if row_serial and current_serial:
@@ -770,7 +776,66 @@ def _ap_optical_history_matches_trackside(row: dict[str, object | None], tracksi
         return row_mac == current_mac
     row_name = str(row.get("ap_name") or "").strip().casefold()
     current_name = str(trackside.get("ap_name") or "").strip().casefold()
-    return bool(row_name and current_name and row_name == current_name)
+    if row_name and current_name:
+        return row_name == current_name
+    row_uuid = str(row.get("ap_uuid") or "").strip()
+    current_uuid = str(trackside.get("ap_uuid") or "").strip()
+    return bool(row_uuid and current_uuid and row_uuid == current_uuid)
+
+
+def _ap_identity_lookup(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
+    lookup: dict[tuple[str, str], dict[str, object | None]] = {}
+    for row in rows or []:
+        payload = {
+            "ap_name": row.get("ap_name"),
+            "ap_mac": normalize_mac(row.get("ap_mac")),
+            "serial_number": row.get("serial_number"),
+        }
+        for key in _ap_identity_keys(payload):
+            existing = lookup.get(key, {})
+            lookup[key] = _merge_ap_identity_payload(existing, payload)
+    return lookup
+
+
+def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
+    if serial and serial not in {"-", "N/A", "n/a"}:
+        keys.append(("serial", serial.casefold()))
+    mac = normalize_mac(row.get("ap_mac") or row.get("mac"))
+    if mac:
+        keys.append(("mac", mac.casefold()))
+    name = str(row.get("ap_name") or "").strip()
+    if name and name not in {"-", "N/A", "n/a"}:
+        keys.append(("name", name.casefold()))
+    return keys
+
+
+def _merge_ap_identity_payload(
+    primary: dict[str, object | None],
+    secondary: dict[str, object | None],
+) -> dict[str, object | None]:
+    result = dict(primary)
+    for field in ("ap_name", "ap_mac", "serial_number"):
+        if _is_missing_display(result.get(field)) and not _is_missing_display(secondary.get(field)):
+            result[field] = secondary.get(field)
+    return result
+
+
+def _complete_treatment_record_ap_identity(
+    record: dict[str, object | None],
+    identity_lookup: dict[tuple[str, str], dict[str, object | None]],
+) -> None:
+    matched: dict[str, object | None] = {}
+    for key in _ap_identity_keys(record):
+        matched = identity_lookup.get(key, {})
+        if matched:
+            break
+    if not matched:
+        return
+    for field in ("ap_name", "ap_mac", "serial_number"):
+        if _is_missing_display(record.get(field)) and not _is_missing_display(matched.get(field)):
+            record[field] = matched.get(field)
 
 
 def _trackside_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
@@ -913,6 +978,7 @@ def export_trackside_ap_business_xlsx(
         for status, color in TRACKSIDE_OPTICAL_COLOR_RGB.items()
         if color
     }
+    header_fill = PatternFill(fill_type="solid", fgColor=TRACKSIDE_EXPORT_HEADER_FILL)
     for row in rows:
         sheet.append([_export_value(field, row) for _key, field in columns])
         fill = fills.get(trackside_row_status(row))
@@ -927,7 +993,8 @@ def export_trackside_ap_business_xlsx(
         bottom=Side(style="thin", color="D1D5DB"),
     )
     header_font = Font(bold=True)
-    _format_export_sheet(sheet, alignment, border, header_font)
+    _format_export_sheet(sheet, alignment, border, header_font, header_fill)
+    sheet.auto_filter.ref = sheet.dimensions
     if progress_callback:
         progress_callback("trackside.export.progress_overview")
     _append_ap_overview_sheet(
@@ -939,6 +1006,7 @@ def export_trackside_ap_business_xlsx(
         ap_online_overview_rows,
         ap_online_overview_columns,
         ap_online_overview_headers,
+        header_fill,
     )
     if progress_callback:
         progress_callback("trackside.export.progress_new_online")
@@ -951,6 +1019,7 @@ def export_trackside_ap_business_xlsx(
         alignment,
         border,
         header_font,
+        header_fill,
     )
     if progress_callback:
         progress_callback("trackside.export.progress_optical_treatment")
@@ -963,6 +1032,9 @@ def export_trackside_ap_business_xlsx(
         alignment,
         border,
         header_font,
+        header_fill,
+        fills,
+        _ap_optical_treatment_row_fill_status,
     )
     if offline_ap_stats is not None and offline_ap_ledger_rows is not None:
         if progress_callback:
@@ -973,7 +1045,7 @@ def export_trackside_ap_business_xlsx(
         write_offline_ap_ledger_sheet(ledger_sheet, offline_ap_ledger_rows, offline_ap_ledger_headers or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS])
     if progress_callback:
         progress_callback("trackside.export.progress_summary")
-    _append_switch_optical_summary_sheet(workbook, rows, alignment, border, header_font)
+    _append_switch_optical_summary_sheet(workbook, rows, alignment, border, header_font, header_fill)
     for worksheet in workbook.worksheets:
         apply_worksheet_autofit(worksheet, maximum=60)
     _set_switch_optical_summary_widths(workbook)
@@ -1351,6 +1423,8 @@ def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:
 
 
 def _export_value(field: str, row: dict[str, object | None]) -> str:
+    if field == "completed_at" and row.get("treatment_status") == TREATMENT_OPEN_LABEL:
+        return ""
     return format_trackside_display_value(field, row)
 
 
@@ -1403,7 +1477,7 @@ def _is_missing_display(value: object) -> bool:
     return str(value or "").strip() in {"", "-"}
 
 
-def _format_export_sheet(sheet, alignment, border, header_font) -> None:
+def _format_export_sheet(sheet, alignment, border, header_font, header_fill=None) -> None:
     sheet.freeze_panes = "A2"
     for row in sheet.iter_rows():
         sheet.row_dimensions[row[0].row].height = 24 if row[0].row == 1 else 22
@@ -1412,6 +1486,8 @@ def _format_export_sheet(sheet, alignment, border, header_font) -> None:
             cell.border = border
             if cell.row == 1:
                 cell.font = header_font
+                if header_fill is not None:
+                    cell.fill = header_fill
 
 
 def _append_export_rows_sheet(
@@ -1423,13 +1499,32 @@ def _append_export_rows_sheet(
     alignment,
     border,
     header_font,
+    header_fill=None,
+    fills: dict[str, object] | None = None,
+    row_fill_status_getter=None,
 ) -> None:
     sheet = workbook.create_sheet(title)
     sheet.append(headers)
     for row in rows:
         sheet.append([_export_value(field, row) for _key, field in columns])
-    _format_export_sheet(sheet, alignment, border, header_font)
+        status = row_fill_status_getter(row) if callable(row_fill_status_getter) else None
+        fill = (fills or {}).get(status)
+        if fill is not None:
+            for cell in sheet[sheet.max_row]:
+                cell.fill = fill
+    _format_export_sheet(sheet, alignment, border, header_font, header_fill)
     sheet.auto_filter.ref = sheet.dimensions
+
+
+def _ap_optical_treatment_row_fill_status(row: dict[str, object | None]) -> str:
+    if row.get("treatment_status") == TREATMENT_CLOSED_LABEL:
+        return "normal"
+    status_text = " ".join(str(row.get(field) or "") for field in ("current_status", "issue_type")).casefold()
+    if "预警" in status_text or "notice" in status_text or "warning" in status_text:
+        return "warning"
+    if any(token in status_text for token in ("无光", "告警", "异常", "alarm", "abnormal", "no_light")):
+        return "alarm"
+    return "alarm" if row.get("treatment_status") == TREATMENT_OPEN_LABEL else "normal"
 
 
 def _append_ap_overview_sheet(
@@ -1441,6 +1536,7 @@ def _append_ap_overview_sheet(
     overview_rows: list[dict[str, object | None]] | None = None,
     overview_columns: tuple[tuple[str, str], ...] | None = None,
     overview_headers: list[str] | None = None,
+    header_fill=None,
 ) -> None:
     sheet = workbook.create_sheet("AP上线情况概览")
     sheet.title = "AP\u4e0a\u7ebf\u60c5\u51b5\u6982\u89c8"
@@ -1451,7 +1547,7 @@ def _append_ap_overview_sheet(
     return
 
 
-def _append_switch_optical_summary_sheet(workbook, rows: list[dict[str, object | None]], alignment, border, header_font) -> None:
+def _append_switch_optical_summary_sheet(workbook, rows: list[dict[str, object | None]], alignment, border, header_font, header_fill=None) -> None:
     sheet = workbook.create_sheet("\u4ea4\u6362\u673a\u5149\u6a21\u5757\u7edf\u8ba1")
     sheet.append(["\u4ea4\u6362\u673a", "\u5149\u6a21\u5757\u6570\u91cf", "\u672a\u63d2\u5149\u6a21\u5757\u7aef\u53e3\u6570\u91cf", "\u672a\u63d2\u5149\u6a21\u5757\u7aef\u53e3"])
     grouped: dict[str, dict[str, object]] = {}
@@ -1476,7 +1572,7 @@ def _append_switch_optical_summary_sheet(workbook, rows: list[dict[str, object |
                 ", ".join(_short_interface_name(port) for port in missing_ports) if missing_ports else "-",
             ]
         )
-    _format_export_sheet(sheet, alignment, border, header_font)
+    _format_export_sheet(sheet, alignment, border, header_font, header_fill)
     sheet.auto_filter.ref = sheet.dimensions
 
 

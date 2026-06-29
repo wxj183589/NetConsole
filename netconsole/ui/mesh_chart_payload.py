@@ -74,10 +74,13 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     active_peer_ap_names = [""] * count
     active_peer_sites = [""] * count
     active_peer_radios = [""] * count
+    active_peer_rssi = np.full(count, np.nan, dtype=np.float32)
+    standby_links_by_index = [[] for _ in range(count)]
     peer_change_indices = [run.start_sample_index for run in active_runs[1:]]
     rapid_flaps = detect_rapid_flaps(active_runs, master_times, peer_segment.get("estimated_interval_seconds") or run_segment.get("estimated_interval_seconds"))
     rapid_flap_indices = [int(item["return_sample_index"]) for item in rapid_flaps]
-    assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs, active_peer_ap_names, active_peer_sites, active_peer_radios)
+    assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs, active_peer_ap_names, active_peer_sites, active_peer_radios, active_peer_rssi)
+    assign_standby_links(master_times, rows_by_time, standby_links_by_index)
     events_by_index = _events_by_index(events, time_index)
     switch_indices = [index for index, items in events_by_index.items() if any(item.get("event_type") == "ACTIVE_SWITCH" for item in items)]
     anchor_index = _nearest_time_index(master_times, anchor_time)
@@ -95,6 +98,8 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
             "backend": "matplotlib-cpu",
             "partial": bool(peer_segment.get("partial") or run_segment.get("partial")),
             "full_loading": bool(peer_segment.get("full_loading") or run_segment.get("full_loading")),
+            "full_active_payload": bool(peer_segment.get("full_active_payload") or run_segment.get("full_active_payload")),
+            "query_active_count": int(peer_segment.get("query_active_count") or run_segment.get("query_active_count") or 0),
         },
         "timestamps": timestamps,
         "timestamp_labels": master_times,
@@ -105,6 +110,8 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         "active_peer_ap_names": active_peer_ap_names,
         "active_peer_sites": active_peer_sites,
         "active_peer_radios": active_peer_radios,
+        "active_peer_rssi": active_peer_rssi,
+        "standby_links_by_index": standby_links_by_index,
         "peer_macs": peer_macs,
         "peer_ap_names": peer_ap_names,
         "peer_sites": peer_sites,
@@ -270,6 +277,7 @@ def assign_active_series(
     active_peer_ap_names: list[str],
     active_peer_sites: list[str],
     active_peer_radios: list[str],
+    active_peer_rssi: np.ndarray,
 ) -> None:
     for run in active_runs:
         for sample_index in run.active_sample_indices:
@@ -282,8 +290,39 @@ def assign_active_series(
                 active_peer_radios[sample_index] = str(active_row.get("peer_radio") or active_row.get("peer_radio_label") or "")
                 metrics = active_row.get("metrics") if isinstance(active_row.get("metrics"), dict) else {}
                 active_series["active_local_rssi"][sample_index] = _float(metrics.get("local_rssi_db"))
+                active_peer_rssi[sample_index] = _float(metrics.get("peer_rssi_db"))
                 active_series["active_local_tx_busy"][sample_index] = _float(metrics.get("local_tx_busy"))
                 active_series["active_local_rx_busy"][sample_index] = _float(metrics.get("local_rx_busy"))
+
+
+def assign_standby_links(
+    master_times: list[str],
+    rows_by_time: dict[str, list[dict[str, object]]],
+    standby_links_by_index: list[list[dict[str, object]]],
+) -> None:
+    for index, sample_time in enumerate(master_times):
+        standby_rows = [row for row in rows_by_time.get(sample_time, []) if row.get("link_state") == "STANDBY"]
+        items = [_standby_summary(row) for row in standby_rows]
+        items.sort(key=lambda item: _sort_rssi(item.get("mr_rssi")), reverse=True)
+        standby_links_by_index[index] = items[:3]
+
+
+def _standby_summary(row: dict[str, object]) -> dict[str, object]:
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    return {
+        "peer_mac": row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "",
+        "ap_name": row.get("peer_ap_name") or "",
+        "site": row.get("peer_site") or "",
+        "radio": row.get("radio") or "",
+        "peer_radio": row.get("peer_radio") or row.get("peer_radio_label") or "",
+        "mr_rssi": metrics.get("local_rssi_db"),
+        "ap_rssi": metrics.get("peer_rssi_db"),
+    }
+
+
+def _sort_rssi(value: object) -> float:
+    parsed = _float(value)
+    return parsed if np.isfinite(parsed) else float("-inf")
 
 
 def detect_rapid_flaps(active_runs: list[ActiveRun], master_times: list[str], estimated_interval_seconds: object) -> list[dict[str, object]]:

@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -171,18 +172,23 @@ def natural_device_sort_key(device: Device) -> tuple[list[object], str, int]:
 
 
 class OnlineMrCollectionPage(QWidget):
-    def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str, paths: PathResolver) -> None:
+    session_history_changed = Signal()
+
+    def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str, paths: PathResolver, analysis_only: bool = False) -> None:
         super().__init__()
         self.repository = repository
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths
+        self.analysis_only = analysis_only
         self.settings = SettingsStore(paths)
         self.store = OnlineMrSessionStore(paths)
         self.manager = OnlineMrCollectionManager(max_concurrent=2)
         self.devices: list[Device] = []
         self.filtered_devices: list[Device] = []
+        self.available_devices: list[Device] = []
         self.device_groups: dict[int, str] = {}
+        self.selected_device_ids: set[int] = set()
         self.workers: dict[str, OnlineMrCollectorWorker] = {}
         self.fping_workers: dict[str, FpingV5ProbeWorker] = {}
         self.iperf_workers: dict[str, IperfProcessWorker] = {}
@@ -223,6 +229,7 @@ class OnlineMrCollectionPage(QWidget):
         self.selected_metric_label = QLabel()
         self.running_metric_label = QLabel()
         self.filter_hint_label = QLabel()
+        self.device_search_input = QLineEdit()
         self.device_table = QTableWidget(0, 9)
         self.view_device_combo = QComboBox()
         self.status_label = QLabel()
@@ -361,10 +368,22 @@ class OnlineMrCollectionPage(QWidget):
         self._first_show_refreshed = True
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self.filter_hint_label.setText(self.i18n.t("app.loading"))
-        self._schedule_device_refresh(refresh_tools=False)
+        if self.analysis_only:
+            self._schedule_history_refresh(refresh_tools=False)
+        else:
+            self._schedule_device_refresh(refresh_tools=False)
 
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
+        if self.analysis_only:
+            self.devices = self.repository.list()
+            self._load_device_groups()
+            self._fill_devices()
+            self._ensure_analysis_device_session_dirs()
+            self._fill_view_devices()
+            self._fill_history()
+            self._update_action_state()
+            return
         self.devices = self.repository.list()
         self._load_device_groups()
         self._fill_devices()
@@ -411,6 +430,7 @@ class OnlineMrCollectionPage(QWidget):
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_collection_data"))
+        self.device_search_input.setPlaceholderText(self.i18n.t("online_mr.device_search_placeholder"))
         self.auto_reconnect_check.setText(self.i18n.t("online_mr.auto_reconnect"))
         self.enable_fping_check.setText(self.i18n.t("online_mr.high_freq_ping"))
         self.enable_iperf_check.setText(self.i18n.t("online_mr.enable_traffic_test"))
@@ -491,17 +511,29 @@ class OnlineMrCollectionPage(QWidget):
             ]
         )
         self.history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.session"), self.i18n.t("online_mr.start_time"), self.i18n.t("online_mr.end_time"), self.i18n.t("online_mr.status"), self.i18n.t("online_mr.mesh_ok_fail"), self.i18n.t("online_mr.busy_ok_fail"), self.i18n.t("online_mr.reconnects"), "MR", self.i18n.t("online_mr.directory")])
-        self.tabs.setTabText(0, self.i18n.t("online_mr.mesh_link"))
-        self.tabs.setTabText(1, self.i18n.t("online_mr.channel_busy"))
-        self.tabs.setTabText(2, self.i18n.t("online_mr.ap_radio_statistics"))
-        self.tabs.setTabText(3, self.i18n.t("online_mr.switch_history"))
-        self.tabs.setTabText(4, self.i18n.t("online_mr.interface_rate"))
-        self.tabs.setTabText(5, "分析图表")
-        self.tabs.setTabText(6, self.i18n.t("online_mr.raw_output"))
-        self.tabs.setTabText(7, self.i18n.t("online_mr.collection_log"))
-        self.tabs.setTabText(8, self.i18n.t("online_mr.traffic_test"))
-        self.tabs.setTabText(9, self.i18n.t("online_mr.diagnosis_results"))
-        self.tabs.setTabText(10, self.i18n.t("online_mr.history_sessions"))
+        if self.analysis_only:
+            labels = (
+                self.i18n.t("online_mr.history_sessions"),
+                self.i18n.t("online_mr.mesh_link"),
+                self.i18n.t("online_mr.channel_busy"),
+                self.i18n.t("online_mr.ap_radio_statistics"),
+                self.i18n.t("online_mr.switch_history"),
+                self.i18n.t("online_mr.interface_rate"),
+                self.i18n.t("online_mr.analysis_charts"),
+                self.i18n.t("online_mr.traffic_test"),
+                self.i18n.t("online_mr.diagnosis_results"),
+                self.i18n.t("online_mr.raw_output"),
+                self.i18n.t("online_mr.collection_log"),
+            )
+        else:
+            labels = (
+                self.i18n.t("online_mr.raw_output"),
+                self.i18n.t("online_mr.collection_log"),
+                self.i18n.t("online_mr.traffic_test"),
+            )
+        for index, label in enumerate(labels):
+            if index < self.tabs.count():
+                self.tabs.setTabText(index, label)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -542,8 +574,9 @@ class OnlineMrCollectionPage(QWidget):
         top_layout.addStretch(1)
         top_layout.addWidget(self._label("online_mr.status"))
         top_layout.addWidget(self.status_label)
-        content_layout.addWidget(controls)
-        content_layout.addWidget(self.filter_hint_label)
+        if not self.analysis_only:
+            content_layout.addWidget(controls)
+            content_layout.addWidget(self.filter_hint_label)
 
         self.device_table.setMinimumHeight(260)
         self.device_table.setMaximumHeight(330)
@@ -567,7 +600,8 @@ class OnlineMrCollectionPage(QWidget):
         device_panel.setMaximumHeight(350)
         device_layout = QVBoxLayout(device_panel)
         device_layout.setContentsMargins(0, 0, 0, 0)
-        device_layout.setSpacing(0)
+        device_layout.setSpacing(6)
+        device_layout.addWidget(self.device_search_input)
         device_layout.addWidget(self.device_table)
         self.collect_status_box.setMinimumHeight(140)
         self.collect_status_box.setMaximumHeight(190)
@@ -619,11 +653,13 @@ class OnlineMrCollectionPage(QWidget):
 
         vertical_splitter = QSplitter(Qt.Vertical)
         self.vertical_splitter = vertical_splitter
-        vertical_splitter.addWidget(main_work_panel)
         self.summary_table.setMinimumHeight(120)
         self.summary_table.setMaximumHeight(150)
-        vertical_splitter.addWidget(self.summary_table)
+        if not self.analysis_only:
+            vertical_splitter.addWidget(main_work_panel)
+            vertical_splitter.addWidget(self.summary_table)
         view_row = QWidget()
+        self.view_row = view_row
         view_row.setMinimumHeight(40)
         view_row.setMaximumHeight(44)
         view_layout = QHBoxLayout(view_row)
@@ -636,30 +672,40 @@ class OnlineMrCollectionPage(QWidget):
         view_layout.addWidget(self.parse_session_button)
         view_layout.addStretch(1)
         self._build_analysis_chart_placeholders()
-        self.tabs.addTab(self.mesh_table, "")
-        self.tabs.addTab(self.channel_table, "")
-        self.tabs.addTab(self.statistics_text, "")
-        self.tabs.addTab(self.switch_history_panel, "")
-        self.tabs.addTab(self.interface_rate_table, "")
-        self.tabs.addTab(self.analysis_charts, "")
-        self.tabs.addTab(self.raw_text, "")
-        self.tabs.addTab(self.log_text, "")
-        self.tabs.addTab(self.iperf_table, "")
-        self.tabs.addTab(self.diagnosis_table, "")
-        self.tabs.addTab(self.history_table, "")
+        if self.analysis_only:
+            self.tabs.addTab(self.history_table, "")
+            self.tabs.addTab(self.mesh_table, "")
+            self.tabs.addTab(self.channel_table, "")
+            self.tabs.addTab(self.statistics_text, "")
+            self.tabs.addTab(self.switch_history_panel, "")
+            self.tabs.addTab(self.interface_rate_table, "")
+            self.tabs.addTab(self.analysis_charts, "")
+            self.tabs.addTab(self.iperf_table, "")
+            self.tabs.addTab(self.diagnosis_table, "")
+            self.tabs.addTab(self.raw_text, "")
+            self.tabs.addTab(self.log_text, "")
+        else:
+            self.tabs.addTab(self.raw_text, "")
+            self.tabs.addTab(self.log_text, "")
+            self.tabs.addTab(self.iperf_table, "")
         self.tabs.setMinimumHeight(260)
         detail = QWidget()
         detail.setMinimumHeight(320)
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(4)
-        detail_layout.addWidget(view_row)
+        if self.analysis_only:
+            detail_layout.addWidget(view_row)
         detail_layout.addWidget(self.tabs)
         vertical_splitter.addWidget(detail)
-        vertical_splitter.setStretchFactor(0, 5)
-        vertical_splitter.setStretchFactor(1, 1)
-        vertical_splitter.setStretchFactor(2, 3)
-        vertical_splitter.setSizes([500, 135, 360])
+        if self.analysis_only:
+            vertical_splitter.setStretchFactor(0, 1)
+            vertical_splitter.setSizes([720])
+        else:
+            vertical_splitter.setStretchFactor(0, 5)
+            vertical_splitter.setStretchFactor(1, 1)
+            vertical_splitter.setStretchFactor(2, 3)
+            vertical_splitter.setSizes([500, 135, 360])
         content_layout.addWidget(vertical_splitter, 1)
         self.retranslate()
         self._load_all_table_widths()
@@ -668,6 +714,7 @@ class OnlineMrCollectionPage(QWidget):
         self.device_table.itemChanged.connect(self._device_item_changed)
         self.device_table.currentCellChanged.connect(self._on_device_current_row_changed)
         self.view_device_combo.currentIndexChanged.connect(self._view_device_changed)
+        self.device_search_input.textChanged.connect(self._fill_devices)
         self.start_button.clicked.connect(self.start_collection)
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
@@ -745,6 +792,9 @@ class OnlineMrCollectionPage(QWidget):
                 self._update_device_status(device.id, self.i18n.t("online_mr.connection_incomplete"))
                 continue
             worker = OnlineMrCollectorWorker(config, self.store, parent=self)
+            if device.id is not None:
+                self.workers_by_device_id[int(device.id)] = worker
+                self.manager.register_device(int(device.id), worker)
             worker.started_session.connect(lambda meta, w=worker: self._worker_started(meta, w))
             worker.snapshot.connect(self.throttle.enqueue)
             worker.raw_stream_event.connect(self._handle_raw_stream_event)
@@ -1319,7 +1369,6 @@ class OnlineMrCollectionPage(QWidget):
     def _worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
         self.manager.register(meta.session_id, worker)
         if meta.device_id is not None:
-            self.manager.register_device(int(meta.device_id), worker)
             self.session_to_device_id[meta.session_id] = int(meta.device_id)
             self.workers_by_device_id[int(meta.device_id)] = worker
         self.workers[meta.session_id] = worker
@@ -1361,6 +1410,7 @@ class OnlineMrCollectionPage(QWidget):
         self._refresh_top_metrics()
         self._fill_view_devices(prefer_device_id=device_id)
         self._fill_history()
+        self.session_history_changed.emit()
         self._update_action_state()
 
     def _worker_failed(self, message: str, device_id: int | None = None) -> None:
@@ -1375,6 +1425,10 @@ class OnlineMrCollectionPage(QWidget):
             self._stream_sample_count_by_device_id.pop(device_id, None)
             self.manager.unregister_device(device_id)
             if session_id:
+                self.manager.unregister(session_id)
+                self.workers.pop(session_id, None)
+                self.session_to_device_id.pop(session_id, None)
+                self.session_dirs.pop(session_id, None)
                 self.event_buses.pop(session_id, None)
                 self.realtime_buffers.pop(session_id, None)
                 self.diagnosis_engines.pop(session_id, None)
@@ -1941,8 +1995,9 @@ class OnlineMrCollectionPage(QWidget):
         )
 
     def _fill_devices(self) -> None:
-        checked_ids = {device.id for device in self._selected_devices()}
-        self.filtered_devices = sorted([device for device in self.devices if self._is_vehicle_fat_ap(device)], key=natural_device_sort_key)
+        self.available_devices = sorted([device for device in self.devices if self._is_vehicle_fat_ap(device)], key=natural_device_sort_key)
+        keyword = self.device_search_input.text().strip().lower()
+        self.filtered_devices = [device for device in self.available_devices if self._matches_device_search(device, keyword)]
         self._updating_device_checks = True
         self.device_table.setUpdatesEnabled(False)
         try:
@@ -1950,7 +2005,7 @@ class OnlineMrCollectionPage(QWidget):
             for row, device in enumerate(self.filtered_devices):
                 check_item = QTableWidgetItem("")
                 check_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-                check_item.setCheckState(Qt.Checked if device.id in checked_ids else Qt.Unchecked)
+                check_item.setCheckState(Qt.Checked if device.id in self.selected_device_ids else Qt.Unchecked)
                 self.device_table.setItem(row, 0, check_item)
                 protocol, port, username, _password = connection_fields_from_device(device)
                 values = [
@@ -1971,8 +2026,13 @@ class OnlineMrCollectionPage(QWidget):
         finally:
             self.device_table.setUpdatesEnabled(True)
             self._updating_device_checks = False
-        self.available_device_count_label.setText(str(len(self.filtered_devices)))
-        self.filter_hint_label.setText("" if self.filtered_devices else self.i18n.t("online_mr.no_vehicle_fat_ap"))
+        self.available_device_count_label.setText(str(len(self.available_devices)))
+        if not self.available_devices:
+            self.filter_hint_label.setText(self.i18n.t("online_mr.no_vehicle_fat_ap"))
+        elif not self.filtered_devices:
+            self.filter_hint_label.setText(self.i18n.t("online_mr.no_device_search_results"))
+        else:
+            self.filter_hint_label.setText(self.i18n.t("online_mr.filtered_device_count", total=len(self.available_devices), shown=len(self.filtered_devices), selected=len(self.selected_device_ids)))
         self._update_selected_count()
         self._refresh_fping_device_choices()
         self._refresh_top_metrics()
@@ -1989,12 +2049,8 @@ class OnlineMrCollectionPage(QWidget):
         return group_name == "\u8f66\u8f7d" and is_fat_ap_device(device.device_type)
 
     def _selected_devices(self) -> list[Device]:
-        checked: list[Device] = []
-        for row in range(self.device_table.rowCount()):
-            item = self.device_table.item(row, 0)
-            if item and item.checkState() == Qt.Checked and row < len(self.filtered_devices):
-                checked.append(self.filtered_devices[row])
-        return checked
+        by_id = {int(device.id): device for device in self.available_devices if device.id is not None}
+        return [by_id[device_id] for device_id in sorted(self.selected_device_ids) if device_id in by_id]
 
     def _device_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating_device_checks or item.column() != 0:
@@ -2002,13 +2058,19 @@ class OnlineMrCollectionPage(QWidget):
         changed_device_id: int | None = None
         if 0 <= item.row() < len(self.filtered_devices):
             device = self.filtered_devices[item.row()]
-            if device.id is not None and item.checkState() == Qt.Checked:
+            if device.id is not None:
                 changed_device_id = int(device.id)
+                if item.checkState() == Qt.Checked:
+                    self.selected_device_ids.add(int(device.id))
+                else:
+                    self.selected_device_ids.discard(int(device.id))
         selected = self._selected_devices()
         if len(selected) > 2:
             self._updating_device_checks = True
             item.setCheckState(Qt.Unchecked)
             self._updating_device_checks = False
+            if changed_device_id is not None:
+                self.selected_device_ids.discard(changed_device_id)
             QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
             changed_device_id = None
         if changed_device_id is not None:
@@ -2032,7 +2094,7 @@ class OnlineMrCollectionPage(QWidget):
             self._view_device_user_selected = True
 
     def _update_selected_count(self) -> None:
-        self.selected_device_count_label.setText(str(len(self._selected_devices())))
+        self.selected_device_count_label.setText(str(len(self.selected_device_ids)))
         self.running_count_label.setText(str(self.manager.running_count()))
         self._refresh_top_metrics()
 
@@ -2313,7 +2375,7 @@ class OnlineMrCollectionPage(QWidget):
         self.view_device_combo.blockSignals(True)
         self.view_device_combo.clear()
         seen: set[int] = set()
-        devices = list(self.filtered_devices)
+        devices = list(self.available_devices or self.filtered_devices)
         if prefer_device_id is not None:
             devices.sort(key=lambda device: 0 if device.id == prefer_device_id else 1)
         for device in devices:
@@ -2323,7 +2385,19 @@ class OnlineMrCollectionPage(QWidget):
             self.view_device_combo.addItem(device.name, int(device.id))
         for device_id in self.workers_by_device_id:
             if device_id not in seen:
-                self.view_device_combo.addItem(str(device_id), device_id)
+                self.view_device_combo.addItem(self.i18n.t("online_mr.unknown_or_deleted_device", device_id=device_id), device_id)
+                seen.add(device_id)
+        if self.analysis_only:
+            for row in self.store.list_sessions(self.site_name, None):
+                raw_device_id = row.get("device_id")
+                try:
+                    device_id = int(raw_device_id)
+                except (TypeError, ValueError):
+                    continue
+                if device_id not in seen:
+                    label = str(row.get("device_name") or "").strip() or self.i18n.t("online_mr.unknown_or_deleted_device", device_id=device_id)
+                    self.view_device_combo.addItem(label, device_id)
+                    seen.add(device_id)
         index = self.view_device_combo.findData(prefer_device_id)
         self.view_device_combo.setCurrentIndex(index if index >= 0 else 0)
         self.view_device_combo.blockSignals(False)
@@ -2351,6 +2425,22 @@ class OnlineMrCollectionPage(QWidget):
                     self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
         finally:
             self.history_table.setUpdatesEnabled(True)
+
+    def _matches_device_search(self, device: Device, keyword: str) -> bool:
+        if not keyword:
+            return True
+        group_name = self.device_groups.get(int(device.group_id or 0), "")
+        values = [device.name, device.primary_address, device.device_type or "", group_name]
+        return any(keyword in str(value or "").lower() for value in values)
+
+    def _ensure_analysis_device_session_dirs(self) -> None:
+        if not self.analysis_only:
+            return
+        root = self.paths.online_mr_root(self.site_name)
+        root.mkdir(parents=True, exist_ok=True)
+        for device in self.available_devices:
+            safe_name = safe_device_folder_name(device)
+            self.paths.online_mr_sessions_root(self.site_name, safe_name).mkdir(parents=True, exist_ok=True)
 
     def _schedule_history_refresh(self, refresh_tools: bool = False) -> None:
         if self._history_refresh_pending:
@@ -2402,6 +2492,9 @@ class OnlineMrCollectionPage(QWidget):
 
     def _upsert_summary(self, snapshot: OnlineMrSnapshot) -> None:
         device_id = self.session_to_device_id.get(snapshot.session_id)
+        if device_id is None:
+            app_logger.log_warning("ONLINE_MR_SNAPSHOT_WITHOUT_DEVICE", f"session_id={snapshot.session_id}")
+            return
         row_key = str(device_id if device_id is not None else snapshot.session_id)
         row = self._find_row(self.summary_table, row_key, column=SUMMARY_COL_DEVICE_ID)
         if row < 0:

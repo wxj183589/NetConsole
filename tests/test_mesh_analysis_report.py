@@ -139,14 +139,18 @@ def test_i18n_report_keys_exist_and_mesh_page_has_generate_button(tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     from netconsole.core.paths import PathResolver
-    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+    from netconsole.ui.pages.mesh_log_analysis_page import MESH_ANALYSIS_REPORT_ENABLED, MeshLogAnalysisPage
 
     app = QApplication.instance() or QApplication([])
     assert app is not None
     assert I18n("zh_CN").t("mesh_report.generate_report") == "生成分析报告"
     assert I18n("en_US").t("mesh_report.generate_report") == "Generate Report"
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert page.generate_report_button.text() == "Generate Report"
+    if MESH_ANALYSIS_REPORT_ENABLED:
+        assert page.generate_report_button is not None
+        assert page.generate_report_button.text() == "Generate Report"
+    else:
+        assert page.generate_report_button is None
 
 
 def test_report_worker_cancel_before_run_cleans_temp(tmp_path):

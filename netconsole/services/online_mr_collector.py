@@ -594,7 +594,7 @@ class OnlineMrCollectionManager:
 
     def register(self, session_id: str, worker: object) -> None:
         with self._lock:
-            if self._running_total() >= self.max_concurrent:
+            if worker not in self.running_collectors.values() and self._running_total() >= self.max_concurrent:
                 raise RuntimeError("online_mr.max_two_running")
             self._running[session_id] = worker
 

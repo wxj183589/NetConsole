@@ -239,10 +239,11 @@ class TracksideApBusinessExportThread(QThread):
                 latest_lldp_by_ap=latest_lldp,
                 latest_optical_by_ap=latest_optical,
                 device_lookup_by_name=build_device_lookup_by_name(devices),
+                resource_history_rows=resource_history_rows,
             )
             rows = enrich_trackside_export_rows(snapshot.rows, fact_repository, ac_repository)
             new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows)
-            optical_treatment_rows = build_ap_optical_treatment_records(rows, ap_optical_history_rows, switch_optical_history_rows)
+            optical_treatment_rows = build_ap_optical_treatment_records(rows, ap_optical_history_rows, switch_optical_history_rows, resources)
             self.stage_changed.emit("trackside.export.progress_write")
             tmp_path.parent.mkdir(parents=True, exist_ok=True)
             export_trackside_ap_business_xlsx(

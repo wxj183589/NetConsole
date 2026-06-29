@@ -16,6 +16,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.services.file_transfer_service import (
     FileTransferService,
@@ -292,6 +294,35 @@ def test_file_management_mesh_logs_for_vehicle_mr_use_mesh_raw_dir(tmp_path):
 
     assert target == paths.mesh_mr_raw_dir("demo", "MR2")
     assert target.exists()
+
+
+def test_file_management_downloaded_mesh_log_auto_imports_to_raw_mesh_analysis(tmp_path):
+    qt_app = app()
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    group = DeviceGroupRepository(database, "demo").create(VEHICLE_MR_GROUP_NAME)
+    device = repository.create(Device(name="MR2", group_id=group.id, device_type="FAT-AP", ip_address="192.0.2.10"))
+    paths = PathResolver(tmp_path)
+    page = FileManagementPage(repository, I18n("zh_CN"), "demo", paths)
+    profile = MeshStorageService("demo", paths).ensure_mr_profile_for_device(device)
+    remote = RemoteDeviceFile("meshlog.log", "flash:/meshlog.log", 1, "2026-06-29 12:00:00", "meshlog")
+    local_path = paths.mesh_mr_raw_dir("demo", profile.safe_folder_name) / "meshlog.log"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_text("[1] 2025/12/03 10:12:33.000\n" + "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0" + "\n", encoding="utf-8")
+    task = page_task(1, device, remote, local_path, "file_management.status.downloading")
+    page.tasks = [task]
+
+    page.on_download_completed(task)
+    for _ in range(200):
+        qt_app.processEvents()
+        if not page.mesh_import_workers:
+            break
+
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    assert repo.list_source_files()
+    assert repo.query_links(10, 0)[0] == 1
+    assert task.status_key == "file_management.mesh_auto_import_done"
 
 
 def test_file_management_non_vehicle_mr_keeps_normal_download_dir(tmp_path):

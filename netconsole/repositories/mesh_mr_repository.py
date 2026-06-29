@@ -809,6 +809,109 @@ class MeshMrRepository:
             return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
         return self._query_peer_chart_segments_in_range(anchor, start_time, end_time, interval, gap, partial=False, full_loading=False, source_file_id=source_file_id)
 
+    def query_active_link_chart_segments(self, source_file_id: int | str | None = None, radio: int | None = None) -> dict[str, object]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if source_file_id not in (None, ""):
+            clauses.append("source_file_id = ?")
+            values.append(int(source_file_id))
+        if radio is not None:
+            clauses.append("radio = ?")
+            values.append(int(radio))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        events_where = where
+        with self._connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT {_MESH_LINK_CHART_COLUMNS}
+                    FROM mesh_links
+                    {where}
+                    ORDER BY radio ASC, sample_time ASC, id ASC
+                    """,
+                    values,
+                ).fetchall()
+            ]
+            events = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT {_MESH_EVENT_CHART_COLUMNS}
+                    FROM mesh_events
+                    {events_where}
+                    ORDER BY radio ASC, event_time ASC, id ASC
+                    """,
+                    values,
+                ).fetchall()
+            ]
+        active_count = sum(1 for row in rows if row.get("link_state") == LINK_STATE_ACTIVE)
+        anchor = next((row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE), rows[0] if rows else None)
+        interval, gap = _interval_and_threshold([str(row.get("sample_time") or "") for row in rows if row.get("sample_time")])
+        run_segment = _segment_payload(anchor, rows, interval, gap)
+        peer_segment = _segment_payload(anchor, [], interval, gap)
+        for segment in (peer_segment, run_segment):
+            segment["partial"] = False
+            segment["full_loading"] = False
+            segment["full_active_payload"] = True
+            segment["query_active_count"] = active_count
+        run_segment["events"] = events
+        return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
+
+    def query_active_link_build_order(self, source_file_id: int | str | None = None, radio: int | None = None) -> list[dict[str, object]]:
+        clauses = ["ml.link_state = ?"]
+        values: list[object] = [LINK_STATE_ACTIVE]
+        if source_file_id not in (None, ""):
+            clauses.append("ml.source_file_id = ?")
+            values.append(int(source_file_id))
+        if radio is not None:
+            clauses.append("ml.radio = ?")
+            values.append(int(radio))
+        where = " AND ".join(clauses)
+        with self._connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT ml.id, ml.source_file_id, ml.sample_time, ml.radio, ml.peer_mac_normalized,
+                           ml.peer_mac_raw, ml.peer_ap_name, ml.peer_site, ml.peer_radio_label, ml.peer_radio,
+                           ml.duration_seconds, ml.metrics_json, sf.archived_filename
+                    FROM mesh_links ml
+                    LEFT JOIN source_files sf ON sf.id = ml.source_file_id
+                    WHERE {where}
+                    ORDER BY ml.radio ASC, ml.sample_time ASC, ml.id ASC
+                    """,
+                    values,
+                ).fetchall()
+            ]
+        rows_by_radio: dict[int, list[dict[str, object]]] = defaultdict(list)
+        for row in rows:
+            rows_by_radio[int(row.get("radio") or 0)].append(row)
+        result: list[dict[str, object]] = []
+        sequence = 1
+        for radio_value in sorted(rows_by_radio):
+            radio_rows = rows_by_radio[radio_value]
+            interval, gap = _interval_and_threshold([str(row.get("sample_time") or "") for row in radio_rows if row.get("sample_time")])
+            sample_interval = float(interval or 0.0)
+            current: list[dict[str, object]] = []
+            current_peer = ""
+            previous_time = ""
+            for row in radio_rows:
+                peer = _canonical_mac(row.get("peer_mac_normalized") or row.get("peer_mac_raw"))
+                sample_time = str(row.get("sample_time") or "")
+                split = bool(current and (peer != current_peer or _seconds_between(previous_time, sample_time) > gap))
+                if split:
+                    result.append(_active_build_order_row(sequence, current, sample_interval))
+                    sequence += 1
+                    current = []
+                current.append(row)
+                current_peer = peer
+                previous_time = sample_time
+            if current:
+                result.append(_active_build_order_row(sequence, current, sample_interval))
+                sequence += 1
+        return result
+
     def query_peer_chart_initial_segments(self, anchor_link_id: int, visible_samples: int = 300, margin_samples: int = 60, source_file_id: int | str | None = None) -> dict[str, object]:
         with self._connect() as conn:
             anchor_row = conn.execute(f"SELECT {_MESH_LINK_CHART_COLUMNS} FROM mesh_links WHERE id = ?", (anchor_link_id,)).fetchone()
@@ -1726,3 +1829,56 @@ def _seconds_between(previous: str, current: str) -> float:
         return (datetime.fromisoformat(current) - datetime.fromisoformat(previous)).total_seconds()
     except (TypeError, ValueError):
         return 0.0
+
+
+def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample_interval: float) -> dict[str, object]:
+    first = rows[0]
+    last = rows[-1]
+    metrics = [_json(row.get("metrics_json")) for row in rows]
+    duration = max(_seconds_between(str(first.get("sample_time") or ""), str(last.get("sample_time") or "")) + max(sample_interval, 0.0), 0.0)
+    reported_values = [value for row in rows if (value := _float(row.get("duration_seconds"))) is not None]
+    rssi_values = [_float(item.get("local_rssi_db")) for item in metrics]
+    tx_values = [_float(item.get("local_tx_busy")) for item in metrics]
+    rx_values = [_float(item.get("local_rx_busy")) for item in metrics]
+    return {
+        "sequence": sequence,
+        "radio": first.get("radio"),
+        "active_peer_mac": first.get("peer_mac_normalized") or first.get("peer_mac_raw") or "",
+        "peer_ap_name": first.get("peer_ap_name") or "",
+        "peer_site": first.get("peer_site") or "",
+        "peer_radio": first.get("peer_radio_label") or first.get("peer_radio") or "",
+        "build_start_time": first.get("sample_time") or "",
+        "build_end_time": last.get("sample_time") or "",
+        "main_link_duration_seconds": round(duration, 3),
+        "reported_duration_seconds": max(reported_values) if reported_values else "",
+        "sample_count": len(rows),
+        "avg_mr_rssi": _average(rssi_values),
+        "min_mr_rssi": _minimum(rssi_values),
+        "max_mr_rssi": _maximum(rssi_values),
+        "avg_tx_busy": _average(tx_values),
+        "avg_rx_busy": _average(rx_values),
+        "build_result": "normal" if duration >= 2.0 else "short",
+        "source_file": first.get("archived_filename") or first.get("source_file_id") or "",
+    }
+
+
+def _float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _average(values: list[float | None]) -> float | str:
+    finite = [value for value in values if value is not None]
+    return round(sum(finite) / len(finite), 3) if finite else ""
+
+
+def _minimum(values: list[float | None]) -> float | str:
+    finite = [value for value in values if value is not None]
+    return min(finite) if finite else ""
+
+
+def _maximum(values: list[float | None]) -> float | str:
+    finite = [value for value in values if value is not None]
+    return max(finite) if finite else ""

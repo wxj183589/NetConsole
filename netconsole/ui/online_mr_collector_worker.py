@@ -25,7 +25,7 @@ class OnlineMrCollectorWorker(QThread):
         self.collector = OnlineMrCollector(config, store, connection_factory=connection_factory)
 
     def cancel(self) -> None:
-        self.collector.cancelled = True
+        self.collector.stop()
 
     def run(self) -> None:
         try:

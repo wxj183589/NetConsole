@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import time
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from matplotlib.collections import LineCollection
@@ -59,6 +61,10 @@ class MeshPeerDetailDialog(QDialog):
         anchor_link_id: int | None = None,
         initial_tab: str | None = None,
         source_file_id: int | str | None = None,
+        owner_widget: QWidget | None = None,
+        detail_jump_handler: Callable[[dict[str, object]], None] | None = None,
+        active_only: bool = False,
+        source_label: str = "",
     ) -> None:
         super().__init__(parent)
         flags = self.windowFlags()
@@ -75,6 +81,10 @@ class MeshPeerDetailDialog(QDialog):
         self.anchor_link_id = anchor_link_id
         self.source_file_id = source_file_id
         self.initial_tab = initial_tab
+        self.owner_widget_ref = weakref.ref(owner_widget) if owner_widget is not None else None
+        self.detail_jump_handler = detail_jump_handler
+        self.active_only = active_only
+        self.source_label = source_label
         self.worker: MeshPeerSeriesWorker | None = None
         self.segment: dict[str, object] = {}
         self.chart_payload: dict[str, object] | None = None
@@ -128,7 +138,11 @@ class MeshPeerDetailDialog(QDialog):
 
         self._build_layout()
         title_radio = f"Radio {radio}" if radio is not None else "Radio"
-        self.setWindowTitle(f"{profile.display_name} / {title_radio} / {format_mac_h3c(peer_mac)}")
+        if self.active_only:
+            title_source = source_label or ("全部源文件" if source_file_id in (None, "") else str(source_file_id))
+            self.setWindowTitle(f"{profile.display_name} / {title_radio} / {title_source} / {self.i18n.t('mesh_analysis.full_active_chart_title')}")
+        else:
+            self.setWindowTitle(f"{profile.display_name} / {title_radio} / {format_mac_h3c(peer_mac)}")
         self.resize(1180, 860)
         self._restore_window_geometry()
         self.setFocusPolicy(Qt.StrongFocus)
@@ -147,7 +161,12 @@ class MeshPeerDetailDialog(QDialog):
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
         summary = QGridLayout()
+        summary.setContentsMargins(0, 0, 0, 0)
+        summary.setHorizontalSpacing(8)
+        summary.setVerticalSpacing(2)
         keys = ("peer", "radio", "segment", "interval", "first", "last", "samples", "active", "standby")
         labels = {
             "peer": "PeerMac",
@@ -171,22 +190,28 @@ class MeshPeerDetailDialog(QDialog):
         session_layout.addWidget(self.session_filter_label)
         session_layout.addWidget(self.session_filter, 1)
         layout.addWidget(self.session_filter_container)
-        layout.addWidget(QLabel(self.i18n.t("mesh_analysis.visible_samples")))
+        controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        controls_layout.addWidget(QLabel(self.i18n.t("mesh_analysis.visible_samples")))
         for value in (30, 60, 120, 300, 0):
             self.visible_samples_combo.addItem(self.i18n.t("mesh_analysis.all_samples") if value == 0 else str(value), value)
         self.visible_samples_combo.setCurrentIndex(2)
-        layout.addWidget(self.visible_samples_combo)
-        layout.addWidget(self.show_switch_points_checkbox)
-        lock_layout = QHBoxLayout()
-        lock_layout.addWidget(self.lock_status_label, 1)
-        lock_layout.addWidget(self.unlock_point_button)
-        layout.addLayout(lock_layout)
-        focus_layout = QHBoxLayout()
-        focus_layout.addWidget(self.focus_status_label, 1)
-        focus_layout.addWidget(self.clear_focus_button)
-        layout.addLayout(focus_layout)
-        layout.addWidget(self.center_button)
-        layout.addWidget(self.reset_button)
+        self.visible_samples_combo.setMaximumWidth(110)
+        controls_layout.addWidget(self.visible_samples_combo)
+        controls_layout.addWidget(self.show_switch_points_checkbox)
+        for button in (self.unlock_point_button, self.clear_focus_button, self.center_button, self.reset_button):
+            button.setMaximumWidth(120)
+            button.setMinimumHeight(24)
+            button.setMaximumHeight(28)
+            controls_layout.addWidget(button)
+        controls_layout.addStretch(1)
+        layout.addLayout(controls_layout)
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.addWidget(self.lock_status_label)
+        status_layout.addWidget(self.focus_status_label)
+        layout.addLayout(status_layout)
         for key, title in self._chart_titles():
             page = QWidget()
             page_layout = QVBoxLayout(page)
@@ -200,13 +225,19 @@ class MeshPeerDetailDialog(QDialog):
             self.canvases[key] = canvas
             self.tabs.addTab(page, title)
             self.tab_keys.append(key)
+        self.status_label.setMaximumHeight(24)
         layout.addWidget(self.status_label)
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self.time_scrollbar)
 
     def _load(self) -> None:
-        self.status_label.setText("正在加载首屏图表...")
-        self.worker = MeshPeerSeriesWorker(self.db_path, self.peer_mac, self.radio, self.initial_session_id, self, self.anchor_link_id, self.source_file_id)
+        self.status_label.setText(self.i18n.t("mesh_analysis.loading_full_active_links") if self.active_only else self.i18n.t("mesh_analysis.loading_chart"))
+        self.worker = MeshPeerSeriesWorker(self.db_path, self.peer_mac, self.radio, self.initial_session_id, self, self.anchor_link_id, self.source_file_id, active_only=self.active_only)
+        if self.active_only:
+            self.worker.loaded.connect(self._on_loaded)
+            self.worker.failed.connect(self._on_failed)
+            self.worker.start()
+            return
         if self.anchor_link_id is None:
             self.worker.loaded.connect(self._on_loaded)
         else:
@@ -234,9 +265,11 @@ class MeshPeerDetailDialog(QDialog):
         metadata = self.chart_payload.get("metadata", {}) if isinstance(self.chart_payload, dict) else {}
         is_partial = bool(metadata.get("partial"))
         if is_partial:
-            self.status_label.setText("正在后台加载完整链路数据...")
+            self.status_label.setText(self.i18n.t("mesh_analysis.loading_full_chart_data"))
         elif was_partial or kind == "full":
-            self.status_label.setText("完整数据已加载")
+            self.status_label.setText(self.i18n.t("mesh_analysis.full_chart_data_loaded"))
+        elif kind == "full_active":
+            self.status_label.setText(self.i18n.t("mesh_analysis.full_active_links_loaded"))
         else:
             self.status_label.setText("")
         self._populate_sessions()
@@ -303,12 +336,15 @@ class MeshPeerDetailDialog(QDialog):
         self.setToolTip("")
 
     def _chart_titles(self) -> list[tuple[str, str]]:
+        if self.active_only:
+            return [
+                ("active_next_rssi", self.i18n.t("mesh_analysis.current_active_rssi_all")),
+                ("active_channel_load", self.i18n.t("mesh_analysis.active_channel_load_all")),
+            ]
         return [
-            ("signal", self.i18n.t("mesh_analysis.signal_chart")),
+            ("signal", self.i18n.t("mesh_analysis.signal_current_ap")),
             ("rssi_noise", self.i18n.t("mesh_analysis.rssi_noise_chart")),
             ("load", self.i18n.t("mesh_analysis.channel_load_chart")),
-            ("active_next_rssi", self.i18n.t("mesh_analysis.current_active_rssi")),
-            ("active_channel_load", self.i18n.t("mesh_analysis.active_channel_load")),
         ]
 
     def _mark_all_dirty_and_render_current(self, *_args) -> None:
@@ -403,6 +439,16 @@ class MeshPeerDetailDialog(QDialog):
         artists["last_count"] = rendered_count
         if self.visible_sample_count == 0 and rendered_count:
             app_logger.log_info("MESH_CHART_DOWNSAMPLED", f"anchor_link_id={self.anchor_link_id}, tab={key}, raw_samples={len(timestamp_numeric)}, rendered_samples={rendered_count}")
+        metadata = payload.get("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
+        if metadata.get("full_active_payload"):
+            app_logger.log_info(
+                "MESH_FULL_ACTIVE_CHART_RENDERED",
+                (
+                    f"source_file_id={self.source_file_id or 'ALL'}, radio={self.radio if self.radio is not None else 'ALL'}, "
+                    f"query_active_count={metadata.get('query_active_count')}, raw_count={len(timestamp_numeric)}, "
+                    f"rendered_count={rendered_count}, full_payload=True, pagination=False, tab={key}"
+                ),
+            )
         self.canvases[key].draw_idle()
 
     def _current_tab_key(self) -> str:
@@ -502,8 +548,7 @@ class MeshPeerDetailDialog(QDialog):
         self._mark_all_dirty_and_render_current()
 
     def jump_to_detail_row(self, point: MeshSelectedPoint) -> None:
-        parent = self.parent()
-        handler = getattr(parent, "jump_to_mesh_link_detail", None)
+        handler = self.detail_jump_handler
         if callable(handler):
             handler(
                 {
@@ -1088,7 +1133,9 @@ class MeshPeerDetailDialog(QDialog):
         if isinstance(geometry, str) and geometry:
             self.restoreGeometry(QByteArray.fromBase64(geometry.encode("ascii")))
             if not _is_on_available_screen(self.frameGeometry()):
-                self.move((self.parent().geometry().center() if self.parent() else QGuiApplication.primaryScreen().availableGeometry().center()) - self.rect().center())
+                owner = self.owner_widget_ref() if self.owner_widget_ref is not None else None
+                center = owner.geometry().center() if owner is not None else QGuiApplication.primaryScreen().availableGeometry().center()
+                self.move(center - self.rect().center())
         if bool(self.settings.get_value("mesh_peer_detail/maximized", False)):
             self.showMaximized()
 
@@ -1148,6 +1195,39 @@ def _seconds_between_labels(previous: str, current: str) -> float:
         return (datetime.fromisoformat(current) - datetime.fromisoformat(previous)).total_seconds()
     except (TypeError, ValueError):
         return 0.0
+
+
+class MeshActiveLinkChartDialog(MeshPeerDetailDialog):
+    def __init__(
+        self,
+        i18n: I18n,
+        profile: MeshMrProfile,
+        db_path: Path,
+        radio: int | None = None,
+        source_file_id: int | str | None = None,
+        source_label: str = "",
+        parent=None,
+        auto_load: bool = True,
+        owner_widget: QWidget | None = None,
+        detail_jump_handler: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
+        super().__init__(
+            i18n,
+            profile,
+            db_path,
+            "",
+            radio,
+            "",
+            parent,
+            auto_load,
+            None,
+            "active_next_rssi",
+            source_file_id,
+            owner_widget,
+            detail_jump_handler,
+            active_only=True,
+            source_label=source_label,
+        )
 
 
 def _is_on_available_screen(rect) -> bool:

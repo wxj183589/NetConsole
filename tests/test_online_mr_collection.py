@@ -777,12 +777,19 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.summary_table.minimumHeight() >= 120
     assert page.summary_table.maximumHeight() <= 150
     assert page.tabs.minimumHeight() >= 260
-    assert page.tabs.count() == 11
-    assert page.tabs.tabText(4)
-    assert page.tabs.tabText(5) == "分析图表"
-    assert page.tabs.tabText(8)
-    assert page.tabs.tabText(9)
+    assert page.tabs.count() == 3
+    assert page.tabs.tabText(0) == "采集输出"
+    assert page.tabs.tabText(1) == "采集日志"
+    assert page.tabs.tabText(2) == "打流测试"
     assert not page.advanced_detail.isVisible()
+
+    from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
+
+    analysis_page = OnlineMrCollectionAnalysisPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+    assert analysis_page.tabs.count() == 11
+    assert analysis_page.tabs.tabText(0) == "历史会话"
+    assert analysis_page.tabs.tabText(6) == "分析图表"
+    assert analysis_page.tabs.tabText(8) == "诊断结果"
 
     wheel = FakeWheelEvent()
     assert page._no_wheel_filter.eventFilter(page.mesh_interval, wheel) is True
@@ -1381,3 +1388,71 @@ def test_online_mr_diagnosis_parser_skips_locked_fping_file(tmp_path: Path, monk
     assert summary.mesh_samples == 1
     assert summary.ping_samples == 0
     assert summary.issues >= 1
+
+
+def test_online_mr_realtime_page_hides_offline_parse_controls(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    assert page.analysis_only is False
+    assert page.view_row.parentWidget() is None
+    assert page.parse_session_button.parentWidget() is page.view_row
+    assert page.tabs.count() == 3
+
+    from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
+
+    analysis = OnlineMrCollectionAnalysisPage(page.repository, I18n("en_US"), "demo", page.paths)
+    assert analysis.analysis_only is True
+    assert analysis.view_row.parentWidget() is not None
+    assert analysis.parse_session_button.parentWidget() is analysis.view_row
+    assert analysis.tabs.count() == 11
+
+
+def test_online_mr_device_search_filters_and_keeps_checked_devices(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d-MR")
+    first = _create_onboard_device(repository, onboard.id, "MR-07")
+    second = _create_onboard_device(repository, onboard.id, "MR-19")
+    page.refresh_all()
+
+    first_row = next(row for row, device in enumerate(page.filtered_devices) if device.id == first.id)
+    page.device_table.item(first_row, 0).setCheckState(Qt.Checked)
+    assert first.id in page.selected_device_ids
+
+    page.device_search_input.setText("MR-19")
+    assert [device.id for device in page.filtered_devices] == [second.id]
+    assert first.id in page.selected_device_ids
+
+    page.device_search_input.clear()
+    restored_row = next(row for row, device in enumerate(page.filtered_devices) if device.id == first.id)
+    assert page.device_table.item(restored_row, 0).checkState() == Qt.Checked
+
+
+def test_online_mr_pending_worker_failure_and_stop_all_are_device_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.QMessageBox.warning", lambda *_args: None)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "MR-01")
+    page.refresh_all()
+
+    class FakePendingWorker:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    worker = FakePendingWorker()
+    page.workers_by_device_id[int(device.id)] = worker
+    page.manager.register_device(int(device.id), worker)
+    assert page.manager.running_count() == 1
+
+    page._upsert_summary(SimpleNamespace(session_id="pending-session"))
+    assert page.summary_table.rowCount() == 0
+
+    page.stop_all()
+    assert worker.cancelled is True
+
+    page.workers_by_device_id[int(device.id)] = worker
+    page.manager.register_device(int(device.id), worker)
+    page._worker_failed("connect failed", int(device.id))
+    assert int(device.id) not in page.workers_by_device_id
+    assert page.manager.running_count() == 0

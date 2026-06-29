@@ -864,7 +864,7 @@ def test_point_table_dialog_uses_chinese_headers_and_keeps_internal_mapping_valu
 
     assert "station" not in header_labels
     assert "primary_address" not in header_labels
-    assert "归属站点/位置" in header_labels
+    assert "归属站点" in header_labels
     assert combo.currentText() == "车内IP"
     assert dialog._rows_to_nodes()[0].primary_address_role == "vehicle_ip"
 

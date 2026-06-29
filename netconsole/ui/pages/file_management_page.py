@@ -47,6 +47,7 @@ from netconsole.services.file_transfer_service import (
     safe_device_name,
 )
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
@@ -194,6 +195,26 @@ class SftpDownloadWorker(QThread):
             service.disconnect()
 
 
+class MeshAutoImportWorker(QThread):
+    completed = Signal(int, int, int)
+    failed = Signal(str)
+
+    def __init__(self, site_name: str, paths: PathResolver, device: Device, local_path: Path, parent=None) -> None:
+        super().__init__(parent)
+        self.site_name = site_name
+        self.paths = paths
+        self.device = device
+        self.local_path = Path(local_path)
+
+    def run(self) -> None:
+        try:
+            profile = MeshStorageService(self.site_name, self.paths).ensure_mr_profile_for_device(self.device)
+            result = MeshImportService(self.site_name, self.paths).import_files(profile, [self.local_path])
+            self.completed.emit(result.imported_count, result.duplicate_count, result.parsed_record_count)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class FileManagementPage(QWidget):
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo", paths: PathResolver | None = None) -> None:
         super().__init__()
@@ -220,6 +241,7 @@ class FileManagementPage(QWidget):
         self.batches: dict[str, DownloadBatch] = {}
         self.next_task_id = 1
         self.active_worker: SftpDownloadWorker | None = None
+        self.mesh_import_workers: dict[int, MeshAutoImportWorker] = {}
         self.connect_worker: SftpConnectWorker | None = None
         self.list_worker: SftpListWorker | None = None
 
@@ -722,7 +744,31 @@ class FileManagementPage(QWidget):
         PathPreferenceService(self.paths).record_download_if_vehicle_mr(task.local_path, task.remote_file.name)
         self.refresh_queue()
         self.refresh_local(select_path=task.local_path)
+        self._start_mesh_auto_import_if_needed(task)
         self.maybe_show_batch_summary(task.batch_id)
+
+    def _start_mesh_auto_import_if_needed(self, task: TransferTask) -> None:
+        if not (is_mesh_log_file(task.remote_file.name) and self.is_vehicle_mr_device(task.device) and task.local_path.exists()):
+            return
+        task.status_key = "file_management.mesh_auto_import_started"
+        self.refresh_queue()
+        worker = MeshAutoImportWorker(self.site_name, self.paths, task.device, task.local_path, self)
+        self.mesh_import_workers[task.id] = worker
+        worker.completed.connect(lambda imported, duplicates, parsed, t=task: self._mesh_auto_import_completed(t, imported, duplicates, parsed))
+        worker.failed.connect(lambda message, t=task: self._mesh_auto_import_failed(t, message))
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda task_id=task.id: self.mesh_import_workers.pop(task_id, None))
+        worker.start()
+
+    def _mesh_auto_import_completed(self, task: TransferTask, imported: int, duplicates: int, parsed: int) -> None:
+        task.status_key = "file_management.mesh_auto_import_duplicate" if duplicates and not imported else "file_management.mesh_auto_import_done"
+        app_logger.log_info("MESH_AUTO_IMPORT_DONE", f"path={task.local_path}, imported={imported}, duplicates={duplicates}, parsed={parsed}")
+        self.refresh_queue()
+
+    def _mesh_auto_import_failed(self, task: TransferTask, message: str) -> None:
+        task.status_key = "file_management.mesh_auto_import_failed"
+        app_logger.log_warning("MESH_AUTO_IMPORT_FAILED", f"path={task.local_path}, error={message}")
+        self.refresh_queue()
 
     def on_download_cancelled(self, task: TransferTask) -> None:
         task.status_key = "file_management.status.cancelled"

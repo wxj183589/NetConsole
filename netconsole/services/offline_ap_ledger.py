@@ -16,10 +16,12 @@ UNASSIGNED_SITE_TEXT = "未归属"
 NO_HISTORY_LLDP_TEXT = "离线AP无历史LLDP记录"
 
 OFFLINE_AP_LEDGER_COLUMNS = (
+    ("ac.station", "site"),
     ("ac.ap_name", "ap_name"),
     ("ac.ap_mac", "ap_mac"),
+    ("trackside.export.ap_serial_number", "serial_number"),
     ("field.status", "ap_status"),
-    ("ac.station", "site"),
+    ("trackside.export.offline_at", "offline_at"),
     ("ac.historical_switch", "historical_switch_name"),
     ("ac.historical_interface", "historical_switch_interface"),
 )
@@ -38,8 +40,10 @@ OFFLINE_AP_STATS_COLUMNS = (
 OFFLINE_AP_HEADER_LABELS = {
     "ac.ap_name": "AP名称",
     "ac.ap_mac": "AP_MAC",
+    "trackside.export.ap_serial_number": "序列号",
     "field.status": "AP状态",
     "ac.station": "归属站点",
+    "trackside.export.offline_at": "离线时间",
     "ac.historical_switch": "历史邻居交换机",
     "ac.historical_interface": "历史邻居接口",
     "ac.ap_total": "AP总数",
@@ -78,18 +82,25 @@ def build_offline_ap_ledger(
     fit_ap_resources: list[dict[str, object | None]],
     latest_lldp_by_ap: dict[str, dict[str, object | None]] | None = None,
     device_lookup_by_name: dict[str, dict[str, object | None]] | None = None,
+    resource_history_rows: list[dict[str, object | None]] | None = None,
     **_ignored: object,
 ) -> tuple[dict[str, object | None], list[dict[str, object | None]]]:
     resources = list(fit_ap_resources or [])
     lldp_index = latest_lldp_by_ap or {}
     device_lookup = device_lookup_by_name or {}
-    online_keys = {_ap_key(resource) for resource in resources if not is_fit_ap_offline(resource)}
+    offline_at_index = _offline_at_index(resource_history_rows or [])
+    online_keys = {
+        key
+        for resource in resources
+        if not is_fit_ap_offline(resource)
+        for key in _ap_key_candidates(resource)
+    }
 
     ledger: list[dict[str, object | None]] = []
     for resource in resources:
         if not is_fit_ap_offline(resource):
             continue
-        if _ap_key(resource) in online_keys:
+        if any(key in online_keys for key in _ap_key_candidates(resource)):
             continue
         lldp = lldp_index.get(_ap_key(resource), {})
         switch_name = _historical_switch_name(lldp)
@@ -104,7 +115,9 @@ def build_offline_ap_ledger(
                 "ap_name": resource.get("ap_name"),
                 "ap_mac": _ap_mac(resource, lldp),
                 "ap_ip": resource.get("ap_ip"),
+                "serial_number": resource.get("serial_number"),
                 "ap_status": "Idle",
+                "offline_at": _offline_at_for_resource(resource, offline_at_index),
                 "site": site,
                 "device_uuid": switch_device.get("device_uuid"),
                 "historical_switch_name": switch_name,
@@ -121,6 +134,14 @@ def build_offline_ap_ledger(
                 "_device_match": switch_device,
             }
         )
+    ledger = sorted(
+        ledger,
+        key=lambda row: (
+            str(row.get("site") or ""),
+            str(row.get("offline_at") or ""),
+            str(row.get("ap_name") or ""),
+        ),
+    )
     return build_offline_ap_stats(resources, ledger), ledger
 
 
@@ -204,7 +225,7 @@ def write_offline_ap_stats_sheet(sheet, stats: dict[str, object | None], headers
 def write_offline_ap_ledger_sheet(sheet, rows: list[dict[str, object | None]], headers: list[str]) -> None:
     sheet.append(headers)
     for row in rows:
-        sheet.append([_display_value(row.get(field)) for _key, field in OFFLINE_AP_LEDGER_COLUMNS])
+        sheet.append([str(row.get(field) or "") if field == "offline_at" else _display_value(row.get(field)) for _key, field in OFFLINE_AP_LEDGER_COLUMNS])
     _format_sheet(sheet)
 
 
@@ -263,9 +284,71 @@ def save_offline_ap_cache(
 def is_fit_ap_offline(row: dict[str, object | None]) -> bool:
     for field in ("state", "state_raw", "state_display"):
         token = _state_token(row.get(field))
-        if token in {"I", "IDLE"}:
+        if token in {"I", "IDLE", "OFFLINE", "DOWN", "D"}:
             return True
     return False
+
+
+def _is_fit_ap_online(row: dict[str, object | None]) -> bool:
+    for field in ("state", "state_raw", "state_display"):
+        token = _state_token(row.get(field))
+        if token in {"R", "R/M", "RUN", "ONLINE", "UP"}:
+            return True
+    return False
+
+
+def _offline_at_index(history_rows: list[dict[str, object | None]]) -> dict[tuple[str, str], str]:
+    grouped: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+    for row in history_rows or []:
+        for key in _ap_identity_keys(row):
+            grouped.setdefault(key, []).append(row)
+    result: dict[tuple[str, str], str] = {}
+    for key, rows in grouped.items():
+        offline_at = _current_offline_started_at(rows)
+        if offline_at:
+            result[key] = offline_at
+    return result
+
+
+def _current_offline_started_at(rows: list[dict[str, object | None]]) -> str:
+    ordered = sorted(rows or [], key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))))
+    previous_online = False
+    first_offline_at = ""
+    latest_transition_at = ""
+    for row in ordered:
+        collected_at = str(row.get("collected_at") or row.get("created_at") or "")
+        if is_fit_ap_offline(row):
+            if not first_offline_at:
+                first_offline_at = collected_at
+            if previous_online:
+                latest_transition_at = collected_at
+            previous_online = False
+            continue
+        if _is_fit_ap_online(row):
+            previous_online = True
+    return latest_transition_at or first_offline_at
+
+
+def _offline_at_for_resource(resource: dict[str, object | None], offline_at_index: dict[tuple[str, str], str]) -> str:
+    for key in _ap_identity_keys(resource):
+        offline_at = offline_at_index.get(key)
+        if offline_at:
+            return offline_at
+    return str(resource.get("updated_at") or resource.get("collected_at") or "")
+
+
+def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    serial = str(row.get("serial_number") or "").strip()
+    if serial:
+        keys.append(("serial", serial.casefold()))
+    mac = _mac_from_text(row.get("ap_mac") or row.get("mac"))
+    if mac:
+        keys.append(("mac", mac.casefold()))
+    name = str(row.get("ap_name") or "").strip()
+    if name:
+        keys.append(("name", name.casefold()))
+    return keys
 
 
 def _cache_safe_row(row: dict[str, object | None]) -> dict[str, object | None]:
@@ -281,11 +364,28 @@ def _state_token(value: object) -> str:
 
 
 def _ap_key(row: dict[str, object | None]) -> str:
-    for prefix, field in (("uuid", "ap_uuid"), ("mac", "ap_mac"), ("sn", "serial_number"), ("name", "ap_name"), ("ip", "ap_ip")):
+    candidates = _ap_key_candidates(row)
+    if candidates:
+        return candidates[0]
+    return ""
+
+
+def _ap_key_candidates(row: dict[str, object | None]) -> list[str]:
+    candidates: list[str] = []
+    for prefix, value in _ap_identity_keys(row):
+        candidates.append(f"{prefix}:{value}")
+    for prefix, field in (("uuid", "ap_uuid"), ("ip", "ap_ip")):
         value = str(row.get(field) or "").strip().casefold()
         if value:
-            return f"{prefix}:{value}"
-    return ""
+            candidates.append(f"{prefix}:{value}")
+    return candidates
+
+
+def _int_value(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0
 
 
 def _normalize_name(value: object) -> str:

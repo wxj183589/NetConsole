@@ -36,6 +36,8 @@ SAFE_FIT_AP_COMMANDS = {
     "screen-length d",
     "screen-length disable",
     "display lldp neighbor-information list",
+    "display transceiver interface",
+    "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",
     "display interface brief",
 }
@@ -45,6 +47,7 @@ SAFE_OPTICAL_REFRESH_COMMANDS = {
     "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
+    "display interface",
     "display interface brief",
 }
 

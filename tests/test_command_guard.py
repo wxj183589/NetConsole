@@ -68,6 +68,7 @@ def test_command_guard_allows_display_boot_loader_but_rejects_config_boot_loader
 def test_optical_refresh_context_only_allows_optical_refresh_commands():
     assert is_command_allowed("screen-length disable", "optical_refresh")
     assert is_command_allowed("display interface", "optical_refresh")
+    assert is_command_allowed("display interface brief", "optical_refresh")
     assert is_command_allowed("display transceiver diagnosis interface", "optical_refresh")
     assert not is_command_allowed("display version", "optical_refresh")
     for command in ("system-view", "undo lldp global enable", "shutdown", "reboot"):

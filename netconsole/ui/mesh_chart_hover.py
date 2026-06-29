@@ -131,6 +131,25 @@ class MeshChartHoverController(QObject):
     def tooltip_text(self, index: int) -> str:
         labels = self.payload.get("timestamp_labels") or []
         sample_time = labels[index] if 0 <= index < len(labels) else ""
+        lines = [
+            f"{self.i18n.t('mesh_analysis.hover_sample_time')}:",
+            full_sample_time_label(sample_time),
+            "",
+        ]
+        lines.extend(self._main_link_lines(index))
+        metric_lines: list[str] = []
+        for field in self._metric_fields_for_tooltip():
+            metric_lines.extend(self._metric_lines(field, index))
+        if metric_lines:
+            lines.append("")
+            lines.extend(metric_lines)
+        lines.append("")
+        lines.extend(self._standby_link_lines(index))
+        event_lines = self._event_lines(index)
+        if event_lines:
+            lines.append("")
+            lines.extend(event_lines)
+        return "\n".join(lines)
         peer = self._peer_for_index(index)
         peer_ap_name = self._payload_value_for_index("active_peer_ap_names" if self.chart_key.startswith("active_") else "peer_ap_names", index)
         peer_site = self._payload_value_for_index("active_peer_sites" if self.chart_key.startswith("active_") else "peer_sites", index)
@@ -155,6 +174,8 @@ class MeshChartHoverController(QObject):
         else:
             for field in self.series_fields:
                 lines.extend(self._metric_lines(field, index))
+        lines.append("")
+        lines.extend(self._standby_link_lines(index))
         event_lines = self._event_lines(index)
         if event_lines:
             lines.append("")
@@ -230,14 +251,52 @@ class MeshChartHoverController(QObject):
             formatted = self.i18n.t("mesh_analysis.unavailable_counter_delta") if field.startswith("peer.delta_") else "-"
         return [f"{label}: {formatted}"]
 
+    def _metric_fields_for_tooltip(self) -> list[str]:
+        hidden = {"peer.local_rssi", "peer.peer_rssi", "active.active_local_rssi"}
+        return [field for field in self.series_fields if field not in hidden]
+
+    def _main_link_lines(self, index: int) -> list[str]:
+        peer = self._peer_for_index(index)
+        mr_rssi, ap_rssi = self._main_rssi_pair(index)
+        return [
+            f"{self.i18n.t('mesh_analysis.hover_active_link')}:",
+            f"{self._main_peer_name(index, peer)} / {self._main_peer_site(index)}",
+            f"PeerMac: {format_mac_h3c(peer) if peer else '-'}",
+            f"{self.i18n.t('mesh_analysis.hover_mr_ap_rssi')}: {mr_rssi}/{ap_rssi}",
+            f"{self.i18n.t('mesh_analysis.state')}: {self._state_text(self._state_for_index(index))}",
+        ]
+
+    def _main_peer_name(self, index: int, peer: str) -> str:
+        key = "active_peer_ap_names" if self.chart_key.startswith("active_") else "peer_ap_names"
+        value = self._payload_value_for_index(key, index)
+        return value or (format_mac_h3c(peer) if peer else "-")
+
+    def _main_peer_site(self, index: int) -> str:
+        key = "active_peer_sites" if self.chart_key.startswith("active_") else "peer_sites"
+        return self._payload_value_for_index(key, index) or "-"
+
+    def _main_rssi_pair(self, index: int) -> tuple[str, str]:
+        if self.chart_key.startswith("active_"):
+            return self._format_raw_value(self._series_value("active.active_local_rssi", index)), self._active_peer_rssi(index)
+        return self._format_raw_value(self._series_value("peer.local_rssi", index)), self._format_raw_value(self._series_value("peer.peer_rssi", index))
+
+    def _series_value(self, field: str, index: int) -> object:
+        values = self._series_values(field)
+        if values is not None and 0 <= index < len(values):
+            return values[index]
+        return np.nan
+
     def _current_active_rssi_lines(self, index: int) -> list[str]:
         active_peers = self.payload.get("active_peer_macs") or []
         if not (0 <= index < len(active_peers)) or not active_peers[index]:
             return [self.i18n.t("mesh_analysis.no_unique_active")]
         peer_name = self._payload_value_for_index("active_peer_ap_names", index)
-        lines = ["当前PEER AP名称" + f": {peer_name or '-'}"]
+        peer_site = self._payload_value_for_index("active_peer_sites", index)
+        peer_rssi = self._active_peer_rssi(index)
+        lines = ["当前PEER AP名称" + f": {peer_name or '-'}", f"归属站点: {peer_site or '-'}"]
         for field in ("active.active_local_rssi",):
             lines.extend(self._metric_lines(field, index)[:1])
+        lines.append(f"AP侧RSSI: {peer_rssi}")
         return lines
 
     def _active_load_lines(self, index: int) -> list[str]:
@@ -249,6 +308,51 @@ class MeshChartHoverController(QObject):
         for field in ("active.active_local_tx_busy", "active.active_local_rx_busy"):
             lines.extend(self._metric_lines(field, index)[:1])
         return lines
+
+    def _standby_link_lines(self, index: int) -> list[str]:
+        rows_by_index = self.payload.get("standby_links_by_index")
+        rows = rows_by_index[index] if isinstance(rows_by_index, list) and 0 <= index < len(rows_by_index) else []
+        title = self.i18n.t("mesh_analysis.hover_standby_links")
+        if not rows:
+            return [self.i18n.t("mesh_analysis.hover_no_standby_links")]
+        lines = [f"{title}:"]
+        for number, row in enumerate(rows[:3], start=1):
+            if not isinstance(row, dict):
+                continue
+            peer_mac = str(row.get("peer_mac") or "")
+            ap_name = str(row.get("ap_name") or "").strip() or (format_mac_h3c(peer_mac) if peer_mac else "-")
+            site = str(row.get("site") or "").strip() or "-"
+            mr_rssi = self._format_raw_value(row.get("mr_rssi"))
+            ap_rssi = self._format_raw_value(row.get("ap_rssi"))
+            lines.append(f"{number}. {ap_name} / {site} / {self.i18n.t('mesh_analysis.hover_mr_ap_rssi')} {mr_rssi}/{ap_rssi}")
+        return lines
+        title = self.i18n.t("mesh_analysis.standby_links")
+        if not rows:
+            return [f"{title}: {self.i18n.t('mesh_analysis.no_standby_links')}"]
+        lines = [f"{title}:"]
+        for number, row in enumerate(rows[:3], start=1):
+            if not isinstance(row, dict):
+                continue
+            ap_name = str(row.get("ap_name") or "-")
+            site = str(row.get("site") or "-")
+            mr_rssi = self._format_raw_value(row.get("mr_rssi"))
+            ap_rssi = self._format_raw_value(row.get("ap_rssi"))
+            peer_radio = str(row.get("peer_radio") or "-")
+            lines.append(f"{number}. {ap_name} / {site} / MR侧RSSI {mr_rssi} / AP侧RSSI {ap_rssi} / Peer Radio {peer_radio}")
+        return lines
+
+    def _active_peer_rssi(self, index: int) -> str:
+        values = self.payload.get("active_peer_rssi")
+        if isinstance(values, np.ndarray) and 0 <= index < len(values):
+            return self._format_raw_value(values[index])
+        return "-"
+
+    def _format_raw_value(self, value: object) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        return f"{number:.0f}" if np.isfinite(number) else "-"
 
     def _event_lines(self, index: int) -> list[str]:
         events_by_index = self.payload.get("events_by_index")
@@ -301,7 +405,7 @@ class MeshChartHoverController(QObject):
 
     def _state_text(self, state: str) -> str:
         if state == "ACTIVE":
-            return self.i18n.t("mesh_analysis.primary_link")
+            return self.i18n.t("mesh_analysis.hover_status_active")
         if state == "STANDBY":
-            return self.i18n.t("mesh_analysis.standby_link")
+            return self.i18n.t("mesh_analysis.hover_status_standby")
         return self.i18n.t("mesh_analysis.no_unique_active") if not state else state

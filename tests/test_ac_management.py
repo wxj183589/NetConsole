@@ -48,7 +48,7 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
 )
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
-from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
+from netconsole.services.offline_ap_ledger import OFFLINE_AP_LEDGER_COLUMNS, OFFLINE_AP_STATS_COLUMNS, OFFLINE_AP_STATUS_TEXT, offline_ap_headers
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
@@ -168,6 +168,13 @@ class FakeOpticalConnection:
             raise RuntimeError("boom")
         if command == "screen-length disable":
             return ""
+        if command == "display interface brief":
+            return """
+Brief information on interfaces in bridge mode:
+Link: ADM - administratively down; Stby - standby
+Interface            Link Speed   Duplex Type PVID Description
+GE1/0/1              UP   1G      F(a)   A    921  To AP
+"""
         if command == "display interface":
             return """
 GigabitEthernet1/0/1 current state: UP
@@ -250,6 +257,18 @@ def make_database(tmp_path):
     database = Database(tmp_path / "devices.db")
     database.initialize()
     return database
+
+
+def create_station_switch(repository: DeviceRepository, site_name: str, **kwargs) -> Device:
+    group_repository = DeviceGroupRepository(repository.database, site_name)
+    station_group = group_repository.find_by_name("\u8f66\u7ad9") or group_repository.create("\u8f66\u7ad9")
+    payload = {
+        "group_id": station_group.id,
+        "device_type": "SW",
+        "device_vendor": "H3C",
+        **kwargs,
+    }
+    return repository.create(Device(**payload))
 
 
 def make_ac_device():
@@ -1658,9 +1677,78 @@ def test_build_ap_optical_treatment_records_closes_and_opens_by_history():
     closed = next(row for row in records if row["side"] == "AP侧")
     open_record = next(row for row in records if row["side"] == "交换机侧")
     assert closed["treatment_status"] == TREATMENT_CLOSED_LABEL
-    assert closed["fixed_at"] == "2026-06-30 09:30:00"
+    assert closed["completed_at"] == "2026-06-30 09:30:00"
     assert open_record["treatment_status"] == TREATMENT_OPEN_LABEL
     assert open_record["first_found_at"] == "2026-06-30 10:00:00"
+
+
+def test_trackside_ap_business_treatment_records_complete_ap_identity_and_normalize_interfaces():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "AP-GE",
+            "ap_mac": "0011-2233-4455",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_rx_power": "-8.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        },
+        {
+            "site": "Station B",
+            "ap_name": "AP-BAGG",
+            "ap_mac": "00aa-bbcc-ddee",
+            "device_uuid": "sw-2",
+            "device_name": "SW-2",
+            "interface_name": "Bridge-Aggregation121",
+            "switch_rx_power": "-8.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        },
+    ]
+    ap_history = [
+        {
+            "id": 1,
+            "ap_name": "AP-GE",
+            "ap_mac": "0011.2233.4455",
+            "rx_power": "-24.00",
+            "optical_alarm_status": "warning",
+            "collected_at": "2026-06-30 09:00:00",
+        }
+    ]
+    switch_history = [
+        {
+            "id": 1,
+            "device_uuid": "sw-1",
+            "interface_name": "GE2/0/1",
+            "rx_power": "-24.00",
+            "optical_alarm_status": "normal",
+            "collected_at": "2026-06-30 09:00:00",
+        },
+        {
+            "id": 2,
+            "device_uuid": "sw-2",
+            "interface_name": "BAGG121",
+            "rx_power": "-24.00",
+            "optical_alarm_status": "normal",
+            "collected_at": "2026-06-30 09:00:00",
+        },
+    ]
+    resources = [
+        {"ap_name": "AP-GE", "ap_mac": "0011-2233-4455", "serial_number": "SN-GE"},
+        {"ap_name": "AP-BAGG", "ap_mac": "00aa-bbcc-ddee", "serial_number": "SN-BAGG"},
+    ]
+
+    records = build_ap_optical_treatment_records(trackside_rows, ap_history, switch_history, resources)
+
+    switch_records = [row for row in records if row["side"] == "交换机侧"]
+    assert {row["interface_name"] for row in switch_records} == {"GigabitEthernet2/0/1", "Bridge-Aggregation121"}
+    assert {row["serial_number"] for row in switch_records} == {"SN-GE", "SN-BAGG"}
+    ap_record = next(row for row in records if row["side"] == "AP侧")
+    assert ap_record["ap_name"] == "AP-GE"
+    assert ap_record["ap_mac"] == "0011-2233-4455"
+    assert ap_record["serial_number"] == "SN-GE"
 
 
 def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(tmp_path):
@@ -1702,7 +1790,12 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
         "交换机光模块统计",
     ]
     assert workbook["新增上线AP概览"]["A2"].value == "Station A"
-    assert workbook["AP光衰处理记录"]["O2"].value == TREATMENT_OPEN_LABEL
+    treatment_sheet = workbook["AP光衰处理记录"]
+    assert treatment_sheet.cell(row=1, column=treatment_sheet.max_column).value == "处理完成时间"
+    assert treatment_sheet["N2"].value == TREATMENT_OPEN_LABEL
+    assert treatment_sheet["P2"].value is None
+    assert treatment_sheet["A1"].fill.fgColor.rgb == "00DBEAFE"
+    assert treatment_sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
 
 
 def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):
@@ -2912,10 +3005,11 @@ def test_trackside_ap_interface_matches_description_or_pvid_plan():
     }
     switch = Device(name="SW", station="Station A", device_uuid="sw-1")
 
-    assert is_trackside_ap_interface(switch, {"description": "", "pvid": "921"}, plan) == (True, "pvid")
-    assert is_trackside_ap_interface(switch, {"description": "to AP", "pvid": "1"}, plan) == (True, "description")
-    assert is_trackside_ap_interface(switch, {"description": "to AP", "pvid": "921"}, plan) == (True, "description+pvid")
-    assert is_trackside_ap_interface(switch, {"description": "", "pvid": "922"}, plan) == (False, "none")
+    base = {"interface_name": "GigabitEthernet1/0/1", "port_status": "access"}
+    assert is_trackside_ap_interface(switch, {**base, "description": "", "pvid": "921"}, plan) == (True, "pvid")
+    assert is_trackside_ap_interface(switch, {**base, "description": "to AP", "pvid": "1"}, plan) == (True, "description")
+    assert is_trackside_ap_interface(switch, {**base, "description": "to AP", "pvid": "921"}, plan) == (True, "description+pvid")
+    assert is_trackside_ap_interface(switch, {**base, "description": "", "pvid": "922"}, plan) == (False, "none")
 
 
 def test_trackside_ap_interface_prefers_station_vlans_and_falls_back_global():
@@ -3237,6 +3331,7 @@ def test_trackside_ap_page_does_not_render_i18n_keys(tmp_path):
     page = rail_page.trackside_page
     visible_text = [
         rail_page.tabs.tabText(0),
+        rail_page.tabs.tabText(2),
         page.update_button.text(),
         page.cancel_update_button.text(),
         page.status_label.text(),
@@ -3517,8 +3612,8 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     app()
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
-    switch = device_repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
-    other = device_repository.create(Device(name="HX_2", station="Station B", ip_address="10.0.0.3"))
+    switch = create_station_switch(device_repository, "demo", name="HX_1", station="Station A", ip_address="10.0.0.2")
+    other = create_station_switch(device_repository, "demo", name="HX_2", station="Station B", ip_address="10.0.0.3")
     fact_repository = DeviceFactRepository(database)
     fact_repository.replace_device_interfaces(
         switch.device_uuid,
@@ -3558,9 +3653,12 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert "Trackside AP Business" not in [ac_page.tabs.tabText(index) for index in range(ac_page.tabs.count())]
 
     rail_page = RailTransitPage(device_repository, I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert rail_page.tabs.tabText(0) == "Trackside AP Service"
-    assert rail_page.tabs.tabText(1) == "MESH Log Analysis"
-    assert rail_page.tabs.tabText(2) == "Onboard MR Online Collection"
+    assert rail_page.tabs.tabText(0) == "列车在线情况"
+    assert rail_page.tabs.tabText(1) == "车内通信检测"
+    assert rail_page.tabs.tabText(2) == "Trackside AP Service"
+    assert rail_page.tabs.tabText(3) == "MR Raw MESH Log Analysis"
+    assert rail_page.tabs.tabText(4) == "Onboard MR Realtime Collection"
+    assert rail_page.tabs.tabText(5) == "Onboard MR Collection Analysis"
     assert rail_page.tabs.currentIndex() == 0
     page = rail_page.trackside_page
     assert isinstance(page, TracksideApServicePage)
@@ -4446,15 +4544,19 @@ def test_rail_transit_lazy_refreshes_only_current_tab(tmp_path, monkeypatch):
     database = make_database(tmp_path)
     page = RailTransitPage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
     calls: list[str] = []
+    monkeypatch.setattr(page.vehicle_mr_online_page, "refresh_all", lambda: calls.append("vehicle"))
     monkeypatch.setattr(page.trackside_page, "refresh_async", lambda force=False: calls.append(f"trackside:{force}"))
     monkeypatch.setattr(page.mesh_page, "refresh_all", lambda: calls.append("mesh"))
     assert page.online_mr_page is None
 
     page.refresh_current_async_or_lazy()
-    assert calls == ["trackside:False"]
+    assert calls == ["vehicle"]
 
-    page.tabs.setCurrentIndex(1)
-    assert calls == ["trackside:False", "mesh"]
+    page.tabs.setCurrentIndex(2)
+    assert calls == ["vehicle", "trackside:False"]
+
+    page.tabs.setCurrentIndex(3)
+    assert calls == ["vehicle", "trackside:False", "mesh"]
 
 
 def test_trackside_ap_search_filter_is_debounced(tmp_path):
@@ -4565,7 +4667,7 @@ def test_trackside_load_snapshot_returns_diagnostic_counts_and_empty_reason(tmp_
     app()
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
-    switch = repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    switch = create_station_switch(repository, "demo", name="HX_1", station="Station A", ip_address="10.0.0.2")
     fact_repository = DeviceFactRepository(database)
     fact_repository.replace_device_interfaces(
         switch.device_uuid,
@@ -4589,7 +4691,7 @@ def test_trackside_load_snapshot_counts_successful_business_rows(tmp_path):
     app()
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
-    switch = repository.create(Device(name="HX_1", station="Station A", ip_address="10.0.0.2"))
+    switch = create_station_switch(repository, "demo", name="HX_1", station="Station A", ip_address="10.0.0.2")
     fact_repository = DeviceFactRepository(database)
     fact_repository.replace_device_interfaces(
         switch.device_uuid,
@@ -4698,6 +4800,8 @@ def test_rail_transit_force_if_empty_refreshes_empty_trackside_cache(tmp_path, m
     page.trackside_page.trackside_rows = []
     monkeypatch.setattr(page.trackside_page, "refresh_async", lambda force=False: calls.append(force))
 
+    page.tabs.setCurrentIndex(2)
+    calls.clear()
     page.refresh_current_async_or_lazy(force_if_empty=True)
 
     assert calls == [True]

@@ -4,6 +4,7 @@ import gzip
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -170,7 +171,7 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("MR2")
     source = tmp_path / "meshlog.log"
-    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n", encoding="utf-8")
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
     MeshImportService("demo", paths).import_files(profile, [source])
     page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
     page.current_profile = profile
@@ -180,17 +181,61 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     monkeypatch.setattr(page_module.QMessageBox, "information", lambda *_args: messages.append(str(_args[-1])) or None)
 
     page.export_link_details()
+    deadline = time.time() + 5
+    while page.export_worker is not None and time.time() < deadline:
+        _app().processEvents()
+        time.sleep(0.01)
 
     assert target.exists()
     workbook = load_workbook(target)
+    assert set(workbook.sheetnames) >= {"链路明细", "主链路建链顺序"}
     sheet = workbook["链路明细"]
     assert sheet["A1"].font.bold
     assert sheet["A2"].alignment.horizontal == "center"
     assert sheet["A2"].alignment.vertical == "center"
+    assert sheet["A2"].font.bold
+    assert sheet["A2"].font.color.rgb.endswith("15803D")
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref
+    build_sheet = workbook["主链路建链顺序"]
+    assert build_sheet["A1"].value == "序号"
+    assert build_sheet["Q2"].value == "短时建链"
     headers = [cell.value for cell in sheet[1]]
     for header in ("时间", "Radio", "PeerMac", "LinkState", "EstablishTime", "DurationTime", "LinkCnt", "L_Rssi", "P_Rssi", "L_Cpu", "P_Cpu", "L_Mem", "P_Mem", "L_TxBusy", "L_RxBusy", "P_TxBusy", "P_RxBusy"):
         assert header in headers
     assert any("链路明细已导出" in message for message in messages)
+
+
+def test_mesh_page_state_filter_defaults_to_raw_and_filters_active_standby(tmp_path):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
+    page.current_profile = profile
+
+    page.refresh_current_mr_data()
+    assert page._current_link_filters()["state"] is None
+    assert page.link_table.rowCount() == 2
+
+    page.state_filter.setCurrentIndex(1)
+    page.refresh_link_table()
+    assert page._current_link_filters()["state"] == "ACTIVE"
+    assert {page.link_table.item(row, 3).text() for row in range(page.link_table.rowCount())} == {"ACTIVE"}
+
+    page.state_filter.setCurrentIndex(2)
+    page.refresh_link_table()
+    assert page._current_link_filters()["state"] == "STANDBY"
+    assert {page.link_table.item(row, 3).text() for row in range(page.link_table.rowCount())} == {"STANDBY"}
+
+    page._clear_link_filters()
+    assert page.state_filter.currentIndex() == 0
+    assert page._current_link_filters()["state"] is None
 
 
 def test_duplicate_sha_is_skipped(tmp_path):
@@ -573,14 +618,10 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     page.link_table.setColumnWidth(3, 260)
     page.refresh_current_mr_data()
     assert page.link_table.columnWidth(3) == 260
-    active_rows = []
-    for row in range(page.link_table.rowCount()):
-        data = page.link_table.item(row, 0).data(Qt.UserRole)
-        if data["link_state"] == "ACTIVE":
-            active_rows.append(row)
-    assert active_rows
-    assert page.link_table.item(active_rows[0], 0).font().bold()
-    assert page.link_table.item(active_rows[0], 0).foreground().color() != page.link_table.item(1 - active_rows[0], 0).foreground().color()
+    assert page.link_table.rowCount() == 2
+    data = page.link_table.item(0, 0).data(Qt.UserRole)
+    assert data["link_state"] == "ACTIVE"
+    assert page.link_table.item(0, 0).font().bold()
 
 
 def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
@@ -778,11 +819,8 @@ def test_anchor_dialog_signal_chart_uses_raw_positive_rssi(tmp_path):
     assert 36 in y_values
     assert 43 in y_values
     assert -52 not in y_values
-    assert not dialog.figures["active_next_rssi"].axes
-    dialog.tabs.setCurrentIndex(dialog.tab_keys.index("active_next_rssi"))
-    assert dialog.figures["active_next_rssi"].axes
-    dialog.tabs.setCurrentIndex(dialog.tab_keys.index("active_channel_load"))
-    assert dialog.figures["active_channel_load"].axes
+    assert "active_next_rssi" not in dialog.tab_keys
+    assert "active_channel_load" not in dialog.tab_keys
 
 
 def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
@@ -793,6 +831,22 @@ def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
     assert len(sample_times) == 10000
     assert "2025-12-03 10:00:00.000" in sample_times
     assert "2025-12-03 13:16:40.000" not in sample_times
+
+
+def test_full_active_chart_query_loads_beyond_link_detail_page_size(tmp_path):
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    repo = MeshMrRepository(tmp_path / "mesh.sqlite")
+    _insert_mesh_samples(repo.path, first_count=1005, second_count=0)
+
+    segment = repo.query_active_link_chart_segments()
+    payload = build_chart_payload(segment["peer_segment"], segment["run_segment"])
+
+    assert len(segment["run_segment"]["rows"]) == 1005
+    assert segment["run_segment"]["query_active_count"] == 1005
+    assert payload["metadata"]["sample_count"] == 1005
+    assert payload["metadata"]["query_active_count"] == 1005
+    assert payload["metadata"]["full_active_payload"] is True
 
 
 def test_worker_uses_single_chart_segment_query(monkeypatch, tmp_path):
@@ -982,9 +1036,10 @@ def test_hover_snaps_to_nearest_master_sample_and_shows_signal_metrics(tmp_path)
     text = hover.tooltip_text(10)
     assert "2025-12-03 10:00:10.000" in text
     assert "30f5-277a-5a2f" in text
-    assert "Primary Link" in text
-    assert "MR RSSI: 24" in text
-    assert "Peer RSSI: 34" in text
+    assert "Active Link" in text
+    assert "MR-AP_RSSI: 24/34" in text
+    assert "MR RSSI: 24" not in text
+    assert "Peer RSSI: 34" not in text
     assert "Raw RSSI margin" not in text
 
 
@@ -992,19 +1047,20 @@ def test_current_active_rssi_hover_shows_only_current_peer(tmp_path):
     _app()
     from netconsole.core.i18n import I18n
     from netconsole.models.mesh_log_models import MeshMrProfile
-    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog
 
     labels = ["2025-12-03 10:00:00.000", "2025-12-03 10:00:01.000"]
     payload = _chart_payload_from_labels(labels, 0)
     payload["active_peer_macs"][0] = "30f5277a5a2f"
     payload["active_series"]["active_local_rssi"][0] = 24
+    payload["active_peer_rssi"] = np.asarray([34, np.nan], dtype=np.float32)
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
-    dialog = MeshPeerDetailDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", "30f5277a5a2f", auto_load=False, initial_tab="active_next_rssi")
+    dialog = MeshActiveLinkChartDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", auto_load=False)
     dialog._on_loaded({"chart_payload": payload, "peer_segment": {}})
     dialog.tabs.setCurrentIndex(dialog.tab_keys.index("active_next_rssi"))
     text = dialog.hover_controllers["active_next_rssi"].tooltip_text(0)
     assert "30f5-277a-5a2f" in text
-    assert "Current Active MR RSSI: 24" in text
+    assert "MR-AP_RSSI: 24/34" in text
     assert "30f5-277a-5a3f" not in text
     assert "Next Active" not in text
     assert "Next Active MR RSSI" not in text
@@ -1110,7 +1166,6 @@ def test_peer_dialog_is_maximizable_and_canvas_expands(tmp_path):
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
     dialog = MeshPeerDetailDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", "30f5277a5a2f", auto_load=False)
     dialog._on_loaded({"chart_payload": _chart_payload(300, 150), "peer_segment": {}})
-    dialog.tabs.setCurrentIndex(dialog.tab_keys.index("active_next_rssi"))
     dialog.time_scrollbar.setValue(25)
     assert dialog.windowFlags() & Qt.WindowMaximizeButtonHint
     assert not dialog.maximumSize().isValid() or dialog.maximumSize().width() > 1180
@@ -1123,18 +1178,21 @@ def test_peer_dialog_is_maximizable_and_canvas_expands(tmp_path):
     assert dialog.time_scrollbar.value() == current_scroll
 
 
-def test_peer_dialog_keeps_only_final_five_tabs(tmp_path):
+def test_peer_dialog_keeps_only_single_peer_tabs_and_active_dialog_has_full_active_tabs(tmp_path):
     _app()
     from netconsole.core.i18n import I18n
     from netconsole.models.mesh_log_models import MeshMrProfile
-    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog, MeshPeerDetailDialog
 
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
     dialog = MeshPeerDetailDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", "30f5277a5a2f", auto_load=False)
     dialog._on_loaded({"chart_payload": _chart_payload(100, 50), "peer_segment": {}})
-    assert dialog.tab_keys == ["signal", "rssi_noise", "load", "active_next_rssi", "active_channel_load"]
+    assert dialog.tab_keys == ["signal", "rssi_noise", "load"]
     tab_titles = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
-    assert "Current Active RSSI" in tab_titles
+    assert "All Active Link RSSI" not in tab_titles
+    active_dialog = MeshActiveLinkChartDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", auto_load=False)
+    active_dialog._on_loaded({"chart_payload": _chart_payload(100, 50), "peer_segment": {}})
+    assert active_dialog.tab_keys == ["active_next_rssi", "active_channel_load"]
     assert "Active / Next Active RSSI" not in tab_titles
     assert all("Next Active" not in title for title in tab_titles)
     assert "Link Duration" not in tab_titles
@@ -1148,6 +1206,29 @@ def test_peer_dialog_keeps_only_final_five_tabs(tmp_path):
     assert "duration" not in dialog.chart_artists
     assert "reliability" not in dialog.hover_controllers
     assert "rate" not in dialog.hover_controllers
+
+
+def test_peer_dialog_uses_callback_without_qt_parent(tmp_path):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.models.mesh_log_models import MeshMrProfile
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog, MeshSelectedPoint
+
+    jumps: list[dict[str, object]] = []
+    profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
+    dialog = MeshPeerDetailDialog(
+        I18n("en_US"),
+        profile,
+        tmp_path / "mesh.sqlite",
+        "30f5277a5a2f",
+        parent=None,
+        auto_load=False,
+        detail_jump_handler=jumps.append,
+    )
+
+    assert dialog.parent() is None
+    dialog.jump_to_detail_row(MeshSelectedPoint(0, "s1", "2026-01-01 00:00:00.000", "30f5277a5a2f", "AP", "Site", "1", "radio1", "ACTIVE"))
+    assert jumps and jumps[0]["session_id"] == "s1"
     assert "state" not in dialog.interaction_controllers
 
 
@@ -1155,16 +1236,17 @@ def test_current_active_rssi_chart_only_draws_current_mr_side_line(tmp_path):
     _app()
     from netconsole.core.i18n import I18n
     from netconsole.models.mesh_log_models import MeshMrProfile
-    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog
 
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
-    dialog = MeshPeerDetailDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", "30f5277a5a2f", auto_load=False)
+    dialog = MeshActiveLinkChartDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", auto_load=False)
     dialog._on_loaded({"chart_payload": _chart_payload(100, 50), "peer_segment": {}})
     dialog.tabs.setCurrentIndex(dialog.tab_keys.index("active_next_rssi"))
     fields = set(dialog.chart_artists["active_next_rssi"]["lines"])
     assert fields == {"active.active_local_rssi"}
     text = dialog.hover_controllers["active_next_rssi"].tooltip_text(0)
-    assert "Current Active MR RSSI" in text
+    assert "MR-AP_RSSI:" in text
+    assert "Current Active MR RSSI" not in text
     assert "Next Active MR RSSI" not in text
     assert "Next Active Link" not in text
     assert "Current Active Peer RSSI" not in text
@@ -1175,10 +1257,10 @@ def test_active_channel_load_chart_only_draws_mr_side_busy(tmp_path):
     _app()
     from netconsole.core.i18n import I18n
     from netconsole.models.mesh_log_models import MeshMrProfile
-    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog
 
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
-    dialog = MeshPeerDetailDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", "30f5277a5a2f", auto_load=False)
+    dialog = MeshActiveLinkChartDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", auto_load=False)
     dialog._on_loaded({"chart_payload": _chart_payload(100, 50), "peer_segment": {}})
     dialog.tabs.setCurrentIndex(dialog.tab_keys.index("active_channel_load"))
     fields = set(dialog.chart_artists["active_channel_load"]["lines"])
@@ -1247,10 +1329,10 @@ def test_active_role_short_missing_point_draws_dashed_bridge(tmp_path):
     from matplotlib.collections import LineCollection
     from netconsole.core.i18n import I18n
     from netconsole.models.mesh_log_models import MeshMrProfile
-    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshPeerDetailDialog
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog
 
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
-    dialog = MeshPeerDetailDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", "30f5277a5a2f", auto_load=False, initial_tab="active_next_rssi")
+    dialog = MeshActiveLinkChartDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", auto_load=False)
     payload = _chart_payload(5, 0)
     payload["active_series"]["active_local_rssi"][2] = np.nan
     dialog._on_loaded({"chart_payload": payload, "peer_segment": {}})
@@ -1322,6 +1404,43 @@ def test_current_active_payload_uses_canonical_mac_formats_for_runs():
     rows[1]["peer_mac_normalized"] = ""
     payload = build_chart_payload({"anchor": rows[0], "rows": [rows[0]]}, {"anchor": rows[0], "rows": rows, "events": []})
     assert [run["peer_mac"] for run in payload["active_runs"]] == ["30f5277a5a2f", "30f5277a5a3f"]
+
+
+def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.models.mesh_log_models import MeshMrProfile
+    from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    rows = [
+        _payload_row(1, "2025-12-03 10:00:00.000", "30f5-277a-5a2f", "ACTIVE", 45, 53),
+        _payload_row(2, "2025-12-03 10:00:00.000", "30f5-277a-5a3f", "STANDBY", 27, 37),
+        _payload_row(3, "2025-12-03 10:00:00.000", "30f5-277a-5a4f", "STANDBY", 31, None),
+        _payload_row(4, "2025-12-03 10:00:00.000", "30f5-277a-5a5f", "STANDBY", None, 39),
+    ]
+    rows[0]["peer_ap_name"] = "AP-X_3111"
+    rows[0]["peer_site"] = "31 Site"
+    rows[1]["peer_ap_name"] = "AP-X_3110"
+    rows[1]["peer_site"] = "31 Site"
+    rows[2]["peer_ap_name"] = ""
+    rows[2]["peer_site"] = ""
+    rows[3]["peer_ap_name"] = "AP-X_3109"
+    rows[3]["peer_site"] = "31 Site"
+    payload = build_chart_payload({"anchor": rows[0], "rows": [rows[0]]}, {"anchor": rows[0], "rows": rows, "events": []})
+
+    profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
+    dialog = MeshActiveLinkChartDialog(I18n("en_US"), profile, tmp_path / "mesh.sqlite", auto_load=False)
+    dialog._on_loaded({"chart_payload": payload, "peer_segment": {}})
+    text = dialog.hover_controllers["active_next_rssi"].tooltip_text(0)
+
+    assert "AP-X_3111 / 31 Site" in text
+    assert "MR-AP_RSSI: 45/53" in text
+    assert "1. 30f5-277a-5a4f / - / MR-AP_RSSI 31/-" in text
+    assert "2. AP-X_3110 / 31 Site / MR-AP_RSSI 27/37" in text
+    assert "3. AP-X_3109 / 31 Site / MR-AP_RSSI -/39" in text
+    assert "4." not in text
+    assert "Peer Radio" not in text
 
 
 def test_aba_active_switch_preserves_three_runs_and_rapid_flap():
@@ -1723,7 +1842,7 @@ def test_parse_issues_empty_state_and_count(tmp_path):
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.current_profile = profile
     page.refresh_parse_issues(repo)
-    assert page.tabs.tabText(3) == "Parse Issues (0)"
+    assert page.tabs.tabText(4) == "Parse Issues (0)"
     assert not page.issue_empty_widget.isHidden()
     assert page.issue_table.isHidden()
     assert page.issue_pagination.isHidden()
@@ -1750,7 +1869,7 @@ def test_parse_issues_table_returns_when_issues_exist(tmp_path):
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.current_profile = profile
     page.refresh_parse_issues(repo)
-    assert page.tabs.tabText(3) == "Parse Issues (1)"
+    assert page.tabs.tabText(4) == "Parse Issues (1)"
     assert page.issue_empty_widget.isHidden()
     assert not page.issue_table.isHidden()
     assert not page.issue_pagination.isHidden()
