@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import time
@@ -3669,6 +3670,75 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     assert result.target_count == 4
     assert not (result.session_dir / "raw").exists()
     assert switch.id is not None
+
+
+def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(tmp_path, monkeypatch):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    target_switch = create_station_switch(repository, "demo", name="SW-A", station="Station A", ip_address="10.0.0.10", ssh_username="u", ssh_password="p")
+    create_station_switch(repository, "demo", name="SW-B", station="Station A", ip_address="10.0.0.11", ssh_username="u", ssh_password="p")
+    ac = repository.create(make_ac_device())
+    ac_repo = AcRepository(database)
+    ac_repo.replace_fit_ap_resources(
+        ac.device_uuid,
+        [
+            {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "bc5a-3457-cbe0", "ap_ip": "10.0.0.21", "site": "Station A", "state": "R"},
+            {"ap_uuid": "ap-2", "ap_name": "AP2", "ap_mac": "bc5a-3457-cbe1", "ap_ip": "10.0.0.22", "site": "Station A", "state": "R"},
+        ],
+    )
+    paths = PathResolver(tmp_path)
+    fit_calls = []
+
+    def fake_resource_collect(ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True):
+        repository.replace_fit_ap_resources(
+            ac_device.device_uuid,
+            [
+                {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "bc5a-3457-cbe0", "ap_ip": "10.0.0.21", "site": "Station A", "state": "I", "state_display": "Idle"},
+                {"ap_uuid": "ap-2", "ap_name": "AP2", "ap_mac": "bc5a-3457-cbe1", "ap_ip": "10.0.0.22", "site": "Station A", "state": "R", "state_display": "Online"},
+            ],
+        )
+        return SimpleNamespace(success=True, collect_run_uuid="resource-run", error_message=None)
+
+    def fake_fit_collect(
+        ac_device,
+        site_name,
+        repository=None,
+        paths=None,
+        max_workers=None,
+        target_ap_uuids=None,
+        target_ap_macs=None,
+        target_ap_names=None,
+        target_stations=None,
+    ):
+        fit_calls.append((target_ap_uuids, target_ap_macs, target_ap_names, target_stations))
+        return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), "fit-run", 1, 0, None)
+
+    FakeOpticalConnection.instances = []
+    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect)
+    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_fit_ap_optical", fake_fit_collect)
+    monkeypatch.setattr(trackside_optical_collection.netmiko_connection, "ConnectHandler", FakeOpticalConnection)
+
+    result = collect_trackside_optical(
+        repository,
+        "demo",
+        paths,
+        [{"site": "Station A", "ap_uuid": "ap-1", "ap_name": "AP1", "device_uuid": target_switch.device_uuid, "device_name": target_switch.name}],
+        concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
+        target_ap_uuid="ap-1",
+    )
+
+    assert [connection.host for connection in FakeOpticalConnection.instances] == ["10.0.0.10"]
+    assert fit_calls == [(["ap-1"], None, None, ["Station A"])]
+    assert result.scope == "ap"
+    assert result.target_label == "AP1"
+    assert result.target_ap_offline is True
+    assert result.switch_scope == "ap_switch"
+    assert result.switch_scope_reason == "current_trackside_row"
+    assert result.station_switch_total == 1
+    with (result.session_dir / "session_meta.json").open(encoding="utf-8") as handle:
+        meta = json.load(handle)
+    assert meta["target_ap_offline"] is True
+    assert meta["switch_scope"] == "ap_switch"
 
 
 def test_device_detail_trackside_ap_business_tab_displays_joined_data(tmp_path):

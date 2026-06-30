@@ -25,6 +25,7 @@ from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -145,6 +146,11 @@ class TracksideOpticalSessionResult:
     results: list[TracksideDeviceCollectionResult] = field(default_factory=list)
     fit_ap_total: int = 0
     station_switch_total: int = 0
+    scope: str = "all"
+    target_label: str = ""
+    target_ap_offline: bool = False
+    switch_scope: str = "all"
+    switch_scope_reason: str = ""
 
 
 def normalize_switch_type(value: object) -> str:
@@ -296,9 +302,23 @@ def collect_trackside_optical(
     ac_repository = AcRepository(repository.database)
     stage("trackside_ap.stage_collect_lldp")
     effective_station = str(target_station or "").strip()
-    if not effective_station and (target_ap_uuid or target_ap_mac or target_ap_name):
+    target_ap_update = bool(target_ap_uuid or target_ap_mac or target_ap_name)
+    if not effective_station and target_ap_update:
         effective_station = _station_for_target_ap(ac_repository, target_ap_uuid, target_ap_mac, target_ap_name)
     switch_targets, switch_skipped = build_station_switch_targets(repository, site_name, effective_station or None)
+    switch_scope = "station" if effective_station else "all"
+    switch_scope_reason = "station_scope" if effective_station else "full_scope"
+    if target_ap_update:
+        switch_targets, switch_scope, switch_scope_reason = _scope_switch_targets_for_target_ap(
+            repository,
+            ac_repository,
+            switch_targets,
+            trackside_rows,
+            target_ap_uuid=target_ap_uuid,
+            target_ap_mac=target_ap_mac,
+            target_ap_name=target_ap_name,
+            fallback_scope=switch_scope,
+        )
     targets = dedupe_targets(switch_targets)
     skipped = [*switch_skipped]
     session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
@@ -348,6 +368,13 @@ def collect_trackside_optical(
                     progress_callback(completed, max(total_units, 1))
         stage("trackside_ap.stage_refresh_fit_ap_optical")
         fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
+    target_ap_resource = _find_scoped_fit_ap_resource(
+        ac_repository.list_all_fit_ap_resources_with_metadata(),
+        target_ap_uuid=target_ap_uuid,
+        target_ap_mac=target_ap_mac,
+        target_ap_name=target_ap_name,
+    )
+    target_ap_offline = bool(target_ap_update and target_ap_resource and is_fit_ap_offline(target_ap_resource))
     skipped.extend(fit_ap_skipped)
     stage("trackside_ap.stage_aggregate")
     fit_success = sum(max(int(result.optical_rows_updated or 0) - int(result.failed_aps or 0), 0) for result in fit_ap_results)
@@ -384,9 +411,32 @@ def collect_trackside_optical(
             "commands": sorted({command for target in targets for command in target.commands}),
             "status": status,
             "skipped": [item.__dict__ for item in skipped],
+            "scope": "ap" if target_ap_update else ("station" if effective_station else "all"),
+            "target_label": _target_ap_label(target_ap_resource, target_ap_uuid, target_ap_mac, target_ap_name) if target_ap_update else (effective_station or ""),
+            "target_ap_offline": target_ap_offline,
+            "switch_scope": switch_scope,
+            "switch_scope_reason": switch_scope_reason,
         },
     )
-    return TracksideOpticalSessionResult(session_id, session_dir, success_count, failed_count, len(skipped), total_units, concurrency, status, skipped, results, fit_ap_total, len(targets))
+    return TracksideOpticalSessionResult(
+        session_id,
+        session_dir,
+        success_count,
+        failed_count,
+        len(skipped),
+        total_units,
+        concurrency,
+        status,
+        skipped,
+        results,
+        fit_ap_total,
+        len(targets),
+        "ap" if target_ap_update else ("station" if effective_station else "all"),
+        _target_ap_label(target_ap_resource, target_ap_uuid, target_ap_mac, target_ap_name) if target_ap_update else (effective_station or ""),
+        target_ap_offline,
+        switch_scope,
+        switch_scope_reason,
+    )
 
 
 def _collect_fit_ap_optical_subtasks(
@@ -456,6 +506,151 @@ def _station_for_target_ap(ac_repository: AcRepository, ap_uuid: str | None, ap_
     return str(row.get("site") or row.get("site_name") or row.get("station") or "").strip()
 
 
+def _scope_switch_targets_for_target_ap(
+    repository: DeviceRepository,
+    ac_repository: AcRepository,
+    switch_targets: list[TracksideOpticalTarget],
+    trackside_rows: list[dict[str, object | None]],
+    *,
+    target_ap_uuid: str | None = None,
+    target_ap_mac: str | None = None,
+    target_ap_name: str | None = None,
+    fallback_scope: str = "station",
+) -> tuple[list[TracksideOpticalTarget], str, str]:
+    matched_rows = [
+        row
+        for row in trackside_rows
+        if _row_matches_target_ap(row, target_ap_uuid=target_ap_uuid, target_ap_mac=target_ap_mac, target_ap_name=target_ap_name)
+    ]
+    by_device_uuid = {str(row.get("device_uuid") or "").strip() for row in matched_rows if row.get("device_uuid")}
+    by_device_name = {
+        str(row.get(field) or "").strip().casefold()
+        for row in matched_rows
+        for field in ("device_name", "source_device")
+        if str(row.get(field) or "").strip()
+    }
+    scoped = _filter_switch_targets_by_identity(switch_targets, by_device_uuid, by_device_name)
+    if scoped:
+        return scoped, "ap_switch", "current_trackside_row"
+
+    identity = {
+        key: value
+        for key, value in {
+            "ap_uuid": str(target_ap_uuid or "").strip(),
+            "ap_mac": _normalize_mac_text(target_ap_mac),
+            "ap_name": str(target_ap_name or "").strip(),
+        }.items()
+        if value
+    }
+    lldp_row = ac_repository.get_previous_ap_lldp_history(identity) if identity else None
+    lldp_names = {
+        str((lldp_row or {}).get(field) or "").strip().casefold()
+        for field in ("neighbor_device_name", "neighbor_switch_sysname", "lldp_neighbor")
+        if str((lldp_row or {}).get(field) or "").strip()
+    }
+    scoped = _filter_switch_targets_by_identity(switch_targets, set(), lldp_names)
+    if scoped:
+        return scoped, "ap_switch", "historical_lldp"
+
+    devices = repository.list()
+    scoped = _filter_switch_targets_by_identity(
+        switch_targets,
+        set(),
+        _device_names_for_lldp_names(devices, lldp_names),
+    )
+    if scoped:
+        return scoped, "ap_switch", "historical_lldp_device_alias"
+
+    return switch_targets, fallback_scope, "fallback_station_or_all"
+
+
+def _filter_switch_targets_by_identity(
+    switch_targets: list[TracksideOpticalTarget],
+    device_uuids: set[str],
+    device_names: set[str],
+) -> list[TracksideOpticalTarget]:
+    result = []
+    for target in switch_targets:
+        uuid = str(target.device_uuid or "").strip()
+        names = {
+            str(target.name or "").strip().casefold(),
+            str(getattr(target.device, "name", "") or "").strip().casefold(),
+            str(getattr(target.device, "system_name", "") or "").strip().casefold(),
+        }
+        if uuid and uuid in device_uuids:
+            result.append(target)
+            continue
+        if names & device_names:
+            result.append(target)
+    return result
+
+
+def _device_names_for_lldp_names(devices: list[Device], lldp_names: set[str]) -> set[str]:
+    if not lldp_names:
+        return set()
+    result: set[str] = set()
+    for device in devices:
+        names = {
+            str(device.name or "").strip().casefold(),
+            str(device.system_name or "").strip().casefold(),
+        }
+        if names & lldp_names:
+            result.update(name for name in names if name)
+    return result
+
+
+def _row_matches_target_ap(
+    row: dict[str, object | None],
+    *,
+    target_ap_uuid: str | None = None,
+    target_ap_mac: str | None = None,
+    target_ap_name: str | None = None,
+) -> bool:
+    ap_uuid = str(target_ap_uuid or "").strip()
+    ap_mac = _normalize_mac_text(target_ap_mac)
+    ap_name = str(target_ap_name or "").strip().casefold()
+    if ap_uuid and str(row.get("ap_uuid") or "").strip() == ap_uuid:
+        return True
+    if ap_mac and _normalize_mac_text(row.get("ap_mac")) == ap_mac:
+        return True
+    if ap_name and str(row.get("ap_name") or "").strip().casefold() == ap_name:
+        return True
+    return False
+
+
+def _find_scoped_fit_ap_resource(
+    rows: list[dict[str, object | None]],
+    *,
+    target_ap_uuid: str | None = None,
+    target_ap_mac: str | None = None,
+    target_ap_name: str | None = None,
+) -> dict[str, object | None] | None:
+    scoped = _filter_scoped_fit_ap_resources(
+        rows,
+        target_ap_uuid=target_ap_uuid,
+        target_ap_mac=target_ap_mac,
+        target_ap_name=target_ap_name,
+    )
+    return scoped[0] if scoped else None
+
+
+def _target_ap_label(
+    resource: dict[str, object | None] | None,
+    target_ap_uuid: str | None,
+    target_ap_mac: str | None,
+    target_ap_name: str | None,
+) -> str:
+    return str(
+        (resource or {}).get("ap_name")
+        or target_ap_name
+        or (resource or {}).get("ap_mac")
+        or target_ap_mac
+        or (resource or {}).get("ap_uuid")
+        or target_ap_uuid
+        or ""
+    )
+
+
 def _filter_scoped_fit_ap_resources(
     rows: list[dict[str, object | None]],
     *,
@@ -470,6 +665,7 @@ def _filter_scoped_fit_ap_resources(
     ap_name = str(target_ap_name or "").strip().casefold()
     if not any((station, ap_uuid, ap_mac, ap_name)):
         return list(rows)
+    has_ap_identity = bool(ap_uuid or ap_mac or ap_name)
     result: list[dict[str, object | None]] = []
     for row in rows:
         if ap_uuid and str(row.get("ap_uuid") or "").strip() == ap_uuid:
@@ -480,6 +676,8 @@ def _filter_scoped_fit_ap_resources(
             continue
         if ap_name and str(row.get("ap_name") or "").strip().casefold() == ap_name:
             result.append(row)
+            continue
+        if has_ap_identity:
             continue
         row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()
         if station and row_station == station:

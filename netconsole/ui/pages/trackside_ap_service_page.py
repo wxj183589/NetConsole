@@ -432,18 +432,45 @@ class TracksideApServicePage(QWidget):
 
     def _finish_collect(self, result) -> None:
         self._set_collect_running(False)
-        self.status_label.setText(
-            self.i18n.t(
-                "trackside_ap.collection_summary",
-                success=result.success_count,
-                failed=result.failed_count,
-                skipped=result.skipped_count,
-            )
+        summary_text = self.i18n.t(
+            "trackside_ap.collection_summary",
+            success=result.success_count,
+            failed=result.failed_count,
+            skipped=result.skipped_count,
         )
+        self.status_label.setText(summary_text)
         self.mark_dirty()
         app_events.ac_summary_changed.emit(self.site_name)
+        self._show_collect_finished_dialog(result, summary_text)
         self.status_label.setText(self.i18n.t("trackside_ap.stage_refresh_page"))
         self.refresh_async(force=True)
+
+    def _show_collect_finished_dialog(self, result, summary_text: str) -> None:
+        lines = [summary_text]
+        scope = str(getattr(result, "scope", "") or "")
+        target_label = str(getattr(result, "target_label", "") or "")
+        if scope == "ap" and target_label:
+            lines.append(self.i18n.t("trackside_ap.update_finished_ap", ap=target_label))
+            if bool(getattr(result, "target_ap_offline", False)):
+                lines.append(self.i18n.t("trackside_ap.update_finished_ap_offline"))
+        elif scope == "station" and target_label:
+            lines.append(self.i18n.t("trackside_ap.update_finished_station", station=target_label))
+        switch_scope = str(getattr(result, "switch_scope", "") or "")
+        switch_scope_reason = str(getattr(result, "switch_scope_reason", "") or "")
+        if switch_scope == "ap_switch":
+            lines.append(self.i18n.t("trackside_ap.update_finished_switch_scoped"))
+        elif switch_scope:
+            lines.append(self.i18n.t("trackside_ap.update_finished_switch_fallback"))
+        if switch_scope_reason == "historical_lldp":
+            lines.append(self.i18n.t("trackside_ap.update_finished_historical_lldp"))
+        message = "\n".join(line for line in lines if line)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle(self.i18n.t("trackside_ap.update_finished_title"))
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.setAttribute(Qt.WA_DeleteOnClose, True)
+        box.open()
 
     def _fail_collect(self, message: str) -> None:
         self._set_collect_running(False)
