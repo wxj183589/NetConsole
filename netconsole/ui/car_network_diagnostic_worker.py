@@ -55,6 +55,7 @@ class CarNetworkDiagnosticWorker(QThread):
                 paths=self.paths,
                 site_name=self.site_name,
                 core_discovery=self.core_discovery,
+                cancel_checker=lambda: self.cancel_requested or self.isInterruptionRequested(),
             )
             result = service.run(self._handle_progress)
             self.completed.emit(result)

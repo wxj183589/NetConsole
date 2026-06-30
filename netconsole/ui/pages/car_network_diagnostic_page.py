@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QSpinBox,
     QTableWidget,
@@ -189,6 +190,7 @@ class CarNetworkDiagnosticPage(QWidget):
 
         self.node_buttons: dict[str, QPushButton] = {}
         self.vrrp_label = QLabel("VRRP\n-")
+        self.cross_tc_label = QLabel("跨TC通信：未检测")
         self.results_container = QWidget()
         self.results_layout = QBoxLayout(QBoxLayout.LeftToRight, self.results_container)
         self.results_layout.setContentsMargins(0, 0, 0, 0)
@@ -197,6 +199,8 @@ class CarNetworkDiagnosticPage(QWidget):
         self.tc2_table = self._new_result_table("tc2")
         self.tc1_box = QGroupBox("TC1端 / CT车头 实时检测结果")
         self.tc2_box = QGroupBox("TC2端 / CW车尾 实时检测结果")
+        self.tc1_box.setMinimumHeight(260)
+        self.tc2_box.setMinimumHeight(260)
         tc1_layout = QVBoxLayout(self.tc1_box)
         tc2_layout = QVBoxLayout(self.tc2_box)
         tc1_layout.addWidget(self.tc1_table)
@@ -261,6 +265,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.ac_probe = None
         self.train_ac_status = None
         self.last_result = None
+        self._apply_cross_tc_ping({"status": "checking", "note": "跨TC通信检测中"})
         self.task_rows = {}
         self.log_lines = []
         self.log_output.clear()
@@ -329,6 +334,8 @@ class CarNetworkDiagnosticPage(QWidget):
         elif stage == "ac" and isinstance(payload, AcApStatus):
             self.ac_status = payload
             self.status_label.setText("AC检测完成，继续执行 ping / SSH" if not self.last_result else self.status_label.text())
+        elif stage == "cross_tc_ping" and isinstance(payload, dict):
+            self._apply_cross_tc_ping(payload)
         self._fill_point_rows()
 
     def on_progress_changed(self, percent: int, message: str) -> None:
@@ -386,6 +393,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.ac_status = result.ac_detail
         self.ac_probe = result.ac_probe
         self.train_ac_status = result.train_ac_status
+        self._apply_cross_tc_ping(result.cross_tc_ping)
         self.status_label.setText(result.conclusion)
         self.progress_bar.setValue(100)
         self.progress_bar.setStyleSheet(_progress_bar_style("ok" if result.status == "ok" else "fail"))
@@ -464,6 +472,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.ac_probe = None
         self.train_ac_status = None
         self.last_result = None
+        self._apply_cross_tc_ping({})
         self.status_label.setText("未检测")
         self.status_label.setStyleSheet(_badge_style("pending"))
         self.json_output.clear()
@@ -545,17 +554,25 @@ class CarNetworkDiagnosticPage(QWidget):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
         topo_box = QGroupBox("固定拓扑")
         topo_layout = QGridLayout(topo_box)
         self._build_topology(topo_layout)
         right_layout.addWidget(topo_box)
         self._arrange_result_tables()
-        right_layout.addWidget(self.results_container, 1)
+        right_layout.addWidget(self.results_container)
         right_layout.addWidget(QLabel("检测日志"))
         right_layout.addWidget(self.log_output)
         right_layout.addWidget(QLabel("诊断输出 JSON"))
         right_layout.addWidget(self.json_output)
-        splitter.addWidget(right)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QScrollArea.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        right_scroll.setWidget(right)
+        splitter.addWidget(right_scroll)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         self._apply_left_panel_state()
@@ -654,6 +671,9 @@ class CarNetworkDiagnosticPage(QWidget):
         layout.addWidget(left_line, 3, 2)
         layout.addWidget(self.vrrp_label, 3, 3)
         layout.addWidget(right_line, 3, 4)
+        self.cross_tc_label.setAlignment(Qt.AlignCenter)
+        self.cross_tc_label.setMinimumHeight(28)
+        layout.addWidget(self.cross_tc_label, 4, 2, 1, 3)
 
     def _connect_signals(self) -> None:
         self.start_button.clicked.connect(self.start_diagnostic)
@@ -693,6 +713,16 @@ class CarNetworkDiagnosticPage(QWidget):
             button.setStyleSheet(_node_style(state))
         vrrp = next((node.vrrp_ip for node in nodes.values() if node.vrrp_ip), "")
         self.vrrp_label.setText(f"VRRP\n{vrrp or '-'}")
+        if self.worker is not None and not (self.last_result and self.last_result.cross_tc_ping):
+            self._apply_cross_tc_ping({"status": "checking", "note": "跨TC通信检测中"})
+
+    def _apply_cross_tc_ping(self, payload: dict[str, object]) -> None:
+        status = str(payload.get("status") or "skipped")
+        text = _cross_tc_ping_label(payload)
+        self.cross_tc_label.setText(text)
+        self.cross_tc_label.setStyleSheet(_cross_tc_ping_style(status))
+        tooltip = _cross_tc_ping_tooltip(payload)
+        self.cross_tc_label.setToolTip(tooltip)
 
     def _fill_point_rows(self) -> None:
         if self.last_result and self.last_result.tables:
@@ -706,6 +736,7 @@ class CarNetworkDiagnosticPage(QWidget):
     def _new_result_table(self, key: str) -> QTableWidget:
         table = QTableWidget(0, 6)
         table.setObjectName(f"car_network_{key}_result_table")
+        table.setMinimumHeight(220)
         table.setHorizontalHeaderLabels(["节点/IP", "层级", "状态", "RTT", "丢包", "说明"])
         configure_readonly_table(table)
         table.setWordWrap(True)
@@ -1310,6 +1341,46 @@ def _train_status_label(result: CarNetworkDiagnosticResult) -> str:
         return "离线"
     failed_ends = [end for end in ("TC1", "TC2") if result.ends.get(end, {}).get("status") in {"fail", "unstable"}]
     return "单端异常" if len(failed_ends) == 1 else "异常"
+
+
+def _cross_tc_ping_label(payload: dict[str, object]) -> str:
+    status = str(payload.get("status") or "skipped")
+    loss = payload.get("loss_percent")
+    if status == "checking":
+        return "跨TC通信：检测中"
+    if status == "ok":
+        return "跨TC通信：正常"
+    if status == "loss":
+        return f"跨TC通信：丢包 {loss}%" if loss is not None else "跨TC通信：丢包"
+    if status == "fail":
+        return "跨TC通信：不通"
+    return "跨TC通信：未检测"
+
+
+def _cross_tc_ping_tooltip(payload: dict[str, object]) -> str:
+    values = [
+        f"执行位置：{payload.get('source') or '-'}",
+        f"目标：{payload.get('target') or '-'} / {payload.get('target_ip') or '-'}",
+        f"命令：{payload.get('command') or '-'}",
+        f"丢包率：{payload.get('loss_percent') if payload.get('loss_percent') is not None else '-'}%",
+        f"RTT：{payload.get('avg_rtt_ms') if payload.get('avg_rtt_ms') is not None else '-'} ms",
+        f"说明：{payload.get('note') or '-'}",
+    ]
+    return "\n".join(values)
+
+
+def _cross_tc_ping_style(status: str) -> str:
+    fg, bg, border = {
+        "checking": ("#075985", "#E0F2FE", "#38BDF8"),
+        "ok": ("#14532D", "#DCFCE7", "#22C55E"),
+        "loss": ("#713F12", "#FEF3C7", "#FACC15"),
+        "fail": ("#7F1D1D", "#FECACA", "#EF4444"),
+        "skipped": ("#E5E7EB", "#475569", "#64748B"),
+    }.get(status, ("#E5E7EB", "#475569", "#64748B"))
+    return (
+        f"QLabel {{ color: {fg}; background-color: {bg}; border: 2px solid {border}; "
+        "border-radius: 4px; font-size: 12px; font-weight: 700; padding: 4px 10px; }}"
+    )
 
 
 def _ac_probe_status_text(probe: AcProbeResult | None, status: TrainAcStatus | None) -> str:

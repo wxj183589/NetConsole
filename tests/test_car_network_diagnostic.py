@@ -43,6 +43,7 @@ from netconsole.services.vehicle_mr_online import (
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.car_network_diagnostic_page import PointTableDialog
+from netconsole.ui.pages import car_network_diagnostic_page as car_page
 
 
 REAL_MESH_OUTPUT = """AP name: 30f5-2787-8080
@@ -132,7 +133,7 @@ def test_vehicle_ping_loss_is_abnormal() -> None:
     result = evaluate_diagnostic(nodes, ping, _cross_ok(), AcApStatus(True, True, True, True))
 
     assert result.status == "partial_fail"
-    assert result.conclusion == "车内有线网络丢包，判定异常"
+    assert result.conclusion == "车内通信存在丢包"
     assert result.nodes["TC1-SRV"] == "unstable"
 
 
@@ -277,10 +278,70 @@ def test_cross_ping_failure_after_ssh_success_reports_cross_link_abnormal() -> N
     assert result.cross_train == {"TC1->TC2": "fail", "TC2->TC1": "fail"}
     assert payload["ssh_status"]["TC1-MR"]["connected"] is True
     assert payload["ssh_status"]["TC1-MR"]["remote_ping_ok_count"] == 2
-    assert any(row["layer"] == "MR远程跨TC长Ping" and row["status"] == "不通" for row in result.tables["TC1"])
+    assert any(row["layer"] == "MR远程跨TC快速检测" and row["status"] == "不通" for row in result.tables["TC1"])
 
 
-def test_mr_remote_ping_uses_default_local_and_long_cross_commands() -> None:
+def test_single_entry_tc2_ping_tc1_mr_marks_tc1_ok() -> None:
+    nodes = _point_table_with_prefix()
+    ssh = {
+        "TC1-MR": SshResult("10.122.6.249", False, "TC1-MR", error="ssh failed"),
+        "TC2-MR": SshResult(
+            "10.122.6.250",
+            True,
+            "TC2-MR",
+            {"10.122.6.249": PingResult("10.122.6.249", True, 0, 1.0)},
+        ),
+    }
+
+    result = evaluate_diagnostic(nodes, {}, ssh, AcApStatus(selected=False))
+    payload = result.to_json_dict()
+
+    assert result.nodes["TC1-MR"] == "ok"
+    assert result.status == "ok"
+    assert result.conclusion == "车内通信正常（单端激活）"
+    assert payload["vehicle_internal_status"]["validation_mode"] == "single_entry"
+    assert payload["vehicle_internal_status"]["single_entry_verified"] is True
+
+
+def test_single_entry_tc1_ping_tc2_mr_marks_tc2_ok() -> None:
+    nodes = _point_table_with_prefix()
+    ssh = {
+        "TC1-MR": SshResult(
+            "10.122.6.249",
+            True,
+            "TC1-MR",
+            {"10.122.6.250": PingResult("10.122.6.250", True, 0, 1.0)},
+        ),
+        "TC2-MR": SshResult("10.122.6.250", False, "TC2-MR", error="ssh failed"),
+    }
+
+    result = evaluate_diagnostic(nodes, {}, ssh, AcApStatus(selected=False))
+
+    assert result.nodes["TC2-MR"] == "ok"
+    assert result.status == "ok"
+    assert result.conclusion == "车内通信正常（单端激活）"
+
+
+def test_single_entry_peer_mr_ping_loss_warns() -> None:
+    nodes = _point_table_with_prefix()
+    ssh = {
+        "TC1-MR": SshResult(
+            "10.122.6.249",
+            True,
+            "TC1-MR",
+            {"10.122.6.250": PingResult("10.122.6.250", True, 2.0, 1.0)},
+        ),
+        "TC2-MR": SshResult("10.122.6.250", False, "TC2-MR", error="ssh failed"),
+    }
+
+    result = evaluate_diagnostic(nodes, {}, ssh, AcApStatus(selected=True))
+
+    assert result.nodes["TC2-MR"] == "unstable"
+    assert result.status == "partial_fail"
+    assert result.conclusion == "车内通信存在丢包"
+
+
+def test_mr_remote_ping_uses_quick_detect_commands() -> None:
     nodes = _point_table_with_prefix()
     mr_device = Device(name="列车06-MR-CT", primary_address="10.122.6.249", ssh_username="admin", ssh_password="pwd")
     commands: list[str] = []
@@ -293,10 +354,74 @@ def test_mr_remote_ping_uses_default_local_and_long_cross_commands() -> None:
     result = service._check_ssh_from_mr(next(node for node in nodes if node.node_name == "TC1-MR"))
 
     assert result.ok is True
-    assert "ping 10.122.6.251" in commands
-    assert "ping 10.122.6.1" in commands
-    assert "ping -c 50 10.122.6.252" in commands
-    assert "ping -c 50 10.122.6.2" in commands
+    assert "ping -c 4 10.122.6.251" in commands
+    assert "ping -c 4 10.122.6.1" in commands
+    assert "ping -c 4 10.122.6.252" in commands
+    assert "ping -c 4 10.122.6.2" in commands
+    assert "ping -c 50 10.122.6.252" not in commands
+    assert car_diag.CAR_NETWORK_QUICK_DETECT_SECONDS == 4
+    assert car_diag.CAR_NETWORK_QUICK_PING_COUNT == 4
+    assert car_diag.CAR_NETWORK_QUICK_PING_TIMEOUT == 4
+    assert car_diag._h3c_ping_read_timeout("ping -c 4 10.122.7.250", 4) >= 8
+    assert car_diag._h3c_ping_read_timeout("ping -c 50 10.122.7.250", 8) >= 60
+
+
+def test_cross_tc_ping_skipped_when_no_mr_login() -> None:
+    nodes = _point_table_with_prefix()
+    result = evaluate_diagnostic(
+        nodes,
+        {},
+        {
+            "TC1-MR": SshResult("10.122.6.249", False, "TC1-MR", error="ssh failed"),
+            "TC2-MR": SshResult("10.122.6.250", False, "TC2-MR", error="ssh failed"),
+        },
+        AcApStatus(selected=True),
+    )
+
+    assert result.cross_tc_ping["status"] == "skipped"
+    assert result.to_json_dict()["cross_tc_ping"]["status"] == "skipped"
+
+
+def test_cross_tc_ping_ui_status_color_mapping() -> None:
+    assert "#22C55E" in car_page._cross_tc_ping_style("ok")
+    assert "#FACC15" in car_page._cross_tc_ping_style("loss")
+    assert "#EF4444" in car_page._cross_tc_ping_style("fail")
+    assert "#64748B" in car_page._cross_tc_ping_style("skipped")
+    assert car_page._cross_tc_ping_label({"status": "loss", "loss_percent": 2.0}) == "跨TC通信：丢包 2.0%"
+
+
+def test_cross_tc_ping_prefers_direction_with_peer_mr_reachable() -> None:
+    nodes = _point_table_with_prefix("LC07", "07", "10.122.7")
+    ssh = {
+        "TC1-MR": SshResult(
+            "10.122.7.249",
+            True,
+            "TC1-MR",
+            {
+                "10.122.7.250": PingResult("10.122.7.250", False, 100.0),
+                "10.122.7.252": PingResult("10.122.7.252", True, 0.0, 1.2),
+                "10.122.7.2": PingResult("10.122.7.2", True, 0.0, 0.8),
+            },
+        ),
+        "TC2-MR": SshResult(
+            "10.122.7.250",
+            True,
+            "TC2-MR",
+            {
+                "10.122.7.249": PingResult("10.122.7.249", True, 0.0, 0.9),
+                "10.122.7.251": PingResult("10.122.7.251", True, 0.0, 1.2),
+                "10.122.7.1": PingResult("10.122.7.1", True, 0.0, 0.7),
+            },
+        ),
+    }
+
+    result = evaluate_diagnostic(nodes, {}, ssh, AcApStatus(selected=False))
+
+    assert result.cross_train == {"TC1->TC2": "ok", "TC2->TC1": "ok"}
+    assert result.cross_tc_ping["status"] == "ok"
+    assert result.cross_tc_ping["source"] == "TC2-MR"
+    assert result.cross_tc_ping["target"] == "TC1-MR"
+    assert result.conclusion == "车内通信正常（双端验证）"
 
 
 def test_service_does_not_use_local_ping_for_main_diagnosis() -> None:
@@ -323,7 +448,8 @@ def test_service_does_not_use_local_ping_for_main_diagnosis() -> None:
     assert result.status == "ok"
     assert "车内通信正常" in result.conclusion
     assert all(" -n " not in command and " -w " not in command for command in commands)
-    assert "ping -c 50 10.122.6.252" in commands
+    assert "ping -c 4 10.122.6.252" in commands
+    assert any(command.startswith("ping -c 50 ") for command in commands)
     assert result.to_json_dict()["ground_access_status"]["uplink_ip_reachable_from_core"] == "fail"
 
 
@@ -343,6 +469,35 @@ round-trip min/avg/max = 1/2/5 ms
     assert result.ok is True
     assert result.loss_percent == 0.0
     assert result.avg_rtt_ms == 2.0
+
+
+def test_h3c_ping_channel_reader_collects_until_packet_loss() -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.command = ""
+            self.outputs = [
+                "PING 10.122.7.250: 56 data bytes, press CTRL_C to break\n",
+                "56 bytes from 10.122.7.250: icmp_seq=0 ttl=255 time=1.094 ms\n",
+                "--- Ping statistics for 10.122.7.250 ---\n4 packet(s) transmitted, 4 packet(s) received, 0.0% packet loss\nround-trip min/avg/max/std-dev = 0.508/0.856/1.249/0.273 ms\n",
+            ]
+
+        def clear_buffer(self) -> None:
+            pass
+
+        def write_channel(self, command: str) -> None:
+            self.command = command
+
+        def read_channel(self) -> str:
+            return self.outputs.pop(0) if self.outputs else ""
+
+    conn = FakeConnection()
+
+    output = car_diag._send_h3c_ping_command(conn, "ping -c 4 10.122.7.250", "gb2312", 8)
+    result = parse_ping_output("10.122.7.250", output)
+
+    assert conn.command == "ping -c 4 10.122.7.250\n"
+    assert result.ok is True
+    assert result.loss_percent == 0.0
 
 
 def test_old_point_table_ap_names_are_imported_as_mr(tmp_path: Path) -> None:
@@ -758,14 +913,15 @@ def test_mr_remote_ping_includes_peer_mr_long_ping() -> None:
     payload = result.to_json_dict()
 
     assert "ping -c 50 10.122.6.250" in commands
-    assert "ping -c 50 10.122.6.249" in commands
+    assert "ping -c 50 10.122.6.249" not in commands
     assert any(row["node"].startswith("TC1-MR -> TC2-MR") for row in result.tables["TC1"])
     assert any(row["node"].startswith("TC2-MR -> TC1-MR") for row in result.tables["TC2"])
     assert payload["vehicle_internal_status"]["mr_peer_reachability"] == {
         "TC1-MR->TC2-MR": "ok",
         "TC2-MR->TC1-MR": "ok",
     }
-    assert any(item["target"] == "TC2-MR" and item["command"] == "ping -c 50 10.122.6.250" for item in payload["diagnosis_items"])
+    assert payload["cross_tc_ping"]["status"] == "ok"
+    assert payload["cross_tc_ping"]["command"] == "ping -c 50 10.122.6.250"
 
 
 def test_global_srv_generation_uses_train_subnet_and_configured_hosts(tmp_path: Path) -> None:

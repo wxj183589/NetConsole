@@ -21,6 +21,7 @@ from netconsole.services.netmiko_connection import (
     build_netmiko_params,
     connection_targets,
     encoding_for_vendor,
+    normalize_command_output,
     safe_send_command,
 )
 from netconsole.services.vehicle_mr_online import (
@@ -73,7 +74,12 @@ LOGGER = logging.getLogger(__name__)
 ONLINE_MESH_STATUSES = {"forwarding", "active", "up"}
 MR_REMOTE_PING_CONCURRENCY_PER_MR = 2
 MR_REMOTE_PING_CONCURRENCY_TOTAL = 4
-MR_REMOTE_PING_CROSS_COUNT = 50
+CAR_NETWORK_QUICK_DETECT_SECONDS = 4
+CAR_NETWORK_QUICK_PING_COUNT = 4
+CAR_NETWORK_QUICK_PING_TIMEOUT = 4
+CAR_NETWORK_QUICK_CLI_READ_TIMEOUT = 8
+CAR_NETWORK_CROSS_TC_PING_COUNT = 50
+CAR_NETWORK_CROSS_TC_PING_TIMEOUT = 60
 DEFAULT_GLOBAL_CONFIG = {
     "address_mapping": {
         "MR": {"primary_address_role": "vehicle_ip", "backup_address_role": "uplink_ip", "ssh_source": "primary_address"},
@@ -348,6 +354,7 @@ class CarNetworkDiagnosticResult:
     train_ac_status: TrainAcStatus | None = None
     tables: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     core_discovery: dict[str, object] = field(default_factory=dict)
+    cross_tc_ping: dict[str, object] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, object]:
         return {
@@ -369,6 +376,7 @@ class CarNetworkDiagnosticResult:
             "access_entry": _access_entry_json(self.ssh_results),
             "ground_access_status": _ground_access_status_json(self.ac_detail, self.ssh_results, self.core_results),
             "vehicle_internal_status": _vehicle_internal_status_json(self.ssh_results),
+            "cross_tc_ping": self.cross_tc_ping,
             "diagnosis_items": _remote_diagnosis_items(self.ssh_results) + _diagnosis_items_from_tables(self.tables),
             "tables": self.tables,
         }
@@ -1249,6 +1257,7 @@ class CarNetworkDiagnosticService:
         ssh_command_func: Callable[[str, str], str] | None = None,
         core_command_func: Callable[[Device, str], str] | None = None,
         core_discovery: dict[str, object] | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
     ) -> None:
         self.nodes = nodes
         self.train = train
@@ -1263,13 +1272,14 @@ class CarNetworkDiagnosticService:
         self.ssh_command_func = ssh_command_func
         self.core_command_func = core_command_func
         self.core_discovery = core_discovery or _core_discovery_from_selected(self.core_devices)
+        self.cancel_checker = cancel_checker
 
     def run(self, progress: Callable[[str, object], None] | None = None) -> CarNetworkDiagnosticResult:
         mr_nodes = [node for node in self.nodes if node.is_mr]
         remote_ping_count = sum(len(_mr_remote_ping_tasks(node, self.nodes, self._mr_ssh_host(node))) for node in mr_nodes if self._mr_ssh_host(node))
         mr_ssh_count = len([node for node in mr_nodes if self._mr_ssh_host(node)])
         core_ping_count = len(_core_remote_ping_tasks(self.core_devices, self.nodes))
-        total_tasks = 1 + mr_ssh_count + remote_ping_count + core_ping_count + 1
+        total_tasks = 1 + mr_ssh_count + remote_ping_count + 1 + core_ping_count + 1
         completed_tasks = 0
 
         def emit(stage: str, payload: object) -> None:
@@ -1286,6 +1296,7 @@ class CarNetworkDiagnosticService:
 
         emit("progress_meta", {"completed": 0, "total": total_tasks, "percent": 0, "message": "准备检测"})
         emit("stage", "获取列车在线情况 / AC mesh-link")
+        self._raise_if_cancelled()
         emit("task_started", {"task_id": "ac_status", "layer": "AC层", "status": "running", "message": "正在获取列车在线情况或查询 AC mesh-link"})
         train_ac_status = get_vehicle_mr_online_status_from_store(self.paths, self.site_name, _current_train_no(self.train, self.nodes))
         if train_ac_status is not None:
@@ -1308,23 +1319,33 @@ class CarNetworkDiagnosticService:
             progress("ac", ac_status)
 
         ssh_results: dict[str, SshResult] = {}
-        emit("stage", "MR SSH 登录与远程 ping")
+        emit("stage", "MR SSH 登录与4秒快速检测")
         with ThreadPoolExecutor(max_workers=max(1, min(MR_REMOTE_PING_CONCURRENCY_TOTAL, len(mr_nodes)))) as executor:
             future_map = {executor.submit(self._check_ssh_from_mr, node, emit, finish_task): node for node in mr_nodes if self._mr_ssh_host(node)}
             for future in as_completed(future_map):
+                self._raise_if_cancelled()
                 result = future.result()
                 ssh_results[result.node_name or result.host] = result
                 if progress:
                     progress("ssh", result)
 
+        emit("stage", "跨TC通信丢包检测")
+        cross_tc_ping = self._check_cross_tc_ping(ssh_results, emit, finish_task)
+        if progress:
+            progress("cross_tc_ping", cross_tc_ping)
+
         emit("stage", "核心侧辅助 ping")
         core_results = self._check_from_core(progress, emit, finish_task)
         emit("stage", "生成诊断结论")
-        result = evaluate_diagnostic(self.nodes, ping_results, ssh_results, ac_status, self.train, ac_probe, train_ac_status, core_results, self.core_devices)
+        result = evaluate_diagnostic(self.nodes, ping_results, ssh_results, ac_status, self.train, ac_probe, train_ac_status, core_results, self.core_devices, cross_tc_ping)
         result.core_discovery = self.core_discovery
         finish_task({"task_id": "summary", "layer": "诊断汇总", "status": result.status, "message": result.conclusion})
         emit("stage", "检测完成")
         return result
+
+    def _raise_if_cancelled(self) -> None:
+        if self.cancel_checker is not None and self.cancel_checker():
+            raise RuntimeError("检测已取消")
 
     def _check_from_core(
         self,
@@ -1336,6 +1357,7 @@ class CarNetworkDiagnosticService:
         results: dict[str, PingResult] = {}
         devices_by_task_id = {_core_remote_ping_task_id(device, node.ip_uplink): device for device in self.core_devices for node in self.nodes if node.ip_uplink and node.node_type.upper() in {"MR", "SW", "3SW"}}
         for task in tasks:
+            self._raise_if_cancelled()
             if emit:
                 emit("task_started", _core_ping_task_payload(task, None, "running"))
             device = devices_by_task_id.get(task.task_id)
@@ -1353,6 +1375,62 @@ class CarNetworkDiagnosticService:
             if progress:
                 progress("core", (device, result))
         return results
+
+    def _check_cross_tc_ping(
+        self,
+        ssh_results: dict[str, SshResult],
+        emit: Callable[[str, object], None] | None = None,
+        finish_task: Callable[[dict[str, object]], None] | None = None,
+    ) -> dict[str, object]:
+        task = _cross_tc_ping_task(self.nodes, ssh_results)
+        if task is None:
+            payload = {
+                "status": "skipped",
+                "source": "",
+                "target": "",
+                "target_ip": "",
+                "loss_percent": None,
+                "avg_rtt_ms": None,
+                "command": "",
+                "note": "无可登录 MR，跨TC通信未检测",
+            }
+            if finish_task:
+                finish_task({"task_id": "cross_tc_ping", "layer": "跨TC通信", "status": "skipped", "message": payload["note"]})
+            return payload
+        if emit:
+            emit("task_started", {"task_id": "cross_tc_ping", "source": task.source_node, "target": task.target_node, "target_ip": task.target_ip, "layer": "跨TC通信", "status": "running", "message": f"{task.source_node} 正在执行 {task.command}，目标 {task.target_node} / {task.target_ip}"})
+        self._raise_if_cancelled()
+        source_node = next((node for node in self.nodes if node.node_name == task.source_node), None)
+        ssh = ssh_results.get(task.source_node)
+        if source_node is None or ssh is None:
+            ping = PingResult(task.target_ip, False, 100.0, error="跨TC ping 入口不存在")
+        else:
+            username, password = self._mr_credentials(source_node)
+            try:
+                ping = self._run_mr_remote_ping_task(task, username, password, source_node)
+            except Exception as exc:
+                ping = PingResult(task.target_ip, False, 100.0, error=str(exc))
+            task_results = dict(ssh.task_results)
+            task_metadata = dict(ssh.task_metadata)
+            command_results = dict(ssh.command_results)
+            task_results[task.task_id] = ping
+            task_metadata[task.task_id] = asdict(task)
+            command_results[task.target_ip] = ping
+            ssh_results[task.source_node] = replace(ssh, command_results=command_results, task_results=task_results, task_metadata=task_metadata)
+        status = "ok" if _ping_ok_no_loss(ping) else "loss" if ping.ok and ping.loss_percent > 0 else "fail"
+        note = _ping_result_message(task.source_node, task.target_node, task.target_ip, ping, via_ssh=True, command=task.command)
+        if finish_task:
+            finish_task({"task_id": "cross_tc_ping", "source": task.source_node, "target": task.target_node, "target_ip": task.target_ip, "layer": "跨TC通信", "status": "unstable" if status == "loss" else status, "loss": ping.loss_percent, "avg_rtt": ping.avg_rtt_ms, "message": note})
+        return {
+            "status": status,
+            "source": task.source_node,
+            "target": task.target_node,
+            "target_ip": task.target_ip,
+            "loss_percent": ping.loss_percent,
+            "avg_rtt_ms": ping.avg_rtt_ms,
+            "command": task.command,
+            "note": note,
+        }
 
     def _send_core_ping(self, device: Device, ip: str) -> str:
         if self.core_command_func is not None:
@@ -1376,8 +1454,8 @@ class CarNetworkDiagnosticService:
         try:
             return safe_send_command(
                 conn,
-                build_h3c_ping_command(ip),
-                read_timeout=20,
+                build_h3c_ping_command(ip, packet_count=CAR_NETWORK_QUICK_PING_COUNT),
+                read_timeout=CAR_NETWORK_QUICK_PING_TIMEOUT,
                 strip_prompt=False,
                 strip_command=False,
                 use_timing=True,
@@ -1447,10 +1525,12 @@ class CarNetworkDiagnosticService:
             with ThreadPoolExecutor(max_workers=max(1, min(MR_REMOTE_PING_CONCURRENCY_PER_MR, len(tasks)))) as executor:
                 future_map = {}
                 for task in tasks:
+                    self._raise_if_cancelled()
                     emit("task_started", {"task_id": task.task_id, "source": task.source_node, "target": task.target_node, "target_ip": task.target_ip, "layer": task.layer, "status": "running", "message": f"{task.source_node} 正在执行 {task.command}，目标 {task.target_node} / {task.target_ip}"})
                     future_map[executor.submit(self._run_mr_remote_ping_task, task, username, password, node)] = task
                 first_error: Exception | None = None
                 for future in as_completed(future_map):
+                    self._raise_if_cancelled()
                     task = future_map[future]
                     try:
                         ping = future.result()
@@ -1476,6 +1556,7 @@ class CarNetworkDiagnosticService:
             return SshResult(host, False, node.node_name, error=str(exc))
 
     def _run_mr_remote_ping_task(self, task: MrRemotePingTask, username: str, password: str, node: CarNetworkNode) -> PingResult:
+        self._raise_if_cancelled()
         output = self._send_ssh_command(task.source_host, task.command, username, password, node, task.timeout)
         return parse_ping_output(task.target_ip, output)
 
@@ -1501,6 +1582,8 @@ class CarNetworkDiagnosticService:
         }
         conn = ConnectHandler(**target)
         try:
+            if _is_h3c_ping_command(command):
+                return _send_h3c_ping_command(conn, command, str(target["encoding"]), _h3c_ping_read_timeout(command, read_timeout))
             return safe_send_command(
                 conn,
                 command,
@@ -1536,12 +1619,14 @@ def evaluate_diagnostic(
     train_ac_status: TrainAcStatus | None = None,
     core_results: dict[str, PingResult] | None = None,
     core_devices: list[Device] | None = None,
+    cross_tc_ping: dict[str, object] | None = None,
 ) -> CarNetworkDiagnosticResult:
     train_id = train.train_id if train is not None else (nodes[0].train_id if nodes else "")
     train_no = train.train_no if train is not None else (nodes[0].train_no if nodes else normalize_train_no(train_id))
     display_name = train.display_name if train is not None else (f"{train_no}车" if train_no else train_id)
     core_results = core_results or {}
-    node_states = {node.normalized_name: _node_state(node, ping_results, ssh_results, ac_status, train_ac_status) for node in nodes}
+    cross_tc_ping = cross_tc_ping or _cross_tc_ping_from_results(nodes, ssh_results)
+    node_states = {node.normalized_name: _node_state(node, ping_results, ssh_results, ac_status, train_ac_status, nodes) for node in nodes}
     cross = _cross_status(nodes, ssh_results)
     ssh_ok_count = sum(1 for item in ssh_results.values() if item.ok)
     ssh_attempted = [item for item in ssh_results.values() if not _ssh_skipped(item)]
@@ -1564,16 +1649,31 @@ def evaluate_diagnostic(
     cannot_execute_vehicle_probe = ssh_ok_count == 0 and not vehicle_internal_known
     peer_mr_issue = _peer_mr_issue(ssh_results)
     any_remote_fail = any(not _ping_ok_no_loss(ping) for ping in remote_ping_values)
+    cross_tc_status = str(cross_tc_ping.get("status") or "")
+    single_entry_verified = _single_entry_verified(nodes, ssh_results)
+    dual_entry_verified = ssh_ok_count >= 2 and cross_tc_status == "ok"
+    ground_aux_abnormal = (ac_status.selected and not ac_status.online) or any(not ping.ok for ping in core_ping_values)
+    cross_vehicle_ok = cross_tc_status == "ok" and any(value == "ok" for value in cross.values())
 
     if cannot_execute_vehicle_probe:
         status = "partial_fail"
         conclusion = "无法从地面接入 MR 执行车内链路检测。可能原因：列车下电、MR射频关闭、地面到车载链路不可达或账号配置异常；不能直接判定车内网络故障。"
-    elif vehicle_loss:
+    elif vehicle_loss or cross_tc_status == "loss":
         status = "partial_fail"
-        conclusion = "车内有线网络丢包，判定异常"
-    elif vehicle_internal_ok:
+        conclusion = "车内通信存在丢包"
+    elif cross_tc_status == "fail":
+        status = "partial_fail"
+        conclusion = "车内通信异常"
+    elif vehicle_internal_ok or single_entry_verified or cross_vehicle_ok:
         status = "ok"
-        conclusion = "车内通信正常（双端验证）" if ssh_ok_count >= 2 else "车内通信正常（单入口验证）"
+        if ground_aux_abnormal:
+            conclusion = "车内通信正常，地面/AC辅助状态异常"
+        elif dual_entry_verified:
+            conclusion = "车内通信正常（双端验证）"
+        elif single_entry_verified or ssh_ok_count == 1:
+            conclusion = "车内通信正常（单端激活）"
+        else:
+            conclusion = "车内通信正常（双端验证）"
     elif peer_mr_issue:
         status = "partial_fail"
         conclusion = peer_mr_issue
@@ -1615,6 +1715,7 @@ def evaluate_diagnostic(
         ac_probe=ac_probe,
         train_ac_status=train_ac_status,
         tables=build_result_tables(nodes, ping_results, ssh_results, ac_status, core_results, core_devices or [], train_ac_status),
+        cross_tc_ping=cross_tc_ping,
     )
 
 
@@ -1701,6 +1802,60 @@ def _ping_result_message(source: str, target: str, target_ip: str, result: PingR
     if via_ssh:
         return _h3c_ping_note(f"{source} CLI", command or build_h3c_ping_command(target_ip), result)
     return _h3c_ping_summary(result)
+
+
+def _is_h3c_ping_command(command: str) -> bool:
+    return bool(re.match(r"^\s*ping(?:\s|$)", str(command or ""), re.IGNORECASE))
+
+
+def _h3c_ping_read_timeout(command: str, requested_timeout: int) -> int:
+    match = re.search(r"(?:^|\s)-c\s+(\d+)(?:\s|$)", str(command or ""), re.IGNORECASE)
+    packet_count = int(match.group(1)) if match else CAR_NETWORK_QUICK_PING_COUNT
+    if packet_count <= CAR_NETWORK_QUICK_PING_COUNT:
+        return max(requested_timeout, CAR_NETWORK_QUICK_CLI_READ_TIMEOUT)
+    return max(requested_timeout, packet_count + 10)
+
+
+def _send_h3c_ping_command(conn: object, command: str, encoding: str, read_timeout: int) -> str:
+    if not hasattr(conn, "write_channel") or not hasattr(conn, "read_channel"):
+        return safe_send_command(
+            conn,
+            command,
+            read_timeout=read_timeout,
+            strip_prompt=False,
+            strip_command=False,
+            use_timing=True,
+            encoding=encoding,
+        )
+    try:
+        if hasattr(conn, "clear_buffer"):
+            conn.clear_buffer()
+    except Exception:
+        pass
+    conn.write_channel(command.rstrip() + "\n")
+    chunks: list[str] = []
+    deadline = time.monotonic() + max(1, read_timeout)
+    last_data_at = time.monotonic()
+    while time.monotonic() < deadline:
+        raw = conn.read_channel()
+        text = normalize_command_output(raw, encoding)
+        if text:
+            chunks.append(text)
+            last_data_at = time.monotonic()
+            joined = "".join(chunks)
+            if _h3c_ping_output_complete(joined):
+                return joined
+        elif chunks and time.monotonic() - last_data_at >= 1.0:
+            joined = "".join(chunks)
+            if _h3c_ping_output_complete(joined):
+                return joined
+        time.sleep(0.1)
+    return "".join(chunks)
+
+
+def _h3c_ping_output_complete(output: str) -> bool:
+    text = str(output or "")
+    return bool(re.search(r"\d+(?:\.\d+)?%\s+packet\s+loss", text, re.IGNORECASE) or re.search(r"\d+(?:\.\d+)?%\s*丢包", text))
 
 
 def _h3c_ping_note(location: str, command: str, result: PingResult) -> str:
@@ -1802,9 +1957,11 @@ def _vehicle_internal_status_json(ssh_results: dict[str, SshResult]) -> dict[str
 
     entry_count = sum(1 for result in ssh_results.values() if result.ok)
     all_remote = [ping for result in ssh_results.values() if result.ok for ping in (result.task_results or result.command_results).values()]
+    single_entry_verified = entry_count == 1 and any(_ping_ok_no_loss(ping) for ping in all_remote)
     return {
         "validated": bool(all_remote),
         "validation_mode": "dual_entry" if entry_count >= 2 else "single_entry" if entry_count == 1 else "none",
+        "single_entry_verified": single_entry_verified,
         "tc1_local": status_for("TC1-MR", "TC1"),
         "tc2_local": status_for("TC2-MR", "TC2"),
         "tc1_to_tc2": status_for("TC1-MR", "TC2"),
@@ -1854,6 +2011,14 @@ def _peer_mr_issue(ssh_results: dict[str, SshResult]) -> str:
         if peer_side_values and all(_ping_ok_no_loss(ping) for ping in peer_side_values):
             return f"{source} 到 {peer} 车内通信异常；跨TC主链路到对端SW/SRV基本可达，优先检查 {peer} 车内接口、车内IP、VLAN、MR状态或路由配置。"
     return ""
+
+
+def _single_entry_verified(nodes: list[CarNetworkNode], ssh_results: dict[str, SshResult]) -> bool:
+    ok_entries = [name for name, result in ssh_results.items() if result.ok]
+    if len(ok_entries) != 1:
+        return False
+    missing_mrs = [node for node in nodes if node.is_mr and node.node_name not in ok_entries]
+    return any(_mr_vehicle_reachable_by_any_entry(node, ssh_results, nodes)[0] for node in missing_mrs)
 
 
 def _remote_diagnosis_items(ssh_results: dict[str, SshResult]) -> list[dict[str, object]]:
@@ -2232,10 +2397,15 @@ def build_result_tables(
                 ssh_note = f"SSH 登录 {node.node_name} 成功" if ssh and ssh.ok else "" if ssh is None else _clean_ping_error(ssh.error)
                 ssh_ip = node.ssh_host or node.ip_vehicle or node.ip_uplink or (ssh.host if ssh else "")
                 tables[tc].append(_table_row(f"{node.node_name} / {ssh_ip}" if ssh_ip else f"{node.node_name} SSH", "SSH地址 / MR管理", ssh_label, "-", "-", ssh_note))
+                reachable, remote_ping, remote_note = _mr_vehicle_reachable_by_any_entry(node, ssh_results, nodes)
+                if ssh is not None and not ssh.ok and remote_ping is not None:
+                    status = "OK" if reachable else "丢包异常" if remote_ping.ok and remote_ping.loss_percent > 0 else "不通"
+                    note = "本端SSH不可达，但对端MR可ping通本端MR车内地址，判定车内通信正常（单端激活）" if reachable else remote_note
+                    tables[tc].append(_table_row(node.node_name, "单端激活验证", status, "-" if remote_ping.avg_rtt_ms is None else f"{remote_ping.avg_rtt_ms} ms", f"{remote_ping.loss_percent}%", note))
                 if ssh is not None:
                     for target, ping in ssh.command_results.items():
                         target_node = nodes_by_vehicle_ip.get(target)
-                        layer = "MR远程跨TC长Ping" if target_node is not None and target_node.tc != node.tc else "MR远程本端检测"
+                        layer = "MR远程跨TC快速检测" if target_node is not None and target_node.tc != node.tc else "MR远程本端检测"
                         target_label = target_node.node_name if target_node is not None else target
                         tables[tc].append(_table_row(f"{node.node_name} -> {target_label} / {target}", layer, _ping_label(ping), "-" if ping.avg_rtt_ms is None else f"{ping.avg_rtt_ms} ms", f"{ping.loss_percent}%", _remote_ping_note(node, target_node, target, layer, ping)))
             if node.ip_uplink and node.node_type.upper() in {"MR", "SW", "3SW"}:
@@ -2243,7 +2413,7 @@ def build_result_tables(
                 if matches:
                     for key, ping in matches:
                         task = _core_task_for_result_key(key, nodes, core_devices)
-                        note = _core_ping_note(task, ping) if task is not None else _h3c_ping_note("核心交换机", build_h3c_ping_command(node.ip_uplink), ping)
+                        note = _core_ping_note(task, ping) if task is not None else _h3c_ping_note("核心交换机", build_h3c_ping_command(node.ip_uplink, packet_count=CAR_NETWORK_QUICK_PING_COUNT), ping)
                         tables[tc].append(_table_row(f"{node.node_name} / {node.ip_uplink}", "核心侧落地IP检测", _core_ping_label(ping), "-" if ping.avg_rtt_ms is None else f"{ping.avg_rtt_ms} ms", f"{ping.loss_percent}%", note))
     return tables
 
@@ -2277,7 +2447,11 @@ def _core_ping_label(ping: PingResult) -> str:
 
 def _remote_ping_note(source: CarNetworkNode, target_node: CarNetworkNode | None, target_ip: str, layer: str, ping: PingResult) -> str:
     target = target_node.node_name if target_node is not None else target_ip
-    command = build_h3c_ping_command(target_ip, packet_count=MR_REMOTE_PING_CROSS_COUNT if "跨TC" in layer else None)
+    if layer == "跨TC通信":
+        packet_count = CAR_NETWORK_CROSS_TC_PING_COUNT
+    else:
+        packet_count = CAR_NETWORK_QUICK_PING_COUNT
+    command = build_h3c_ping_command(target_ip, packet_count=packet_count)
     base = _ping_result_message(source.node_name, target, target_ip, ping, via_ssh=True, command=command)
     if ping.ok and ping.loss_percent == 0:
         return f"{base}。{source.node_name} 到 {target} 车内通信正常。"
@@ -2441,12 +2615,12 @@ def _suspected_train_lines(output: str, train_no: str, parsed_peers: list[object
     return suspected
 
 
-def _run_local_aux_ping(ip: str, *, count: int = 4, timeout_ms: int = 1000) -> PingResult:
+def _run_local_aux_ping(ip: str, *, count: int = CAR_NETWORK_QUICK_PING_COUNT, timeout_ms: int = CAR_NETWORK_QUICK_DETECT_SECONDS * 1000) -> PingResult:
     args = _ping_args(ip, count, timeout_ms)
     started = time.monotonic()
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
-        completed = subprocess.run(args, capture_output=True, text=True, encoding="gbk", errors="replace", timeout=max(3, count * timeout_ms / 1000 + 2), creationflags=creationflags)
+        completed = subprocess.run(args, capture_output=True, text=True, encoding="gbk", errors="replace", timeout=CAR_NETWORK_QUICK_DETECT_SECONDS, creationflags=creationflags)
     except Exception as exc:
         return PingResult(ip, False, error=str(exc))
     output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
@@ -2605,9 +2779,9 @@ def _core_remote_ping_tasks(core_devices: list[Device], nodes: list[CarNetworkNo
                     core_host=core_host,
                     target_node=node.node_name,
                     target_ip=node.ip_uplink,
-                    command=build_h3c_ping_command(node.ip_uplink),
+                    command=build_h3c_ping_command(node.ip_uplink, packet_count=CAR_NETWORK_QUICK_PING_COUNT),
                     layer="核心侧落地IP检测",
-                    timeout=20,
+                    timeout=CAR_NETWORK_QUICK_PING_TIMEOUT,
                 )
             )
     return tuple(tasks)
@@ -2647,10 +2821,10 @@ def _mr_remote_ping_tasks(source: CarNetworkNode, nodes: list[CarNetworkNode], s
                     target_node=node.node_name,
                     target_ip=target_ip,
                     direction="local",
-                    command=build_h3c_ping_command(target_ip),
-                    packet_count=None,
+                    command=build_h3c_ping_command(target_ip, packet_count=CAR_NETWORK_QUICK_PING_COUNT),
+                    packet_count=CAR_NETWORK_QUICK_PING_COUNT,
                     layer="MR远程本端检测",
-                    timeout=20,
+                    timeout=CAR_NETWORK_QUICK_PING_TIMEOUT,
                 )
             )
     for node in remote:
@@ -2663,13 +2837,102 @@ def _mr_remote_ping_tasks(source: CarNetworkNode, nodes: list[CarNetworkNode], s
                     target_node=node.node_name,
                     target_ip=target_ip,
                     direction="cross_tc",
-                    command=build_h3c_ping_command(target_ip, packet_count=MR_REMOTE_PING_CROSS_COUNT),
-                    packet_count=MR_REMOTE_PING_CROSS_COUNT,
-                    layer="MR远程跨TC长Ping",
-                    timeout=90,
+                    command=build_h3c_ping_command(target_ip, packet_count=CAR_NETWORK_QUICK_PING_COUNT),
+                    packet_count=CAR_NETWORK_QUICK_PING_COUNT,
+                    layer="MR远程跨TC快速检测",
+                    timeout=CAR_NETWORK_QUICK_PING_TIMEOUT,
                 )
             )
     return tuple(tasks)
+
+
+def _cross_tc_ping_task(nodes: list[CarNetworkNode], ssh_results: dict[str, SshResult]) -> MrRemotePingTask | None:
+    candidates: list[tuple[int, MrRemotePingTask]] = []
+    for source_name, target_name in (("TC1-MR", "TC2-MR"), ("TC2-MR", "TC1-MR")):
+        ssh = ssh_results.get(source_name)
+        if ssh is None or not ssh.ok or _ssh_skipped(ssh):
+            continue
+        source = next((node for node in nodes if node.node_name == source_name), None)
+        target = next((node for node in nodes if node.node_name == target_name), None)
+        if source is None or target is None:
+            continue
+        target_ip = next(iter(_vehicle_candidate_ips(target, nodes)), "")
+        if not target_ip:
+            continue
+        task = MrRemotePingTask(
+            task_id=f"{source.node_name}_cross_tc_ping_{target.node_name}_{target_ip}",
+            source_node=source.node_name,
+            source_host=ssh.host,
+            target_node=target.node_name,
+            target_ip=target_ip,
+            direction="cross_tc_loss",
+            command=build_h3c_ping_command(target_ip, packet_count=CAR_NETWORK_CROSS_TC_PING_COUNT),
+            packet_count=CAR_NETWORK_CROSS_TC_PING_COUNT,
+            layer="跨TC通信",
+            timeout=CAR_NETWORK_CROSS_TC_PING_TIMEOUT,
+        )
+        candidates.append((_cross_tc_direction_score(source, target, ssh, nodes), task))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
+
+
+def _cross_tc_direction_score(source: CarNetworkNode, target: CarNetworkNode, ssh: SshResult, nodes: list[CarNetworkNode]) -> int:
+    peer_results: list[PingResult] = []
+    cross_results: list[PingResult] = []
+    all_results = {**ssh.command_results}
+    all_results.update(ssh.task_results)
+    for key, ping in all_results.items():
+        meta = ssh.task_metadata.get(key, {})
+        target_node = str(meta.get("target_node") or "")
+        if not target_node and f"_ping_{target.node_name}_" in str(key):
+            target_node = target.node_name
+        if not target_node:
+            matched = _node_for_vehicle_ping_ip(nodes, ping.ip)
+            target_node = matched.node_name if matched is not None else ""
+        if target_node == target.node_name:
+            peer_results.append(ping)
+        elif target_node.startswith(f"{target.tc}-"):
+            cross_results.append(ping)
+    if any(_ping_ok_no_loss(ping) for ping in peer_results):
+        return 0
+    if any(_ping_ok_no_loss(ping) for ping in cross_results):
+        return 1
+    if any(ping.ok and ping.loss_percent > 0 for ping in peer_results):
+        return 2
+    if any(ping.ok and ping.loss_percent > 0 for ping in cross_results):
+        return 3
+    if not peer_results and not cross_results:
+        return 4
+    return 5
+
+
+def _node_for_vehicle_ping_ip(nodes: list[CarNetworkNode], ip: str) -> CarNetworkNode | None:
+    return next((node for node in nodes if ip in _vehicle_candidate_ips(node, nodes)), None)
+
+
+def _cross_tc_ping_from_results(nodes: list[CarNetworkNode], ssh_results: dict[str, SshResult]) -> dict[str, object]:
+    task = _cross_tc_ping_task(nodes, ssh_results)
+    if task is None:
+        return {"status": "skipped", "source": "", "target": "", "target_ip": "", "loss_percent": None, "avg_rtt_ms": None, "command": "", "note": "无可登录 MR，跨TC通信未检测"}
+    ssh = ssh_results.get(task.source_node)
+    ping = ssh.task_results.get(task.task_id) if ssh is not None else None
+    if ping is None and ssh is not None:
+        matches = [value for task_id, value in ssh.task_results.items() if f"_ping_{task.target_node}_" in task_id]
+        ping = matches[0] if matches else ssh.command_results.get(task.target_ip)
+    if ping is None:
+        return {"status": "skipped", "source": task.source_node, "target": task.target_node, "target_ip": task.target_ip, "loss_percent": None, "avg_rtt_ms": None, "command": task.command, "note": "跨TC通信未检测"}
+    status = "ok" if _ping_ok_no_loss(ping) else "loss" if ping.ok and ping.loss_percent > 0 else "fail"
+    return {
+        "status": status,
+        "source": task.source_node,
+        "target": task.target_node,
+        "target_ip": task.target_ip,
+        "loss_percent": ping.loss_percent,
+        "avg_rtt_ms": ping.avg_rtt_ms,
+        "command": task.command,
+        "note": _ping_result_message(task.source_node, task.target_node, task.target_ip, ping, via_ssh=True, command=task.command),
+    }
 
 
 def _vehicle_candidate_ips(node: CarNetworkNode, nodes: list[CarNetworkNode]) -> tuple[str, ...]:
@@ -2708,10 +2971,16 @@ def _node_state(
     ssh_results: dict[str, SshResult],
     ac_status: AcApStatus,
     train_ac_status: TrainAcStatus | None = None,
+    all_nodes: list[CarNetworkNode] | None = None,
 ) -> str:
     if node.is_mr:
         ping_values = [ping_results[ip] for ip in node.ping_ips if ip in ping_results]
         ssh = ssh_results.get(node.node_name)
+        remote_reachable, remote_ping, _remote_note = _mr_vehicle_reachable_by_any_entry(node, ssh_results, all_nodes or [node])
+        if remote_ping is not None and remote_ping.ok and remote_ping.loss_percent > 0:
+            return "unstable"
+        if remote_reachable:
+            return "ok"
         ac_end_online = False
         if train_ac_status is not None:
             ac_end_online = train_ac_status.tc1_mr_online if node.tc == "TC1" else train_ac_status.tc2_mr_online
@@ -2751,6 +3020,41 @@ def _remote_results_for_node(node: CarNetworkNode, ssh_results: dict[str, SshRes
     return [ping for ssh in ssh_results.values() for task_id, ping in ssh.task_results.items() if f"_ping_{node.node_name}_" in task_id]
 
 
+def _mr_vehicle_reachable_by_any_entry(
+    node: CarNetworkNode,
+    ssh_results: dict[str, SshResult],
+    nodes: list[CarNetworkNode],
+) -> tuple[bool, PingResult | None, str]:
+    candidates = set(_vehicle_candidate_ips(node, nodes))
+    if not candidates:
+        return False, None, ""
+    first_failure: tuple[PingResult, str] | None = None
+    first_loss: tuple[PingResult, str] | None = None
+    for ssh in ssh_results.values():
+        if not ssh.ok:
+            continue
+        all_results = {**ssh.command_results}
+        all_results.update(ssh.task_results)
+        for key, ping in all_results.items():
+            meta = ssh.task_metadata.get(key, {})
+            target_ip = str(meta.get("target_ip") or ping.ip or key)
+            if target_ip not in candidates:
+                continue
+            source = str(meta.get("source_node") or ssh.node_name or ssh.host)
+            note = f"{source} CLI ping {node.node_name} 车内IP"
+            if _ping_ok_no_loss(ping):
+                return True, ping, f"{note}成功"
+            if ping.ok and ping.loss_percent > 0 and first_loss is None:
+                first_loss = (ping, f"{note}存在丢包")
+            elif not ping.ok and first_failure is None:
+                first_failure = (ping, f"{note}失败")
+    if first_loss is not None:
+        return False, first_loss[0], first_loss[1]
+    if first_failure is not None:
+        return False, first_failure[0], first_failure[1]
+    return False, None, ""
+
+
 def _cross_status(nodes: list[CarNetworkNode], ssh_results: dict[str, SshResult]) -> dict[str, str]:
     tc1_targets = {ip for node in nodes if node.tc == "TC2" and not node.is_mr for ip in _vehicle_candidate_ips(node, nodes)}
     tc2_targets = {ip for node in nodes if node.tc == "TC1" and not node.is_mr for ip in _vehicle_candidate_ips(node, nodes)}
@@ -2774,10 +3078,10 @@ def _remote_ping_status(result: SshResult | None, targets: set[str]) -> str:
     relevant = [ping for ip, ping in result.command_results.items() if ip in targets]
     if not relevant:
         return "pending"
-    if len({ip for ip in result.command_results if ip in targets}) < len(targets):
-        return "pending"
-    if all(_ping_ok_no_loss(ping) for ping in relevant):
+    if any(_ping_ok_no_loss(ping) for ping in relevant):
         return "ok"
+    if any(ping.ok and ping.loss_percent > 0 for ping in relevant):
+        return "unstable"
     return "fail"
 
 
