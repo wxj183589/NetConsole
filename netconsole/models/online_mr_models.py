@@ -31,6 +31,13 @@ TASK_SWITCH_HISTORY = "switch_history"
 TASK_INTERFACE_RATE = "interface_rate"
 TASK_TERMINAL_MONITOR = "terminal_monitor"
 TASK_FPING = "fping"
+TASK_CONFIG_COLLECT = "config_collect"
+
+CONFIG_COLLECT_COMMANDS: tuple[str, ...] = (
+    "screen-length disable",
+    "display current-configuration",
+    "quit",
+)
 
 INIT_COMMANDS: tuple[str, ...] = (
     "screen-length disable",
@@ -237,6 +244,7 @@ class OnlineMrConnectionConfig:
     duration_minutes: int | None = None
     connection_targets: tuple[object, ...] = field(default_factory=tuple)
     connection_method: str = ""
+    collect_config_on_start: bool = False
 
 
 @dataclass
@@ -284,6 +292,12 @@ class OnlineMrSessionMeta:
     iperf: dict[str, object] = field(default_factory=dict)
     stats: dict[str, int] = field(default_factory=dict)
     session_dir: Path | None = None
+    session_type: str = "realtime"
+    config_collect_enabled: bool = False
+    config_collect_status: str = "skipped"
+    config_file_path: str = ""
+    config_error: str | None = None
+    raw_log_path: str = ""
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -305,6 +319,12 @@ class OnlineMrSessionMeta:
             "fping": self.fping,
             "iperf": self.iperf,
             "stats": self.stats,
+            "session_type": self.session_type,
+            "config_collect_enabled": self.config_collect_enabled,
+            "config_collect_status": self.config_collect_status,
+            "config_file_path": self.config_file_path,
+            "config_error": self.config_error,
+            "raw_log_path": self.raw_log_path,
         }
 
 
@@ -332,6 +352,8 @@ class OnlineMrSnapshot:
     iperf_mbps: float | None = None
     iperf_retransmits: int | None = None
     iperf_status: str = ""
+    config_collect_status: str = ""
+    config_file_path: str = ""
 
 
 class OnlineMrConnection:

@@ -3,8 +3,10 @@
 import json
 import sqlite3
 import sys
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,7 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import (
+    CONFIG_COLLECT_COMMANDS,
     FpingConfig,
     INIT_COMMANDS,
     STATE_ABORTED,
@@ -30,6 +33,7 @@ from netconsole.models.online_mr_models import (
     TASK_SWITCH_HISTORY,
     OnlineMrConnectionConfig,
     OnlineMrIntervals,
+    OnlineMrSnapshot,
     repeat_command_group,
 )
 from netconsole.core.ping.fping_v5_runner import build_fping_v5_args
@@ -46,14 +50,20 @@ from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, re
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
 from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_LINK_SWITCH, EVENT_MESH_SAMPLE, OnlineMrEvent
 from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator, build_realtime_state
+from netconsole.services.online_mr.core.realtime_cache import OnlineMrRawEvent, OnlineMrRealtimeCache
+from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
+from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.ui.pages.online_mr_collection_page import (
     OnlineMrCollectionPage,
     SUMMARY_COL_ACTIVE_PEER,
     SUMMARY_COL_DEVICE_ID,
     SUMMARY_COL_LAST_COLLECTION,
+    SUMMARY_COL_MR_RSSI,
     SUMMARY_COL_PEER_SITE,
     SUMMARY_COL_PING_LATENCY,
+    SUMMARY_COL_SESSION,
+    SUMMARY_COL_STATUS,
     is_fat_ap_device,
     natural_device_sort_key,
     safe_device_folder_name,
@@ -64,6 +74,7 @@ from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
 from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
+from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 
 
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
@@ -232,6 +243,159 @@ def test_raw_persistence_after_mesh_link(tmp_path: Path) -> None:
     assert meta["stats"]["mesh_link_success"] == 1
 
 
+def test_realtime_session_collects_config_inside_same_session(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    config.collect_config_on_start = True
+    config_connection = FakeConnection({command: f"{command}\nOK" for command in CONFIG_COLLECT_COMMANDS})
+    realtime_connection = FakeConnection()
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=Factory([config_connection, realtime_connection]))
+
+    meta = collector.start()
+
+    config_path = collector.session.session_dir / "config" / "current_configuration.txt"
+    root_config_dir = collector.session.session_dir.parent.parent / "config"
+    saved_meta = json.loads((collector.session.session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert meta.session_id == collector.session.meta.session_id
+    assert config_path.exists()
+    assert root_config_dir.exists() is False
+    assert config_connection.commands == list(CONFIG_COLLECT_COMMANDS)
+    assert saved_meta["session_type"] == "realtime"
+    assert saved_meta["config_collect_enabled"] is True
+    assert saved_meta["config_collect_status"] == "success"
+    assert saved_meta["config_file_path"] == str(config_path)
+    assert saved_meta["raw_log_path"] == str(collector.session.session_dir / "terminal_monitor_raw.txt")
+    assert "display current-configuration" in config_path.read_text(encoding="utf-8")
+
+
+def test_config_only_session_writes_config_and_meta(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    connection = FakeConnection({command: f"{command}\nOK" for command in CONFIG_COLLECT_COMMANDS})
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=lambda _: connection)
+
+    meta = collector.collect_config_only()
+
+    config_path = collector.session.session_dir / "config" / "current_configuration.txt"
+    saved_meta = json.loads((collector.session.session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert meta.session_type == "config_only"
+    assert saved_meta["session_type"] == "config_only"
+    assert saved_meta["config_collect_status"] == "success"
+    assert saved_meta["config_file_path"] == str(config_path)
+    assert saved_meta["raw_log_path"] == str(collector.session.session_dir / "terminal_monitor_raw.txt")
+    assert saved_meta["ended_at"]
+    assert connection.commands == list(CONFIG_COLLECT_COMMANDS)
+
+
+def test_config_collect_failure_keeps_session_meta(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    config.collect_config_on_start = True
+    collector = OnlineMrCollector(
+        config,
+        OnlineMrSessionStore(paths),
+        connection_factory=Factory([FakeConnection(fail_on={"display current-configuration"}), FakeConnection()]),
+    )
+
+    collector.start()
+
+    saved_meta = json.loads((collector.session.session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert saved_meta["config_collect_status"] == "failed"
+    assert saved_meta["config_error"]
+    assert collector.status == STATE_COLLECTING
+
+
+def test_terminal_monitor_raw_receives_collector_raw_output(tmp_path: Path) -> None:
+    collector, _ = _collector(tmp_path)
+    collector.start()
+    collector.run_once(TASK_MESH_LINK)
+
+    terminal_raw = collector.session.session_dir / "terminal_monitor_raw.txt"
+    text = terminal_raw.read_text(encoding="utf-8")
+    assert "display wlan mesh-link" in text
+    assert LINE_A in text
+
+
+def test_realtime_cache_tracks_latest_snapshot_without_file_polling(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    cache = OnlineMrRealtimeCache()
+    collector = OnlineMrCollector(
+        config,
+        OnlineMrSessionStore(paths),
+        connection_factory=lambda _: FakeConnection({"display wlan mesh-link": LINE_A}),
+        realtime_cache=cache,
+    )
+    collector.start()
+    collector.run_once(TASK_MESH_LINK)
+
+    snapshot = cache.get_latest_snapshot(1)
+    assert snapshot is not None
+    assert snapshot.active_peer == "30f5-277a-5a2f"
+    assert cache.get_session_realtime_table(snapshot.session_id) is snapshot
+
+
+def test_realtime_parser_parses_raw_cache_event_without_file_polling() -> None:
+    parser = OnlineMrRealtimeParser()
+    event = OnlineMrRawEvent(
+        timestamp=datetime.now(),
+        session_id="session-1",
+        device_id=1,
+        source="ssh-repeat",
+        task_type=TASK_MESH_LINK,
+        raw=LINE_A,
+    )
+
+    parsed = parser.parse_raw_event(event)
+
+    assert parsed is not None
+    assert parsed.module == "mesh"
+    assert parsed.payload["peer_mac"] == "30f5-277a-5a2f"
+    assert parsed.payload["link_state"] == "ACTIVE"
+
+
+def test_repeat_stream_invokes_callback_before_archival(tmp_path: Path) -> None:
+    stop_event = Event()
+    raw_path = tmp_path / "raw" / "mesh_link_raw.log"
+    seen: list[str] = []
+
+    class FakeInteractiveConnection:
+        def __init__(self) -> None:
+            self.read_count = 0
+            self.writes: list[str] = []
+
+        def write_channel(self, text: str) -> None:
+            self.writes.append(text)
+
+        def read_channel(self) -> str:
+            self.read_count += 1
+            if self.read_count == 1:
+                return f"{LINE_A}\n"
+            stop_event.set()
+            return ""
+
+        def disconnect(self) -> None:
+            pass
+
+    connection = object.__new__(NetmikoShellConnection)
+    connection.connection = FakeInteractiveConnection()
+    connection._tunnel_session = None
+
+    def callback(_stamp: datetime, line: str) -> None:
+        seen.append(line)
+        stop_event.set()
+
+    connection.run_repeat_stream(
+        ("display wlan mesh-link",),
+        raw_path,
+        stop_event,
+        timeout=1,
+        line_callback=callback,
+    )
+
+    assert seen == [LINE_A]
+    text = raw_path.read_text(encoding="utf-8")
+    assert LINE_A in text
+    assert "display wlan mesh-link" in text
+    assert "\x03" in "".join(connection.connection.writes)
+
+
 def test_sqlite_writes_live_samples_and_active_peer(tmp_path: Path) -> None:
     collector, _ = _collector(tmp_path)
     collector.start()
@@ -275,6 +439,23 @@ def test_ui_throttle_coalesces_many_snapshots() -> None:
     assert throttle.flush_count == 1
 
 
+def test_flush_snapshot_does_not_start_realtime_file_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    called = False
+
+    def fail_parse(_snapshot: OnlineMrSnapshot) -> None:
+        nonlocal called
+        called = True
+        raise AssertionError("realtime page must not start file parse worker")
+
+    monkeypatch.setattr(page, "_maybe_parse_realtime", fail_parse)
+    page.throttle.enqueue(OnlineMrSnapshot("session-1", STATE_STOPPED, device_id=1, device_name="MR-01", host="192.0.2.1"))
+
+    page._flush_snapshot()
+
+    assert called is False
+
+
 def test_collector_snapshot_before_session_is_pending_with_device_identity(tmp_path: Path) -> None:
     collector, _connection = _collector(tmp_path)
     collector.status = STATE_CONNECTING
@@ -286,6 +467,49 @@ def test_collector_snapshot_before_session_is_pending_with_device_identity(tmp_p
     assert snapshot.device_id == 1
     assert snapshot.device_name == "FAT-AP-01"
     assert snapshot.host == "192.0.2.10"
+
+
+def test_collector_snapshot_overrides_stale_latest_status(tmp_path: Path) -> None:
+    collector, _connection = _collector(tmp_path)
+    collector.start()
+    collector.latest_snapshot = OnlineMrSnapshot(
+        collector.session.meta.session_id,
+        STATE_COLLECTING,
+        device_id=collector.config.device_id,
+        device_name=collector.config.device_name,
+        host=collector.config.host,
+        active_peer="30f5-277a-5a2f",
+        local_rssi=36,
+    )
+    collector.status = STATE_STOPPED
+
+    snapshot = collector.snapshot()
+
+    assert snapshot.status == STATE_STOPPED
+    assert collector.latest_snapshot.status == STATE_COLLECTING
+    assert snapshot.active_peer == "30f5-277a-5a2f"
+
+
+def test_collector_worker_cancel_only_requests_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths, config = _config(tmp_path)
+    calls: list[str] = []
+
+    class FakeCollector:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def request_stop(self) -> None:
+            calls.append("request_stop")
+
+        def stop(self) -> None:
+            calls.append("stop")
+
+    monkeypatch.setattr("netconsole.ui.online_mr_collector_worker.OnlineMrCollector", FakeCollector)
+    worker = OnlineMrCollectorWorker(config, OnlineMrSessionStore(paths))
+
+    worker.cancel()
+
+    assert calls == ["request_stop"]
 
 
 def test_parse_failure_saves_raw_marks_failed_and_loop_continues(tmp_path: Path) -> None:
@@ -410,6 +634,21 @@ def test_online_mesh_parser_accepts_peer_name_table_format() -> None:
     assert records[0].link_state == "ACTIVE"
     assert records[0].peer_mac_raw == "bc5a-3457-755f"
     assert records[0].metrics["local_rssi_db"] == 51
+
+
+@pytest.mark.parametrize("peer_name", ["AP-X_3111", "AP-S_3406", "30f5-277a-0ea0", "083b-e9ec-da40"])
+def test_online_mesh_parser_accepts_common_ap_names(peer_name: str) -> None:
+    records, status, error = parse_mesh_link_text(
+        " Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"
+        f" {peer_name:<22} 083b-e9ec-da40 39   74ad-cb9d-3321 WLAN-MeshLink694  Active(ax)       00h 36m 52s\n",
+        datetime(2026, 6, 27, 3, 23, 54),
+    )
+
+    assert status == "OK"
+    assert error == ""
+    assert len(records) == 1
+    assert records[0].metrics["peer_name"] == peer_name
+    assert records[0].peer_mac_raw == "083b-e9ec-da40"
 
 
 def test_channel_busy_parser_uses_first_01_table_row() -> None:
@@ -563,6 +802,39 @@ def test_realtime_aggregator_updates_stats_and_iperf_fields() -> None:
     assert state.retry == 12
     assert state.iperf_mbps == 88.0
     assert state.retrans == 2
+
+
+def test_sliding_window_keeps_latest_module_after_window_trim() -> None:
+    buffer = SlidingWindowBuffer(window_seconds=60)
+    old_mesh = OnlineMrEvent(
+        datetime(2026, 6, 27, 10, 0, 0),
+        "s1",
+        1,
+        "ssh_stream",
+        "mesh",
+        EVENT_MESH_SAMPLE,
+        {"peer_name": "AP-X_3111", "link_state": "ACTIVE"},
+        raw="AP-X_3111 083b-e9ec-da40 39 74ad-cb9d-3321 WLAN-MeshLink694 Active(ax)",
+    )
+    busy = OnlineMrEvent(
+        datetime(2026, 6, 27, 10, 2, 0),
+        "s1",
+        1,
+        "ssh_stream",
+        "busy",
+        EVENT_BUSY_SAMPLE,
+        {"tx_busy": 1, "rx_busy": 3},
+    )
+
+    buffer.add(old_mesh)
+    buffer.add(busy)
+    events = buffer.get_window()
+
+    assert old_mesh in events
+    assert busy in events
+    state = build_realtime_state(device_id=1, device_name="MR", status=STATE_COLLECTING, events=events)
+    assert state.peer_name == "AP-X_3111"
+    assert state.tx_busy == 1
 
 
 def test_iperf_json_parser_extracts_udp_1m_result() -> None:
@@ -798,13 +1070,36 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.fping_device_combo_1.maximumWidth() <= 360
     assert page.fping_target_label_1.minimumWidth() >= 160
     assert page.fping_target_label_1.maximumWidth() <= 260
-    assert page.summary_table.minimumHeight() >= 150
-    assert page.summary_table.maximumHeight() <= 190
+    assert page.summary_table.minimumHeight() >= 120
+    assert page.summary_table.maximumHeight() > 1000
     assert page.tabs.minimumHeight() >= 180
     assert page.tabs.count() == 3
     assert page.tabs.tabText(0) == "采集输出"
     assert page.tabs.tabText(1) == "采集日志"
     assert page.tabs.tabText(2) == "打流测试"
+    expected_summary_widths = {
+        0: 180,
+        1: 130,
+        SUMMARY_COL_STATUS: 90,
+        SUMMARY_COL_ACTIVE_PEER: 190,
+        SUMMARY_COL_MR_RSSI: 80,
+        SUMMARY_COL_PEER_SITE: 120,
+        6: 80,
+        SUMMARY_COL_PING_LATENCY: 90,
+        8: 90,
+        9: 90,
+        10: 90,
+        SUMMARY_COL_LAST_COLLECTION: 160,
+        12: 100,
+        13: 80,
+        SUMMARY_COL_SESSION: 170,
+        SUMMARY_COL_DEVICE_ID: 80,
+    }
+    for column, width in expected_summary_widths.items():
+        assert page.summary_table.columnWidth(column) >= width
+    page.vertical_splitter.setSizes([480, 220, 180])
+    page._save_vertical_splitter_sizes()
+    assert page.settings.get_value("online_mr/realtime_vertical_splitter_sizes") == page.vertical_splitter.sizes()
     assert not page.advanced_detail.isVisible()
 
     from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
@@ -891,7 +1186,7 @@ def test_online_mr_snapshot_summary_prefers_peer_name_and_station(tmp_path: Path
     page, _repository, _groups = _online_page_with_devices(tmp_path)
     snapshot = OnlineMrSnapshot(
         "pending:7",
-        "COLLECTING",
+        "STOPPED",
         device_id=7,
         device_name="MR-07",
         host="192.0.2.7",
@@ -964,6 +1259,124 @@ def test_online_mr_stream_mesh_event_updates_summary_without_file_polling(tmp_pa
     assert page.summary_table.item(0, 3).text() == "bc5a-3457-c8a0"
     assert page.summary_table.item(0, 4).text() == "35"
     assert page.summary_table.item(0, 11).text().startswith("2026-06-27 10:00:00")
+
+
+def test_online_mr_stream_mesh_event_accepts_ap_name_without_file_polling(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+    session = OnlineMrSessionStore(page.paths).create_session(config)
+    page.session_dirs[session.meta.session_id] = session.session_dir
+    page.session_to_device_id[session.meta.session_id] = int(device.id)
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
+
+    page._handle_raw_stream_event(
+        OnlineMrEvent(
+            datetime(2026, 6, 27, 10, 0, 0),
+            session.meta.session_id,
+            int(device.id),
+            "ssh_stream",
+            "mesh",
+            EVENT_MESH_SAMPLE,
+            {},
+            raw="AP-X_3111              083b-e9ec-da40 39   74ad-cb9d-3321 WLAN-MeshLink694  Active(ax)       00h 36m 52s",
+        )
+    )
+
+    assert page.summary_table.item(0, SUMMARY_COL_ACTIVE_PEER).text() == "AP-X_3111"
+    assert page.summary_table.item(0, SUMMARY_COL_MR_RSSI).text() == "39"
+
+
+def test_online_mr_stream_event_creates_summary_row_for_second_device(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "B")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+    session = OnlineMrSessionStore(page.paths).create_session(config)
+    page.session_dirs[session.meta.session_id] = session.session_dir
+    page.session_to_device_id[session.meta.session_id] = int(device.id)
+
+    page._handle_raw_stream_event(
+        OnlineMrEvent(
+            datetime(2026, 6, 27, 10, 0, 0),
+            session.meta.session_id,
+            int(device.id),
+            "ssh_stream",
+            "mesh",
+            EVENT_MESH_SAMPLE,
+            {},
+            raw="AP-S_3406 083b-e9ec-da41 40 74ad-cb9d-3322 WLAN-MeshLink695 Active(ax)",
+        )
+    )
+
+    row = page._find_row(page.summary_table, str(device.id), column=SUMMARY_COL_DEVICE_ID)
+    assert row >= 0
+    assert page.summary_table.item(row, SUMMARY_COL_ACTIVE_PEER).text() == "AP-S_3406"
+    assert page.summary_table.item(row, SUMMARY_COL_MR_RSSI).text() == "40"
+
+
+def test_online_mr_raw_output_is_split_by_device(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    first = _create_onboard_device(repository, onboard.id, "MR-A")
+    second = _create_onboard_device(repository, onboard.id, "MR-B")
+    page.refresh_all()
+    first_session = OnlineMrSessionStore(page.paths).create_session(page._build_config_for_device(first))
+    second_session = OnlineMrSessionStore(page.paths).create_session(page._build_config_for_device(second))
+    page.session_dirs[first_session.meta.session_id] = first_session.session_dir
+    page.session_dirs[second_session.meta.session_id] = second_session.session_dir
+    page.session_to_device_id[first_session.meta.session_id] = int(first.id)
+    page.session_to_device_id[second_session.meta.session_id] = int(second.id)
+
+    page._handle_raw_stream_event(OnlineMrEvent(datetime(2026, 6, 27, 10, 0, 0), first_session.meta.session_id, int(first.id), "ssh_stream", "mesh", EVENT_MESH_SAMPLE, {}, raw="AP-X_3111 083b-e9ec-da40 39 74ad-cb9d-3321 WLAN-MeshLink694 Active(ax)"))
+    page._handle_raw_stream_event(OnlineMrEvent(datetime(2026, 6, 27, 10, 0, 1), second_session.meta.session_id, int(second.id), "ssh_stream", "mesh", EVENT_MESH_SAMPLE, {}, raw="AP-S_3406 083b-e9ec-da41 40 74ad-cb9d-3322 WLAN-MeshLink695 Active(ax)"))
+    page._flush_output_buffers()
+
+    first_text = page.output_widgets_by_device_id[int(first.id)].toPlainText()
+    second_text = page.output_widgets_by_device_id[int(second.id)].toPlainText()
+    assert "AP-X_3111" in first_text
+    assert "AP-S_3406" not in first_text
+    assert "AP-S_3406" in second_text
+    assert "AP-X_3111" not in second_text
+
+
+def test_online_mr_hide_output_keeps_parser_and_summary_active(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+    session = OnlineMrSessionStore(page.paths).create_session(config)
+    page.session_dirs[session.meta.session_id] = session.session_dir
+    page.session_to_device_id[session.meta.session_id] = int(device.id)
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
+    page.output_toggle.setChecked(True)
+
+    page._handle_raw_stream_event(
+        OnlineMrEvent(
+            datetime(2026, 6, 27, 10, 0, 0),
+            session.meta.session_id,
+            int(device.id),
+            "ssh_stream",
+            "mesh",
+            EVENT_MESH_SAMPLE,
+            {},
+            raw="AP-X_3111 083b-e9ec-da40 39 74ad-cb9d-3321 WLAN-MeshLink694 Active(ax)",
+        )
+    )
+
+    assert page.summary_table.item(0, SUMMARY_COL_ACTIVE_PEER).text() == "AP-X_3111"
+    assert page.output_buffers_by_device_id[int(device.id)]
+    assert page.output_widgets_by_device_id[int(device.id)].toPlainText() == ""
+    assert page.output_splitter.isVisible() is False
 
 
 def test_online_mr_stream_mesh_active_change_writes_link_switch_event(tmp_path: Path) -> None:
@@ -1238,6 +1651,44 @@ def test_online_mr_stop_selected_and_stop_all_are_device_scoped(tmp_path: Path) 
     assert second_worker.cancelled is True
 
 
+def test_online_mr_stop_all_covers_session_workers_and_probe_workers(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class FakeProbeWorker:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    session_worker = FakeWorker()
+    fping_worker = FakeProbeWorker()
+    iperf_worker = FakeProbeWorker()
+    page.workers["session-1"] = session_worker
+    page.session_to_device_id["session-1"] = int(device.id)
+    page.manager.register("session-1", session_worker)
+    page.fping_workers_by_device_id[int(device.id)] = fping_worker
+    page.iperf_workers_by_device_id[int(device.id)] = iperf_worker
+
+    page.stop_all()
+
+    assert session_worker.cancelled is True
+    assert fping_worker.stopped is True
+    assert iperf_worker.stopped is True
+    assert page.status_value == "STOPPING"
+    assert page.stop_animation_timer.isActive()
+
+
 def test_online_mr_stop_updates_device_and_summary_status(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
     onboard = groups.create("\u8f66\u8f7d")
@@ -1263,7 +1714,112 @@ def test_online_mr_stop_updates_device_and_summary_status(tmp_path: Path) -> Non
 
     assert worker.cancelled is True
     assert page.status_value == "STOPPING"
+    assert page.stop_animation_timer.isActive()
     assert "stopping" in page.summary_table.item(0, 2).text().lower()
+
+
+def test_online_mr_reconcile_prunes_orphan_collecting_summary_row(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
+    page.summary_table.setItem(0, SUMMARY_COL_SESSION, QTableWidgetItem("orphan-session"))
+    page.summary_table.setItem(0, SUMMARY_COL_STATUS, QTableWidgetItem(page._status_text(STATE_COLLECTING)))
+
+    page._reconcile_collection_state()
+
+    assert page.summary_table.item(0, SUMMARY_COL_STATUS).text() == page._status_text(STATE_STOPPED)
+    assert page.status_value == STATE_STOPPED
+
+
+def test_online_mr_pages_share_runtime_for_same_site(tmp_path: Path) -> None:
+    page, repository, _groups = _online_page_with_devices(tmp_path)
+    second = OnlineMrCollectionPage(repository, I18n("en_US"), "demo", page.paths)
+
+    assert second.manager is page.manager
+    assert second.realtime_cache is page.realtime_cache
+    assert second.workers is page.workers
+    assert second.output_buffers_by_device_id is page.output_buffers_by_device_id
+
+
+def test_online_mr_output_hidden_state_syncs_between_pages(tmp_path: Path) -> None:
+    page, repository, _groups = _online_page_with_devices(tmp_path)
+    second = OnlineMrCollectionPage(repository, I18n("en_US"), "demo", page.paths)
+
+    page.output_toggle.setChecked(True)
+
+    assert second.output_toggle.isChecked() is True
+    assert second.output_render_enabled is False
+
+    second.output_toggle.setChecked(False)
+
+    assert page.output_toggle.isChecked() is False
+    assert page.output_render_enabled is True
+
+
+def test_online_mr_site_switch_clears_page_ui_without_stopping_runtime(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    page.summary_table.setRowCount(1)
+    page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
+    page.summary_table.setItem(0, SUMMARY_COL_SESSION, QTableWidgetItem("demo-session"))
+    page.summary_table.setItem(0, SUMMARY_COL_STATUS, QTableWidgetItem(page._status_text(STATE_COLLECTING)))
+    page.output_buffers_by_device_id.setdefault(int(device.id), deque(maxlen=2000)).append("line")
+    page._ensure_output_widget(int(device.id), "demo-session")
+    page.selected_device_ids.add(int(device.id))
+
+    page.set_site("other")
+
+    assert page.site_name == "other"
+    assert page.summary_table.rowCount() == 0
+    assert page.output_widgets_by_device_id == {}
+    assert page.selected_device_ids == set()
+
+
+def test_online_mr_reconcile_restores_running_summary_row_from_runtime(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+    page.refresh_all()
+    snapshot = OnlineMrSnapshot(
+        session_id="running-session",
+        device_id=int(device.id),
+        device_name=device.name,
+        host=device.primary_address or "",
+        status=STATE_COLLECTING,
+        collected_count=3,
+    )
+
+    class _Signal:
+        def connect(self, _callback) -> None:
+            return None
+
+    class _Collector:
+        config = SimpleNamespace(site="demo", device_name=device.name, host=device.primary_address or "", connection_method="SSH")
+
+        def snapshot(self) -> OnlineMrSnapshot:
+            return snapshot
+
+    worker = SimpleNamespace(
+        collector=_Collector(),
+        snapshot=_Signal(),
+        raw_stream_event=_Signal(),
+        completed=_Signal(),
+        failed=_Signal(),
+    )
+    page.workers["running-session"] = worker
+    page.workers_by_device_id[int(device.id)] = worker
+    page.session_to_device_id["running-session"] = int(device.id)
+
+    page._reconcile_collection_state()
+
+    assert page.summary_table.rowCount() == 1
+    assert page.summary_table.item(0, SUMMARY_COL_DEVICE_ID).text() == str(device.id)
+    assert page.running_count_label.text() == "1"
 
 
 def test_online_mr_view_device_follows_checked_device(tmp_path: Path) -> None:

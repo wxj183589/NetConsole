@@ -47,7 +47,7 @@ SWITCH_HISTORY_ROW_RE = re.compile(
     re.IGNORECASE,
 )
 MESH_PEER_TABLE_RE = re.compile(
-    r"^\s*(?P<peer_name>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
+    r"^\s*(?P<peer_name>\S+)\s+"
     r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<rssi>-?\d{1,3})\s+"
     r"(?P<bssid>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"

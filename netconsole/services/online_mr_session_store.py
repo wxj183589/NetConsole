@@ -12,6 +12,7 @@ from netconsole.models.online_mr_models import (
     TASK_AP_RADIO_STATISTICS,
     TASK_CHANNEL_BUSY,
     TASK_FPING,
+    TASK_CONFIG_COLLECT,
     TASK_INTERFACE_RATE,
     TASK_MESH_LINK,
     TASK_SWITCH_HISTORY,
@@ -24,6 +25,7 @@ from netconsole.services.online_mr_parser import parse_interface_rate_text
 
 RAW_FILES = {
     "init": "init_raw.log",
+    TASK_CONFIG_COLLECT: "config_collect_raw.log",
     TASK_TERMINAL_MONITOR: "terminal_monitor_raw.log",
     TASK_MESH_LINK: "mesh_link_raw.log",
     TASK_CHANNEL_BUSY: "channel_busy_raw.log",
@@ -39,12 +41,20 @@ class OnlineMrSessionStore:
     def __init__(self, paths: PathResolver) -> None:
         self.paths = paths
 
-    def create_session(self, config: OnlineMrConnectionConfig, now: datetime | None = None) -> "OnlineMrSession":
+    def create_session(
+        self,
+        config: OnlineMrConnectionConfig,
+        now: datetime | None = None,
+        *,
+        session_type: str = "realtime",
+        config_collect_enabled: bool | None = None,
+    ) -> "OnlineMrSession":
         started = now or datetime.now()
         session_id = f"{started:%Y%m%d_%H%M%S}_{id(config) & 0xFFFFFF:06x}"
         session_dir = self.paths.online_mr_session_dir(config.site, config.safe_mr_name, session_id)
-        for relative in ("raw", "parsed", "view", "summary", "logs", "exports"):
+        for relative in ("raw", "parsed", "view", "summary", "logs", "exports", "config"):
             (session_dir / relative).mkdir(parents=True, exist_ok=True)
+        enabled = bool(config.collect_config_on_start) if config_collect_enabled is None else bool(config_collect_enabled)
         meta = OnlineMrSessionMeta(
             session_id=session_id,
             site=config.site,
@@ -63,6 +73,10 @@ class OnlineMrSessionStore:
             iperf=config.iperf.as_dict(),
             stats={},
             session_dir=session_dir,
+            session_type=session_type,
+            config_collect_enabled=enabled,
+            config_collect_status="skipped" if not enabled else "pending",
+            raw_log_path=str(session_dir / "terminal_monitor_raw.txt"),
         )
         session = OnlineMrSession(session_dir, meta)
         session.initialize_database()
@@ -282,6 +296,8 @@ class OnlineMrSession:
             path = self.session_dir / "raw" / raw_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(exist_ok=True)
+        (self.session_dir / "terminal_monitor_raw.txt").touch(exist_ok=True)
+        (self.session_dir / "config").mkdir(parents=True, exist_ok=True)
 
     def update_status(self, status: str) -> None:
         self.meta.status = status
@@ -300,6 +316,29 @@ class OnlineMrSession:
         text = str(message or "").strip() or "未采集到 fping 数据"
         path.write_text(f"{text}\n", encoding="utf-8")
         return path
+
+    def write_current_configuration(self, raw_text: str) -> Path:
+        path = self.session_dir / "config" / "current_configuration.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(raw_text.rstrip() + "\n", encoding="utf-8", errors="replace")
+        return path
+
+    def update_config_collect(
+        self,
+        *,
+        enabled: bool | None = None,
+        status: str | None = None,
+        file_path: Path | str | None = None,
+        error: str | None = None,
+    ) -> None:
+        if enabled is not None:
+            self.meta.config_collect_enabled = bool(enabled)
+        if status is not None:
+            self.meta.config_collect_status = status
+        if file_path is not None:
+            self.meta.config_file_path = str(file_path)
+        self.meta.config_error = error
+        self.write_meta()
 
     def write_meta(self) -> None:
         path = self.session_dir / "session_meta.json"
@@ -323,7 +362,17 @@ class OnlineMrSession:
         with path.open("a", encoding="utf-8") as file:
             file.write(payload)
             file.flush()
+        self.append_terminal_monitor_raw(payload)
         return f"raw/{raw_name}", offset_start, offset_start + len(payload.encode("utf-8"))
+
+    def append_terminal_monitor_raw(self, text: str, collected_at: datetime | None = None) -> Path:
+        path = self.session_dir / "terminal_monitor_raw.txt"
+        stamp = (collected_at or datetime.now()).isoformat(sep=" ", timespec="milliseconds")
+        payload = text if text.endswith("\n") else f"{text}\n"
+        with path.open("a", encoding="utf-8", errors="replace") as file:
+            file.write(f"{stamp} {payload}")
+            file.flush()
+        return path
 
     def append_sample(
         self,

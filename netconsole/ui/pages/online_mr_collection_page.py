@@ -5,11 +5,14 @@ import json
 import os
 import subprocess
 import time
+import weakref
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QDoubleValidator
+from PySide6.QtGui import QDoubleValidator, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -43,7 +46,19 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
-from netconsole.models.online_mr_models import FpingConfig, IperfTrafficConfig, OnlineMrConnectionConfig, OnlineMrIntervals, OnlineMrRadioConfig, OnlineMrSnapshot
+from netconsole.models.online_mr_models import (
+    STATE_COLLECTING,
+    STATE_CONNECTING,
+    STATE_INITIALIZING,
+    STATE_RECONNECTING,
+    STATE_STOPPING,
+    FpingConfig,
+    IperfTrafficConfig,
+    OnlineMrConnectionConfig,
+    OnlineMrIntervals,
+    OnlineMrRadioConfig,
+    OnlineMrSnapshot,
+)
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -64,6 +79,8 @@ from netconsole.services.online_mr.core.event_model import (
     OnlineMrEvent,
 )
 from netconsole.services.online_mr.core.realtime_model import PingConfig, RealtimeMRState, build_realtime_state
+from netconsole.services.online_mr.core.realtime_cache import OnlineMrRealtimeCache
+from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.db.event_writer import EventWriter
 from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngine
 from netconsole.services.online_mr.event_bus import OnlineMrEventBus
@@ -88,6 +105,7 @@ TABLE_WIDTH_KEYS = {
     "iperf": "online_mr/table_widths/iperf",
     "history_sessions": "online_mr/table_widths/history_sessions",
 }
+SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
 
 STATUS_I18N_KEYS = {
     "CREATED": "online_mr.status_created",
@@ -100,6 +118,7 @@ STATUS_I18N_KEYS = {
     "FAILED": "online_mr.status_failed",
     "ABORTED": "online_mr.status_aborted",
 }
+ACTIVE_UI_STATES = {STATE_CONNECTING, STATE_INITIALIZING, STATE_COLLECTING, STATE_RECONNECTING, STATE_STOPPING}
 
 SUMMARY_COL_DEVICE_NAME = 0
 SUMMARY_COL_HOST = 1
@@ -117,6 +136,51 @@ SUMMARY_COL_IPERF_MBPS = 12
 SUMMARY_COL_IPERF_RETRANS = 13
 SUMMARY_COL_SESSION = 14
 SUMMARY_COL_DEVICE_ID = 15
+
+
+@dataclass
+class OnlineMrRuntimeSiteState:
+    workers: dict[str, OnlineMrCollectorWorker] = field(default_factory=dict)
+    fping_workers: dict[str, FpingV5ProbeWorker] = field(default_factory=dict)
+    iperf_workers: dict[str, IperfProcessWorker] = field(default_factory=dict)
+    session_dirs: dict[str, Path] = field(default_factory=dict)
+    session_to_device_id: dict[str, int] = field(default_factory=dict)
+    workers_by_device_id: dict[int, OnlineMrCollectorWorker] = field(default_factory=dict)
+    fping_workers_by_device_id: dict[int, FpingV5ProbeWorker] = field(default_factory=dict)
+    iperf_workers_by_device_id: dict[int, IperfProcessWorker] = field(default_factory=dict)
+    output_buffers_by_device_id: dict[int, deque[str]] = field(default_factory=dict)
+    output_hidden: bool = False
+
+
+class OnlineMrSharedRuntime:
+    def __init__(self) -> None:
+        self.manager = OnlineMrCollectionManager(max_concurrent=2)
+        self.realtime_cache = OnlineMrRealtimeCache()
+        self.sites: dict[str, OnlineMrRuntimeSiteState] = {}
+        self.observers: dict[str, weakref.WeakSet[OnlineMrCollectionPage]] = {}
+
+    def site(self, site_name: str) -> OnlineMrRuntimeSiteState:
+        return self.sites.setdefault(site_name, OnlineMrRuntimeSiteState())
+
+    def observe(self, site_name: str, page: OnlineMrCollectionPage) -> None:
+        self.observers.setdefault(site_name, weakref.WeakSet()).add(page)
+
+    def unobserve(self, site_name: str, page: OnlineMrCollectionPage) -> None:
+        observers = self.observers.get(site_name)
+        if observers is not None:
+            observers.discard(page)
+
+
+_ONLINE_MR_RUNTIMES: dict[str, OnlineMrSharedRuntime] = {}
+
+
+def _online_mr_runtime(paths: PathResolver) -> OnlineMrSharedRuntime:
+    runtime_key = str(Path(paths.data_root).resolve())
+    runtime = _ONLINE_MR_RUNTIMES.get(runtime_key)
+    if runtime is None:
+        runtime = OnlineMrSharedRuntime()
+        _ONLINE_MR_RUNTIMES[runtime_key] = runtime
+    return runtime
 
 
 class OnlineMrUiThrottle:
@@ -184,13 +248,18 @@ class OnlineMrCollectionPage(QWidget):
         self.analysis_only = analysis_only
         self.settings = SettingsStore(paths)
         self.store = OnlineMrSessionStore(paths)
-        self.manager = OnlineMrCollectionManager(max_concurrent=2)
+        self.runtime = _online_mr_runtime(paths)
+        self.manager = self.runtime.manager
+        self.realtime_cache = self.runtime.realtime_cache
+        self._runtime_site_state: OnlineMrRuntimeSiteState | None = None
+        self._attached_worker_sessions: set[str] = set()
         self.devices: list[Device] = []
         self.filtered_devices: list[Device] = []
         self.available_devices: list[Device] = []
         self.device_groups: dict[int, str] = {}
         self.selected_device_ids: set[int] = set()
         self.workers: dict[str, OnlineMrCollectorWorker] = {}
+        self.config_workers: dict[str, OnlineMrCollectorWorker] = {}
         self.fping_workers: dict[str, FpingV5ProbeWorker] = {}
         self.iperf_workers: dict[str, IperfProcessWorker] = {}
         self.session_dirs: dict[str, Path] = {}
@@ -203,6 +272,7 @@ class OnlineMrCollectionPage(QWidget):
         self.realtime_buffers: dict[str, SlidingWindowBuffer] = {}
         self.diagnosis_engines: dict[str, OnlineMrDiagnosisEngine] = {}
         self.event_parsers: dict[str, EventParserEngine] = {}
+        self.realtime_stream_parsers: dict[str, OnlineMrRealtimeParser] = {}
         self._stream_interface_direction: dict[str, str] = {}
         self._last_active_peer_by_device_id: dict[int, str] = {}
         self._stream_sample_count_by_device_id: dict[int, int] = {}
@@ -225,6 +295,14 @@ class OnlineMrCollectionPage(QWidget):
         self._view_device_user_selected = False
         self._fping_target_user_edited: dict[int, bool] = {1: False, 2: False}
         self._updating_fping_targets = False
+        self.output_widgets_by_device_id: dict[int, QTextEdit] = {}
+        self.output_titles_by_device_id: dict[int, QLabel] = {}
+        self.output_buffers_by_device_id: dict[int, deque[str]] = {}
+        self.output_dirty_devices: set[int] = set()
+        self.output_render_enabled = True
+        self._stopping_task_count = 0
+        self._stop_animation_step = 0
+        self._bind_runtime_site(site_name)
 
         self.site_label = QLabel()
         self.available_device_count_label = QLabel()
@@ -242,6 +320,7 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button = QPushButton()
         self.stop_selected_button = QPushButton()
         self.stop_all_button = QPushButton()
+        self.collect_config_button = QPushButton()
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
         self.parse_session_button = QPushButton()
@@ -256,6 +335,8 @@ class OnlineMrCollectionPage(QWidget):
         self.statistics_radio = self.radio_port
         self.auto_reconnect_check = QCheckBox()
         self.auto_reconnect_check.setChecked(True)
+        self.collect_config_on_start_check = QCheckBox()
+        self.collect_config_on_start_check.setChecked(True)
         self.reconnect_interval = self._interval_spin(1, 3600, 5)
         self.max_reconnect = self._interval_spin(0, 9999, 0)
         self.duration_minutes = self._interval_spin(0, 10080, 0)
@@ -329,6 +410,9 @@ class OnlineMrCollectionPage(QWidget):
         switch_history_layout.addWidget(self.switch_history_text)
         self.raw_text = QTextEdit()
         self.raw_text.setReadOnly(True)
+        self.output_panel = QWidget()
+        self.output_toggle = QCheckBox()
+        self.output_splitter = QSplitter(Qt.Horizontal)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.tabs = QTabWidget()
@@ -339,6 +423,15 @@ class OnlineMrCollectionPage(QWidget):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(self.throttle.interval_ms)
         self.refresh_timer.timeout.connect(self._flush_snapshot)
+        self.output_render_timer = QTimer(self)
+        self.output_render_timer.setInterval(500)
+        self.output_render_timer.timeout.connect(self._flush_output_buffers)
+        self.reconcile_timer = QTimer(self)
+        self.reconcile_timer.setInterval(3000)
+        self.reconcile_timer.timeout.connect(self._reconcile_collection_state)
+        self.stop_animation_timer = QTimer(self)
+        self.stop_animation_timer.setInterval(400)
+        self.stop_animation_timer.timeout.connect(self._tick_stop_animation)
         self.connection_box: QGroupBox | None = None
         self.period_box: QGroupBox | None = None
         self.radio_box: QGroupBox | None = None
@@ -355,16 +448,149 @@ class OnlineMrCollectionPage(QWidget):
         self._connect_signals()
         self._refresh_top_metrics()
         self.refresh_timer.start()
+        self.output_render_timer.start()
+        self.reconcile_timer.start()
+        if not self.analysis_only:
+            self.attach_to_running_collections()
+
+    def _bind_runtime_site(self, site_name: str) -> None:
+        self.runtime.unobserve(getattr(self, "site_name", site_name), self)
+        state = self.runtime.site(site_name)
+        self._runtime_site_state = state
+        self.workers = state.workers
+        self.fping_workers = state.fping_workers
+        self.iperf_workers = state.iperf_workers
+        self.session_dirs = state.session_dirs
+        self.session_to_device_id = state.session_to_device_id
+        self.workers_by_device_id = state.workers_by_device_id
+        self.fping_workers_by_device_id = state.fping_workers_by_device_id
+        self.iperf_workers_by_device_id = state.iperf_workers_by_device_id
+        self.output_buffers_by_device_id = state.output_buffers_by_device_id
+        self.output_render_enabled = not state.output_hidden
+        self.runtime.observe(site_name, self)
+
+    def attach_to_running_collections(self) -> None:
+        if self.analysis_only:
+            return
+        self._bind_runtime_site(self.site_name)
+        self._apply_output_hidden(self._runtime_site_state.output_hidden if self._runtime_site_state else False)
+        restored = 0
+        for session_id, worker in list(self.workers.items()):
+            if not self._worker_belongs_to_current_site(worker):
+                app_logger.log_info("ONLINE_MR_CROSS_SITE_STATE_FILTERED", f"site={self.site_name} session_id={session_id}")
+                continue
+            self._connect_runtime_worker(session_id, worker)
+            device_id = self.session_to_device_id.get(session_id)
+            if device_id is not None:
+                self._ensure_output_widget(device_id, session_id)
+                self.output_dirty_devices.add(device_id)
+            session_dir = self.session_dirs.get(session_id)
+            if session_dir is not None:
+                self._ensure_event_pipeline(session_id, session_dir)
+            snapshot = self._snapshot_from_worker(worker)
+            if snapshot is not None:
+                self.throttle.enqueue(snapshot)
+                self._upsert_summary(snapshot)
+            restored += 1
+        if self.output_render_enabled:
+            self._flush_output_buffers()
+        self._reconcile_collection_state()
+        app_logger.log_info("ONLINE_MR_UI_ATTACH_RUNTIME", f"site={self.site_name} restored_workers={restored}")
+        app_logger.log_info("ONLINE_MR_DETACHED_WINDOW_ATTACHED", f"site={self.site_name} restored_workers={restored}")
+
+    def _detach_from_runtime_site(self) -> None:
+        self.runtime.unobserve(self.site_name, self)
+        self._attached_worker_sessions.clear()
+        app_logger.log_info("ONLINE_MR_UI_DETACH_RUNTIME", f"site={self.site_name}")
+
+    def _clear_runtime_view(self) -> None:
+        self.selected_device_ids.clear()
+        self.summary_table.setRowCount(0)
+        self.mesh_table.setRowCount(0)
+        self.channel_table.setRowCount(0)
+        self.events_table.setRowCount(0)
+        self.statistics_text.clear()
+        self.switch_history_table.setRowCount(0)
+        self.switch_history_text.clear()
+        self.interface_rate_table.setRowCount(0)
+        self.iperf_table.setRowCount(0)
+        self.diagnosis_table.setRowCount(0)
+        self.log_text.clear()
+        self.output_widgets_by_device_id.clear()
+        self.output_titles_by_device_id.clear()
+        self.output_dirty_devices.clear()
+        while self.output_splitter.count():
+            widget = self.output_splitter.widget(0)
+            widget.setParent(None)
+            widget.deleteLater()
+        placeholder = QTextEdit()
+        placeholder.setReadOnly(True)
+        placeholder.setLineWrapMode(QTextEdit.NoWrap)
+        placeholder.setPlainText(self.i18n.t("online_mr.waiting_realtime_output"))
+        self.raw_text = placeholder
+        self.output_splitter.addWidget(placeholder)
+        self.event_buses.clear()
+        self.realtime_buffers.clear()
+        self.diagnosis_engines.clear()
+        self.event_parsers.clear()
+        self.realtime_stream_parsers.clear()
+        self._stream_interface_direction.clear()
+        self._last_active_peer_by_device_id.clear()
+        self._stream_sample_count_by_device_id.clear()
+        self.realtime_states_by_device_id.clear()
+        self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
+        app_logger.log_info("ONLINE_MR_CROSS_SITE_STATE_FILTERED", f"site={self.site_name} source=site_switch")
+
+    def _connect_runtime_worker(self, session_id: str, worker: OnlineMrCollectorWorker) -> None:
+        if session_id in self._attached_worker_sessions:
+            return
+        worker.snapshot.connect(self.throttle.enqueue)
+        worker.raw_stream_event.connect(self._handle_raw_stream_event)
+        worker.completed.connect(self._worker_completed)
+        worker.failed.connect(lambda message, device_id=self.session_to_device_id.get(session_id): self._worker_failed(message, device_id))
+        self._attached_worker_sessions.add(session_id)
+
+    def _worker_belongs_to_current_site(self, worker: OnlineMrCollectorWorker) -> bool:
+        config = getattr(getattr(worker, "collector", None), "config", None)
+        return str(getattr(config, "site", self.site_name) or self.site_name) == self.site_name
+
+    def _snapshot_from_worker(self, worker: OnlineMrCollectorWorker) -> OnlineMrSnapshot | None:
+        collector = getattr(worker, "collector", None)
+        snapshot_fn = getattr(collector, "snapshot", None)
+        if not callable(snapshot_fn):
+            return None
+        try:
+            return snapshot_fn()
+        except Exception as exc:
+            app_logger.log_warning("ONLINE_MR_RUNTIME_SNAPSHOT_FAILED", f"site={self.site_name} error={exc}")
+            return None
+
+    def _site_running_count(self) -> int:
+        return len({id(worker) for worker in list(self.workers.values()) + list(self.workers_by_device_id.values())})
+
+    def closeEvent(self, event) -> None:
+        self._detach_from_runtime_site()
+        super().closeEvent(event)
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
         self.set_site(site_name)
 
     def set_site(self, site_name: str) -> None:
+        if site_name == self.site_name:
+            self.attach_to_running_collections()
+            self._schedule_device_refresh(refresh_tools=False)
+            return
+        old_site = self.site_name
+        self._detach_from_runtime_site()
         self.site_name = site_name
+        self._bind_runtime_site(site_name)
         self._first_show_refreshed = False
+        self._clear_runtime_view()
         self._clear_peer_identity_cache()
         self._schedule_device_refresh(refresh_tools=False)
+        self.attach_to_running_collections()
+        app_logger.log_info("ONLINE_MR_SITE_CONTEXT_SWITCHED", f"old_site={old_site} new_site={site_name}")
 
     def first_show_refresh(self) -> None:
         if self.site_name not in self._stale_sessions_checked_sites:
@@ -399,6 +625,7 @@ class OnlineMrCollectionPage(QWidget):
         else:
             self._fill_history()
             self._refresh_tool_status_once(force=refresh_tools)
+        self.attach_to_running_collections()
         self._update_action_state()
 
     def _clear_peer_identity_cache(self) -> None:
@@ -438,11 +665,13 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setText(self.i18n.t("online_mr.start"))
         self.stop_selected_button.setText(self.i18n.t("online_mr.stop_selected"))
         self.stop_all_button.setText(self.i18n.t("online_mr.stop_all"))
+        self.collect_config_button.setText(self.i18n.t("online_mr.collect_config_once"))
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_collection_data"))
         self.device_search_input.setPlaceholderText(self.i18n.t("online_mr.device_search_placeholder"))
         self.auto_reconnect_check.setText(self.i18n.t("online_mr.auto_reconnect"))
+        self.collect_config_on_start_check.setText(self.i18n.t("online_mr.collect_config_on_start"))
         self.enable_fping_check.setText(self.i18n.t("online_mr.high_freq_ping"))
         self.enable_iperf_check.setText(self.i18n.t("online_mr.enable_traffic_test"))
         self.iperf_follow_check.setText(self.i18n.t("iperf.follow_collection"))
@@ -494,7 +723,7 @@ class OnlineMrCollectionPage(QWidget):
                 "IPERF Mbps",
                 self.i18n.t("iperf.retransmits"),
                 self.i18n.t("online_mr.session"),
-                self.i18n.t("online_mr.device_id"),
+                "ID",
             ]
         )
         self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.state"), "PeerName", "PeerMac", "MR RSSI", "BSSID", "Interface", "归属站点", "Online time"])
@@ -545,6 +774,8 @@ class OnlineMrCollectionPage(QWidget):
         for index, label in enumerate(labels):
             if index < self.tabs.count():
                 self.tabs.setTabText(index, label)
+        self.output_toggle.setText(self.i18n.t("online_mr.hide_output"))
+        self._retranslate_output_titles()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -580,6 +811,7 @@ class OnlineMrCollectionPage(QWidget):
         top_layout.addWidget(self.start_button)
         top_layout.addWidget(self.stop_selected_button)
         top_layout.addWidget(self.stop_all_button)
+        top_layout.addWidget(self.collect_config_button)
         top_layout.addWidget(self.open_button)
         top_layout.addWidget(self.refresh_devices_button)
         top_layout.addStretch(1)
@@ -663,8 +895,7 @@ class OnlineMrCollectionPage(QWidget):
 
         vertical_splitter = QSplitter(Qt.Vertical)
         self.vertical_splitter = vertical_splitter
-        self.summary_table.setMinimumHeight(150)
-        self.summary_table.setMaximumHeight(190)
+        self.summary_table.setMinimumHeight(120)
         if not self.analysis_only:
             vertical_splitter.addWidget(main_work_panel)
             vertical_splitter.addWidget(self.summary_table)
@@ -695,12 +926,13 @@ class OnlineMrCollectionPage(QWidget):
             self.tabs.addTab(self.raw_text, "")
             self.tabs.addTab(self.log_text, "")
         else:
-            self.tabs.addTab(self.raw_text, "")
+            self._build_output_panel()
+            self.tabs.addTab(self.output_panel, "")
             self.tabs.addTab(self.log_text, "")
             self.tabs.addTab(self.iperf_table, "")
         self.tabs.setMinimumHeight(180)
         detail = QWidget()
-        detail.setMinimumHeight(210)
+        detail.setMinimumHeight(120)
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(4)
@@ -712,10 +944,12 @@ class OnlineMrCollectionPage(QWidget):
             vertical_splitter.setStretchFactor(0, 1)
             vertical_splitter.setSizes([720])
         else:
-            vertical_splitter.setStretchFactor(0, 6)
-            vertical_splitter.setStretchFactor(1, 1)
-            vertical_splitter.setStretchFactor(2, 2)
-            vertical_splitter.setSizes([620, 150, 180])
+            vertical_splitter.setStretchFactor(0, 45)
+            vertical_splitter.setStretchFactor(1, 17)
+            vertical_splitter.setStretchFactor(2, 20)
+            vertical_splitter.setSizes([520, 200, 230])
+            self._restore_vertical_splitter_sizes()
+            vertical_splitter.splitterMoved.connect(self._save_vertical_splitter_sizes)
         content_layout.addWidget(vertical_splitter, 1)
         self.retranslate()
         self._load_all_table_widths()
@@ -728,9 +962,11 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.clicked.connect(self.start_collection)
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
+        self.collect_config_button.clicked.connect(self.collect_config_once)
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
+        self.output_toggle.toggled.connect(self._output_render_toggled)
         self.fping_device_combo_1.currentIndexChanged.connect(lambda _index: self._fping_device_changed(1))
         self.fping_device_combo_2.currentIndexChanged.connect(lambda _index: self._fping_device_changed(2))
         self.fping_target_label_1.textEdited.connect(lambda _text: self._fping_target_edited(1))
@@ -749,6 +985,158 @@ class OnlineMrCollectionPage(QWidget):
             self.analysis_chart_pages[key] = page
             self.analysis_chart_placeholders[key] = placeholder
             self.analysis_charts.addTab(page, title)
+
+    def _build_output_panel(self) -> None:
+        layout = QVBoxLayout(self.output_panel)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        self.output_toggle.setChecked(False)
+        toolbar.addWidget(self.output_toggle)
+        toolbar.addStretch(1)
+        layout.addLayout(toolbar)
+        self.output_splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.output_splitter, 1)
+        self._ensure_placeholder_output()
+
+    def _ensure_placeholder_output(self) -> None:
+        if self.output_widgets_by_device_id:
+            return
+        placeholder = QTextEdit()
+        placeholder.setReadOnly(True)
+        placeholder.setPlainText(self.i18n.t("online_mr.waiting_realtime_output"))
+        self.raw_text = placeholder
+        self.output_splitter.addWidget(placeholder)
+
+    def _ensure_output_widget(self, device_id: int | None, session_id: str = "") -> QTextEdit:
+        if device_id is None:
+            device_id = -1
+        if device_id in self.output_widgets_by_device_id:
+            return self.output_widgets_by_device_id[device_id]
+        if len(self.output_widgets_by_device_id) == 0 and self.output_splitter.count() == 1:
+            placeholder = self.output_splitter.widget(0)
+            placeholder.setParent(None)
+            placeholder.deleteLater()
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(2, 2, 2, 2)
+        panel_layout.setSpacing(4)
+        title = QLabel(self._output_title_for_device(device_id, session_id))
+        title.setMinimumHeight(24)
+        title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QTextEdit.NoWrap)
+        panel_layout.addWidget(title)
+        panel_layout.addWidget(editor, 1)
+        self.output_titles_by_device_id[device_id] = title
+        self.output_widgets_by_device_id[device_id] = editor
+        self.output_buffers_by_device_id.setdefault(device_id, deque(maxlen=2000))
+        self.output_splitter.addWidget(panel)
+        self.raw_text = editor
+        self._retranslate_output_titles()
+        return editor
+
+    def _output_title_for_device(self, device_id: int, session_id: str = "") -> str:
+        worker = self.workers_by_device_id.get(device_id)
+        if worker is not None:
+            config = worker.collector.config
+            return f"{config.device_name} / {config.host}"
+        device = next((item for item in self.available_devices + self.filtered_devices if item.id == device_id), None)
+        if device is not None:
+            return f"{device.name} / {device.primary_address or '-'}"
+        if session_id:
+            return f"{self.i18n.t('online_mr.unknown_or_deleted_device', device_id=device_id)} / {session_id}"
+        return self.i18n.t("online_mr.waiting_realtime_output")
+
+    def _retranslate_output_titles(self) -> None:
+        for device_id, title in self.output_titles_by_device_id.items():
+            title.setText(self._output_title_for_device(device_id, self._session_id_for_device(device_id)))
+
+    def _output_render_toggled(self, checked: bool) -> None:
+        hidden = checked
+        if self._runtime_site_state is not None:
+            self._runtime_site_state.output_hidden = hidden
+        for page in list(self.runtime.observers.get(self.site_name, ())):
+            page._apply_output_hidden(hidden)
+        app_logger.log_info("ONLINE_MR_UI_OUTPUT_STATE_SYNCED", f"site={self.site_name} hidden={hidden}")
+
+    def _apply_output_hidden(self, hidden: bool) -> None:
+        self.output_render_enabled = not hidden
+        if self.output_toggle.isChecked() != hidden:
+            self.output_toggle.blockSignals(True)
+            self.output_toggle.setChecked(hidden)
+            self.output_toggle.blockSignals(False)
+        self.output_toggle.setText(self.i18n.t("online_mr.hide_output"))
+        self._set_output_area_collapsed(hidden)
+        if not hidden:
+            self.output_dirty_devices.update(self.output_buffers_by_device_id)
+            self._flush_output_buffers()
+        else:
+            app_logger.log_info(
+                "ONLINE_MR_OUTPUT_RENDER_DISABLED",
+                f"output_render_enabled=False workers_count={len(self.workers)} manager_running_count={self.manager.running_count()}",
+            )
+
+    def _set_output_area_collapsed(self, collapsed: bool) -> None:
+        self.output_splitter.setVisible(not collapsed)
+        self.output_panel.setMaximumHeight(54 if collapsed else 16777215)
+        if not self.analysis_only and hasattr(self, "vertical_splitter"):
+            if collapsed:
+                self.vertical_splitter.setSizes([560, 260, 56])
+            else:
+                self._restore_vertical_splitter_sizes()
+
+    def _focus_output_device(self, device_id: int | None) -> None:
+        if self.analysis_only or device_id is None:
+            return
+        editor = self.output_widgets_by_device_id.get(int(device_id))
+        if editor is None:
+            return
+        self.tabs.setCurrentWidget(self.output_panel)
+        editor.setFocus()
+
+    def _restore_vertical_splitter_sizes(self) -> None:
+        if self.analysis_only or not hasattr(self, "vertical_splitter"):
+            return
+        sizes = self.settings.get_value(SPLITTER_SIZES_KEY, [520, 200, 230])
+        if not isinstance(sizes, list) or len(sizes) != 3:
+            sizes = [520, 200, 230]
+        try:
+            self.vertical_splitter.setSizes([max(40, int(size)) for size in sizes])
+        except (TypeError, ValueError):
+            self.vertical_splitter.setSizes([520, 200, 230])
+
+    def _save_vertical_splitter_sizes(self, _pos: int | None = None, _index: int | None = None) -> None:
+        if self.analysis_only or not hasattr(self, "vertical_splitter"):
+            return
+        sizes = self.vertical_splitter.sizes()
+        self.settings.set_value(SPLITTER_SIZES_KEY, sizes)
+        app_logger.log_info("ONLINE_MR_LAYOUT_SPLITTER_CHANGED", f"sizes={sizes}")
+
+    def _start_stop_animation(self, task_count: int) -> None:
+        self._stopping_task_count = max(1, int(task_count))
+        self._stop_animation_step = 0
+        self.stop_animation_timer.start()
+        self._tick_stop_animation()
+        app_logger.log_info(
+            "ONLINE_MR_STOP_ANIMATION_STARTED",
+            f"tasks={self._stopping_task_count} workers_count={len(self.workers)} manager_running_count={self.manager.running_count()}",
+        )
+
+    def _stop_stop_animation(self) -> None:
+        self._stopping_task_count = 0
+        self.stop_animation_timer.stop()
+
+    def _tick_stop_animation(self) -> None:
+        if self._stopping_task_count <= 0:
+            self.stop_animation_timer.stop()
+            return
+        dots = "." * ((self._stop_animation_step % 3) + 1)
+        self._stop_animation_step += 1
+        text = self.i18n.t("online_mr.stopping_count", count=self._stopping_task_count)
+        self.status_label.setText(f"{text}{dots}")
 
     @staticmethod
     def _analysis_chart_titles() -> tuple[tuple[str, str], ...]:
@@ -803,7 +1191,7 @@ class OnlineMrCollectionPage(QWidget):
                 skipped.append(device.name)
                 self._update_device_status(device.id, self.i18n.t("online_mr.connection_incomplete"))
                 continue
-            worker = OnlineMrCollectorWorker(config, self.store, parent=self)
+            worker = OnlineMrCollectorWorker(config, self.store, realtime_cache=self.realtime_cache, parent=self)
             if device.id is not None:
                 self.workers_by_device_id[int(device.id)] = worker
                 self.manager.register_device(int(device.id), worker)
@@ -823,6 +1211,39 @@ class OnlineMrCollectionPage(QWidget):
             self._set_status("CONNECTING")
         self._update_action_state()
 
+    def collect_config_once(self) -> None:
+        selected = self._selected_devices()
+        if len(selected) != 1:
+            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.select_mr_device"))
+            return
+        device = selected[0]
+        if device.id is not None and device.id in self.workers_by_device_id:
+            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.collect_config_with_session"))
+            return
+        try:
+            config = self._build_config_for_device(device)
+        except ValueError as exc:
+            QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), str(exc))
+            return
+        if config is None:
+            self._update_device_status(device.id, self.i18n.t("online_mr.connection_incomplete"))
+            return
+        worker_key = f"config:{device.id}:{time.time_ns()}"
+        worker = OnlineMrCollectorWorker(
+            config,
+            self.store,
+            realtime_cache=self.realtime_cache,
+            config_only=True,
+            parent=self,
+        )
+        self.config_workers[worker_key] = worker
+        self._update_device_status(device.id, self.i18n.t("online_mr.collecting_config"))
+        worker.started_session.connect(lambda meta, w=worker: self._config_worker_started(meta, w))
+        worker.completed.connect(lambda session_id, key=worker_key: self._config_worker_completed(session_id, key))
+        worker.failed.connect(lambda message, key=worker_key, device_id=device.id: self._config_worker_failed(message, key, device_id))
+        worker.start()
+        self._update_action_state()
+
     def stop_selected(self) -> None:
         stopped_any = False
         for device in self._selected_devices():
@@ -837,28 +1258,60 @@ class OnlineMrCollectionPage(QWidget):
                 fping_worker.stop()
             worker = self.workers_by_device_id.get(device.id)
             if worker:
+                app_logger.log_info("ONLINE_MR_STOP_REQUESTED", f"device_id={device.id} session_id={self._session_id_for_device(device.id)}")
                 worker.cancel()
                 self._update_device_status(device.id, self.i18n.t("online_mr.status_stopping"))
                 self._update_summary_status_by_device(device.id, "STOPPING")
                 stopped_any = True
         if stopped_any:
             self._set_status("STOPPING")
+            self._start_stop_animation(1)
+        self._reconcile_collection_state()
         self._update_action_state()
 
     def stop_all(self) -> None:
+        self._request_stop_all_collectors()
+        self._update_action_state()
+
+    def _request_stop_all_collectors(self) -> None:
+        workers: list[OnlineMrCollectorWorker] = []
+        seen_workers: set[int] = set()
+        for worker in list(self.workers_by_device_id.values()) + list(self.workers.values()):
+            marker = id(worker)
+            if marker in seen_workers:
+                continue
+            seen_workers.add(marker)
+            workers.append(worker)
+
+        device_ids: set[int] = set(self.workers_by_device_id)
+        device_ids.update(self.session_to_device_id.values())
+        session_ids: set[str] = set(self.workers)
+        session_ids.update(self.session_to_device_id)
+
         for worker in list(self.iperf_workers_by_device_id.values()):
             worker.stop()
         for worker in list(self.fping_workers_by_device_id.values()):
             worker.stop()
         for device_id in list(self.fping_workers_by_device_id.keys()):
             self._set_ping_status(device_id, "stopping")
-        for device_id, worker in list(self.workers_by_device_id.items()):
+
+        app_logger.log_info(
+            "ONLINE_MR_STOP_ALL_REQUESTED",
+            f"devices={sorted(device_ids)} sessions={sorted(session_ids)} workers_count={len(workers)} manager_running_count={self.manager.running_count()}",
+        )
+        for worker in workers:
+            device_id = getattr(getattr(worker, "collector", None), "config", None)
+            actual_device_id = getattr(device_id, "device_id", None)
+            session_id = next((sid for sid, item in self.workers.items() if item is worker), "")
+            app_logger.log_info("ONLINE_MR_WORKER_CANCEL_SENT", f"device_id={actual_device_id} session_id={session_id}")
             worker.cancel()
+        for device_id in device_ids:
             self._update_device_status(device_id, self.i18n.t("online_mr.status_stopping"))
             self._update_summary_status_by_device(device_id, "STOPPING")
-        if self.workers_by_device_id:
+        if workers or device_ids or session_ids:
             self._set_status("STOPPING")
-        self._update_action_state()
+            self._start_stop_animation(max(len(workers), len(device_ids), 1))
+        self._reconcile_collection_state()
 
     def open_selected_session_dir(self) -> None:
         selected = self._selected_devices()
@@ -1380,9 +1833,12 @@ class OnlineMrCollectionPage(QWidget):
 
     def _worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
         self.manager.register(meta.session_id, worker)
+        self._attached_worker_sessions.add(meta.session_id)
         if meta.device_id is not None:
             self.session_to_device_id[meta.session_id] = int(meta.device_id)
             self.workers_by_device_id[int(meta.device_id)] = worker
+            if not self.analysis_only:
+                self._ensure_output_widget(int(meta.device_id), meta.session_id)
         self.workers[meta.session_id] = worker
         if meta.session_dir:
             self.session_dirs[meta.session_id] = Path(meta.session_dir)
@@ -1397,60 +1853,89 @@ class OnlineMrCollectionPage(QWidget):
         self._fill_view_devices(prefer_device_id=int(meta.device_id) if meta.device_id is not None else None)
         self._fill_history()
 
+    def _config_worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
+        if meta.session_dir:
+            self.session_dirs[meta.session_id] = Path(meta.session_dir)
+            if meta.device_id is not None:
+                self.last_session_dir_by_device_id[int(meta.device_id)] = Path(meta.session_dir)
+                self._update_device_status(int(meta.device_id), self.i18n.t("online_mr.config_collect_success" if meta.config_collect_status == "success" else "online_mr.config_collect_failed"))
+        self.log_text.append(
+            f"{self.i18n.t('online_mr.config_only_session')}: {meta.session_id} "
+            f"{self.i18n.t('online_mr.config_file_path')}: {meta.config_file_path or '-'}"
+        )
+        self._fill_history()
+
+    def _config_worker_completed(self, session_id: str, worker_key: str) -> None:
+        self.config_workers.pop(worker_key, None)
+        self.session_history_changed.emit()
+        self._fill_history()
+        self._update_action_state()
+
+    def _config_worker_failed(self, message: str, worker_key: str, device_id: int | None) -> None:
+        self.config_workers.pop(worker_key, None)
+        if device_id is not None:
+            self._update_device_status(device_id, self.i18n.t("online_mr.config_collect_failed"))
+        self.log_text.append(f"{self.i18n.t('online_mr.config_collect_failed')}: {message}")
+        self._update_action_state()
+
     def _worker_completed(self, session_id: str) -> None:
-        self.manager.unregister(session_id)
-        device_id = self.session_to_device_id.pop(session_id, None)
+        app_logger.log_info("ONLINE_MR_WORKER_FINISHED", f"session_id={session_id}")
+        self._finalize_collection_state(device_id=None, session_id=session_id, final_status="STOPPED", reason="completed")
+
+    def _worker_failed(self, message: str, device_id: int | None = None) -> None:
+        session_id = self._session_id_for_device(device_id) if device_id is not None else None
+        self._finalize_collection_state(device_id=device_id, session_id=session_id, final_status="FAILED", reason=message)
+        QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
+
+    def _finalize_collection_state(
+        self,
+        *,
+        device_id: int | None,
+        session_id: str | None,
+        final_status: str,
+        reason: str | None = None,
+    ) -> None:
+        if session_id and device_id is None:
+            device_id = self.session_to_device_id.get(session_id)
+        if device_id is not None and not session_id:
+            session_id = self._session_id_for_device(device_id)
+        if session_id:
+            self.manager.unregister(session_id)
+            self.workers.pop(session_id, None)
+            self.session_to_device_id.pop(session_id, None)
+            self.session_dirs.pop(session_id, None)
+            self.fping_workers.pop(session_id, None)
+            self.iperf_workers.pop(session_id, None)
+            self.event_buses.pop(session_id, None)
+            self.realtime_buffers.pop(session_id, None)
+            self.diagnosis_engines.pop(session_id, None)
+            self.event_parsers.pop(session_id, None)
+            self.realtime_stream_parsers.pop(session_id, None)
+            self._stream_interface_direction.pop(session_id, None)
+            self.realtime_cache.close_session(session_id)
         if device_id is not None:
             self.manager.unregister_device(device_id)
             self.workers_by_device_id.pop(device_id, None)
-            self.fping_workers_by_device_id.pop(device_id, None)
             self.iperf_workers_by_device_id.pop(device_id, None)
+            self.fping_workers_by_device_id.pop(device_id, None)
             self._last_active_peer_by_device_id.pop(device_id, None)
             self._stream_sample_count_by_device_id.pop(device_id, None)
-            self._update_device_status(device_id, self.i18n.t("online_mr.status_stopped"))
-            self._update_summary_status_by_device(device_id, "STOPPED")
-        self.workers.pop(session_id, None)
-        self.fping_workers.pop(session_id, None)
-        self.iperf_workers.pop(session_id, None)
-        self.event_buses.pop(session_id, None)
-        self.realtime_buffers.pop(session_id, None)
-        self.diagnosis_engines.pop(session_id, None)
-        self.event_parsers.pop(session_id, None)
-        self._stream_interface_direction.pop(session_id, None)
+            self._update_device_status(device_id, self._status_text(final_status))
+            self._update_summary_status_by_device(device_id, final_status)
+        app_logger.log_info(
+            "ONLINE_MR_COLLECTION_FINALIZED",
+            f"device_id={device_id} session_id={session_id} new_status={final_status} reason={reason or ''} workers_count={len(self.workers)} manager_running_count={self.manager.running_count()}",
+        )
+        self._reconcile_collection_state()
         self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
-        self.running_count_label.setText(str(self.manager.running_count()))
+        if not self.workers_by_device_id:
+            self._stop_stop_animation()
+        self.running_count_label.setText(str(self._site_running_count()))
         self._refresh_top_metrics()
         self._fill_view_devices(prefer_device_id=device_id)
         self._fill_history()
         self.session_history_changed.emit()
         self._update_action_state()
-
-    def _worker_failed(self, message: str, device_id: int | None = None) -> None:
-        if device_id is not None:
-            session_id = next((sid for sid, sid_device_id in self.session_to_device_id.items() if sid_device_id == device_id), "")
-            self._update_device_status(device_id, self.i18n.t("online_mr.status_failed"))
-            self._update_summary_status_by_device(device_id, "FAILED")
-            self.workers_by_device_id.pop(device_id, None)
-            self.iperf_workers_by_device_id.pop(device_id, None)
-            self.fping_workers_by_device_id.pop(device_id, None)
-            self._last_active_peer_by_device_id.pop(device_id, None)
-            self._stream_sample_count_by_device_id.pop(device_id, None)
-            self.manager.unregister_device(device_id)
-            if session_id:
-                self.manager.unregister(session_id)
-                self.workers.pop(session_id, None)
-                self.session_to_device_id.pop(session_id, None)
-                self.session_dirs.pop(session_id, None)
-                self.event_buses.pop(session_id, None)
-                self.realtime_buffers.pop(session_id, None)
-                self.diagnosis_engines.pop(session_id, None)
-                self.event_parsers.pop(session_id, None)
-                self._stream_interface_direction.pop(session_id, None)
-        self._set_status("FAILED" if not self.workers_by_device_id else "COLLECTING")
-        self.running_count_label.setText(str(self.manager.running_count()))
-        self._refresh_top_metrics()
-        self._update_action_state()
-        QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
 
     def _start_fping_worker(self, meta, ssh_worker: OnlineMrCollectorWorker) -> None:
         config = ssh_worker.collector.config.fping.normalized()
@@ -1582,14 +2067,13 @@ class OnlineMrCollectionPage(QWidget):
         self._upsert_summary(snapshot)
         self._append_mesh_snapshot(snapshot)
         self._refresh_realtime_view()
-        self._maybe_parse_realtime(snapshot)
 
     def _ensure_event_pipeline(self, session_id: str, session_dir: Path) -> OnlineMrEventBus:
         bus = self.event_buses.get(session_id)
         if bus is not None:
             return bus
         bus = OnlineMrEventBus()
-        buffer = SlidingWindowBuffer(window_seconds=5)
+        buffer = SlidingWindowBuffer(window_seconds=60)
         parser = EventParserEngine()
         diagnosis = OnlineMrDiagnosisEngine()
         writer = EventWriter(session_dir / "parsed" / "online_diagnosis.sqlite")
@@ -1607,13 +2091,16 @@ class OnlineMrCollectionPage(QWidget):
         session_dir = self.session_dirs.get(event.session_id)
         if session_dir is None:
             return
+        raw_started = datetime.now()
+        app_logger.log_info(
+            "ONLINE_MR_REALTIME_RAW_LINE",
+            f"device_id={event.device_id} session_id={event.session_id} module={event.module} raw_line_prefix={str(event.raw or '')[:80]} output_render_enabled={self.output_render_enabled}",
+        )
+        self._append_raw_stream_text(event)
         bus = self._ensure_event_pipeline(event.session_id, session_dir)
-        parser = self.event_parsers.get(event.session_id)
-        if parser is None:
-            parser = EventParserEngine()
-            self.event_parsers[event.session_id] = parser
-        payload = self._parse_raw_stream_payload(parser, event)
-        if payload is None:
+        parser = self.realtime_stream_parsers.setdefault(event.session_id, OnlineMrRealtimeParser())
+        sample = parser.parse_raw_event(event)
+        if sample is None:
             return
         parsed_event = OnlineMrEvent(
             timestamp=event.timestamp,
@@ -1622,14 +2109,57 @@ class OnlineMrCollectionPage(QWidget):
             source=event.source,
             module=event.module,
             event_type=event.event_type,
-            payload=payload,
+            payload=sample.payload,
             raw=event.raw,
         )
         if event.device_id is not None:
             self._stream_sample_count_by_device_id[int(event.device_id)] = self._stream_sample_count_by_device_id.get(int(event.device_id), 0) + 1
+        self.realtime_cache.append_parsed_sample(event.session_id, parsed_event)
+        elapsed_ms = int((datetime.now() - raw_started).total_seconds() * 1000)
+        app_logger.log_info(
+            "ONLINE_MR_REALTIME_MESH_ROW_PARSED" if parsed_event.module == "mesh" else "ONLINE_MR_REALTIME_EVENT_PARSED",
+            f"device_id={event.device_id} session_id={event.session_id} module={parsed_event.module} peer_name={parsed_event.payload.get('peer_name', '')} peer_mac={parsed_event.payload.get('peer_mac', '')} link_state={parsed_event.payload.get('link_state', '')} mr_rssi={parsed_event.payload.get('mr_rssi', '')} elapsed_ms_from_raw_to_ui={elapsed_ms}",
+        )
         self._publish_link_switch_if_needed(bus, parsed_event)
         bus.publish(parsed_event)
         self._refresh_realtime_view()
+
+    def _append_raw_stream_text(self, event: OnlineMrEvent) -> None:
+        text = str(event.raw or "").rstrip()
+        if not text:
+            return
+        device_id = int(event.device_id) if event.device_id is not None else -1
+        line = f"{event.timestamp.isoformat(sep=' ', timespec='milliseconds')} [{event.module}] {text}"
+        self.output_buffers_by_device_id.setdefault(device_id, deque(maxlen=2000)).append(line)
+        self._ensure_output_widget(device_id, event.session_id)
+        if self.output_render_enabled:
+            self.output_dirty_devices.add(device_id)
+
+    def _flush_output_buffers(self) -> None:
+        if not self.output_render_enabled:
+            return
+        dirty = list(self.output_dirty_devices)
+        if not dirty:
+            return
+        self.output_dirty_devices.clear()
+        rendered = 0
+        for device_id in dirty:
+            editor = self.output_widgets_by_device_id.get(device_id)
+            if editor is None:
+                continue
+            lines = list(self.output_buffers_by_device_id.get(device_id, ()))
+            if not lines:
+                continue
+            editor.setPlainText("\n".join(lines[-2000:]))
+            cursor = editor.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            editor.setTextCursor(cursor)
+            rendered += 1
+        if rendered:
+            app_logger.log_info(
+                "ONLINE_MR_OUTPUT_RENDER_THROTTLED",
+                f"rendered_devices={rendered} raw_queue_size={sum(len(buffer) for buffer in self.output_buffers_by_device_id.values())} output_render_enabled={self.output_render_enabled}",
+            )
 
     def _parse_raw_stream_payload(self, parser: EventParserEngine, event: OnlineMrEvent) -> dict[str, object] | None:
         if event.module == "mesh":
@@ -1830,7 +2360,7 @@ class OnlineMrCollectionPage(QWidget):
     def _update_summary_from_state(self, state: RealtimeMRState) -> None:
         row = self._find_row(self.summary_table, str(state.device_id), column=SUMMARY_COL_DEVICE_ID)
         if row < 0:
-            return
+            row = self._insert_summary_row_for_state(state)
         values = {
             SUMMARY_COL_STATUS: self._status_text(state.status),
             SUMMARY_COL_ACTIVE_PEER: state.peer_name or state.peer_mac or "",
@@ -1860,6 +2390,53 @@ class OnlineMrCollectionPage(QWidget):
             }:
                 item.setTextAlignment(Qt.AlignCenter)
             self.summary_table.setItem(row, column, item)
+        app_logger.log_info(
+            "ONLINE_MR_REALTIME_SUMMARY_UPDATED",
+            f"device_id={state.device_id} device_name={state.device_name} new_status={state.status} peer_name={state.peer_name or ''} peer_mac={state.peer_mac or ''} mr_rssi={state.mr_rssi if state.mr_rssi is not None else ''}",
+        )
+
+    def _insert_summary_row_for_state(self, state: RealtimeMRState) -> int:
+        row = self.summary_table.rowCount()
+        self.summary_table.insertRow(row)
+        worker = self.workers_by_device_id.get(state.device_id)
+        config = worker.collector.config if worker is not None else None
+        device = next((item for item in self.filtered_devices if item.id == state.device_id), None)
+        host = config.host if config is not None else str(getattr(device, "primary_address", "") or "")
+        session_id = self._session_id_for_device(state.device_id)
+        values = [
+            state.device_name or (config.device_name if config is not None else getattr(device, "name", "")),
+            host,
+            state.status,
+            "",
+            "",
+            "",
+            "",
+            "",
+            state.sample_count,
+            state.fail_count,
+            state.reconnect_count,
+            "",
+            "",
+            "",
+            session_id,
+            state.device_id,
+        ]
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
+            if column in {
+                SUMMARY_COL_STATUS,
+                SUMMARY_COL_MR_RSSI,
+                SUMMARY_COL_PING_LOSS,
+                SUMMARY_COL_PING_LATENCY,
+                SUMMARY_COL_COLLECTED,
+                SUMMARY_COL_FAILED,
+                SUMMARY_COL_RECONNECTS,
+                SUMMARY_COL_IPERF_MBPS,
+                SUMMARY_COL_IPERF_RETRANS,
+            }:
+                item.setTextAlignment(Qt.AlignCenter)
+            self.summary_table.setItem(row, column, item)
+        return row
 
     def _resolve_peer_cached(self, peer_mac_or_name: str) -> dict[str, object] | None:
         return self._resolve_peer_identity_cached(peer_mac_or_name)
@@ -2044,6 +2621,7 @@ class OnlineMrCollectionPage(QWidget):
             reconnect_interval=self.reconnect_interval.value(),
             max_reconnect=None if self.max_reconnect.value() == 0 else self.max_reconnect.value(),
             duration_minutes=None if self.duration_minutes.value() == 0 else self.duration_minutes.value(),
+            collect_config_on_start=self.collect_config_on_start_check.isChecked(),
         )
 
     def _fill_devices(self) -> None:
@@ -2140,6 +2718,7 @@ class OnlineMrCollectionPage(QWidget):
         device = self.filtered_devices[current_row]
         if device.id is not None:
             self._fill_view_devices(prefer_device_id=int(device.id))
+            self._focus_output_device(int(device.id))
 
     def _view_device_changed(self, _index: int) -> None:
         if not self.view_device_combo.signalsBlocked():
@@ -2147,21 +2726,60 @@ class OnlineMrCollectionPage(QWidget):
 
     def _update_selected_count(self) -> None:
         self.selected_device_count_label.setText(str(len(self.selected_device_ids)))
-        self.running_count_label.setText(str(self.manager.running_count()))
+        self.running_count_label.setText(str(self._site_running_count()))
         self._refresh_top_metrics()
 
     def _update_action_state(self) -> None:
+        if not self.workers and not self.workers_by_device_id:
+            self._prune_orphan_summary_rows()
         selected = self._selected_devices()
         selected_ids = {device.id for device in selected if device.id is not None}
         running_selected = any(device_id in self.workers_by_device_id for device_id in selected_ids)
         can_start = bool(selected) and len(selected) <= 2 and self.manager.running_count() < self.manager.max_concurrent
         self.start_button.setEnabled(can_start)
         self.stop_selected_button.setEnabled(running_selected)
-        self.stop_all_button.setEnabled(bool(self.workers_by_device_id))
+        self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers))
+        self.collect_config_button.setEnabled(len(selected) == 1 and not running_selected)
         self.open_button.setEnabled(True)
-        self.running_count_label.setText(str(self.manager.running_count()))
+        self.running_count_label.setText(str(self._site_running_count()))
         self._refresh_top_metrics()
         self._refresh_collection_animation()
+
+    def _reconcile_collection_state(self) -> None:
+        self._prune_orphan_summary_rows()
+        self._restore_runtime_summary_rows()
+        if not self.workers and not self.workers_by_device_id:
+            self._set_status("STOPPED")
+            self._stop_stop_animation()
+        elif self.status_value != "STOPPING":
+            self._set_status("COLLECTING")
+        self.running_count_label.setText(str(self._site_running_count()))
+        self._refresh_top_metrics()
+        app_logger.log_info(
+            "ONLINE_MR_UI_STATE_RECONCILED",
+            f"site={self.site_name} workers_count={len(self.workers)} manager_running_count={self.manager.running_count()} site_running_count={self._site_running_count()}",
+        )
+
+    def _restore_runtime_summary_rows(self) -> None:
+        for session_id, worker in list(self.workers.items()):
+            if not self._worker_belongs_to_current_site(worker):
+                app_logger.log_info("ONLINE_MR_CROSS_SITE_STATE_FILTERED", f"site={self.site_name} session_id={session_id}")
+                continue
+            device_id = self.session_to_device_id.get(session_id)
+            if device_id is None:
+                continue
+            if self._find_row(self.summary_table, str(device_id), column=SUMMARY_COL_DEVICE_ID) >= 0:
+                continue
+            snapshot = self._snapshot_from_worker(worker)
+            if snapshot is not None:
+                self._upsert_summary(snapshot)
+                continue
+            state = RealtimeMRState(
+                device_id=int(device_id),
+                device_name=self._output_title_for_device(int(device_id), session_id).split(" / ", 1)[0],
+                status=STATE_COLLECTING,
+            )
+            self._insert_summary_row_for_state(state)
 
     def _refresh_top_metrics(self) -> None:
         self.available_metric_label.setText(f"{self.i18n.t('online_mr.available_devices')}: {self.available_device_count_label.text() or '0'}")
@@ -2428,6 +3046,11 @@ class OnlineMrCollectionPage(QWidget):
             return self._status_text("COLLECTING")
         return self.i18n.t("online_mr.status_stopped")
 
+    def _session_id_for_device(self, device_id: int | None) -> str:
+        if device_id is None:
+            return ""
+        return next((sid for sid, sid_device_id in self.session_to_device_id.items() if sid_device_id == device_id), "")
+
     def _update_device_status(self, device_id: int | None, status: str) -> None:
         if device_id is None:
             return
@@ -2493,11 +3116,15 @@ class OnlineMrCollectionPage(QWidget):
             self.history_table.setRowCount(len(rows))
             for row, row_data in enumerate(rows):
                 stats = row_data.get("stats") if isinstance(row_data.get("stats"), dict) else {}
+                session_type = str(row_data.get("session_type") or "realtime")
+                status_text = str(row_data.get("status", ""))
+                if session_type == "config_only":
+                    status_text = f"{status_text} / {self.i18n.t('online_mr.config_only_session')}"
                 values = [
                     row_data.get("session_id", ""),
                     row_data.get("started_at", ""),
                     row_data.get("ended_at", ""),
-                    row_data.get("status", ""),
+                    status_text,
                     f"{stats.get('mesh_link_success', 0)}/{stats.get('mesh_link_failed', 0)}",
                     f"{stats.get('channel_busy_success', 0)}/{stats.get('channel_busy_failed', 0)}",
                     stats.get("reconnect_count", 0),
@@ -2505,7 +3132,10 @@ class OnlineMrCollectionPage(QWidget):
                     row_data.get("session_dir", ""),
                 ]
                 for column, value in enumerate(values):
-                    self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
+                    item = QTableWidgetItem(str(value))
+                    if column == 8 and row_data.get("config_file_path"):
+                        item.setToolTip(f"{self.i18n.t('online_mr.config_file_path')}: {row_data.get('config_file_path')}")
+                    self.history_table.setItem(row, column, item)
         finally:
             self.history_table.setUpdatesEnabled(True)
 
@@ -2578,12 +3208,24 @@ class OnlineMrCollectionPage(QWidget):
         if device_id is None:
             app_logger.log_warning("ONLINE_MR_SNAPSHOT_WITHOUT_DEVICE", f"session_id={snapshot.session_id}")
             return
-        row_key = str(device_id if device_id is not None else snapshot.session_id)
+        try:
+            device_id_int = int(device_id)
+        except (TypeError, ValueError):
+            app_logger.log_warning("ONLINE_MR_SNAPSHOT_WITH_INVALID_DEVICE", f"session_id={snapshot.session_id} device_id={device_id}")
+            return
+        device = next((item for item in self.filtered_devices if item.id == device_id_int), None)
+        worker = self.workers.get(snapshot.session_id) or self.workers_by_device_id.get(device_id_int)
+        if device is None and worker is None and snapshot.status in ACTIVE_UI_STATES:
+            app_logger.log_warning("ONLINE_MR_SNAPSHOT_ORPHAN_SKIPPED", f"session_id={snapshot.session_id} device_id={device_id}")
+            return
+        if snapshot.status in ACTIVE_UI_STATES and worker is None:
+            app_logger.log_warning("ONLINE_MR_ACTIVE_SNAPSHOT_WITHOUT_WORKER", f"session_id={snapshot.session_id} device_id={device_id}")
+            return
+        row_key = str(device_id_int)
         row = self._find_row(self.summary_table, row_key, column=SUMMARY_COL_DEVICE_ID)
         if row < 0:
             row = self.summary_table.rowCount()
             self.summary_table.insertRow(row)
-        worker = self.workers.get(snapshot.session_id) or self.workers_by_device_id.get(int(device_id))
         config = worker.collector.config if worker else None
         host_text = getattr(snapshot, "host", "") or ""
         if config:
@@ -2630,6 +3272,43 @@ class OnlineMrCollectionPage(QWidget):
             }:
                 item.setTextAlignment(Qt.AlignCenter)
             self.summary_table.setItem(row, column, item)
+        app_logger.log_info(
+            "ONLINE_MR_REALTIME_SUMMARY_UPDATED",
+            f"device_id={device_id_int} device_name={getattr(snapshot, 'device_name', '')} new_status={snapshot.status} peer_name={peer_display or ''} peer_mac={snapshot.active_peer or ''} mr_rssi={snapshot.local_rssi if snapshot.local_rssi is not None else ''}",
+        )
+
+    def _prune_orphan_summary_rows(self) -> None:
+        known_device_ids = {int(device.id) for device in self.filtered_devices if device.id is not None}
+        running_device_ids = set(self.workers_by_device_id)
+        for row in range(self.summary_table.rowCount() - 1, -1, -1):
+            status_item = self.summary_table.item(row, SUMMARY_COL_STATUS)
+            device_item = self.summary_table.item(row, SUMMARY_COL_DEVICE_ID)
+            session_item = self.summary_table.item(row, SUMMARY_COL_SESSION)
+            status_code = self._summary_status_code(status_item.text() if status_item else "")
+            if status_code not in ACTIVE_UI_STATES:
+                continue
+            device_id: int | None = None
+            try:
+                device_id = int(device_item.text()) if device_item and device_item.text().strip() else None
+            except ValueError:
+                device_id = None
+            session_id = session_item.text().strip() if session_item else ""
+            has_worker = (device_id is not None and device_id in running_device_ids) or (session_id in self.workers)
+            if has_worker:
+                continue
+            detail = f"device_id={device_id} session_id={session_id} source=summary_table reason=no_running_worker"
+            app_logger.log_info("ONLINE_MR_ORPHAN_COLLECTION_CLEANED", detail)
+            if device_id is None or device_id not in known_device_ids:
+                self.summary_table.removeRow(row)
+            else:
+                self._update_summary_status_by_device(device_id, "STOPPED")
+
+    def _summary_status_code(self, text: str) -> str:
+        value = str(text or "").strip()
+        for status in STATUS_I18N_KEYS:
+            if value == status or value == self._status_text(status):
+                return status
+        return value
 
     def _update_summary_iperf(self, device_id: int, row_data: dict[str, object]) -> None:
         row = self._find_row(self.summary_table, str(device_id), column=SUMMARY_COL_DEVICE_ID)
@@ -2727,7 +3406,7 @@ class OnlineMrCollectionPage(QWidget):
         ):
             widget.setMaximumWidth(width)
             widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.open_button, self.refresh_devices_button):
+        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.collect_config_button, self.open_button, self.refresh_devices_button):
             button.setMinimumWidth(86)
             button.setMaximumWidth(130)
             button.setMinimumHeight(28)
@@ -2950,13 +3629,15 @@ class OnlineMrCollectionPage(QWidget):
         detail_grid.setVerticalSpacing(6)
         self.auto_reconnect_check.setMinimumHeight(24)
         detail_grid.addWidget(self.auto_reconnect_check, 0, 0, 1, 3)
+        self.collect_config_on_start_check.setMinimumHeight(24)
+        detail_grid.addWidget(self.collect_config_on_start_check, 1, 0, 1, 3)
         for row, (label_key, spin, unit_key) in enumerate(
             (
                 ("online_mr.reconnect_interval", self.reconnect_interval, "online_mr.seconds"),
                 ("online_mr.max_reconnect", self.max_reconnect, None),
                 ("online_mr.duration_minutes", self.duration_minutes, "online_mr.minutes"),
             ),
-            start=1,
+            start=2,
         ):
             label = self._text_label(label_key)
             label.setMinimumHeight(26)
@@ -3023,7 +3704,7 @@ class OnlineMrCollectionPage(QWidget):
             "history_sessions": self.history_table,
         }
         defaults = {
-            "session_summary": [180, 130, 90, 180, 80, 110, 80, 90, 80, 80, 80, 150, 100, 80, 160, 80],
+            "session_summary": [180, 130, 90, 190, 80, 120, 80, 90, 90, 90, 90, 160, 100, 80, 170, 80],
             "mesh_link": [180, 90, 110, 160, 180, 90, 160, 160, 120, 140],
             "channel_busy": [180, 90, 90, 90, 90, 360],
             "statistics": [180, 120, 90, 180, 180, 320],
@@ -3041,10 +3722,10 @@ class OnlineMrCollectionPage(QWidget):
                 table.setColumnWidth(column, max(int(width), int(default_width)))
             if table is self.summary_table:
                 header = table.horizontalHeader()
-                for column in (SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION):
+                for column in (SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_PEER_SITE, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION):
                     header.setSectionResizeMode(column, QHeaderView.Stretch)
                 for column in range(table.columnCount()):
-                    if column not in {SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION}:
+                    if column not in {SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_PEER_SITE, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION}:
                         header.setSectionResizeMode(column, QHeaderView.Interactive)
             table.horizontalHeader().sectionResized.connect(lambda _idx, _old, _new, n=name, t=table: self._save_table_widths(n, t))
 

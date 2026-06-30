@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from queue import Queue
 from threading import Event, Lock, Thread
 from typing import Callable, Protocol
 
 from netconsole.models.online_mr_models import (
+    CONFIG_COLLECT_COMMANDS,
     EVENT_COMMAND_FAILED,
     EVENT_RECONNECT,
     INIT_COMMANDS,
@@ -20,6 +23,7 @@ from netconsole.models.online_mr_models import (
     STATE_STOPPING,
     TASK_AP_RADIO_STATISTICS,
     TASK_CHANNEL_BUSY,
+    TASK_CONFIG_COLLECT,
     TASK_COMMANDS,
     TASK_INTERFACE_RATE,
     TASK_MESH_LINK,
@@ -47,6 +51,7 @@ from netconsole.services.online_mr.core.event_model import (
     EVENT_STATS_SAMPLE,
     OnlineMrEvent,
 )
+from netconsole.services.online_mr.core.realtime_cache import OnlineMrRealtimeCache, OnlineMrRawEvent
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 
 
@@ -105,14 +110,40 @@ class NetmikoShellConnection(OnlineMrConnection):
         if not callable(writer) or not callable(reader):
             raise OnlineMrConnectionError("interactive shell is unavailable")
         raw_path.parent.mkdir(parents=True, exist_ok=True)
-        with raw_path.open("a", encoding="utf-8", errors="replace") as file:
-            file.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] START commands:\n")
-            for command in commands:
-                file.write(f"{command}\n")
-                writer(f"{command}\n")
-                file.flush()
-                time.sleep(0.05)
-            idle_started = time.monotonic()
+        write_queue: Queue[str | None] = Queue(maxsize=20000)
+        writer_error: list[Exception] = []
+
+        def write_loop() -> None:
+            try:
+                with raw_path.open("a", encoding="utf-8", errors="replace") as file:
+                    while True:
+                        line = write_queue.get()
+                        if line is None:
+                            break
+                        file.write(line)
+                        if write_queue.empty():
+                            file.flush()
+                    file.flush()
+            except Exception as exc:
+                writer_error.append(exc)
+
+        writer_thread = Thread(target=write_loop, name="online-mr-raw-writer", daemon=True)
+        writer_thread.start()
+
+        def enqueue(text: str) -> None:
+            try:
+                write_queue.put_nowait(text)
+            except Exception:
+                # File archival must not block or terminate the SSH read path.
+                pass
+
+        enqueue(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] START commands:\n")
+        for command in commands:
+            enqueue(f"{command}\n")
+            writer(f"{command}\n")
+            time.sleep(0.05)
+        idle_started = time.monotonic()
+        try:
             while not stop_event.is_set():
                 chunk = reader()
                 if chunk:
@@ -120,22 +151,25 @@ class NetmikoShellConnection(OnlineMrConnection):
                     stamp_dt = datetime.now()
                     stamp = stamp_dt.isoformat(sep=" ", timespec="milliseconds")
                     for line in normalize_command_output(chunk).splitlines():
-                        file.write(f"{stamp} [collector=repeat] RX {line}\n")
                         if line_callback is not None:
                             line_callback(stamp_dt, line)
-                    file.flush()
+                        enqueue(f"{stamp} [collector=repeat] RX {line}\n")
                     continue
                 if time.monotonic() - idle_started > max(3, timeout):
-                    file.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] WARNING no output for {timeout}s\n")
-                    file.flush()
+                    enqueue(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] WARNING no output for {timeout}s\n")
                     idle_started = time.monotonic()
                 time.sleep(0.05)
             try:
                 writer("\x03")
-                file.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] STOP Ctrl+C sent\n")
-                file.flush()
+                enqueue(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] STOP Ctrl+C sent\n")
             except Exception:
                 pass
+        finally:
+            try:
+                write_queue.put(None, timeout=1)
+            except Exception:
+                pass
+            writer_thread.join(timeout=3)
 
     def close(self) -> None:
         if self.connection is not None:
@@ -213,12 +247,14 @@ class OnlineMrCollector:
         config: OnlineMrConnectionConfig,
         store: OnlineMrSessionStore,
         connection_factory: ConnectionFactory | None = None,
+        realtime_cache: OnlineMrRealtimeCache | None = None,
         clock: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.connection_factory = connection_factory or (lambda cfg: NetmikoShellConnection(cfg))
+        self.realtime_cache = realtime_cache
         self.clock = clock or time.monotonic
         self.sleeper = sleeper or time.sleep
         self.session: OnlineMrSession | None = None
@@ -239,9 +275,20 @@ class OnlineMrCollector:
         self._stream_stop = Event()
         self._stream_threads: list[Thread] = []
         self._stream_connections: list[OnlineMrConnection] = []
+        self._terminal_write_queue: Queue[tuple[datetime | None, str] | None] = Queue(maxsize=20000)
+        self._terminal_writer_thread: Thread | None = None
 
     def start(self) -> OnlineMrSessionMeta:
-        self.session = self.store.create_session(self.config)
+        self.session = self.store.create_session(
+            self.config,
+            session_type="realtime",
+            config_collect_enabled=self.config.collect_config_on_start,
+        )
+        self._register_realtime_session()
+        if self.config.collect_config_on_start:
+            self.collect_current_configuration()
+        else:
+            self.session.update_config_collect(enabled=False, status="skipped", error=None)
         self._set_status(STATE_CONNECTING)
         self.connection = self.connection_factory(self.config)
         if self.config.connection_method:
@@ -250,6 +297,50 @@ class OnlineMrCollector:
         self.initialize_connection()
         self._set_status(STATE_COLLECTING)
         return self.session.meta
+
+    def collect_config_only(self) -> OnlineMrSessionMeta:
+        self.session = self.store.create_session(
+            self.config,
+            session_type="config_only",
+            config_collect_enabled=True,
+        )
+        self._register_realtime_session(session_type="config_only")
+        self._set_status(STATE_INITIALIZING)
+        self.collect_current_configuration()
+        final_status = STATE_STOPPED if self.session.meta.config_collect_status == "success" else STATE_FAILED
+        self.session.finish(final_status, self.stats.as_dict())
+        self.status = final_status
+        if self.realtime_cache:
+            self.realtime_cache.close_session(self.session.meta.session_id)
+        return self.session.meta
+
+    def collect_current_configuration(self) -> Path | None:
+        session = self._session()
+        session.update_config_collect(enabled=True, status="collecting", error=None)
+        connection: OnlineMrConnection | None = None
+        command_outputs: list[str] = []
+        collected_at = datetime.now()
+        try:
+            connection = self.connection_factory(self.config)
+            for command in CONFIG_COLLECT_COMMANDS:
+                raw = connection.send_command(command, self.config.command_timeout)
+                command_outputs.append(f">>> {command}\n{raw.rstrip()}")
+            payload = "\n".join(command_outputs).rstrip() + "\n"
+            session.append_raw(TASK_CONFIG_COLLECT, "\n".join(CONFIG_COLLECT_COMMANDS), payload, collected_at)
+            path = session.write_current_configuration(payload)
+            session.update_config_collect(status="success", file_path=path, error=None)
+            session.log("INFO", f"config_collect_status=success path={path}")
+            return path
+        except Exception as exc:
+            session.update_config_collect(status="failed", error=str(exc))
+            session.log("WARNING", f"config_collect_status=failed error={exc}")
+            return None
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
     def initialize_connection(self) -> None:
         if self.connection is None:
@@ -330,28 +421,60 @@ class OnlineMrCollector:
                 self.stop()
 
     def stop(self) -> None:
+        self.request_stop()
+        self._join_stream_threads(3)
+        self._stop_terminal_writer()
+        self._close_stream_connections()
+        self._close_main_connection()
+        if self.session:
+            self.session.finish(STATE_STOPPED, self.stats.as_dict())
+            if self.realtime_cache:
+                self.realtime_cache.close_session(self.session.meta.session_id)
+        self.status = STATE_STOPPED
+
+    def request_stop(self) -> None:
         self.cancelled = True
         self._stream_stop.set()
+        if self.session:
+            self._set_status(STATE_STOPPING)
+        for stream_connection in list(self._stream_connections):
+            self._interrupt_connection(stream_connection)
+        if self.connection is not None:
+            self._interrupt_connection(self.connection)
+
+    def _join_stream_threads(self, timeout: float) -> None:
         for thread in list(self._stream_threads):
-            thread.join(timeout=3)
+            thread.join(timeout=timeout)
         self._stream_threads.clear()
+
+    def _close_stream_connections(self) -> None:
         for stream_connection in list(self._stream_connections):
             try:
                 stream_connection.close()
             except Exception:
                 pass
         self._stream_connections.clear()
-        if self.session:
-            self._set_status(STATE_STOPPING)
+
+    def _close_main_connection(self) -> None:
         if self.connection is not None:
             try:
                 self.connection.close()
             except Exception:
                 pass
             self.connection = None
-        if self.session:
-            self.session.finish(STATE_STOPPED, self.stats.as_dict())
-        self.status = STATE_STOPPED
+
+    def _interrupt_connection(self, connection: OnlineMrConnection) -> None:
+        send_command = getattr(connection, "send_command", None)
+        if callable(send_command):
+            for command in ("\x03", "quit"):
+                try:
+                    send_command(command, 1)
+                except Exception:
+                    pass
+        try:
+            connection.close()
+        except Exception:
+            pass
 
     def snapshot(self) -> OnlineMrSnapshot:
         collected = (
@@ -369,7 +492,7 @@ class OnlineMrCollector:
             + self.stats.interface_rate_failed
         )
         if self.latest_snapshot is not None:
-            snapshot = self.latest_snapshot
+            snapshot = replace(self.latest_snapshot)
         elif self.session is not None:
             snapshot = OnlineMrSnapshot(
                 self.session.meta.session_id,
@@ -394,6 +517,11 @@ class OnlineMrCollector:
         snapshot.failed_count = failed
         snapshot.reconnect_count = self.stats.reconnect_count
         snapshot.uptime_seconds = int(self.clock() - self.started_monotonic)
+        if self.session is not None:
+            snapshot.config_collect_status = self.session.meta.config_collect_status
+            snapshot.config_file_path = self.session.meta.config_file_path
+        if self.realtime_cache and snapshot.session_id:
+            self.realtime_cache.update_snapshot(snapshot)
         return snapshot
 
     def _persist_task_result(self, task_type: str, collected_at: datetime, command_text: str, raw_file: str, start: int, end: int, raw_text: str) -> int:
@@ -421,6 +549,10 @@ class OnlineMrCollector:
                         local_rx_busy=active.metrics.get("local_rx_busy"),
                         last_collection_time=collected_at.isoformat(sep=" ", timespec="seconds"),
                     )
+                    self.latest_snapshot.config_collect_status = session.meta.config_collect_status
+                    self.latest_snapshot.config_file_path = session.meta.config_file_path
+                    if self.realtime_cache:
+                        self.realtime_cache.update_snapshot(self.latest_snapshot)
             if parse_status == "FAILED":
                 self.stats.parse_failed += 1
             return sample_id
@@ -469,6 +601,7 @@ class OnlineMrCollector:
             TASK_INTERFACE_RATE,
         ]
         enabled = self.config.tasks.enabled_tasks()
+        self._start_terminal_writer()
         for task_type in stream_tasks:
             if task_type in enabled:
                 self._start_repeat_thread(task_type)
@@ -493,6 +626,9 @@ class OnlineMrCollector:
             except Exception as exc:
                 self._record_command_failure("init", command, exc)
         commands = self._repeat_commands(task_type)
+        self._enqueue_terminal_monitor_raw(
+            f"[collector=repeat] START task={task_type}\n" + "\n".join(commands) + "\n"
+        )
         raw_path = session.session_dir / "raw" / {
             TASK_MESH_LINK: "mesh_link_raw.log",
             TASK_CHANNEL_BUSY: "channel_busy_raw.log",
@@ -523,7 +659,7 @@ class OnlineMrCollector:
         thread.start()
 
     def _publish_stream_line(self, task_type: str, timestamp: datetime, line: str) -> None:
-        if self._stream_event_callback is None or self.session is None:
+        if self.session is None:
             return
         module_event = {
             TASK_MESH_LINK: ("mesh", EVENT_MESH_SAMPLE),
@@ -534,18 +670,31 @@ class OnlineMrCollector:
         if module_event is None:
             return
         module, event_type = module_event
-        self._stream_event_callback(
-            OnlineMrEvent(
-                timestamp=timestamp,
-                session_id=self.session.meta.session_id,
-                device_id=self.config.device_id,
-                source="ssh_stream",
-                module=module,
-                event_type=event_type,
-                payload={"task_type": task_type, "line": line},
-                raw=line,
-            )
+        event = OnlineMrEvent(
+            timestamp=timestamp,
+            session_id=self.session.meta.session_id,
+            device_id=self.config.device_id,
+            source="ssh_stream",
+            module=module,
+            event_type=event_type,
+            payload={"task_type": task_type, "line": line},
+            raw=line,
         )
+        self._enqueue_terminal_monitor_raw(f"[collector=repeat] {task_type} {line}", timestamp)
+        if self.realtime_cache:
+            self.realtime_cache.append_raw_event(
+                event.session_id,
+                OnlineMrRawEvent(
+                    timestamp=timestamp,
+                    session_id=event.session_id,
+                    device_id=event.device_id,
+                    source=event.source,
+                    raw=line,
+                    task_type=task_type,
+                ),
+            )
+        if self._stream_event_callback is not None:
+            self._stream_event_callback(event)
 
     def _reconnect(self) -> None:
         if not self.config.auto_reconnect:
@@ -596,6 +745,62 @@ class OnlineMrCollector:
         session = self._session()
         session.meta.stats = self.stats.as_dict()
         session.write_meta()
+
+    def _start_terminal_writer(self) -> None:
+        if self._terminal_writer_thread is not None and self._terminal_writer_thread.is_alive():
+            return
+
+        def write_loop() -> None:
+            while True:
+                item = self._terminal_write_queue.get()
+                if item is None:
+                    break
+                stamp, text = item
+                try:
+                    if self.session is not None:
+                        self.session.append_terminal_monitor_raw(text, stamp)
+                except Exception as exc:
+                    if self.session is not None:
+                        try:
+                            self.session.log("WARNING", f"terminal raw writer failed: {exc}")
+                        except Exception:
+                            pass
+
+        self._terminal_writer_thread = Thread(target=write_loop, name="online-mr-terminal-writer", daemon=True)
+        self._terminal_writer_thread.start()
+
+    def _enqueue_terminal_monitor_raw(self, text: str, stamp: datetime | None = None) -> None:
+        try:
+            self._terminal_write_queue.put_nowait((stamp, text))
+        except Exception:
+            pass
+
+    def _stop_terminal_writer(self) -> None:
+        if self._terminal_writer_thread is None:
+            return
+        try:
+            self._terminal_write_queue.put(None, timeout=1)
+        except Exception:
+            pass
+        self._terminal_writer_thread.join(timeout=3)
+        self._terminal_writer_thread = None
+
+    def _register_realtime_session(self, session_type: str = "realtime") -> None:
+        if self.realtime_cache is None or self.session is None:
+            return
+        self.realtime_cache.register_session(
+            site_id=self.config.site,
+            session_id=self.session.meta.session_id,
+            device_id=self.config.device_id,
+            session_type=session_type,
+            snapshot=OnlineMrSnapshot(
+                self.session.meta.session_id,
+                self.status,
+                device_id=self.config.device_id,
+                device_name=self.config.device_name,
+                host=self.config.host,
+            ),
+        )
 
     def _session(self) -> OnlineMrSession:
         if self.session is None:

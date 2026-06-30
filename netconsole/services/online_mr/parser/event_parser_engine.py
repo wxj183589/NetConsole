@@ -129,7 +129,7 @@ def _extract_iperf_mbps(payload: dict[str, Any]) -> float | None:
 
 
 MESH_PEER_FIELD_RE = re.compile(
-    r"(?P<peer_name>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
+    r"(?P<peer_name>\S+)\s+"
     r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
     r"(?P<rssi>-?\d{1,3})\s+"
     r"(?P<bssid>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
@@ -148,6 +148,8 @@ def _extract_mesh_peer_fields(raw_text: str) -> dict[str, Any]:
             "peer_name": match.group("peer_name"),
             "peer_mac": match.group("peer_mac"),
             "mr_rssi": int(match.group("rssi")),
+            "local_rssi": int(match.group("rssi")),
+            "peer_rssi": None,
             "bssid": match.group("bssid") or "",
             "interface": match.group("interface") or "",
             "link_state": _normalize_mesh_link_state(match.group("link_state")),
