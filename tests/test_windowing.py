@@ -752,7 +752,7 @@ def test_release_resources_and_build_script_are_configured():
     assert icon_path("love.png").exists()
     assert changelog_path().exists()
     assert "clean_build_spec.py\" --prepare --write-spec" in script
-    assert "project\\build_release.py\" --backend pyinstaller %*" in script
+    assert "project\\build_release.py\" --backend pyinstaller --build-editions both %*" in script
     assert "--finalize" not in script
     assert "--add-data" not in script
     assert "PROJECT_ROOT=%ROOT%\\project" not in script

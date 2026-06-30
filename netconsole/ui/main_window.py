@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.background_tasks import background_task_manager
 from netconsole.core.database import Database
+from netconsole.core.feature_flags import FeatureDisabledError, FeatureGate, default_feature_gate
+from netconsole.core.feature_registry import PAGE_FEATURE_BY_PAGE_ID
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import icon_path
@@ -59,6 +61,7 @@ class MainWindow(QMainWindow):
         self.repository = repository
         self.i18n = i18n
         self.current_theme = self.settings.theme
+        self.feature_gate: FeatureGate = default_feature_gate()
         self.about_dialog: AboutRepositoryDialog | None = None
         self.changelog_dialog: ChangelogDialog | None = None
         self.pages: dict[str, QWidget] = {}
@@ -70,10 +73,11 @@ class MainWindow(QMainWindow):
         self.tray_notice_shown_this_session = False
         self.sidebar_collapsed = self._read_sidebar_collapsed_setting()
 
-        self.navigation = Navigation(i18n)
+        self.navigation = Navigation(i18n, self.feature_gate)
         self.stack = QStackedWidget()
         self.loading_overlay = LoadingOverlay(self.stack)
         self.device_page = DeviceManagementPage(repository, i18n, site.name)
+        self.disabled_pages: dict[str, QWidget] = {}
         self.config_collection_page: QWidget | None = None
         self.file_management_page: QWidget | None = None
         self.rail_transit_page: QWidget | None = None
@@ -173,6 +177,8 @@ class MainWindow(QMainWindow):
             return
         page_id = self.navigation.item(row).data(256)
         page = self.get_or_create_page(str(page_id))
+        if not self._is_page_enabled(str(page_id)):
+            return
         if page_id == "rail_transit":
             app_logger.log_info("RAIL_TRANSIT_OPEN_REQUESTED", self.site.name)
         self.stack.setCurrentWidget(page)
@@ -199,12 +205,14 @@ class MainWindow(QMainWindow):
             self.hide_page_loading()
 
     def get_or_create_page(self, page_id: str) -> QWidget:
+        if not self._is_page_enabled(page_id):
+            return self._disabled_page(page_id)
         if page_id in self.pages:
             return self.pages[page_id]
         if page_id == "ac":
             from netconsole.ui.pages.ac_management_page import AcManagementPage
 
-            page = AcManagementPage(self.repository, self.i18n, self.site.name)
+            page = AcManagementPage(self.repository, self.i18n, self.site.name, self.feature_gate)
             self.ac_page = page
         elif page_id == "config_collection":
             from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
@@ -214,12 +222,12 @@ class MainWindow(QMainWindow):
         elif page_id == "file_management":
             from netconsole.ui.pages.file_management_page import FileManagementPage
 
-            page = FileManagementPage(self.repository, self.i18n, self.site.name, self.paths)
+            page = FileManagementPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
             self.file_management_page = page
         elif page_id == "rail_transit":
             from netconsole.ui.pages.rail_transit_page import RailTransitPage
 
-            page = RailTransitPage(self.repository, self.i18n, self.site.name, self.paths)
+            page = RailTransitPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
             self.rail_transit_page = page
         elif page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
@@ -236,6 +244,10 @@ class MainWindow(QMainWindow):
 
             page = AppLogPage(self.i18n, auto_refresh=False)
             self.log_page = page
+        elif page_id == "feature_flags":
+            from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
+
+            page = FeatureFlagsPage(self.i18n, self.feature_gate)
         else:
             return self.device_page
         self.pages[page_id] = page
@@ -244,12 +256,13 @@ class MainWindow(QMainWindow):
         return page
 
     def create_detached_page(self, page_id: str) -> QWidget:
+        self._assert_page_enabled(page_id)
         if page_id == "devices":
             return DeviceManagementPage(self.repository, self.i18n, self.site.name)
         if page_id == "ac":
             from netconsole.ui.pages.ac_management_page import AcManagementPage
 
-            return AcManagementPage(self.repository, self.i18n, self.site.name)
+            return AcManagementPage(self.repository, self.i18n, self.site.name, self.feature_gate)
         if page_id == "config_collection":
             from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
 
@@ -257,11 +270,11 @@ class MainWindow(QMainWindow):
         if page_id == "file_management":
             from netconsole.ui.pages.file_management_page import FileManagementPage
 
-            return FileManagementPage(self.repository, self.i18n, self.site.name, self.paths)
+            return FileManagementPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
         if page_id == "rail_transit":
             from netconsole.ui.pages.rail_transit_page import RailTransitPage
 
-            return RailTransitPage(self.repository, self.i18n, self.site.name, self.paths)
+            return RailTransitPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
         if page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
@@ -274,6 +287,10 @@ class MainWindow(QMainWindow):
             from netconsole.ui.pages.app_log_page import AppLogPage
 
             return AppLogPage(self.i18n, auto_refresh=False)
+        if page_id == "feature_flags":
+            from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
+
+            return FeatureFlagsPage(self.i18n, self.feature_gate)
         return DeviceManagementPage(self.repository, self.i18n, self.site.name)
 
     def detach_current_page(self) -> None:
@@ -285,6 +302,9 @@ class MainWindow(QMainWindow):
         title = item.text() or page_id
         try:
             page = self.create_detached_page(page_id)
+        except FeatureDisabledError:
+            QMessageBox.information(self, self.i18n.t("app.title"), self.i18n.t("feature_flags.disabled_message"))
+            return
         except Exception as exc:
             app_logger.log_error("DETACHED_PAGE_CREATE_FAILED", f"page={page_id}, error={exc}")
             QMessageBox.warning(self, self.i18n.t("app.title"), str(exc))
@@ -374,6 +394,7 @@ class MainWindow(QMainWindow):
                     break
 
     def preload_page(self, page_id: str) -> QWidget:
+        self._assert_page_enabled(page_id)
         page = self.get_or_create_page(page_id)
         if page_id == "logs" and self.log_page is not None:
             self.log_page.refresh()
@@ -388,6 +409,9 @@ class MainWindow(QMainWindow):
             app_logger.log_warning("STARTUP_PRELOAD_PARTIAL_FAILURE", ", ".join(sorted(failures)))
 
     def activate_page(self, page_id: str, *, force_if_empty: bool = False) -> None:
+        if not self._is_page_enabled(page_id):
+            self.hide_page_loading()
+            return
         if page_id not in self.activated_pages:
             self.activated_pages.add(page_id)
             app_logger.log_info(f"PAGE_FIRST_ACTIVATED:{page_id}", self._startup_elapsed_detail())
@@ -665,6 +689,40 @@ class MainWindow(QMainWindow):
                 retranslate()
         self._apply_sidebar_visual_state()
         self._update_tray_text()
+
+    def refresh_feature_flags(self) -> None:
+        self.feature_gate.reload()
+        blocked = self.navigation.blockSignals(True)
+        try:
+            self.navigation.retranslate()
+        finally:
+            self.navigation.blockSignals(blocked)
+        for page_id in list(self.pages):
+            if not self._is_page_enabled(page_id):
+                page = self.pages.pop(page_id)
+                self.stack.removeWidget(page)
+                page.deleteLater()
+
+    def _feature_for_page(self, page_id: str) -> str | None:
+        return PAGE_FEATURE_BY_PAGE_ID.get(page_id)
+
+    def _is_page_enabled(self, page_id: str) -> bool:
+        feature_id = self._feature_for_page(page_id)
+        return True if feature_id is None else self.feature_gate.is_enabled(feature_id)
+
+    def _assert_page_enabled(self, page_id: str) -> None:
+        feature_id = self._feature_for_page(page_id)
+        if feature_id is not None:
+            self.feature_gate.assert_enabled(feature_id)
+
+    def _disabled_page(self, page_id: str) -> QWidget:
+        page = self.disabled_pages.get(page_id)
+        if page is None:
+            page = QLabel(self.i18n.t("feature_flags.disabled_message"))
+            page.setAlignment(Qt.AlignCenter)
+            self.disabled_pages[page_id] = page
+            self.stack.addWidget(page)
+        return page
 
     def apply_style(self, theme: str) -> None:
         apply_global_theme(theme)

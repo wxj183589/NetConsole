@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
+from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -216,12 +217,20 @@ class MeshAutoImportWorker(QThread):
 
 
 class FileManagementPage(QWidget):
-    def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo", paths: PathResolver | None = None) -> None:
+    def __init__(
+        self,
+        repository: DeviceRepository,
+        i18n: I18n,
+        site_name: str = "demo",
+        paths: PathResolver | None = None,
+        feature_gate: FeatureGate | None = None,
+    ) -> None:
         super().__init__()
         self.repository = repository
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths or PathResolver()
+        self.feature_gate = feature_gate or default_feature_gate()
         self.group_repository = self._make_group_repository(repository, site_name)
         self.settings = SettingsStore(self.paths)
         self._initializing_columns = True
@@ -339,8 +348,13 @@ class FileManagementPage(QWidget):
         self.local_table.itemActivated.connect(lambda item: self.open_local_path_from_item(item))
 
         self.retranslate()
+        self._apply_feature_gate()
         self.refresh_devices()
         self._initializing_columns = False
+
+    def _apply_feature_gate(self) -> None:
+        apply_feature_to_widget(self.feature_gate, "file.mesh_log_download", self.remote_mesh_logs_button)
+        apply_feature_to_widget(self.feature_gate, "file.mesh_log_download", self.download_button)
 
     def _local_panel(self) -> QWidget:
         panel = QWidget()
@@ -672,6 +686,7 @@ class FileManagementPage(QWidget):
         return self.remote_file_for_table_row(row)
 
     def download_selected(self) -> None:
+        self.feature_gate.assert_enabled("file.mesh_log_download")
         files = self.checked_remote_files_in_view_order()
         if not files:
             QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_file_selected"))
@@ -748,6 +763,8 @@ class FileManagementPage(QWidget):
         self.maybe_show_batch_summary(task.batch_id)
 
     def _start_mesh_auto_import_if_needed(self, task: TransferTask) -> None:
+        if not self.feature_gate.is_enabled("file.mesh_auto_import"):
+            return
         if not (is_mesh_log_file(task.remote_file.name) and self.is_vehicle_mr_device(task.device) and task.local_path.exists()):
             return
         task.status_key = "file_management.mesh_auto_import_started"
@@ -923,6 +940,7 @@ class FileManagementPage(QWidget):
         self.populate_remote_table()
 
     def select_mesh_logs(self) -> None:
+        self.feature_gate.assert_enabled("file.mesh_log_download")
         selected_paths = {
             item.remote_path
             for item in self.remote_files

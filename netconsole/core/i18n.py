@@ -2831,6 +2831,60 @@ TRANSLATIONS["en_US"].update(
     }
 )
 
+TRANSLATIONS["zh_CN"].update(
+    {
+        "nav.system_settings": "系统设置",
+        "system.feature_flags": "功能开关配置",
+        "feature_flags.title": "功能开关配置",
+        "feature_flags.feature_id": "功能ID",
+        "feature_flags.feature_name": "功能名称",
+        "feature_flags.type": "类型",
+        "feature_flags.parent": "所属模块",
+        "feature_flags.visible": "显示",
+        "feature_flags.enabled": "启用",
+        "feature_flags.customer_package": "客户版打包",
+        "feature_flags.internal_only": "内部专用",
+        "feature_flags.description": "备注",
+        "feature_flags.save_profile": "保存客户配置",
+        "feature_flags.reload_defaults": "恢复默认",
+        "feature_flags.preview_customer": "预览客户版",
+        "feature_flags.profile_saved": "配置已保存",
+        "feature_flags.disabled_message": "当前版本未开放此功能",
+        "feature_flags.internal_only_hint": "内部版本专用，客户版自动隐藏",
+        "rail_transit.train_online": "列车在线情况",
+        "rail_transit.car_network_diagnostic": "车内通信检测",
+        "file_management.mesh_auto_import": "MESH自动导入",
+        "mesh_analysis.generate_report": "生成报告",
+    }
+)
+
+TRANSLATIONS["en_US"].update(
+    {
+        "nav.system_settings": "System",
+        "system.feature_flags": "Feature Flags",
+        "feature_flags.title": "Feature Flags",
+        "feature_flags.feature_id": "Feature ID",
+        "feature_flags.feature_name": "Feature Name",
+        "feature_flags.type": "Type",
+        "feature_flags.parent": "Parent",
+        "feature_flags.visible": "Visible",
+        "feature_flags.enabled": "Enabled",
+        "feature_flags.customer_package": "Customer Package",
+        "feature_flags.internal_only": "Internal Only",
+        "feature_flags.description": "Description",
+        "feature_flags.save_profile": "Save Customer Profile",
+        "feature_flags.reload_defaults": "Restore Defaults",
+        "feature_flags.preview_customer": "Preview Customer",
+        "feature_flags.profile_saved": "Profile saved.",
+        "feature_flags.disabled_message": "This feature is not available in the current edition.",
+        "feature_flags.internal_only_hint": "Internal edition only; hidden from customer builds.",
+        "rail_transit.train_online": "Train Online",
+        "rail_transit.car_network_diagnostic": "Car Network Diagnostic",
+        "file_management.mesh_auto_import": "MESH Auto Import",
+        "mesh_analysis.generate_report": "Generate Report",
+    }
+)
+
 
 class I18n:
     def __init__(self, language: str = "zh_CN") -> None:

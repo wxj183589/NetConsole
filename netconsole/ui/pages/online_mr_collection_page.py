@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
+from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -239,13 +240,22 @@ def natural_device_sort_key(device: Device) -> tuple[list[object], str, int]:
 class OnlineMrCollectionPage(QWidget):
     session_history_changed = Signal()
 
-    def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str, paths: PathResolver, analysis_only: bool = False) -> None:
+    def __init__(
+        self,
+        repository: DeviceRepository,
+        i18n: I18n,
+        site_name: str,
+        paths: PathResolver,
+        analysis_only: bool = False,
+        feature_gate: FeatureGate | None = None,
+    ) -> None:
         super().__init__()
         self.repository = repository
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths
         self.analysis_only = analysis_only
+        self.feature_gate = feature_gate or default_feature_gate()
         self.settings = SettingsStore(paths)
         self.store = OnlineMrSessionStore(paths)
         self.runtime = _online_mr_runtime(paths)
@@ -952,6 +962,7 @@ class OnlineMrCollectionPage(QWidget):
             vertical_splitter.splitterMoved.connect(self._save_vertical_splitter_sizes)
         content_layout.addWidget(vertical_splitter, 1)
         self.retranslate()
+        self._apply_feature_gate()
         self._load_all_table_widths()
 
     def _connect_signals(self) -> None:
@@ -1154,6 +1165,10 @@ class OnlineMrCollectionPage(QWidget):
             widget.setFocusPolicy(Qt.StrongFocus)
 
     def start_collection(self) -> None:
+        if self.enable_fping_check.isChecked():
+            self.feature_gate.assert_enabled("online_mr.advanced_ping")
+        if self.enable_iperf_check.isChecked():
+            self.feature_gate.assert_enabled("online_mr.iperf_test")
         selected = self._selected_devices()
         if not selected:
             QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.select_mr_device"))
@@ -1212,6 +1227,7 @@ class OnlineMrCollectionPage(QWidget):
         self._update_action_state()
 
     def collect_config_once(self) -> None:
+        self.feature_gate.assert_enabled("online_mr.collect_config_once")
         selected = self._selected_devices()
         if len(selected) != 1:
             QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.select_mr_device"))
@@ -2740,10 +2756,17 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_selected_button.setEnabled(running_selected)
         self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers))
         self.collect_config_button.setEnabled(len(selected) == 1 and not running_selected)
+        if not self.feature_gate.is_enabled("online_mr.collect_config_once"):
+            self.collect_config_button.setEnabled(False)
         self.open_button.setEnabled(True)
         self.running_count_label.setText(str(self._site_running_count()))
         self._refresh_top_metrics()
         self._refresh_collection_animation()
+
+    def _apply_feature_gate(self) -> None:
+        apply_feature_to_widget(self.feature_gate, "online_mr.collect_config_once", self.collect_config_button)
+        apply_feature_to_widget(self.feature_gate, "online_mr.advanced_ping", self.enable_fping_check)
+        apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.enable_iperf_check)
 
     def _reconcile_collection_state(self) -> None:
         self._prune_orphan_summary_rows()

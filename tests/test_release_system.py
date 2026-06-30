@@ -139,11 +139,11 @@ def test_build_release_script_uses_project_output_and_release_zip():
     text = (root / "build_release.bat").read_text(encoding="utf-8")
 
     assert "project\\build_release.py" in text
-    assert "--backend pyinstaller %*" in text
+    assert "--backend pyinstaller --build-editions both %*" in text
     assert "project\\release.py" not in text
     assert "PROJECT_ROOT=%ROOT%\\project" not in text
     assert "--add-data" not in text
-    assert "project\\build_release.py\" --backend pyinstaller %*" in text
+    assert "project\\build_release.py\" --backend pyinstaller --build-editions both %*" in text
 
 
 def test_changelog_source_is_chinese_for_zh_ui():

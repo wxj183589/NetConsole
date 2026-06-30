@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
+from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
 from netconsole.core.paths import PathResolver
@@ -507,7 +508,13 @@ def _format_export_sheet(sheet) -> None:
 
 
 class AcManagementPage(QWidget):
-    def __init__(self, device_repository: DeviceRepository, i18n: I18n, site_name: str = "demo") -> None:
+    def __init__(
+        self,
+        device_repository: DeviceRepository,
+        i18n: I18n,
+        site_name: str = "demo",
+        feature_gate: FeatureGate | None = None,
+    ) -> None:
         super().__init__()
         self.device_repository = device_repository
         self.repository = AcRepository(device_repository.database)
@@ -515,6 +522,7 @@ class AcManagementPage(QWidget):
         self.import_export_service = FitApImportExportService(self.repository)
         self.i18n = i18n
         self.site_name = site_name
+        self.feature_gate = feature_gate or default_feature_gate()
         self.ac_devices: list[Device] = []
         self.resource_thread: AcResourceCollectThread | None = None
         self.optical_thread: FitApOpticalCollectThread | None = None
@@ -715,6 +723,13 @@ class AcManagementPage(QWidget):
         self.tabs.addTab(overview_tab, "")
         self.tabs.addTab(resources_tab, "")
         self.tabs.addTab(optical_tab, "")
+        self.tab_by_feature_id = {
+            "ac.trackside_ap_plan": self.trackside_plan_page,
+            "ac.ap_online_overview": overview_tab,
+            "ac.fit_ap_resources": resources_tab,
+            "ac.fit_ap_optical": optical_tab,
+        }
+        self._apply_feature_gate()
         # Trackside AP Service is mounted under Rail Transit.
 
         layout = QVBoxLayout()
@@ -757,6 +772,19 @@ class AcManagementPage(QWidget):
         self.trackside_plan_page.plan_saved.connect(self._handle_trackside_plan_saved)
         self.retranslate()
         self.refresh_devices()
+
+    def _apply_feature_gate(self) -> None:
+        for feature_id, widget in reversed(list(self.tab_by_feature_id.items())):
+            index = self.tabs.indexOf(widget)
+            if index >= 0 and not self.feature_gate.is_visible(feature_id):
+                self.tabs.removeTab(index)
+            elif index >= 0:
+                self.tabs.setTabEnabled(index, self.feature_gate.is_enabled(feature_id))
+        apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.refresh_button)
+        apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.import_button)
+        apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.export_button)
+        apply_feature_to_widget(self.feature_gate, "ac.fit_ap_optical", self.refresh_optical_button)
+        apply_feature_to_widget(self.feature_gate, "ac.fit_ap_optical", self.optical_export_button)
 
     def set_repository(self, device_repository: DeviceRepository, site_name: str) -> None:
         self.device_repository = device_repository
@@ -806,10 +834,16 @@ class AcManagementPage(QWidget):
             label = self.findChild(QLabel, f"summary_label_{SUMMARY_FIELDS[index][1]}")
             if label is not None:
                 label.setText(self.i18n.t(key))
-        self.tabs.setTabText(0, self.i18n.t("ac.trackside_ap_plan"))
-        self.tabs.setTabText(1, self.i18n.t("ac.ap_online_overview"))
-        self.tabs.setTabText(2, self.i18n.t("ac.fit_ap_resources"))
-        self.tabs.setTabText(3, self.i18n.t("ac.fit_ap_optical"))
+        tab_titles = {
+            "ac.trackside_ap_plan": "ac.trackside_ap_plan",
+            "ac.ap_online_overview": "ac.ap_online_overview",
+            "ac.fit_ap_resources": "ac.fit_ap_resources",
+            "ac.fit_ap_optical": "ac.fit_ap_optical",
+        }
+        for feature_id, widget in self.tab_by_feature_id.items():
+            index = self.tabs.indexOf(widget)
+            if index >= 0:
+                self.tabs.setTabText(index, self.i18n.t(tab_titles[feature_id]))
         self.overview_inner_tabs.setTabText(0, self.i18n.t("ac.ap_online_overview"))
         self.overview_inner_tabs.setTabText(1, "AP离线情况")
         self.overview_inner_tabs.setTabText(2, "离线AP台账")
@@ -1011,6 +1045,7 @@ class AcManagementPage(QWidget):
         self.status_label.setText(self.i18n.t("ac.update_cancelled"))
 
     def refresh_ac_resources(self) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_resources")
         device = self.current_device()
         if device is None:
             QMessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
@@ -1025,6 +1060,7 @@ class AcManagementPage(QWidget):
         self.resource_thread.start()
 
     def refresh_fit_ap_optical(self) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_optical")
         device = self.current_device()
         if device is None:
             return
@@ -1198,6 +1234,7 @@ class AcManagementPage(QWidget):
         self.refresh_data()
 
     def import_metadata(self) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_resources")
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ap.import_metadata"), "", "Excel Files (*.xlsx);;CSV Files (*.csv)")
         if not path:
             return
@@ -1241,6 +1278,7 @@ class AcManagementPage(QWidget):
         return Path(selected) if selected else None
 
     def export_aps(self) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_resources")
         path = select_export_path(self, self.i18n.t("ap.export_info"), make_fit_ap_export_filename(self.site_name), CSV_FILTER)
         if not path:
             return
@@ -1371,6 +1409,7 @@ class AcManagementPage(QWidget):
         self.apply_optical_filters()
 
     def export_optical_table(self) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_optical")
         path = select_export_path(self, self.i18n.t("ac.export_table"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return

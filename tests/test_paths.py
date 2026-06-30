@@ -72,6 +72,50 @@ def test_path_resolver_uses_exe_dir_when_nuitka_compiled(tmp_path, monkeypatch):
     assert not (tmp_path / "project").exists()
 
 
+def test_path_resolver_uses_release_dir_when_exe_has_build_info(tmp_path, monkeypatch):
+    project_root = tmp_path / "project"
+    release_root = tmp_path / "release" / "customer"
+    release_root.mkdir(parents=True)
+    (release_root / "NetConsole.exe").write_text("", encoding="utf-8")
+    (release_root / "runtime").mkdir()
+    (release_root / "runtime" / "build_info.json").write_text(
+        '{"edition":"customer","feature_profile":"customer"}',
+        encoding="utf-8",
+    )
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr(sys, "executable", str(release_root / "NetConsole.exe"))
+
+    paths = PathResolver()
+
+    assert paths.app_root == release_root
+    assert paths.runtime_dir == release_root / "runtime"
+
+
+def test_path_resolver_uses_argv_exe_dir_before_unreliable_executable(tmp_path, monkeypatch):
+    project_root = tmp_path / "project"
+    release_root = tmp_path / "release" / "customer"
+    temp_root = tmp_path / "temp"
+    release_root.mkdir(parents=True)
+    temp_root.mkdir()
+    (release_root / "NetConsole.exe").write_text("", encoding="utf-8")
+    (temp_root / "NetConsole.exe").write_text("", encoding="utf-8")
+    (release_root / "runtime").mkdir()
+    (release_root / "runtime" / "build_info.json").write_text(
+        '{"edition":"customer","feature_profile":"customer"}',
+        encoding="utf-8",
+    )
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr(sys, "argv", [str(release_root / "NetConsole.exe")])
+    monkeypatch.setattr(sys, "executable", str(temp_root / "NetConsole.exe"))
+
+    paths = PathResolver()
+
+    assert paths.app_root == release_root
+    assert paths.runtime_dir == release_root / "runtime"
+
+
 def test_path_resolver_does_not_create_development_dirs_when_frozen(tmp_path, monkeypatch):
     exe_path = tmp_path / "NetConsole.exe"
     exe_path.write_text("", encoding="utf-8")

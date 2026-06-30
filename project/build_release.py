@@ -14,10 +14,12 @@ if str(ROOT) not in sys.path:
 
 import clean_build_spec
 from project.build_config import BuildConfig, load_config
+from netconsole.core.feature_flags import install_runtime_feature_files
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 
 
 BACKENDS = ("pyinstaller", "nuitka")
+BUILD_EDITIONS = ("internal", "customer", "both")
 NUITKA_ALLOWED_RELEASE_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime"})
 PYINSTALLER_ALLOWED_APP_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime"})
 FORBIDDEN_RELEASE_DIR_NAMES = frozenset({"docs", "tests", "project", "netconsole"})
@@ -35,6 +37,8 @@ def main() -> int:
     parser.add_argument("--no-zip", action="store_true", help="do not create release zip")
     parser.add_argument("--jobs", default="8", help="Nuitka worker count")
     parser.add_argument("--dry-run", action="store_true", help="print command plan without compiling")
+    parser.add_argument("--build-editions", choices=BUILD_EDITIONS, default="both", help="release editions to generate")
+    parser.add_argument("--feature-profile", default=None, help="feature profile for single-edition customer/internal builds")
     args = parser.parse_args()
 
     try:
@@ -50,9 +54,10 @@ def main() -> int:
             install_dependencies(args.backend)
         preflight(config, smoke_test=not args.no_smoke_test)
         if args.backend == "pyinstaller":
-            build_pyinstaller(config, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
+            payload = build_pyinstaller(config, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
         else:
-            build_nuitka(config, jobs=args.jobs, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
+            payload = build_nuitka(config, jobs=args.jobs, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
+        create_edition_releases(config, payload, args.build_editions, feature_profile=args.feature_profile, make_zip=not args.no_zip)
         assert_root_clean(config.root)
         validate_release_version_tree(config.release_version_dir)
         return 0
@@ -90,7 +95,7 @@ def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
             print(f"[OK] {result.name}: {first_line}")
 
 
-def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) -> None:
+def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) -> Path:
     build_root = config.backend_build_dir("pyinstaller")
     release_root = config.backend_release_dir("pyinstaller")
     dist_root = build_root / "dist"
@@ -114,9 +119,10 @@ def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) 
         validate_zip_file(config.zip_path("pyinstaller"))
     validate_release_app_dir(final_app, PYINSTALLER_ALLOWED_APP_ITEMS)
     print("PyInstaller output:", final_app / f"{config.app_name}.exe")
+    return final_app
 
 
-def build_nuitka(config: BuildConfig, *, jobs: str, smoke_test: bool, make_zip: bool) -> None:
+def build_nuitka(config: BuildConfig, *, jobs: str, smoke_test: bool, make_zip: bool) -> Path:
     build_root = config.backend_build_dir("nuitka")
     release_root = config.backend_release_dir("nuitka")
     clean_backend_dirs(build_root, release_root)
@@ -137,6 +143,42 @@ def build_nuitka(config: BuildConfig, *, jobs: str, smoke_test: bool, make_zip: 
         validate_zip_file(config.zip_path("nuitka"))
     validate_release_app_dir(release_root, NUITKA_ALLOWED_RELEASE_ITEMS)
     print("Nuitka output:", final_exe)
+    return release_root
+
+
+def create_edition_releases(
+    config: BuildConfig,
+    payload: Path,
+    build_editions: str,
+    *,
+    feature_profile: str | None,
+    make_zip: bool,
+) -> None:
+    for edition in selected_editions(build_editions):
+        profile = feature_profile or ("full" if edition == "internal" else "customer")
+        destination = config.release_version_dir / edition
+        remove_tree(destination)
+        copy_tree(payload, destination)
+        remove_copied_zip_files(destination)
+        install_runtime_feature_files(destination, edition=edition, profile=profile)
+        validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
+        if make_zip:
+            zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
+            zip_directory(destination, zip_path, destination, NUITKA_ALLOWED_RELEASE_ITEMS)
+            validate_zip_file(zip_path)
+        validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
+        print(f"{edition.title()} output:", destination / f"{config.app_name}.exe")
+
+
+def selected_editions(value: str) -> tuple[str, ...]:
+    if value == "both":
+        return ("internal", "customer")
+    return (value,)
+
+
+def remove_copied_zip_files(destination: Path) -> None:
+    for zip_path in destination.glob("*.zip"):
+        zip_path.unlink()
 
 
 def pyinstaller_command(config: BuildConfig) -> list[str]:

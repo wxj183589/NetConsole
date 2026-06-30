@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "profile": "customer",
+  "features": {
+    "module.devices": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.ac": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.rail_transit": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.wifi_survey": {
+      "visible": false,
+      "enabled": false
+    },
+    "module.config_collection": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.file_management": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.network_tools": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.logs": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.system_settings": {
+      "visible": false,
+      "enabled": false
+    },
+    "rail.train_online": {
+      "visible": true,
+      "enabled": true
+    },
+    "rail.car_network_diagnostic": {
+      "visible": true,
+      "enabled": true
+    },
+    "rail.trackside_ap_business": {
+      "visible": true,
+      "enabled": true
+    },
+    "rail.raw_mesh_log_analysis": {
+      "visible": true,
+      "enabled": true
+    },
+    "rail.online_mr_collection": {
+      "visible": false,
+      "enabled": false
+    },
+    "rail.online_mr_analysis": {
+      "visible": false,
+      "enabled": false
+    },
+    "ac.trackside_ap_plan": {
+      "visible": true,
+      "enabled": true
+    },
+    "ac.ap_online_overview": {
+      "visible": true,
+      "enabled": true
+    },
+    "ac.fit_ap_resources": {
+      "visible": true,
+      "enabled": true
+    },
+    "ac.fit_ap_optical": {
+      "visible": true,
+      "enabled": true
+    },
+    "file.mesh_log_download": {
+      "visible": true,
+      "enabled": true
+    },
+    "file.mesh_auto_import": {
+      "visible": true,
+      "enabled": true
+    },
+    "online_mr.collect_config_once": {
+      "visible": false,
+      "enabled": false
+    },
+    "online_mr.advanced_ping": {
+      "visible": false,
+      "enabled": false
+    },
+    "online_mr.iperf_test": {
+      "visible": false,
+      "enabled": false
+    },
+    "mesh.generate_report": {
+      "visible": false,
+      "enabled": false
+    },
+    "system.feature_flags": {
+      "visible": false,
+      "enabled": false
+    }
+  }
+}

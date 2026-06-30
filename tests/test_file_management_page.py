@@ -7,6 +7,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHeaderView
 from PySide6.QtCore import Qt
 
@@ -46,7 +47,7 @@ def test_navigation_includes_file_management_page():
     page_ids = [navigation.item(index).data(256) for index in range(navigation.count())]
     labels = [navigation.item(index).text() for index in range(navigation.count())]
 
-    assert page_ids == ["devices", "ac", "rail_transit", "wifi_survey", "config_collection", "file_management", "network_tools", "logs"]
+    assert page_ids == ["devices", "ac", "rail_transit", "wifi_survey", "config_collection", "file_management", "network_tools", "logs", "feature_flags"]
     assert "file_management" in page_ids
     assert "File Management" in labels
 
@@ -318,6 +319,7 @@ def test_file_management_downloaded_mesh_log_auto_imports_to_raw_mesh_analysis(t
         qt_app.processEvents()
         if not page.mesh_import_workers:
             break
+        QTest.qWait(10)
 
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     assert repo.list_source_files()
