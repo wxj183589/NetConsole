@@ -45,6 +45,7 @@ from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import FpingConfig, IperfTrafficConfig, OnlineMrConnectionConfig, OnlineMrIntervals, OnlineMrRadioConfig, OnlineMrSnapshot
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_runner import IperfClientConfig, build_iperf_client_args, normalize_bandwidth_text
@@ -207,6 +208,8 @@ class OnlineMrCollectionPage(QWidget):
         self._stream_sample_count_by_device_id: dict[int, int] = {}
         self.realtime_states_by_device_id: dict[int, RealtimeMRState] = {}
         self.peer_station_cache: dict[str, dict[str, object]] = {}
+        self.peer_name_cache: dict[str, dict[str, object]] = {}
+        self._peer_name_cache_loaded = False
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
         self.parse_worker: OnlineMrParseWorker | None = None
         self.last_session_dir_by_device_id: dict[int, Path] = {}
@@ -220,6 +223,8 @@ class OnlineMrCollectionPage(QWidget):
         self.realtime_parse_worker: OnlineMrParseWorker | None = None
         self._stale_sessions_checked_sites: set[str] = set()
         self._view_device_user_selected = False
+        self._fping_target_user_edited: dict[int, bool] = {1: False, 2: False}
+        self._updating_fping_targets = False
 
         self.site_label = QLabel()
         self.available_device_count_label = QLabel()
@@ -267,7 +272,6 @@ class OnlineMrCollectionPage(QWidget):
         self.fping_target_label_1 = QLineEdit()
         self.fping_target_label_2 = QLineEdit()
         for target_label in (self.fping_target_label_1, self.fping_target_label_2):
-            target_label.setReadOnly(True)
             target_label.setPlaceholderText("-")
         self.fping_status_label_1 = QLabel("Ping 1: idle")
         self.fping_status_label_2 = QLabel("Ping 2: idle")
@@ -359,6 +363,7 @@ class OnlineMrCollectionPage(QWidget):
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
         self._first_show_refreshed = False
+        self._clear_peer_identity_cache()
         self._schedule_device_refresh(refresh_tools=False)
 
     def first_show_refresh(self) -> None:
@@ -375,6 +380,7 @@ class OnlineMrCollectionPage(QWidget):
 
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
+        self._clear_peer_identity_cache()
         if self.analysis_only:
             self.devices = self.repository.list()
             self._load_device_groups()
@@ -394,6 +400,11 @@ class OnlineMrCollectionPage(QWidget):
             self._fill_history()
             self._refresh_tool_status_once(force=refresh_tools)
         self._update_action_state()
+
+    def _clear_peer_identity_cache(self) -> None:
+        self.peer_station_cache.clear()
+        self.peer_name_cache.clear()
+        self._peer_name_cache_loaded = False
         self._refresh_top_metrics()
 
     def _schedule_device_refresh(self, refresh_tools: bool = False) -> None:
@@ -471,15 +482,15 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.device_name"),
                 self.i18n.t("online_mr.host"),
                 self.i18n.t("online_mr.status"),
-                self.i18n.t("online_mr.active_peer"),
+                "Peer Name",
                 "MR RSSI",
                 "归属站点",
                 self.i18n.t("online_mr.ping_loss_rate"),
-                self.i18n.t("online_mr.latest_ping_latency"),
+                "Ping延迟",
                 self.i18n.t("online_mr.collected"),
                 self.i18n.t("online_mr.failed"),
                 self.i18n.t("online_mr.reconnects"),
-                self.i18n.t("online_mr.last_collection"),
+                "最后采集",
                 "IPERF Mbps",
                 self.i18n.t("iperf.retransmits"),
                 self.i18n.t("online_mr.session"),
@@ -649,12 +660,11 @@ class OnlineMrCollectionPage(QWidget):
         main_grid.setRowStretch(0, 4)
         main_grid.setRowStretch(1, 2)
         main_work_panel.setMinimumHeight(430)
-        main_work_panel.setMaximumHeight(520)
 
         vertical_splitter = QSplitter(Qt.Vertical)
         self.vertical_splitter = vertical_splitter
-        self.summary_table.setMinimumHeight(120)
-        self.summary_table.setMaximumHeight(150)
+        self.summary_table.setMinimumHeight(150)
+        self.summary_table.setMaximumHeight(190)
         if not self.analysis_only:
             vertical_splitter.addWidget(main_work_panel)
             vertical_splitter.addWidget(self.summary_table)
@@ -688,9 +698,9 @@ class OnlineMrCollectionPage(QWidget):
             self.tabs.addTab(self.raw_text, "")
             self.tabs.addTab(self.log_text, "")
             self.tabs.addTab(self.iperf_table, "")
-        self.tabs.setMinimumHeight(260)
+        self.tabs.setMinimumHeight(180)
         detail = QWidget()
-        detail.setMinimumHeight(320)
+        detail.setMinimumHeight(210)
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(4)
@@ -702,10 +712,10 @@ class OnlineMrCollectionPage(QWidget):
             vertical_splitter.setStretchFactor(0, 1)
             vertical_splitter.setSizes([720])
         else:
-            vertical_splitter.setStretchFactor(0, 5)
+            vertical_splitter.setStretchFactor(0, 6)
             vertical_splitter.setStretchFactor(1, 1)
-            vertical_splitter.setStretchFactor(2, 3)
-            vertical_splitter.setSizes([500, 135, 360])
+            vertical_splitter.setStretchFactor(2, 2)
+            vertical_splitter.setSizes([620, 150, 180])
         content_layout.addWidget(vertical_splitter, 1)
         self.retranslate()
         self._load_all_table_widths()
@@ -721,8 +731,10 @@ class OnlineMrCollectionPage(QWidget):
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
-        self.fping_device_combo_1.currentIndexChanged.connect(lambda _index: self._refresh_ping_target_labels())
-        self.fping_device_combo_2.currentIndexChanged.connect(lambda _index: self._refresh_ping_target_labels())
+        self.fping_device_combo_1.currentIndexChanged.connect(lambda _index: self._fping_device_changed(1))
+        self.fping_device_combo_2.currentIndexChanged.connect(lambda _index: self._fping_device_changed(2))
+        self.fping_target_label_1.textEdited.connect(lambda _text: self._fping_target_edited(1))
+        self.fping_target_label_2.textEdited.connect(lambda _text: self._fping_target_edited(2))
 
     def _build_analysis_chart_placeholders(self) -> None:
         if self.analysis_charts.count() > 0:
@@ -1710,6 +1722,8 @@ class OnlineMrCollectionPage(QWidget):
         self._last_active_peer_by_device_id[int(event.device_id)] = peer
 
     def _publish_snapshot_event(self, snapshot: OnlineMrSnapshot) -> None:
+        if not snapshot.session_id or str(snapshot.session_id).startswith("pending:"):
+            return
         bus = self.event_buses.get(snapshot.session_id)
         device_id = self.session_to_device_id.get(snapshot.session_id)
         if bus is None:
@@ -1719,7 +1733,13 @@ class OnlineMrCollectionPage(QWidget):
             bus = self._ensure_event_pipeline(snapshot.session_id, session_dir)
         timestamp = _snapshot_time(snapshot.last_collection_time)
         if snapshot.active_peer:
-            peer_info = self._resolve_peer_cached(snapshot.active_peer) or {}
+            snapshot_peer_name = str(getattr(snapshot, "peer_name", "") or "")
+            snapshot_peer_site = str(getattr(snapshot, "peer_station", "") or getattr(snapshot, "peer_site", "") or "")
+            peer_info = self._resolve_peer_identity_cached(snapshot_peer_name or snapshot.active_peer) or {}
+            if not peer_info and snapshot_peer_name:
+                peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
+            peer_name = snapshot_peer_name or str(peer_info.get("peer_ap_name") or "")
+            peer_site = snapshot_peer_site or str(peer_info.get("peer_site") or "")
             bus.publish(
                 OnlineMrEvent(
                     timestamp=timestamp,
@@ -1731,8 +1751,9 @@ class OnlineMrCollectionPage(QWidget):
                     payload={
                         "active_peer": snapshot.active_peer,
                         "peer_mac": snapshot.active_peer,
-                        "peer_name": peer_info.get("peer_ap_name") or "",
-                        "peer_site": peer_info.get("peer_site") or "",
+                        "peer_name": peer_name,
+                        "peer_site": peer_site,
+                        "peer_station": peer_site,
                         "peer_radio": peer_info.get("peer_radio_label") or "",
                         "link_state": "ACTIVE",
                         "local_rssi": snapshot.local_rssi,
@@ -1840,23 +1861,54 @@ class OnlineMrCollectionPage(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
             self.summary_table.setItem(row, column, item)
 
-    def _resolve_peer_cached(self, peer_mac: str) -> dict[str, object] | None:
-        key = _normalize_mac_key(peer_mac)
-        if not key:
+    def _resolve_peer_cached(self, peer_mac_or_name: str) -> dict[str, object] | None:
+        return self._resolve_peer_identity_cached(peer_mac_or_name)
+
+    def _resolve_peer_identity_cached(self, peer_mac_or_name: str) -> dict[str, object] | None:
+        text = str(peer_mac_or_name or "").strip()
+        if not text:
             return None
-        if key not in self.peer_station_cache:
-            try:
-                resolved = self.peer_mapping_service.resolve_peer_mac(peer_mac)
-                self.peer_station_cache[key] = {
-                    "peer_ap_name": resolved.ap_name or "",
-                    "peer_site": resolved.site or "",
-                    "peer_radio_label": resolved.radio or "",
-                    "peer_radio_mac": resolved.radio_mac or "",
-                    "match_rule": resolved.source,
-                }
-            except Exception:
-                self.peer_station_cache[key] = {}
-        return self.peer_station_cache.get(key)
+        key = _normalize_mac_key(text)
+        if key:
+            if key not in self.peer_station_cache:
+                try:
+                    resolved = self.peer_mapping_service.resolve_peer_mac(text)
+                    self.peer_station_cache[key] = {
+                        "peer_ap_name": resolved.ap_name or "",
+                        "peer_site": resolved.site or "",
+                        "peer_radio_label": resolved.radio or "",
+                        "peer_radio_mac": resolved.radio_mac or "",
+                        "peer_mac": resolved.peer_mac or text,
+                        "match_rule": resolved.source,
+                    }
+                except Exception:
+                    self.peer_station_cache[key] = {}
+            return self.peer_station_cache.get(key)
+        self._ensure_peer_name_cache()
+        return self.peer_name_cache.get(_normalize_peer_name_key(text))
+
+    def _ensure_peer_name_cache(self) -> None:
+        if self._peer_name_cache_loaded:
+            return
+        self._peer_name_cache_loaded = True
+        try:
+            rows = AcRepository(self.repository.database).list_all_fit_ap_resources_with_metadata()
+        except Exception:
+            rows = []
+        for row in rows:
+            name = str(row.get("ap_name") or "").strip()
+            key = _normalize_peer_name_key(name)
+            if not key:
+                continue
+            self.peer_name_cache[key] = {
+                "peer_ap_name": name,
+                "peer_site": row.get("site") or row.get("site_name") or row.get("station") or "",
+                "peer_radio_label": "",
+                "peer_radio_mac": "",
+                "peer_mac": row.get("ap_mac") or "",
+                "serial_number": row.get("serial_number") or "",
+                "match_rule": "ap_name",
+            }
 
     @staticmethod
     def _latest_module_event(events: list[OnlineMrEvent], module: str) -> OnlineMrEvent | None:
@@ -2147,25 +2199,54 @@ class OnlineMrCollectionPage(QWidget):
             combo.blockSignals(True)
             combo.setCurrentIndex(index if index >= 0 else 0)
             combo.blockSignals(False)
+        if previous_1 != desired[0]:
+            self._fping_target_user_edited[1] = False
+        if previous_2 != desired[1]:
+            self._fping_target_user_edited[2] = False
         self._refresh_ping_target_labels()
         self._refresh_ping_status_labels()
 
+    def _fping_device_changed(self, slot: int) -> None:
+        self._fping_target_user_edited[slot] = False
+        self._refresh_ping_target_labels()
+
+    def _fping_target_edited(self, slot: int) -> None:
+        if self._updating_fping_targets:
+            return
+        self._fping_target_user_edited[slot] = True
+
     def _refresh_ping_target_labels(self) -> None:
+        self._updating_fping_targets = True
+        try:
+            for slot, combo, target_label in (
+                (1, self.fping_device_combo_1, self.fping_target_label_1),
+                (2, self.fping_device_combo_2, self.fping_target_label_2),
+            ):
+                device_id = combo.currentData()
+                target = ""
+                placeholder = self.i18n.t("online_mr.ping_target_placeholder")
+                if device_id is not None:
+                    device = self._device_by_id(int(device_id))
+                    if device is not None:
+                        target = str(device.primary_address or "").strip()
+                        if not target:
+                            placeholder = self.i18n.t("online_mr.ping_target_empty")
+                target_label.setPlaceholderText(placeholder)
+                if not self._fping_target_user_edited.get(slot, False):
+                    target_label.setText(target)
+        finally:
+            self._updating_fping_targets = False
+
+    def _fping_target_text_for_device(self, device_id: int, fallback: object = "") -> str:
         for combo, target_label in (
             (self.fping_device_combo_1, self.fping_target_label_1),
             (self.fping_device_combo_2, self.fping_target_label_2),
         ):
-            device_id = combo.currentData()
-            target = ""
-            placeholder = "-"
-            if device_id is not None:
-                device = self._device_by_id(int(device_id))
-                if device is not None:
-                    target = str(device.primary_address or "").strip()
-                    if not target:
-                        placeholder = "主机地址为空"
-            target_label.setPlaceholderText(placeholder)
-            target_label.setText(target)
+            if combo.currentData() == device_id:
+                target = target_label.text().strip()
+                if target:
+                    return target
+        return str(fallback or "").strip()
 
     def _selected_fping_device_ids(self) -> set[int]:
         ids: set[int] = set()
@@ -2183,7 +2264,8 @@ class OnlineMrCollectionPage(QWidget):
         if selected_ids and source_device_id not in selected_ids:
             return None
         repo_device = self._device_by_id(source_device_id)
-        target_ip = str((repo_device.primary_address if repo_device else device.primary_address) or "").strip()
+        fallback = repo_device.primary_address if repo_device else device.primary_address
+        target_ip = self._fping_target_text_for_device(source_device_id, fallback)
         if not target_ip:
             return None
         return PingConfig(source_device_id=source_device_id, target_ip=target_ip)
@@ -2270,8 +2352,9 @@ class OnlineMrCollectionPage(QWidget):
                 modules.append("ping")
             realtime = self._realtime_status_for_device(int(device.id))
             ping_text = realtime if realtime else ping_label.text()
+            session_text = "" if str(snapshot.session_id or "").startswith("pending:") else snapshot.session_id
             label.setText(
-                f"状态：{self._status_text(snapshot.status)}  会话：{snapshot.session_id or '-'}\n"
+                f"状态：{self._status_text(snapshot.status)}  会话：{session_text or '-'}\n"
                 f"Mesh：正常  Busy：正常  Stats：正常\n"
                 f"{ping_text}\n"
                 f"采集时长：{snapshot.uptime_seconds}s"
@@ -2491,7 +2574,7 @@ class OnlineMrCollectionPage(QWidget):
         self.enable_iperf_check.setEnabled(True)
 
     def _upsert_summary(self, snapshot: OnlineMrSnapshot) -> None:
-        device_id = self.session_to_device_id.get(snapshot.session_id)
+        device_id = self.session_to_device_id.get(snapshot.session_id) or getattr(snapshot, "device_id", None)
         if device_id is None:
             app_logger.log_warning("ONLINE_MR_SNAPSHOT_WITHOUT_DEVICE", f"session_id={snapshot.session_id}")
             return
@@ -2500,20 +2583,27 @@ class OnlineMrCollectionPage(QWidget):
         if row < 0:
             row = self.summary_table.rowCount()
             self.summary_table.insertRow(row)
-        worker = self.workers.get(snapshot.session_id)
+        worker = self.workers.get(snapshot.session_id) or self.workers_by_device_id.get(int(device_id))
         config = worker.collector.config if worker else None
-        host_text = ""
+        host_text = getattr(snapshot, "host", "") or ""
         if config:
             host_text = config.host
             if config.connection_method:
                 host_text = f"{host_text} ({config.connection_method})"
+        peer_name = str(getattr(snapshot, "peer_name", "") or "")
+        peer_station = str(getattr(snapshot, "peer_station", "") or getattr(snapshot, "peer_site", "") or "")
+        peer_info = self._resolve_peer_identity_cached(peer_name or snapshot.active_peer) or {}
+        if not peer_info and peer_name and snapshot.active_peer:
+            peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
+        peer_display = peer_name or str(peer_info.get("peer_ap_name") or peer_info.get("ap_name") or "") or snapshot.active_peer
+        peer_site = peer_station or str(peer_info.get("peer_site") or peer_info.get("site") or "")
         values = [
-            config.device_name if config else "",
+            config.device_name if config else getattr(snapshot, "device_name", ""),
             host_text,
             snapshot.status,
-            snapshot.active_peer,
+            peer_display,
             snapshot.local_rssi,
-            "",
+            peer_site,
             "",
             "",
             snapshot.collected_count,
@@ -2563,8 +2653,12 @@ class OnlineMrCollectionPage(QWidget):
             return
         row = self.mesh_table.rowCount()
         self.mesh_table.insertRow(row)
-        peer_info = self._resolve_peer_cached(snapshot.active_peer) or {}
-        values = [snapshot.last_collection_time, 1, "ACTIVE", "", snapshot.active_peer, snapshot.local_rssi, "", "", peer_info.get("peer_site") or "", ""]
+        peer_name = str(getattr(snapshot, "peer_name", "") or "")
+        peer_info = self._resolve_peer_identity_cached(peer_name or snapshot.active_peer) or {}
+        if not peer_info and peer_name:
+            peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
+        peer_site = str(getattr(snapshot, "peer_station", "") or getattr(snapshot, "peer_site", "") or peer_info.get("peer_site") or "")
+        values = [snapshot.last_collection_time, 1, "ACTIVE", peer_name or peer_info.get("peer_ap_name") or "", snapshot.active_peer, snapshot.local_rssi, "", "", peer_site, ""]
         for column, value in enumerate(values):
             self.mesh_table.setItem(row, column, QTableWidgetItem("" if value is None else str(value)))
         self._trim_table(self.mesh_table)
@@ -2723,8 +2817,8 @@ class OnlineMrCollectionPage(QWidget):
 
     def _ping_box(self) -> QGroupBox:
         box = QGroupBox()
-        box.setMinimumHeight(300)
-        box.setMaximumHeight(380)
+        box.setMinimumHeight(220)
+        box.setMaximumHeight(280)
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -2766,7 +2860,6 @@ class OnlineMrCollectionPage(QWidget):
             target.setMinimumWidth(160)
             target.setMaximumWidth(260)
             target.setMinimumHeight(28)
-            target.setReadOnly(True)
         return box
 
     def _ping_endpoint_box(self, title: str, combo: QComboBox, target: QLineEdit) -> QGroupBox:
@@ -2930,7 +3023,7 @@ class OnlineMrCollectionPage(QWidget):
             "history_sessions": self.history_table,
         }
         defaults = {
-            "session_summary": [160, 120, 90, 180, 80, 120, 90, 110, 80, 80, 80, 160, 100, 80, 90, 160, 70],
+            "session_summary": [180, 130, 90, 180, 80, 110, 80, 90, 80, 80, 80, 150, 100, 80, 160, 80],
             "mesh_link": [180, 90, 110, 160, 180, 90, 160, 160, 120, 140],
             "channel_busy": [180, 90, 90, 90, 90, 360],
             "statistics": [180, 120, 90, 180, 180, 320],
@@ -2944,7 +3037,15 @@ class OnlineMrCollectionPage(QWidget):
             if not isinstance(widths, list):
                 widths = defaults[name]
             for column, width in enumerate(widths[: table.columnCount()]):
-                table.setColumnWidth(column, int(width))
+                default_width = defaults[name][column] if column < len(defaults[name]) else int(width)
+                table.setColumnWidth(column, max(int(width), int(default_width)))
+            if table is self.summary_table:
+                header = table.horizontalHeader()
+                for column in (SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION):
+                    header.setSectionResizeMode(column, QHeaderView.Stretch)
+                for column in range(table.columnCount()):
+                    if column not in {SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION}:
+                        header.setSectionResizeMode(column, QHeaderView.Interactive)
             table.horizontalHeader().sectionResized.connect(lambda _idx, _old, _new, n=name, t=table: self._save_table_widths(n, t))
 
     def _save_table_widths(self, name: str, table: QTableWidget) -> None:
@@ -2990,3 +3091,7 @@ def _snapshot_time(value: object) -> datetime:
 def _normalize_mac_key(value: object) -> str:
     compact = re.sub(r"[^0-9a-fA-F]", "", str(value or "")).lower()
     return compact if len(compact) == 12 else ""
+
+
+def _normalize_peer_name_key(value: object) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()

@@ -112,9 +112,14 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
         state.retry_count = retry if retry is not None else state.retry_count
         state.retry = retry if retry is not None else state.retry
-        lookup_key = state.peer_mac or state.peer_name
-        if lookup_key and resolve_peer and (not state.peer_name or not state.peer_station):
-            resolved = resolve_peer(lookup_key) or {}
+        if resolve_peer and (not state.peer_name or not state.peer_station):
+            resolved: dict[str, object] = {}
+            for lookup_key in (state.peer_mac, state.peer_name):
+                if not lookup_key:
+                    continue
+                resolved = resolve_peer(lookup_key) or {}
+                if resolved:
+                    break
             state.peer_name = _text(resolved.get("peer_ap_name") or resolved.get("ap_name")) or state.peer_name
             resolved_site = _text(resolved.get("peer_site") or resolved.get("site"))
             state.peer_station = resolved_site or state.peer_station

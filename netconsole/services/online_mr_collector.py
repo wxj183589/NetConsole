@@ -368,8 +368,28 @@ class OnlineMrCollector:
             + self.stats.switch_history_failed
             + self.stats.interface_rate_failed
         )
-        snapshot = self.latest_snapshot or OnlineMrSnapshot(self._session().meta.session_id, self.status)
+        if self.latest_snapshot is not None:
+            snapshot = self.latest_snapshot
+        elif self.session is not None:
+            snapshot = OnlineMrSnapshot(
+                self.session.meta.session_id,
+                self.status,
+                device_id=self.config.device_id,
+                device_name=self.config.device_name,
+                host=self.config.host,
+            )
+        else:
+            snapshot = OnlineMrSnapshot(
+                f"pending:{self.config.device_id}" if self.config.device_id is not None else "",
+                self.status,
+                device_id=self.config.device_id,
+                device_name=self.config.device_name,
+                host=self.config.host,
+            )
         snapshot.status = self.status
+        snapshot.device_id = self.config.device_id
+        snapshot.device_name = self.config.device_name
+        snapshot.host = self.config.host
         snapshot.collected_count = collected
         snapshot.failed_count = failed
         snapshot.reconnect_count = self.stats.reconnect_count
@@ -388,7 +408,13 @@ class OnlineMrCollector:
                     self.latest_snapshot = OnlineMrSnapshot(
                         session.meta.session_id,
                         self.status,
+                        device_id=self.config.device_id,
+                        device_name=self.config.device_name,
+                        host=self.config.host,
                         active_peer=active.peer_mac_raw,
+                        peer_name=str(active.metrics.get("peer_name") or ""),
+                        peer_station=str(active.metrics.get("peer_station") or active.metrics.get("peer_site") or ""),
+                        peer_site=str(active.metrics.get("peer_station") or active.metrics.get("peer_site") or ""),
                         local_rssi=active.metrics.get("local_rssi_db"),
                         peer_rssi=active.metrics.get("peer_rssi_db"),
                         local_tx_busy=active.metrics.get("local_tx_busy"),

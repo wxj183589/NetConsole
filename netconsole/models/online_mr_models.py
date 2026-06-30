@@ -312,7 +312,13 @@ class OnlineMrSessionMeta:
 class OnlineMrSnapshot:
     session_id: str
     status: str
+    device_id: int | None = None
+    device_name: str = ""
+    host: str = ""
     active_peer: str = ""
+    peer_name: str = ""
+    peer_station: str = ""
+    peer_site: str = ""
     local_rssi: int | None = None
     peer_rssi: int | None = None
     local_tx_busy: int | None = None

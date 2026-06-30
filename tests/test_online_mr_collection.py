@@ -20,6 +20,7 @@ from netconsole.models.online_mr_models import (
     INIT_COMMANDS,
     STATE_ABORTED,
     STATE_COLLECTING,
+    STATE_CONNECTING,
     STATE_RECONNECTING,
     STATE_STOPPED,
     TASK_CHANNEL_BUSY,
@@ -46,7 +47,17 @@ from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text,
 from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_LINK_SWITCH, EVENT_MESH_SAMPLE, OnlineMrEvent
 from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator, build_realtime_state
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
-from netconsole.ui.pages.online_mr_collection_page import OnlineMrCollectionPage, SUMMARY_COL_DEVICE_ID, is_fat_ap_device, natural_device_sort_key, safe_device_folder_name
+from netconsole.ui.pages.online_mr_collection_page import (
+    OnlineMrCollectionPage,
+    SUMMARY_COL_ACTIVE_PEER,
+    SUMMARY_COL_DEVICE_ID,
+    SUMMARY_COL_LAST_COLLECTION,
+    SUMMARY_COL_PEER_SITE,
+    SUMMARY_COL_PING_LATENCY,
+    is_fat_ap_device,
+    natural_device_sort_key,
+    safe_device_folder_name,
+)
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
@@ -262,6 +273,19 @@ def test_ui_throttle_coalesces_many_snapshots() -> None:
     assert snapshot.session_id == "99"
     assert throttle.flush() is None
     assert throttle.flush_count == 1
+
+
+def test_collector_snapshot_before_session_is_pending_with_device_identity(tmp_path: Path) -> None:
+    collector, _connection = _collector(tmp_path)
+    collector.status = STATE_CONNECTING
+
+    snapshot = collector.snapshot()
+
+    assert snapshot.status == STATE_CONNECTING
+    assert snapshot.session_id == "pending:1"
+    assert snapshot.device_id == 1
+    assert snapshot.device_name == "FAT-AP-01"
+    assert snapshot.host == "192.0.2.10"
 
 
 def test_parse_failure_saves_raw_marks_failed_and_loop_continues(tmp_path: Path) -> None:
@@ -768,15 +792,15 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.device_panel.minimumHeight() >= 280
     assert page.right_control_scroll.minimumWidth() >= 560
     assert page.right_control_scroll.maximumWidth() <= 700
-    assert page.ping_box.minimumHeight() >= 300
-    assert page.ping_box.maximumHeight() <= 380
+    assert page.ping_box.minimumHeight() >= 220
+    assert page.ping_box.maximumHeight() <= 280
     assert page.fping_device_combo_1.minimumWidth() >= 220
     assert page.fping_device_combo_1.maximumWidth() <= 360
     assert page.fping_target_label_1.minimumWidth() >= 160
     assert page.fping_target_label_1.maximumWidth() <= 260
-    assert page.summary_table.minimumHeight() >= 120
-    assert page.summary_table.maximumHeight() <= 150
-    assert page.tabs.minimumHeight() >= 260
+    assert page.summary_table.minimumHeight() >= 150
+    assert page.summary_table.maximumHeight() <= 190
+    assert page.tabs.minimumHeight() >= 180
     assert page.tabs.count() == 3
     assert page.tabs.tabText(0) == "采集输出"
     assert page.tabs.tabText(1) == "采集日志"
@@ -812,19 +836,21 @@ def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
 
     assert page.fping_device_combo_1.currentData() == first.id
     assert page.fping_device_combo_2.currentData() == second.id
-    assert page.fping_target_label_1.isReadOnly()
-    assert page.fping_target_label_2.isReadOnly()
+    assert not page.fping_target_label_1.isReadOnly()
+    assert not page.fping_target_label_2.isReadOnly()
     assert page.fping_target_label_1.text() == first.primary_address
     assert page.fping_target_label_2.text() == second.primary_address
     combo_ids = {page.fping_device_combo_1.itemData(index) for index in range(page.fping_device_combo_1.count())}
     assert combo_ids == {None, first.id, second.id}
 
-    page.fping_target_edit.setText("203.0.113.250")
+    page.fping_target_label_1.setText("203.0.113.250")
+    page._fping_target_edited(1)
+    page._refresh_ping_target_labels()
     first_config = page._build_config_for_device(first)
     second_config = page._build_config_for_device(second)
     assert first_config is not None
     assert second_config is not None
-    assert first_config.fping.target == first.primary_address
+    assert first_config.fping.target == "203.0.113.250"
     assert second_config.fping.target == second.primary_address
 
 
@@ -857,6 +883,55 @@ def test_online_mr_summary_binds_station_without_busy_columns(tmp_path: Path) ->
     assert page.summary_table.item(0, 5).text() == "宁波站"
     assert page.summary_table.item(0, 6).text() == "-"
     assert page.summary_table.item(0, SUMMARY_COL_DEVICE_ID).text() == "7"
+
+
+def test_online_mr_snapshot_summary_prefers_peer_name_and_station(tmp_path: Path) -> None:
+    from netconsole.models.online_mr_models import OnlineMrSnapshot
+
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    snapshot = OnlineMrSnapshot(
+        "pending:7",
+        "COLLECTING",
+        device_id=7,
+        device_name="MR-07",
+        host="192.0.2.7",
+        active_peer="30f5-277a-5a2f",
+        peer_name="AP-X_3111",
+        peer_station="横溪站",
+        local_rssi=36,
+    )
+
+    page._upsert_summary(snapshot)
+
+    headers = [page.summary_table.horizontalHeaderItem(column).text() for column in range(page.summary_table.columnCount())]
+    assert headers[SUMMARY_COL_ACTIVE_PEER] == "Peer Name"
+    assert headers[SUMMARY_COL_PING_LATENCY] == "Ping延迟"
+    assert headers[SUMMARY_COL_LAST_COLLECTION] == "最后采集"
+    assert page.summary_table.item(0, SUMMARY_COL_ACTIVE_PEER).text() == "AP-X_3111"
+    assert page.summary_table.item(0, SUMMARY_COL_PEER_SITE).text() == "横溪站"
+
+
+def test_online_mr_peer_resolver_supports_ap_name_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+
+    monkeypatch.setattr(
+        "netconsole.ui.pages.online_mr_collection_page.AcRepository.list_all_fit_ap_resources_with_metadata",
+        lambda _self: [
+            {
+                "ap_name": "AP-X_3111",
+                "ap_mac": "083b-e9ec-da40",
+                "serial_number": "SN-3111",
+                "site": "横溪站",
+            }
+        ],
+    )
+
+    resolved = page._resolve_peer_identity_cached(" ap-x_3111 ")
+
+    assert resolved is not None
+    assert resolved["peer_ap_name"] == "AP-X_3111"
+    assert resolved["peer_site"] == "横溪站"
+    assert resolved["peer_mac"] == "083b-e9ec-da40"
 
 
 def test_online_mr_stream_mesh_event_updates_summary_without_file_polling(tmp_path: Path) -> None:

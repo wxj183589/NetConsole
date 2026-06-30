@@ -8,6 +8,7 @@ from time import perf_counter
 
 from PySide6.QtCore import QThread, Signal
 
+from netconsole.core import app_logger
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.ac_repository import AcRepository
@@ -205,12 +206,24 @@ class TracksideApBusinessExportThread(QThread):
 
     def run(self) -> None:
         tmp_path = self.path.with_name(f"{self.path.stem}.tmp{self.path.suffix}")
+        profile_start = perf_counter()
+
+        def log_phase(phase: str, start: float, **values: object) -> None:
+            elapsed_ms = int((perf_counter() - start) * 1000)
+            details = " ".join(f"{key}={value}" for key, value in values.items())
+            app_logger.log_info("TRACKSIDE_EXPORT_PROFILE", f"phase={phase} elapsed_ms={elapsed_ms}" + (f" {details}" if details else ""))
+
         try:
             self.stage_changed.emit("trackside.export.progress_load")
+            phase_start = perf_counter()
             snapshot = load_trackside_ap_business_snapshot(self.repository, self.site_name, generation=0)
+            log_phase("load_trackside_rows", phase_start, rows=len(snapshot.rows))
             ac_repository = AcRepository(self.repository.database)
             fact_repository = DeviceFactRepository(self.repository.database)
+            phase_start = perf_counter()
             resources = ac_repository.list_all_fit_ap_resources_with_metadata()
+            log_phase("load_fit_ap_resources", phase_start, rows=len(resources))
+            phase_start = perf_counter()
             ac_device_names = {str(device.device_uuid or ""): device.name for device in self.repository.list() if str(device.device_uuid or "")}
             resources = [
                 {
@@ -219,21 +232,37 @@ class TracksideApBusinessExportThread(QThread):
                 }
                 for row in resources
             ]
+            log_phase("load_ac_devices", phase_start, rows=len(ac_device_names))
+            phase_start = perf_counter()
             optical_rows = ac_repository.list_all_fit_ap_optical()
+            log_phase("load_fit_ap_optical", phase_start, rows=len(optical_rows))
+            phase_start = perf_counter()
             resource_history_rows = ac_repository.list_all_fit_ap_resource_history()
+            log_phase("load_fit_ap_resource_history", phase_start, rows=len(resource_history_rows))
+            phase_start = perf_counter()
             ap_optical_history_rows = ac_repository.list_all_ap_optical_history()
+            log_phase("load_ap_optical_history", phase_start, rows=len(ap_optical_history_rows))
+            phase_start = perf_counter()
             capacity_details = ac_repository.list_active_trackside_plan_capacity_details()
             if not capacity_details:
                 capacity_details = ac_repository.list_station_ap_capacity_details()
+            log_phase("load_capacity_details", phase_start, rows=len(capacity_details))
+            phase_start = perf_counter()
             overview_rows = ApOnlineOverviewService.build_rows(
                 metadata_rows=ac_repository.list_fit_ap_metadata(),
                 fit_ap_resources=resources,
                 optical_rows=optical_rows,
                 capacity_details=capacity_details,
             )
+            log_phase("build_ap_online_overview", phase_start, rows=len(overview_rows))
+            phase_start = perf_counter()
             latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
+            log_phase("build_latest_ap_history_indexes", phase_start, resources=len(resources))
+            phase_start = perf_counter()
             devices = filter_station_switch_devices(self.repository.list(), self.repository.database, self.site_name)
             switch_optical_history_rows = fact_repository.list_all_optical_history([str(device.device_uuid or "") for device in devices])
+            log_phase("load_switch_optical_history", phase_start, devices=len(devices), rows=len(switch_optical_history_rows))
+            phase_start = perf_counter()
             offline_stats, offline_ledger_rows = build_offline_ap_ledger(
                 fit_ap_resources=resources,
                 latest_lldp_by_ap=latest_lldp,
@@ -241,11 +270,32 @@ class TracksideApBusinessExportThread(QThread):
                 device_lookup_by_name=build_device_lookup_by_name(devices),
                 resource_history_rows=resource_history_rows,
             )
-            rows = enrich_trackside_export_rows(snapshot.rows, fact_repository, ac_repository)
+            log_phase("build_offline_ap_ledger", phase_start, rows=len(offline_ledger_rows))
+            phase_start = perf_counter()
+            rows = enrich_trackside_export_rows(
+                snapshot.rows,
+                fact_repository,
+                ac_repository,
+                switch_optical_history_rows=switch_optical_history_rows,
+                ap_optical_history_rows=ap_optical_history_rows,
+            )
+            log_phase("build_history_compare", phase_start, rows=len(rows))
+            phase_start = perf_counter()
             new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows)
-            optical_treatment_rows = build_ap_optical_treatment_records(rows, ap_optical_history_rows, switch_optical_history_rows, resources)
+            log_phase("build_new_online_ap_overview", phase_start, rows=len(new_online_ap_rows))
+            phase_start = perf_counter()
+            optical_treatment_rows = build_ap_optical_treatment_records(
+                rows,
+                ap_optical_history_rows,
+                switch_optical_history_rows,
+                resources,
+                resource_history_rows,
+                offline_ledger_rows=offline_ledger_rows,
+            )
+            log_phase("build_optical_treatment", phase_start, rows=len(optical_treatment_rows), ap_history=len(ap_optical_history_rows), switch_history=len(switch_optical_history_rows))
             self.stage_changed.emit("trackside.export.progress_write")
             tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            phase_start = perf_counter()
             export_trackside_ap_business_xlsx(
                 tmp_path,
                 rows,
@@ -268,7 +318,10 @@ class TracksideApBusinessExportThread(QThread):
                 self.offline_ledger_headers,
                 progress_callback=self.stage_changed.emit,
             )
+            log_phase("write_excel", phase_start, rows=len(rows), treatment_rows=len(optical_treatment_rows))
+            phase_start = perf_counter()
             os.replace(tmp_path, self.path)
+            log_phase("save_excel", phase_start, path=self.path.name)
         except Exception as exc:
             try:
                 if tmp_path.exists():
@@ -277,6 +330,7 @@ class TracksideApBusinessExportThread(QThread):
                 pass
             self.export_failed.emit(str(exc))
             return
+        log_phase("total", profile_start)
         self.export_finished.emit({"path": self.path, "row_count": len(rows)})
 
 

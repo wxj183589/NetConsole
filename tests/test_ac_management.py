@@ -1751,6 +1751,123 @@ def test_trackside_ap_business_treatment_records_complete_ap_identity_and_normal
     assert ap_record["serial_number"] == "SN-GE"
 
 
+def test_trackside_ap_business_treatment_records_complete_identity_by_serial_only():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "-",
+            "ap_mac": "-",
+            "serial_number": "SN-ONLY",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_rx_power": "-24.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        }
+    ]
+    resources = [{"serial_number": "SN-ONLY", "ap_name": "AP-SERIAL", "ap_mac": "083b.e9ec.da40"}]
+
+    records = build_ap_optical_treatment_records(trackside_rows, [], [], resources)
+
+    assert len(records) == 1
+    assert records[0]["ap_name"] == "AP-SERIAL"
+    assert records[0]["ap_mac"] == "083b-e9ec-da40"
+
+
+def test_trackside_ap_business_treatment_records_use_ap_name_mac_as_fallback():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "30f5-277a-0ea0",
+            "ap_mac": "",
+            "serial_number": "SN-MAC-NAME",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_rx_power": "-24.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        }
+    ]
+
+    records = build_ap_optical_treatment_records(trackside_rows, [], [], [])
+
+    assert records[0]["ap_name"] == "30f5-277a-0ea0"
+    assert records[0]["ap_mac"] == "30f5-277a-0ea0"
+
+
+def test_trackside_ap_business_treatment_records_use_offline_ledger_by_serial():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "-",
+            "ap_mac": "-",
+            "serial_number": "SN-OFFLINE",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_rx_power": "-24.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        }
+    ]
+    offline_ledger_rows = [
+        {"site": "Station A", "ap_name": "AP-OFFLINE", "ap_mac": "083b.e9ec.da40", "serial_number": "SN-OFFLINE"}
+    ]
+
+    records = build_ap_optical_treatment_records(trackside_rows, [], [], [], [], offline_ledger_rows=offline_ledger_rows)
+
+    assert records[0]["ap_name"] == "AP-OFFLINE"
+    assert records[0]["ap_mac"] == "083b-e9ec-da40"
+
+
+def test_trackside_ap_business_treatment_records_use_offline_ledger_by_switch_interface():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "-",
+            "ap_mac": "-",
+            "serial_number": "",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_rx_power": "-24.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        }
+    ]
+    offline_ledger_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "AP-PORT",
+            "ap_mac": "083be9ecda40",
+            "serial_number": "SN-PORT",
+            "historical_switch_name": "SW-1",
+            "historical_switch_interface": "GE2/0/1",
+        }
+    ]
+
+    records = build_ap_optical_treatment_records(trackside_rows, [], [], [], [], offline_ledger_rows=offline_ledger_rows)
+
+    assert records[0]["ap_name"] == "AP-PORT"
+    assert records[0]["ap_mac"] == "083b-e9ec-da40"
+    assert records[0]["serial_number"] == "SN-PORT"
+
+
+def test_trackside_ap_business_treatment_records_ignore_unmatched_switch_history():
+    records = build_ap_optical_treatment_records(
+        [],
+        [],
+        [{"device_uuid": "sw-ordinary", "interface_name": "GE1/0/1", "rx_power": "-24", "optical_alarm_status": "warning"}],
+        [],
+        [],
+        offline_ledger_rows=[],
+    )
+
+    assert records == []
+
+
 def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(tmp_path):
     from openpyxl import load_workbook
 
@@ -1769,7 +1886,15 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
         new_online_ap_columns=NEW_ONLINE_AP_OVERVIEW_COLUMNS,
         new_online_ap_headers=[i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
         new_online_ap_sheet_title=i18n.t("trackside.export.sheet_new_online_ap_overview"),
-        ap_optical_treatment_rows=[{"site": "Station A", "ap_name": "AP-1", "side": "AP侧", "treatment_status": TREATMENT_OPEN_LABEL}],
+        ap_optical_treatment_rows=[
+            {
+                "site": "Station A",
+                "ap_name": "AP-1",
+                "ap_mac": "0011-2233-4455",
+                "side": "AP侧",
+                "treatment_status": TREATMENT_OPEN_LABEL,
+            }
+        ],
         ap_optical_treatment_columns=AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
         ap_optical_treatment_headers=[i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
         ap_optical_treatment_sheet_title=i18n.t("trackside.export.sheet_ap_optical_treatment"),
@@ -1792,6 +1917,8 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
     assert workbook["新增上线AP概览"]["A2"].value == "Station A"
     treatment_sheet = workbook["AP光衰处理记录"]
     assert treatment_sheet.cell(row=1, column=treatment_sheet.max_column).value == "处理完成时间"
+    assert treatment_sheet["B2"].value == "AP-1"
+    assert treatment_sheet["C2"].value == "0011-2233-4455"
     assert treatment_sheet["N2"].value == TREATMENT_OPEN_LABEL
     assert treatment_sheet["P2"].value is None
     assert treatment_sheet["A1"].fill.fgColor.rgb == "00DBEAFE"
@@ -3172,8 +3299,8 @@ def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
         [{"ac_device_uuid": "ac-1", "ap_uuid": "ap-23", "ap_mac": "bc5a-3457-cbe1", "ap_name": "Renamed-AP-23"}],
     )
 
-    assert rows[0]["ap_mac"] is None
-    assert rows[0]["ap_name"] is None
+    assert rows[0]["ap_mac"] == "bc5a-3457-cbe1"
+    assert rows[0]["ap_name"] == "Renamed-AP-23"
     assert rows[0]["ap_rx_power"] is None
     assert rows[0]["switch_optical_status"] == "unknown"
     assert rows[0]["ap_optical_status"] == ""
@@ -3191,7 +3318,7 @@ def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
         {"sw-1": [{"local_interface": "GE2/0/24", "neighbor_mac": "bc5a-3457-cbe2"}]},
     )
 
-    assert rows[0]["ap_mac"] is None
+    assert rows[0]["ap_mac"] == "bc5a-3457-cbe2"
     assert rows[0]["ap_name"] is None
     assert rows[0]["ap_rx_power"] is None
     assert rows[0]["switch_optical_status"] == "notice"

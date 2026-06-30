@@ -210,6 +210,30 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
     assert rows[0]["ap_optical_status"] == "normal"
 
 
+def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-8", "rx_low_warning": "-20"}]},
+        [
+            {
+                "ap_name": "AP-MISSING-OPTICAL",
+                "ap_mac": "083b.e9ec.da40",
+                "serial_number": "SN-MISSING-OPTICAL",
+                "state": "Run",
+                "neighbor_device_name": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+            }
+        ],
+    )
+
+    assert rows[0]["ap_name"] == "AP-MISSING-OPTICAL"
+    assert rows[0]["ap_mac"] == "083b-e9ec-da40"
+    assert rows[0]["serial_number"] == "SN-MISSING-OPTICAL"
+    assert rows[0]["ap_rx_power"] is None
+
+
 def test_ac_resource_collect_failure_keeps_existing_resources(monkeypatch, tmp_path):
     database = make_database(tmp_path)
     repository = AcRepository(database)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from time import perf_counter
 
 from netconsole.core import app_logger
 from netconsole.core.optical_severity_engine import compute_optical_severity, display_optical_status, worse_optical_severity
@@ -435,8 +436,8 @@ def build_trackside_ap_business_rows(
                     "switch_rx_power": optical.get("rx_power"),
                     "switch_tx_power": optical.get("tx_power"),
                     "switch_optical_status": switch_status,
-                    "ap_mac": ap_candidate["ap_mac"] if ap_side_has_data or switch_offline else None,
-                    "ap_name": ap_candidate["ap_name"] if ap_side_has_data or switch_offline else None,
+                    "ap_mac": ap_candidate["ap_mac"],
+                    "ap_name": ap_candidate["ap_name"],
                     "ap_ip": fit_ap.get("ap_ip"),
                     "ap_state": fit_ap.get("state"),
                     "ap_state_display": fit_ap.get("state_display") or fit_ap.get("state_raw"),
@@ -582,11 +583,11 @@ def build_new_online_ap_overview_rows(
     resource_history_rows: list[dict[str, object | None]],
     trackside_rows: list[dict[str, object | None]],
 ) -> list[dict[str, object | None]]:
-    historical_keys: set[tuple[str, str]] = set()
+    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
     for row in resource_history_rows or []:
         key = ap_identity_key(row)
         if key:
-            historical_keys.add(key)
+            history_by_identity.setdefault(key, []).append(row)
     trackside_by_identity = _trackside_rows_by_ap_identity(trackside_rows)
     rows: list[dict[str, object | None]] = []
     for resource in current_resource_rows or []:
@@ -598,9 +599,7 @@ def build_new_online_ap_overview_rows(
         current_collect_run = str(resource.get("collect_run_uuid") or "")
         current_collected_at = str(resource.get("collected_at") or resource.get("updated_at") or "")
         had_previous_history = False
-        for history in resource_history_rows or []:
-            if ap_identity_key(history) != key:
-                continue
+        for history in history_by_identity.get(key, []):
             if current_collect_run and str(history.get("collect_run_uuid") or "") == current_collect_run:
                 continue
             history_collected_at = str(history.get("collected_at") or history.get("created_at") or "")
@@ -636,12 +635,26 @@ def build_ap_optical_treatment_records(
     ap_optical_history_rows: list[dict[str, object | None]],
     switch_optical_history_rows: list[dict[str, object | None]],
     fit_ap_resource_rows: list[dict[str, object | None]] | None = None,
+    resource_history_rows: list[dict[str, object | None]] | None = None,
+    offline_ledger_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
     records: list[dict[str, object | None]] = []
-    identity_lookup = _ap_identity_lookup([*(trackside_rows or []), *(ap_optical_history_rows or []), *(fit_ap_resource_rows or [])])
+    identity_lookup = _ap_identity_lookup_with_sources(
+        (
+            ("trackside_row", trackside_rows or []),
+            ("ap_optical_history", ap_optical_history_rows or []),
+            ("fit_ap_resource", fit_ap_resource_rows or []),
+            ("resource_history", resource_history_rows or []),
+            ("offline_ledger", offline_ledger_rows or []),
+        )
+    )
     trackside_by_identity = _trackside_rows_by_ap_identity(trackside_rows)
+    ap_history_by_identity = _ap_optical_history_by_identity(ap_optical_history_rows)
+    switch_history_by_interface = _switch_optical_history_by_interface(switch_optical_history_rows)
+    trackside_interface_lookup = _trackside_rows_by_switch_name_interface(trackside_rows)
+    offline_ledger_interface_lookup = _offline_ledger_rows_by_switch_interface(offline_ledger_rows or [])
     for _key, current in trackside_by_identity.items():
-        history = [row for row in ap_optical_history_rows or [] if _ap_optical_history_matches_trackside(row, current)]
+        history = _ap_history_for_trackside(current, ap_history_by_identity)
         current_item = {
             **current,
             "side": "ap",
@@ -650,18 +663,17 @@ def build_ap_optical_treatment_records(
             "collected_at": current.get("updated_at"),
         }
         for record in _build_treatment_records_for_series(AP_SIDE_LABEL, current, history, current_item):
-            _complete_treatment_record_ap_identity(record, identity_lookup)
+            enrich_treatment_record_ap_identity(
+                record,
+                identity_lookup=identity_lookup,
+                trackside_interface_lookup=trackside_interface_lookup,
+                offline_ledger_interface_lookup=offline_ledger_interface_lookup,
+            )
             records.append(record)
 
     switch_rows = _trackside_rows_by_switch_interface(trackside_rows)
     for key, current in switch_rows.items():
-        device_uuid, interface_key = key
-        history = [
-            row
-            for row in switch_optical_history_rows or []
-            if str(row.get("device_uuid") or "") == device_uuid
-            and normalize_interface_name(row.get("interface_name")).casefold() == interface_key
-        ]
+        history = switch_history_by_interface.get(key, [])
         current_item = {
             **current,
             "side": "switch",
@@ -670,8 +682,20 @@ def build_ap_optical_treatment_records(
             "collected_at": current.get("updated_at"),
         }
         for record in _build_treatment_records_for_series(SWITCH_SIDE_LABEL, current, history, current_item):
-            _complete_treatment_record_ap_identity(record, identity_lookup)
+            enrich_treatment_record_ap_identity(
+                record,
+                identity_lookup=identity_lookup,
+                trackside_interface_lookup=trackside_interface_lookup,
+                offline_ledger_interface_lookup=offline_ledger_interface_lookup,
+            )
             records.append(record)
+    for record in records:
+        enrich_treatment_record_ap_identity(
+            record,
+            identity_lookup=identity_lookup,
+            trackside_interface_lookup=trackside_interface_lookup,
+            offline_ledger_interface_lookup=offline_ledger_interface_lookup,
+        )
     return sorted(records, key=lambda row: (str(row.get("first_found_at") or ""), str(row.get("site") or ""), str(row.get("ap_name") or "")))
 
 
@@ -784,16 +808,96 @@ def _ap_optical_history_matches_trackside(row: dict[str, object | None], tracksi
 
 
 def _ap_identity_lookup(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
+    return _ap_identity_lookup_with_sources((("unknown", rows),))
+
+
+def _ap_identity_lookup_with_sources(
+    sources: tuple[tuple[str, list[dict[str, object | None]]], ...],
+) -> dict[tuple[str, str], dict[str, object | None]]:
+    lookup: dict[tuple[str, str], dict[str, object | None]] = {}
+    for source, rows in sources:
+        for row in rows or []:
+            payload = _ap_identity_payload(row, source)
+            for key in _ap_identity_keys(payload):
+                existing = lookup.get(key, {})
+                merged = _merge_ap_identity_payload(existing, payload)
+                if not merged.get("_source"):
+                    merged["_source"] = source
+                lookup[key] = merged
+    return lookup
+
+
+def _ap_identity_payload(row: dict[str, object | None], source: str = "") -> dict[str, object | None]:
+    ap_name = row.get("ap_name")
+    ap_mac = normalize_mac(row.get("ap_mac"))
+    if _is_missing_display(ap_mac):
+        name_as_mac = normalize_mac(ap_name)
+        if _is_mac_like(name_as_mac):
+            ap_mac = name_as_mac
+    return {
+        "ap_uuid": row.get("ap_uuid"),
+        "ap_name": ap_name,
+        "ap_mac": ap_mac,
+        "serial_number": row.get("serial_number"),
+        "site": row.get("site") or row.get("site_name") or row.get("station"),
+        "device_name": row.get("device_name") or row.get("historical_switch_name"),
+        "interface_name": row.get("interface_name") or row.get("historical_switch_interface"),
+        "_source": source,
+    }
+
+
+def _ap_optical_history_by_identity(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], list[dict[str, object | None]]]:
+    grouped: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+    for row in rows or []:
+        for key in _ap_identity_keys(row):
+            grouped.setdefault(key, []).append(row)
+    return grouped
+
+
+def _ap_history_for_trackside(
+    trackside: dict[str, object | None],
+    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]],
+) -> list[dict[str, object | None]]:
+    seen: set[int] = set()
+    history: list[dict[str, object | None]] = []
+    for key in _ap_identity_keys(trackside):
+        for row in history_by_identity.get(key, []):
+            marker = id(row)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            history.append(row)
+    return history
+
+
+def _switch_optical_history_by_interface(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], list[dict[str, object | None]]]:
+    grouped: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+    for row in rows or []:
+        device_uuid = str(row.get("device_uuid") or "")
+        interface_key = normalize_interface_name(row.get("interface_name")).casefold()
+        if device_uuid and interface_key:
+            grouped.setdefault((device_uuid, interface_key), []).append(row)
+    return grouped
+
+
+def _trackside_rows_by_switch_name_interface(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
     lookup: dict[tuple[str, str], dict[str, object | None]] = {}
     for row in rows or []:
-        payload = {
-            "ap_name": row.get("ap_name"),
-            "ap_mac": normalize_mac(row.get("ap_mac")),
-            "serial_number": row.get("serial_number"),
-        }
-        for key in _ap_identity_keys(payload):
-            existing = lookup.get(key, {})
-            lookup[key] = _merge_ap_identity_payload(existing, payload)
+        key = (_normalize_name(row.get("device_name")), normalize_interface_name(row.get("interface_name")).casefold())
+        if all(key):
+            lookup[key] = row
+    return lookup
+
+
+def _offline_ledger_rows_by_switch_interface(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
+    lookup: dict[tuple[str, str], dict[str, object | None]] = {}
+    for row in rows or []:
+        key = (
+            _normalize_name(row.get("historical_switch_name") or row.get("device_name")),
+            normalize_interface_name(row.get("historical_switch_interface") or row.get("interface_name")).casefold(),
+        )
+        if all(key):
+            lookup[key] = row
     return lookup
 
 
@@ -808,7 +912,17 @@ def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     name = str(row.get("ap_name") or "").strip()
     if name and name not in {"-", "N/A", "n/a"}:
         keys.append(("name", name.casefold()))
+        name_as_mac = normalize_mac(name)
+        if not mac and _is_mac_like(name_as_mac):
+            keys.append(("mac", name_as_mac.casefold()))
+    ap_uuid = str(row.get("ap_uuid") or "").strip()
+    if ap_uuid:
+        keys.append(("uuid", ap_uuid.casefold()))
     return keys
+
+
+def _is_mac_like(value: object) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}", str(value or "").strip().casefold()))
 
 
 def _merge_ap_identity_payload(
@@ -816,9 +930,11 @@ def _merge_ap_identity_payload(
     secondary: dict[str, object | None],
 ) -> dict[str, object | None]:
     result = dict(primary)
-    for field in ("ap_name", "ap_mac", "serial_number"):
+    for field in ("ap_uuid", "ap_name", "ap_mac", "serial_number", "site", "device_name", "interface_name"):
         if _is_missing_display(result.get(field)) and not _is_missing_display(secondary.get(field)):
             result[field] = secondary.get(field)
+    if _is_missing_display(result.get("_source")) and not _is_missing_display(secondary.get("_source")):
+        result["_source"] = secondary.get("_source")
     return result
 
 
@@ -836,6 +952,89 @@ def _complete_treatment_record_ap_identity(
     for field in ("ap_name", "ap_mac", "serial_number"):
         if _is_missing_display(record.get(field)) and not _is_missing_display(matched.get(field)):
             record[field] = matched.get(field)
+    if _is_missing_display(record.get("ap_mac")):
+        name_as_mac = normalize_mac(record.get("ap_name"))
+        if _is_mac_like(name_as_mac):
+            record["ap_mac"] = name_as_mac
+
+
+def enrich_treatment_record_ap_identity(
+    record: dict[str, object | None],
+    *,
+    identity_lookup: dict[tuple[str, str], dict[str, object | None]],
+    trackside_interface_lookup: dict[tuple[str, str], dict[str, object | None]],
+    offline_ledger_interface_lookup: dict[tuple[str, str], dict[str, object | None]],
+) -> tuple[dict[str, object | None], str]:
+    before_ap_name = record.get("ap_name")
+    before_ap_mac = record.get("ap_mac")
+    source = "not_found"
+    for key in _ap_identity_keys(record):
+        matched = identity_lookup.get(key)
+        if matched:
+            _fill_treatment_record_identity(record, matched)
+            source = f"{matched.get('_source') or 'identity'}_{key[0]}"
+            break
+    if _record_identity_missing(record):
+        interface_key = (_normalize_name(record.get("device_name")), normalize_interface_name(record.get("interface_name")).casefold())
+        matched = trackside_interface_lookup.get(interface_key)
+        if matched:
+            _fill_treatment_record_identity(record, _ap_identity_payload(matched, "trackside_row"))
+            source = "trackside_row"
+        if _record_identity_missing(record):
+            matched = offline_ledger_interface_lookup.get(interface_key)
+            if matched:
+                _fill_treatment_record_identity(record, _ap_identity_payload(matched, "offline_ledger"))
+                source = "offline_ledger_interface"
+    if _is_missing_display(record.get("ap_mac")):
+        name_as_mac = normalize_mac(record.get("ap_name"))
+        if _is_mac_like(name_as_mac):
+            record["ap_mac"] = name_as_mac
+            if source == "not_found":
+                source = "ap_name_mac_fallback"
+    changed = before_ap_name != record.get("ap_name") or before_ap_mac != record.get("ap_mac")
+    if changed:
+        app_logger.log_info(
+            "TRACKSIDE_AP_TREATMENT_IDENTITY_ENRICH",
+            " ".join(
+                [
+                    f"side={record.get('side') or ''}",
+                    f"station={record.get('site') or ''}",
+                    f"switch={record.get('device_name') or ''}",
+                    f"interface={record.get('interface_name') or ''}",
+                    f"before_ap_name={before_ap_name or '-'}",
+                    f"before_ap_mac={before_ap_mac or '-'}",
+                    f"serial={record.get('serial_number') or ''}",
+                    f"after_ap_name={record.get('ap_name') or '-'}",
+                    f"after_ap_mac={record.get('ap_mac') or '-'}",
+                    f"source={source}",
+                ]
+            ),
+        )
+    elif _record_identity_missing(record):
+        app_logger.log_info(
+            "TRACKSIDE_AP_TREATMENT_IDENTITY_MISSING",
+            " ".join(
+                [
+                    f"side={record.get('side') or ''}",
+                    f"station={record.get('site') or ''}",
+                    f"switch={record.get('device_name') or ''}",
+                    f"interface={record.get('interface_name') or ''}",
+                    f"serial={record.get('serial_number') or ''}",
+                    "reason=no_trackside_or_offline_ledger_match",
+                ]
+            ),
+        )
+    return record, source
+
+
+def _fill_treatment_record_identity(record: dict[str, object | None], source: dict[str, object | None]) -> None:
+    for field in ("ap_name", "ap_mac", "serial_number", "site"):
+        if _is_missing_display(record.get(field)) and not _is_missing_display(source.get(field)):
+            record[field] = source.get(field)
+
+
+def _record_identity_missing(record: dict[str, object | None]) -> bool:
+    return _is_missing_display(record.get("ap_name")) or _is_missing_display(record.get("ap_mac")) or _is_missing_display(record.get("serial_number"))
 
 
 def _trackside_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
@@ -970,8 +1169,14 @@ def export_trackside_ap_business_xlsx(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "\u8f68\u65c1AP\u4e1a\u52a1"
+    def log_write_phase(phase: str, start: float, **values: object) -> None:
+        elapsed_ms = int((perf_counter() - start) * 1000)
+        details = " ".join(f"{key}={value}" for key, value in values.items())
+        app_logger.log_info("TRACKSIDE_EXPORT_PROFILE", f"phase={phase} elapsed_ms={elapsed_ms}" + (f" {details}" if details else ""))
+
     if progress_callback:
         progress_callback("trackside.export.progress_rows")
+    phase_start = perf_counter()
     sheet.append(headers)
     fills = {
         status: PatternFill(fill_type="solid", fgColor=color)
@@ -995,8 +1200,10 @@ def export_trackside_ap_business_xlsx(
     header_font = Font(bold=True)
     _format_export_sheet(sheet, alignment, border, header_font, header_fill)
     sheet.auto_filter.ref = sheet.dimensions
+    log_write_phase("write_trackside_sheet", phase_start, rows=len(rows))
     if progress_callback:
         progress_callback("trackside.export.progress_overview")
+    phase_start = perf_counter()
     _append_ap_overview_sheet(
         workbook,
         rows,
@@ -1008,8 +1215,10 @@ def export_trackside_ap_business_xlsx(
         ap_online_overview_headers,
         header_fill,
     )
+    log_write_phase("write_ap_online_overview_sheet", phase_start, rows=len(ap_online_overview_rows or []))
     if progress_callback:
         progress_callback("trackside.export.progress_new_online")
+    phase_start = perf_counter()
     _append_export_rows_sheet(
         workbook,
         new_online_ap_sheet_title,
@@ -1021,8 +1230,10 @@ def export_trackside_ap_business_xlsx(
         header_font,
         header_fill,
     )
+    log_write_phase("write_new_online_ap_sheet", phase_start, rows=len(new_online_ap_rows or []))
     if progress_callback:
         progress_callback("trackside.export.progress_optical_treatment")
+    phase_start = perf_counter()
     _append_export_rows_sheet(
         workbook,
         ap_optical_treatment_sheet_title,
@@ -1035,23 +1246,33 @@ def export_trackside_ap_business_xlsx(
         header_fill,
         fills,
         _ap_optical_treatment_row_fill_status,
+        preserve_ap_identity=True,
     )
+    log_write_phase("write_optical_treatment_sheet", phase_start, rows=len(ap_optical_treatment_rows or []))
     if offline_ap_stats is not None and offline_ap_ledger_rows is not None:
         if progress_callback:
             progress_callback("trackside.export.progress_offline")
+        phase_start = perf_counter()
         stats_sheet = workbook.create_sheet("AP\u79bb\u7ebf\u60c5\u51b5")
         write_offline_ap_stats_sheet(stats_sheet, offline_ap_stats, offline_ap_stats_headers or [key for key, _field in OFFLINE_AP_STATS_COLUMNS])
         ledger_sheet = workbook.create_sheet("\u79bb\u7ebfAP\u53f0\u8d26")
         write_offline_ap_ledger_sheet(ledger_sheet, offline_ap_ledger_rows, offline_ap_ledger_headers or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS])
+        log_write_phase("write_offline_ap_sheets", phase_start, rows=len(offline_ap_ledger_rows or []))
     if progress_callback:
         progress_callback("trackside.export.progress_summary")
+    phase_start = perf_counter()
     _append_switch_optical_summary_sheet(workbook, rows, alignment, border, header_font, header_fill)
+    log_write_phase("write_switch_optical_summary_sheet", phase_start, rows=len(rows))
+    phase_start = perf_counter()
     for worksheet in workbook.worksheets:
         apply_worksheet_autofit(worksheet, maximum=60)
     _set_switch_optical_summary_widths(workbook)
+    log_write_phase("autofit_sheets", phase_start, sheets=len(workbook.worksheets))
     if progress_callback:
         progress_callback("trackside.export.progress_save")
+    phase_start = perf_counter()
     workbook.save(path)
+    log_write_phase("save_workbook", phase_start, path=Path(path).name)
 
 
 # Legacy aliases removed — status is now computed real-time from raw data.
@@ -1213,12 +1434,16 @@ def enrich_trackside_export_rows(
     rows: list[dict[str, object | None]],
     fact_repository=None,
     ac_repository=None,
+    switch_optical_history_rows: list[dict[str, object | None]] | None = None,
+    ap_optical_history_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
+    switch_history_by_interface = _switch_optical_history_by_interface(switch_optical_history_rows or [])
+    ap_history_by_identity = _ap_optical_history_by_identity(ap_optical_history_rows or [])
     enriched: list[dict[str, object | None]] = []
     for row in rows:
         item = dict(row)
-        _apply_switch_optical_change(item, fact_repository)
-        _apply_ap_optical_change(item, ac_repository)
+        _apply_switch_optical_change(item, fact_repository, switch_history_by_interface)
+        _apply_ap_optical_change(item, ac_repository, ap_history_by_identity)
         _apply_ap_port_change(item, ac_repository)
         enriched.append(item)
     return enriched
@@ -1244,8 +1469,20 @@ def ap_port_change_text(previous_switch: object, previous_interface: object, cur
     return f"AP端口变化: {previous_switch_text} {previous_interface_text} → {current_switch_text} {current_interface_text}"
 
 
-def _apply_switch_optical_change(row: dict[str, object | None], fact_repository) -> None:
+def _apply_switch_optical_change(
+    row: dict[str, object | None],
+    fact_repository,
+    history_by_interface: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
+) -> None:
     row.setdefault("switch_optical_change", "-")
+    device_uuid = str(row.get("device_uuid") or "")
+    interface_key = normalize_interface_name(row.get("interface_name")).casefold()
+    previous = _previous_row_before((history_by_interface or {}).get((device_uuid, interface_key), []), row.get("updated_at"))
+    if previous:
+        previous_status = _optical_status_from_history(previous, "switch")
+        row["switch_optical_change"] = optical_change_text(previous_status, row.get("switch_optical_status"))
+        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+        return
     if fact_repository is None:
         return
     getter = getattr(fact_repository, "get_previous_optical_history", None)
@@ -1259,8 +1496,18 @@ def _apply_switch_optical_change(row: dict[str, object | None], fact_repository)
     row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
 
 
-def _apply_ap_optical_change(row: dict[str, object | None], ac_repository) -> None:
+def _apply_ap_optical_change(
+    row: dict[str, object | None],
+    ac_repository,
+    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
+) -> None:
     row.setdefault("ap_optical_change", "-")
+    previous = _previous_row_before(_ap_history_for_trackside(row, history_by_identity or {}), row.get("updated_at"))
+    if previous:
+        previous_status = _optical_status_from_history(previous, "ap")
+        row["ap_optical_change"] = optical_change_text(previous_status, row.get("ap_optical_status"))
+        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+        return
     if ac_repository is None:
         return
     getter = getattr(ac_repository, "get_previous_ap_optical_history", None)
@@ -1272,6 +1519,18 @@ def _apply_ap_optical_change(row: dict[str, object | None], ac_repository) -> No
     previous_status = _optical_status_from_history(previous, "ap")
     row["ap_optical_change"] = optical_change_text(previous_status, row.get("ap_optical_status"))
     row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+
+
+def _previous_row_before(rows: list[dict[str, object | None]], before: object) -> dict[str, object | None] | None:
+    before_text = str(before or "")
+    candidates = [
+        row
+        for row in rows or []
+        if not before_text or str(row.get("collected_at") or row.get("created_at") or "") < before_text
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))))
 
 
 def _apply_ap_port_change(row: dict[str, object | None], ac_repository) -> None:
@@ -1422,9 +1681,12 @@ def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:
     row["port_type"] = _port_type(row.get("port_type") or row.get("port_status"))
 
 
-def _export_value(field: str, row: dict[str, object | None]) -> str:
+def _export_value(field: str, row: dict[str, object | None], *, preserve_ap_identity: bool = False) -> str:
     if field == "completed_at" and row.get("treatment_status") == TREATMENT_OPEN_LABEL:
         return ""
+    if preserve_ap_identity and field in {"ap_name", "ap_mac", "serial_number"}:
+        value = row.get(field)
+        return str(value) if value not in (None, "") else AP_SIDE_MISSING_DISPLAY
     return format_trackside_display_value(field, row)
 
 
@@ -1502,11 +1764,12 @@ def _append_export_rows_sheet(
     header_fill=None,
     fills: dict[str, object] | None = None,
     row_fill_status_getter=None,
+    preserve_ap_identity: bool = False,
 ) -> None:
     sheet = workbook.create_sheet(title)
     sheet.append(headers)
     for row in rows:
-        sheet.append([_export_value(field, row) for _key, field in columns])
+        sheet.append([_export_value(field, row, preserve_ap_identity=preserve_ap_identity) for _key, field in columns])
         status = row_fill_status_getter(row) if callable(row_fill_status_getter) else None
         fill = (fills or {}).get(status)
         if fill is not None:
