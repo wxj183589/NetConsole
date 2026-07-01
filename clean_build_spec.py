@@ -4,6 +4,7 @@ import argparse
 import ast
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -190,9 +191,23 @@ def _source_to_module(source: Path) -> str:
 def prepare_runtime() -> None:
     if not CLEAN_BUILD:
         raise CleanBuildLockError("Clean Build Mode is required for release packaging")
+    clean_tool_cache_artifacts()
     validate_project_safety(ALLOWED_DATA)
     validate_allowed_runtime(ALLOWED_DATA)
     validate_tool_sources()
+
+
+def clean_tool_cache_artifacts() -> None:
+    tools_root = ROOT / "tools"
+    if not tools_root.exists():
+        return
+    for cache_dir in tools_root.glob("**/__pycache__"):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+    for pattern in EXCLUDE_FILES:
+        for artifact in tools_root.glob(f"**/{pattern}"):
+            if artifact.is_file():
+                artifact.unlink()
 
 
 def write_spec() -> Path:
@@ -366,7 +381,11 @@ def _find_runtime_dll(dll_name: str, roots: list[Path]) -> Path | None:
 def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: bool = True) -> None:
     app_dist = Path(app_dist or DIST_ROOT / "NetConsole")
     if run_version_check and _same_path(app_dist, DIST_ROOT / "NetConsole"):
-        source_files = sorted(path.relative_to(ROOT) for path in (ROOT / "tools").glob("**/*") if path.is_file())
+        source_files = sorted(
+            path.relative_to(ROOT)
+            for path in (ROOT / "tools").glob("**/*")
+            if path.is_file() and not _is_excluded_tool_artifact(path)
+        )
         missing_packaged = [relative for relative in source_files if not (app_dist / "_internal" / relative).is_file()]
         if missing_packaged:
             raise CleanBuildLockError(
@@ -400,6 +419,13 @@ def _same_path(left: Path, right: Path) -> bool:
         return left.resolve() == right.resolve()
     except OSError:
         return left == right
+
+
+def _is_excluded_tool_artifact(path: Path) -> bool:
+    relative_parts = path.relative_to(ROOT / "tools").parts
+    if any(part == "__pycache__" for part in relative_parts):
+        return True
+    return any(path.match(pattern) for pattern in EXCLUDE_FILES)
 
 
 def main() -> int:

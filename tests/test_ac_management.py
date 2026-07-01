@@ -72,6 +72,7 @@ from netconsole.services.trackside_ap_business import (
     normalize_link_state,
     normalize_vlan_text,
     parse_vlan_set,
+    _optical_status_from_history,
     normalize_interface_name as normalize_trackside_interface_name,
     normalize_mac,
     pvid_matches_trackside_plan,
@@ -3534,6 +3535,53 @@ def test_trackside_ap_side_normal_and_notice_format_from_computed_status():
 
     assert format_ap_side_alarm(normal) == "正常"
     assert format_ap_side_alarm(notice) == "偏低关注"
+
+
+def test_trackside_ap_side_unknown_with_rx_power_recomputes_for_display():
+    row = {
+        "ap_mac": "bc5a-3457-cbe1",
+        "ap_name": "AP23",
+        "ap_rx_power": "-14.41",
+        "ap_optical_status": "unknown",
+        "ap_side_has_data": True,
+    }
+
+    assert format_ap_side_alarm(row) == "偏低关注"
+    assert format_trackside_display_value("ap_optical_status", row) == "偏低关注"
+
+
+def test_trackside_history_unknown_with_rx_power_recomputes_ap_status():
+    row = {
+        "rx_power": "-19.07",
+        "rx_low_alarm": None,
+        "rx_low_warning": None,
+        "optical_alarm_status": "unknown",
+    }
+
+    assert _optical_status_from_history(row, "ap") == "alarm"
+
+
+def test_trackside_ap_optical_status_uses_default_profile_without_thresholds():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10"}]},
+        [
+            {
+                "ap_uuid": "ap-10",
+                "ap_mac": "bc5a-3457-cbe0",
+                "ap_name": "AP10",
+                "neighbor_device_name": "HX_1",
+                "neighbor_interface": "GigabitEthernet2/0/10",
+                "rx_power": "-14.41",
+            }
+        ],
+    )
+
+    assert rows[0]["ap_rx_power"] == "-14.41"
+    assert rows[0]["ap_optical_status"] == "notice"
+    assert format_trackside_display_value("ap_optical_status", rows[0]) == "偏低关注"
 
 
 def test_trackside_row_status_ignores_missing_ap_side_data():

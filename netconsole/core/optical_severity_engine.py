@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 DERIVED_WARNING_DELTA_DB = 2.01
 MAINTENANCE_MARGIN_DB = 3.0
+AP_DEFAULT_OPTICAL_THRESHOLD_PROFILE = {
+    "alarm_low": -19.00,
+    "warning_low": -16.99,
+}
 
 SEVERITY_RANK = {
     "unknown": 0,
@@ -90,7 +94,7 @@ def compute_optical_severity(record: dict) -> OpticalSeverityResult:
     - alarm: rx < alarm
 
     If warning is missing but alarm exists, warning is derived as alarm + 2.01 dB.
-    If both warning and alarm are missing, the status is unknown instead of normal.
+    If AP-side thresholds are missing, a centralized default AP profile is used.
     """
     module_present = _first_value(record, "module_present", "has_module")
     if _is_false(module_present) or _is_true(_first_value(record, "no_module")):
@@ -111,6 +115,9 @@ def compute_optical_severity(record: dict) -> OpticalSeverityResult:
     if warning_low is None and alarm_low is not None:
         warning_low = round(alarm_low + DERIVED_WARNING_DELTA_DB, 2)
         warning_source = "derived"
+    if device_type == "ap" and (alarm_low is None or warning_low is None):
+        alarm_low, warning_low = _apply_ap_default_threshold_profile(alarm_low, warning_low)
+        warning_source = "default_profile"
     source_label = _source_label(device_type, warning_source)
 
     if warning_low is None:
@@ -204,4 +211,16 @@ def _source_label(device_type: str, warning_source: str) -> str:
         return "AP native" if device_type == "ap" else "switch native"
     if warning_source == "derived":
         return "AP derived" if device_type == "ap" else "switch derived"
+    if warning_source == "default_profile":
+        return "AP default profile" if device_type == "ap" else "default profile"
     return "threshold missing"
+
+
+def _apply_ap_default_threshold_profile(
+    alarm_low: float | None,
+    warning_low: float | None,
+) -> tuple[float | None, float | None]:
+    return (
+        alarm_low if alarm_low is not None else AP_DEFAULT_OPTICAL_THRESHOLD_PROFILE["alarm_low"],
+        warning_low if warning_low is not None else AP_DEFAULT_OPTICAL_THRESHOLD_PROFILE["warning_low"],
+    )

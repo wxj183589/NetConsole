@@ -33,6 +33,8 @@ TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
     "status_reason",
     "data_source",
     "switch_collection_status",
+    "ap_rx_low_alarm",
+    "ap_rx_low_warning",
 }
 
 TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
@@ -472,6 +474,8 @@ def build_trackside_ap_business_rows(
                     "ap_state_display": fit_ap.get("state_display") or fit_ap.get("state_raw"),
                     "ap_rx_power": ap_candidate["ap_rx_power"] if ap_side_has_data and not switch_offline else None,
                     "ap_tx_power": ap_candidate["ap_tx_power"] if ap_side_has_data and not switch_offline else None,
+                    "ap_rx_low_alarm": fit_ap.get("rx_low_alarm"),
+                    "ap_rx_low_warning": fit_ap.get("rx_low_warning"),
                     "ap_optical_status": ap_status,
                     "ap_side_has_data": ap_side_has_data,
                     "updated_at": fit_ap.get("updated_at") or optical.get("updated_at") or interface.get("updated_at") or interface.get("collected_at"),
@@ -486,6 +490,7 @@ def build_trackside_ap_business_rows(
                     "has_fit_ap_resource": bool(resource_from_neighbor or resource_from_identity),
                     "is_ap_offline": bool(offline_reason),
                 }
+            _ensure_ap_optical_status(row)
             app_logger.log_info(
                 "TRACKSIDE_AP_ROW_SOURCE",
                 (
@@ -1309,10 +1314,61 @@ def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
 
 
 def format_ap_side_alarm(row: dict[str, object | None], language: str = "zh") -> str:
-    if not has_ap_side_optical_data(row):
+    status = _ap_optical_status_for_display(row)
+    if not has_ap_side_optical_data(row) and not _has_valid_rx_power(row.get("ap_rx_power")):
         return AP_SIDE_MISSING_DISPLAY
-    status = str(row.get("ap_optical_status") or "")
+    if status == "unknown":
+        return AP_SIDE_MISSING_DISPLAY
     return display_optical_status(status, language) if status else AP_SIDE_MISSING_DISPLAY
+
+
+def _ensure_ap_optical_status(row: dict[str, object | None]) -> None:
+    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
+        return
+    status = str(row.get("ap_optical_status") or "").strip().casefold()
+    if status not in {"", "unknown"} or not _has_valid_rx_power(row.get("ap_rx_power")):
+        return
+    row["ap_optical_status"] = _compute_ap_optical_status_from_row(row)
+    row["ap_side_has_data"] = True
+
+
+def _ap_optical_status_for_display(row: dict[str, object | None]) -> str:
+    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
+        return "offline"
+    status = str(row.get("ap_optical_status") or "").strip().casefold()
+    if status in {"", "unknown"} and _has_valid_rx_power(row.get("ap_rx_power")):
+        return _compute_ap_optical_status_from_row(row)
+    return status
+
+
+def _compute_ap_optical_status_from_row(row: dict[str, object | None]) -> str:
+    return compute_optical_severity(
+        {
+            "module_present": True,
+            "no_module": _explicit_no_module(row),
+            "ap_rx_power": row.get("ap_rx_power") or row.get("rx_power"),
+            "ap_port_status": row.get("ap_port_status") or row.get("port_status"),
+            "alarm_low": row.get("ap_rx_low_alarm") or row.get("rx_low_alarm"),
+            "warning_low": row.get("ap_rx_low_warning") or row.get("rx_low_warning"),
+            "device_type": "ap",
+        }
+    ).severity
+
+
+def _has_valid_rx_power(value: object) -> bool:
+    return _float_value(value) is not None
+
+
+def _float_value(value: object) -> float | None:
+    if value is None:
+        return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
 
 
 def format_trackside_display_value(field: str, row: dict[str, object | None], language: str = "zh") -> str:
@@ -1737,10 +1793,13 @@ def _apply_ap_optical_change(
     latest_valid = _latest_valid_ap_optical_history(history_rows)
     if _is_missing_display(row.get("ap_rx_power")) and latest_valid and not _is_missing_display(latest_valid.get("rx_power")):
         row["ap_rx_power"] = latest_valid.get("rx_power")
+        row["ap_rx_low_alarm"] = latest_valid.get("rx_low_alarm") or row.get("ap_rx_low_alarm")
+        row["ap_rx_low_warning"] = latest_valid.get("rx_low_warning") or row.get("ap_rx_low_warning")
         row["ap_last_valid_rx_power"] = latest_valid.get("rx_power")
         row["ap_last_valid_collected_at"] = latest_valid.get("collected_at") or latest_valid.get("created_at")
         row["ap_optical_data_source"] = "沿用历史"
         row["ap_optical_missing_reason"] = "not_collected" if str(row.get("collection_status") or "").casefold() in {"", "not_collected"} else "overwritten_by_failed_row"
+        _ensure_ap_optical_status(row)
     previous = _previous_row_before(history_rows, row.get("updated_at"))
     if previous:
         previous_status = _optical_status_from_history(previous, "ap")
@@ -1818,7 +1877,10 @@ def _normal_abnormal_state(status: object) -> str:
 
 def _optical_status_from_history(row: dict[str, object | None], device_type: str) -> str:
     status = row.get("alarm_status") or row.get("optical_alarm_status") or row.get("status")
-    if str(status or "").strip().casefold() in {"normal", "notice", "warning", "alarm", "link_abnormal", "link_down", "no_light", "no_module", "unknown", "not_collected", "skipped", "offline"}:
+    normalized_status = str(status or "").strip().casefold()
+    if normalized_status in {"normal", "notice", "warning", "alarm", "link_abnormal", "link_down", "no_light", "no_module", "not_collected", "skipped", "offline"}:
+        return str(status or "")
+    if normalized_status == "unknown" and not _has_valid_rx_power(row.get("rx_power")):
         return str(status or "")
     result = compute_optical_severity(
         {
@@ -1885,6 +1947,8 @@ def _merge_trackside_row(target: dict[str, object | None], source: dict[str, obj
         "ap_state_display",
         "ap_rx_power",
         "ap_tx_power",
+        "ap_rx_low_alarm",
+        "ap_rx_low_warning",
         "offline_remark",
     )
     for field in prefer_source_fields:
@@ -1924,6 +1988,8 @@ def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:
         row["is_ap_offline"] = True
         row["offline_reason"] = "ac_idle"
         row["status_reason"] = row.get("status_reason") or "AC FIT-AP状态为Idle，轨旁AP离线"
+    else:
+        _ensure_ap_optical_status(row)
     row["port_type"] = _port_type(row.get("port_type") or row.get("port_status"))
 
 

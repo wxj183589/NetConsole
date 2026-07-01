@@ -516,8 +516,57 @@ def test_compute_optical_severity_does_not_mark_missing_thresholds_normal():
 
     result = compute_optical_severity({"ap_rx_power": "-10.00", "device_type": "ap"})
 
-    assert result.severity == "unknown"
-    assert result.source_label == "threshold missing"
+    assert result.severity == "normal"
+    assert result.alarm_low == -19.0
+    assert result.warning_low == -16.99
+    assert result.warning_source == "default_profile"
+    assert result.source_label == "AP default profile"
+
+
+def test_compute_optical_severity_uses_ap_default_profile_when_thresholds_missing():
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    cases = {
+        "-6.95": "normal",
+        "-10.03": "normal",
+        "-14.41": "notice",
+        "-19.07": "alarm",
+    }
+
+    for rx_power, expected in cases.items():
+        result = compute_optical_severity(
+            {
+                "ap_rx_power": rx_power,
+                "rx_low_alarm": None,
+                "rx_low_warning": None,
+                "device_type": "ap",
+            }
+        )
+
+        assert result.severity == expected
+        assert result.severity != "unknown"
+        assert result.warning_source == "default_profile"
+
+
+def test_compute_optical_severity_missing_rx_power_is_not_normal():
+    from netconsole.core.optical_severity_engine import compute_optical_severity
+
+    assert compute_optical_severity({"ap_rx_power": "", "device_type": "ap"}).severity == "no_light"
+
+
+def test_transceiver_parser_extracts_receive_power_threshold_aliases():
+    parsed = parse_transceiver_diagnosis(
+        """
+GigabitEthernet2/0/30 transceiver diagnostic information:
+  Receive Power     : -10.03 dBm
+  Receive power low alarm   : -19.00 dBm
+  Receive power low warning : -16.99 dBm
+"""
+    )
+
+    assert parsed[0]["rx_power"] == "-10.03 dBm"
+    assert parsed[0]["rx_low_alarm"] == "-19.00 dBm"
+    assert parsed[0]["rx_low_warning"] == "-16.99 dBm"
 
 
 def test_lldp_parser_extracts_local_neighbor_and_remote_interface():
