@@ -20,10 +20,7 @@ from netconsole.services.external_terminal import (
     _safe_command,
     available_external_terminal_configs,
     build_external_terminal_command,
-    build_legacy_ssh_options,
-    build_powershell_ssh_command,
     launch_external_terminal,
-    powershell_quote_single,
 )
 from netconsole.services.netmiko_connection import choose_connection_target
 from netconsole.services.securecrt_session_export import export_securecrt_sessions, sanitize_path_part
@@ -102,48 +99,22 @@ def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(monkeypatch):
             "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
             "external_terminal/mobaxterm_path": r"C:\Tools\MobaXterm.exe",
             "external_terminal/cmd_path": r"C:\Windows\System32\cmd.exe",
-            "external_terminal/powershell_path": "",
+            "external_terminal/powershell_path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "external_terminal/legacy_ssh_compatibility": True,
+            "external_terminal/legacy_ssh_extended_compatibility": True,
         }
     )
     monkeypatch.setattr("netconsole.services.external_terminal.Path.is_file", lambda self: str(self).endswith("SecureCRT.exe"))
-    monkeypatch.setattr("netconsole.services.external_terminal.shutil.which", lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" if name == "powershell" else "")
 
     configs = available_external_terminal_configs(settings)
 
-    assert [config.terminal_type for config in configs] == ["securecrt", "powershell"]
+    assert [config.terminal_type for config in configs] == ["securecrt"]
     assert "mobaxterm" not in TERMINAL_LABELS
     assert "cmd" not in TERMINAL_LABELS
+    assert "powershell" not in TERMINAL_LABELS
     assert "mobaxterm" not in TERMINAL_SETTING_KEYS
     assert "cmd" not in TERMINAL_SETTING_KEYS
-
-
-def test_powershell_ssh_uses_array_arguments_and_legacy_hostkey_only(monkeypatch):
-    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
-    target = choose_connection_target(device)
-    monkeypatch.setattr("netconsole.services.external_terminal.resolve_windows_ssh_exe", lambda: r"C:\Windows\System32\OpenSSH\ssh.exe")
-
-    args = build_external_terminal_command(device, target, "powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", include_password=True)
-
-    assert args[:5] == [r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass"]
-    command = args[6]
-    assert command.startswith("& { & 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' @(")
-    assert "-oHostKeyAlgorithms=+ssh-rsa" in command
-    assert "-oPubkeyAcceptedAlgorithms" not in command
-    assert "group1-sha1" not in command
-    assert "'-p','22','admin@10.0.0.1'" in command
-    assert "secret" not in command
-
-
-def test_powershell_quote_and_command_builder_escape_single_quotes():
-    assert powershell_quote_single(r"C:\Tools\it' ssh.exe") == r"'C:\Tools\it'' ssh.exe'"
-    assert build_powershell_ssh_command("ssh.exe", ["-p", "22", "admin@10.0.0.1"]) == "& { & 'ssh.exe' @('-p','22','admin@10.0.0.1') }"
-
-
-def test_legacy_ssh_options_can_be_disabled():
-    assert build_legacy_ssh_options(False) == []
-    assert build_legacy_ssh_options(True) == ["-oHostKeyAlgorithms=+ssh-rsa"]
-    assert "-oPubkeyAcceptedAlgorithms=+ssh-rsa" not in build_legacy_ssh_options(True)
-    assert "group1-sha1" not in " ".join(build_legacy_ssh_options(True, extended=True))
+    assert "powershell" not in TERMINAL_SETTING_KEYS
 
 
 class FakeSettings:
@@ -164,18 +135,16 @@ def test_external_terminal_settings_dialog_saves_only_paths():
     dialog.securecrt_path.setText(r"C:\Tools\SecureCRT.exe")
     dialog.xshell_path.setText(r"C:\Tools\Xshell.exe")
     dialog.putty_path.setText(r"C:\Tools\putty.exe")
-    dialog.powershell_path.setText(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
 
     dialog._save()
 
+    assert not hasattr(dialog, "powershell_path")
+    assert not hasattr(dialog, "legacy_ssh_compatibility")
     assert settings.values == {
         "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
         "external_terminal/xshell_path": r"C:\Tools\Xshell.exe",
         "external_terminal/putty_path": r"C:\Tools\putty.exe",
-        "external_terminal/powershell_path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
         "external_terminal/pass_password": False,
-        "external_terminal/legacy_ssh_compatibility": True,
-        "external_terminal/legacy_ssh_extended_compatibility": False,
     }
 
 
@@ -213,10 +182,7 @@ def test_external_terminal_settings_dialog_saves_paths_and_options():
     dialog.securecrt_path.setText(r"C:\Tools\SecureCRT.exe")
     dialog.xshell_path.setText(r"C:\Tools\Xshell.exe")
     dialog.putty_path.setText(r"C:\Tools\putty.exe")
-    dialog.powershell_path.setText("")
     dialog.pass_password.setChecked(True)
-    dialog.legacy_ssh_compatibility.setChecked(True)
-    dialog.legacy_ssh_extended_compatibility.setChecked(False)
 
     dialog._save()
 
@@ -224,10 +190,7 @@ def test_external_terminal_settings_dialog_saves_paths_and_options():
         "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
         "external_terminal/xshell_path": r"C:\Tools\Xshell.exe",
         "external_terminal/putty_path": r"C:\Tools\putty.exe",
-        "external_terminal/powershell_path": "",
         "external_terminal/pass_password": True,
-        "external_terminal/legacy_ssh_compatibility": True,
-        "external_terminal/legacy_ssh_extended_compatibility": False,
     }
     assert sanitize_path_part('a:b*c?') == "a_b_c_"
 

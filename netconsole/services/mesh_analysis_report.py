@@ -13,6 +13,7 @@ from netconsole.services.mesh_quality_analysis import (
     MR_RAW_MESH_LOG,
     MeshQualityRules,
     build_quality_report,
+    get_threshold_template,
     load_default_rules,
 )
 
@@ -59,6 +60,13 @@ class MeshReportOptions:
     include_link_establishment: bool = True
     include_flap_analysis: bool = True
     export_format: str = "excel"
+    excluded_region_keywords: tuple[str, ...] = ()
+    threshold_template_key: str = "pis_wifi6_40_80_standard"
+    business_type: str = "PIS"
+    working_mode: str = "Wi-Fi6 / 11ax"
+    bandwidth: str = "40M / 80M 混合"
+    ap_spacing: str = "80~150m"
+    threshold_template_description: str = ""
 
 
 @dataclass
@@ -130,6 +138,8 @@ class MeshAnalysisReportService:
             include_all_link_details=options.include_all_link_details,
             include_parse_issues=options.include_parse_issues,
             include_busy_analysis=options.include_busy_analysis,
+            threshold_template_key=options.threshold_template_key,
+            excluded_region_keywords=options.excluded_region_keywords,
             progress=progress,
             should_cancel=should_cancel,
         )
@@ -153,7 +163,16 @@ class MeshAnalysisReportService:
         progress(82, "statistics")
         rssi_statistics = build_rssi_statistics(links)
         channel_busy_statistics = build_channel_busy_statistics(links)
-        overview = quality_report.overview
+        overview = dict(quality_report.overview)
+        overview.update(
+            {
+                "业务类型": options.business_type,
+                "实际工作模式": options.working_mode,
+                "频宽": options.bandwidth,
+                "典型 AP 间隔": options.ap_spacing,
+                "评估模板说明": options.threshold_template_description or overview.get("评估模板说明", ""),
+            }
+        )
         progress(88, "analysis_done")
         return MeshAnalysisReportModel(
             mr_name=self.mr_name,
@@ -186,6 +205,8 @@ class MeshAnalysisReportService:
 
     def _rules_from_options(self, options: MeshReportOptions) -> MeshQualityRules:
         defaults = load_default_rules()
+        template = get_threshold_template(options.threshold_template_key)
+        weights = template.rules.score_weights or defaults.score_weights
         return MeshQualityRules(
             rssi_excellent_threshold=options.rssi_excellent_threshold or defaults.rssi_excellent_threshold,
             rssi_good_threshold=options.rssi_good_threshold or defaults.rssi_good_threshold,
@@ -201,7 +222,7 @@ class MeshAnalysisReportService:
             switch_target_window_seconds=options.switch_target_window_seconds or defaults.switch_target_window_seconds,
             flap_window_seconds=options.flap_window_seconds or defaults.flap_window_seconds,
             short_active_segment_seconds=options.short_active_segment_seconds or defaults.short_active_segment_seconds,
-            score_weights=defaults.score_weights,
+            score_weights=weights,
         )
 
     def _load_links(self, options: MeshReportOptions) -> list[dict[str, object]]:

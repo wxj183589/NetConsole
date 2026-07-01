@@ -14,6 +14,19 @@ from netconsole.ui.mesh_chart_time_axis import full_sample_time_label
 from netconsole.ui.mesh_series_metadata import MESH_SERIES_METADATA, format_mesh_value
 
 
+def _format_switch_detection_window(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "- ms"
+    if not math.isfinite(number):
+        return "- ms"
+    rounded = int(round(number))
+    if 900 <= rounded <= 1100:
+        return f"约 {rounded} ms"
+    return f"{rounded} ms"
+
+
 class MeshChartHoverController(QObject):
     def __init__(self, canvas, axis, i18n: I18n, parent=None) -> None:
         super().__init__(parent)
@@ -376,7 +389,8 @@ class MeshChartHoverController(QObject):
                         str(event.get("event_time") or event.get("current_sample_time") or "-"),
                         f"{self.i18n.t('mesh_analysis.switch_from')}: {from_peer_ap} / {from_peer_site} / {from_peer_mac}",
                         f"{self.i18n.t('mesh_analysis.switch_to')}: {to_peer_ap} / {to_peer_site} / {to_peer_mac}",
-                        f"{self.i18n.t('mesh_analysis.observed_window')}: {event.get('observed_window_ms') or '-'} ms",
+                        f"{self.i18n.t('mesh_analysis.observed_window')}: {_format_switch_detection_window(event.get('observed_window_ms'))}",
+                        self.i18n.t("mesh_analysis.switch_window_note"),
                     ]
                 )
             elif event_type == "NO_ACTIVE":

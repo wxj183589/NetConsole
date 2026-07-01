@@ -20,7 +20,7 @@ from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
 def test_version_file_exposes_release_metadata():
-    assert APP_VERSION == "v1.3.3"
+    assert APP_VERSION == "v1.3.4"
     assert BUILD_TIME
     assert GIT_COMMIT
 

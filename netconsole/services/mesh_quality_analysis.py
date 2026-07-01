@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
@@ -42,6 +42,18 @@ class MeshQualityRules:
     )
 
 
+@dataclass(frozen=True)
+class MeshThresholdTemplate:
+    key: str
+    label: str
+    business_type: str
+    working_mode: str
+    bandwidth: str
+    ap_spacing: str
+    description: str
+    rules: MeshQualityRules
+
+
 @dataclass
 class MeshQualityReport:
     overview: dict[str, object]
@@ -58,6 +70,154 @@ class MeshQualityReport:
     raw_evidence: list[dict[str, object]]
     parse_issues: list[dict[str, object]]
     all_link_details: list[dict[str, object]]
+
+
+def load_threshold_templates() -> dict[str, MeshThresholdTemplate]:
+    defaults = load_default_rules()
+    standard_pis = replace(
+        defaults,
+        rssi_excellent_threshold=42,
+        rssi_good_threshold=32,
+        rssi_warning_threshold=26,
+        rssi_bad_threshold=20,
+        backup_available_threshold=32,
+        backup_strong_threshold=42,
+        busy_warning_threshold=60,
+        busy_bad_threshold=75,
+        no_backup_min_seconds=5,
+        weak_active_min_seconds=3,
+        switch_late_window_seconds=5,
+        switch_target_window_seconds=5,
+        flap_window_seconds=30,
+        short_active_segment_seconds=5,
+    )
+    high_quality_pis = replace(
+        standard_pis,
+        rssi_excellent_threshold=45,
+        rssi_good_threshold=35,
+        rssi_warning_threshold=28,
+        rssi_bad_threshold=22,
+        backup_available_threshold=35,
+        backup_strong_threshold=45,
+    )
+    wifi5_pis = replace(
+        standard_pis,
+        rssi_excellent_threshold=40,
+        rssi_good_threshold=30,
+        rssi_warning_threshold=25,
+        rssi_bad_threshold=20,
+        backup_available_threshold=30,
+        backup_strong_threshold=40,
+    )
+    dcs_dot11a = replace(
+        standard_pis,
+        rssi_excellent_threshold=35,
+        rssi_good_threshold=28,
+        rssi_warning_threshold=22,
+        rssi_bad_threshold=18,
+        backup_available_threshold=28,
+        backup_strong_threshold=35,
+        busy_warning_threshold=55,
+        busy_bad_threshold=70,
+        no_backup_min_seconds=15,
+        weak_active_min_seconds=5,
+        switch_late_window_seconds=8,
+        switch_target_window_seconds=8,
+        flap_window_seconds=45,
+        short_active_segment_seconds=5,
+    )
+    templates = [
+        MeshThresholdTemplate(
+            "pis_wifi6_40_80_standard",
+            "PIS - Wi-Fi6 - 40/80M - 标准间隔",
+            "PIS",
+            "Wi-Fi6 / 11ax",
+            "40M / 80M 混合",
+            "80~150m",
+            "按 PIS 高吞吐业务评估，RSSI 与备份链路要求高于 DCS/20M 远间隔场景。",
+            standard_pis,
+        ),
+        MeshThresholdTemplate(
+            "pis_wifi6_80_high_quality",
+            "PIS - Wi-Fi6 - 80M - 高质量覆盖",
+            "PIS",
+            "Wi-Fi6 / 11ax",
+            "80M",
+            "80~120m",
+            "适用于高质量 PIS/视频业务和较密集覆盖，要求更高链路余量。",
+            high_quality_pis,
+        ),
+        MeshThresholdTemplate(
+            "pis_wifi5_80_normal",
+            "PIS - Wi-Fi5 - 80M - 常规覆盖",
+            "PIS",
+            "Wi-Fi5 / 11ac",
+            "80M",
+            "100~150m",
+            "适用于 Wi-Fi5/11ac 的常规 PIS 覆盖。",
+            wifi5_pis,
+        ),
+        MeshThresholdTemplate(
+            "dcs_wifi6_dot11a_20_far",
+            "DCS - Wi-Fi6设备 - dot11a/20M - 远间隔",
+            "DCS/信号",
+            "强制 dot11a",
+            "20M",
+            "150~180m 或更远",
+            "按低带宽远间隔稳定链路评估；低 RSSI 容忍度高于 PIS，但链路重建、无 Active、短时切换会被重点关注。",
+            dcs_dot11a,
+        ),
+        MeshThresholdTemplate(
+            "dcs_80211a_20_legacy",
+            "DCS - 802.11a/20M - 老线兼容",
+            "DCS/信号",
+            "802.11a",
+            "20M",
+            "150~180m 或更远",
+            "适用于老线 802.11a/20M 低吞吐业务，关注连续性和稳定性，不按 Wi-Fi6 高质量覆盖评估。",
+            dcs_dot11a,
+        ),
+        MeshThresholdTemplate(
+            "custom",
+            "自定义",
+            "自定义",
+            "未知",
+            "未知",
+            "未知",
+            "用户自定义阈值。设备代际不等于评估模板，应按实际工作模式和业务场景选择。",
+            standard_pis,
+        ),
+    ]
+    return {template.key: template for template in templates}
+
+
+def load_threshold_template_rules() -> dict[str, MeshQualityRules]:
+    return {key: template.rules for key, template in load_threshold_templates().items()}
+
+
+def get_threshold_template(key: str) -> MeshThresholdTemplate:
+    templates = load_threshold_templates()
+    return templates.get(key) or templates["pis_wifi6_40_80_standard"]
+
+
+def threshold_template_labels() -> dict[str, str]:
+    return {key: template.label for key, template in load_threshold_templates().items()}
+
+
+def template_overview_fields(template_key: str, rules: MeshQualityRules) -> dict[str, object]:
+    template = get_threshold_template(template_key)
+    overview = {
+        "评估模板": template.label,
+        "业务类型": template.business_type,
+        "实际工作模式": template.working_mode,
+        "频宽": template.bandwidth,
+        "典型 AP 间隔": template.ap_spacing,
+        "RSSI 良好线": rules.rssi_good_threshold,
+        "可用备份线": rules.backup_available_threshold,
+        "无备份风险窗口": f"{rules.no_backup_min_seconds}秒",
+        "评估模板说明": template.description,
+    }
+    return overview
 
 
 def load_default_rules() -> MeshQualityRules:
@@ -112,35 +272,39 @@ def build_quality_report(
     include_all_link_details: bool = False,
     include_parse_issues: bool = True,
     include_busy_analysis: bool = True,
+    threshold_template_key: str = "pis_wifi6_40_80_standard",
+    excluded_region_keywords: tuple[str, ...] = (),
     progress: Callable[[int, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> MeshQualityReport:
     progress = progress or (lambda _value, _stage: None)
     should_cancel = should_cancel or (lambda: False)
-    normalized = normalize_samples(rows)
+    normalized = mark_excluded_rows(normalize_samples(rows), excluded_region_keywords)
+    analysis_rows = [row for row in normalized if not row.get("excluded")]
+    excluded_source_files = mark_excluded_source_files(source_files, normalized)
     _cancel(should_cancel)
     progress(12, "normalize_samples")
     _cancel(should_cancel)
     progress(18, "sample_quality")
-    sample_quality = build_sample_quality(normalized, rules)
+    sample_quality = build_sample_quality(analysis_rows, rules)
     _cancel(should_cancel)
     progress(30, "active_segments")
-    active_segments = build_active_segments(sample_quality, normalized, rules)
+    active_segments = build_active_segments(sample_quality, analysis_rows, rules)
     _cancel(should_cancel)
     progress(42, "switch_analysis")
     switch_events = analyze_switch_events(active_segments, sample_quality, rules)
     progress(50, "peer_ranking")
-    peer_ranking = build_peer_quality(normalized, active_segments, switch_events, rules)
+    peer_ranking = build_peer_quality(analysis_rows, active_segments, switch_events, rules)
     _cancel(should_cancel)
     progress(56, "anomaly_analysis")
-    anomaly_events = analyze_anomaly_events(sample_quality, normalized, rules, include_busy_analysis=include_busy_analysis)
+    anomaly_events = analyze_anomaly_events(sample_quality, analysis_rows, rules, include_busy_analysis=include_busy_analysis)
     no_backup_risks = [event for event in anomaly_events if event.get("event_type") == "NO_BACKUP"]
     _cancel(should_cancel)
     progress(68, "busy_analysis")
-    busy_analysis = build_busy_analysis(normalized, rules) if include_busy_analysis else []
+    busy_analysis = build_busy_analysis(analysis_rows, rules) if include_busy_analysis else []
     _cancel(should_cancel)
     progress(76, "link_rebuild_analysis")
-    rebuild_events = analyze_link_rebuilds(normalized)
+    rebuild_events = analyze_link_rebuilds(analysis_rows)
     _cancel(should_cancel)
     progress(84, "raw_evidence")
     raw_evidence = collect_raw_evidence(normalized, switch_events, anomaly_events, rebuild_events) if include_raw_evidence else []
@@ -149,8 +313,8 @@ def build_quality_report(
         mr_name,
         report_name,
         data_source_type,
-        source_files,
-        normalized,
+        excluded_source_files,
+        analysis_rows,
         active_segments,
         switch_events,
         anomaly_events,
@@ -159,11 +323,15 @@ def build_quality_report(
         total_score,
         score_level,
         tags,
+        threshold_template_key,
+        rules,
+        tuple(keyword for keyword in excluded_region_keywords if str(keyword).strip()),
+        len(normalized) - len(analysis_rows),
     )
     return MeshQualityReport(
         overview=overview,
         score_rows=score_rows,
-        source_files=source_files,
+        source_files=excluded_source_files,
         sample_quality=sample_quality,
         active_segments=active_segments,
         peer_ranking=peer_ranking,
@@ -199,6 +367,36 @@ def normalize_samples(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         item["realtime_radio_statistics"] = None
         result.append(item)
     return sorted(result, key=lambda row: (str(row.get("sample_time") or ""), str(row.get("radio") or ""), int(row.get("id") or 0)))
+
+
+def mark_excluded_rows(rows: list[dict[str, object]], keywords: tuple[str, ...]) -> list[dict[str, object]]:
+    normalized_keywords = tuple(str(keyword).strip().lower() for keyword in keywords if str(keyword).strip())
+    if not normalized_keywords:
+        return [dict(row, excluded=False) for row in rows]
+    result = []
+    for row in rows:
+        site = str(row.get("peer_site") or "").lower()
+        excluded = any(keyword in site for keyword in normalized_keywords)
+        result.append(dict(row, excluded=excluded))
+    return result
+
+
+def mark_excluded_source_files(source_files: list[dict[str, object]], rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    excluded_by_source: dict[int, bool] = {}
+    seen_by_source: set[int] = set()
+    for row in rows:
+        source_file_id = int(row.get("source_file_id") or 0)
+        if source_file_id <= 0:
+            continue
+        seen_by_source.add(source_file_id)
+        excluded_by_source[source_file_id] = bool(row.get("excluded")) or excluded_by_source.get(source_file_id, False)
+    result = []
+    for source in source_files:
+        item = dict(source)
+        source_file_id = int(item.get("id") or 0)
+        item["excluded"] = bool(excluded_by_source.get(source_file_id, False)) if source_file_id in seen_by_source else False
+        result.append(item)
+    return result
 
 
 def build_sample_quality(rows: list[dict[str, object]], rules: MeshQualityRules) -> list[dict[str, object]]:
@@ -638,7 +836,25 @@ def build_score_rows(samples: list[dict[str, object]], switches: list[dict[str, 
     return rows, final, _score_level(final), tags
 
 
-def build_overview(mr_name: str, report_name: str, data_source_type: str, source_files: list[dict[str, object]], rows: list[dict[str, object]], segments: list[dict[str, object]], switches: list[dict[str, object]], anomalies: list[dict[str, object]], rebuilds: list[dict[str, object]], parse_issues: list[dict[str, object]], score: int, score_level: str, tags: list[str]) -> dict[str, object]:
+def build_overview(
+    mr_name: str,
+    report_name: str,
+    data_source_type: str,
+    source_files: list[dict[str, object]],
+    rows: list[dict[str, object]],
+    segments: list[dict[str, object]],
+    switches: list[dict[str, object]],
+    anomalies: list[dict[str, object]],
+    rebuilds: list[dict[str, object]],
+    parse_issues: list[dict[str, object]],
+    score: int,
+    score_level: str,
+    tags: list[str],
+    threshold_template_key: str = "pis_wifi6_40_80_standard",
+    rules: MeshQualityRules | None = None,
+    excluded_region_keywords: tuple[str, ...] = (),
+    excluded_link_count: int = 0,
+) -> dict[str, object]:
     sample_keys = {(row.get("radio"), row.get("sample_time")) for row in rows}
     return {
         "报告名称": report_name or mr_name,
@@ -646,6 +862,8 @@ def build_overview(mr_name: str, report_name: str, data_source_type: str, source
         "数据来源类型": data_source_type,
         "生成时间": datetime.now().isoformat(sep=" ", timespec="seconds"),
         "源文件数量": len(source_files),
+        "排除区域规则": "、".join(excluded_region_keywords) if excluded_region_keywords else "未启用",
+        "排除区域链路记录数": excluded_link_count,
         "采样时间范围": f"{min((str(row.get('sample_time')) for row in rows if row.get('sample_time')), default='')} ~ {max((str(row.get('sample_time')) for row in rows if row.get('sample_time')), default='')}",
         "Radio 数量": len({row.get("radio") for row in rows if row.get("radio") is not None}),
         "Peer 数量": len({row.get("peer_mac") for row in rows if row.get("peer_mac")}),
@@ -667,7 +885,11 @@ def build_overview(mr_name: str, report_name: str, data_source_type: str, source
         "评分等级": score_level,
         "主要问题标签": "; ".join(tags) if tags else "无",
         "总体结论": _overall_conclusion(score, tags),
+        "切换检测窗口说明": "MR原始MESH日志为周期采样数据，切换事件的实际发生时间只能定位在相邻采样之间，无法精确到真实切换耗时。",
     }
+    if rules is not None:
+        overview.update(template_overview_fields(threshold_template_key, rules))
+    return overview
 
 
 def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]], rows: list[dict[str, object]], rules: MeshQualityRules) -> None:

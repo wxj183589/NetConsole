@@ -184,8 +184,8 @@ class CarNetworkDiagnosticPage(QWidget):
         self.scope_hint_label = QLabel("检测说明：本页面主检测对象为车内有线通信链路。地面到车载MR落地IP不可达属于常见现场情况，仅作为辅助状态，不直接判定车内网络故障。")
         self.scope_hint_label.setWordWrap(True)
 
-        self.train_table = QTableWidget(0, 4)
-        self.train_table.setHorizontalHeaderLabels(["列车", "状态", "TC1/CT", "TC2/CW"])
+        self.train_table = QTableWidget(0, 2)
+        self.train_table.setHorizontalHeaderLabels(["列车", "状态"])
         configure_readonly_table(self.train_table)
 
         self.node_buttons: dict[str, QPushButton] = {}
@@ -691,16 +691,21 @@ class CarNetworkDiagnosticPage(QWidget):
             self.train_table.insertRow(row)
             tc1 = train.tc1_device.name if train.tc1_device else "-"
             tc2 = train.tc2_device.name if train.tc2_device else "-"
-            values = [train.display_name, self.train_statuses.get(train.train_id, "未检测"), tc1, tc2]
+            values = [train.display_name, self.train_statuses.get(train.train_id, "未检测")]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                item.setTextAlignment(Qt.AlignCenter if column < 2 else Qt.AlignVCenter | Qt.AlignLeft)
+                item.setTextAlignment(Qt.AlignCenter)
+                item.setToolTip(f"TC1/CT: {tc1}\nTC2/CW: {tc2}")
                 if column == 0:
                     item.setData(Qt.UserRole, train.train_id)
+                if column == 1:
+                    fg, bg = _status_cell_colors(str(value))
+                    item.setForeground(QBrush(QColor(fg)))
+                    item.setBackground(QBrush(QColor(bg)))
                 self.train_table.setItem(row, column, item)
             if train.train_id == self.current_train_id:
                 self.train_table.selectRow(row)
-        for column, width in enumerate((80, 90, 180, 180)):
+        for column, width in enumerate((100, 90)):
             self.train_table.setColumnWidth(column, width)
 
     def _refresh_topology(self) -> None:

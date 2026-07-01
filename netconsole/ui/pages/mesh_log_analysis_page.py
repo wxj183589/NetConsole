@@ -215,7 +215,7 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_label = QLabel()
 
-        self.mr_table = QTableWidget(0, 8)
+        self.mr_table = QTableWidget(0, 1)
         self.source_table = QTableWidget(0, 15)
         self.link_table = QTableWidget(0, 27)
         self.active_build_order_table = QTableWidget(0, 18)
@@ -315,18 +315,7 @@ class MeshLogAnalysisPage(QWidget):
         self.state_filter.setItemText(2, self.i18n.t("mesh_analysis.state_standby"))
         self.peer_filter.setPlaceholderText("PeerMac / AP名称 / 站点")
         self.keyword_filter.setPlaceholderText(self.i18n.t("mesh_analysis.keyword"))
-        self.mr_table.setHorizontalHeaderLabels(
-            [
-                self.i18n.t("mesh_analysis.mr_name"),
-                self.i18n.t("mesh_analysis.earliest_time"),
-                self.i18n.t("mesh_analysis.latest_time"),
-                self.i18n.t("mesh_analysis.source_files"),
-                self.i18n.t("mesh_analysis.samples"),
-                self.i18n.t("mesh_analysis.link_records"),
-                self.i18n.t("mesh_analysis.events"),
-                self.i18n.t("mesh_analysis.last_import_at"),
-            ]
-        )
+        self.mr_table.setHorizontalHeaderLabels([self.i18n.t("mesh_analysis.mr_name")])
         self.source_table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("mesh_analysis.file_name"),
@@ -679,16 +668,7 @@ class MeshLogAnalysisPage(QWidget):
         for row, profile in enumerate(self.profiles):
             if current_id and profile.mr_id == current_id:
                 selected_row = row
-            values = [
-                profile.display_name,
-                _display(profile.earliest_sample_time),
-                _display(profile.latest_sample_time),
-                profile.source_file_count,
-                profile.sample_count,
-                profile.link_record_count,
-                profile.event_count,
-                _display(profile.last_import_at),
-            ]
+            values = [profile.display_name]
             _set_row(self.mr_table, row, values, profile.mr_id)
         del blocker
         self.mr_table.setSortingEnabled(sorting)
@@ -848,6 +828,17 @@ class MeshLogAnalysisPage(QWidget):
         if dialog.exec() != QDialog.Accepted:
             return
         options = dialog.options()
+        source_file_ids = self._selected_source_file_ids()
+        if not source_file_ids:
+            answer = QMessageBox.question(
+                self,
+                self.i18n.t("mesh_report.generate_report"),
+                "未选择源文件，将为当前 MR 的全部已解析源文件生成报告。是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         self.report_open_output_dir = bool(options.open_output_dir_after_done)
         export_dir = self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name)
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -858,7 +849,14 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_label.setText(self.i18n.t("mesh_report.generating"))
         self.generate_report_button.setEnabled(False)
         output_path = export_dir / f"{filename_mr}_MR原始MESH日志分析报告_{timestamp}.xlsx"
-        self.report_worker = MeshAnalysisReportWorker(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name), profile.display_name, output_path, options, self)
+        self.report_worker = MeshAnalysisReportWorker(
+            self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name),
+            profile.display_name,
+            output_path,
+            options,
+            source_file_ids,
+            self,
+        )
         self.report_worker.progress.connect(self._on_report_progress)
         self.report_worker.completed.connect(self._on_report_finished)
         self.report_worker.failed.connect(self._on_report_failed)
@@ -867,6 +865,17 @@ class MeshLogAnalysisPage(QWidget):
         self.report_worker.failed.connect(lambda _error: self._cleanup_report_worker())
         self.report_worker.cancelled.connect(self._cleanup_report_worker)
         self.report_worker.start()
+
+    def _selected_source_file_ids(self) -> tuple[int, ...]:
+        source_ids: set[int] = set()
+        for model_index in self.source_table.selectionModel().selectedRows(0):
+            item = self.source_table.item(model_index.row(), 0)
+            data = item.data(Qt.UserRole) if item else None
+            if isinstance(data, dict):
+                source_id = int(data.get("id") or 0)
+                if source_id > 0:
+                    source_ids.add(source_id)
+        return tuple(sorted(source_ids))
 
     def _on_report_progress(self, value: int, message: str) -> None:
         self.progress_bar.setValue(value)
@@ -1329,7 +1338,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def _setup_column_states(self) -> None:
         defaults = {
-            "mr": [180, 180, 180, 90, 100, 120, 90, 180],
+            "mr": [180],
             "source": [180, 90, 320, 100, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
             "link": [90, 180, 70, 90, 180, 180, 140, 140, 150, 110, 140, 110, 80, 90, 90, 90, 90, 90, 90, 110, 110, 90, 90, 90, 90, 240, 80],
             "active_build_order": [70, 70, 160, 180, 140, 100, 180, 180, 130, 130, 90, 100, 100, 100, 90, 90, 100, 220],

@@ -22,6 +22,7 @@ class MeshReportProcessRequest:
     output_path: str
     temp_path: str
     options: MeshReportOptions
+    source_file_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ def run_mesh_report_process(request: MeshReportProcessRequest, progress_queue: A
             emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
             return
         emit("progress", 1, "source_files", output_dir=str(output_dir))
-        source_files = _list_source_files(Path(request.db_path))
+        source_files = _list_source_files(Path(request.db_path), request.source_file_ids)
         if not source_files:
             raise RuntimeError("当前数据缺少源文件关联，无法按 meshlog 单独生成报告。")
         workers = calculate_worker_count(request.options)
@@ -271,18 +272,24 @@ def _generate_source_report_task(job: dict[str, object]) -> dict[str, object]:
         raise
 
 
-def _list_source_files(db_path: Path) -> list[dict[str, object]]:
+def _list_source_files(db_path: Path, source_file_ids: tuple[int, ...] = ()) -> list[dict[str, object]]:
+    clauses = ["COALESCE(parsed_deleted_at, '') = ''", "COALESCE(records_parsed, 0) > 0"]
+    values: list[object] = []
+    if source_file_ids:
+        placeholders = ",".join("?" for _ in source_file_ids)
+        clauses.append(f"id IN ({placeholders})")
+        values.extend(source_file_ids)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
+            f"""
             SELECT id, original_filename, archived_filename, first_sample_time, last_sample_time,
                    records_parsed, records_skipped, issue_count, sha256
             FROM source_files
-            WHERE COALESCE(parsed_deleted_at, '') = ''
-              AND COALESCE(records_parsed, 0) > 0
+            WHERE {" AND ".join(clauses)}
             ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC
-            """
+            """,
+            values,
         ).fetchall()
     return [dict(row) for row in rows]
 

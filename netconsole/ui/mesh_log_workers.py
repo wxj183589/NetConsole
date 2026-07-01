@@ -97,13 +97,22 @@ class MeshAnalysisReportWorker(QThread):
     failed = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, db_path: Path, mr_name: str, output_path: Path, options: MeshReportOptions, parent=None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        mr_name: str,
+        output_path: Path,
+        options: MeshReportOptions,
+        source_file_ids: tuple[int, ...] = (),
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.db_path = Path(db_path)
         self.mr_name = mr_name
         self.output_path = Path(output_path)
         self.temp_path = self.output_path.with_name(self.output_path.stem + ".tmp.xlsx")
         self.options = options
+        self.source_file_ids = source_file_ids
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -126,6 +135,7 @@ class MeshAnalysisReportWorker(QThread):
             output_path=str(self.output_path),
             temp_path=str(self.temp_path),
             options=self.options,
+            source_file_ids=self.source_file_ids,
         )
         process = context.Process(target=run_mesh_report_process, args=(request, progress_queue, cancel_event), daemon=False)
         process.start()

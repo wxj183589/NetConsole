@@ -26,8 +26,11 @@ from netconsole.services.mesh_quality_analysis import (
     build_active_segments as build_quality_active_segments,
     build_busy_analysis,
     build_sample_quality,
+    get_threshold_template,
+    load_threshold_templates,
     normalize_samples,
     percentile,
+    template_overview_fields,
 )
 from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker
 
@@ -72,6 +75,58 @@ def test_active_segments_preserve_aba_runs_and_switch_sequence():
     assert [(switch["from_peer_mac"], switch["to_peer_mac"]) for switch in switches] == [(PEER_A, PEER_B), (PEER_B, PEER_A)]
     assert switches[0]["from_mr_rssi"] == 41
     assert switches[0]["to_mr_rssi"] == 55
+
+
+def test_mesh_threshold_templates_follow_business_scenario_not_wifi_generation():
+    templates = load_threshold_templates()
+
+    assert list(templates)[:2] == ["pis_wifi6_40_80_standard", "pis_wifi6_80_high_quality"]
+    assert templates["pis_wifi6_40_80_standard"].label == "PIS - Wi-Fi6 - 40/80M - 标准间隔"
+    assert templates["pis_wifi6_40_80_standard"].rules.rssi_good_threshold == 32
+    assert templates["pis_wifi6_40_80_standard"].rules.backup_available_threshold == 32
+    assert templates["dcs_wifi6_dot11a_20_far"].business_type == "DCS/信号"
+    assert templates["dcs_wifi6_dot11a_20_far"].working_mode == "强制 dot11a"
+    assert templates["dcs_wifi6_dot11a_20_far"].rules.rssi_good_threshold == 28
+    assert templates["dcs_wifi6_dot11a_20_far"].rules.backup_available_threshold == 28
+    assert templates["dcs_wifi6_dot11a_20_far"].rules.no_backup_min_seconds == 15
+    assert "Wi-Fi6" in templates["dcs_wifi6_dot11a_20_far"].label
+    assert "dot11a/20M" in templates["dcs_wifi6_dot11a_20_far"].label
+
+
+def test_template_overview_fields_explain_selected_evaluation_context():
+    template = get_threshold_template("pis_wifi6_40_80_standard")
+    fields = template_overview_fields(template.key, template.rules)
+
+    assert fields["评估模板"] == "PIS - Wi-Fi6 - 40/80M - 标准间隔"
+    assert fields["业务类型"] == "PIS"
+    assert fields["实际工作模式"] == "Wi-Fi6 / 11ax"
+    assert fields["RSSI 良好线"] == 32
+    assert fields["可用备份线"] == 32
+    assert fields["无备份风险窗口"] == "5秒"
+
+
+def test_mesh_report_settings_dialog_applies_scenario_template():
+    from PySide6.QtWidgets import QApplication, QScrollArea
+    from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    dialog = MeshReportSettingsDialog(I18n("zh_CN"), "MR-01")
+    index = dialog.threshold_template_combo.findData("dcs_wifi6_dot11a_20_far")
+    dialog.threshold_template_combo.setCurrentIndex(index)
+
+    options = dialog.options()
+
+    assert dialog.threshold_template_combo.itemText(index) == "DCS - Wi-Fi6设备 - dot11a/20M - 远间隔"
+    assert options.threshold_template_key == "dcs_wifi6_dot11a_20_far"
+    assert options.business_type == "DCS/信号"
+    assert options.working_mode == "强制 dot11a"
+    assert options.bandwidth == "20M"
+    assert options.ap_spacing == "150~180m 或更远"
+    assert options.rssi_good_threshold == 28
+    assert options.backup_available_threshold == 28
+    assert options.no_backup_min_seconds == 15
+    assert dialog.findChild(QScrollArea) is not None
 
 
 def test_flap_detects_aba_inside_window_and_ignores_non_flap():
