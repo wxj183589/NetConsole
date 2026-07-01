@@ -4,11 +4,11 @@ import sqlite3
 from pathlib import Path
 
 
-CURRENT_SCHEMA_VERSION = "2026.06.23.device_ap_rebuild_mac"
+CURRENT_SCHEMA_VERSION = "2026.07.02.ap_extension_points"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
-    """Raised when an existing database is not on the current rebuild-only schema."""
+    """Raised when an existing database is not safe for additive schema updates."""
 
 
 SCHEMA_METADATA_SCHEMA = """
@@ -380,6 +380,76 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resource_history (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     created_at TEXT
+);
+"""
+
+AP_EXTENSION_POINTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_extension_points (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT,
+    line_name TEXT,
+    system_type TEXT,
+    network_domain TEXT,
+    station_name TEXT,
+    section_name TEXT,
+    line_side TEXT,
+    direction TEXT,
+    mileage_text TEXT,
+    mileage_m REAL,
+    distance_to_prev_m REAL,
+    ap_point_code TEXT,
+    ap_name TEXT,
+    ap_mac_norm TEXT,
+    ap_mac_display TEXT,
+    curve_radius_m REAL,
+    curve_start_text TEXT,
+    curve_start_m REAL,
+    curve_end_text TEXT,
+    curve_end_m REAL,
+    curve_flag INTEGER DEFAULT 0,
+    curve_impact_level TEXT,
+    interval_risk_level TEXT,
+    interval_risk_reason TEXT,
+    install_scene TEXT,
+    power_station TEXT,
+    power_distribution TEXT,
+    fiber_access_station TEXT,
+    fiber_distribution TEXT,
+    uplink_switch TEXT,
+    uplink_port TEXT,
+    optical_port TEXT,
+    location_desc TEXT,
+    remark TEXT,
+    source_file TEXT,
+    source_sheet TEXT,
+    source_row INTEGER,
+    import_batch_id TEXT,
+    raw_payload_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_extension_points_mac
+    ON ap_extension_points(ap_mac_norm);
+CREATE INDEX IF NOT EXISTS idx_ap_extension_points_station
+    ON ap_extension_points(station_name, line_side, mileage_m);
+"""
+
+AP_EXTENSION_IMPORT_BATCHES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_extension_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT,
+    source_file TEXT,
+    template_type TEXT,
+    system_type TEXT,
+    network_domain TEXT,
+    import_time TEXT NOT NULL,
+    total_rows INTEGER DEFAULT 0,
+    success_rows INTEGER DEFAULT 0,
+    updated_rows INTEGER DEFAULT 0,
+    skipped_rows INTEGER DEFAULT 0,
+    error_rows INTEGER DEFAULT 0,
+    operator TEXT,
+    remark TEXT
 );
 """
 
@@ -826,45 +896,9 @@ class Database:
         existed = self.exists()
         conn = self.connect()
         try:
-            if existed:
-                self._assert_current_schema(conn)
             conn.executescript(
                 "\n".join(
-                    (
-                        SCHEMA_METADATA_SCHEMA,
-                        DEVICES_SCHEMA,
-                        DEVICE_GROUPS_SCHEMA,
-                        COLLECT_RUNS_SCHEMA,
-                        DEVICE_FACTS_SCHEMA,
-                        DEVICE_INTERFACES_SCHEMA,
-                        DEVICE_OPTICAL_MODULES_SCHEMA,
-                        DEVICE_LLDP_NEIGHBORS_SCHEMA,
-                        DEVICE_FACTS_HISTORY_SCHEMA,
-                        DEVICE_INTERFACES_HISTORY_SCHEMA,
-                        DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
-                        DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
-                        AC_AP_SUMMARY_SCHEMA,
-                        AC_FIT_AP_RESOURCES_SCHEMA,
-                        AC_FIT_AP_METADATA_SCHEMA,
-                        AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
-                        AC_FIT_AP_UNAUTHENTICATED_SCHEMA,
-                        AC_FIT_AP_UNAUTHENTICATED_HISTORY_SCHEMA,
-                        AC_FIT_AP_UNAUTHENTICATED_SUMMARY_SCHEMA,
-                        AC_FIT_AP_OPTICAL_SCHEMA,
-                        AP_ENTITIES_SCHEMA,
-                        AP_RESOURCE_SNAPSHOTS_SCHEMA,
-                        AP_LLDP_HISTORY_SCHEMA,
-                        AP_OPTICAL_HISTORY_SCHEMA,
-                        TRACKSIDE_AP_VIEW_CACHE_SCHEMA,
-                        AC_STATION_AP_CAPACITY_SCHEMA,
-                        AC_TRACKSIDE_AP_PLAN_SCHEMA,
-                        AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA,
-                        AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
-                        AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
-                        AC_FIT_AP_LLDP_HISTORY_SCHEMA,
-                        AC_FIT_AP_RADIO_HISTORY_SCHEMA,
-                        CONFIG_SNAPSHOTS_SCHEMA,
-                    )
+                    self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
                 )
             )
             self._write_schema_version(conn)
@@ -881,12 +915,65 @@ class Database:
         finally:
             conn.close()
 
-    def _assert_current_schema(self, conn: sqlite3.Connection) -> None:
+    def _schema_scripts_for_existing_database(self, conn: sqlite3.Connection) -> tuple[str, ...]:
         if not self._table_exists(conn, "schema_metadata"):
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
-        row = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
-        if row is None or str(row["value"]) != CURRENT_SCHEMA_VERSION:
+        if self._schema_version(conn) == CURRENT_SCHEMA_VERSION:
+            return self._all_schema_scripts()
+        self._assert_additive_update_safe(conn)
+        return self._all_schema_scripts()
+
+    def _assert_additive_update_safe(self, conn: sqlite3.Connection) -> None:
+        required_tables = {
+            "devices",
+            "device_groups",
+            "ac_fit_ap_resources",
+            "ap_entities",
+            "schema_metadata",
+        }
+        missing = sorted(table for table in required_tables if not self._table_exists(conn, table))
+        if missing:
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
+
+    @staticmethod
+    def _all_schema_scripts() -> tuple[str, ...]:
+        return (
+            SCHEMA_METADATA_SCHEMA,
+            DEVICES_SCHEMA,
+            DEVICE_GROUPS_SCHEMA,
+            COLLECT_RUNS_SCHEMA,
+            DEVICE_FACTS_SCHEMA,
+            DEVICE_INTERFACES_SCHEMA,
+            DEVICE_OPTICAL_MODULES_SCHEMA,
+            DEVICE_LLDP_NEIGHBORS_SCHEMA,
+            DEVICE_FACTS_HISTORY_SCHEMA,
+            DEVICE_INTERFACES_HISTORY_SCHEMA,
+            DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
+            DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
+            AC_AP_SUMMARY_SCHEMA,
+            AC_FIT_AP_RESOURCES_SCHEMA,
+            AC_FIT_AP_METADATA_SCHEMA,
+            AP_EXTENSION_POINTS_SCHEMA,
+            AP_EXTENSION_IMPORT_BATCHES_SCHEMA,
+            AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
+            AC_FIT_AP_UNAUTHENTICATED_SCHEMA,
+            AC_FIT_AP_UNAUTHENTICATED_HISTORY_SCHEMA,
+            AC_FIT_AP_UNAUTHENTICATED_SUMMARY_SCHEMA,
+            AC_FIT_AP_OPTICAL_SCHEMA,
+            AP_ENTITIES_SCHEMA,
+            AP_RESOURCE_SNAPSHOTS_SCHEMA,
+            AP_LLDP_HISTORY_SCHEMA,
+            AP_OPTICAL_HISTORY_SCHEMA,
+            TRACKSIDE_AP_VIEW_CACHE_SCHEMA,
+            AC_STATION_AP_CAPACITY_SCHEMA,
+            AC_TRACKSIDE_AP_PLAN_SCHEMA,
+            AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA,
+            AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
+            AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
+            AC_FIT_AP_LLDP_HISTORY_SCHEMA,
+            AC_FIT_AP_RADIO_HISTORY_SCHEMA,
+            CONFIG_SNAPSHOTS_SCHEMA,
+        )
 
     def _write_schema_version(self, conn: sqlite3.Connection) -> None:
         now = __import__("datetime").datetime.now().isoformat(timespec="seconds")
@@ -902,6 +989,11 @@ class Database:
         )
 
     @staticmethod
+    def _schema_version(conn: sqlite3.Connection) -> str:
+        row = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+        return str(row["value"]) if row is not None else ""
+
+    @staticmethod
     def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         row = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
@@ -912,7 +1004,7 @@ class Database:
     @staticmethod
     def _schema_mismatch_message() -> str:
         return (
-            "当前数据库结构与新版本不兼容。本次版本需要重建数据库。"
+            "当前数据库结构缺少基础元数据，无法自动升级。"
             "请先备份旧 data 目录，然后使用数据库重建工具或清空旧数据后重新初始化。"
         )
 

@@ -100,6 +100,25 @@ def test_duplicate_site_name_is_rejected(tmp_path):
         manager.create_site("A")
 
 
+def test_site_metadata_supports_line_system_and_network_domain(tmp_path):
+    manager = SiteManager(PathResolver(tmp_path))
+
+    site = manager.create_site(
+        "杭州4号线-信号A网",
+        line_name="杭州4号线",
+        system_type="信号",
+        network_domain="A网",
+        remark="信号 A 网局点",
+    )
+    loaded = manager.ensure_site("杭州4号线-信号A网")
+
+    assert site.display_name == "杭州4号线-信号A网"
+    assert loaded.line_name == "杭州4号线"
+    assert loaded.system_type == "信号"
+    assert loaded.network_domain == "A网"
+    assert loaded.remark == "信号 A 网局点"
+
+
 def test_switch_site_updates_app_json_current_site(tmp_path):
     paths = PathResolver(tmp_path)
     manager = SiteManager(paths)
@@ -127,7 +146,7 @@ def test_new_site_repository_reads_its_own_database(tmp_path):
     assert [device.name for device in repo_b.list()] == ["B-SW"]
 
 
-def test_existing_site_database_requires_rebuild_when_opened(tmp_path):
+def test_existing_site_database_without_metadata_still_requires_rebuild(tmp_path):
     paths = PathResolver(tmp_path)
     site_root = paths.ensure_site_dirs("legacy")
     db = Database(site_root / "db" / "devices.db")

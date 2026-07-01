@@ -20,6 +20,12 @@ class Site:
     name: str
     root_path: Path
     database_path: Path
+    display_name: str = ""
+    line_name: str = ""
+    system_type: str = ""
+    network_domain: str = "default"
+    remark: str = ""
+    schema_version: int = 1
 
 
 class SiteManager:
@@ -35,13 +41,32 @@ class SiteManager:
     def ensure_site(self, site_name: str) -> Site:
         return self.init_site_database(site_name, with_demo_data=(site_name == DEFAULT_SITE))
 
-    def create_site(self, site_name: str) -> Site:
+    def create_site(
+        self,
+        site_name: str,
+        *,
+        line_name: str = "",
+        system_type: str = "",
+        network_domain: str = "default",
+        display_name: str = "",
+        remark: str = "",
+    ) -> Site:
         site_name = self.validate_site_name(site_name)
         if site_name in self.list_sites():
             raise ValueError(f"Site already exists: {site_name}")
         site = self.init_site_database(site_name, with_demo_data=False)
+        self.save_site_metadata(
+            site_name,
+            {
+                "display_name": display_name or site_name,
+                "line_name": line_name,
+                "system_type": system_type,
+                "network_domain": network_domain or "default",
+                "remark": remark,
+            },
+        )
         self.switch_site(site_name)
-        return site
+        return self.ensure_site(site_name)
 
     def list_sites(self) -> list[str]:
         self.paths.sites_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +125,60 @@ class SiteManager:
         if first_database and with_demo_data:
             insert_demo_devices(DeviceRepository(database))
         DeviceGroupRepository(database, site_name).ensure_default_groups()
-        return Site(name=site_name, root_path=root_path, database_path=database.path)
+        metadata = self.load_site_metadata(site_name)
+        return Site(
+            name=site_name,
+            root_path=root_path,
+            database_path=database.path,
+            display_name=str(metadata.get("display_name") or site_name),
+            line_name=str(metadata.get("line_name") or ""),
+            system_type=str(metadata.get("system_type") or ""),
+            network_domain=str(metadata.get("network_domain") or "default"),
+            remark=str(metadata.get("remark") or ""),
+            schema_version=int(metadata.get("schema_version") or 1),
+        )
+
+    def load_site_metadata(self, site_name: str) -> dict[str, object]:
+        path = self.paths.site_dir(self.validate_site_name(site_name)) / "site_meta.json"
+        if not path.exists():
+            return {
+                "display_name": site_name,
+                "line_name": "",
+                "system_type": "",
+                "network_domain": "default",
+                "remark": "",
+                "schema_version": 1,
+            }
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("display_name", site_name)
+        data.setdefault("line_name", "")
+        data.setdefault("system_type", "")
+        data.setdefault("network_domain", "default")
+        data.setdefault("remark", "")
+        data.setdefault("schema_version", 1)
+        return data
+
+    def save_site_metadata(self, site_name: str, metadata: dict[str, object]) -> None:
+        site_name = self.validate_site_name(site_name)
+        root_path = self.ensure_site_dirs(site_name)
+        current = self.load_site_metadata(site_name)
+        now = __import__("datetime").datetime.now().isoformat(timespec="seconds")
+        payload = {
+            **current,
+            **{key: value for key, value in metadata.items() if value is not None},
+            "display_name": str(metadata.get("display_name") or current.get("display_name") or site_name),
+            "updated_at": now,
+            "schema_version": 1,
+        }
+        payload.setdefault("created_at", now)
+        with (root_path / "site_meta.json").open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
 
     def ensure_app_config(self) -> dict[str, object]:
         self.ensure_demo_site()

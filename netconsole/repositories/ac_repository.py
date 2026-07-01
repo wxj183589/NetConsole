@@ -8,6 +8,7 @@ from netconsole.core import app_logger
 from netconsole.utils.station_normalize import normalize_station_value
 
 from netconsole.core.database import Database
+from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.trackside_ap_business import parse_vlan_set
 
 
@@ -112,6 +113,66 @@ FIT_AP_RESOURCE_HISTORY_FIELDS = (
     "collect_run_uuid",
     "raw_log_path",
     "created_at",
+)
+
+AP_EXTENSION_POINT_FIELDS = (
+    "site_id",
+    "line_name",
+    "system_type",
+    "network_domain",
+    "station_name",
+    "section_name",
+    "line_side",
+    "direction",
+    "mileage_text",
+    "mileage_m",
+    "distance_to_prev_m",
+    "ap_point_code",
+    "ap_name",
+    "ap_mac_norm",
+    "ap_mac_display",
+    "curve_radius_m",
+    "curve_start_text",
+    "curve_start_m",
+    "curve_end_text",
+    "curve_end_m",
+    "curve_flag",
+    "curve_impact_level",
+    "interval_risk_level",
+    "interval_risk_reason",
+    "install_scene",
+    "power_station",
+    "power_distribution",
+    "fiber_access_station",
+    "fiber_distribution",
+    "uplink_switch",
+    "uplink_port",
+    "optical_port",
+    "location_desc",
+    "remark",
+    "source_file",
+    "source_sheet",
+    "source_row",
+    "import_batch_id",
+    "raw_payload_json",
+    "created_at",
+    "updated_at",
+)
+
+AP_EXTENSION_IMPORT_BATCH_FIELDS = (
+    "site_id",
+    "source_file",
+    "template_type",
+    "system_type",
+    "network_domain",
+    "import_time",
+    "total_rows",
+    "success_rows",
+    "updated_rows",
+    "skipped_rows",
+    "error_rows",
+    "operator",
+    "remark",
 )
 
 FIT_AP_UNAUTHENTICATED_FIELDS = (
@@ -461,7 +522,9 @@ class AcRepository:
         return self._list_fit_ap_resources(ac_device_uuid, include_metadata=False)
 
     def list_fit_ap_resources_with_metadata(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
-        return self._enrich_resources_with_unauthenticated_status(self._list_fit_ap_resources(ac_device_uuid, include_metadata=True), ac_device_uuid)
+        rows = self._list_fit_ap_resources(ac_device_uuid, include_metadata=True)
+        rows = self._enrich_resources_with_extensions(rows)
+        return self._enrich_resources_with_unauthenticated_status(rows, ac_device_uuid)
 
     def list_all_fit_ap_resources_with_metadata(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -480,7 +543,8 @@ class AcRepository:
                 ORDER BY r.ap_name, r.id
                 """
             ).fetchall()
-        return self._enrich_resources_with_unauthenticated_status([self._resource_with_metadata(dict(row)) for row in rows])
+        rows = self._enrich_resources_with_extensions([self._resource_with_metadata(dict(row)) for row in rows])
+        return self._enrich_resources_with_unauthenticated_status(rows)
 
     def replace_fit_ap_unauthenticated(
         self,
@@ -613,6 +677,162 @@ class AcRepository:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_ap_extension_points(
+        self,
+        *,
+        search: str = "",
+        station_name: str = "",
+        line_side: str = "",
+        direction: str = "",
+        match_status: str = "",
+    ) -> list[dict[str, object | None]]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if search:
+            clauses.append(
+                """
+                (
+                    ap_mac_display LIKE ? OR ap_mac_norm LIKE ? OR ap_name LIKE ? OR ap_point_code LIKE ?
+                    OR station_name LIKE ? OR section_name LIKE ? OR remark LIKE ?
+                )
+                """
+            )
+            like = f"%{search}%"
+            params.extend([like] * 7)
+        for field, value in (("station_name", station_name), ("line_side", line_side), ("direction", direction)):
+            if value:
+                clauses.append(f"{field} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM ap_extension_points
+                {where}
+                ORDER BY station_name, line_side, mileage_m, ap_point_code, id
+                """,
+                params,
+            ).fetchall()
+            resources = conn.execute("SELECT ap_name, ap_mac FROM ac_fit_ap_resources").fetchall()
+        matched_macs = {self._extension_mac_norm(row["ap_mac"]) for row in resources if self._extension_mac_norm(row["ap_mac"])}
+        matched_names = {str(row["ap_name"] or "").strip().casefold() for row in resources if str(row["ap_name"] or "").strip()}
+        result = [self._extension_with_match_status(dict(row), matched_macs, matched_names) for row in rows]
+        if match_status:
+            result = [row for row in result if row.get("match_status") == match_status]
+        return result
+
+    def get_ap_extension_point(self, extension_id: int) -> dict[str, object | None] | None:
+        with self.database.connect() as conn:
+            row = conn.execute("SELECT * FROM ap_extension_points WHERE id = ?", (extension_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def upsert_ap_extension_point(self, data: dict[str, object | None]) -> dict[str, object | None]:
+        now = self._now()
+        payload = self._payload(AP_EXTENSION_POINT_FIELDS, data)
+        mac = normalize_ap_mac(payload.get("ap_mac_display") or payload.get("ap_mac_norm"))
+        payload["ap_mac_norm"] = mac.normalized or str(payload.get("ap_mac_norm") or "").strip().casefold()
+        payload["ap_mac_display"] = mac.display or str(payload.get("ap_mac_display") or "").strip()
+        payload["created_at"] = payload.get("created_at") or now
+        payload["updated_at"] = now
+        extension_id = data.get("id")
+        with self.database.connect() as conn:
+            if extension_id:
+                assignments = ", ".join(f"{field} = ?" for field in AP_EXTENSION_POINT_FIELDS if field != "created_at")
+                conn.execute(
+                    f"UPDATE ap_extension_points SET {assignments} WHERE id = ?",
+                    [payload[field] for field in AP_EXTENSION_POINT_FIELDS if field != "created_at"] + [extension_id],
+                )
+            else:
+                columns = ", ".join(AP_EXTENSION_POINT_FIELDS)
+                placeholders = ", ".join("?" for _ in AP_EXTENSION_POINT_FIELDS)
+                cursor = conn.execute(
+                    f"INSERT INTO ap_extension_points ({columns}) VALUES ({placeholders})",
+                    [payload[field] for field in AP_EXTENSION_POINT_FIELDS],
+                )
+                extension_id = cursor.lastrowid
+            conn.commit()
+        return self.get_ap_extension_point(int(extension_id)) or payload
+
+    def delete_ap_extension_points(self, extension_ids: list[int]) -> int:
+        ids = [int(value) for value in extension_ids if value]
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        with self.database.connect() as conn:
+            count = conn.execute(f"DELETE FROM ap_extension_points WHERE id IN ({placeholders})", ids).rowcount
+            conn.commit()
+        return int(count or 0)
+
+    def clear_ap_extension_points(self) -> int:
+        with self.database.connect() as conn:
+            count = conn.execute("DELETE FROM ap_extension_points").rowcount
+            conn.commit()
+        return int(count or 0)
+
+    def import_ap_extension_points(
+        self,
+        rows: list[dict[str, object | None]],
+        *,
+        source_file: str = "",
+        template_type: str = "",
+        duplicate_strategy: str = "update_by_priority",
+    ) -> dict[str, int | str]:
+        now = self._now()
+        import_batch_id = str(uuid4())
+        stats = {"total_rows": len(rows), "success_rows": 0, "updated_rows": 0, "skipped_rows": 0, "error_rows": 0}
+        with self.database.connect() as conn:
+            for row in rows:
+                payload = self._payload(AP_EXTENSION_POINT_FIELDS, {**row, "import_batch_id": import_batch_id})
+                mac = normalize_ap_mac(payload.get("ap_mac_display") or payload.get("ap_mac_norm"))
+                if payload.get("ap_mac_display") and not mac.valid:
+                    stats["error_rows"] += 1
+                    continue
+                payload["ap_mac_norm"] = mac.normalized or str(payload.get("ap_mac_norm") or "").strip().casefold()
+                payload["ap_mac_display"] = mac.display or str(payload.get("ap_mac_display") or "").strip()
+                payload["created_at"] = payload.get("created_at") or now
+                payload["updated_at"] = now
+                existing_id = self._find_ap_extension_existing_id(conn, row)
+                if existing_id and duplicate_strategy == "skip_existing":
+                    stats["skipped_rows"] += 1
+                    continue
+                if existing_id:
+                    assignments = ", ".join(f"{field} = ?" for field in AP_EXTENSION_POINT_FIELDS if field != "created_at")
+                    conn.execute(
+                        f"UPDATE ap_extension_points SET {assignments} WHERE id = ?",
+                        [payload[field] for field in AP_EXTENSION_POINT_FIELDS if field != "created_at"] + [existing_id],
+                    )
+                    stats["updated_rows"] += 1
+                else:
+                    columns = ", ".join(AP_EXTENSION_POINT_FIELDS)
+                    placeholders = ", ".join("?" for _ in AP_EXTENSION_POINT_FIELDS)
+                    conn.execute(
+                        f"INSERT INTO ap_extension_points ({columns}) VALUES ({placeholders})",
+                        [payload[field] for field in AP_EXTENSION_POINT_FIELDS],
+                    )
+                    stats["success_rows"] += 1
+            batch_payload = self._payload(
+                AP_EXTENSION_IMPORT_BATCH_FIELDS,
+                {
+                    "source_file": source_file,
+                    "template_type": template_type,
+                    "import_time": now,
+                    "total_rows": stats["total_rows"],
+                    "success_rows": stats["success_rows"],
+                    "updated_rows": stats["updated_rows"],
+                    "skipped_rows": stats["skipped_rows"],
+                    "error_rows": stats["error_rows"],
+                },
+            )
+            columns = ", ".join(AP_EXTENSION_IMPORT_BATCH_FIELDS)
+            placeholders = ", ".join("?" for _ in AP_EXTENSION_IMPORT_BATCH_FIELDS)
+            conn.execute(
+                f"INSERT INTO ap_extension_import_batches ({columns}) VALUES ({placeholders})",
+                [batch_payload[field] for field in AP_EXTENSION_IMPORT_BATCH_FIELDS],
+            )
+            conn.commit()
+        return {**stats, "import_batch_id": import_batch_id}
 
     def update_ap_entity_extension_by_mac(self, ap_mac: str, fields: dict[str, object | None]) -> int:
         normalized_mac = self._mac_from_text(ap_mac)
@@ -1638,6 +1858,57 @@ class AcRepository:
             result.append(self._resource_with_metadata(dict(row)))
         return result
 
+    def _enrich_resources_with_extensions(self, rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+        if not rows:
+            return rows
+        extensions = self.list_ap_extension_points()
+        by_mac = {
+            str(row.get("ap_mac_norm") or ""): row
+            for row in extensions
+            if str(row.get("ap_mac_norm") or "").strip()
+        }
+        by_name = {
+            str(row.get("ap_name") or "").strip().casefold(): row
+            for row in extensions
+            if str(row.get("ap_name") or "").strip()
+        }
+        enriched: list[dict[str, object | None]] = []
+        for row in rows:
+            item = dict(row)
+            mac = self._extension_mac_norm(item.get("ap_mac"))
+            extension = by_mac.get(mac)
+            match_status = "matched_by_mac" if extension else ""
+            if extension is None and str(item.get("ap_name") or "").strip():
+                extension = by_name.get(str(item.get("ap_name") or "").strip().casefold())
+                match_status = "matched_by_name" if extension else ""
+            if extension:
+                for field in (
+                    "station_name",
+                    "section_name",
+                    "line_side",
+                    "direction",
+                    "mileage_text",
+                    "mileage_m",
+                    "distance_to_prev_m",
+                    "ap_point_code",
+                    "power_station",
+                    "power_distribution",
+                    "fiber_access_station",
+                    "fiber_distribution",
+                    "uplink_switch",
+                    "uplink_port",
+                    "optical_port",
+                    "location_desc",
+                    "remark",
+                ):
+                    item[f"extension_{field}"] = extension.get(field)
+                item["extension_id"] = extension.get("id")
+                item["extension_match_status"] = match_status
+            else:
+                item["extension_match_status"] = "no_extension"
+            enriched.append(item)
+        return enriched
+
     @staticmethod
     def _resource_with_metadata(item: dict[str, object | None]) -> dict[str, object | None]:
         item["site"] = item.get("site_name") or item.get("site")
@@ -1645,6 +1916,56 @@ class AcRepository:
         item["location_note"] = item.get("metadata_location_note") or item.get("location_note")
         item["direction"] = item.get("metadata_direction") or item.get("direction")
         return item
+
+    def _find_ap_extension_existing_id(self, conn, row: dict[str, object | None]) -> int | None:
+        extension_id = row.get("id")
+        if extension_id:
+            found = conn.execute("SELECT id FROM ap_extension_points WHERE id = ?", (extension_id,)).fetchone()
+            if found:
+                return int(found["id"])
+        mac = self._extension_mac_norm(row.get("ap_mac_norm") or row.get("ap_mac_display"))
+        if mac:
+            found = conn.execute("SELECT id FROM ap_extension_points WHERE ap_mac_norm = ? ORDER BY id LIMIT 1", (mac,)).fetchone()
+            if found:
+                return int(found["id"])
+        ap_point_code = str(row.get("ap_point_code") or "").strip()
+        station_name = str(row.get("station_name") or "").strip()
+        line_side = str(row.get("line_side") or "").strip()
+        mileage_m = row.get("mileage_m")
+        if ap_point_code and station_name and line_side and mileage_m is not None:
+            found = conn.execute(
+                """
+                SELECT id FROM ap_extension_points
+                WHERE ap_point_code = ? AND station_name = ? AND line_side = ? AND mileage_m = ?
+                ORDER BY id LIMIT 1
+                """,
+                (ap_point_code, station_name, line_side, mileage_m),
+            ).fetchone()
+            if found:
+                return int(found["id"])
+        return None
+
+    @staticmethod
+    def _extension_mac_norm(value: object) -> str:
+        return normalize_ap_mac(value).normalized
+
+    @staticmethod
+    def _extension_with_match_status(
+        row: dict[str, object | None],
+        matched_macs: set[str],
+        matched_names: set[str],
+    ) -> dict[str, object | None]:
+        mac = str(row.get("ap_mac_norm") or "").strip()
+        name = str(row.get("ap_name") or "").strip().casefold()
+        if mac and mac in matched_macs:
+            row["match_status"] = "matched_by_mac"
+        elif mac:
+            row["match_status"] = "extension_not_online"
+        elif name and name in matched_names:
+            row["match_status"] = "matched_by_name"
+        else:
+            row["match_status"] = "unbound_no_mac"
+        return row
 
     def _enrich_resources_with_unauthenticated_status(
         self,

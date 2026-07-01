@@ -79,13 +79,13 @@ def _delete_site_databases(paths: PathResolver) -> None:
 
 def _handle_schema_mismatch(exc: DatabaseSchemaMismatchError, paths: PathResolver) -> str:
     message = QMessageBox()
-    message.setWindowTitle("数据库结构已变更")
+    message.setWindowTitle("数据库无法自动升级")
     message.setIcon(QMessageBox.Warning)
-    message.setText("当前数据库结构与新版本不兼容。")
+    message.setText("当前数据库缺少基础元数据，无法安全自动升级。")
     message.setInformativeText(
         f"{exc}\n\n"
-        "可以先备份旧数据库，然后重建为最新 schema。"
-        "重建不会迁移旧 AP / LLDP / 光衰历史数据。"
+        "普通新增表、索引类更新会在启动时自动完成。"
+        "如果看到此提示，说明该库过旧或结构不完整，需要先备份后重建。"
     )
     rebuild_button = message.addButton("备份并重建数据库", QMessageBox.AcceptRole)
     backup_button = message.addButton("仅备份", QMessageBox.ActionRole)

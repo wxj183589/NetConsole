@@ -59,6 +59,7 @@ from netconsole.services.vehicle_mr_online import (
 from netconsole.ui.pages.online_mr_collection_page import connection_fields_from_device
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
+from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
 
 class VehicleMrOnlinePage(QWidget):
@@ -853,9 +854,7 @@ def _read_mapping_file(path: Path) -> list[dict[str, object]]:
     if path.suffix.lower() == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as file:
             return [dict(row) for row in csv.DictReader(file)]
-    from openpyxl import load_workbook
-
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = load_workbook_without_unsupported_image_warning(path, read_only=True, data_only=True)
     sheet = workbook.active
     rows = list(sheet.iter_rows(values_only=True))
     if not rows:

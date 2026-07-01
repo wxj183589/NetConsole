@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.services.trackside_ap_business import parse_vlan_set
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
@@ -280,9 +281,7 @@ def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
     if path.suffix.casefold() == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             return [_row_from_named(row) for row in csv.DictReader(handle)]
-    from openpyxl import load_workbook
-
-    workbook = load_workbook(path, data_only=True)
+    workbook = load_workbook_without_unsupported_image_warning(path, data_only=True)
     sheet = workbook[workbook.sheetnames[0]]
     headers = [str(cell.value or "").strip() for cell in sheet[1]]
     rows = []

@@ -38,6 +38,7 @@ from netconsole.services.vehicle_mr_online import (
     canonical_peer_name,
     train_sort_key,
 )
+from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
 try:
     from netmiko import ConnectHandler
@@ -1208,9 +1209,7 @@ def read_point_table_file(path: Path) -> list[dict[str, object]]:
     if path.suffix.casefold() == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as file:
             return [dict(row) for row in csv.DictReader(file)]
-    from openpyxl import load_workbook
-
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = load_workbook_without_unsupported_image_warning(path, read_only=True, data_only=True)
     sheet = workbook.active
     rows = list(sheet.iter_rows(values_only=True))
     if not rows:

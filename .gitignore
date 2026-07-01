@@ -58,3 +58,6 @@ netconsole.zip
 
 tmp/
 tmp/*
+
+.agents
+.codex

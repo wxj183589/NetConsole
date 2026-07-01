@@ -1605,7 +1605,8 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert page.tabs.tabText(1) == "AP Online Overview"
     assert page.tabs.tabText(2) == "FIT-AP Resources"
     assert page.tabs.tabText(3) == "FIT-AP Optical"
-    assert page.tabs.count() == 4
+    assert page.tabs.tabText(4) == "FIT-AP Extensions"
+    assert page.tabs.count() == 5
     assert "Online Vehicle MR" not in [page.tabs.tabText(index) for index in range(page.tabs.count())]
 
 
@@ -5947,7 +5948,6 @@ def test_database_runtime_has_no_legacy_migration_chain():
     assert "ALTER TABLE" not in text
     assert "ADD COLUMN" not in text
     assert "DROP TABLE" not in text
-    assert "upgrade_database" not in text
     assert "migrate_old_" not in text
     assert "legacy_table_adapter" not in text
 

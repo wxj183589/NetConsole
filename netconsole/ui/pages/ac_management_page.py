@@ -8,7 +8,9 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
     QFileDialog,
+    QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -20,6 +22,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -123,6 +126,45 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("ac.new_online_status", "new_online_status"),
     ("ac.new_online_source", "new_online_source"),
     ("ac.unauthenticated_collected_at", "unauthenticated_collected_at"),
+)
+
+AP_EXTENSION_COLUMNS = (
+    ("ID", "id"),
+    ("车站", "station_name"),
+    ("归属区间", "section_name"),
+    ("线别", "line_side"),
+    ("方向", "direction"),
+    ("里程", "mileage_text"),
+    ("AP编号", "ap_point_code"),
+    ("AP名称", "ap_name"),
+    ("AP MAC", "ap_mac_display"),
+    ("距上一个AP", "distance_to_prev_m"),
+    ("曲线半径", "curve_radius_m"),
+    ("供电站", "power_station"),
+    ("电源分配", "power_distribution"),
+    ("光缆接入站", "fiber_access_station"),
+    ("光缆分配", "fiber_distribution"),
+    ("匹配状态", "match_status"),
+    ("备注", "remark"),
+)
+
+AP_EXTENSION_SUMMARY_COLUMNS = (
+    ("车站", "station_name"),
+    ("AP点位数", "total"),
+    ("已绑定MAC", "bound"),
+    ("未绑定MAC", "unbound"),
+    ("左线数量", "left"),
+    ("右线数量", "right"),
+    ("曲线段AP数", "curve"),
+    ("间隔异常数", "risk"),
+)
+
+AP_EXTENSION_ISSUE_COLUMNS = (
+    ("类型", "type"),
+    ("级别", "severity"),
+    ("来源行", "source_row"),
+    ("AP MAC", "ap_mac_norm"),
+    ("说明", "message"),
 )
 
 FIT_AP_OPTICAL_COLUMNS = (
@@ -578,6 +620,21 @@ class AcManagementPage(QWidget):
         self.resource_search_input = QLineEdit()
         self.resource_group_filter = QComboBox()
         self.resource_state_filter = QComboBox()
+        self.extension_rows: list[dict[str, object | None]] = []
+        self.extension_table = QTableWidget()
+        self.extension_summary_table = QTableWidget()
+        self.extension_issue_table = QTableWidget()
+        self.extension_inner_tabs = QTabWidget()
+        self.extension_search_input = QLineEdit()
+        self.extension_import_standard_button = QPushButton()
+        self.extension_import_smart_button = QPushButton()
+        self.extension_export_button = QPushButton()
+        self.extension_template_button = QPushButton()
+        self.extension_add_button = QPushButton()
+        self.extension_edit_button = QPushButton()
+        self.extension_delete_button = QPushButton()
+        self.extension_clear_button = QPushButton()
+        self.extension_refresh_button = QPushButton()
         self.optical_table = QTableWidget()
         self.optical_pagination = PaginationWidget(self.i18n)
         self.refresh_optical_button = QPushButton()
@@ -609,6 +666,9 @@ class AcManagementPage(QWidget):
         self.trackside_plan_page = TracksideApPlanPage(self.repository, self.i18n, self.site_name)
 
         configure_readonly_table(self.resources_table)
+        configure_readonly_table(self.extension_table)
+        configure_readonly_table(self.extension_summary_table)
+        configure_readonly_table(self.extension_issue_table)
         configure_readonly_table(self.optical_table)
         configure_readonly_table(self.overview_table)
         configure_readonly_table(self.offline_stats_table)
@@ -620,12 +680,18 @@ class AcManagementPage(QWidget):
             | QAbstractItemView.SelectedClicked
         )
         self.resources_table.setColumnCount(len(FIT_AP_RESOURCE_COLUMNS))
+        self.extension_table.setColumnCount(len(AP_EXTENSION_COLUMNS))
+        self.extension_summary_table.setColumnCount(len(AP_EXTENSION_SUMMARY_COLUMNS))
+        self.extension_issue_table.setColumnCount(len(AP_EXTENSION_ISSUE_COLUMNS))
         self.optical_table.setColumnCount(len(FIT_AP_OPTICAL_COLUMNS))
         self.overview_table.setColumnCount(len(AP_ONLINE_OVERVIEW_COLUMNS))
         self.offline_stats_table.setColumnCount(len(OFFLINE_AP_STATS_COLUMNS))
         self.offline_ledger_table.setColumnCount(len(OFFLINE_AP_LEDGER_COLUMNS))
         self.trackside_table.setColumnCount(len(TRACKSIDE_AP_BUSINESS_COLUMNS))
         set_table_column_fields(self.resources_table, [field for _key, field in FIT_AP_RESOURCE_COLUMNS])
+        set_table_column_fields(self.extension_table, [field for _key, field in AP_EXTENSION_COLUMNS])
+        set_table_column_fields(self.extension_summary_table, [field for _key, field in AP_EXTENSION_SUMMARY_COLUMNS])
+        set_table_column_fields(self.extension_issue_table, [field for _key, field in AP_EXTENSION_ISSUE_COLUMNS])
         set_table_column_fields(self.optical_table, [field for _key, field in FIT_AP_OPTICAL_COLUMNS])
         set_table_column_fields(self.overview_table, [field for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
         set_table_column_fields(self.offline_stats_table, [field for _key, field in OFFLINE_AP_STATS_COLUMNS])
@@ -638,6 +704,7 @@ class AcManagementPage(QWidget):
         self.resources_table.doubleClicked.connect(lambda index: self.open_ap_detail(index.row()))
         self.resources_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.resources_table.customContextMenuRequested.connect(self.show_resource_context_menu)
+        self.extension_table.doubleClicked.connect(lambda index: self.edit_ap_extension_point(index.row()))
         self.optical_table.doubleClicked.connect(lambda index: self.open_ap_detail_from_optical(index.row()))
         self.offline_ledger_table.doubleClicked.connect(lambda index: self.open_ap_detail_from_offline_ledger(index.row()))
         self.optical_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -666,8 +733,6 @@ class AcManagementPage(QWidget):
         for button in (
             self.refresh_button,
             self.batch_delete_button,
-            self.import_button,
-            self.export_extension_template_button,
             self.export_button,
             self.clear_selection_button,
             self.invert_selection_button,
@@ -684,6 +749,30 @@ class AcManagementPage(QWidget):
         resources_layout.addWidget(self.resources_table, 1)
         resources_layout.addWidget(self.resources_pagination)
         resources_tab.setLayout(resources_layout)
+
+        extension_tab = QWidget()
+        extension_layout = QVBoxLayout()
+        extension_actions = QHBoxLayout()
+        for button in (
+            self.extension_import_standard_button,
+            self.extension_import_smart_button,
+            self.extension_template_button,
+            self.extension_export_button,
+            self.extension_add_button,
+            self.extension_edit_button,
+            self.extension_delete_button,
+            self.extension_clear_button,
+            self.extension_refresh_button,
+        ):
+            extension_actions.addWidget(button)
+        extension_actions.addStretch(1)
+        extension_layout.addLayout(extension_actions)
+        extension_layout.addWidget(self.extension_search_input)
+        self.extension_inner_tabs.addTab(self.extension_table, "AP点位扩展表")
+        self.extension_inner_tabs.addTab(self.extension_summary_table, "车站汇总")
+        self.extension_inner_tabs.addTab(self.extension_issue_table, "异常检查")
+        extension_layout.addWidget(self.extension_inner_tabs, 1)
+        extension_tab.setLayout(extension_layout)
 
         optical_tab = QWidget()
         optical_layout = QVBoxLayout()
@@ -727,10 +816,12 @@ class AcManagementPage(QWidget):
         self.tabs.addTab(overview_tab, "")
         self.tabs.addTab(resources_tab, "")
         self.tabs.addTab(optical_tab, "")
+        self.tabs.addTab(extension_tab, "")
         self.tab_by_feature_id = {
             "ac.trackside_ap_plan": self.trackside_plan_page,
             "ac.ap_online_overview": overview_tab,
             "ac.fit_ap_resources": resources_tab,
+            "ac.fit_ap_extensions": extension_tab,
             "ac.fit_ap_optical": optical_tab,
         }
         self._apply_feature_gate()
@@ -748,9 +839,17 @@ class AcManagementPage(QWidget):
         self.refresh_button.clicked.connect(self.refresh_ac_resources)
         self.cancel_update_button.clicked.connect(self.cancel_current_update)
         self.batch_delete_button.clicked.connect(self.batch_delete_aps)
-        self.import_button.clicked.connect(self.import_metadata)
         self.export_extension_template_button.clicked.connect(self.export_ap_extension_template)
         self.export_button.clicked.connect(self.export_aps)
+        self.extension_import_standard_button.clicked.connect(lambda: self.import_ap_extensions("standard_template"))
+        self.extension_import_smart_button.clicked.connect(lambda: self.import_ap_extensions("smart_design"))
+        self.extension_template_button.clicked.connect(self.export_ap_extension_template)
+        self.extension_export_button.clicked.connect(self.export_ap_extensions)
+        self.extension_add_button.clicked.connect(self.add_ap_extension_point)
+        self.extension_edit_button.clicked.connect(lambda: self.edit_ap_extension_point(self.extension_table.currentRow()))
+        self.extension_delete_button.clicked.connect(self.delete_selected_ap_extension_points)
+        self.extension_clear_button.clicked.connect(self.clear_ap_extension_points)
+        self.extension_refresh_button.clicked.connect(self.refresh_ap_extensions)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.invert_selection_button.clicked.connect(self.invert_selection)
         self.refresh_optical_button.clicked.connect(self.refresh_fit_ap_optical)
@@ -765,6 +864,7 @@ class AcManagementPage(QWidget):
         self.trackside_site_filter.currentIndexChanged.connect(self.apply_trackside_filters)
         self.trackside_search_input.textChanged.connect(self.apply_trackside_filters)
         self.resource_search_input.textChanged.connect(self.apply_resource_filters)
+        self.extension_search_input.textChanged.connect(self.refresh_ap_extensions)
         self.resource_group_filter.currentIndexChanged.connect(self.apply_resource_filters)
         self.resource_state_filter.currentIndexChanged.connect(self.apply_resource_filters)
         self.resources_pagination.pageChanged.connect(self.set_resource_page)
@@ -785,8 +885,19 @@ class AcManagementPage(QWidget):
             elif index >= 0:
                 self.tabs.setTabEnabled(index, self.feature_gate.is_enabled(feature_id))
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.refresh_button)
-        apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.import_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.export_button)
+        for widget in (
+            self.extension_import_standard_button,
+            self.extension_import_smart_button,
+            self.extension_export_button,
+            self.extension_template_button,
+            self.extension_add_button,
+            self.extension_edit_button,
+            self.extension_delete_button,
+            self.extension_clear_button,
+            self.extension_refresh_button,
+        ):
+            apply_feature_to_widget(self.feature_gate, "ac.fit_ap_extensions", widget)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_optical", self.refresh_optical_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_optical", self.optical_export_button)
 
@@ -799,6 +910,7 @@ class AcManagementPage(QWidget):
         self.trackside_plan_page.repository = self.repository
         self.trackside_plan_page.site_name = site_name
         self.trackside_plan_page.refresh()
+        self.refresh_ap_extensions()
         self.refresh_devices()
 
     def retranslate(self) -> None:
@@ -809,6 +921,16 @@ class AcManagementPage(QWidget):
         self.import_button.setText(self.i18n.t("ap.import_metadata"))
         self.export_extension_template_button.setText(self.i18n.t("ap.export_extension_template"))
         self.export_button.setText(self.i18n.t("ap.export_info"))
+        self.extension_import_standard_button.setText("标准模板导入")
+        self.extension_import_smart_button.setText("原始设计/布点表智能识别导入")
+        self.extension_template_button.setText("下载标准模板")
+        self.extension_export_button.setText("导出")
+        self.extension_add_button.setText("新增")
+        self.extension_edit_button.setText("编辑")
+        self.extension_delete_button.setText("批量删除")
+        self.extension_clear_button.setText("清空当前局点扩展信息")
+        self.extension_refresh_button.setText("刷新")
+        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、车站、归属区间、备注")
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.refresh_optical_button.setText(self.i18n.t("ac.refresh_optical"))
@@ -842,6 +964,7 @@ class AcManagementPage(QWidget):
             "ac.trackside_ap_plan": "ac.trackside_ap_plan",
             "ac.ap_online_overview": "ac.ap_online_overview",
             "ac.fit_ap_resources": "ac.fit_ap_resources",
+            "ac.fit_ap_extensions": "ac.fit_ap_extensions",
             "ac.fit_ap_optical": "ac.fit_ap_optical",
         }
         for feature_id, widget in self.tab_by_feature_id.items():
@@ -854,6 +977,9 @@ class AcManagementPage(QWidget):
         self.trackside_plan_page.retranslate()
         self.resources_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_RESOURCE_COLUMNS])
         self.resources_table.horizontalHeaderItem(CHECK_COLUMN).setText(self.i18n.t("ap.select_all"))
+        self.extension_table.setHorizontalHeaderLabels([key for key, _field in AP_EXTENSION_COLUMNS])
+        self.extension_summary_table.setHorizontalHeaderLabels([key for key, _field in AP_EXTENSION_SUMMARY_COLUMNS])
+        self.extension_issue_table.setHorizontalHeaderLabels([key for key, _field in AP_EXTENSION_ISSUE_COLUMNS])
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS])
         self.overview_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
         self.offline_stats_table.setHorizontalHeaderLabels(offline_ap_headers(OFFLINE_AP_STATS_COLUMNS))
@@ -861,6 +987,9 @@ class AcManagementPage(QWidget):
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         self._apply_trackside_header_tooltips()
         apply_table_style(self.resources_table)
+        apply_table_style(self.extension_table)
+        apply_table_style(self.extension_summary_table)
+        apply_table_style(self.extension_issue_table)
         apply_table_style(self.optical_table)
         apply_table_style(self.overview_table)
         apply_table_style(self.offline_stats_table)
@@ -907,6 +1036,7 @@ class AcManagementPage(QWidget):
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
             self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
             self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
+            self.refresh_ap_extensions()
             self.update_open_web_button()
             return
         self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
@@ -927,6 +1057,7 @@ class AcManagementPage(QWidget):
         self._set_site_filter_items(self.optical_rows)
         self.apply_optical_filters()
         self.refresh_overview_table(resources)
+        self.refresh_ap_extensions()
         self.update_selection_state()
         self.update_open_web_button()
 
@@ -1258,6 +1389,168 @@ class AcManagementPage(QWidget):
             return
         app_logger.log_info("FIT_AP_IMPORT", f"updated={result.updated}, skipped={result.skipped}")
         self.refresh_data()
+
+    def refresh_ap_extensions(self) -> None:
+        search = self.extension_search_input.text() if hasattr(self, "extension_search_input") else ""
+        self.extension_rows = self.repository.list_ap_extension_points(search=search)
+        self._set_rows(self.extension_table, AP_EXTENSION_COLUMNS, self.extension_rows)
+        self._set_rows(self.extension_summary_table, AP_EXTENSION_SUMMARY_COLUMNS, self._extension_summary_rows(self.extension_rows))
+        self._set_rows(self.extension_issue_table, AP_EXTENSION_ISSUE_COLUMNS, self._extension_issue_rows(self.extension_rows))
+
+    def import_ap_extensions(self, import_mode: str) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_extensions")
+        title = "标准模板导入" if import_mode == "standard_template" else "原始设计/布点表智能识别导入"
+        path, _ = QFileDialog.getOpenFileName(self, title, "", "Excel/CSV Files (*.xlsx *.csv)")
+        if not path:
+            return
+        try:
+            preview = self.import_export_service.preview_ap_extension_import(Path(path), import_mode)
+        except Exception as exc:
+            QMessageBox.warning(self, title, str(exc))
+            return
+        lines = [
+            f"文件名：{preview.file_name}",
+            f"模板类型：{preview.template_type}",
+            f"识别置信度：{preview.confidence_score}",
+            f"工作表数：{len(preview.sheets)}",
+            f"预览数据行：{preview.summary.get('total_rows', 0)}",
+            f"未绑定 AP MAC 数量：{preview.summary.get('unbound_rows', 0)}",
+            f"无效 MAC 数量：{preview.summary.get('invalid_mac_rows', 0)}",
+        ]
+        if preview.low_confidence:
+            lines.append("识别置信度较低，请手动映射字段。")
+            QMessageBox.warning(self, title, "\n".join(lines))
+            return
+        if QMessageBox.question(self, title, "\n".join(lines) + "\n\n确认导入以上预览数据？") != QMessageBox.Yes:
+            return
+        stats = self.import_export_service.commit_ap_extension_import(preview)
+        QMessageBox.information(
+            self,
+            title,
+            f"新增：{stats.get('success_rows', 0)}\n更新：{stats.get('updated_rows', 0)}\n跳过：{stats.get('skipped_rows', 0)}\n错误：{stats.get('error_rows', 0)}",
+        )
+        self.refresh_ap_extensions()
+        self.refresh_data()
+
+    def export_ap_extensions(self) -> None:
+        self.feature_gate.assert_enabled("ac.fit_ap_extensions")
+        path = select_export_path(self, "导出FIT-AP扩展信息", f"{self.site_name}_FIT-AP扩展信息.xlsx", EXCEL_FILTER)
+        if not path:
+            return
+        self.import_export_service.export_standard_ap_extension_xlsx(Path(path), self.extension_rows)
+        remember_export_path(Path(path))
+        QMessageBox.information(self, "导出FIT-AP扩展信息", f"已导出 {len(self.extension_rows)} 条。")
+
+    def add_ap_extension_point(self) -> None:
+        self._edit_ap_extension_point({})
+
+    def edit_ap_extension_point(self, row: int) -> None:
+        if row < 0 or row >= len(self.extension_rows):
+            return
+        self._edit_ap_extension_point(self.extension_rows[row])
+
+    def _edit_ap_extension_point(self, row: dict[str, object | None]) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("FIT-AP扩展信息")
+        form = QFormLayout()
+        fields = (
+            ("station_name", "车站"),
+            ("section_name", "归属区间"),
+            ("line_side", "线别"),
+            ("direction", "方向"),
+            ("mileage_text", "里程"),
+            ("ap_point_code", "AP编号"),
+            ("ap_name", "AP名称"),
+            ("ap_mac_display", "AP MAC"),
+            ("power_station", "供电站"),
+            ("power_distribution", "电源分配"),
+            ("fiber_access_station", "光缆接入站"),
+            ("fiber_distribution", "光缆分配"),
+            ("remark", "备注"),
+        )
+        editors: dict[str, QLineEdit] = {}
+        for field, label in fields:
+            editor = QLineEdit(str(row.get(field) or ""))
+            editors[field] = editor
+            form.addRow(label, editor)
+        buttons = QHBoxLayout()
+        save_button = QPushButton("保存")
+        cancel_button = QPushButton("取消")
+        buttons.addStretch(1)
+        buttons.addWidget(save_button)
+        buttons.addWidget(cancel_button)
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addLayout(buttons)
+        dialog.setLayout(layout)
+        save_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        payload = {field: editor.text().strip() for field, editor in editors.items()}
+        if row.get("id"):
+            payload["id"] = row.get("id")
+        self.repository.upsert_ap_extension_point(payload)
+        self.refresh_ap_extensions()
+        self.refresh_data()
+
+    def delete_selected_ap_extension_points(self) -> None:
+        selected_rows = sorted({index.row() for index in self.extension_table.selectionModel().selectedRows()})
+        ids = [int(self.extension_rows[row].get("id") or 0) for row in selected_rows if 0 <= row < len(self.extension_rows)]
+        if not ids:
+            return
+        if QMessageBox.question(self, "批量删除", f"确认删除 {len(ids)} 条 FIT-AP扩展信息？") != QMessageBox.Yes:
+            return
+        self.repository.delete_ap_extension_points(ids)
+        self.refresh_ap_extensions()
+        self.refresh_data()
+
+    def clear_ap_extension_points(self) -> None:
+        if QMessageBox.question(self, "清空当前局点扩展信息", "该操作会删除当前局点全部 FIT-AP扩展信息，确认继续？") != QMessageBox.Yes:
+            return
+        count = self.repository.clear_ap_extension_points()
+        QMessageBox.information(self, "清空当前局点扩展信息", f"已删除 {count} 条。")
+        self.refresh_ap_extensions()
+        self.refresh_data()
+
+    @staticmethod
+    def _extension_summary_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+        summary: dict[str, dict[str, object | None]] = {}
+        for row in rows:
+            station = str(row.get("station_name") or "未填写").strip()
+            item = summary.setdefault(station, {"station_name": station, "total": 0, "bound": 0, "unbound": 0, "left": 0, "right": 0, "curve": 0, "risk": 0})
+            item["total"] = int(item["total"] or 0) + 1
+            item["bound" if row.get("ap_mac_norm") else "unbound"] = int(item["bound" if row.get("ap_mac_norm") else "unbound"] or 0) + 1
+            if row.get("line_side") == "左线":
+                item["left"] = int(item["left"] or 0) + 1
+            if row.get("line_side") == "右线":
+                item["right"] = int(item["right"] or 0) + 1
+            if row.get("curve_flag"):
+                item["curve"] = int(item["curve"] or 0) + 1
+            if row.get("interval_risk_level") and row.get("interval_risk_level") != "正常":
+                item["risk"] = int(item["risk"] or 0) + 1
+        return list(summary.values())
+
+    @staticmethod
+    def _extension_issue_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+        issues: list[dict[str, object | None]] = []
+        seen: dict[str, int] = {}
+        for row in rows:
+            row_id = int(row.get("id") or 0)
+            mac = str(row.get("ap_mac_norm") or "")
+            if not mac:
+                issues.append({"type": "缺 AP MAC", "severity": "提示", "source_row": row.get("source_row"), "message": "记录将作为未绑定点位保存"})
+            elif mac in seen:
+                issues.append({"type": "AP MAC 重复", "severity": "警告", "source_row": row.get("source_row"), "ap_mac_norm": mac, "message": f"与扩展记录 {seen[mac]} 重复"})
+            else:
+                seen[mac] = row_id
+            if row.get("mileage_text") and row.get("mileage_m") is None:
+                issues.append({"type": "里程无法解析", "severity": "提示", "source_row": row.get("source_row"), "message": row.get("mileage_text")})
+            if row.get("interval_risk_level") and row.get("interval_risk_level") != "正常":
+                issues.append({"type": "AP间隔风险", "severity": "提示", "source_row": row.get("source_row"), "message": row.get("interval_risk_reason")})
+            if row.get("match_status") == "extension_not_online":
+                issues.append({"type": "扩展信息未采集到", "severity": "提示", "source_row": row.get("source_row"), "ap_mac_norm": mac, "message": "扩展信息中存在，但 AC 当前没有采集到"})
+        return issues
 
     def export_ap_extension_template(self) -> None:
         ac_uuid = self.current_device_uuid()

@@ -36,6 +36,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("ac.trackside_ap_plan", "ac.trackside_ap_plan", "module.ac", "tab"),
     FeatureItem("ac.ap_online_overview", "ac.ap_online_overview", "module.ac", "tab"),
     FeatureItem("ac.fit_ap_resources", "ac.fit_ap_resources", "module.ac", "tab"),
+    FeatureItem("ac.fit_ap_extensions", "ac.fit_ap_extensions", "module.ac", "tab"),
     FeatureItem("ac.fit_ap_optical", "ac.fit_ap_optical", "module.ac", "tab"),
     FeatureItem("file.mesh_log_download", "file_management.mesh_logs", "module.file_management", "button"),
     FeatureItem("file.mesh_auto_import", "file_management.mesh_auto_import", "module.file_management", "button"),

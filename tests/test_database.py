@@ -1,4 +1,4 @@
-from netconsole.core.bootstrap import create_demo_context
+﻿from netconsole.core.bootstrap import create_demo_context
 import pytest
 
 from netconsole.core.database import CURRENT_SCHEMA_VERSION, Database, DatabaseSchemaMismatchError
@@ -116,7 +116,35 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert schema_version == CURRENT_SCHEMA_VERSION
 
 
-def test_database_initialize_rejects_old_schema_without_auto_migration(tmp_path):
+def test_database_initialize_auto_updates_additive_schema(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO devices (device_uuid, name, device_vendor, primary_address, created_at, updated_at)
+            VALUES ('device-1', 'AC-1', 'H3C', '10.0.0.1', '2026-07-01T00:00:00', '2026-07-01T00:00:00')
+            """
+        )
+        conn.execute("UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'", ("2026.06.23.device_ap_rebuild_mac",))
+        conn.execute("DROP TABLE ap_extension_points")
+        conn.execute("DROP TABLE ap_extension_import_batches")
+        conn.commit()
+
+    db.initialize()
+
+    with db.connect() as conn:
+        version = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()["value"]
+        device_count = conn.execute("SELECT COUNT(*) AS count FROM devices WHERE device_uuid = 'device-1'").fetchone()["count"]
+        table_names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+
+    assert version == CURRENT_SCHEMA_VERSION
+    assert device_count == 1
+    assert "ap_extension_points" in table_names
+    assert "ap_extension_import_batches" in table_names
+
+
+def test_database_initialize_rejects_schema_without_metadata(tmp_path):
     db = Database(tmp_path / "legacy.db")
     with db.connect() as conn:
         conn.execute(
@@ -140,7 +168,7 @@ def test_database_initialize_rejects_old_schema_without_auto_migration(tmp_path)
         )
         conn.commit()
 
-    with pytest.raises(DatabaseSchemaMismatchError, match="数据库结构已变更|当前数据库结构"):
+    with pytest.raises(DatabaseSchemaMismatchError, match="基础元数据|当前数据库结构"):
         db.initialize()
 
     with db.connect() as conn:
@@ -150,7 +178,6 @@ def test_database_initialize_rejects_old_schema_without_auto_migration(tmp_path)
     assert "https_port" not in columns
     assert "group_id" not in columns
     assert dict(row) == {"device_uuid": "legacy-uuid", "name": "AC-OLD", "ip_address": "10.122.100.10"}
-
 
 def test_fit_ap_resource_update_writes_ap_entity_and_snapshot(tmp_path):
     db = Database(tmp_path / "devices.db")

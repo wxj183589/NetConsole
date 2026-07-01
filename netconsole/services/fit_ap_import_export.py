@@ -6,6 +6,13 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ap_extension_import import (
+    ApExtensionImportService,
+    ImportPreview,
+    standard_export_row,
+    standard_template_headers,
+)
+from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -68,6 +75,22 @@ def make_ap_extension_template_filename(ac_name: str | None, now: datetime | Non
 class FitApImportExportService:
     def __init__(self, repository: AcRepository) -> None:
         self.repository = repository
+        self.ap_extension_import_service = ApExtensionImportService()
+
+    def preview_ap_extension_import(self, path: Path, import_mode: str) -> ImportPreview:
+        return self.ap_extension_import_service.preview_file(path, import_mode=import_mode)
+
+    def commit_ap_extension_import(
+        self,
+        preview: ImportPreview,
+        duplicate_strategy: str = "update_by_priority",
+    ) -> dict[str, int | str]:
+        return self.repository.import_ap_extension_points(
+            preview.standard_rows,
+            source_file=preview.file_name,
+            template_type=preview.template_type,
+            duplicate_strategy=duplicate_strategy,
+        )
 
     def import_metadata_csv(self, path: Path) -> ApMetadataImportResult:
         with Path(path).open("r", newline="", encoding="utf-8-sig") as file:
@@ -79,9 +102,7 @@ class FitApImportExportService:
     def import_metadata_file(self, path: Path) -> ApMetadataImportResult:
         suffix = Path(path).suffix.casefold()
         if suffix == ".xlsx":
-            from openpyxl import load_workbook
-
-            sheet = load_workbook(path, data_only=True).active
+            sheet = load_workbook_without_unsupported_image_warning(path, data_only=True).active
             rows = list(sheet.iter_rows(values_only=True))
             if not rows:
                 return ApMetadataImportResult(0, 0, [])
@@ -168,6 +189,32 @@ class FitApImportExportService:
             for cell in row:
                 if sheet.cell(row=1, column=cell.column).value in AP_EXTENSION_TEMPLATE_EDITABLE_FIELDS:
                     cell.fill = editable_fill
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        _auto_width(sheet)
+        workbook.save(path)
+
+    def export_standard_ap_extension_xlsx(
+        self,
+        path: Path,
+        rows: list[dict[str, object | None]],
+    ) -> None:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "FIT-AP扩展信息"
+        headers = list(standard_template_headers())
+        sheet.append(headers)
+        editable_fill = PatternFill(fill_type="solid", fgColor="FFF7D6")
+        for row in rows:
+            sheet.append(standard_export_row(row))
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.fill = editable_fill
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions
         _auto_width(sheet)

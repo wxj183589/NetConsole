@@ -7,9 +7,13 @@ from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
+    QDialog,
+    QFormLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -454,11 +458,45 @@ class MainWindow(QMainWindow):
         self.loading_overlay.hide_loading()
 
     def create_site(self) -> None:
-        name, accepted = QInputDialog.getText(self, self.i18n.t("site.new"), self.i18n.t("site.name"))
-        if not accepted:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.i18n.t("site.new"))
+        form = QFormLayout()
+        name_input = QLineEdit()
+        line_input = QLineEdit()
+        system_combo = QComboBox()
+        system_combo.addItems(["PIS", "信号", "其他"])
+        network_combo = QComboBox()
+        network_combo.addItems(["default", "A网", "B网", "红网", "蓝网", "其他"])
+        remark_input = QLineEdit()
+        form.addRow(self.i18n.t("site.name"), name_input)
+        form.addRow("线路名称", line_input)
+        form.addRow("系统类型", system_combo)
+        form.addRow("网络域", network_combo)
+        form.addRow("备注", remark_input)
+        buttons = QHBoxLayout()
+        ok_button = QPushButton("确定")
+        cancel_button = QPushButton("取消")
+        buttons.addStretch(1)
+        buttons.addWidget(ok_button)
+        buttons.addWidget(cancel_button)
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addLayout(buttons)
+        dialog.setLayout(layout)
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        if dialog.exec() != QDialog.Accepted:
             return
+        name = name_input.text().strip()
         try:
-            site = self.site_manager.create_site(name)
+            site = self.site_manager.create_site(
+                name,
+                display_name=name,
+                line_name=line_input.text().strip(),
+                system_type=str(system_combo.currentText() or "").strip(),
+                network_domain=str(network_combo.currentText() or "default").strip(),
+                remark=remark_input.text().strip(),
+            )
         except Exception as exc:
             app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
             QMessageBox.warning(self, self.i18n.t("site.new"), self.i18n.t("site.invalid", error=str(exc)))
