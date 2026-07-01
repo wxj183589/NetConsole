@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing
+import queue
 from pathlib import Path
 from time import monotonic
 
@@ -8,9 +10,9 @@ from PySide6.QtCore import QThread, Signal
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
-from netconsole.services.mesh_analysis_excel_report import MeshAnalysisExcelReportExporter
-from netconsole.services.mesh_analysis_report import MeshAnalysisReportService, MeshReportCancelled, MeshReportOptions
+from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 
 
 class MeshLogImportWorker(QThread):
@@ -111,34 +113,80 @@ class MeshAnalysisReportWorker(QThread):
         return self._cancelled
 
     def run(self) -> None:
-        try:
-            if self.is_cancelled():
-                self._cleanup_temp()
-                self.cancelled.emit()
-                return
-            service = MeshAnalysisReportService(self.db_path, self.mr_name)
-            model = service.build_report(self.options, progress=lambda value, message: self.progress.emit(value, message), should_cancel=self.is_cancelled)
-            if self.is_cancelled():
-                self._cleanup_temp()
-                self.cancelled.emit()
-                return
-            self.progress.emit(90, "export")
-            MeshAnalysisExcelReportExporter().export(model, self.temp_path)
-            if self.is_cancelled():
-                self._cleanup_temp()
-                self.cancelled.emit()
-                return
-            self.temp_path.replace(self.output_path)
-            self.progress.emit(100, "done")
-        except MeshReportCancelled:
+        if self.is_cancelled():
             self._cleanup_temp()
             self.cancelled.emit()
             return
-        except Exception as exc:
+        context = multiprocessing.get_context("spawn")
+        progress_queue = context.Queue()
+        cancel_event = context.Event()
+        request = MeshReportProcessRequest(
+            db_path=str(self.db_path),
+            mr_name=self.mr_name,
+            output_path=str(self.output_path),
+            temp_path=str(self.temp_path),
+            options=self.options,
+        )
+        process = context.Process(target=run_mesh_report_process, args=(request, progress_queue, cancel_event), daemon=False)
+        process.start()
+        last_emit = 0.0
+        last_progress: tuple[int, str, int, int, str] | None = None
+        terminal: dict[str, object] | None = None
+        while process.is_alive() or not progress_queue.empty():
+            if self.is_cancelled():
+                cancel_event.set()
+            try:
+                message = progress_queue.get(timeout=0.1)
+            except queue.Empty:
+                message = None
+            if isinstance(message, dict):
+                kind = str(message.get("kind") or "")
+                if kind == "progress":
+                    last_progress = (
+                        int(message.get("value") or 0),
+                        str(message.get("stage") or ""),
+                        int(message.get("file_index") or 0),
+                        int(message.get("file_total") or 0),
+                        str(message.get("file_name") or ""),
+                    )
+                elif kind in {"completed", "failed", "cancelled"}:
+                    terminal = message
+                    if kind == "progress":
+                        last_progress = (int(message.get("value") or 0), str(message.get("stage") or ""))
+            now = monotonic()
+            if last_progress and (now - last_emit >= 0.2 or last_progress[0] >= 100):
+                last_emit = now
+                stage = f"{last_progress[1]}|||{last_progress[2]}|||{last_progress[3]}|||{last_progress[4]}"
+                self.progress.emit(last_progress[0], stage)
+                last_progress = None
+        if self.is_cancelled() and process.is_alive():
+            cancel_event.set()
+            process.join(2.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(2.0)
+        else:
+            process.join(0.2)
+        if self.is_cancelled():
             self._cleanup_temp()
-            self.failed.emit(str(exc))
+            self.cancelled.emit()
             return
-        self.completed.emit(str(self.output_path))
+        if terminal is None and process.exitcode not in (0, None):
+            self._cleanup_temp()
+            self.failed.emit(f"报告生成子进程异常退出，exitcode={process.exitcode}")
+            return
+        if terminal and terminal.get("kind") == "failed":
+            self._cleanup_temp()
+            detail = str(terminal.get("traceback_summary") or "").strip()
+            error = str(terminal.get("error") or "报告生成失败")
+            self.failed.emit(f"{error}\n{detail}" if detail else error)
+            return
+        if terminal and terminal.get("kind") == "cancelled":
+            self._cleanup_temp()
+            self.cancelled.emit()
+            return
+        completed_path = str((terminal or {}).get("path") or self.output_path.parent)
+        self.completed.emit(completed_path)
 
     def _cleanup_temp(self) -> None:
         if self.temp_path.exists():

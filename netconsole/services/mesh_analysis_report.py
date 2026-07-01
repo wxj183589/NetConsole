@@ -9,6 +9,12 @@ from statistics import mean
 from typing import Callable
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, format_mac_h3c
+from netconsole.services.mesh_quality_analysis import (
+    MR_RAW_MESH_LOG,
+    MeshQualityRules,
+    build_quality_report,
+    load_default_rules,
+)
 
 
 ProgressCallback = Callable[[int, str], None]
@@ -18,15 +24,40 @@ CancelCallback = Callable[[], bool]
 @dataclass(frozen=True)
 class MeshReportOptions:
     report_name: str = ""
+    data_source_type: str = MR_RAW_MESH_LOG
     start_time: str | None = None
     end_time: str | None = None
     radio_filter: int | None = None
+    source_file_id: int | None = None
+    source_file_name: str = ""
+    rssi_excellent_threshold: int = 40
+    rssi_good_threshold: int = 30
+    rssi_warning_threshold: int = 25
+    rssi_bad_threshold: int = 20
+    backup_available_threshold: int = 30
+    backup_strong_threshold: int = 40
+    busy_warning_threshold: int = 60
+    busy_bad_threshold: int = 75
+    no_backup_min_seconds: int = 5
+    weak_active_min_seconds: int = 3
+    switch_late_window_seconds: int = 5
+    switch_target_window_seconds: int = 5
+    flap_window_seconds: int = 30
+    short_active_segment_seconds: int = 5
+    include_raw_evidence: bool = True
+    include_all_link_details: bool = False
+    include_busy_analysis: bool = True
+    use_multi_core: bool = True
+    worker_processes: int = 0
+    stream_large_excel: bool = True
+    autofit_scan_limit: int = 2000
+    open_output_dir_after_done: bool = True
+    separate_reports_by_source_file: bool = True
     include_raw_events: bool = True
     include_parse_issues: bool = True
     include_peer_lifecycle: bool = True
     include_link_establishment: bool = True
     include_flap_analysis: bool = True
-    flap_window_seconds: int = 5
     export_format: str = "excel"
 
 
@@ -47,6 +78,17 @@ class MeshAnalysisReportModel:
     channel_busy_statistics: list[dict[str, object]] = field(default_factory=list)
     raw_events: list[dict[str, object]] = field(default_factory=list)
     parse_issues: list[dict[str, object]] = field(default_factory=list)
+    source_files: list[dict[str, object]] = field(default_factory=list)
+    score_rows: list[dict[str, object]] = field(default_factory=list)
+    sample_quality: list[dict[str, object]] = field(default_factory=list)
+    peer_ranking: list[dict[str, object]] = field(default_factory=list)
+    switch_events: list[dict[str, object]] = field(default_factory=list)
+    anomaly_events: list[dict[str, object]] = field(default_factory=list)
+    no_backup_risks: list[dict[str, object]] = field(default_factory=list)
+    busy_analysis: list[dict[str, object]] = field(default_factory=list)
+    link_rebuild_events: list[dict[str, object]] = field(default_factory=list)
+    raw_evidence: list[dict[str, object]] = field(default_factory=list)
+    all_link_details: list[dict[str, object]] = field(default_factory=list)
 
 
 class MeshReportCancelled(RuntimeError):
@@ -71,8 +113,26 @@ class MeshAnalysisReportService:
         progress(5, "loading")
         links = self._load_links(options)
         events = self._load_events(options) if options.include_raw_events else []
-        parse_issues = self._load_parse_issues() if options.include_parse_issues else []
-        source_files = self._load_source_files()
+        parse_issues = self._load_parse_issues(options) if options.include_parse_issues else []
+        source_files = self._load_source_files(options)
+        self._raise_if_cancelled(should_cancel)
+
+        rules = self._rules_from_options(options)
+        quality_report = build_quality_report(
+            links,
+            source_files,
+            parse_issues,
+            self.mr_name,
+            options.report_name or self.mr_name,
+            options.data_source_type,
+            rules,
+            include_raw_evidence=options.include_raw_evidence,
+            include_all_link_details=options.include_all_link_details,
+            include_parse_issues=options.include_parse_issues,
+            include_busy_analysis=options.include_busy_analysis,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
         self._raise_if_cancelled(should_cancel)
 
         progress(25, "active_segments")
@@ -93,25 +153,8 @@ class MeshAnalysisReportService:
         progress(82, "statistics")
         rssi_statistics = build_rssi_statistics(links)
         channel_busy_statistics = build_channel_busy_statistics(links)
-        overview = {
-            "report_name": options.report_name or self.mr_name,
-            "mr_name": self.mr_name,
-            "source_file_count": len(source_files),
-            "sample_count": len({(row.get("radio"), row.get("sample_time")) for row in links}),
-            "link_record_count": len(links),
-            "radio_count": len({row.get("radio") for row in links if row.get("radio") is not None}),
-            "peer_count": len({_peer(row) for row in links if _peer(row)}),
-            "active_segment_count": len(active_segments),
-            "switch_count": len(switch_sequence),
-            "flap_count": len(flap_events),
-            "no_active_count": len([row for row in active_anomalies if row.get("anomaly_type") == "NO_ACTIVE"]),
-            "multi_active_count": len([row for row in active_anomalies if row.get("anomaly_type") == "MULTI_ACTIVE"]),
-            "parse_issue_count": len(parse_issues),
-            "start_time": min((str(row.get("sample_time")) for row in links if row.get("sample_time")), default=""),
-            "end_time": max((str(row.get("sample_time")) for row in links if row.get("sample_time")), default=""),
-            "generated_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
-        }
-        progress(100, "done")
+        overview = quality_report.overview
+        progress(88, "analysis_done")
         return MeshAnalysisReportModel(
             mr_name=self.mr_name,
             report_name=options.report_name or self.mr_name,
@@ -119,7 +162,6 @@ class MeshAnalysisReportService:
             options=options,
             overview=overview,
             switch_sequence=switch_sequence,
-            active_segments=active_segments,
             flap_events=flap_events,
             link_establishment_order=link_establishment_order,
             peer_lifecycle=peer_lifecycle,
@@ -128,6 +170,38 @@ class MeshAnalysisReportService:
             channel_busy_statistics=channel_busy_statistics,
             raw_events=events,
             parse_issues=parse_issues,
+            source_files=quality_report.source_files,
+            score_rows=quality_report.score_rows,
+            sample_quality=quality_report.sample_quality,
+            active_segments=quality_report.active_segments or active_segments,
+            peer_ranking=quality_report.peer_ranking,
+            switch_events=quality_report.switch_events,
+            anomaly_events=quality_report.anomaly_events,
+            no_backup_risks=quality_report.no_backup_risks,
+            busy_analysis=quality_report.busy_analysis,
+            link_rebuild_events=quality_report.link_rebuild_events,
+            raw_evidence=quality_report.raw_evidence,
+            all_link_details=quality_report.all_link_details,
+        )
+
+    def _rules_from_options(self, options: MeshReportOptions) -> MeshQualityRules:
+        defaults = load_default_rules()
+        return MeshQualityRules(
+            rssi_excellent_threshold=options.rssi_excellent_threshold or defaults.rssi_excellent_threshold,
+            rssi_good_threshold=options.rssi_good_threshold or defaults.rssi_good_threshold,
+            rssi_warning_threshold=options.rssi_warning_threshold or defaults.rssi_warning_threshold,
+            rssi_bad_threshold=options.rssi_bad_threshold or defaults.rssi_bad_threshold,
+            backup_available_threshold=options.backup_available_threshold or defaults.backup_available_threshold,
+            backup_strong_threshold=options.backup_strong_threshold or defaults.backup_strong_threshold,
+            busy_warning_threshold=options.busy_warning_threshold or defaults.busy_warning_threshold,
+            busy_bad_threshold=options.busy_bad_threshold or defaults.busy_bad_threshold,
+            no_backup_min_seconds=options.no_backup_min_seconds or defaults.no_backup_min_seconds,
+            weak_active_min_seconds=options.weak_active_min_seconds or defaults.weak_active_min_seconds,
+            switch_late_window_seconds=options.switch_late_window_seconds or defaults.switch_late_window_seconds,
+            switch_target_window_seconds=options.switch_target_window_seconds or defaults.switch_target_window_seconds,
+            flap_window_seconds=options.flap_window_seconds or defaults.flap_window_seconds,
+            short_active_segment_seconds=options.short_active_segment_seconds or defaults.short_active_segment_seconds,
+            score_weights=defaults.score_weights,
         )
 
     def _load_links(self, options: MeshReportOptions) -> list[dict[str, object]]:
@@ -136,6 +210,9 @@ class MeshAnalysisReportService:
         if options.radio_filter is not None:
             clauses.append("ml.radio = ?")
             values.append(options.radio_filter)
+        if options.source_file_id is not None:
+            clauses.append("ml.source_file_id = ?")
+            values.append(options.source_file_id)
         if options.start_time:
             clauses.append("ml.sample_time >= ?")
             values.append(options.start_time)
@@ -146,7 +223,17 @@ class MeshAnalysisReportService:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT ml.*, sf.archived_filename, sf.original_filename
+                SELECT
+                    ml.id, ml.sample_id, ml.source_file_id, ml.source_file_order, ml.record_seq,
+                    ml.source_line_number, ml.raw_line, ml.radio, ml.sample_time,
+                    ml.link_state_raw, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
+                    ml.peer_mac, ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site,
+                    ml.peer_radio_id, ml.peer_radio, ml.peer_radio_label, ml.peer_radio_mac,
+                    ml.peer_match_rule, ml.peer_resolve_source, ml.establish_time,
+                    ml.duration_text, ml.duration_seconds, ml.link_count, ml.session_id,
+                    ml.metrics_json, ml.deltas_json, ml.local_noise_dbm, ml.peer_noise_dbm,
+                    ml.local_signal_dbm, ml.peer_signal_dbm,
+                    sf.archived_filename, sf.original_filename
                 FROM mesh_links ml
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
@@ -162,6 +249,9 @@ class MeshAnalysisReportService:
         if options.radio_filter is not None:
             clauses.append("radio = ?")
             values.append(options.radio_filter)
+        if options.source_file_id is not None:
+            clauses.append("source_file_id = ?")
+            values.append(options.source_file_id)
         if options.start_time:
             clauses.append("event_time >= ?")
             values.append(options.start_time)
@@ -173,14 +263,26 @@ class MeshAnalysisReportService:
             rows = conn.execute(f"SELECT * FROM mesh_events {where} ORDER BY event_time ASC, id ASC", values).fetchall()
         return [dict(row) for row in rows]
 
-    def _load_parse_issues(self) -> list[dict[str, object]]:
+    def _load_parse_issues(self, options: MeshReportOptions) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if options.source_file_id is not None:
+            clauses.append("source_file_id = ?")
+            values.append(options.source_file_id)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM parse_issues ORDER BY source_file ASC, line_number ASC, id ASC").fetchall()
+            rows = conn.execute(f"SELECT * FROM parse_issues {where} ORDER BY source_file ASC, line_number ASC, id ASC", values).fetchall()
         return [dict(row) for row in rows]
 
-    def _load_source_files(self) -> list[dict[str, object]]:
+    def _load_source_files(self, options: MeshReportOptions) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if options.source_file_id is not None:
+            clauses.append("id = ?")
+            values.append(options.source_file_id)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM source_files ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC").fetchall()
+            rows = conn.execute(f"SELECT * FROM source_files {where} ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC", values).fetchall()
         return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:

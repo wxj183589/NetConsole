@@ -1,0 +1,46 @@
+{
+  "rssi": {
+    "excellent": 40,
+    "good": 30,
+    "warning": 25,
+    "bad": 20
+  },
+  "backup": {
+    "available_threshold": 30,
+    "strong_threshold": 40,
+    "no_backup_min_seconds": 5
+  },
+  "busy": {
+    "warning_threshold": 60,
+    "bad_threshold": 75
+  },
+  "switch": {
+    "late_window_seconds": 5,
+    "target_window_seconds": 5,
+    "flap_window_seconds": 30,
+    "short_active_segment_seconds": 5
+  },
+  "anomaly": {
+    "weak_active_min_seconds": 3,
+    "no_active_merge_gap_seconds": 2,
+    "event_merge_gap_seconds": 2
+  },
+  "score_weights": {
+    "active_rssi": 30,
+    "backup_health": 15,
+    "switch_quality": 20,
+    "busy_quality": 15,
+    "link_stability": 15,
+    "parse_integrity": 5
+  },
+  "performance": {
+    "auto_workers": true,
+    "reserve_cpu_cores": 2,
+    "max_worker_processes": 8,
+    "parallel_row_threshold": 100000,
+    "excel_stream_row_threshold": 50000,
+    "autofit_scan_limit": 2000,
+    "progress_emit_interval_ms": 200,
+    "open_output_dir_after_done": true
+  }
+}

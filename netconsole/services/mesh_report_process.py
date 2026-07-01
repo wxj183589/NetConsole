@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
+
+from netconsole.services.mesh_analysis_excel_report import MeshAnalysisExcelReportExporter
+from netconsole.services.mesh_analysis_report import MeshAnalysisReportService, MeshReportOptions
+
+
+@dataclass(frozen=True)
+class MeshReportProcessRequest:
+    db_path: str
+    mr_name: str
+    output_path: str
+    temp_path: str
+    options: MeshReportOptions
+
+
+@dataclass(frozen=True)
+class MeshReportProcessProgress:
+    kind: str
+    value: int = 0
+    stage: str = ""
+    path: str = ""
+    output_dir: str = ""
+    generated_files: tuple[str, ...] = ()
+    file_index: int = 0
+    file_total: int = 0
+    file_name: str = ""
+    error: str = ""
+    traceback_summary: str = ""
+
+
+def run_mesh_report_process(request: MeshReportProcessRequest, progress_queue: Any, cancel_event: Any) -> None:
+    def emit(
+        kind: str,
+        value: int = 0,
+        stage: str = "",
+        path: str = "",
+        output_dir: str = "",
+        generated_files: list[str] | None = None,
+        file_index: int = 0,
+        file_total: int = 0,
+        file_name: str = "",
+        error: str = "",
+        traceback_summary: str = "",
+    ) -> None:
+        progress_queue.put(
+            {
+                "kind": kind,
+                "value": int(value or 0),
+                "stage": stage,
+                "path": path,
+                "output_dir": output_dir,
+                "generated_files": list(generated_files or []),
+                "file_index": int(file_index or 0),
+                "file_total": int(file_total or 0),
+                "file_name": file_name,
+                "error": error,
+                "traceback_summary": traceback_summary,
+            }
+        )
+
+    def should_cancel() -> bool:
+        return bool(cancel_event.is_set())
+
+    output_dir = Path(request.output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated_files: list[str] = []
+    try:
+        if should_cancel():
+            emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
+            return
+        emit("progress", 1, "source_files", output_dir=str(output_dir))
+        source_files = _list_source_files(Path(request.db_path))
+        if not source_files:
+            raise RuntimeError("当前数据缺少源文件关联，无法按 meshlog 单独生成报告。")
+        workers = calculate_worker_count(request.options)
+        emit("progress", 2, f"workers:{workers}", output_dir=str(output_dir), file_total=len(source_files))
+        total = len(source_files)
+        if workers > 1 and total > 1:
+            jobs = _build_report_jobs(output_dir, request, source_files)
+            emit("progress", 3, "parallel_workers", output_dir=str(output_dir), file_total=total)
+            with ProcessPoolExecutor(max_workers=min(workers, total)) as executor:
+                future_map = {
+                    executor.submit(_generate_source_report_task, job): job
+                    for job in jobs
+                }
+                completed = 0
+                for future in as_completed(future_map):
+                    job = future_map[future]
+                    if should_cancel():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        _cleanup_tmp_files(output_dir)
+                        emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
+                        return
+                    result = future.result()
+                    completed += 1
+                    generated_files.append(str(result["report_path"]))
+                    emit(
+                        "progress",
+                        _combined_progress(completed, total, 100),
+                        "done",
+                        output_dir=str(output_dir),
+                        generated_files=generated_files,
+                        file_index=completed,
+                        file_total=total,
+                        file_name=str(result["file_label"]),
+                    )
+            emit("completed", 100, "done", str(output_dir), str(output_dir), generated_files)
+            return
+        for index, source_file in enumerate(source_files, 1):
+            if should_cancel():
+                emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
+                return
+            file_label = str(source_file.get("original_filename") or source_file.get("archived_filename") or source_file.get("id") or "")
+            emit("progress", _combined_progress(index, total, 0), "loading", output_dir=str(output_dir), file_index=index, file_total=total, file_name=file_label)
+            report_path = _unique_report_path(output_dir, request.mr_name, source_file)
+            temp_path = report_path.with_name(report_path.stem + ".tmp.xlsx")
+            options = replace(
+                request.options,
+                source_file_id=int(source_file["id"]),
+                source_file_name=file_label,
+                report_name=request.options.report_name or f"{request.mr_name} {file_label}",
+            )
+            service = MeshAnalysisReportService(Path(request.db_path), request.mr_name)
+
+            def progress(value: int, stage: str, *, current_index: int = index, current_total: int = total, current_file: str = file_label) -> None:
+                emit(
+                    "progress",
+                    _combined_progress(current_index, current_total, value),
+                    stage,
+                    output_dir=str(output_dir),
+                    file_index=current_index,
+                    file_total=current_total,
+                    file_name=current_file,
+                )
+
+            model = service.build_report(options, progress=progress, should_cancel=should_cancel)
+            if should_cancel():
+                _cleanup_temp(temp_path)
+                emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
+                return
+            MeshAnalysisExcelReportExporter().export(model, temp_path, progress=progress, should_cancel=should_cancel)
+            if should_cancel():
+                _cleanup_temp(temp_path)
+                emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
+                return
+            temp_path.replace(report_path)
+            generated_files.append(str(report_path))
+            emit("progress", _combined_progress(index, total, 100), "done", output_dir=str(output_dir), generated_files=generated_files, file_index=index, file_total=total, file_name=file_label)
+        emit("completed", 100, "done", str(output_dir), str(output_dir), generated_files)
+    except RuntimeError as exc:
+        _cleanup_tmp_files(output_dir)
+        if str(exc) == "cancelled" or should_cancel():
+            emit("cancelled", output_dir=str(output_dir), generated_files=generated_files)
+            return
+        emit("failed", error=str(exc), traceback_summary=traceback.format_exc(limit=12), output_dir=str(output_dir), generated_files=generated_files)
+    except BaseException as exc:
+        _cleanup_tmp_files(output_dir)
+        emit("failed", error=str(exc), traceback_summary=traceback.format_exc(limit=12), output_dir=str(output_dir), generated_files=generated_files)
+
+
+def calculate_worker_count(options: MeshReportOptions) -> int:
+    config = _load_performance_config()
+    if not options.use_multi_core:
+        return 1
+    manual = int(options.worker_processes or 0)
+    if manual > 0:
+        return max(1, min(manual, min(os.cpu_count() or 1, 16)))
+    reserve = int(config.get("reserve_cpu_cores", 2))
+    maximum = int(config.get("max_worker_processes", 8))
+    cpu_count = os.cpu_count() or 1
+    return min(max(1, cpu_count - reserve), maximum)
+
+
+def _build_report_jobs(output_dir: Path, request: MeshReportProcessRequest, source_files: list[dict[str, object]]) -> list[dict[str, object]]:
+    reserved_paths: set[Path] = set()
+    jobs: list[dict[str, object]] = []
+    total = len(source_files)
+    for index, source_file in enumerate(source_files, 1):
+        file_label = str(source_file.get("original_filename") or source_file.get("archived_filename") or source_file.get("id") or "")
+        report_path = _unique_report_path(output_dir, request.mr_name, source_file, reserved_paths)
+        reserved_paths.add(report_path)
+        options = replace(
+            request.options,
+            source_file_id=int(source_file["id"]),
+            source_file_name=file_label,
+            report_name=request.options.report_name or f"{request.mr_name} {file_label}",
+        )
+        jobs.append(
+            {
+                "index": index,
+                "total": total,
+                "db_path": request.db_path,
+                "mr_name": request.mr_name,
+                "file_label": file_label,
+                "report_path": str(report_path),
+                "temp_path": str(report_path.with_name(report_path.stem + ".tmp.xlsx")),
+                "options": options,
+            }
+        )
+    return jobs
+
+
+def _generate_source_report_task(job: dict[str, object]) -> dict[str, object]:
+    report_path = Path(str(job["report_path"]))
+    temp_path = Path(str(job["temp_path"]))
+    try:
+        service = MeshAnalysisReportService(Path(str(job["db_path"])), str(job["mr_name"]))
+        options = job["options"]
+        if not isinstance(options, MeshReportOptions):
+            raise TypeError("invalid report options")
+        model = service.build_report(options)
+        MeshAnalysisExcelReportExporter().export(model, temp_path)
+        temp_path.replace(report_path)
+        return {
+            "index": int(job["index"]),
+            "file_label": str(job["file_label"]),
+            "report_path": str(report_path),
+        }
+    except BaseException:
+        _cleanup_temp(temp_path)
+        raise
+
+
+def _list_source_files(db_path: Path) -> list[dict[str, object]]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, original_filename, archived_filename, first_sample_time, last_sample_time,
+                   records_parsed, records_skipped, issue_count, sha256
+            FROM source_files
+            WHERE COALESCE(parsed_deleted_at, '') = ''
+              AND COALESCE(records_parsed, 0) > 0
+            ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _unique_report_path(output_dir: Path, mr_name: str, source_file: dict[str, object], reserved_paths: set[Path] | None = None) -> Path:
+    reserved_paths = reserved_paths or set()
+    timestamp = _timestamp()
+    source_stem = _strip_log_suffix(str(source_file.get("original_filename") or source_file.get("archived_filename") or source_file.get("id") or "meshlog"))
+    base = f"{_safe_filename(mr_name)}_{_safe_filename(source_stem)}_MR原始MESH日志分析报告_{timestamp}"
+    base = f"{_safe_filename(mr_name)}_{_safe_filename(source_stem)}_MR原始MESH日志分析报告_{timestamp}"
+    path = output_dir / f"{base}.xlsx"
+    if not path.exists() and path not in reserved_paths:
+        return path
+    source_id = str(source_file.get("id") or "")
+    sha = str(source_file.get("sha256") or "")[:8]
+    base = f"{base}_{_safe_filename(source_id or sha or 'source')}"
+    path = output_dir / f"{base}.xlsx"
+    if not path.exists() and path not in reserved_paths:
+        return path
+    for index in range(1, 1000):
+        candidate = output_dir / f"{base}_{index:03d}.xlsx"
+        if not candidate.exists() and candidate not in reserved_paths:
+            return candidate
+    raise RuntimeError("无法生成不冲突的报告文件名。")
+
+
+def _strip_log_suffix(filename: str) -> str:
+    name = filename
+    lower = name.lower()
+    for suffix in (".log.gz", ".txt.gz", ".meshlog.gz", ".gz", ".log", ".txt", ".meshlog"):
+        if lower.endswith(suffix):
+            return name[: -len(suffix)]
+    return Path(name).stem or name
+
+
+def _safe_filename(value: str) -> str:
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", str(value)).strip(" ._")
+    return safe or "MR"
+
+
+def _timestamp() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _combined_progress(index: int, total: int, inner_value: int) -> int:
+    total = max(total, 1)
+    base = (index - 1) / total
+    current = max(0, min(inner_value, 100)) / 100 / total
+    return min(99, int((base + current) * 100))
+
+
+def _load_performance_config() -> dict[str, object]:
+    path = Path(__file__).resolve().parents[1] / "resources" / "mesh_quality_rules.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    performance = data.get("performance")
+    return performance if isinstance(performance, dict) else {}
+
+
+def _cleanup_temp(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _cleanup_tmp_files(output_dir: Path) -> None:
+    for path in output_dir.glob("*.tmp.xlsx"):
+        _cleanup_temp(path)

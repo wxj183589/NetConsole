@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
+from netconsole.core.feature_flags import apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -56,7 +57,51 @@ from netconsole.utils.natural_sort import natural_text_key
 
 FILE_FILTER = "MESH Logs (*.log *.log.gz *.txt);;Log Files (*.log *.log.gz);;Text Files (*.txt);;All Files (*.*)"
 MESH_DEFAULT_PAGE_SIZE = 1000
-MESH_ANALYSIS_REPORT_ENABLED = False
+MESH_ANALYSIS_REPORT_ENABLED = True
+REPORT_STAGE_LABELS = {
+    "loading": "读取数据库",
+    "normalize_samples": "规范化链路数据",
+    "sample_quality": "采样点质量分析",
+    "active_segments": "Active区段分析",
+    "peer_ranking": "Peer质量排名",
+    "switch_analysis": "切换事件分析",
+    "anomaly_analysis": "异常事件分析",
+    "busy_analysis": "空口繁忙度分析",
+    "link_rebuild_analysis": "链路重建分析",
+    "raw_evidence": "原始证据提取",
+    "analysis_done": "分析完成",
+    "excel_overview": "Excel写入：报告总览",
+    "excel_sample_quality": "Excel写入：采样点质量统计",
+    "excel_active_segments": "Excel写入：Active主链路区段",
+    "excel_peer_ranking": "Excel写入：Peer质量排名",
+    "excel_raw_evidence": "Excel写入：原始证据片段",
+    "excel_save": "Excel保存文件",
+    "done": "完成",
+}
+REPORT_STAGE_LABELS.update(
+    {
+        "source_files": "查询源文件清单",
+        "parallel_workers": "多进程并行生成",
+        "loading": "读取数据库",
+        "normalize_samples": "规范化链路数据",
+        "sample_quality": "采样点质量分析",
+        "active_segments": "Active区段分析",
+        "peer_ranking": "Peer质量排名",
+        "switch_analysis": "切换事件分析",
+        "anomaly_analysis": "异常事件分析",
+        "busy_analysis": "空口繁忙度分析",
+        "link_rebuild_analysis": "链路重建分析",
+        "raw_evidence": "原始证据提取",
+        "analysis_done": "分析完成",
+        "excel_overview": "Excel写入：报告总览",
+        "excel_sample_quality": "Excel写入：采样点质量统计",
+        "excel_active_segments": "Excel写入：Active主链路区段",
+        "excel_peer_ranking": "Excel写入：Peer质量排名",
+        "excel_raw_evidence": "Excel写入：原始证据片段",
+        "excel_save": "Excel保存文件",
+        "done": "完成",
+    }
+)
 
 
 class MeshLinkDetailExportWorker(QThread):
@@ -130,11 +175,13 @@ class MeshLogAnalysisPage(QWidget):
         self.storage = MeshStorageService(site_name, self.paths)
         self.settings = SettingsStore(self.paths)
         self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        self.feature_gate = default_feature_gate()
         self.repo_cache: dict[str, MeshMrRepository] = {}
         self.profile_by_id: dict[str, MeshMrProfile] = {}
         self.worker: MeshLogImportWorker | None = None
         self.export_worker: MeshLinkDetailExportWorker | None = None
         self.report_worker: object | None = None
+        self.report_open_output_dir = True
         self.derived_worker: MeshDerivedAnalysisRebuildWorker | None = None
         self.peer_dialogs: list[MeshPeerDetailDialog] = []
         self.profiles: list[MeshMrProfile] = []
@@ -161,7 +208,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button = QPushButton()
         self.refresh_button = QPushButton()
         self.open_folder_button = QPushButton()
-        self.generate_report_button = QPushButton() if MESH_ANALYSIS_REPORT_ENABLED else None
+        self.generate_report_button = QPushButton()
         self.export_link_button = QPushButton()
         self.open_full_active_chart_button = QPushButton()
         self.progress_bar = QProgressBar()
@@ -235,6 +282,7 @@ class MeshLogAnalysisPage(QWidget):
         self.storage = MeshStorageService(site_name, self.paths)
         self.settings = SettingsStore(self.paths)
         self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        self.feature_gate = default_feature_gate()
         if self.repository is not None:
             self.group_repository = self._make_group_repository(self.repository, self.site_name)
         self.repo_cache.clear()
@@ -257,8 +305,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button.setText(self.i18n.t("mesh_analysis.cancel"))
         self.refresh_button.setText(self.i18n.t("mesh_analysis.refresh"))
         self.open_folder_button.setText(self.i18n.t("mesh_analysis.open_folder"))
-        if self.generate_report_button is not None:
-            self.generate_report_button.setText(self.i18n.t("mesh_report.generate_report"))
+        self.generate_report_button.setText("生成 MR 原始 MESH 分析报告")
         self.export_link_button.setText("导出链路明细")
         self.open_full_active_chart_button.setText(self.i18n.t("mesh_analysis.open_full_active_chart"))
         self.radio_filter.setPlaceholderText("Radio")
@@ -402,8 +449,8 @@ class MeshLogAnalysisPage(QWidget):
             self.open_full_active_chart_button,
         ):
             toolbar.addWidget(button)
-        if self.generate_report_button is not None:
-            toolbar.addWidget(self.generate_report_button)
+        toolbar.addWidget(self.generate_report_button)
+        apply_feature_to_widget(self.feature_gate, "mesh.generate_report", self.generate_report_button)
         toolbar.addStretch(1)
         progress = QHBoxLayout()
         progress.addWidget(self.progress_bar, 1)
@@ -467,8 +514,7 @@ class MeshLogAnalysisPage(QWidget):
         self.cancel_button.clicked.connect(self.cancel_import)
         self.refresh_button.clicked.connect(lambda: self.refresh_all())
         self.open_folder_button.clicked.connect(self.open_mr_folder)
-        if self.generate_report_button is not None:
-            self.generate_report_button.clicked.connect(self.generate_report)
+        self.generate_report_button.clicked.connect(self.generate_report)
         self.export_link_button.clicked.connect(self.export_link_details)
         self.open_full_active_chart_button.clicked.connect(self.open_full_active_chart)
         self.mr_table.itemSelectionChanged.connect(self._schedule_current_mr_selection)
@@ -614,6 +660,7 @@ class MeshLogAnalysisPage(QWidget):
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
         if self.report_worker and self.report_worker.isRunning():
+            self.progress_label.setText("正在取消报告生成...")
             self.report_worker.cancel()
 
     def refresh_all(self, select_mr_id: str | None = None) -> None:
@@ -783,7 +830,7 @@ class MeshLogAnalysisPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(path)))
 
     def generate_report(self) -> None:
-        if not MESH_ANALYSIS_REPORT_ENABLED:
+        if not self.feature_gate.is_enabled("mesh.generate_report"):
             QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.disabled"))
             return
         profile = self._require_profile()
@@ -800,13 +847,15 @@ class MeshLogAnalysisPage(QWidget):
         if dialog.exec() != QDialog.Accepted:
             return
         options = dialog.options()
+        self.report_open_output_dir = bool(options.open_output_dir_after_done)
         export_dir = self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name)
         export_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename_mr = _safe_filename(profile.display_name)
-        output_path = export_dir / f"{filename_mr}_MESH分析报告_{timestamp}.xlsx"
+        output_path = export_dir / f"{filename_mr}_MR原始MESH日志分析报告_{timestamp}.xlsx"
         self.progress_bar.setValue(0)
         self.progress_label.setText(self.i18n.t("mesh_report.generating"))
+        output_path = export_dir / f"{filename_mr}_MR原始MESH日志分析报告_{timestamp}.xlsx"
         self.report_worker = MeshAnalysisReportWorker(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name), profile.display_name, output_path, options, self)
         self.report_worker.progress.connect(self._on_report_progress)
         self.report_worker.completed.connect(self._on_report_finished)
@@ -819,7 +868,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def _on_report_progress(self, value: int, message: str) -> None:
         self.progress_bar.setValue(value)
-        self.progress_label.setText(self.i18n.t("mesh_report.progress", value=value, stage=message))
+        self.progress_label.setText(f"报告生成进度 {value}%：{REPORT_STAGE_LABELS.get(message, message)}")
 
     def _on_report_finished(self, path: str) -> None:
         self.progress_bar.setValue(100)
@@ -832,6 +881,26 @@ class MeshLogAnalysisPage(QWidget):
 
     def _on_report_cancelled(self) -> None:
         self.progress_label.setText(self.i18n.t("mesh_report.cancelled"))
+
+    def _on_report_progress(self, value: int, message: str) -> None:
+        self.progress_bar.setValue(value)
+        stage, file_index, file_total, file_name = _parse_report_progress_message(message)
+        stage_label = REPORT_STAGE_LABELS.get(stage, stage)
+        if stage.startswith("workers:"):
+            stage_label = f"准备工作进程：{stage.split(':', 1)[1]} 个"
+        if file_total > 0:
+            self.progress_label.setText(
+                f"正在生成 MR 原始MESH分析报告：文件 {file_index}/{file_total}：{file_name}；阶段：{stage_label}；进度：{value}%"
+            )
+        else:
+            self.progress_label.setText(f"报告生成进度 {value}%：{stage_label}")
+
+    def _on_report_finished(self, path: str) -> None:
+        self.progress_bar.setValue(100)
+        self.progress_label.setText(self.i18n.t("mesh_report.done", path=path))
+        if self.report_open_output_dir:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(Path(path))))
+        QMessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
 
     def _cleanup_report_worker(self) -> None:
         if self.report_worker is not None:
@@ -1662,3 +1731,18 @@ def _json_dict(value) -> dict[str, object]:
 def _safe_filename(value: str) -> str:
     safe = re.sub(r'[\\/:*?"<>|]+', "_", value).strip(" ._")
     return safe or "MR"
+
+
+def _parse_report_progress_message(message: str) -> tuple[str, int, int, str]:
+    parts = str(message or "").split("|||", 3)
+    stage = parts[0] if parts else ""
+    try:
+        file_index = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        file_index = 0
+    try:
+        file_total = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        file_total = 0
+    file_name = parts[3] if len(parts) > 3 else ""
+    return stage, file_index, file_total, file_name

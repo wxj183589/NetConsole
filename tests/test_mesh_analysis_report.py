@@ -5,7 +5,7 @@ from datetime import datetime
 from openpyxl import load_workbook
 
 from netconsole.core.i18n import I18n
-from netconsole.services.mesh_analysis_excel_report import EMPTY_PARSE_ISSUES_TEXT, MeshAnalysisExcelReportExporter, SHEET_DEFINITIONS
+from netconsole.services.mesh_analysis_excel_report import EMPTY_PARSE_ISSUES_TEXT, MeshAnalysisExcelReportExporter, REPORT_FIELD_LABELS, SHEET_DEFINITIONS, translate_report_value
 from netconsole.services.mesh_analysis_report import (
     MeshAnalysisReportModel,
     MeshReportOptions,
@@ -17,6 +17,17 @@ from netconsole.services.mesh_analysis_report import (
     build_rssi_statistics,
     build_switch_sequence,
     detect_flap_switches,
+)
+from netconsole.services.mesh_quality_analysis import (
+    MeshQualityRules,
+    analyze_anomaly_events,
+    analyze_link_rebuilds,
+    analyze_switch_events,
+    build_active_segments as build_quality_active_segments,
+    build_busy_analysis,
+    build_sample_quality,
+    normalize_samples,
+    percentile,
 )
 from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker
 
@@ -42,6 +53,8 @@ def _row(sample_time: str, peer: str, state: str = "ACTIVE", radio: int = 1, mr_
         "peer_rx_busy": 4,
         "local_rate_raw": 866,
         "archived_filename": "mesh.log",
+        "source_line_number": 1,
+        "raw_line": f"{sample_time} {state} {peer}",
     }
 
 
@@ -129,8 +142,13 @@ def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_tex
     path = MeshAnalysisExcelReportExporter().export(model, tmp_path / "report.xlsx")
     workbook = load_workbook(path)
     assert workbook.sheetnames == [definition[0] for definition in SHEET_DEFINITIONS]
-    assert [cell.value for cell in workbook["主链路切换顺序"][1]][:4] == ["序号", "Radio", "切换时间", "原PeerMac"]
-    assert workbook["解析问题"]["A2"].value == EMPTY_PARSE_ISSUES_TEXT
+    assert [cell.value for cell in workbook["切换事件分析"][1]][:4] == [
+        REPORT_FIELD_LABELS["sequence"],
+        REPORT_FIELD_LABELS["radio"],
+        REPORT_FIELD_LABELS["switch_time"],
+        REPORT_FIELD_LABELS["from_peer"],
+    ]
+    assert workbook["解析问题"]["F2"].value == EMPTY_PARSE_ISSUES_TEXT
 
 
 def test_i18n_report_keys_exist_and_mesh_page_has_generate_button(tmp_path):
@@ -146,11 +164,9 @@ def test_i18n_report_keys_exist_and_mesh_page_has_generate_button(tmp_path):
     assert I18n("zh_CN").t("mesh_report.generate_report") == "生成分析报告"
     assert I18n("en_US").t("mesh_report.generate_report") == "Generate Report"
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    if MESH_ANALYSIS_REPORT_ENABLED:
-        assert page.generate_report_button is not None
-        assert page.generate_report_button.text() == "Generate Report"
-    else:
-        assert page.generate_report_button is None
+    assert MESH_ANALYSIS_REPORT_ENABLED
+    assert page.generate_report_button is not None
+    assert page.generate_report_button.text() == "生成 MR 原始 MESH 分析报告"
 
 
 def test_report_worker_cancel_before_run_cleans_temp(tmp_path):
@@ -162,3 +178,94 @@ def test_report_worker_cancel_before_run_cleans_temp(tmp_path):
     worker.run()
     assert not output.exists()
     assert not temp.exists()
+
+
+def test_report_export_translates_internal_enum_values():
+    assert translate_report_value("quality_level", "EXCELLENT") == "优秀"
+    assert translate_report_value("switch_type", "LATE_SWITCH") == "切换滞后"
+    assert translate_report_value("event_type", "NO_BACKUP") == "无可用备份"
+    assert translate_report_value("rebuild_type", "DURATION_RESET") == "持续时间回退"
+    assert translate_report_value("link_state", "ACTIVE") == "主链路"
+    assert translate_report_value("data_source_type", "MR_RAW_MESH_LOG") == "MR原始MESH日志"
+    assert translate_report_value("fping_loss_rate", None) == "N/A"
+    assert translate_report_value("related_event_type", "SHORT_SEGMENT_SWITCH") == "短时切换"
+
+
+def test_quality_sample_point_and_fping_na():
+    rules = MeshQualityRules()
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=42),
+            _row("2025-12-03 10:00:00", PEER_B, "STANDBY", mr_rssi=35),
+        ]
+    )
+    sample = build_sample_quality(rows, rules)[0]
+    assert sample["quality_level"] == "EXCELLENT"
+    assert sample["available_backup_count"] == 1
+    assert rows[0]["fping_loss_rate"] is None
+
+
+def test_quality_anomaly_event_merging_for_no_backup_weak_no_active_multi_active_and_busy():
+    rules = MeshQualityRules(no_backup_min_seconds=1, weak_active_min_seconds=1, busy_warning_threshold=60, busy_bad_threshold=75)
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=28),
+            _row("2025-12-03 10:00:01", PEER_A, "ACTIVE", mr_rssi=27),
+            _row("2025-12-03 10:00:02", PEER_A, "STANDBY"),
+            _row("2025-12-03 10:00:03", PEER_A, "ACTIVE"),
+            _row("2025-12-03 10:00:03", PEER_B, "ACTIVE"),
+            {**_row("2025-12-03 10:00:04", PEER_A, "ACTIVE"), "local_tx_busy": 80, "local_rx_busy": 10},
+        ]
+    )
+    samples = build_sample_quality(rows, rules)
+    events = analyze_anomaly_events(samples, rows, rules)
+    event_types = {event["event_type"] for event in events}
+    assert {"NO_BACKUP", "WEAK_ACTIVE", "NO_ACTIVE", "MULTI_ACTIVE", "HIGH_BUSY"} <= event_types
+    assert len([event for event in events if event["event_type"] == "NO_BACKUP"]) == 1
+
+
+def test_quality_switch_late_weak_target_and_flap_detection():
+    rules = MeshQualityRules(switch_late_window_seconds=5, switch_target_window_seconds=5, flap_window_seconds=30, short_active_segment_seconds=0)
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=24),
+            _row("2025-12-03 10:00:00", PEER_B, "STANDBY", mr_rssi=40),
+            _row("2025-12-03 10:00:01", PEER_A, "ACTIVE", mr_rssi=23),
+            _row("2025-12-03 10:00:01", PEER_B, "STANDBY", mr_rssi=41),
+            _row("2025-12-03 10:00:02", PEER_B, "ACTIVE", mr_rssi=24),
+            _row("2025-12-03 10:00:03", PEER_A, "ACTIVE", mr_rssi=41),
+        ]
+    )
+    samples = build_sample_quality(rows, rules)
+    segments = build_quality_active_segments(samples, rows, rules)
+    switches = analyze_switch_events(segments, samples, rules)
+    assert any(switch["switch_type"] == "FLAP_SWITCH" for switch in switches)
+    late_rows = normalize_samples(
+        [
+            _row("2025-12-03 10:01:00", PEER_A, "ACTIVE", mr_rssi=24),
+            _row("2025-12-03 10:01:00", PEER_B, "STANDBY", mr_rssi=40),
+            _row("2025-12-03 10:01:01", PEER_A, "ACTIVE", mr_rssi=23),
+            _row("2025-12-03 10:01:01", PEER_B, "STANDBY", mr_rssi=41),
+            _row("2025-12-03 10:01:02", PEER_B, "ACTIVE", mr_rssi=24),
+        ]
+    )
+    late_samples = build_sample_quality(late_rows, rules)
+    late_segments = build_quality_active_segments(late_samples, late_rows, rules)
+    late_switches = analyze_switch_events(late_segments, late_samples, rules)
+    assert late_switches[0]["switch_type"] in {"LATE_SWITCH", "WEAK_TARGET_SWITCH"}
+
+
+def test_quality_rebuild_busy_and_percentiles():
+    assert percentile([10, 20, 30, 40], 0.1) == 13
+    assert percentile([10, 20, 30, 40], 0.9) == 37
+    rows = normalize_samples(
+        [
+            {**_row("2025-12-03 10:00:00", PEER_A, "ACTIVE"), "link_count": 1, "duration_seconds": 20, "establish_time": "2025-12-03 09:59:00", "local_tx_busy": 10, "local_rx_busy": 10},
+            {**_row("2025-12-03 10:00:01", PEER_A, "ACTIVE"), "link_count": 2, "duration_seconds": 21, "establish_time": "2025-12-03 09:59:00", "local_tx_busy": 80, "local_rx_busy": 20},
+            {**_row("2025-12-03 10:00:02", PEER_A, "ACTIVE"), "link_count": 2, "duration_seconds": 1, "establish_time": "2025-12-03 10:00:02", "local_tx_busy": 30, "local_rx_busy": 82},
+        ]
+    )
+    rebuilds = analyze_link_rebuilds(rows)
+    assert {event["rebuild_type"] for event in rebuilds} >= {"LINKCNT_INCREASE", "DURATION_RESET"}
+    busy = build_busy_analysis(rows, MeshQualityRules(busy_warning_threshold=60, busy_bad_threshold=75))[0]
+    assert busy["busy_level"] == "BAD"
