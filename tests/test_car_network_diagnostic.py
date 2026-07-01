@@ -1086,6 +1086,8 @@ def test_rail_transit_contains_car_network_tab_and_train_from_devices(tmp_path: 
     repository.create(Device(name="列车06-MR-CT", group_id=group.id, device_type="FAT-AP", primary_address="10.122.89.106"))
 
     page = RailTransitPage(repository, I18n("zh_CN"), "demo", paths)
+    assert page.car_network_page is None
+    page._ensure_feature_page("rail.car_network_diagnostic")
 
     assert page.tabs.tabText(1) == "车内通信检测"
     assert page.car_network_page.train_table.item(0, 0).text() == "06车"

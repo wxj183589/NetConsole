@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 import re
@@ -1723,15 +1723,17 @@ def enrich_trackside_export_rows(
     ac_repository=None,
     switch_optical_history_rows: list[dict[str, object | None]] | None = None,
     ap_optical_history_rows: list[dict[str, object | None]] | None = None,
+    ap_lldp_history_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
     switch_history_by_interface = _switch_optical_history_by_interface(switch_optical_history_rows or [])
     ap_history_by_identity = _ap_optical_history_by_identity(ap_optical_history_rows or [])
+    ap_lldp_history_by_identity = _ap_optical_history_by_identity(ap_lldp_history_rows or [])
     enriched: list[dict[str, object | None]] = []
     for row in rows:
         item = dict(row)
         _apply_switch_optical_change(item, fact_repository, switch_history_by_interface)
         _apply_ap_optical_change(item, ac_repository, ap_history_by_identity)
-        _apply_ap_port_change(item, ac_repository)
+        _apply_ap_port_change(item, ac_repository, ap_lldp_history_by_identity)
         enriched.append(item)
     return enriched
 
@@ -1764,11 +1766,16 @@ def _apply_switch_optical_change(
     row.setdefault("switch_optical_change", "-")
     device_uuid = str(row.get("device_uuid") or "")
     interface_key = normalize_interface_name(row.get("interface_name")).casefold()
-    previous = _previous_row_before((history_by_interface or {}).get((device_uuid, interface_key), []), row.get("updated_at"))
-    if previous:
-        previous_status = _optical_status_from_history(previous, "switch")
-        row["switch_optical_change"] = optical_change_text(previous_status, row.get("switch_optical_status"))
-        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+    baseline = _optical_transition_baseline_before(
+        (history_by_interface or {}).get((device_uuid, interface_key), []),
+        row.get("updated_at"),
+        row.get("switch_optical_status"),
+        "switch",
+    )
+    if baseline:
+        baseline_status = _optical_status_from_history(baseline, "switch")
+        row["switch_optical_change"] = optical_change_text(baseline_status, row.get("switch_optical_status"))
+        row["history_compared_at"] = baseline.get("collected_at") or baseline.get("created_at") or row.get("history_compared_at")
         return
     if fact_repository is None:
         return
@@ -1780,7 +1787,8 @@ def _apply_switch_optical_change(
         return
     previous_status = _optical_status_from_history(previous, "switch")
     row["switch_optical_change"] = optical_change_text(previous_status, row.get("switch_optical_status"))
-    row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+    if row["switch_optical_change"] != "-":
+        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
 
 
 def _apply_ap_optical_change(
@@ -1800,11 +1808,11 @@ def _apply_ap_optical_change(
         row["ap_optical_data_source"] = "沿用历史"
         row["ap_optical_missing_reason"] = "not_collected" if str(row.get("collection_status") or "").casefold() in {"", "not_collected"} else "overwritten_by_failed_row"
         _ensure_ap_optical_status(row)
-    previous = _previous_row_before(history_rows, row.get("updated_at"))
-    if previous:
-        previous_status = _optical_status_from_history(previous, "ap")
-        row["ap_optical_change"] = optical_change_text(previous_status, row.get("ap_optical_status"))
-        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+    baseline = _optical_transition_baseline_before(history_rows, row.get("updated_at"), row.get("ap_optical_status"), "ap")
+    if baseline:
+        baseline_status = _optical_status_from_history(baseline, "ap")
+        row["ap_optical_change"] = optical_change_text(baseline_status, row.get("ap_optical_status"))
+        row["history_compared_at"] = baseline.get("collected_at") or baseline.get("created_at") or row.get("history_compared_at")
         return
     if ac_repository is None:
         return
@@ -1816,19 +1824,46 @@ def _apply_ap_optical_change(
         return
     previous_status = _optical_status_from_history(previous, "ap")
     row["ap_optical_change"] = optical_change_text(previous_status, row.get("ap_optical_status"))
-    row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
+    if row["ap_optical_change"] != "-":
+        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
 
 
 def _previous_row_before(rows: list[dict[str, object | None]], before: object) -> dict[str, object | None] | None:
+    candidates = _history_rows_before(rows, before)
+    if not candidates:
+        return None
+    return candidates[0]
+
+
+def _history_rows_before(rows: list[dict[str, object | None]], before: object) -> list[dict[str, object | None]]:
     before_text = str(before or "")
     candidates = [
         row
         for row in rows or []
         if not before_text or str(row.get("collected_at") or row.get("created_at") or "") < before_text
     ]
-    if not candidates:
+    return sorted(
+        candidates,
+        key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))),
+        reverse=True,
+    )
+
+
+def _optical_transition_baseline_before(
+    rows: list[dict[str, object | None]],
+    before: object,
+    current_status: object,
+    side: str,
+) -> dict[str, object | None] | None:
+    current_state = _normal_abnormal_key(current_status)
+    if not current_state:
         return None
-    return max(candidates, key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))))
+    target_state = "abnormal" if current_state == "normal" else "normal"
+    for row in _history_rows_before(rows, before):
+        status = _normal_abnormal_key(_optical_status_from_history(row, side))
+        if status == target_state:
+            return row
+    return None
 
 
 def _latest_valid_ap_optical_history(rows: list[dict[str, object | None]]) -> dict[str, object | None] | None:
@@ -1838,10 +1873,28 @@ def _latest_valid_ap_optical_history(rows: list[dict[str, object | None]]) -> di
     return max(candidates, key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))))
 
 
-def _apply_ap_port_change(row: dict[str, object | None], ac_repository) -> None:
+def _apply_ap_port_change(
+    row: dict[str, object | None],
+    ac_repository,
+    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
+) -> None:
     row.setdefault("ap_port_change", "-")
     row["current_switch"] = row.get("device_name") or "-"
     row["current_interface"] = row.get("interface_name") or "-"
+    previous = _ap_port_transition_baseline_before(
+        _ap_history_for_trackside(row, history_by_identity or {}),
+        row.get("updated_at"),
+        row.get("device_name"),
+        row.get("interface_name"),
+    )
+    if previous:
+        previous_switch = _previous_lldp_switch(previous)
+        previous_interface = _previous_lldp_interface(previous)
+        row["previous_switch"] = previous_switch or "-"
+        row["previous_interface"] = previous_interface or "-"
+        row["ap_port_change"] = ap_port_change_text(previous_switch, previous_interface, row.get("device_name"), row.get("interface_name"))
+        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at") or "-"
+        return
     if ac_repository is None:
         row.setdefault("previous_switch", "-")
         row.setdefault("previous_interface", "-")
@@ -1857,6 +1910,27 @@ def _apply_ap_port_change(row: dict[str, object | None], ac_repository) -> None:
     row["history_compared_at"] = (previous or {}).get("collected_at") or (previous or {}).get("created_at") or row.get("history_compared_at") or "-"
 
 
+def _ap_port_transition_baseline_before(
+    rows: list[dict[str, object | None]],
+    before: object,
+    current_switch: object,
+    current_interface: object,
+) -> dict[str, object | None] | None:
+    current_switch_text = str(current_switch or "").strip()
+    current_interface_key = normalize_interface_name(current_interface).casefold()
+    if not current_switch_text or not current_interface_key:
+        return None
+    for row in _history_rows_before(rows, before):
+        previous_switch = str(_previous_lldp_switch(row) or "").strip()
+        previous_interface_key = normalize_interface_name(_previous_lldp_interface(row)).casefold()
+        if not previous_switch or not previous_interface_key:
+            continue
+        if previous_switch.casefold() == current_switch_text.casefold() and previous_interface_key == current_interface_key:
+            continue
+        return row
+    return None
+
+
 def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
     return {
         "ap_uuid": str(row.get("ap_uuid") or "").strip(),
@@ -1864,6 +1938,15 @@ def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
         "ap_mac": normalize_mac(row.get("ap_mac")),
         "ap_name": str(row.get("ap_name") or "").strip(),
     }
+
+
+def _normal_abnormal_key(status: object) -> str:
+    text = str(status or "").strip().casefold()
+    if not text or text in {"unknown", "not_collected", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
+        return ""
+    if text == "normal":
+        return "normal"
+    return "abnormal"
 
 
 def _normal_abnormal_state(status: object) -> str:

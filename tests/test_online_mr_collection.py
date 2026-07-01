@@ -2037,6 +2037,55 @@ def test_online_mr_realtime_page_hides_offline_parse_controls(tmp_path: Path) ->
     assert analysis.tabs.count() == 11
 
 
+def test_online_mr_analysis_filters_and_selects_session_combo(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    first_paths, first_config = _config(tmp_path)
+    second_config = OnlineMrConnectionConfig(
+        site="demo",
+        mr_id="mr-02",
+        mr_name="MR-02",
+        safe_mr_name="MR-02",
+        device_id=2,
+        device_name="FAT-AP-02",
+        host="198.51.100.20",
+        username="admin",
+        password="secret",
+    )
+    first_session = OnlineMrSessionStore(first_paths).create_session(first_config, datetime(2026, 1, 1, 8, 0, 0))
+    second_session = OnlineMrSessionStore(first_paths).create_session(second_config, datetime(2026, 1, 1, 9, 0, 0))
+
+    from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
+
+    analysis = OnlineMrCollectionAnalysisPage(page.repository, I18n("en_US"), "demo", page.paths)
+    analysis.refresh_all()
+
+    assert analysis.session_select_combo.count() == 2
+    analysis.session_search_input.setText("198.51.100.20")
+    analysis._refresh_session_select_combo()
+
+    assert analysis.session_select_combo.count() == 1
+    assert analysis.session_select_combo.currentData() == str(second_session.session_dir)
+    assert analysis._selected_session_dir_for_parse() == second_session.session_dir
+    assert first_session.session_dir != second_session.session_dir
+
+
+def test_online_mr_analysis_parse_requires_explicit_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+
+    from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
+
+    analysis = OnlineMrCollectionAnalysisPage(page.repository, I18n("en_US"), "demo", page.paths)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "netconsole.ui.pages.online_mr_collection_page.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(str(message)),
+    )
+
+    analysis.parse_selected_session()
+
+    assert warnings == ["Select a collection session first."]
+
+
 def test_online_mr_device_search_filters_and_keeps_checked_devices(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
     onboard = groups.create("\u8f66\u8f7d-MR")

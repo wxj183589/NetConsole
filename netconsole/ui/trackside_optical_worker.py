@@ -213,7 +213,11 @@ class TracksideApBusinessExportThread(QThread):
         def log_phase(phase: str, start: float, **values: object) -> None:
             elapsed_ms = int((perf_counter() - start) * 1000)
             details = " ".join(f"{key}={value}" for key, value in values.items())
-            app_logger.log_info("TRACKSIDE_EXPORT_PROFILE", f"phase={phase} elapsed_ms={elapsed_ms}" + (f" {details}" if details else ""))
+            app_logger.log_info(
+                "UI_PAGE_PROFILE",
+                f"page=rail.trackside_ap_business phase=export.{phase} elapsed_ms={elapsed_ms}"
+                + (f" {details}" if details else ""),
+            )
 
         try:
             self.stage_changed.emit("trackside.export.progress_load")
@@ -244,6 +248,9 @@ class TracksideApBusinessExportThread(QThread):
             phase_start = perf_counter()
             ap_optical_history_rows = ac_repository.list_all_ap_optical_history()
             log_phase("load_ap_optical_history", phase_start, rows=len(ap_optical_history_rows))
+            phase_start = perf_counter()
+            ap_lldp_history_rows = ac_repository.list_all_ap_lldp_history()
+            log_phase("load_ap_lldp_history", phase_start, rows=len(ap_lldp_history_rows))
             phase_start = perf_counter()
             capacity_details = ac_repository.list_active_trackside_plan_capacity_details()
             if not capacity_details:
@@ -280,6 +287,7 @@ class TracksideApBusinessExportThread(QThread):
                 ac_repository,
                 switch_optical_history_rows=switch_optical_history_rows,
                 ap_optical_history_rows=ap_optical_history_rows,
+                ap_lldp_history_rows=ap_lldp_history_rows,
             )
             log_phase("build_history_compare", phase_start, rows=len(rows))
             phase_start = perf_counter()

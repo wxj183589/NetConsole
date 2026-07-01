@@ -334,6 +334,12 @@ class OnlineMrCollectionPage(QWidget):
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
         self.parse_session_button = QPushButton()
+        self.session_search_input = QLineEdit()
+        self.session_select_combo = QComboBox()
+        self.session_history_rows: list[dict[str, object]] = []
+        self.session_filter_timer = QTimer(self)
+        self.session_filter_timer.setSingleShot(True)
+        self.session_filter_timer.setInterval(250)
 
         self.mesh_interval = self._interval_spin(1, 3600, 1)
         self.channel_interval = self._interval_spin(1, 3600, 9)
@@ -615,16 +621,18 @@ class OnlineMrCollectionPage(QWidget):
             self._schedule_device_refresh(refresh_tools=False)
 
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
+        profile_start = time.perf_counter()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self._clear_peer_identity_cache()
         if self.analysis_only:
             self.devices = self.repository.list()
             self._load_device_groups()
-            self._fill_devices()
-            self._ensure_analysis_device_session_dirs()
+            self.available_devices = self.devices
+            self.filtered_devices = self.devices
             self._fill_view_devices()
             self._fill_history()
             self._update_action_state()
+            self._log_page_profile("refresh", profile_start, rows=len(self.session_history_rows))
             return
         self.devices = self.repository.list()
         self._load_device_groups()
@@ -637,6 +645,7 @@ class OnlineMrCollectionPage(QWidget):
             self._refresh_tool_status_once(force=refresh_tools)
         self.attach_to_running_collections()
         self._update_action_state()
+        self._log_page_profile("refresh", profile_start, rows=len(self.filtered_devices))
 
     def _clear_peer_identity_cache(self) -> None:
         self.peer_station_cache.clear()
@@ -678,8 +687,9 @@ class OnlineMrCollectionPage(QWidget):
         self.collect_config_button.setText(self.i18n.t("online_mr.collect_config_once"))
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
-        self.parse_session_button.setText(self.i18n.t("online_mr.parse_collection_data"))
+        self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
         self.device_search_input.setPlaceholderText(self.i18n.t("online_mr.device_search_placeholder"))
+        self.session_search_input.setPlaceholderText(self.i18n.t("online_mr.search_device"))
         self.auto_reconnect_check.setText(self.i18n.t("online_mr.auto_reconnect"))
         self.collect_config_on_start_check.setText(self.i18n.t("online_mr.collect_config_on_start"))
         self.enable_fping_check.setText(self.i18n.t("online_mr.high_freq_ping"))
@@ -915,10 +925,18 @@ class OnlineMrCollectionPage(QWidget):
         view_row.setMaximumHeight(44)
         view_layout = QHBoxLayout(view_row)
         view_layout.setContentsMargins(0, 4, 0, 4)
-        view_layout.addWidget(self._text_label("online_mr.view_device"))
-        self.view_device_combo.setMinimumWidth(260)
-        self.view_device_combo.setMaximumWidth(360)
-        view_layout.addWidget(self.view_device_combo)
+        if self.analysis_only:
+            self.session_search_input.setMinimumWidth(220)
+            self.session_select_combo.setMinimumWidth(520)
+            view_layout.addWidget(self._text_label("online_mr.search_device"))
+            view_layout.addWidget(self.session_search_input)
+            view_layout.addWidget(self._text_label("online_mr.select_session"))
+            view_layout.addWidget(self.session_select_combo, 1)
+        else:
+            view_layout.addWidget(self._text_label("online_mr.view_device"))
+            self.view_device_combo.setMinimumWidth(260)
+            self.view_device_combo.setMaximumWidth(360)
+            view_layout.addWidget(self.view_device_combo)
         self.parse_session_button.setMinimumWidth(140)
         view_layout.addWidget(self.parse_session_button)
         view_layout.addStretch(1)
@@ -970,6 +988,8 @@ class OnlineMrCollectionPage(QWidget):
         self.device_table.currentCellChanged.connect(self._on_device_current_row_changed)
         self.view_device_combo.currentIndexChanged.connect(self._view_device_changed)
         self.device_search_input.textChanged.connect(self._fill_devices)
+        self.session_search_input.textChanged.connect(lambda _text: self.session_filter_timer.start())
+        self.session_filter_timer.timeout.connect(self._refresh_session_select_combo)
         self.start_button.clicked.connect(self.start_collection)
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
@@ -1350,6 +1370,16 @@ class OnlineMrCollectionPage(QWidget):
             QMessageBox.warning(self, self.i18n.t("online_mr.open_session_dir"), f"Open collection directory failed: {exc}")
 
     def _selected_session_dir_for_parse(self) -> Path | None:
+        if self.analysis_only:
+            selected_dir = self.session_select_combo.currentData()
+            if selected_dir:
+                return Path(str(selected_dir))
+            row = self.history_table.currentRow()
+            if row >= 0:
+                item = self.history_table.item(row, 8)
+                if item is not None and item.text():
+                    return Path(item.text())
+            return None
         device_id = self.view_device_combo.currentData()
         if device_id is not None:
             parsed_device_id = int(device_id)
@@ -1387,7 +1417,11 @@ class OnlineMrCollectionPage(QWidget):
     def parse_selected_session(self) -> None:
         session_dir = self._selected_session_dir_for_parse()
         if session_dir is None:
-            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), "Please select a device or history session to parse.")
+            QMessageBox.warning(
+                self,
+                self.i18n.t("online_mr.parse_collection_data"),
+                self.i18n.t("online_mr.no_session_selected") if self.analysis_only else "Please select a device or history session to parse.",
+            )
             return
         if not session_dir.exists():
             QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Collection directory does not exist: {session_dir}")
@@ -1396,6 +1430,7 @@ class OnlineMrCollectionPage(QWidget):
         if not raw_dir.exists():
             QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Raw directory was not found: {raw_dir}")
             return
+        self._log_page_profile("parse.start", time.perf_counter(), rows=1)
         self.parse_session_button.setEnabled(False)
         self.log_text.append(f"Start parsing collection data: {session_dir}")
         self.parse_worker = OnlineMrParseWorker(session_dir, parent=self)
@@ -1404,6 +1439,7 @@ class OnlineMrCollectionPage(QWidget):
         self.parse_worker.start()
 
     def _parse_completed(self, session_dir: Path, summary) -> None:
+        profile_start = time.perf_counter()
         self.parse_session_button.setEnabled(True)
         self.log_text.append(
             f"Parse completed: active_segments={summary.active_segments}, "
@@ -1413,6 +1449,7 @@ class OnlineMrCollectionPage(QWidget):
             f"ping_samples={summary.ping_samples}, iperf_samples={summary.iperf_samples}, issues={summary.issues}"
         )
         rows = self._load_offline_analysis(session_dir)
+        self._log_page_profile("render.analysis", profile_start, rows=rows)
         self.tabs.setCurrentWidget(self.diagnosis_table)
         if rows == 0:
             message = (
@@ -3132,8 +3169,10 @@ class OnlineMrCollectionPage(QWidget):
         self.view_device_combo.blockSignals(False)
 
     def _fill_history(self) -> None:
+        profile_start = time.perf_counter()
         self._history_refresh_pending = False
         rows = self.store.list_sessions(self.site_name, None)
+        self.session_history_rows = list(rows)
         self.history_table.setUpdatesEnabled(False)
         try:
             self.history_table.setRowCount(len(rows))
@@ -3161,6 +3200,70 @@ class OnlineMrCollectionPage(QWidget):
                     self.history_table.setItem(row, column, item)
         finally:
             self.history_table.setUpdatesEnabled(True)
+        if self.analysis_only:
+            self._refresh_session_select_combo()
+        self._log_page_profile("load.history", profile_start, rows=len(rows))
+
+    def _refresh_session_select_combo(self) -> None:
+        if not self.analysis_only:
+            return
+        keyword = self.session_search_input.text().strip().lower()
+        current_dir = self.session_select_combo.currentData()
+        filtered = [row for row in self.session_history_rows if self._matches_session_search(row, keyword)]
+        self.session_select_combo.blockSignals(True)
+        try:
+            self.session_select_combo.clear()
+            for row in filtered:
+                session_dir = str(row.get("session_dir") or "").strip()
+                if not session_dir:
+                    continue
+                self.session_select_combo.addItem(self._session_combo_label(row), session_dir)
+            if current_dir:
+                index = self.session_select_combo.findData(current_dir)
+                if index >= 0:
+                    self.session_select_combo.setCurrentIndex(index)
+        finally:
+            self.session_select_combo.blockSignals(False)
+        if not filtered:
+            self.session_search_input.setToolTip(self.i18n.t("online_mr.session_filter_empty"))
+        else:
+            self.session_search_input.setToolTip("")
+
+    def _matches_session_search(self, row: dict[str, object], keyword: str) -> bool:
+        if not keyword:
+            return True
+        device_id = row.get("device_id")
+        device = next((item for item in self.devices if str(item.id) == str(device_id)), None)
+        group_name = self.device_groups.get(int(getattr(device, "group_id", 0) or 0), "") if device is not None else ""
+        values = [
+            row.get("device_name"),
+            row.get("mr_name"),
+            row.get("session_id"),
+            row.get("session_dir"),
+            row.get("status"),
+            row.get("session_type"),
+            row.get("host"),
+            row.get("protocol"),
+            row.get("device_name"),
+            device.primary_address if device is not None else "",
+            device.device_type if device is not None else "",
+            group_name,
+        ]
+        return any(keyword in str(value or "").lower() for value in values)
+
+    @staticmethod
+    def _session_combo_label(row: dict[str, object]) -> str:
+        start = str(row.get("started_at") or "-")
+        end = str(row.get("ended_at") or "-")
+        status = str(row.get("status") or "-")
+        mr_name = str(row.get("mr_name") or row.get("device_name") or "-")
+        session_id = str(row.get("session_id") or "-")
+        return f"{start} ~ {end} | {status} | {mr_name} | {session_id}"
+
+    def _log_page_profile(self, phase: str, start: float, *, rows: int = 0) -> None:
+        page = "rail.online_mr_analysis" if self.analysis_only else "rail.online_mr_collection"
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        app_logger.log_info("UI_PAGE_PROFILE", f"page={page} phase={phase} elapsed_ms={elapsed_ms:.1f} rows={rows}")
 
     def _matches_device_search(self, device: Device, keyword: str) -> bool:
         if not keyword:
@@ -3172,11 +3275,7 @@ class OnlineMrCollectionPage(QWidget):
     def _ensure_analysis_device_session_dirs(self) -> None:
         if not self.analysis_only:
             return
-        root = self.paths.online_mr_root(self.site_name)
-        root.mkdir(parents=True, exist_ok=True)
-        for device in self.available_devices:
-            safe_name = safe_device_folder_name(device)
-            self.paths.online_mr_sessions_root(self.site_name, safe_name).mkdir(parents=True, exist_ok=True)
+        return
 
     def _schedule_history_refresh(self, refresh_tools: bool = False) -> None:
         if self._history_refresh_pending:

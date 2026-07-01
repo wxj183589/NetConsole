@@ -3622,6 +3622,8 @@ def test_trackside_ap_page_does_not_render_i18n_keys(tmp_path):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     rail_page = RailTransitPage(repository, I18n("zh_CN"), "demo", PathResolver(tmp_path))
+    assert rail_page.trackside_page is None
+    rail_page._ensure_feature_page("rail.trackside_ap_business")
     page = rail_page.trackside_page
     visible_text = [
         rail_page.tabs.tabText(0),
@@ -4023,6 +4025,7 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert rail_page.tabs.tabText(4) == "Onboard MR Realtime Collection"
     assert rail_page.tabs.tabText(5) == "Onboard MR Collection Analysis"
     assert rail_page.tabs.currentIndex() == 0
+    rail_page._ensure_feature_page("rail.trackside_ap_business")
     page = rail_page.trackside_page
     assert isinstance(page, TracksideApServicePage)
     page.refresh_async(force=True)
@@ -4907,10 +4910,15 @@ def test_rail_transit_lazy_refreshes_only_current_tab(tmp_path, monkeypatch):
     database = make_database(tmp_path)
     page = RailTransitPage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
     calls: list[str] = []
+    page._ensure_feature_page("rail.train_online")
+    page._ensure_feature_page("rail.trackside_ap_business")
+    page._ensure_feature_page("rail.raw_mesh_log_analysis")
     monkeypatch.setattr(page.vehicle_mr_online_page, "refresh_all", lambda: calls.append("vehicle"))
     monkeypatch.setattr(page.trackside_page, "refresh_async", lambda force=False: calls.append(f"trackside:{force}"))
     monkeypatch.setattr(page.mesh_page, "refresh_all", lambda: calls.append("mesh"))
     assert page.online_mr_page is None
+    page.tabs.setCurrentIndex(0)
+    calls.clear()
 
     page.refresh_current_async_or_lazy()
     assert calls == ["vehicle"]
@@ -5213,6 +5221,7 @@ def test_rail_transit_force_if_empty_refreshes_empty_trackside_cache(tmp_path, m
     database = make_database(tmp_path)
     page = RailTransitPage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
     calls: list[bool] = []
+    page._ensure_feature_page("rail.trackside_ap_business")
     page.trackside_page.has_loaded = True
     page.trackside_page.dirty = False
     page.trackside_page.trackside_rows = []

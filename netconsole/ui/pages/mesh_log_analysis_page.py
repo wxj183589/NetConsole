@@ -4,6 +4,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 
 from PySide6.QtCore import QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
@@ -654,6 +655,7 @@ class MeshLogAnalysisPage(QWidget):
             self.report_worker.cancel()
 
     def refresh_all(self, select_mr_id: str | None = None) -> None:
+        profile_start = perf_counter()
         current_id = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
         self.profiles = self._vehicle_mr_profiles()
         self.profile_by_id = {profile.mr_id: profile for profile in self.profiles}
@@ -688,6 +690,7 @@ class MeshLogAnalysisPage(QWidget):
             self.current_source_file_id = None
             self.current_source_file_name = None
         self.refresh_current_mr_data()
+        self._log_page_profile("refresh", profile_start, rows=len(self.profiles))
 
     def _vehicle_mr_profiles(self) -> list[MeshMrProfile]:
         if self.repository is None or self.group_repository is None:
@@ -717,6 +720,7 @@ class MeshLogAnalysisPage(QWidget):
         self._load_profile_by_id(str(item.data(Qt.UserRole)))
 
     def _load_profile_by_id(self, mr_id: str) -> None:
+        profile_start = perf_counter()
         self.current_profile = self.profile_by_id.get(mr_id) or self.catalog_repo.get_profile(mr_id)
         if self.current_profile is None:
             return
@@ -729,12 +733,15 @@ class MeshLogAnalysisPage(QWidget):
         self.dirty_tabs = {"source", "link", "active_build_order", "event", "issue"}
         self.refresh_current_tab(generation)
         app_logger.log_info("MESH_MR_LOAD_COMPLETED", f"mr_id={mr_id}, generation={generation}, tab={self._current_tab_name()}")
+        self._log_page_profile("load", profile_start, rows=1)
 
     def refresh_current_mr_data(self, current_tab_only: bool = False) -> None:
+        profile_start = perf_counter()
         if self.current_profile is None:
             for table in (self.source_table, self.link_table, self.active_build_order_table, self.event_table, self.issue_table):
                 table.setRowCount(0)
             self.refresh_parse_issues()
+            self._log_page_profile("render", profile_start, rows=0)
             return
         repo = self._repo()
         self._ensure_current_derived_analysis(repo)
@@ -747,6 +754,17 @@ class MeshLogAnalysisPage(QWidget):
         self._render_events(repo)
         self.refresh_parse_issues(repo)
         self.dirty_tabs.clear()
+        self._log_page_profile("render", profile_start, rows=self._current_rendered_rows())
+
+    def _log_page_profile(self, phase: str, start: float, *, rows: int = 0) -> None:
+        elapsed_ms = (perf_counter() - start) * 1000
+        app_logger.log_info("UI_PAGE_PROFILE", f"page=rail.raw_mesh_log_analysis phase={phase} elapsed_ms={elapsed_ms:.1f} rows={rows}")
+
+    def _current_rendered_rows(self) -> int:
+        return sum(
+            table.rowCount()
+            for table in (self.source_table, self.link_table, self.active_build_order_table, self.event_table, self.issue_table)
+        )
 
     def refresh_current_tab(self, generation: int | None = None) -> None:
         if self.current_profile is None:

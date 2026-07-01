@@ -16,6 +16,7 @@ from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     ap_port_change_text,
     build_trackside_ap_business_rows,
+    enrich_trackside_export_rows,
     filter_station_switch_devices,
     is_trackside_ap_interface,
     merge_fit_ap_rows_by_identity,
@@ -246,3 +247,78 @@ def test_ac_resource_collect_failure_keeps_existing_resources(monkeypatch, tmp_p
 
     assert result.success is False
     assert [row["ap_name"] for row in repository.list_fit_ap_resources(str(ac.device_uuid))] == ["old-ap"]
+
+
+def test_trackside_optical_change_uses_latest_status_boundary():
+    rows = [{"device_uuid": "sw-1", "interface_name": "GE1/0/1", "switch_optical_status": "alarm", "updated_at": "2026-01-04"}]
+    history = [
+        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "normal", "collected_at": "2026-01-01", "id": 1},
+        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "warning", "collected_at": "2026-01-02", "id": 2},
+        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "alarm", "collected_at": "2026-01-03", "id": 3},
+    ]
+
+    enriched = enrich_trackside_export_rows(rows, switch_optical_history_rows=history)
+
+    assert enriched[0]["switch_optical_change"] == optical_change_text("normal", "alarm")
+    assert enriched[0]["history_compared_at"] == "2026-01-01"
+
+
+def test_trackside_optical_change_ignores_same_abnormal_boundary_without_normal():
+    rows = [{"device_uuid": "sw-1", "interface_name": "GE1/0/1", "switch_optical_status": "warning", "updated_at": "2026-01-03"}]
+    history = [
+        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
+        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "warning", "collected_at": "2026-01-02", "id": 2},
+    ]
+
+    enriched = enrich_trackside_export_rows(rows, switch_optical_history_rows=history)
+
+    assert enriched[0]["switch_optical_change"] == "-"
+
+
+def test_trackside_optical_change_reports_recovery_from_earlier_abnormal():
+    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "ap_optical_status": "normal", "updated_at": "2026-01-04"}]
+    history = [
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "optical_alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "optical_alarm_status": "normal", "collected_at": "2026-01-02", "id": 2},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "optical_alarm_status": "normal", "collected_at": "2026-01-03", "id": 3},
+    ]
+
+    enriched = enrich_trackside_export_rows(rows, ap_optical_history_rows=history)
+
+    assert enriched[0]["ap_optical_change"] == optical_change_text("alarm", "normal")
+    assert enriched[0]["history_compared_at"] == "2026-01-01"
+
+
+def test_trackside_ap_port_change_uses_latest_different_port_boundary():
+    rows = [
+        {
+            "ap_uuid": "ap-1",
+            "ap_name": "AP1",
+            "device_name": "SW-B",
+            "interface_name": "GigabitEthernet1/0/2",
+            "updated_at": "2026-01-05",
+        }
+    ]
+    history = [
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "neighbor_device_name": "SW-A", "neighbor_interface": "GigabitEthernet1/0/1", "collected_at": "2026-01-01", "id": 1},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "neighbor_device_name": "SW-A", "neighbor_interface": "GE1/0/1", "collected_at": "2026-01-02", "id": 2},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "neighbor_device_name": "SW-B", "neighbor_interface": "GE1/0/2", "collected_at": "2026-01-03", "id": 3},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "neighbor_device_name": "SW-B", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-04", "id": 4},
+    ]
+
+    enriched = enrich_trackside_export_rows(rows, ap_lldp_history_rows=history)
+
+    assert enriched[0]["ap_port_change"] == ap_port_change_text("SW-A", "GE1/0/1", "SW-B", "GigabitEthernet1/0/2")
+    assert enriched[0]["history_compared_at"] == "2026-01-02"
+
+
+def test_trackside_ap_port_change_ignores_normalized_same_port():
+    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "device_name": "SW-B", "interface_name": "GigabitEthernet1/0/2", "updated_at": "2026-01-03"}]
+    history = [
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "neighbor_device_name": "SW-B", "neighbor_interface": "GE1/0/2", "collected_at": "2026-01-01", "id": 1},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "neighbor_device_name": "SW-B", "neighbor_interface": "GigabitEthernet1/0/2", "collected_at": "2026-01-02", "id": 2},
+    ]
+
+    enriched = enrich_trackside_export_rows(rows, ap_lldp_history_rows=history)
+
+    assert enriched[0]["ap_port_change"] == "-"

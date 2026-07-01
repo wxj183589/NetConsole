@@ -554,6 +554,8 @@ def test_rail_transit_first_tab_is_vehicle_mr_online(tmp_path: Path) -> None:
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+    assert page.vehicle_mr_online_page is None
+    page._ensure_feature_page("rail.train_online")
 
     assert page.tabs.tabText(0) == "列车在线情况"
     assert page.vehicle_mr_online_page.title_label.text() == "列车在线情况"
@@ -569,6 +571,7 @@ def test_vehicle_mr_page_status_items_have_readable_roles_and_interval_validatio
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     rail_page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+    rail_page._ensure_feature_page("rail.train_online")
     page = rail_page.vehicle_mr_online_page
     page.current_trains = {
         "列车06": VehicleMrTrainState("列车06", "06", True, status="离线"),
@@ -597,6 +600,7 @@ def test_vehicle_mr_event_table_keeps_user_widths_and_centers_cells(tmp_path: Pa
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     rail_page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+    rail_page._ensure_feature_page("rail.train_online")
     page = rail_page.vehicle_mr_online_page
     store = page.store
     train_id = "列车06"

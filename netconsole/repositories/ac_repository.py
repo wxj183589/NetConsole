@@ -1200,6 +1200,42 @@ class AcRepository:
                 latest[key] = row
         return [*latest.values(), *passthrough]
 
+    def list_all_ap_lldp_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            entity_rows = conn.execute(
+                """
+                SELECT id, ap_uuid, ap_mac, ap_name, serial_number,
+                       neighbor_switch_name AS neighbor_device_name,
+                       neighbor_switch_sysname AS lldp_neighbor,
+                       neighbor_interface,
+                       collected_at,
+                       created_at,
+                       'ap_lldp_history' AS data_source
+                FROM ap_lldp_history
+                WHERE neighbor_interface IS NOT NULL
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            fit_rows = conn.execute(
+                """
+                SELECT id, ap_uuid, ap_mac, ap_name, NULL AS serial_number,
+                       neighbor_device_name,
+                       lldp_neighbor,
+                       neighbor_interface,
+                       collected_at,
+                       created_at,
+                       'ac_fit_ap_lldp_history' AS data_source
+                FROM ac_fit_ap_lldp_history
+                WHERE neighbor_interface IS NOT NULL
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows]
+
     def get_fit_ap_resource(self, ac_device_uuid: str, ap_name: str) -> dict[str, object | None] | None:
         rows = self.list_fit_ap_resources_with_metadata(ac_device_uuid)
         return next((row for row in rows if row.get("ap_name") == ap_name), None)

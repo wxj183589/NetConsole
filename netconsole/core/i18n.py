@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 
 SUPPORTED_LANGUAGES = ("zh_CN", "en_US", "zh", "en")
@@ -186,6 +186,11 @@ TRANSLATIONS = {
         "online_mr.enable_traffic_test": "启用打流测试",
         "online_mr.traffic_test": "打流测试",
         "online_mr.parse_collection_data": "解析采集数据",
+        "online_mr.search_device": "搜索设备",
+        "online_mr.select_session": "选择会话",
+        "online_mr.no_session_selected": "请先选择一个采集会话。",
+        "online_mr.parse_selected_session": "解析选中会话",
+        "online_mr.session_filter_empty": "没有匹配的采集会话",
         "online_mr.select_history_session": "请先选择一个历史会话。",
         "online_mr.parse_done": "解析完成：Active段 {segments}，Ping样本 {ping}，IPERF样本 {iperf}，问题 {issues}",
         "online_mr.diagnosis_results": "诊断结果",
@@ -1306,6 +1311,11 @@ TRANSLATIONS = {
         "online_mr.enable_traffic_test": "Enable Traffic Test",
         "online_mr.traffic_test": "Traffic Test",
         "online_mr.parse_collection_data": "Parse Collection Data",
+        "online_mr.search_device": "Search device",
+        "online_mr.select_session": "Select session",
+        "online_mr.no_session_selected": "Select a collection session first.",
+        "online_mr.parse_selected_session": "Parse Selected Session",
+        "online_mr.session_filter_empty": "No matching collection sessions",
         "online_mr.select_history_session": "Select a history session first.",
         "online_mr.parse_done": "Parse completed: active segments {segments}, ping samples {ping}, IPERF samples {iperf}, issues {issues}",
         "online_mr.diagnosis_results": "Diagnosis Results",
