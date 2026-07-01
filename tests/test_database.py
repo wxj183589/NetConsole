@@ -43,6 +43,9 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "device_lldp_neighbors_history" in table_names
     assert "ac_ap_summary" in table_names
     assert "ac_fit_ap_resources" in table_names
+    assert "ac_fit_ap_unauthenticated" in table_names
+    assert "ac_fit_ap_unauthenticated_history" in table_names
+    assert "ac_fit_ap_unauthenticated_summary" in table_names
     assert "ap_entities" in table_names
     assert "ap_resource_snapshots" in table_names
     assert "ap_lldp_history" in table_names

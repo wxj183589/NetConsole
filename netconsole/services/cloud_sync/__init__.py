@@ -1,2 +1,0 @@
-"""Cloud synchronization services."""
-

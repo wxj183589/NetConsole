@@ -241,7 +241,7 @@ def build_online_counts(
             site = str(optical.get("_station") or UNASSIGNED_SITE_LABEL)
             online_key = _resource_unique_key(resource)
             stats[f"matched_by_{optical_method}"] = int(stats.get(f"matched_by_{optical_method}") or 0) + 1
-        elif metadata and str(metadata.get("_station") or "").strip() and str(metadata.get("_station") or "") != UNASSIGNED_SITE_LABEL:
+        elif metadata and str(metadata.get("_station") or "").strip():
             site = str(metadata.get("_station") or UNASSIGNED_SITE_LABEL)
             online_key = _resource_unique_key(resource)
             stats["matched_by_metadata"] = int(stats["matched_by_metadata"] or 0) + 1
@@ -250,10 +250,9 @@ def build_online_counts(
             online_key = _resource_unique_key(resource)
             stats["matched_by_known_resource_site"] = int(stats["matched_by_known_resource_site"] or 0) + 1
         else:
-            site = UNASSIGNED_SITE_LABEL
-            online_key = _resource_unique_key(resource)
             stats["unmatched_online"] = int(stats["unmatched_online"] or 0) + 1
             _append_unmatched_sample(stats, resource)
+            continue
         if online_key in seen_online:
             continue
         seen_online.add(online_key)
@@ -271,8 +270,6 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
         site = str(row.get("site") or "")
         total = int(row.get("total") or 0)
         online = int(row.get("online") or 0)
-        if site == UNASSIGNED_SITE_LABEL and online > total:
-            total = online
         normalized = {
             "site": site,
             "total": total,

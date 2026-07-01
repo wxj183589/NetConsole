@@ -589,12 +589,12 @@ class MeshAnalysisExcelReportExporter:
             _raise_if_cancelled(should_cancel)
             progress(90 + int(written / max(total_sheets, 1) * 8), STAGE_BY_ATTR.get(attr_name, f"excel_{attr_name}"))
             rows = self._rows_for(model, attr_name)
-            self._write_sheet(workbook, sheet_name, fields, rows, attr_name, should_cancel)
+            self._write_sheet(workbook, sheet_name, fields, rows, attr_name, should_cancel, progress)
             written += 1
         if getattr(model.options, "include_all_link_details", False):
             _raise_if_cancelled(should_cancel)
             progress(98, "excel_all_link_details")
-            self._write_sheet(workbook, "全量链路明细", ALL_LINK_COLUMNS, getattr(model, "all_link_details", []), "all_link_details", should_cancel)
+            self._write_sheet(workbook, "全量链路明细", ALL_LINK_COLUMNS, getattr(model, "all_link_details", []), "all_link_details", should_cancel, progress)
         progress(99, "excel_save")
         workbook.save(path)
         return path
@@ -607,6 +607,7 @@ class MeshAnalysisExcelReportExporter:
         rows: list[dict[str, object]] | list[tuple[object, ...]],
         attr_name: str,
         should_cancel: CancelCallback,
+        progress: ProgressCallback,
     ) -> None:
         field_list = list(fields)
         sheet = workbook.create_sheet(sheet_name)
@@ -621,9 +622,11 @@ class MeshAnalysisExcelReportExporter:
             width_tracker.feed(self._row_values(field_list, row, attr_name, index))
         width_tracker.apply(sheet)
         sheet.append([_header_cell(sheet, REPORT_FIELD_LABELS.get(field, field)) for field in field_list])
+        total_rows = len(rows)
         for index, row in enumerate(rows, 1):
-            if index % 2000 == 0:
+            if index % 1000 == 0:
                 _raise_if_cancelled(should_cancel)
+                progress(95, f"excel_sheet_rows:{sheet_name}:{index}:{total_rows}")
             values = self._row_values(field_list, row, attr_name, index)
             sheet.append(values)
 

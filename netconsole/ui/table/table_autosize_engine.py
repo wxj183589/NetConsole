@@ -16,7 +16,7 @@ MEDIUM_PRIORITY_MIN_WIDTH = 112
 LOW_PRIORITY_MIN_WIDTH = 82
 MEDIUM_PRIORITY_MAX_WIDTH = 190
 LOW_PRIORITY_MAX_WIDTH = 150
-ACTION_COLUMN_WIDTH = 220
+ACTION_COLUMN_WIDTH = 320
 CHECK_COLUMN_WIDTH = 48
 
 HIGH_PRIORITY_FIELDS = {
@@ -184,7 +184,7 @@ def apply_worksheet_autofit(sheet, maximum: float = 60.0) -> None:
 
 
 def _install_resize_hook(table: QTableWidget) -> None:
-    if table.property("netconsole_wps_autosize_hooked"):
+    if table.property("netconsole_table_autosize_hooked"):
         return
     original_resize_event = table.resizeEvent
 
@@ -193,7 +193,7 @@ def _install_resize_hook(table: QTableWidget) -> None:
         apply_table_autosize(table)
 
     table.resizeEvent = resize_event
-    table.setProperty("netconsole_wps_autosize_hooked", True)
+    table.setProperty("netconsole_table_autosize_hooked", True)
 
 
 def _base_column_width(table: QTableWidget, column: int, priority: str) -> int:

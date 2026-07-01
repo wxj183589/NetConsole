@@ -26,6 +26,7 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
     "display wlan ap all",
     "display wlan ap all address",
     "display wlan ap all radio",
+    "display wlan ap unauthenticated",
     "display cpu-usage",
     "display memory",
     "display ip https | include port",

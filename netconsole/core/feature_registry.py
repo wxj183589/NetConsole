@@ -25,6 +25,8 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.network_tools", "nav.network_tools", None, "module"),
     FeatureItem("module.logs", "nav.logs", None, "module"),
     FeatureItem("module.system_settings", "nav.system_settings", None, "module"),
+    FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
+    FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),
     FeatureItem("rail.train_online", "rail_transit.train_online", "module.rail_transit", "tab"),
     FeatureItem("rail.car_network_diagnostic", "rail_transit.car_network_diagnostic", "module.rail_transit", "tab"),
     FeatureItem("rail.trackside_ap_business", "rail_transit.trackside_ap_service", "module.rail_transit", "tab"),

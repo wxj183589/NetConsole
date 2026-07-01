@@ -362,13 +362,20 @@ class MeshChartHoverController(QObject):
         for event in events_by_index.get(index, []):
             event_type = event.get("event_type")
             if event_type == "ACTIVE_SWITCH":
+                from_peer_mac = str(event.get("from_peer_mac") or "-")
+                to_peer_mac = str(event.get("to_peer_mac") or "-")
+                from_peer_ap = str(event.get("from_peer_ap_name") or self.i18n.t("mesh_analysis.unknown_ap") or "未知AP")
+                to_peer_ap = str(event.get("to_peer_ap_name") or self.i18n.t("mesh_analysis.unknown_ap") or "未知AP")
+                from_peer_site = str(event.get("from_peer_site") or "-")
+                to_peer_site = str(event.get("to_peer_site") or "-")
                 lines.extend(
                     [
                         "事件:",
                         self.i18n.t("mesh_analysis.active_switch"),
                         "切换时间:",
                         str(event.get("event_time") or event.get("current_sample_time") or "-"),
-                        f"{event.get('from_peer_mac') or '-'} -> {event.get('to_peer_mac') or '-'}",
+                        f"{self.i18n.t('mesh_analysis.switch_from')}: {from_peer_ap} / {from_peer_site} / {from_peer_mac}",
+                        f"{self.i18n.t('mesh_analysis.switch_to')}: {to_peer_ap} / {to_peer_site} / {to_peer_mac}",
                         f"{self.i18n.t('mesh_analysis.observed_window')}: {event.get('observed_window_ms') or '-'} ms",
                     ]
                 )

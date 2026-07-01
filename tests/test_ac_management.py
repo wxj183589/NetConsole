@@ -34,7 +34,7 @@ from netconsole.services.fit_ap_import_export import AP_EXTENSION_TEMPLATE_FIELD
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
 from netconsole.services.device_web_service import build_https_url, effective_https_port, parse_https_port
-from netconsole.services.h3c_ac_collect_service import FIT_AP_RESOURCE_COMMANDS, HTTPS_PORT_COMMANDS, RESOURCE_COMMANDS, collect_h3c_ac_resources
+from netconsole.services.h3c_ac_collect_service import FIT_AP_RESOURCE_COMMANDS, FIT_AP_RESOURCE_OPTIONAL_COMMANDS, HTTPS_PORT_COMMANDS, RESOURCE_COMMANDS, collect_h3c_ac_resources
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
 from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
@@ -62,6 +62,7 @@ from netconsole.services.trackside_ap_business import (
     build_new_online_ap_overview_rows,
     build_trackside_ap_business_rows,
     description_contains_ap,
+    enrich_trackside_export_rows,
     export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
     format_ap_side_alarm,
@@ -141,6 +142,7 @@ class FakeConnection:
             "display wlan ap all": fixture("display_wlan_ap_all.txt"),
             "display wlan ap all address": fixture("display_wlan_ap_all_address.txt"),
             "display wlan ap all radio": fixture("display_wlan_ap_all_radio.txt"),
+            "display wlan ap unauthenticated": "Total number of connected auto APs: 0\n\nAP information:\nAP name APID State Model Serial ID Dev-Type Work-mode\n",
             "display cpu-usage": fixture("display_cpu_usage.txt"),
             "display memory": fixture("display_memory.txt"),
             "display ip https | include port": "HTTPS port: 443\n",
@@ -599,6 +601,58 @@ def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
     assert [row["lldp_neighbor"] for row in history[:2]] == ["SW02", "SW01"]
     assert history[0]["local_interface"] == "GigabitEthernet1/0/2"
     assert history[0]["neighbor_device_name"] == "HX_2"
+
+
+def test_fit_ap_optical_failed_row_does_not_overwrite_valid_rx(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "rx_power": "-7.34", "status": "success", "collected_at": "2026-01-01T00:00:00"}],
+    )
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "rx_power": "", "status": "timeout", "collected_at": "2026-01-02T00:00:00"}],
+    )
+
+    row = repository.get_fit_ap_optical_by_uuid("ac-1", ap_uuid)
+    assert row["rx_power"] == "-7.34"
+    assert row["ap_name"] == "ap-a"
+
+
+def test_fit_ap_optical_lldp_only_success_is_not_treated_as_failure(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "status": "success", "neighbor_device_name": "SW01", "neighbor_interface": "GE1/0/1"}],
+    )
+
+    row = repository.get_fit_ap_optical_by_uuid("ac-1", ap_uuid)
+    assert row["neighbor_device_name"] == "SW01"
+    assert h3c_ac_collect_service._is_fit_ap_optical_success_row(dict(row))
+
+
+def test_fit_ap_optical_retry_targets_and_concurrency():
+    resources = [
+        {"ap_uuid": "ap-ok", "ap_name": "AP-OK"},
+        {"ap_uuid": "ap-empty", "ap_name": "AP-EMPTY"},
+        {"ap_uuid": "ap-missing", "ap_name": "AP-MISSING"},
+    ]
+    round_rows = [
+        {"ap_uuid": "ap-ok", "status": "success", "rx_power": "-7.34"},
+        {"ap_uuid": "ap-empty", "status": "success", "rx_power": ""},
+    ]
+
+    retry = h3c_ac_collect_service._retry_fit_ap_optical_targets(resources, round_rows)
+
+    assert [row["ap_uuid"] for row in retry] == ["ap-empty", "ap-missing"]
+    assert h3c_ac_collect_service.retry_fit_ap_optical_concurrency(1000, floor=100, ratio=0.5) == 500
+    assert h3c_ac_collect_service.retry_fit_ap_optical_concurrency(120, floor=100, ratio=0.5) == 100
 
 
 def test_fit_ap_radio_history_is_appended_from_resource_rows(tmp_path):
@@ -1223,7 +1277,7 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     assert result.success is True
     assert result.summary_updated is True
     assert result.https_port_collected is False
-    assert connection.commands == ["screen-length disable", *FIT_AP_RESOURCE_COMMANDS]
+    assert connection.commands == ["screen-length disable", *FIT_AP_RESOURCE_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS]
     assert "display cpu-usage" not in connection.commands
     assert "display memory" not in connection.commands
     assert "display version" not in connection.commands
@@ -1509,6 +1563,10 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "group_name",
         "online_time",
         "updated_at",
+        "register_status",
+        "new_online_status",
+        "new_online_source",
+        "unauthenticated_collected_at",
     ]
     assert [field for _key, field in FIT_AP_OPTICAL_COLUMNS] == [
         "ap_name",
@@ -1562,7 +1620,7 @@ def test_fit_ap_optical_table_colors_no_light_rows(tmp_path):
     assert page.optical_table.item(0, 0).textAlignment() == Qt.AlignCenter
 
 
-def test_mesh_report_generation_hidden_and_guarded(tmp_path, monkeypatch):
+def test_mesh_report_generation_button_is_available(tmp_path, monkeypatch):
     app()
     context = create_demo_context(PathResolver(tmp_path))
     messages: list[str] = []
@@ -1570,10 +1628,10 @@ def test_mesh_report_generation_hidden_and_guarded(tmp_path, monkeypatch):
 
     page = MeshLogAnalysisPage(context.repository, I18n("en_US"), "demo", PathResolver(tmp_path))
 
-    assert MESH_ANALYSIS_REPORT_ENABLED is False
-    assert page.generate_report_button is None
-    page.generate_report()
-    assert messages == ["Report generation is temporarily disabled."]
+    assert MESH_ANALYSIS_REPORT_ENABLED is True
+    assert page.generate_report_button is not None
+    assert page.feature_gate.is_enabled("mesh.generate_report")
+    assert messages == []
     assert page.report_worker is None
 
 
@@ -1634,7 +1692,24 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
     assert [row["ap_name"] for row in rows] == ["AP-New"]
     assert rows[0]["device_name"] == "SW-1"
     assert rows[0]["interface_name"] == "GigabitEthernet1/0/1"
-    assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][-1] == "updated_at"
+    assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][:15] == [
+        "site",
+        "device_name",
+        "interface_name",
+        "link_status",
+        "port_type",
+        "description",
+        "pvid",
+        "vlan",
+        "switch_rx_power",
+        "switch_optical_status",
+        "ap_mac",
+        "ap_name",
+        "ap_rx_power",
+        "ap_optical_status",
+        "updated_at",
+    ]
+    assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][-1] == "suggestion"
 
 
 def test_build_ap_optical_treatment_records_closes_and_opens_by_history():
@@ -1889,12 +1964,30 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
         new_online_ap_sheet_title=i18n.t("trackside.export.sheet_new_online_ap_overview"),
         ap_optical_treatment_rows=[
             {
+                "site": "Station B",
+                "ap_name": "AP-3",
+                "device_name": "SW-2",
+                "interface_name": "GigabitEthernet2/0/1",
+                "side": "AP侧",
+                "treatment_status": TREATMENT_OPEN_LABEL,
+            },
+            {
+                "site": "Station A",
+                "ap_name": "AP-2",
+                "device_name": "SW-1",
+                "interface_name": "GigabitEthernet2/0/10",
+                "side": "AP侧",
+                "treatment_status": TREATMENT_OPEN_LABEL,
+            },
+            {
                 "site": "Station A",
                 "ap_name": "AP-1",
                 "ap_mac": "0011-2233-4455",
+                "device_name": "SW-1",
+                "interface_name": "GigabitEthernet2/0/9",
                 "side": "AP侧",
                 "treatment_status": TREATMENT_OPEN_LABEL,
-            }
+            },
         ],
         ap_optical_treatment_columns=AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
         ap_optical_treatment_headers=[i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
@@ -1918,6 +2011,12 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
     assert workbook["新增上线AP概览"]["A2"].value == "Station A"
     treatment_sheet = workbook["AP光衰处理记录"]
     assert treatment_sheet.cell(row=1, column=treatment_sheet.max_column).value == "处理完成时间"
+    assert [treatment_sheet.cell(row=row, column=1).value for row in range(2, 5)] == ["Station A", "Station A", "Station B"]
+    assert [treatment_sheet.cell(row=row, column=7).value for row in range(2, 5)] == [
+        "GigabitEthernet2/0/9",
+        "GigabitEthernet2/0/10",
+        "GigabitEthernet2/0/1",
+    ]
     assert treatment_sheet["B2"].value == "AP-1"
     assert treatment_sheet["C2"].value == "0011-2233-4455"
     assert treatment_sheet["N2"].value == TREATMENT_OPEN_LABEL
@@ -2506,30 +2605,29 @@ def test_ap_online_overview_matches_dirty_resource_site_back_to_plan():
     assert overview[0]["offline"] == 0
 
 
-def test_ap_online_overview_unmatched_online_uses_unassigned_not_dirty_site():
+def test_ap_online_overview_unmatched_online_does_not_enter_unassigned():
     resources = [{"ap_mac": "00aa-bbcc-ddee", "ap_name": "AP-Z", "site": "Demo", "state": "R/M"}]
     plans = [{"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "station": "01小洋江站"}]
 
     overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources)
 
-    assert [row["site"] for row in overview] == ["01小洋江站", "\u672a\u5f52\u5c5e", "\u5408\u8ba1"]
-    assert overview[1]["total"] == 1
-    assert overview[1]["online"] == 1
-    assert overview[1]["offline"] == 0
+    assert [row["site"] for row in overview] == ["01小洋江站", "\u5408\u8ba1"]
+    assert overview[0]["online"] == 0
+    assert overview[-1]["online"] == 0
     assert all(row["site"] != "Demo" for row in overview)
 
 
-def test_ap_online_overview_keeps_bulk_unmatched_in_unassigned_when_plan_coverage_is_missing():
+def test_ap_online_overview_excludes_bulk_unmatched_when_plan_coverage_is_missing():
     resources = [{"ap_mac": f"00aa-bbcc-{index:04x}", "site": "Demo", "state": "R/M"} for index in range(20)]
     plans = [{"ap_mac": "0011-2233-4455", "station": "Station A"}]
     capacities = {"Station A": {"ap_total": 30, "remark": ""}, "Station B": {"ap_total": 56, "remark": ""}}
 
     overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources, capacity_details=capacities)
 
-    assert [row["site"] for row in overview] == ["Station A", "Station B", "\u672a\u5f52\u5c5e", "\u5408\u8ba1"]
+    assert [row["site"] for row in overview] == ["Station A", "Station B", "\u5408\u8ba1"]
     assert all(row["site"] != "Demo" for row in overview)
-    assert overview[-1]["total"] == 106
-    assert overview[-1]["online"] == 20
+    assert overview[-1]["total"] == 86
+    assert overview[-1]["online"] == 0
 
 
 def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
@@ -2702,7 +2800,7 @@ def test_ap_online_overview_falls_back_to_known_resource_site_when_no_optical_ma
     assert "未归属" not in by_site
 
 
-def test_ap_online_overview_unknown_dirty_resource_site_goes_unassigned():
+def test_ap_online_overview_unknown_dirty_resource_site_is_excluded_from_unassigned():
     rows = build_ap_online_overview_rows(
         metadata_rows=[],
         fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "体育中心站", "state": "R"}],
@@ -2711,7 +2809,7 @@ def test_ap_online_overview_unknown_dirty_resource_site_goes_unassigned():
     )
     by_site = {row["site"]: row for row in rows}
 
-    assert by_site["未归属"]["online"] == 1
+    assert "未归属" not in by_site
     assert "体育中心站" not in by_site
 
 
@@ -2724,7 +2822,7 @@ def test_ap_online_overview_dirty_unknown_station_does_not_create_station_row():
     by_site = {row["site"]: row for row in rows}
 
     assert "Demo" not in by_site
-    assert by_site["未归属"]["online"] == 1
+    assert "未归属" not in by_site
 
 
 def _make_standard_ap_online_overview_fixture():
@@ -2808,7 +2906,7 @@ def test_ap_online_overview_standard_large_sample_matches_expected_totals():
     assert rows[-1] == {"site": "\u5408\u8ba1", "total": 948, "online": 773, "offline": 175, "remark": "", "online_rate": "81.5%"}
 
 
-def test_ap_online_overview_name_match_without_mac_and_unmatched_goes_to_unassigned():
+def test_ap_online_overview_name_match_without_mac_and_unmatched_is_excluded():
     planned_aps = [{"ap_name": " AP - 001 ", "site_name": "01小洋江站"}]
     resources = [
         {"ap_name": "AP-001", "site": "Demo", "state": "ONLINE"},
@@ -2818,9 +2916,28 @@ def test_ap_online_overview_name_match_without_mac_and_unmatched_goes_to_unassig
     by_site = {row["site"]: row for row in rows}
 
     assert by_site["01小洋江站"]["online"] == 1
-    assert by_site["未归属"]["online"] == 1
+    assert "未归属" not in by_site
     assert "Demo" not in by_site
     assert "体育中心站" not in by_site
+
+
+def test_ap_online_overview_unassigned_only_comes_from_metadata_rows():
+    planned_aps = [
+        {"ap_mac": "30f5-277a-11a0", "site_name": "未归属", "state": "I"},
+        {"ap_mac": "30f5-277a-1e00", "site_name": "未归属", "state": "I"},
+    ]
+    resources = [
+        {"ap_mac": f"30f5-277a-{index:04x}", "site": "", "state": "R"}
+        for index in range(13)
+    ]
+
+    rows = build_ap_online_overview_rows(planned_aps=planned_aps, fit_ap_resources=resources)
+    by_site = {row["site"]: row for row in rows}
+
+    assert by_site["未归属"]["total"] == 2
+    assert by_site["未归属"]["online"] == 0
+    assert by_site["未归属"]["offline"] == 2
+    assert rows[-1]["online"] == 0
 
 
 def test_trackside_overview_export_large_sample_has_only_overview_columns(tmp_path):
@@ -3850,8 +3967,8 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert "Trackside AP Business" not in [ac_page.tabs.tabText(index) for index in range(ac_page.tabs.count())]
 
     rail_page = RailTransitPage(device_repository, I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert rail_page.tabs.tabText(0) == "列车在线情况"
-    assert rail_page.tabs.tabText(1) == "车内通信检测"
+    assert rail_page.tabs.tabText(0) == "Train Online"
+    assert rail_page.tabs.tabText(1) == "Car Network Diagnostic"
     assert rail_page.tabs.tabText(2) == "Trackside AP Service"
     assert rail_page.tabs.tabText(3) == "MR Raw MESH Log Analysis"
     assert rail_page.tabs.tabText(4) == "Onboard MR Realtime Collection"
@@ -4698,7 +4815,7 @@ def test_trackside_ap_refresh_async_uses_background_loader_and_loading_state(tmp
     assert not page.dirty
     assert page.update_button.isEnabled()
     assert page.trackside_table.rowCount() == 1
-    assert page.status_label.text() == "Loaded 1 rows; online AP 0, offline AP 0"
+    assert page.status_label.text().startswith("Loaded 1 rows; filtered 1; trackside UP 0; AC online AP 0; offline ledger ")
 
 
 def test_trackside_ap_generation_discards_stale_load_result(tmp_path, monkeypatch):
@@ -4917,6 +5034,61 @@ def test_trackside_load_snapshot_counts_successful_business_rows(tmp_path):
     assert result.fit_ap_optical_count == 1
     assert result.candidate_ap_interface_count == 1
     assert result.empty_reason == ""
+
+
+def test_trackside_export_backfills_latest_valid_ap_rx_from_history():
+    rows = [
+        {
+            "site": "Station A",
+            "ap_uuid": "ap-10",
+            "ap_mac": "bc5a-3457-cbe0",
+            "ap_name": "AP10",
+            "ap_rx_power": "-",
+            "ap_optical_status": "no_light",
+            "collection_status": "timeout",
+            "updated_at": "2026-01-03T00:00:00",
+        }
+    ]
+    history = [
+        {
+            "ap_uuid": "ap-10",
+            "ap_mac": "bc5a-3457-cbe0",
+            "ap_name": "AP10",
+            "rx_power": "-7.34",
+            "status": "success",
+            "collected_at": "2026-01-02T00:00:00",
+        }
+    ]
+
+    enriched = enrich_trackside_export_rows(rows, ap_optical_history_rows=history)
+
+    assert enriched[0]["ap_rx_power"] == "-7.34"
+    assert enriched[0]["ap_last_valid_rx_power"] == "-7.34"
+    assert enriched[0]["ap_last_valid_collected_at"] == "2026-01-02T00:00:00"
+    assert enriched[0]["ap_optical_missing_reason"] == "overwritten_by_failed_row"
+
+
+def test_trackside_status_distinguishes_trackside_up_and_ac_online(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    page = TracksideApServicePage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.has_loaded = True
+    page.trackside_rows = [
+        {"site": "Station A", "serial_number": "SN-001", "ap_name": "AP-1", "link_status": "UP"},
+        {"site": "Station A", "serial_number": "SN-001", "ap_name": "AP-1", "link_status": "UP"},
+        {"site": "Station B", "serial_number": "SN-002", "ap_name": "AP-2", "link_status": "UP"},
+    ]
+    page._set_trackside_site_filter_items(page.trackside_rows)
+    page.trackside_site_filter.setCurrentIndex(page.trackside_site_filter.findData("Station A"))
+    AcRepository(database).upsert_ac_ap_summary({"ac_device_uuid": "ac-1", "online_aps": 898})
+
+    page._update_idle_status()
+
+    text = page.status_label.text()
+    assert "filtered 2" in text
+    assert "trackside UP 1" in text
+    assert "AC online AP 898" in text
+    assert "online AP 1" not in text
 
 
 def test_trackside_ap_load_failure_keeps_retry_state(tmp_path, monkeypatch):

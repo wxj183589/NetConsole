@@ -12,6 +12,7 @@ from uuid import uuid4
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical
@@ -19,6 +20,7 @@ from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
 from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_ap_unauthenticated_rows, parse_wlan_ap_unauthenticated_summary
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -31,11 +33,15 @@ from netconsole.services.netmiko_connection import build_netmiko_params, choose_
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 
 
-FIT_AP_RESOURCE_COMMANDS = (
+FIT_AP_RESOURCE_REQUIRED_COMMANDS = (
     "display wlan ap all",
     "display wlan ap all address",
     "display wlan ap all radio",
 )
+FIT_AP_RESOURCE_OPTIONAL_COMMANDS = (
+    "display wlan ap unauthenticated",
+)
+FIT_AP_RESOURCE_COMMANDS = FIT_AP_RESOURCE_REQUIRED_COMMANDS
 
 AC_OVERVIEW_COMMANDS = (
     "display cpu-usage",
@@ -44,7 +50,7 @@ AC_OVERVIEW_COMMANDS = (
     "display device",
     "display device manuinfo",
 )
-RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_COMMANDS, *AC_OVERVIEW_COMMANDS)
+RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS, *AC_OVERVIEW_COMMANDS)
 
 HTTPS_PORT_COMMANDS = (
     "display ip https",
@@ -68,6 +74,7 @@ FIT_AP_OPTICAL_COMMANDS = (
     "display interface brief",
 )
 BATCH_CONCURRENCY = 50
+DEFAULT_FIT_AP_TELNET_CONCURRENCY = 1000
 ProgressCallback = Callable[[str], None]
 CancelCheck = Callable[[], bool]
 
@@ -90,6 +97,9 @@ class AcResourceCollectResult:
     https_port_error: str | None
     error_message: str | None
     command_results: list[CommandResult] = field(default_factory=list)
+    unauthenticated_updated: bool = False
+    unauthenticated_rows_updated: int = 0
+    unauthenticated_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -165,7 +175,7 @@ def collect_h3c_ac_resources(
 
     connection = None
     try:
-        commands = list(FIT_AP_RESOURCE_COMMANDS)
+        commands = [*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS]
         if refresh_ac_overview:
             commands.extend(AC_OVERVIEW_COMMANDS)
         validate_commands = ["screen-length disable", *commands]
@@ -215,13 +225,37 @@ def collect_h3c_ac_resources(
         resource_commands_ok = all(
             result.success
             for result in command_results
-            if result.command in FIT_AP_RESOURCE_COMMANDS
+            if result.command in FIT_AP_RESOURCE_REQUIRED_COMMANDS
         )
         resources_persisted = bool(resource_commands_ok and resources)
         if resources_persisted:
             repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+        unauth_result = next((result for result in command_results if result.command == "display wlan ap unauthenticated"), None)
+        unauthenticated_updated = False
+        unauthenticated_rows_updated = 0
+        unauthenticated_error = None
+        if unauth_result and unauth_result.success:
+            unauth_summary = parse_wlan_ap_unauthenticated_summary(unauth_result.output)
+            unauth_rows = parse_wlan_ap_unauthenticated_rows(unauth_result.output)
+            metadata = {
+                "collect_run_uuid": collect_run_uuid,
+                "raw_log_path": relative_raw_log_path,
+                "collected_at": started_at,
+                "updated_at": _now(),
+            }
+            repository.replace_fit_ap_unauthenticated(
+                str(ac_device.device_uuid),
+                {**unauth_summary, **metadata},
+                [{**row, **metadata} for row in unauth_rows],
+            )
+            unauthenticated_updated = True
+            unauthenticated_rows_updated = len(unauth_rows)
+            app_logger.log_info("FIT_AP_UNAUTHENTICATED_UPDATED", _detail(ac_device, collect_run_uuid, count=len(unauth_rows)))
+        elif unauth_result:
+            unauthenticated_error = unauth_result.error_message or "display wlan ap unauthenticated failed"
+            app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
         status = "success" if summary_updated or dynamic_summary_updated or resources_persisted else "failed"
-        error_message = _command_error_summary(command_results)
+        error_message = _command_error_summary([result for result in command_results if result.command not in FIT_AP_RESOURCE_OPTIONAL_COMMANDS])
         fact_repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
         if status == "success":
             app_logger.log_info("FIT_AP_RESOURCE_UPDATED", _detail(ac_device, collect_run_uuid, count=len(resources)))
@@ -244,6 +278,9 @@ def collect_h3c_ac_resources(
             persistence.error_message,
             error_message or None,
             command_results,
+            unauthenticated_updated,
+            unauthenticated_rows_updated,
+            unauthenticated_error,
         )
     except CollectionCancelled:
         message = "用户已取消更新"
@@ -268,7 +305,7 @@ def collect_h3c_fit_ap_optical(
     site_name: str,
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
-    max_workers: int = BATCH_CONCURRENCY,
+    max_workers: int = DEFAULT_FIT_AP_TELNET_CONCURRENCY,
     progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
     target_ap_uuids: list[str] | None = None,
@@ -333,7 +370,8 @@ def collect_h3c_fit_ap_optical(
     )
     resources = [row for row in resources if row.get("ap_ip") and not is_fit_ap_offline(row)]
     rows: list[dict[str, object | None]] = []
-    worker_count = max(1, min(int(max_workers or BATCH_CONCURRENCY), 1000))
+    settings = _fit_ap_optical_collect_settings(paths)
+    worker_count = max(1, int(max_workers or settings["max_fit_ap_concurrency"] or DEFAULT_FIT_AP_TELNET_CONCURRENCY))
     total = len(resources)
     if scoped_refresh and total == 0:
         fact_repository.update_collect_run_status(collect_run_uuid, "success", error_message=None)
@@ -343,28 +381,59 @@ def collect_h3c_fit_ap_optical(
     completed = 0
     progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a0/{total}")
     try:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
-                for row in resources
-            }
-            for future in as_completed(futures):
-                if should_cancel():
-                    for pending in futures:
-                        pending.cancel()
-                    raise CollectionCancelled()
-                rows.append(future.result())
-                completed += 1
-                progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a{completed}/{total}")
+        round_summaries: list[dict[str, object]] = []
+        first_round_rows = _collect_fit_ap_optical_round(
+            ac_device,
+            resources,
+            site_name,
+            collect_run_uuid,
+            fit_ap_dir,
+            paths,
+            worker_count,
+            should_cancel,
+            lambda done, total_count: progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a{done}/{total_count}"),
+        )
+        rows.extend(first_round_rows)
+        completed = len(rows)
+        round_summaries.append(_fit_ap_optical_round_summary(1, worker_count, first_round_rows))
+        retry_targets = _retry_fit_ap_optical_targets(resources, first_round_rows)
+        retry_count = int(settings["retry_count"]) if settings["adaptive_retry_enabled"] else 0
+        previous_concurrency = worker_count
+        for round_index in range(2, retry_count + 2):
+            if not retry_targets:
+                break
+            retry_concurrency = (
+                retry_fit_ap_optical_concurrency(
+                    previous_concurrency,
+                    floor=int(settings["retry_concurrency_floor"]),
+                    ratio=float(settings["retry_concurrency_ratio"]),
+                )
+                if settings["adaptive_concurrency_enabled"]
+                else previous_concurrency
+            )
+            app_logger.log_info("FIT_AP_OPTICAL_RETRY_STARTED", _detail(ac_device, collect_run_uuid, count=len(retry_targets), error=f"round={round_index}, concurrency={retry_concurrency}"))
+            retry_rows = _collect_fit_ap_optical_round(
+                ac_device,
+                retry_targets,
+                site_name,
+                collect_run_uuid,
+                fit_ap_dir,
+                paths,
+                retry_concurrency,
+                should_cancel,
+                lambda done, total_count, r=round_index: progress(f"\u6b63\u5728\u91cd\u8bd5 AP\u4fa7\u5149\u8870\uff08第{r}轮\uff09\uff1a{done}/{total_count}"),
+            )
+            rows.extend(retry_rows)
+            round_summaries.append(_fit_ap_optical_round_summary(round_index, retry_concurrency, retry_rows))
+            retry_targets = _retry_fit_ap_optical_targets(retry_targets, retry_rows)
+            previous_concurrency = retry_concurrency
+        app_logger.log_info("FIT_AP_OPTICAL_ADAPTIVE_SUMMARY", f"ac_device_uuid={ac_device.device_uuid}, rounds={round_summaries}")
         progress("\u6b63\u5728\u89e3\u6790\u5149\u6a21\u5757\u6570\u636e...")
         _raise_if_cancelled(should_cancel)
         progress("\u6b63\u5728\u5199\u5165\u6570\u636e\u5e93...")
-        if scoped_refresh:
-            existing_rows = repository.list_fit_ap_optical(str(ac_device.device_uuid))
-            rows_to_save = _merge_fit_ap_optical_rows(existing_rows, rows)
-        else:
-            rows_to_save = rows
-        successful_rows = [row for row in rows if row.get("status") == "success"]
+        existing_rows = repository.list_fit_ap_optical(str(ac_device.device_uuid))
+        rows_to_save = _merge_fit_ap_optical_rows(existing_rows, rows)
+        successful_rows = [row for row in rows if _is_fit_ap_optical_success_row(row)]
         if successful_rows:
             repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows_to_save)
         else:
@@ -394,6 +463,47 @@ def collect_h3c_fit_ap_optical(
 
 def _is_scoped_fit_ap_refresh(*scopes: list[str] | None) -> bool:
     return any(bool(scope) for scope in scopes)
+
+
+def _fit_ap_optical_collect_settings(paths: PathResolver) -> dict[str, object]:
+    defaults = {
+        "max_fit_ap_concurrency": DEFAULT_FIT_AP_TELNET_CONCURRENCY,
+        "adaptive_concurrency_enabled": True,
+        "adaptive_retry_enabled": True,
+        "retry_count": 2,
+        "retry_concurrency_floor": 100,
+        "retry_concurrency_ratio": 0.5,
+    }
+    try:
+        store = SettingsStore(paths)
+    except Exception:
+        return defaults
+    return {
+        "max_fit_ap_concurrency": _int_setting(store.get_value("trackside_ap/max_fit_ap_concurrency", defaults["max_fit_ap_concurrency"]), defaults["max_fit_ap_concurrency"], minimum=1),
+        "adaptive_concurrency_enabled": bool(store.get_value("trackside_ap/adaptive_concurrency_enabled", defaults["adaptive_concurrency_enabled"])),
+        "adaptive_retry_enabled": bool(store.get_value("trackside_ap/adaptive_retry_enabled", defaults["adaptive_retry_enabled"])),
+        "retry_count": _int_setting(store.get_value("trackside_ap/retry_count", defaults["retry_count"]), defaults["retry_count"], minimum=0),
+        "retry_concurrency_floor": _int_setting(store.get_value("trackside_ap/retry_concurrency_floor", defaults["retry_concurrency_floor"]), defaults["retry_concurrency_floor"], minimum=1),
+        "retry_concurrency_ratio": _float_setting(store.get_value("trackside_ap/retry_concurrency_ratio", defaults["retry_concurrency_ratio"]), defaults["retry_concurrency_ratio"], minimum=0.01),
+    }
+
+
+def retry_fit_ap_optical_concurrency(previous_concurrency: int, *, floor: int = 100, ratio: float = 0.5) -> int:
+    return max(max(1, int(floor or 1)), int(max(1, previous_concurrency) * max(0.01, float(ratio or 0.01))))
+
+
+def _int_setting(value: object, default: object, *, minimum: int) -> int:
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+
+
+def _float_setting(value: object, default: object, *, minimum: float) -> float:
+    try:
+        return max(minimum, float(value))
+    except (TypeError, ValueError):
+        return max(minimum, float(default))
 
 
 def _filter_fit_ap_optical_targets(
@@ -427,6 +537,64 @@ def _filter_fit_ap_optical_targets(
     return result
 
 
+def _collect_fit_ap_optical_round(
+    ac_device: Device,
+    resources: list[dict[str, object | None]],
+    site_name: str,
+    collect_run_uuid: str,
+    fit_ap_dir: Path,
+    paths: PathResolver,
+    concurrency: int,
+    should_cancel: CancelCheck,
+    progress_round: Callable[[int, int], None],
+) -> list[dict[str, object | None]]:
+    rows: list[dict[str, object | None]] = []
+    total = len(resources)
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1))) as executor:
+        futures = {
+            executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
+            for row in resources
+        }
+        for future in as_completed(futures):
+            if should_cancel():
+                for pending in futures:
+                    pending.cancel()
+                raise CollectionCancelled()
+            rows.append(future.result())
+            completed += 1
+            progress_round(completed, total)
+    return rows
+
+
+def _retry_fit_ap_optical_targets(
+    resources: list[dict[str, object | None]],
+    round_rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    result_by_key = {_fit_ap_optical_identity(row): row for row in round_rows if _fit_ap_optical_identity(row)}
+    retry: list[dict[str, object | None]] = []
+    for resource in resources:
+        key = _fit_ap_optical_identity(resource)
+        row = result_by_key.get(key)
+        if row is None or fit_ap_optical_prefer_score(row)[0] < 80:
+            retry.append(resource)
+    return retry
+
+
+def _fit_ap_optical_round_summary(round_index: int, concurrency: int, rows: list[dict[str, object | None]]) -> dict[str, object]:
+    failed = sum(1 for row in rows if not _is_fit_ap_optical_success_row(row))
+    empty = sum(1 for row in rows if _is_fit_ap_optical_success_row(row) and not _has_fit_ap_optical_data(row))
+    return {
+        "round_index": round_index,
+        "planned": len(rows),
+        "success": len(rows) - failed,
+        "failed": failed,
+        "empty_output": empty,
+        "concurrency": concurrency,
+        "success_rate": 0 if not rows else round((len(rows) - failed) / len(rows), 4),
+    }
+
+
 def _merge_fit_ap_optical_rows(
     existing_rows: list[dict[str, object | None]],
     updated_rows: list[dict[str, object | None]],
@@ -442,14 +610,26 @@ def _merge_fit_ap_optical_rows(
     for row in updated_rows:
         key = _fit_ap_optical_identity(row)
         if key:
-            merged[key] = dict(row)
+            current = merged.get(key)
+            if current is not None and fit_ap_optical_prefer_score(current) > fit_ap_optical_prefer_score(row):
+                merged[key] = _merge_failed_fit_ap_optical_row(current, row)
+            elif _is_fit_ap_optical_success_row(row):
+                merged[key] = dict(row)
+            elif key in merged:
+                merged[key] = _merge_failed_fit_ap_optical_row(merged[key], row)
+            else:
+                merged[key] = dict(row)
         else:
             passthrough.append(dict(row))
     return [*merged.values(), *passthrough]
 
 
 def _fit_ap_optical_identity(row: dict[str, object | None]) -> str:
-    for field in ("ap_uuid", "ap_mac", "ap_name"):
+    ac_uuid = str(row.get("ac_device_uuid") or "").strip().casefold()
+    apid = str(row.get("apid") or row.get("ap_id") or "").strip().casefold()
+    if ac_uuid and apid and apid not in {"-", "n/a"}:
+        return f"apid:{ac_uuid}:{apid}"
+    for field in ("ap_uuid", "serial_number", "ap_mac", "ap_name"):
         if field == "ap_mac":
             text = _normalize_mac_text(row.get(field))
         else:
@@ -457,6 +637,87 @@ def _fit_ap_optical_identity(row: dict[str, object | None]) -> str:
         if text:
             return f"{field}:{text}"
     return ""
+
+
+def _merge_failed_fit_ap_optical_row(
+    old: dict[str, object | None],
+    new: dict[str, object | None],
+) -> dict[str, object | None]:
+    merged = {**old, **new}
+    merged["ap_optical_data_source"] = "沿用历史" if _has_fit_ap_optical_data(old) else "本轮失败"
+    merged["ap_last_valid_rx_power"] = old.get("rx_power") if not _is_empty_fit_ap_value(old.get("rx_power")) else old.get("ap_last_valid_rx_power")
+    merged["ap_last_valid_collected_at"] = old.get("collected_at") if not _is_empty_fit_ap_value(old.get("rx_power")) else old.get("ap_last_valid_collected_at")
+    merged["ap_optical_missing_reason"] = _fit_ap_optical_missing_reason(new)
+    for field in (
+        "ap_mac",
+        "ap_name",
+        "serial_number",
+        "neighbor_device_name",
+        "neighbor_interface",
+        "rx_power",
+        "tx_power",
+    ):
+        if _is_empty_fit_ap_value(new.get(field)) and not _is_empty_fit_ap_value(old.get(field)):
+            merged[field] = old.get(field)
+    return merged
+
+
+def _is_empty_fit_ap_value(value: object) -> bool:
+    text = str(value or "").strip()
+    return not text or text in {"-", "N/A", "n/a"}
+
+
+def _is_fit_ap_optical_success_row(row: dict[str, object | None]) -> bool:
+    status = str(row.get("status") or "").strip().casefold()
+    if status == "success":
+        return _has_fit_ap_optical_data(row) or _has_fit_ap_lldp_data(row)
+    if status:
+        return False
+    return any(not _is_empty_fit_ap_value(row.get(field)) for field in ("ap_name", "ap_mac", "neighbor_device_name", "neighbor_interface", "rx_power", "tx_power", "interface_name", "site"))
+
+
+def fit_ap_optical_prefer_score(row: dict[str, object | None]) -> tuple[int, str, str, int]:
+    status = str(row.get("status") or "").strip().casefold()
+    optical_status = str(row.get("optical_alarm_status") or row.get("raw_status") or "").strip().casefold()
+    if status == "success" and not _is_empty_fit_ap_value(row.get("rx_power")):
+        base = 100
+    elif status == "success" and _has_fit_ap_optical_data(row):
+        base = 90
+    elif status == "success" and _has_fit_ap_lldp_data(row):
+        base = 80
+    elif "no_light" in optical_status or "无光" in optical_status:
+        base = 50
+    elif status in {"failed", "timeout", "parse_failed", "unknown"}:
+        base = 10
+    else:
+        base = 0
+    return (base, str(row.get("collected_at") or ""), str(row.get("updated_at") or ""), _int_value(row.get("id")))
+
+
+def _has_fit_ap_optical_data(row: dict[str, object | None]) -> bool:
+    return any(not _is_empty_fit_ap_value(row.get(field)) for field in ("rx_power", "tx_power", "module_model", "module_serial_number", "module_vendor", "temperature", "voltage"))
+
+
+def _has_fit_ap_lldp_data(row: dict[str, object | None]) -> bool:
+    return any(not _is_empty_fit_ap_value(row.get(field)) for field in ("neighbor_device_name", "neighbor_interface", "lldp_neighbor", "neighbor_mac"))
+
+
+def _fit_ap_optical_missing_reason(row: dict[str, object | None]) -> str:
+    message = str(row.get("error_message") or "").casefold()
+    if "timeout" in message:
+        return "connect_timeout"
+    if "auth" in message or "password" in message:
+        return "auth_failed"
+    if str(row.get("status") or "").strip().casefold() in {"failed", "timeout"}:
+        return "connect_timeout"
+    return "unknown"
+
+
+def _int_value(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0
 
 
 def _normalize_mac_text(value: object) -> str:
@@ -628,6 +889,8 @@ def _collect_single_fit_ap_optical(
         "ap_uuid": ap_row.get("ap_uuid"),
         "ap_name": ap_name,
         "ap_mac": ap_row.get("ap_mac"),
+        "serial_number": ap_row.get("serial_number"),
+        "apid": ap_row.get("apid"),
         "ap_ip": ap_ip,
         "site": ap_row.get("site"),
         "collected_at": collected_at,

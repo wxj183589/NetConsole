@@ -13,6 +13,7 @@ from uuid import uuid4
 from netconsole.core.database import Database
 from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
@@ -26,6 +27,8 @@ from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources,
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
+from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, is_trackside_ap_interface
+from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -36,6 +39,9 @@ TRACKSIDE_OPTICAL_COMMANDS = (
     "display interface brief",
 )
 DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY = 1000
+TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY = "trackside_ap/max_device_concurrency"
+TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY = "trackside_ap/max_switch_concurrency"
+TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY = "trackside_ap/max_fit_ap_concurrency"
 UNSUPPORTED_VENDOR_REASON = "vendor_not_supported"
 ACTIVE_AC_KEYWORDS = ("active", "master", "primary", "主用", "主控", "主")
 STANDBY_AC_KEYWORDS = ("standby", "backup", "secondary", "备机", "备用", "备")
@@ -151,6 +157,16 @@ class TracksideOpticalSessionResult:
     target_ap_offline: bool = False
     switch_scope: str = "all"
     switch_scope_reason: str = ""
+    candidate_ap_interface_count: int = 0
+    current_lldp_port_count: int = 0
+    preserved_lldp_port_count: int = 0
+    fit_ap_resource_count: int = 0
+    fit_ap_optical_success_count: int = 0
+    fit_ap_optical_failed_count: int = 0
+    trackside_rows_total: int = 0
+    rows_with_ap_identity: int = 0
+    rows_without_ap_identity: int = 0
+    current_lldp_identity_count: int = 0
 
 
 def normalize_switch_type(value: object) -> str:
@@ -330,7 +346,11 @@ def collect_trackside_optical(
     started_at = _now()
     cancel_event = cancel_event or Event()
     command_guard.validate_command_list(TRACKSIDE_OPTICAL_COMMANDS, "optical_refresh")
-    max_workers = max(1, min(int(concurrency or DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), len(targets) or 1))
+    concurrency_settings = _trackside_concurrency_settings(paths)
+    requested_concurrency = max(1, int(concurrency or concurrency_settings["device"]))
+    switch_concurrency = max(1, int(concurrency_settings["switch"] or requested_concurrency))
+    fit_ap_concurrency = max(1, int(concurrency_settings["fit_ap"] or requested_concurrency))
+    max_workers = max(1, min(requested_concurrency, switch_concurrency, len(targets) or 1))
     results: list[TracksideDeviceCollectionResult] = []
     completed = 0
     total_units = len(targets)
@@ -343,7 +363,7 @@ def collect_trackside_optical(
             repository,
             site_name,
             paths,
-            concurrency,
+            min(requested_concurrency, fit_ap_concurrency),
             cancel_event,
             effective_station or None,
             target_ap_uuid,
@@ -387,6 +407,12 @@ def collect_trackside_optical(
     status = "CANCELLED" if cancel_event.is_set() else "DONE"
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
+    coverage = _trackside_update_coverage(
+        repository,
+        ac_repository,
+        [target.device for target in targets],
+        results,
+    )
     _write_session_meta(
         session_dir / "session_meta.json",
         {
@@ -401,8 +427,10 @@ def collect_trackside_optical(
             "fit_ap_optical_status": "DONE" if fit_ap_results else "SKIPPED",
             "station_switch_optical_status": "DONE" if results else "SKIPPED",
             "fit_ap_optical_success_count": fit_success,
+            "fit_ap_optical_failed_count": fit_failed,
             "station_switch_success_count": sum(1 for result in results if result.success),
             "station_switch_total": len(targets),
+            **coverage,
             "success_count": success_count,
             "failed_count": failed_count,
             "skipped_count": len(skipped),
@@ -436,7 +464,99 @@ def collect_trackside_optical(
         target_ap_offline,
         switch_scope,
         switch_scope_reason,
+        int(coverage.get("candidate_ap_interface_count") or 0),
+        int(coverage.get("current_lldp_port_count") or 0),
+        int(coverage.get("preserved_lldp_port_count") or 0),
+        int(coverage.get("fit_ap_resource_count") or 0),
+        int(coverage.get("fit_ap_optical_success_count") or fit_success),
+        int(coverage.get("fit_ap_optical_failed_count") or fit_failed),
+        int(coverage.get("trackside_rows_total") or 0),
+        int(coverage.get("rows_with_ap_identity") or 0),
+        int(coverage.get("rows_without_ap_identity") or 0),
+        int(coverage.get("current_lldp_identity_count") or 0),
     )
+
+
+def _trackside_update_coverage(
+    repository: DeviceRepository,
+    ac_repository: AcRepository,
+    devices: list[Device],
+    results: list[TracksideDeviceCollectionResult],
+) -> dict[str, int]:
+    fact_repository = DeviceFactRepository(repository.database)
+    device_uuids = [str(device.device_uuid or "") for device in devices if str(device.device_uuid or "").strip()]
+    interfaces_by_device = {device_uuid: fact_repository.list_device_interfaces(device_uuid) for device_uuid in device_uuids}
+    optical_by_device = {device_uuid: fact_repository.list_optical_modules(device_uuid) for device_uuid in device_uuids}
+    lldp_by_device = {device_uuid: fact_repository.list_lldp_neighbors(device_uuid) for device_uuid in device_uuids}
+    fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
+    fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
+    active_plan = ac_repository.get_active_trackside_pvid_plan()
+    historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
+    rows = build_trackside_ap_business_rows(
+        devices,
+        interfaces_by_device,
+        optical_by_device,
+        fit_ap_optical_rows,
+        lldp_by_device,
+        fit_ap_resource_rows,
+        None,
+        active_plan,
+        [],
+        historical_lldp_rows,
+    )
+    candidate_ap_interface_count = sum(
+        1
+        for device in devices
+        for interface in interfaces_by_device.get(str(device.device_uuid or ""), [])
+        if is_trackside_ap_interface(device, interface, active_plan)[0]
+    )
+    collected_lldp_ports = {
+        (str(result.target.device_uuid or ""), normalize_interface_name(row.get("local_interface")).casefold())
+        for result in results
+        if result.success
+        for row in result.lldp_rows
+        if normalize_interface_name(row.get("local_interface")).casefold()
+    }
+    stored_lldp_ports = {
+        (device_uuid, normalize_interface_name(row.get("local_interface")).casefold())
+        for device_uuid, lldp_rows in lldp_by_device.items()
+        for row in lldp_rows
+        if normalize_interface_name(row.get("local_interface")).casefold()
+    }
+    rows_with_ap_identity = sum(1 for row in rows if _has_trackside_ap_identity(row))
+    rows_without_ap_identity = max(len(rows) - rows_with_ap_identity, 0)
+    return {
+        "candidate_ap_interface_count": candidate_ap_interface_count,
+        "current_lldp_port_count": len(collected_lldp_ports),
+        "preserved_lldp_port_count": max(len(stored_lldp_ports - collected_lldp_ports), 0),
+        "fit_ap_resource_count": len(fit_ap_resource_rows),
+        "fit_ap_optical_success_count": sum(1 for row in fit_ap_optical_rows if str(row.get("status") or "").casefold() == "success"),
+        "fit_ap_optical_failed_count": sum(1 for row in fit_ap_optical_rows if str(row.get("status") or "").casefold() not in {"", "success"}),
+        "trackside_rows_total": len(rows),
+        "rows_with_ap_identity": rows_with_ap_identity,
+        "rows_without_ap_identity": rows_without_ap_identity,
+        "current_lldp_identity_count": sum(1 for row in rows if row.get("has_current_lldp") and _has_trackside_ap_identity(row)),
+    }
+
+
+def _has_trackside_ap_identity(row: dict[str, object | None]) -> bool:
+    return bool(_normalize_mac_text(row.get("ap_mac")) or str(row.get("ap_name") or "").strip())
+
+
+def _trackside_concurrency_settings(paths: PathResolver) -> dict[str, int]:
+    settings = SettingsStore(paths)
+    device = _positive_int_setting(settings.get_value(TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY)
+    switch = _positive_int_setting(settings.get_value(TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY, device), device)
+    fit_ap = _positive_int_setting(settings.get_value(TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY, device), device)
+    return {"device": device, "switch": switch, "fit_ap": fit_ap}
+
+
+def _positive_int_setting(value: object, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return parsed if parsed > 0 else int(default)
 
 
 def _collect_fit_ap_optical_subtasks(

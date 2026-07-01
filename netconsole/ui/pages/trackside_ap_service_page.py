@@ -86,6 +86,31 @@ def trackside_default_column_widths() -> dict[str, int]:
     }
 
 
+def current_trackside_status_counts(rows: list[dict[str, object | None]]) -> dict[str, int]:
+    seen_up: set[tuple[str, str]] = set()
+    for row in rows or []:
+        key = _trackside_ap_identity_key(row)
+        if not key:
+            continue
+        if str(row.get("link_status") or row.get("link") or "").strip().upper() == "UP":
+            seen_up.add(key)
+    return {"trackside_up": len(seen_up)}
+
+
+def _trackside_ap_identity_key(row: dict[str, object | None]) -> tuple[str, str] | None:
+    for field in ("serial_number", "ap_mac", "ap_name"):
+        text = str(row.get(field) or "").strip()
+        if not text or text in {"-", "N/A", "n/a"}:
+            continue
+        return (field, text.casefold())
+    return None
+
+
+def _is_ac_resource_online(row: dict[str, object | None]) -> bool:
+    state = str(row.get("state") or row.get("state_raw") or row.get("state_display") or "").strip().upper()
+    return state in {"R", "R/M", "R/B", "RUN", "RUNNING", "ONLINE", "NORMAL", "UP", "CONNECTED", "1", "在线"}
+
+
 def trackside_minimum_column_widths() -> dict[str, int]:
     return trackside_default_column_widths()
 
@@ -754,8 +779,20 @@ class TracksideApServicePage(QWidget):
             self.status_label.setText(self.i18n.t("trackside_ap.loading"))
             return
         if self.trackside_rows:
-            online, offline = self.ap_online_overview_counts()
-            self.status_label.setText(self.i18n.t("trackside.loaded_count_with_ap_status", count=len(self.trackside_rows), online=online, offline=offline))
+            filtered_rows = self.filtered_trackside_rows()
+            counts = current_trackside_status_counts(filtered_rows)
+            ac_online = self.ac_online_count_from_summary_or_resources()
+            offline_stats, offline_ledger_rows, *_ = self.offline_ap_export_context()
+            self.status_label.setText(
+                self.i18n.t(
+                    "trackside.loaded_count_with_ap_status",
+                    count=len(self.trackside_rows),
+                    filtered=len(filtered_rows),
+                    trackside_up=counts["trackside_up"],
+                    ac_online=ac_online,
+                    offline_ledger=len(offline_ledger_rows or []),
+                )
+            )
             return
         if self.has_loaded:
             reason_key = self.empty_reason or "trackside.empty.no_rows"
@@ -797,6 +834,18 @@ class TracksideApServicePage(QWidget):
         overview_rows = self.ap_online_overview_rows()
         total_row = next((row for row in overview_rows if str(row.get("site") or "") == "合计"), overview_rows[-1] if overview_rows else {})
         return int(total_row.get("online") or 0), int(total_row.get("offline") or 0)
+
+    def ac_online_count_from_summary_or_resources(self) -> int:
+        summary_total = 0
+        for row in self.ac_repository.list_ac_ap_summaries():
+            value = row.get("connected_aps") or row.get("online_aps")
+            try:
+                summary_total += int(value or 0)
+            except (TypeError, ValueError):
+                continue
+        if summary_total:
+            return summary_total
+        return sum(1 for row in self.ac_repository.list_all_fit_ap_resources_with_metadata() if _is_ac_resource_online(row))
 
     def offline_ap_export_context(self):
         cached = load_offline_ap_cache(PathResolver().offline_ap_cache_path)

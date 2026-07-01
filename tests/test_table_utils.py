@@ -167,7 +167,7 @@ def test_auto_layout_recalculates_after_table_resize():
     assert table.property("netconsole_auto_layout_widths")[0] > initial_width
 
 
-def test_wps_autosize_weights_chinese_as_double_width():
+def test_excel_autosize_weights_chinese_as_double_width():
     assert weighted_text_length("AP名称") == 6
     assert weighted_text_length("APName") == 6
     assert weighted_text_length("车站A") == 5

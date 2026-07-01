@@ -13,9 +13,24 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadResult
+from netconsole.services.external_terminal import (
+    ExternalTerminalConfig,
+    TERMINAL_LABELS,
+    TERMINAL_SETTING_KEYS,
+    _safe_command,
+    available_external_terminal_configs,
+    build_external_terminal_command,
+    build_legacy_ssh_options,
+    build_powershell_ssh_command,
+    launch_external_terminal,
+    powershell_quote_single,
+)
+from netconsole.services.netmiko_connection import choose_connection_target
+from netconsole.services.securecrt_session_export import export_securecrt_sessions, sanitize_path_part
 from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
+from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, open_diagnostic_folder_for_results, select_device_id_for_connection
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
 
@@ -29,6 +44,192 @@ def test_protocol_display_rules():
     assert protocol_label(0, 1) == "Telnet"
     assert protocol_label(1, 1) == "SSH/Telnet"
     assert protocol_label(0, 0) == "-"
+
+
+def test_securecrt_command_uses_ssh_without_password_by_default():
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+    target = choose_connection_target(device)
+    args = build_external_terminal_command(device, target, "securecrt", r"C:\Tools\SecureCRT.exe")
+
+    assert args == [r"C:\Tools\SecureCRT.exe", "/SSH2", "/P", "22", "/L", "admin", "10.0.0.1"]
+    assert "secret" not in args
+
+
+def test_securecrt_command_includes_password_only_when_enabled():
+    # Updated behavior: SecureCRT can receive the password when explicitly enabled.
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+    target = choose_connection_target(device)
+    args = build_external_terminal_command(device, target, "securecrt", r"C:\Tools\SecureCRT.exe", include_password=True)
+
+    assert "/PASSWORD" in args
+    assert "secret" in args
+    assert "secret" not in _safe_command(args, device)
+
+
+def test_external_terminal_missing_exe_returns_failure():
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+
+    result = launch_external_terminal(device, ExternalTerminalConfig(exe_path=r"Z:\missing\SecureCRT.exe"))
+
+    assert result.success is False
+    assert "SecureCRT" in result.message
+
+
+def test_securecrt_command_passes_password_and_masks_safe_command():
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+    target = choose_connection_target(device)
+
+    args = build_external_terminal_command(device, target, "securecrt", r"C:\Tools\SecureCRT.exe", include_password=True)
+
+    assert args == [r"C:\Tools\SecureCRT.exe", "/SSH2", "/P", "22", "/L", "admin", "10.0.0.1", "/PASSWORD", "secret"]
+    assert "secret" not in _safe_command(args, device)
+
+
+def test_putty_command_passes_password_and_masks_safe_command():
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+    target = choose_connection_target(device)
+
+    args = build_external_terminal_command(device, target, "putty", r"C:\Tools\putty.exe", include_password=True)
+
+    assert args == [r"C:\Tools\putty.exe", "-ssh", "admin@10.0.0.1", "-P", "22", "-pw", "secret"]
+    assert "secret" not in _safe_command(args, device)
+
+
+def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(monkeypatch):
+    settings = FakeSettings()
+    settings.values.update(
+        {
+            "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
+            "external_terminal/mobaxterm_path": r"C:\Tools\MobaXterm.exe",
+            "external_terminal/cmd_path": r"C:\Windows\System32\cmd.exe",
+            "external_terminal/powershell_path": "",
+        }
+    )
+    monkeypatch.setattr("netconsole.services.external_terminal.Path.is_file", lambda self: str(self).endswith("SecureCRT.exe"))
+    monkeypatch.setattr("netconsole.services.external_terminal.shutil.which", lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" if name == "powershell" else "")
+
+    configs = available_external_terminal_configs(settings)
+
+    assert [config.terminal_type for config in configs] == ["securecrt", "powershell"]
+    assert "mobaxterm" not in TERMINAL_LABELS
+    assert "cmd" not in TERMINAL_LABELS
+    assert "mobaxterm" not in TERMINAL_SETTING_KEYS
+    assert "cmd" not in TERMINAL_SETTING_KEYS
+
+
+def test_powershell_ssh_uses_array_arguments_and_legacy_hostkey_only(monkeypatch):
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+    target = choose_connection_target(device)
+    monkeypatch.setattr("netconsole.services.external_terminal.resolve_windows_ssh_exe", lambda: r"C:\Windows\System32\OpenSSH\ssh.exe")
+
+    args = build_external_terminal_command(device, target, "powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", include_password=True)
+
+    assert args[:5] == [r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+    command = args[6]
+    assert command.startswith("& { & 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' @(")
+    assert "-oHostKeyAlgorithms=+ssh-rsa" in command
+    assert "-oPubkeyAcceptedAlgorithms" not in command
+    assert "group1-sha1" not in command
+    assert "'-p','22','admin@10.0.0.1'" in command
+    assert "secret" not in command
+
+
+def test_powershell_quote_and_command_builder_escape_single_quotes():
+    assert powershell_quote_single(r"C:\Tools\it' ssh.exe") == r"'C:\Tools\it'' ssh.exe'"
+    assert build_powershell_ssh_command("ssh.exe", ["-p", "22", "admin@10.0.0.1"]) == "& { & 'ssh.exe' @('-p','22','admin@10.0.0.1') }"
+
+
+def test_legacy_ssh_options_can_be_disabled():
+    assert build_legacy_ssh_options(False) == []
+    assert build_legacy_ssh_options(True) == ["-oHostKeyAlgorithms=+ssh-rsa"]
+    assert "-oPubkeyAcceptedAlgorithms=+ssh-rsa" not in build_legacy_ssh_options(True)
+    assert "group1-sha1" not in " ".join(build_legacy_ssh_options(True, extended=True))
+
+
+class FakeSettings:
+    def __init__(self):
+        self.values = {}
+
+    def get_value(self, key, default=None):
+        return self.values.get(key, default)
+
+    def set_value(self, key, value):
+        self.values[key] = value
+
+
+def test_external_terminal_settings_dialog_saves_only_paths():
+    app()
+    settings = FakeSettings()
+    dialog = ExternalTerminalSettingsDialog(I18n("en_US"), settings)
+    dialog.securecrt_path.setText(r"C:\Tools\SecureCRT.exe")
+    dialog.xshell_path.setText(r"C:\Tools\Xshell.exe")
+    dialog.putty_path.setText(r"C:\Tools\putty.exe")
+    dialog.powershell_path.setText(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+
+    dialog._save()
+
+    assert settings.values == {
+        "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
+        "external_terminal/xshell_path": r"C:\Tools\Xshell.exe",
+        "external_terminal/putty_path": r"C:\Tools\putty.exe",
+        "external_terminal/powershell_path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        "external_terminal/pass_password": False,
+        "external_terminal/legacy_ssh_compatibility": True,
+        "external_terminal/legacy_ssh_extended_compatibility": False,
+    }
+
+
+def test_securecrt_session_export_creates_group_station_tree(tmp_path):
+    device = Device(
+        name='SW:1',
+        ip_address="10.0.0.1",
+        station="Station/A",
+        group_id=7,
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+        telnet_enabled=0,
+    )
+
+    result = export_securecrt_sessions([device], "Site:Demo", tmp_path, group_names={7: "Group*One"})
+
+    assert result.generated == 1
+    assert result.skipped == 0
+    ini_files = list(result.output_dir.rglob("*.ini"))
+    assert len(ini_files) == 1
+    assert "Site_Demo" in str(ini_files[0])
+    assert "Group_One" in str(ini_files[0])
+    assert "Station_A" in str(ini_files[0])
+    text = ini_files[0].read_text(encoding="utf-8")
+    assert 'S:"Hostname"=10.0.0.1' in text
+    assert 'S:"Protocol Name"=SSH2' in text
+    assert "secret" not in text
+
+
+def test_external_terminal_settings_dialog_saves_paths_and_options():
+    app()
+    settings = FakeSettings()
+    dialog = ExternalTerminalSettingsDialog(I18n("en_US"), settings)
+    dialog.securecrt_path.setText(r"C:\Tools\SecureCRT.exe")
+    dialog.xshell_path.setText(r"C:\Tools\Xshell.exe")
+    dialog.putty_path.setText(r"C:\Tools\putty.exe")
+    dialog.powershell_path.setText("")
+    dialog.pass_password.setChecked(True)
+    dialog.legacy_ssh_compatibility.setChecked(True)
+    dialog.legacy_ssh_extended_compatibility.setChecked(False)
+
+    dialog._save()
+
+    assert settings.values == {
+        "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
+        "external_terminal/xshell_path": r"C:\Tools\Xshell.exe",
+        "external_terminal/putty_path": r"C:\Tools\putty.exe",
+        "external_terminal/powershell_path": "",
+        "external_terminal/pass_password": True,
+        "external_terminal/legacy_ssh_compatibility": True,
+        "external_terminal/legacy_ssh_extended_compatibility": False,
+    }
+    assert sanitize_path_part('a:b*c?') == "a_b_c_"
 
 
 def test_main_table_columns_only_include_core_fields():
@@ -62,6 +263,7 @@ def test_user_visible_i18n_and_ui_text_do_not_contain_question_mark_mojibake():
 
 
 def test_device_table_header_tooltips_are_readable():
+    app()
     table = DeviceTable(I18n("zh_CN"))
     fields = [field for field, _key in COLUMNS]
 
@@ -194,7 +396,7 @@ def test_row_edit_button_calls_edit_callback():
 
     action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
-    buttons[1].click()
+    buttons[2].click()
 
     assert edited == [1]
 
@@ -204,7 +406,19 @@ def test_row_action_buttons_include_connection_edit_and_delete():
     action_widget = table.cellWidget(0, table._column_index("actions"))
     buttons = action_widget.findChildren(QPushButton)
 
-    assert [button.text() for button in buttons] == ["Details", "Edit", "Delete"]
+    assert [button.text() for button in buttons] == ["Details", "External Terminal", "Edit", "Delete"]
+
+
+def test_row_external_terminal_button_calls_single_device_callback():
+    table = make_table()
+    requested = []
+    table.external_terminal_requested.connect(lambda device_id: requested.append(device_id))
+
+    action_widget = table.cellWidget(0, table._column_index("actions"))
+    buttons = action_widget.findChildren(QPushButton)
+    buttons[1].click()
+
+    assert requested == [1]
 
 
 def test_row_action_buttons_include_chinese_connection_text():
@@ -235,7 +449,7 @@ def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
     assert action_widget.layout().contentsMargins().left() == 0
     assert action_widget.layout().contentsMargins().top() == 0
     assert action_widget.layout().alignment() == Qt.AlignCenter
-    assert [button.objectName() for button in buttons] == ["tableActionButton", "tableActionButton", "tableActionButton"]
+    assert [button.objectName() for button in buttons] == ["tableActionButton", "tableActionButton", "tableActionButton", "tableActionButton"]
     assert all(button.minimumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
     assert all(button.maximumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
     assert ACTION_BUTTON_HEIGHT == 28
@@ -338,13 +552,49 @@ def test_toolbar_test_connection_with_multiple_devices_uses_batch(monkeypatch):
 def test_top_toolbar_omits_edit_delete_and_contains_batch_refresh_details():
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
-    top_buttons = [button.text() for button in page.findChildren(QPushButton) if button.parent() is page]
+    top_buttons = [page.action_content.layout().itemAt(index).widget().text() for index in range(page.action_content.layout().count() - 1)]
 
     assert "Edit" not in top_buttons
     assert "Delete" not in top_buttons
     assert page.batch_refresh_details_button.text() == "Batch Refresh Details"
+    assert page.external_terminal_button.text() == "External Terminal Config"
+    assert top_buttons[-2:] == ["Invert Selection", "External Terminal Config"]
     assert page.action_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert page.selection_label.parent() is page
+
+
+def test_external_terminal_settings_does_not_open_until_toolbar_button_clicked():
+    application = app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    application.processEvents()
+
+    assert page.external_terminal_settings_dialog is None
+    assert page.external_terminal_button.parent() is page.action_content
+    assert page.external_terminal_button.isWindow() is False
+    assert "External Terminal" not in [
+        widget.windowTitle()
+        for widget in application.topLevelWidgets()
+        if widget is not page and widget.isVisible()
+    ]
+
+    page.external_terminal_button.click()
+
+    assert page.external_terminal_settings_dialog is not None
+    assert page.external_terminal_settings_dialog.parent() is page
+    page.external_terminal_settings_dialog.close()
+
+
+def test_row_external_terminal_without_config_only_prompts(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    messages = []
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.available_external_terminal_configs", lambda _settings: [])
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+
+    page.launch_external_terminal_for_device_id(1)
+
+    assert messages == ["No external terminal path is configured. Click External Terminal Config first."]
+    assert page.external_terminal_settings_dialog is None
 
 
 def test_same_device_detail_window_is_created_once(monkeypatch):

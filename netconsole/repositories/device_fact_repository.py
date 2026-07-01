@@ -222,12 +222,34 @@ class DeviceFactRepository:
     def replace_lldp_neighbors(self, device_uuid: str, neighbors: list[dict[str, object | None]]) -> None:
         now = self._now()
         with self.database.connect() as conn:
-            conn.execute("DELETE FROM device_lldp_neighbors WHERE device_uuid = ?", (device_uuid,))
+            existing_rows = conn.execute(
+                "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
+                (device_uuid,),
+            ).fetchall()
+            merged: dict[str, dict[str, object | None]] = {}
+            passthrough: list[dict[str, object | None]] = []
+            for row in existing_rows:
+                item = dict(row)
+                key = normalize_interface_name(item.get("local_interface")).casefold()
+                if key:
+                    merged[key] = item
+                else:
+                    passthrough.append(item)
+            current_payloads: list[dict[str, object | None]] = []
             for item in neighbors:
                 payload = self._payload(LLDP_FIELDS, {**item, "device_uuid": device_uuid})
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
+                key = normalize_interface_name(payload.get("local_interface")).casefold()
+                if key:
+                    merged[key] = payload
+                else:
+                    passthrough.append(payload)
+                current_payloads.append(payload)
+            conn.execute("DELETE FROM device_lldp_neighbors WHERE device_uuid = ?", (device_uuid,))
+            for payload in [*merged.values(), *passthrough]:
                 self._insert(conn, "device_lldp_neighbors", LLDP_FIELDS, payload)
+            for payload in current_payloads:
                 self._insert_history(conn, "device_lldp_neighbors_history", LLDP_HISTORY_FIELDS, payload)
             conn.commit()
 

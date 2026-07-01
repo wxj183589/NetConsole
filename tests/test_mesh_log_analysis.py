@@ -1468,6 +1468,47 @@ def test_aba_active_switch_preserves_three_runs_and_rapid_flap():
     assert payload["rapid_flaps"][0]["is_rapid_flap"] is True
 
 
+def test_active_switch_hover_includes_from_and_to_ap_names():
+    from types import SimpleNamespace
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.mesh_chart_hover import MeshChartHoverController
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    rows = [
+        _payload_row(1, "2025-12-03 10:00:01.000", "083b-e9ec-de2f", "ACTIVE", 24, 34),
+        _payload_row(2, "2025-12-03 10:00:01.000", "94a7-482c-1def", "STANDBY", 40, 42),
+        _payload_row(3, "2025-12-03 10:00:02.000", "083b-e9ec-de2f", "STANDBY", 25, 35),
+        _payload_row(4, "2025-12-03 10:00:02.000", "94a7-482c-1def", "ACTIVE", 41, 43),
+    ]
+    rows[0]["peer_ap_name"] = "AP-X_3109"
+    rows[0]["peer_site"] = "31 Site"
+    rows[1]["peer_ap_name"] = "AP-X_3110"
+    rows[1]["peer_site"] = "31 Site"
+    rows[2]["peer_ap_name"] = "AP-X_3109"
+    rows[2]["peer_site"] = "31 Site"
+    rows[3]["peer_ap_name"] = "AP-X_3110"
+    rows[3]["peer_site"] = "31 Site"
+    events = [
+        {
+            "event_type": EVENT_ACTIVE_SWITCH,
+            "event_time": "2025-12-03 10:00:02.000",
+            "from_peer_mac": "083b-e9ec-de2f",
+            "to_peer_mac": "94a7-482c-1def",
+        }
+    ]
+
+    payload = build_chart_payload({"anchor": rows[0], "rows": rows}, {"anchor": rows[0], "rows": rows, "events": events})
+    event = payload["events_by_index"][1][0]
+    assert event["from_peer_ap_name"] == "AP-X_3109"
+    assert event["to_peer_ap_name"] == "AP-X_3110"
+
+    controller = SimpleNamespace(payload=payload, i18n=I18n("zh_CN"))
+    lines = MeshChartHoverController._event_lines(controller, 1)
+    assert any("AP-X_3109 / 31 Site / 083b-e9ec-de2f" in line for line in lines)
+    assert any("AP-X_3110 / 31 Site / 94a7-482c-1def" in line for line in lines)
+
+
 def test_no_active_and_multi_active_do_not_generate_active_series():
     from netconsole.ui.mesh_chart_payload import build_chart_payload
 

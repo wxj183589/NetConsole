@@ -63,6 +63,7 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
     lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
     fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
+    historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
     active_plan = ac_repository.get_active_trackside_pvid_plan()
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
     latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, fit_ap_resource_rows)
@@ -94,6 +95,7 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
         switch_lookup,
         active_plan,
         offline_ledger_rows,
+        historical_lldp_rows,
     )
     build_ms = int((perf_counter() - build_start) * 1000)
     row_count = len(rows)
@@ -281,7 +283,13 @@ class TracksideApBusinessExportThread(QThread):
             )
             log_phase("build_history_compare", phase_start, rows=len(rows))
             phase_start = perf_counter()
-            new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows)
+            unauthenticated_rows = ac_repository.list_all_fit_ap_unauthenticated()
+            new_online_ap_rows = build_new_online_ap_overview_rows(
+                resources,
+                resource_history_rows,
+                snapshot.rows,
+                unauthenticated_rows,
+            )
             log_phase("build_new_online_ap_overview", phase_start, rows=len(new_online_ap_rows))
             phase_start = perf_counter()
             optical_treatment_rows = build_ap_optical_treatment_records(

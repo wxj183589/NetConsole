@@ -24,7 +24,9 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.core import app_logger
+from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -32,6 +34,8 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
+from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
+from netconsole.services.securecrt_session_export import export_securecrt_sessions
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
@@ -42,6 +46,7 @@ from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProg
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.dialogs.device_group_dialog import DeviceGroupDialog
+from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import DeviceDialogRegistry
@@ -98,7 +103,7 @@ class DeviceManagementPage(QWidget):
     groups_changed = Signal()
     devices_changed = Signal()
 
-    def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo") -> None:
+    def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str = "demo", feature_gate: FeatureGate | None = None) -> None:
         super().__init__()
         self.repository = repository
         self.fact_repository = DeviceFactRepository(repository.database)
@@ -107,9 +112,13 @@ class DeviceManagementPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.service = DeviceImportExportService(repository, self.group_repository)
+        self.paths = PathResolver()
+        self.settings = SettingsStore(self.paths)
+        self.feature_gate = feature_gate or default_feature_gate()
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
         self.group_dialog: DeviceGroupDialog | None = None
+        self.external_terminal_settings_dialog: ExternalTerminalSettingsDialog | None = None
 
         self.search_input = QLineEdit()
         self.vendor_filter = QComboBox()
@@ -119,6 +128,8 @@ class DeviceManagementPage(QWidget):
         self.detail_button = QPushButton()
         self.test_connection_button = QPushButton()
         self.diagnostic_download_button = QPushButton()
+        self.external_terminal_button = QPushButton()
+        self.generate_crt_sessions_button = QPushButton()
         self.manage_groups_button = QPushButton()
         self.assign_group_button = QPushButton()
         self.batch_refresh_details_button = QPushButton()
@@ -151,11 +162,13 @@ class DeviceManagementPage(QWidget):
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(6)
         self.action_content = QWidget()
+        self.external_terminal_button.setParent(self.action_content)
         for button in (
             self.add_button,
             self.detail_button,
             self.test_connection_button,
             self.diagnostic_download_button,
+            self.generate_crt_sessions_button,
             self.manage_groups_button,
             self.assign_group_button,
             self.batch_refresh_details_button,
@@ -166,6 +179,7 @@ class DeviceManagementPage(QWidget):
             self.export_template_button,
             self.clear_selection_button,
             self.invert_selection_button,
+            self.external_terminal_button,
         ):
             actions.addWidget(button)
         actions.addStretch(1)
@@ -197,6 +211,8 @@ class DeviceManagementPage(QWidget):
         self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.test_connection_button.clicked.connect(self.test_selected_device_connection)
         self.diagnostic_download_button.clicked.connect(self.download_diagnostics)
+        self.external_terminal_button.clicked.connect(self.open_external_terminal_settings)
+        self.generate_crt_sessions_button.clicked.connect(self.generate_securecrt_sessions)
         self.manage_groups_button.clicked.connect(self.manage_groups)
         self.assign_group_button.clicked.connect(self.assign_group)
         self.batch_refresh_details_button.clicked.connect(self.batch_refresh_details)
@@ -211,6 +227,7 @@ class DeviceManagementPage(QWidget):
         self.table.detail_requested.connect(self.show_device_detail)
         self.table.edit_requested.connect(self.edit_device_by_id)
         self.table.delete_requested.connect(self.delete_device_by_id)
+        self.table.external_terminal_requested.connect(self.launch_external_terminal_for_device_id)
         self.retranslate()
         self.refresh()
         self.connection_test_thread: DeviceConnectionTestThread | None = None
@@ -218,6 +235,12 @@ class DeviceManagementPage(QWidget):
         self.batch_connection_test_dialog: BatchConnectionTestProgressDialog | None = None
         self.batch_collect_worker: BatchCollectWorker | None = None
         self.batch_collect_dialog: BatchCollectProgressDialog | None = None
+        apply_feature_to_widget(self.feature_gate, "devices.external_terminal", self.external_terminal_button)
+        self.table.set_external_terminal_action_state(
+            visible=self.feature_gate.is_visible("devices.external_terminal"),
+            enabled=self.feature_gate.is_enabled("devices.external_terminal"),
+        )
+        apply_feature_to_widget(self.feature_gate, "devices.securecrt_sessions", self.generate_crt_sessions_button)
         self.diagnostic_download_worker: DiagnosticDownloadWorker | None = None
 
     def retranslate(self) -> None:
@@ -226,6 +249,8 @@ class DeviceManagementPage(QWidget):
         self.detail_button.setText(self.i18n.t("details.title"))
         self.test_connection_button.setText(self.i18n.t("devices.test_connection"))
         self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_download"))
+        self.external_terminal_button.setText(self.i18n.t("devices.external_terminal_config"))
+        self.generate_crt_sessions_button.setText(self.i18n.t("devices.generate_crt_sessions"))
         self.manage_groups_button.setText(self.i18n.t("groups.manage_groups"))
         self.assign_group_button.setText(self.i18n.t("groups.assign_group"))
         self.batch_refresh_details_button.setText(self.i18n.t("devices.batch_refresh_details"))
@@ -308,6 +333,137 @@ class DeviceManagementPage(QWidget):
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),
             )
+
+    def launch_external_terminal_for_selection(self) -> None:
+        devices = self._external_terminal_target_devices()
+        if not devices:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            return
+        if len(devices) > 20:
+            answer = QMessageBox.question(self, self.i18n.t("devices.external_terminal"), self.i18n.t("external_terminal.confirm_many", count=len(devices)))
+            if answer != QMessageBox.Yes:
+                return
+        config = self._select_external_terminal_config()
+        if config is None:
+            return
+        success = 0
+        failures: list[str] = []
+        for device in devices:
+            result = launch_external_terminal(device, config)
+            if result.success:
+                success += 1
+            else:
+                failures.append(f"{device.name or device.primary_address}: {result.message}")
+        message = self.i18n.t("external_terminal.launch_done", success=success, failed=len(failures))
+        if failures:
+            message = f"{message}\n\n" + "\n".join(failures[:10])
+            QMessageBox.warning(self, self.i18n.t("devices.external_terminal"), message)
+        else:
+            QMessageBox.information(self, self.i18n.t("devices.external_terminal"), message)
+
+    def launch_external_terminal_for_device_id(self, device_id: int) -> None:
+        device = self.repository.get(device_id)
+        config = self._select_external_terminal_config()
+        if config is None:
+            return
+        result = launch_external_terminal(device, config)
+        if result.success:
+            QMessageBox.information(self, self.i18n.t("devices.external_terminal"), result.message)
+        else:
+            QMessageBox.warning(self, self.i18n.t("devices.external_terminal"), result.message)
+
+    def _select_external_terminal_config(self):
+        configs = available_external_terminal_configs(self.settings)
+        if not configs:
+            QMessageBox.information(
+                self,
+                self.i18n.t("devices.external_terminal"),
+                self.i18n.t("external_terminal.not_configured"),
+            )
+            return None
+        if len(configs) == 1:
+            return configs[0]
+        labels = [TERMINAL_LABELS.get(config.terminal_type, config.terminal_type) for config in configs]
+        label, accepted = QInputDialog.getItem(
+            self,
+            self.i18n.t("external_terminal.select_terminal"),
+            self.i18n.t("external_terminal.select_terminal"),
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return None
+        return configs[labels.index(label)]
+
+    def open_external_terminal_settings(self) -> None:
+        if self.external_terminal_settings_dialog is not None:
+            self._activate_window(self.external_terminal_settings_dialog)
+            return
+        dialog = ExternalTerminalSettingsDialog(self.i18n, self.settings, self)
+        self.external_terminal_settings_dialog = dialog
+        dialog.destroyed.connect(lambda _=None: setattr(self, "external_terminal_settings_dialog", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def generate_securecrt_sessions(self) -> None:
+        devices = self.table.checked_devices() or self._filtered_devices()
+        if not devices:
+            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            return
+        output_dir = QFileDialog.getExistingDirectory(self, self.i18n.t("external_terminal.select_output_dir"), "")
+        if not output_dir:
+            return
+        template_path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.i18n.t("external_terminal.select_template_ini"),
+            "",
+            "SecureCRT Session (*.ini);;All Files (*)",
+        )
+        template = Path(template_path) if template_path else Path()
+        group_names = {int(group.id): group.name for group in self._list_groups() if group.id is not None}
+        result = export_securecrt_sessions(
+            devices,
+            self.site_name,
+            Path(output_dir),
+            group_names=group_names,
+            template_ini=template if template.is_file() else None,
+        )
+        self._open_folder(result.output_dir)
+        QMessageBox.information(
+            self,
+            self.i18n.t("devices.generate_crt_sessions"),
+            self.i18n.t("external_terminal.export_done", generated=result.generated, skipped=result.skipped, path=result.output_dir),
+        )
+
+    def _external_terminal_target_devices(self):
+        checked = self.table.checked_devices()
+        if checked:
+            return checked
+        current_id = self.selected_id()
+        return [self.repository.get(current_id)] if current_id is not None else []
+
+    def _filtered_devices(self):
+        return self.repository.list(
+            search=self.search_input.text().strip() or None,
+            vendor=self.vendor_filter.currentData(),
+            device_type=self.type_filter.currentData(),
+            group_filter=group_filter_to_repository_value(self.group_filter.currentData()),
+        )
+
+    @staticmethod
+    def _open_folder(path: Path) -> None:
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif system == "Darwin":
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as exc:
+            app_logger.log_warning("OPEN_FOLDER_FAILED", f"{path}: {exc}")
 
     def download_diagnostics(self) -> None:
         devices = self._diagnostic_target_devices()
@@ -407,6 +563,10 @@ class DeviceManagementPage(QWidget):
             group_filter=group_filter_to_repository_value(self.group_filter.currentData()),
         )
         self.table.set_group_names({int(group.id): group.name for group in self._list_groups() if group.id is not None})
+        self.table.set_external_terminal_action_state(
+            visible=self.feature_gate.is_visible("devices.external_terminal"),
+            enabled=self.feature_gate.is_enabled("devices.external_terminal"),
+        )
         self.table.set_devices(devices)
         self.update_selection_state()
 
@@ -460,6 +620,7 @@ class DeviceManagementPage(QWidget):
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs = {}
         self.group_dialog = None
+        self.external_terminal_settings_dialog = None
         self.search_input.clear()
         self.vendor_filter.setCurrentIndex(0)
         self.type_filter.setCurrentIndex(0)

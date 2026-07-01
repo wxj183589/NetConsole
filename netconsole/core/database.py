@@ -383,6 +383,88 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resource_history (
 );
 """
 
+AC_FIT_AP_UNAUTHENTICATED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_unauthenticated (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    apid TEXT,
+    state TEXT,
+    state_raw TEXT,
+    state_display TEXT,
+    model TEXT,
+    serial_number TEXT,
+    dev_type TEXT,
+    work_mode TEXT,
+    inferred_ap_mac TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    collected_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_ac
+    ON ac_fit_ap_unauthenticated(ac_device_uuid);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_serial
+    ON ac_fit_ap_unauthenticated(serial_number);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_mac
+    ON ac_fit_ap_unauthenticated(inferred_ap_mac);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_name
+    ON ac_fit_ap_unauthenticated(ap_name);
+"""
+
+AC_FIT_AP_UNAUTHENTICATED_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_unauthenticated_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    apid TEXT,
+    state TEXT,
+    state_raw TEXT,
+    state_display TEXT,
+    model TEXT,
+    serial_number TEXT,
+    dev_type TEXT,
+    work_mode TEXT,
+    inferred_ap_mac TEXT,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    collected_at TEXT NOT NULL,
+    updated_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_history_ac
+    ON ac_fit_ap_unauthenticated_history(ac_device_uuid, collected_at);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_history_serial
+    ON ac_fit_ap_unauthenticated_history(serial_number);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_history_mac
+    ON ac_fit_ap_unauthenticated_history(inferred_ap_mac);
+"""
+
+AC_FIT_AP_UNAUTHENTICATED_SUMMARY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_unauthenticated_summary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL UNIQUE,
+    total_aps INTEGER,
+    connected_aps INTEGER,
+    connected_manual_aps INTEGER,
+    connected_auto_aps INTEGER,
+    connected_common_aps INTEGER,
+    connected_wtus INTEGER,
+    inside_aps INTEGER,
+    maximum_supported_aps INTEGER,
+    remaining_aps INTEGER,
+    total_ap_licenses INTEGER,
+    local_ap_licenses INTEGER,
+    server_ap_licenses INTEGER,
+    remaining_local_ap_licenses INTEGER,
+    sync_ap_licenses INTEGER,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    collected_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 AC_FIT_AP_OPTICAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -725,6 +807,7 @@ CREATE TABLE IF NOT EXISTS config_snapshots (
 """
 
 
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -764,6 +847,9 @@ class Database:
                         AC_FIT_AP_RESOURCES_SCHEMA,
                         AC_FIT_AP_METADATA_SCHEMA,
                         AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,
+                        AC_FIT_AP_UNAUTHENTICATED_SCHEMA,
+                        AC_FIT_AP_UNAUTHENTICATED_HISTORY_SCHEMA,
+                        AC_FIT_AP_UNAUTHENTICATED_SUMMARY_SCHEMA,
                         AC_FIT_AP_OPTICAL_SCHEMA,
                         AP_ENTITIES_SCHEMA,
                         AP_RESOURCE_SNAPSHOTS_SCHEMA,

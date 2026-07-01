@@ -27,7 +27,7 @@ DEVICE_COLUMN_WIDTHS = {
     "backup_address": 130,
     "protocols": 70,
     "updated_at": 150,
-    "actions": 220,
+    "actions": 320,
 }
 
 COLUMNS = (
@@ -68,6 +68,7 @@ class DeviceTable(QTableWidget):
     detail_requested = Signal(int)
     edit_requested = Signal(int)
     delete_requested = Signal(int)
+    external_terminal_requested = Signal(int)
 
     def __init__(self, i18n: I18n) -> None:
         super().__init__(0, len(COLUMNS))
@@ -75,6 +76,8 @@ class DeviceTable(QTableWidget):
         self.devices: list[Device] = []
         self.group_names: dict[int, str] = {}
         self.selected_device_ids: set[int] = set()
+        self.external_terminal_visible = True
+        self.external_terminal_enabled = True
         self._updating_checks = False
         set_table_column_fields(self, [field for field, _key in COLUMNS])
         configure_readonly_table(self)
@@ -135,6 +138,11 @@ class DeviceTable(QTableWidget):
     def set_group_names(self, group_names: dict[int, str]) -> None:
         self.group_names = dict(group_names)
 
+    def set_external_terminal_action_state(self, *, visible: bool, enabled: bool) -> None:
+        self.external_terminal_visible = visible
+        self.external_terminal_enabled = enabled
+        self._refresh_action_buttons()
+
     def selected_device_id(self) -> int | None:
         row = self.currentRow()
         if row < 0:
@@ -184,6 +192,10 @@ class DeviceTable(QTableWidget):
             detail_requested=self.detail_requested.emit,
             edit_requested=self.edit_requested.emit,
             delete_requested=self.delete_requested.emit,
+            external_terminal_text=self.i18n.t("devices.external_terminal"),
+            external_terminal_requested=self.external_terminal_requested.emit,
+            external_terminal_visible=self.external_terminal_visible,
+            external_terminal_enabled=self.external_terminal_enabled,
         )
 
     def _refresh_action_buttons(self) -> None:
@@ -290,6 +302,10 @@ class ActionCellWidget(QWidget):
         detail_requested,
         edit_requested,
         delete_requested,
+        external_terminal_text: str = "",
+        external_terminal_requested=None,
+        external_terminal_visible: bool = False,
+        external_terminal_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.setMinimumHeight(ROW_HEIGHT)
@@ -298,11 +314,17 @@ class ActionCellWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignCenter)
-        buttons = (
+        buttons = [
             (QPushButton(detail_text), detail_requested),
+        ]
+        if external_terminal_visible and external_terminal_requested is not None:
+            terminal_button = QPushButton(external_terminal_text)
+            terminal_button.setEnabled(external_terminal_enabled)
+            buttons.append((terminal_button, external_terminal_requested))
+        buttons.extend((
             (QPushButton(edit_text), edit_requested),
             (QPushButton(delete_text), delete_requested),
-        )
+        ))
         for button, callback in buttons:
             button.setObjectName("tableActionButton")
             button.setMinimumHeight(ACTION_BUTTON_HEIGHT)

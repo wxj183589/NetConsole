@@ -163,8 +163,32 @@ def test_replace_lldp_neighbors_replaces_only_target_device(tmp_path):
     repository.replace_lldp_neighbors("device-1", [{"local_interface": "GE1/0/2", "neighbor_sysname": "NEW"}])
 
     neighbors = repository.list_lldp_neighbors("device-1")
-    assert [(item["local_interface"], item["neighbor_sysname"]) for item in neighbors] == [("GE1/0/2", "NEW")]
+    assert [(item["local_interface"], item["neighbor_sysname"]) for item in neighbors] == [("GE1/0/1", "OLD"), ("GE1/0/2", "NEW")]
     assert repository.list_lldp_neighbors("device-2")[0]["neighbor_sysname"] == "OTHER"
+
+
+def test_replace_lldp_neighbors_preserves_ports_missing_from_partial_collect(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [
+            {"local_interface": "GigabitEthernet1/0/1", "neighbor_mac": "0000-0000-0001"},
+            {"local_interface": "GigabitEthernet1/0/2", "neighbor_mac": "0000-0000-0002"},
+            {"local_interface": "GigabitEthernet1/0/3", "neighbor_mac": "0000-0000-0003"},
+        ],
+    )
+
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [
+            {"local_interface": "GE1/0/1", "neighbor_mac": "0000-0000-0011"},
+            {"local_interface": "GE1/0/2", "neighbor_mac": "0000-0000-0022"},
+        ],
+    )
+
+    neighbors = repository.list_lldp_neighbors("device-1")
+    assert [item["neighbor_mac"] for item in neighbors] == ["0000-0000-0011", "0000-0000-0022", "0000-0000-0003"]
+    assert len(repository.list_lldp_history("device-1", "GE1/0/1")) == 1
 
 
 def test_lldp_neighbors_use_logical_local_interface_sort(tmp_path):

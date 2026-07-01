@@ -82,6 +82,7 @@ REPORT_STAGE_LABELS.update(
     {
         "source_files": "查询源文件清单",
         "parallel_workers": "多进程并行生成",
+        "parallel_running": "多进程并行生成中",
         "loading": "读取数据库",
         "normalize_samples": "规范化链路数据",
         "sample_quality": "采样点质量分析",
@@ -855,6 +856,7 @@ class MeshLogAnalysisPage(QWidget):
         output_path = export_dir / f"{filename_mr}_MR原始MESH日志分析报告_{timestamp}.xlsx"
         self.progress_bar.setValue(0)
         self.progress_label.setText(self.i18n.t("mesh_report.generating"))
+        self.generate_report_button.setEnabled(False)
         output_path = export_dir / f"{filename_mr}_MR原始MESH日志分析报告_{timestamp}.xlsx"
         self.report_worker = MeshAnalysisReportWorker(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name), profile.display_name, output_path, options, self)
         self.report_worker.progress.connect(self._on_report_progress)
@@ -885,7 +887,7 @@ class MeshLogAnalysisPage(QWidget):
     def _on_report_progress(self, value: int, message: str) -> None:
         self.progress_bar.setValue(value)
         stage, file_index, file_total, file_name = _parse_report_progress_message(message)
-        stage_label = REPORT_STAGE_LABELS.get(stage, stage)
+        stage_label = _report_stage_label(stage)
         if stage.startswith("workers:"):
             stage_label = f"准备工作进程：{stage.split(':', 1)[1]} 个"
         if file_total > 0:
@@ -903,6 +905,7 @@ class MeshLogAnalysisPage(QWidget):
         QMessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
 
     def _cleanup_report_worker(self) -> None:
+        self.generate_report_button.setEnabled(True)
         if self.report_worker is not None:
             self.report_worker.deleteLater()
             self.report_worker = None
@@ -1746,3 +1749,12 @@ def _parse_report_progress_message(message: str) -> tuple[str, int, int, str]:
         file_total = 0
     file_name = parts[3] if len(parts) > 3 else ""
     return stage, file_index, file_total, file_name
+
+
+def _report_stage_label(stage: str) -> str:
+    if stage.startswith("workers:"):
+        return f"准备工作进程：{stage.split(':', 1)[1]} 个"
+    if stage.startswith("excel_sheet_rows:"):
+        _prefix, sheet_name, index, total = (stage.split(":", 3) + ["", "", "", ""])[:4]
+        return f"正在写入 Excel：{sheet_name} {index} / {total}"
+    return REPORT_STAGE_LABELS.get(stage, stage)

@@ -8,7 +8,7 @@ from netconsole.ui.table.table_autosize_engine import apply_table_autosize
 
 ROW_HEIGHT = 36
 CHECK_COLUMN_WIDTH = 48
-ACTION_COLUMN_WIDTH = 220
+ACTION_COLUMN_WIDTH = 320
 ACTION_BUTTON_HEIGHT = 28
 AP_MAC_COLUMN_WIDTH = 140
 AP_NAME_MIN_WIDTH = 180

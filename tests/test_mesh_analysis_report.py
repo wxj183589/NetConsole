@@ -151,6 +151,22 @@ def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_tex
     assert workbook["解析问题"]["F2"].value == EMPTY_PARSE_ISSUES_TEXT
 
 
+def test_excel_report_emits_row_progress_for_large_sheets(tmp_path):
+    rows = [{"sample_time": f"2025-12-03 10:00:{index % 60:02d}.000"} for index in range(1001)]
+    model = MeshAnalysisReportModel(
+        mr_name="14CW-01",
+        report_name="14CW-01",
+        generated_at=datetime.now(),
+        options=MeshReportOptions(),
+        sample_quality=rows,
+    )
+    stages: list[str] = []
+
+    MeshAnalysisExcelReportExporter().export(model, tmp_path / "report.xlsx", progress=lambda _value, stage: stages.append(stage))
+
+    assert any(stage.startswith("excel_sheet_rows:") and ":1000:1001" in stage for stage in stages)
+
+
 def test_i18n_report_keys_exist_and_mesh_page_has_generate_button(tmp_path):
     import os
 

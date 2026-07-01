@@ -114,6 +114,48 @@ FIT_AP_RESOURCE_HISTORY_FIELDS = (
     "created_at",
 )
 
+FIT_AP_UNAUTHENTICATED_FIELDS = (
+    "ac_device_uuid",
+    "ap_name",
+    "apid",
+    "state",
+    "state_raw",
+    "state_display",
+    "model",
+    "serial_number",
+    "dev_type",
+    "work_mode",
+    "inferred_ap_mac",
+    "collect_run_uuid",
+    "raw_log_path",
+    "collected_at",
+    "updated_at",
+)
+
+FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS = (*FIT_AP_UNAUTHENTICATED_FIELDS, "created_at")
+
+FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS = (
+    "ac_device_uuid",
+    "total_aps",
+    "connected_aps",
+    "connected_manual_aps",
+    "connected_auto_aps",
+    "connected_common_aps",
+    "connected_wtus",
+    "inside_aps",
+    "maximum_supported_aps",
+    "remaining_aps",
+    "total_ap_licenses",
+    "local_ap_licenses",
+    "server_ap_licenses",
+    "remaining_local_ap_licenses",
+    "sync_ap_licenses",
+    "collect_run_uuid",
+    "raw_log_path",
+    "collected_at",
+    "updated_at",
+)
+
 FIT_AP_OPTICAL_FIELDS = (
     "ac_device_uuid",
     "ap_uuid",
@@ -419,7 +461,7 @@ class AcRepository:
         return self._list_fit_ap_resources(ac_device_uuid, include_metadata=False)
 
     def list_fit_ap_resources_with_metadata(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
-        return self._list_fit_ap_resources(ac_device_uuid, include_metadata=True)
+        return self._enrich_resources_with_unauthenticated_status(self._list_fit_ap_resources(ac_device_uuid, include_metadata=True), ac_device_uuid)
 
     def list_all_fit_ap_resources_with_metadata(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -438,7 +480,80 @@ class AcRepository:
                 ORDER BY r.ap_name, r.id
                 """
             ).fetchall()
-        return [self._resource_with_metadata(dict(row)) for row in rows]
+        return self._enrich_resources_with_unauthenticated_status([self._resource_with_metadata(dict(row)) for row in rows])
+
+    def replace_fit_ap_unauthenticated(
+        self,
+        ac_device_uuid: str,
+        summary: dict[str, object | None],
+        rows: list[dict[str, object | None]],
+    ) -> None:
+        now = self._now()
+        with self.database.connect() as conn:
+            summary_payload = self._payload(FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS, {**summary, "ac_device_uuid": ac_device_uuid})
+            summary_payload["collected_at"] = summary_payload.get("collected_at") or now
+            summary_payload["updated_at"] = summary_payload.get("updated_at") or now
+            columns = ", ".join(FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS)
+            placeholders = ", ".join("?" for _ in FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS)
+            updates = ", ".join(f"{field} = excluded.{field}" for field in FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS if field != "ac_device_uuid")
+            conn.execute(
+                f"""
+                INSERT INTO ac_fit_ap_unauthenticated_summary ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT(ac_device_uuid) DO UPDATE SET {updates}
+                """,
+                [summary_payload[field] for field in FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS],
+            )
+            conn.execute("DELETE FROM ac_fit_ap_unauthenticated WHERE ac_device_uuid = ?", (ac_device_uuid,))
+            for row in rows:
+                payload = self._payload(FIT_AP_UNAUTHENTICATED_FIELDS, {**row, "ac_device_uuid": ac_device_uuid})
+                payload["inferred_ap_mac"] = self._mac_from_text(payload.get("inferred_ap_mac") or payload.get("ap_name")) or None
+                payload["collected_at"] = payload.get("collected_at") or summary_payload["collected_at"] or now
+                payload["updated_at"] = payload.get("updated_at") or now
+                self._insert(conn, "ac_fit_ap_unauthenticated", FIT_AP_UNAUTHENTICATED_FIELDS, payload)
+                history_payload = self._payload(FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS, {**payload, "created_at": now})
+                self._insert(conn, "ac_fit_ap_unauthenticated_history", FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS, history_payload)
+            conn.commit()
+
+    def list_fit_ap_unauthenticated(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ac_fit_ap_unauthenticated WHERE ac_device_uuid = ? ORDER BY ap_name, id",
+                (ac_device_uuid,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_all_fit_ap_unauthenticated(self) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute("SELECT * FROM ac_fit_ap_unauthenticated ORDER BY ac_device_uuid, ap_name, id").fetchall()
+        return [dict(row) for row in rows]
+
+    def list_fit_ap_unauthenticated_history(self, ac_device_uuid: str | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
+        params: list[object] = []
+        where = ""
+        if ac_device_uuid:
+            where = "WHERE ac_device_uuid = ?"
+            params.append(ac_device_uuid)
+        params.append(limit)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ac_fit_ap_unauthenticated_history
+                {where}
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_fit_ap_unauthenticated_summary(self, ac_device_uuid: str) -> dict[str, object | None] | None:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM ac_fit_ap_unauthenticated_summary WHERE ac_device_uuid = ?",
+                (ac_device_uuid,),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def list_fit_ap_resource_history(self, ac_device_uuid: str, limit: int = 10000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -520,7 +635,24 @@ class AcRepository:
     def replace_fit_ap_optical(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
         now = self._now()
         with self.database.connect() as conn:
-            conn.execute("DELETE FROM ac_fit_ap_optical WHERE ac_device_uuid = ?", (ac_device_uuid,))
+            current_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM ac_fit_ap_optical WHERE ac_device_uuid = ?",
+                    (ac_device_uuid,),
+                ).fetchall()
+            ]
+            merged: dict[tuple[str, str], dict[str, object | None]] = {}
+            passthrough: list[dict[str, object | None]] = []
+            for current in current_rows:
+                key = _fit_ap_optical_merge_key(current)
+                if key:
+                    merged[key] = current
+                else:
+                    passthrough.append(current)
+
+            current_payloads: list[dict[str, object | None]] = []
+            success_count = 0
             for row in rows:
                 resource = self._resource_for_payload(conn, ac_device_uuid, row)
                 payload = self._payload(FIT_AP_OPTICAL_FIELDS, {**row, "ac_device_uuid": ac_device_uuid})
@@ -531,10 +663,40 @@ class AcRepository:
                 payload["site"] = payload.get("site") or resource.get("site_name") or resource.get("site")
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
-                columns = ", ".join(FIT_AP_OPTICAL_FIELDS)
-                placeholders = ", ".join("?" for _ in FIT_AP_OPTICAL_FIELDS)
+                current_payloads.append(payload)
+                key = _fit_ap_optical_merge_key(payload)
+                current = merged.get(key) if key else None
+                if current is not None and _fit_ap_optical_prefer_score(current) > _fit_ap_optical_prefer_score(payload):
+                    merged[key] = _merge_failed_fit_ap_optical_payload(current, payload)
+                    continue
+                if _is_fit_ap_optical_success_payload(payload):
+                    success_count += 1
+                    if key:
+                        merged[key] = payload
+                    else:
+                        passthrough.append(payload)
+                    continue
+                if key and key in merged:
+                    merged[key] = _merge_failed_fit_ap_optical_payload(merged[key], payload)
+                elif key:
+                    merged[key] = payload
+                else:
+                    passthrough.append(payload)
+
+            if rows and success_count == 0:
+                app_logger.log_warning(
+                    "FIT_AP_OPTICAL_DB_SAVE_SKIPPED",
+                    f"ac_device_uuid={ac_device_uuid}, error=no successful AP optical rows; keeping previous data",
+                )
+                return
+
+            conn.execute("DELETE FROM ac_fit_ap_optical WHERE ac_device_uuid = ?", (ac_device_uuid,))
+            columns = ", ".join(FIT_AP_OPTICAL_FIELDS)
+            placeholders = ", ".join("?" for _ in FIT_AP_OPTICAL_FIELDS)
+            for payload in [*merged.values(), *passthrough]:
                 conn.execute(f"INSERT INTO ac_fit_ap_optical ({columns}) VALUES ({placeholders})", [payload[field] for field in FIT_AP_OPTICAL_FIELDS])
-                history_payload = self._payload(FIT_AP_OPTICAL_HISTORY_FIELDS, {**row, **payload, "created_at": now})
+            for payload in current_payloads:
+                history_payload = self._payload(FIT_AP_OPTICAL_HISTORY_FIELDS, {**payload, "created_at": now})
                 history_columns = ", ".join(FIT_AP_OPTICAL_HISTORY_FIELDS)
                 history_placeholders = ", ".join("?" for _ in FIT_AP_OPTICAL_HISTORY_FIELDS)
                 conn.execute(
@@ -770,6 +932,53 @@ class AcRepository:
                 (ap_uuid,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def list_latest_ap_lldp_histories(self, limit: int = 100000) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            entity_rows = conn.execute(
+                """
+                SELECT id, ap_uuid, ap_mac, ap_name, serial_number,
+                       neighbor_switch_name AS neighbor_device_name,
+                       neighbor_switch_sysname AS lldp_neighbor,
+                       neighbor_interface,
+                       collected_at,
+                       created_at,
+                       'ap_lldp_history' AS data_source
+                FROM ap_lldp_history
+                WHERE neighbor_interface IS NOT NULL
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            fit_rows = conn.execute(
+                """
+                SELECT id, ap_uuid, ap_mac, ap_name, NULL AS serial_number,
+                       neighbor_device_name,
+                       lldp_neighbor,
+                       neighbor_interface,
+                       collected_at,
+                       created_at,
+                       'ac_fit_ap_lldp_history' AS data_source
+                FROM ac_fit_ap_lldp_history
+                WHERE neighbor_interface IS NOT NULL
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        rows = [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows]
+        latest: dict[tuple[str, str], dict[str, object | None]] = {}
+        passthrough: list[dict[str, object | None]] = []
+        for row in rows:
+            key = _fit_ap_optical_merge_key(row) or _ap_identity_key(row)
+            if key is None:
+                passthrough.append(row)
+                continue
+            current = latest.get(key)
+            if current is None or _latest_row_score(row) >= _latest_row_score(current):
+                latest[key] = row
+        return [*latest.values(), *passthrough]
 
     def get_fit_ap_resource(self, ac_device_uuid: str, ap_name: str) -> dict[str, object | None] | None:
         rows = self.list_fit_ap_resources_with_metadata(ac_device_uuid)
@@ -1437,9 +1646,70 @@ class AcRepository:
         item["direction"] = item.get("metadata_direction") or item.get("direction")
         return item
 
+    def _enrich_resources_with_unauthenticated_status(
+        self,
+        resources: list[dict[str, object | None]],
+        ac_device_uuid: str | None = None,
+    ) -> list[dict[str, object | None]]:
+        if not resources:
+            return resources
+        current_rows = self.list_fit_ap_unauthenticated(ac_device_uuid) if ac_device_uuid else self.list_all_fit_ap_unauthenticated()
+        history_rows = self.list_fit_ap_unauthenticated_history(ac_device_uuid)
+        current_index = _unauthenticated_identity_index(current_rows)
+        history_index = _unauthenticated_identity_index(history_rows)
+        enriched: list[dict[str, object | None]] = []
+        for resource in resources:
+            item = dict(resource)
+            current = _find_unauthenticated_match(item, current_index)
+            history = _find_unauthenticated_match(item, history_index)
+            if current:
+                item.update(
+                    {
+                        "is_new_online_ap": 1,
+                        "new_online_source": "display wlan ap unauthenticated",
+                        "new_online_status": "当前新上线Auto AP",
+                        "register_status": "未固化",
+                        "unauthenticated_state": "pending_confirm",
+                        "unauthenticated_collected_at": current.get("collected_at"),
+                        "last_unauthenticated_at": current.get("collected_at"),
+                    }
+                )
+            elif history:
+                item.update(
+                    {
+                        "is_new_online_ap": 0,
+                        "new_online_source": "",
+                        "new_online_status": "历史新上线",
+                        "register_status": "已固化/已确认",
+                        "unauthenticated_state": "confirmed_manual",
+                        "unauthenticated_collected_at": None,
+                        "last_unauthenticated_at": history.get("collected_at"),
+                    }
+                )
+            else:
+                item.update(
+                    {
+                        "is_new_online_ap": 0,
+                        "new_online_source": "",
+                        "new_online_status": "-",
+                        "register_status": "已手动固化或普通AP",
+                        "unauthenticated_state": "",
+                        "unauthenticated_collected_at": None,
+                        "last_unauthenticated_at": None,
+                    }
+                )
+            enriched.append(item)
+        return enriched
+
     @classmethod
     def _payload(cls, fields: tuple[str, ...], data: dict[str, object | None]) -> dict[str, object | None]:
         return {field: data.get(field) for field in fields}
+
+    @staticmethod
+    def _insert(conn, table: str, fields: tuple[str, ...], payload: dict[str, object | None]) -> None:
+        columns = ", ".join(fields)
+        placeholders = ", ".join("?" for _ in fields)
+        conn.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", [payload[field] for field in fields])
 
     @staticmethod
     def _ap_identity_clauses(identity: dict[str, str], allowed: tuple[str, ...]) -> tuple[list[str], list[object]]:
@@ -1578,9 +1848,48 @@ def _latest_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> list[di
             passthrough.append(row)
             continue
         current = latest.get(key)
-        if current is None or _latest_row_score(row) >= _latest_row_score(current):
+        if current is None or _latest_row_prefer_score(row) >= _latest_row_prefer_score(current):
             latest[key] = row
     return [*latest.values(), *passthrough]
+
+
+def _unauthenticated_identity_index(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
+    index: dict[tuple[str, str], dict[str, object | None]] = {}
+    for row in rows or []:
+        for key in _unauthenticated_identity_keys(row):
+            current = index.get(key)
+            if current is None or _latest_row_score(row) >= _latest_row_score(current):
+                index[key] = row
+    return index
+
+
+def _find_unauthenticated_match(
+    resource: dict[str, object | None],
+    index: dict[tuple[str, str], dict[str, object | None]],
+) -> dict[str, object | None]:
+    for key in _unauthenticated_identity_keys(resource):
+        row = index.get(key)
+        if row:
+            return row
+    return {}
+
+
+def _unauthenticated_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
+    if serial and serial not in {"-", "N/A", "n/a"}:
+        keys.append(("serial", serial.casefold()))
+    mac = AcRepository._mac_from_text(row.get("inferred_ap_mac") or row.get("ap_mac") or row.get("mac") or row.get("ap_name"))
+    if mac:
+        keys.append(("mac", mac.casefold()))
+    ap_name = str(row.get("ap_name") or "").strip()
+    if ap_name and ap_name not in {"-", "N/A", "n/a"}:
+        keys.append(("name", ap_name.casefold()))
+    ac_device_uuid = str(row.get("ac_device_uuid") or "").strip()
+    apid = str(row.get("apid") or row.get("ap_id") or "").strip()
+    if ac_device_uuid and apid:
+        keys.append(("apid", f"{ac_device_uuid.casefold()}:{apid.casefold()}"))
+    return keys
 
 
 def _ap_identity_key(row: dict[str, object | None]) -> tuple[str, str] | None:
@@ -1591,12 +1900,97 @@ def _ap_identity_key(row: dict[str, object | None]) -> tuple[str, str] | None:
     return None
 
 
+def _fit_ap_optical_merge_key(row: dict[str, object | None]) -> tuple[str, str] | None:
+    ac_uuid = str(row.get("ac_device_uuid") or "").strip()
+    apid = str(row.get("apid") or row.get("ap_id") or "").strip()
+    if ac_uuid and apid and apid not in {"-", "N/A", "n/a"}:
+        return "apid", f"{ac_uuid.casefold()}:{apid.casefold()}"
+    value = str(row.get("ap_uuid") or "").strip()
+    if value and value not in {"-", "N/A", "n/a"}:
+        return "ap_uuid", value.casefold()
+    mac = AcRepository._mac_from_text(row.get("ap_mac"))
+    if mac:
+        return "ap_mac", mac.casefold()
+    value = str(row.get("serial_number") or "").strip()
+    if value and value not in {"-", "N/A", "n/a"}:
+        return "serial_number", value.casefold()
+    value = str(row.get("ap_name") or "").strip()
+    if value and value not in {"-", "N/A", "n/a"}:
+        return "ap_name", value.casefold()
+    return None
+
+
+def _merge_failed_fit_ap_optical_payload(
+    old: dict[str, object | None],
+    new: dict[str, object | None],
+) -> dict[str, object | None]:
+    merged = {**old, **new}
+    for field in (
+        "ap_mac",
+        "ap_name",
+        "neighbor_device_name",
+        "neighbor_interface",
+        "rx_power",
+        "tx_power",
+    ):
+        if _is_empty_identity_value(new.get(field)) and not _is_empty_identity_value(old.get(field)):
+            merged[field] = old.get(field)
+    return merged
+
+
+def _is_fit_ap_optical_success_payload(row: dict[str, object | None]) -> bool:
+    status = str(row.get("status") or "").strip().casefold()
+    if status == "success":
+        return _has_fit_ap_optical_payload(row) or _has_fit_ap_lldp_payload(row)
+    if status:
+        return False
+    return any(not _is_empty_identity_value(row.get(field)) for field in FIT_AP_OPTICAL_FIELDS if field not in {"ac_device_uuid", "ap_uuid", "collected_at", "updated_at"})
+
+
+def _fit_ap_optical_prefer_score(row: dict[str, object | None]) -> tuple[int, str, str, int]:
+    status = str(row.get("status") or "").strip().casefold()
+    optical_status = str(row.get("optical_alarm_status") or row.get("raw_status") or "").strip().casefold()
+    if status == "success" and not _is_empty_identity_value(row.get("rx_power")):
+        base = 100
+    elif status == "success" and _has_fit_ap_optical_payload(row):
+        base = 90
+    elif status == "success" and _has_fit_ap_lldp_payload(row):
+        base = 80
+    elif "no_light" in optical_status or "无光" in optical_status:
+        base = 50
+    elif status in {"failed", "timeout", "parse_failed", "unknown"}:
+        base = 10
+    else:
+        base = 0
+    return (base, str(row.get("collected_at") or ""), str(row.get("updated_at") or ""), _int_value(row.get("id")))
+
+
+def _has_fit_ap_optical_payload(row: dict[str, object | None]) -> bool:
+    return any(not _is_empty_identity_value(row.get(field)) for field in ("rx_power", "tx_power", "module_model", "module_serial_number", "module_vendor", "temperature", "voltage"))
+
+
+def _has_fit_ap_lldp_payload(row: dict[str, object | None]) -> bool:
+    return any(not _is_empty_identity_value(row.get(field)) for field in ("neighbor_device_name", "neighbor_interface", "lldp_neighbor", "neighbor_mac"))
+
+
+def _is_empty_identity_value(value: object) -> bool:
+    text = str(value or "").strip()
+    return not text or text in {"-", "N/A", "n/a"}
+
+
 def _latest_row_score(row: dict[str, object | None]) -> tuple[str, str, int]:
     return (
         str(row.get("collected_at") or ""),
         str(row.get("updated_at") or ""),
         _int_value(row.get("id")),
     )
+
+
+def _latest_row_prefer_score(row: dict[str, object | None]) -> tuple[int, str, str, int]:
+    if any(field in row for field in ("rx_power", "tx_power", "neighbor_device_name", "neighbor_interface", "optical_alarm_status")):
+        return _fit_ap_optical_prefer_score(row)
+    collected_at, updated_at, row_id = _latest_row_score(row)
+    return (0, collected_at, updated_at, row_id)
 
 
 def _int_value(value: object) -> int:

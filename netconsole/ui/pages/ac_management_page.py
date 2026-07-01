@@ -119,6 +119,10 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("AP组", "group_name"),
     ("ac.online_time", "online_time"),
     ("field.updated_at", "updated_at"),
+    ("ac.register_status", "register_status"),
+    ("ac.new_online_status", "new_online_status"),
+    ("ac.new_online_source", "new_online_source"),
+    ("ac.unauthenticated_collected_at", "unauthenticated_collected_at"),
 )
 
 FIT_AP_OPTICAL_COLUMNS = (
@@ -1099,6 +1103,15 @@ class AcManagementPage(QWidget):
                 if source == "device"
                 else self.i18n.t("ac.update_done_https_default", port=DEFAULT_HTTPS_PORT)
             )
+        if hasattr(result, "fit_ap_resources_updated") or hasattr(result, "unauthenticated_rows_updated"):
+            resource_count = int(getattr(result, "fit_ap_resources_updated", 0) or 0)
+            unauth_count = int(getattr(result, "unauthenticated_rows_updated", 0) or 0)
+            unauth_error = str(getattr(result, "unauthenticated_error", "") or "").strip()
+            if unauth_error:
+                extra = f"FIT-AP资源 {resource_count} 条；新上线AP识别失败：{unauth_error}"
+            else:
+                extra = f"FIT-AP资源 {resource_count} 条；新上线AP {unauth_count} 条"
+            self.status_label.setText(f"{self.status_label.text()}；{extra}")
         device = self.current_device()
         app_logger.log_info("AC_HTTPS_PORT_UI_REFRESHED", f"device={device.name if device else ''}, ui_port={device.https_port if device else None}")
 

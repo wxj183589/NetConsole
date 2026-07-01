@@ -81,7 +81,7 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     rapid_flap_indices = [int(item["return_sample_index"]) for item in rapid_flaps]
     assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs, active_peer_ap_names, active_peer_sites, active_peer_radios, active_peer_rssi)
     assign_standby_links(master_times, rows_by_time, standby_links_by_index)
-    events_by_index = _events_by_index(events, time_index)
+    events_by_index = _events_by_index(events, time_index, active_peer_macs, active_peer_ap_names, active_peer_sites)
     switch_indices = [index for index, items in events_by_index.items() if any(item.get("event_type") == "ACTIVE_SWITCH" for item in items)]
     anchor_index = _nearest_time_index(master_times, anchor_time)
     return {
@@ -352,17 +352,59 @@ def detect_rapid_flaps(active_runs: list[ActiveRun], master_times: list[str], es
     return flaps
 
 
-def _events_by_index(events: list[dict[str, object]], time_index: dict[str, int]) -> dict[int, list[dict[str, object]]]:
+def _events_by_index(
+    events: list[dict[str, object]],
+    time_index: dict[str, int],
+    active_peer_macs: list[str] | None = None,
+    active_peer_ap_names: list[str] | None = None,
+    active_peer_sites: list[str] | None = None,
+) -> dict[int, list[dict[str, object]]]:
     by_index: dict[int, list[dict[str, object]]] = {}
     for event in events:
         sample_time = str(event.get("event_time") or event.get("current_sample_time") or "")
         if sample_time in time_index:
-            by_index.setdefault(time_index[sample_time], []).append(event)
+            index = time_index[sample_time]
+            by_index.setdefault(index, []).append(_enrich_switch_event(event, index, active_peer_macs or [], active_peer_ap_names or [], active_peer_sites or []))
             continue
         nearest = _nearest_time_index(list(time_index), sample_time)
         if nearest >= 0:
-            by_index.setdefault(nearest, []).append(event)
+            by_index.setdefault(nearest, []).append(_enrich_switch_event(event, nearest, active_peer_macs or [], active_peer_ap_names or [], active_peer_sites or []))
     return by_index
+
+
+def _enrich_switch_event(
+    event: dict[str, object],
+    index: int,
+    active_peer_macs: list[str],
+    active_peer_ap_names: list[str],
+    active_peer_sites: list[str],
+) -> dict[str, object]:
+    if event.get("event_type") != "ACTIVE_SWITCH":
+        return event
+    enriched = dict(event)
+    from_peer = canonical_mesh_mac(enriched.get("from_peer_mac"))
+    to_peer = canonical_mesh_mac(enriched.get("to_peer_mac"))
+    if not str(enriched.get("to_peer_ap_name") or "").strip():
+        enriched["to_peer_ap_name"] = _peer_name_near_index(to_peer, index, active_peer_macs, active_peer_ap_names)
+    if not str(enriched.get("to_peer_site") or "").strip():
+        enriched["to_peer_site"] = _peer_name_near_index(to_peer, index, active_peer_macs, active_peer_sites)
+    if not str(enriched.get("from_peer_ap_name") or "").strip():
+        enriched["from_peer_ap_name"] = _peer_name_near_index(from_peer, index - 1, active_peer_macs, active_peer_ap_names)
+    if not str(enriched.get("from_peer_site") or "").strip():
+        enriched["from_peer_site"] = _peer_name_near_index(from_peer, index - 1, active_peer_macs, active_peer_sites)
+    return enriched
+
+
+def _peer_name_near_index(peer: str, index: int, peers: list[str], values: list[str]) -> str:
+    if not peer:
+        return ""
+    for candidate in (index, index - 1, index + 1):
+        if 0 <= candidate < len(peers) and canonical_mesh_mac(peers[candidate]) == peer:
+            return str(values[candidate] or "")
+    for candidate_peer, value in zip(peers, values):
+        if canonical_mesh_mac(candidate_peer) == peer and value:
+            return str(value)
+    return ""
 
 
 def _nearest_time_index(times: list[str], sample_time: str) -> int:
