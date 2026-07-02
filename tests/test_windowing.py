@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon, QTextEdit, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QSystemTrayIcon, QTextEdit, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core import app_logger
@@ -171,6 +171,59 @@ def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
     assert isinstance(window.changelog_dialog, ChangelogDialog)
     assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
     window.app_is_exiting = True
+    window.close()
+
+
+def test_main_window_version_button_shift_alt_click_opens_admin_unlock(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    opened: list[bool] = []
+
+    class FakeMousePress:
+        def type(self):
+            from PySide6.QtCore import QEvent
+
+            return QEvent.MouseButtonPress
+
+        def button(self):
+            return Qt.LeftButton
+
+        def modifiers(self):
+            return Qt.ShiftModifier | Qt.AltModifier
+
+    monkeypatch.setattr(window, "show_admin_unlock_dialog", lambda: opened.append(True))
+
+    assert window.eventFilter(window.version_button, FakeMousePress()) is True
+    assert opened == [True]
+
+    window.app_is_exiting = True
+    window.close()
+
+
+def test_main_window_refresh_feature_flags_updates_detached_pages(tmp_path):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    calls: list[str] = []
+
+    class FakeDetachedPage(QWidget):
+        def _apply_feature_gate(self):
+            calls.append("apply")
+
+        def reload_from_gate(self):
+            calls.append("reload")
+
+    detached = QMainWindow()
+    detached.setCentralWidget(FakeDetachedPage())
+    window.detached_windows.append(detached)
+
+    window.refresh_feature_flags()
+
+    assert calls == ["apply", "reload"]
+
+    window.app_is_exiting = True
+    detached.close()
     window.close()
 
 

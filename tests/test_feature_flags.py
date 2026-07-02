@@ -7,7 +7,7 @@ import pytest
 
 from netconsole.core.feature_flags import FeatureDisabledError, FeatureGate, install_runtime_feature_files, load_profile
 from netconsole.core.feature_registry import FEATURE_BY_ID, list_features
-from project.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_zip_file, zip_directory
+from project.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
 
 def write_runtime(root: Path, edition: str, profile: str, features: dict[str, dict[str, bool]]) -> None:
@@ -64,14 +64,111 @@ def test_install_runtime_feature_files_writes_distinct_editions(tmp_path: Path) 
     internal = tmp_path / "internal"
     customer = tmp_path / "customer"
     install_runtime_feature_files(internal, edition="internal", profile="full")
-    install_runtime_feature_files(customer, edition="customer", profile="customer")
+    install_runtime_feature_files(customer, edition="customer", profile="customer", admin_unlock_password="temporary-secret")
 
     internal_info = json.loads((internal / "runtime" / "build_info.json").read_text(encoding="utf-8"))
     customer_info = json.loads((customer / "runtime" / "build_info.json").read_text(encoding="utf-8"))
     customer_flags = json.loads((customer / "runtime" / "feature_flags.json").read_text(encoding="utf-8"))
+    embedded_info_text = (customer / "_internal" / "netconsole" / "assets" / "runtime" / "build_info.json").read_text(encoding="utf-8")
 
     assert internal_info != customer_info
+    assert internal_info["admin_unlock_enabled"] is False
+    assert customer_info["admin_unlock_enabled"] is True
+    assert "temporary-secret" not in embedded_info_text
     assert customer_flags["features"]["system.feature_flags"] == {"visible": False, "enabled": False}
+    assert (customer / "_internal" / "netconsole" / "assets" / "runtime" / "build_info.json").is_file()
+    assert (customer / "_internal" / "netconsole" / "assets" / "runtime" / "feature_flags.json").is_file()
+    assert (customer / "_internal" / "netconsole" / "assets" / "runtime" / "feature_flags.full.json").is_file()
+
+
+def test_customer_embedded_feature_flags_survive_missing_runtime(tmp_path: Path) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer")
+    runtime = tmp_path / "runtime"
+    for path in sorted(runtime.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            path.rmdir()
+    runtime.rmdir()
+
+    gate = FeatureGate(tmp_path)
+
+    assert gate.build_info["edition"] == "customer"
+    assert gate.build_info["feature_profile"] == "customer"
+    assert gate.resolution.source == "embedded"
+    assert gate.allow_local_override is False
+    assert not gate.is_visible("system.feature_flags")
+
+
+def test_customer_admin_unlock_requires_configured_hash(tmp_path: Path) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer")
+
+    gate = FeatureGate(tmp_path)
+
+    assert gate.is_admin_unlock_configured() is False
+    assert gate.verify_admin_unlock_password("temporary-secret") is False
+    assert not gate.is_visible("system.feature_flags")
+
+
+def test_customer_session_full_mode_is_process_only(tmp_path: Path) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer", admin_unlock_password="temporary-secret")
+    runtime_info_before = (tmp_path / "runtime" / "build_info.json").read_text(encoding="utf-8")
+    embedded_info_before = (tmp_path / "_internal" / "netconsole" / "assets" / "runtime" / "build_info.json").read_text(encoding="utf-8")
+
+    gate = FeatureGate(tmp_path)
+
+    assert gate.edition == "customer"
+    assert gate.profile == "customer"
+    assert not gate.is_visible("system.feature_flags")
+    assert gate.verify_admin_unlock_password("wrong") is False
+    assert gate.verify_admin_unlock_password("temporary-secret") is True
+
+    gate.enable_session_full_mode(reason="test", operator="tester")
+
+    assert gate.edition == "customer"
+    assert gate.profile == "full"
+    assert gate.base_profile == "customer"
+    assert gate.is_session_override_active()
+    assert gate.current_profile_source() == "embedded+session_override"
+    assert gate.is_visible("system.feature_flags")
+    assert gate.is_enabled("system.feature_flags")
+    assert not (tmp_path / "runtime" / "feature_flags.local.json").exists()
+    assert (tmp_path / "runtime" / "build_info.json").read_text(encoding="utf-8") == runtime_info_before
+    assert (tmp_path / "_internal" / "netconsole" / "assets" / "runtime" / "build_info.json").read_text(encoding="utf-8") == embedded_info_before
+
+    gate.disable_session_override(reason="test")
+
+    assert not gate.is_session_override_active()
+    assert gate.profile == "customer"
+    assert not gate.is_visible("system.feature_flags")
+
+    restarted = FeatureGate(tmp_path)
+    assert restarted.profile == "customer"
+    assert not restarted.is_session_override_active()
+    assert not restarted.is_visible("system.feature_flags")
+
+
+def test_customer_local_override_cannot_enable_internal_only(tmp_path: Path) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer")
+    local = tmp_path / "runtime" / "feature_flags.local.json"
+    local.write_text(
+        json.dumps({"profile": "full", "features": {"system.feature_flags": {"visible": True, "enabled": True}}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    gate = FeatureGate(tmp_path, allow_local_override=True)
+
+    assert gate.allow_local_override is False
+    assert not gate.is_visible("system.feature_flags")
+    assert not gate.is_enabled("system.feature_flags")
+
+
+def test_build_validation_checks_customer_without_runtime(tmp_path: Path) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer")
+
+    validate_embedded_feature_gate(tmp_path, edition="customer", profile="customer")
+
+    assert (tmp_path / "runtime" / "build_info.json").is_file()
 
 
 def test_load_profile_keeps_saved_customer_flags(tmp_path: Path) -> None:
@@ -116,8 +213,15 @@ def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) 
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
         flags = json.loads(archive.read("runtime/feature_flags.json").decode("utf-8"))
+        embedded_flags = json.loads(archive.read("_internal/netconsole/assets/runtime/feature_flags.json").decode("utf-8"))
+        embedded_full_flags = json.loads(archive.read("_internal/netconsole/assets/runtime/feature_flags.full.json").decode("utf-8"))
 
     assert "NetConsole.exe" in names
     assert "runtime/feature_flags.json" in names
+    assert "_internal/netconsole/assets/runtime/build_info.json" in names
+    assert "_internal/netconsole/assets/runtime/feature_flags.json" in names
+    assert "_internal/netconsole/assets/runtime/feature_flags.full.json" in names
     assert all(not name.startswith(("docs/", "tests/", "project/")) for name in names)
     assert flags["features"]["system.feature_flags"] == {"visible": False, "enabled": False}
+    assert embedded_flags["features"]["system.feature_flags"] == {"visible": False, "enabled": False}
+    assert embedded_full_flags["features"]["system.feature_flags"] == {"visible": True, "enabled": True}

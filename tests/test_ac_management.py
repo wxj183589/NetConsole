@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeade
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
+from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -261,6 +262,21 @@ def make_database(tmp_path):
     database = Database(tmp_path / "devices.db")
     database.initialize()
     return database
+
+
+def make_feature_gate(root: Path, *, hidden: tuple[str, ...]) -> FeatureGate:
+    runtime = root / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "build_info.json").write_text(
+        json.dumps({"edition": "customer", "feature_profile": "customer"}),
+        encoding="utf-8",
+    )
+    features = {feature_id: {"visible": False, "enabled": False} for feature_id in hidden}
+    (runtime / "feature_flags.json").write_text(
+        json.dumps({"schema_version": 1, "profile": "customer", "features": features}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return FeatureGate(root)
 
 
 def create_station_switch(repository: DeviceRepository, site_name: str, **kwargs) -> Device:
@@ -4929,6 +4945,89 @@ def test_rail_transit_lazy_refreshes_only_current_tab(tmp_path, monkeypatch):
 
     page.tabs.setCurrentIndex(3)
     assert calls == ["vehicle", "trackside:False", "mesh_first:False"]
+
+
+def test_rail_transit_reload_from_gate_reconciles_session_full_tabs(tmp_path):
+    app()
+    database = make_database(tmp_path)
+    gate = make_feature_gate(
+        tmp_path / "gate",
+        hidden=(
+            "rail.train_online",
+            "rail.car_network_diagnostic",
+            "rail.online_mr_collection",
+            "rail.online_mr_analysis",
+        ),
+    )
+    page = RailTransitPage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path), feature_gate=gate)
+
+    assert [page.feature_by_tab[page.tabs.widget(index)] for index in range(page.tabs.count())] == [
+        "rail.trackside_ap_business",
+        "rail.raw_mesh_log_analysis",
+    ]
+
+    page._ensure_feature_page("rail.trackside_ap_business")
+    existing_trackside_page = page.trackside_page
+    gate.enable_session_full_mode(reason="test", operator="tester")
+    page.reload_from_gate(refresh_current=False)
+
+    assert [page.feature_by_tab[page.tabs.widget(index)] for index in range(page.tabs.count())] == [
+        "rail.train_online",
+        "rail.car_network_diagnostic",
+        "rail.trackside_ap_business",
+        "rail.raw_mesh_log_analysis",
+        "rail.online_mr_collection",
+        "rail.online_mr_analysis",
+    ]
+    assert page.trackside_page is existing_trackside_page
+    assert page.vehicle_mr_online_page is None
+
+    gate.disable_session_override(reason="test")
+    page.reload_from_gate(refresh_current=False)
+
+    assert [page.feature_by_tab[page.tabs.widget(index)] for index in range(page.tabs.count())] == [
+        "rail.trackside_ap_business",
+        "rail.raw_mesh_log_analysis",
+    ]
+
+
+def test_ac_management_apply_feature_gate_readds_session_full_tabs(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    gate = make_feature_gate(
+        tmp_path / "gate",
+        hidden=(
+            "ac.trackside_ap_plan",
+            "ac.ap_online_overview",
+            "ac.fit_ap_optical",
+        ),
+    )
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo", feature_gate=gate)
+
+    assert [page._current_feature_id() for _ in [None]][0] in {"ac.fit_ap_resources", "ac.fit_ap_extensions"}
+    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == [
+        "FIT-AP Resources",
+        "FIT-AP Extensions",
+    ]
+
+    gate.enable_session_full_mode(reason="test", operator="tester")
+    page._apply_feature_gate()
+
+    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == [
+        "Trackside AP Plan",
+        "AP Online Overview",
+        "FIT-AP Resources",
+        "FIT-AP Extensions",
+        "FIT-AP Optical",
+    ]
+
+    gate.disable_session_override(reason="test")
+    page._apply_feature_gate()
+
+    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == [
+        "FIT-AP Resources",
+        "FIT-AP Extensions",
+    ]
 
 
 def test_trackside_ap_search_filter_is_debounced(tmp_path):

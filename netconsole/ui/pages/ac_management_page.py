@@ -211,6 +211,13 @@ OPTICAL_EXPORT_COLOR_RGB = {
     "skipped": "F3F4F6",
 }
 OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
+AC_FEATURE_ORDER = (
+    "ac.trackside_ap_plan",
+    "ac.ap_online_overview",
+    "ac.fit_ap_resources",
+    "ac.fit_ap_extensions",
+    "ac.fit_ap_optical",
+)
 
 
 class OfflineApLedgerLoadThread(QThread):
@@ -878,12 +885,7 @@ class AcManagementPage(QWidget):
         self.refresh_devices()
 
     def _apply_feature_gate(self) -> None:
-        for feature_id, widget in reversed(list(self.tab_by_feature_id.items())):
-            index = self.tabs.indexOf(widget)
-            if index >= 0 and not self.feature_gate.is_visible(feature_id):
-                self.tabs.removeTab(index)
-            elif index >= 0:
-                self.tabs.setTabEnabled(index, self.feature_gate.is_enabled(feature_id))
+        self._reconcile_feature_tabs()
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.refresh_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.export_button)
         for widget in (
@@ -900,6 +902,60 @@ class AcManagementPage(QWidget):
             apply_feature_to_widget(self.feature_gate, "ac.fit_ap_extensions", widget)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_optical", self.refresh_optical_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_optical", self.optical_export_button)
+
+    def _reconcile_feature_tabs(self) -> None:
+        current_feature = self._current_feature_id()
+        blocked = self.tabs.blockSignals(True)
+        try:
+            while self.tabs.count():
+                self.tabs.removeTab(0)
+            for feature_id in AC_FEATURE_ORDER:
+                if not self.feature_gate.is_visible(feature_id):
+                    continue
+                widget = self.tab_by_feature_id[feature_id]
+                self.tabs.addTab(widget, self.i18n.t(feature_id))
+                self.tabs.setTabEnabled(self.tabs.count() - 1, self.feature_gate.is_enabled(feature_id))
+            target = self._tab_index_for_feature(current_feature) if current_feature else -1
+            self.tabs.setCurrentIndex(target if target >= 0 else (0 if self.tabs.count() else -1))
+        finally:
+            self.tabs.blockSignals(blocked)
+        self._set_ac_tab_titles()
+        app_logger.log_info(
+            "AC_FEATURE_TABS_RECONCILED",
+            (
+                f"session_override_active={self.feature_gate.is_session_override_active()} profile={self.feature_gate.profile} "
+                f"visible_features={','.join(self._visible_feature_ids())} current_feature={self._current_feature_id() or ''} "
+                f"tab_count={self.tabs.count()}"
+            ),
+        )
+
+    def _set_ac_tab_titles(self) -> None:
+        for feature_id, widget in self.tab_by_feature_id.items():
+            index = self.tabs.indexOf(widget)
+            if index >= 0:
+                self.tabs.setTabText(index, self.i18n.t(feature_id))
+
+    def _current_feature_id(self) -> str | None:
+        current = self.tabs.currentWidget()
+        for feature_id, widget in self.tab_by_feature_id.items():
+            if widget is current:
+                return feature_id
+        return None
+
+    def _tab_index_for_feature(self, feature_id: str | None) -> int:
+        if not feature_id:
+            return -1
+        widget = self.tab_by_feature_id.get(feature_id)
+        return self.tabs.indexOf(widget) if widget is not None else -1
+
+    def _visible_feature_ids(self) -> list[str]:
+        visible: list[str] = []
+        for index in range(self.tabs.count()):
+            widget = self.tabs.widget(index)
+            feature_id = next((key for key, value in self.tab_by_feature_id.items() if value is widget), "")
+            if feature_id:
+                visible.append(feature_id)
+        return visible
 
     def set_repository(self, device_repository: DeviceRepository, site_name: str) -> None:
         self.device_repository = device_repository
@@ -960,17 +1016,7 @@ class AcManagementPage(QWidget):
             label = self.findChild(QLabel, f"summary_label_{SUMMARY_FIELDS[index][1]}")
             if label is not None:
                 label.setText(self.i18n.t(key))
-        tab_titles = {
-            "ac.trackside_ap_plan": "ac.trackside_ap_plan",
-            "ac.ap_online_overview": "ac.ap_online_overview",
-            "ac.fit_ap_resources": "ac.fit_ap_resources",
-            "ac.fit_ap_extensions": "ac.fit_ap_extensions",
-            "ac.fit_ap_optical": "ac.fit_ap_optical",
-        }
-        for feature_id, widget in self.tab_by_feature_id.items():
-            index = self.tabs.indexOf(widget)
-            if index >= 0:
-                self.tabs.setTabText(index, self.i18n.t(tab_titles[feature_id]))
+        self._set_ac_tab_titles()
         self.overview_inner_tabs.setTabText(0, self.i18n.t("ac.ap_online_overview"))
         self.overview_inner_tabs.setTabText(1, "AP离线情况")
         self.overview_inner_tabs.setTabText(2, "离线AP台账")

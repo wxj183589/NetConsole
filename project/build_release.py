@@ -14,7 +14,8 @@ if str(ROOT) not in sys.path:
 
 import clean_build_spec
 from project.build_config import BuildConfig, load_config
-from netconsole.core.feature_flags import install_runtime_feature_files
+from netconsole.core.feature_flags import FeatureGate, install_runtime_feature_files, load_profile, profiles_dir
+from netconsole.core.feature_registry import list_features
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 
 
@@ -39,6 +40,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print command plan without compiling")
     parser.add_argument("--build-editions", choices=BUILD_EDITIONS, default="both", help="release editions to generate")
     parser.add_argument("--feature-profile", default=None, help="feature profile for single-edition customer/internal builds")
+    parser.add_argument("--admin-unlock-password", default=None, help="customer edition temporary full-mode unlock password")
     args = parser.parse_args()
 
     try:
@@ -57,7 +59,14 @@ def main() -> int:
             payload = build_pyinstaller(config, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
         else:
             payload = build_nuitka(config, jobs=args.jobs, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
-        create_edition_releases(config, payload, args.build_editions, feature_profile=args.feature_profile, make_zip=not args.no_zip)
+        create_edition_releases(
+            config,
+            payload,
+            args.build_editions,
+            feature_profile=args.feature_profile,
+            make_zip=not args.no_zip,
+            admin_unlock_password=args.admin_unlock_password or os.environ.get("NETCONSOLE_ADMIN_UNLOCK_PASSWORD"),
+        )
         assert_root_clean(config.root)
         validate_release_version_tree(config.release_version_dir)
         return 0
@@ -153,6 +162,7 @@ def create_edition_releases(
     *,
     feature_profile: str | None,
     make_zip: bool,
+    admin_unlock_password: str | None = None,
 ) -> None:
     for edition in selected_editions(build_editions):
         profile = feature_profile or ("full" if edition == "internal" else "customer")
@@ -160,7 +170,9 @@ def create_edition_releases(
         remove_tree(destination)
         copy_tree(payload, destination)
         remove_copied_zip_files(destination)
-        install_runtime_feature_files(destination, edition=edition, profile=profile)
+        unlock_password = admin_unlock_password if edition == "customer" else None
+        install_runtime_feature_files(destination, edition=edition, profile=profile, admin_unlock_password=unlock_password)
+        validate_embedded_feature_gate(destination, edition=edition, profile=profile)
         validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
         if make_zip:
             zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
@@ -179,6 +191,43 @@ def selected_editions(value: str) -> tuple[str, ...]:
 def remove_copied_zip_files(destination: Path) -> None:
     for zip_path in destination.glob("*.zip"):
         zip_path.unlink()
+
+
+def validate_embedded_feature_gate(destination: Path, *, edition: str, profile: str) -> None:
+    gate = FeatureGate(destination)
+    if gate.build_info.get("edition") != edition or gate.build_info.get("feature_profile") != profile:
+        raise BuildError(f"FeatureGate build info mismatch for {destination}: {gate.build_info}")
+    runtime = destination / "runtime"
+    hidden_runtime = destination / ".runtime_feature_gate_validation"
+    if hidden_runtime.exists():
+        shutil.rmtree(hidden_runtime)
+    if runtime.exists():
+        runtime.rename(hidden_runtime)
+    try:
+        embedded_gate = FeatureGate(destination)
+        if embedded_gate.build_info.get("edition") != edition or embedded_gate.build_info.get("feature_profile") != profile:
+            raise BuildError(f"Embedded FeatureGate fallback mismatch for {destination}: {embedded_gate.build_info}")
+        if profile == "customer":
+            validate_customer_feature_gate(embedded_gate)
+    finally:
+        if hidden_runtime.exists():
+            if runtime.exists():
+                shutil.rmtree(runtime)
+            hidden_runtime.rename(runtime)
+
+
+def validate_customer_feature_gate(gate: FeatureGate) -> None:
+    if gate.is_visible("system.feature_flags") or gate.is_enabled("system.feature_flags"):
+        raise BuildError("Customer build exposes system.feature_flags")
+    expected = load_profile(profiles_dir() / "customer.json", "customer")
+    for feature_id, state in expected.items():
+        if not state.get("visible", True) and gate.is_visible(feature_id):
+            raise BuildError(f"Customer build exposes hidden feature: {feature_id}")
+        if not state.get("enabled", True) and gate.is_enabled(feature_id):
+            raise BuildError(f"Customer build enables disabled feature: {feature_id}")
+    for item in list_features():
+        if item.internal_only and (gate.is_visible(item.feature_id) or gate.is_enabled(item.feature_id)):
+            raise BuildError(f"Customer build exposes internal-only feature: {item.feature_id}")
 
 
 def pyinstaller_command(config: BuildConfig) -> list[str]:

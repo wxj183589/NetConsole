@@ -320,7 +320,7 @@ release/
     nuitka/
       nuitka-report.xml
       netconsole.nuitka-package.config.yml
-  v1.3.4/
+  v1.3.5/
     pyinstaller/
       NetConsole/
         NetConsole.exe
@@ -331,13 +331,13 @@ release/
         data/
         runtime/
           logs/
-      NetConsole_v1.3.4_pyinstaller.zip
+      NetConsole_v1.3.5_pyinstaller.zip
     nuitka/
       NetConsole.exe
-      NetConsole_v1.3.4_nuitka.zip
+      NetConsole_v1.3.5_nuitka.zip
 ```
 
-PyInstaller 版本需要完整保留 `NetConsole` 目录。Nuitka 版本是 onefile，最终主产物是 `release\v1.3.4\nuitka\NetConsole.exe`，可直接双击运行。
+PyInstaller 版本需要完整保留 `NetConsole` 目录。Nuitka 版本是 onefile，最终主产物是 `release\v1.3.5\nuitka\NetConsole.exe`，可直接双击运行。
 
 `tools` 目录会整体打包，保持 `tools\iperf\iperf3.exe` 与 `cygcrypto-3.dll`、`cygwin1.dll`、`cygz.dll` 位于同一目录。构建前后都会执行 `Fping_v3.exe -v` 和 `iperf3.exe -v`，缺失 DLL 或工具无法启动会导致构建失败。
 

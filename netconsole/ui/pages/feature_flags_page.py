@@ -5,6 +5,7 @@ import json
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -28,6 +29,8 @@ class FeatureFlagsPage(QWidget):
         super().__init__()
         self.i18n = i18n
         self.feature_gate = feature_gate
+        self.session_label = QLabel("当前为临时完整模式，本次启动有效。")
+        self.session_label.setObjectName("featureGateSessionOverrideLabel")
         self.table = QTableWidget(0, 9)
         self.save_button = QPushButton()
         self.reload_button = QPushButton()
@@ -40,6 +43,7 @@ class FeatureFlagsPage(QWidget):
         actions.addStretch(1)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.session_label)
         layout.addLayout(actions)
         layout.addWidget(self.table, 1)
 
@@ -50,6 +54,7 @@ class FeatureFlagsPage(QWidget):
         self.reload_from_gate()
 
     def reload_from_gate(self) -> None:
+        self.session_label.setVisible(self.feature_gate.is_session_override_active())
         self._reload_table(self._saved_customer_features())
 
     def _reload_table(self, features: dict[str, dict[str, bool]]) -> None:
@@ -104,6 +109,7 @@ class FeatureFlagsPage(QWidget):
         )
 
     def retranslate(self) -> None:
+        self.session_label.setText("当前为临时完整模式，本次启动有效。")
         self.save_button.setText(self.i18n.t("feature_flags.save_profile"))
         self.reload_button.setText(self.i18n.t("feature_flags.reload_defaults"))
         self.preview_button.setText(self.i18n.t("feature_flags.preview_customer"))

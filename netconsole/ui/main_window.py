@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import getpass
 from time import perf_counter
 
-from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -110,6 +112,7 @@ class MainWindow(QMainWindow):
         self.about_button.setObjectName("aboutRepositoryButton")
         self.version_button = QPushButton()
         self.version_button.setObjectName("versionButton")
+        self.version_button.installEventFilter(self)
         self.data_disk_button = QPushButton()
         self.sidebar_toggle_button = QPushButton()
         self.sidebar_toggle_button.setObjectName("sidebarToggleButton")
@@ -175,6 +178,13 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         window_manager.set_main_window(self)
         app_logger.log_info("DEVICE_PAGE_OPENED", self.site.name)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.version_button and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.LeftButton and event.modifiers() & Qt.ShiftModifier and event.modifiers() & Qt.AltModifier:
+                self.show_admin_unlock_dialog()
+                return True
+        return super().eventFilter(watched, event)
 
     def open_current_page(self, row: int) -> None:
         if row < 0:
@@ -612,6 +622,34 @@ class MainWindow(QMainWindow):
         self.data_disk_dialog.raise_()
         self.data_disk_dialog.activateWindow()
 
+    def show_admin_unlock_dialog(self) -> None:
+        if not self.feature_gate.is_admin_unlock_configured():
+            QMessageBox.information(self, "内部调试解锁", "当前版本未启用内部解锁。")
+            self.feature_gate.verify_admin_unlock_password("")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("内部调试解锁")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("请输入内部解锁口令。本次启动有效，重启后恢复定制版。"))
+        form = QFormLayout()
+        password_input = QLineEdit()
+        password_input.setEchoMode(QLineEdit.Password)
+        form.addRow("口令", password_input)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        password_input.setFocus()
+        if dialog.exec() != QDialog.Accepted:
+            return
+        if not self.feature_gate.verify_admin_unlock_password(password_input.text()):
+            QMessageBox.warning(self, "内部调试解锁", "口令错误，未启用临时完整模式。")
+            return
+        self.feature_gate.enable_session_full_mode(reason="version_button_unlock", operator=getpass.getuser())
+        self.refresh_feature_flags()
+        QMessageBox.information(self, "内部调试解锁", "已启用临时完整模式。本次启动有效，重启后恢复定制版。")
+
     def toggle_sidebar(self) -> None:
         self.set_sidebar_collapsed(not self.sidebar_collapsed, persist=True)
 
@@ -740,6 +778,52 @@ class MainWindow(QMainWindow):
                 page = self.pages.pop(page_id)
                 self.stack.removeWidget(page)
                 page.deleteLater()
+                continue
+            self._refresh_page_feature_gate(self.pages[page_id], page_id=page_id)
+        for index, window in enumerate(list(self.detached_windows)):
+            page = window.centralWidget()
+            if page is not None:
+                self._refresh_page_feature_gate(page, page_id=f"detached:{index}")
+        current = self.stack.currentWidget()
+        if current is None or current not in self.pages.values():
+            self.navigation.setCurrentRow(0)
+
+    def _refresh_page_feature_gate(self, page: QWidget, *, page_id: str) -> None:
+        try:
+            apply_gate = getattr(page, "_apply_feature_gate", None)
+            if callable(apply_gate):
+                apply_gate()
+            reload_from_gate = getattr(page, "reload_from_gate", None)
+            if callable(reload_from_gate):
+                reload_from_gate()
+            app_logger.log_info(
+                "FEATURE_GATE_UI_REFRESH",
+                (
+                    f"page_id={page_id} page_class={page.__class__.__name__} "
+                    f"session_override_active={self.feature_gate.is_session_override_active()} profile={self.feature_gate.profile} "
+                    f"visible_tabs={self._page_tab_summary(page, enabled=False)} enabled_tabs={self._page_tab_summary(page, enabled=True)}"
+                ),
+            )
+        except Exception as exc:
+            app_logger.log_error(
+                "FEATURE_GATE_PAGE_REFRESH_FAILED",
+                f"page_id={page_id} page_class={page.__class__.__name__} error={exc}",
+            )
+
+    @staticmethod
+    def _page_tab_summary(page: QWidget, *, enabled: bool) -> str:
+        tabs = getattr(page, "tabs", None)
+        if tabs is None or not hasattr(tabs, "count"):
+            return ""
+        values: list[str] = []
+        for index in range(tabs.count()):
+            text = tabs.tabText(index) if hasattr(tabs, "tabText") else str(index)
+            if enabled:
+                if hasattr(tabs, "isTabEnabled") and tabs.isTabEnabled(index):
+                    values.append(text)
+            else:
+                values.append(text)
+        return ",".join(values)
 
     def _feature_for_page(self, page_id: str) -> str | None:
         return PAGE_FEATURE_BY_PAGE_ID.get(page_id)

@@ -6,9 +6,20 @@ from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 from netconsole.core import app_logger
 from netconsole.core.feature_flags import FeatureGate, default_feature_gate
+from netconsole.core.feature_registry import FEATURE_BY_ID
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.device_repository import DeviceRepository
+
+
+RAIL_FEATURE_ORDER = (
+    "rail.train_online",
+    "rail.car_network_diagnostic",
+    "rail.trackside_ap_business",
+    "rail.raw_mesh_log_analysis",
+    "rail.online_mr_collection",
+    "rail.online_mr_analysis",
+)
 
 
 class RailTransitPage(QWidget):
@@ -45,13 +56,7 @@ class RailTransitPage(QWidget):
         }
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
-        self._add_feature_tab("rail.train_online")
-        self._add_feature_tab("rail.car_network_diagnostic")
-        self._add_feature_tab("rail.trackside_ap_business")
-        self._add_feature_tab("rail.raw_mesh_log_analysis")
-        self._add_feature_tab("rail.online_mr_collection")
-        self._add_feature_tab("rail.online_mr_analysis")
-        self.tabs.setCurrentIndex(0)
+        self.reload_from_gate(refresh_current=False)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.retranslate()
 
@@ -120,9 +125,7 @@ class RailTransitPage(QWidget):
         for index in range(self.tabs.count()):
             widget = self.tabs.widget(index)
             feature_id = self.feature_by_tab.get(widget, "")
-            item = self.feature_gate.visible_children("module.rail_transit")
-            title_key = next((feature.title_key for feature in item if feature.feature_id == feature_id), feature_id)
-            self.tabs.setTabText(index, self.i18n.t(title_key))
+            self.tabs.setTabText(index, self._feature_title(feature_id))
         self._call_visible_pages("retranslate")
 
     def restyle_visible_link_rows(self) -> None:
@@ -165,11 +168,59 @@ class RailTransitPage(QWidget):
     def _add_feature_tab(self, feature_id: str) -> None:
         if not self.feature_gate.is_visible(feature_id):
             return
-        widget = QWidget()
+        widget = self._widget_for_feature(feature_id)
         self.tab_by_feature_id[feature_id] = widget
         self.feature_by_tab[widget] = feature_id
         self.tabs.addTab(widget, "")
         self.tabs.setTabEnabled(self.tabs.indexOf(widget), self.feature_gate.is_enabled(feature_id))
+
+    def reload_from_gate(self, *, refresh_current: bool = True) -> None:
+        current_feature = self.feature_by_tab.get(self.tabs.currentWidget())
+        blocked = self.tabs.blockSignals(True)
+        try:
+            while self.tabs.count():
+                self.tabs.removeTab(0)
+            visible_features: list[str] = []
+            for feature_id in RAIL_FEATURE_ORDER:
+                if not self.feature_gate.is_visible(feature_id):
+                    continue
+                widget = self._widget_for_feature(feature_id)
+                self.tab_by_feature_id[feature_id] = widget
+                self.feature_by_tab[widget] = feature_id
+                self.tabs.addTab(widget, self._feature_title(feature_id))
+                self.tabs.setTabEnabled(self.tabs.count() - 1, self.feature_gate.is_enabled(feature_id))
+                visible_features.append(feature_id)
+            target = self.tabs.indexOf(self.tab_by_feature_id.get(current_feature)) if current_feature else -1
+            self.tabs.setCurrentIndex(target if target >= 0 else (0 if self.tabs.count() else -1))
+        finally:
+            self.tabs.blockSignals(blocked)
+        self.retranslate()
+        app_logger.log_info(
+            "RAIL_TRANSIT_FEATURE_TABS_RECONCILED",
+            (
+                f"session_override_active={self.feature_gate.is_session_override_active()} profile={self.feature_gate.profile} "
+                f"visible_features={','.join(self._visible_feature_ids())} current_feature={self.feature_by_tab.get(self.tabs.currentWidget(), '')} "
+                f"tab_count={self.tabs.count()}"
+            ),
+        )
+        if refresh_current:
+            self.refresh_current_async_or_lazy(force_if_empty=False)
+
+    def _widget_for_feature(self, feature_id: str) -> QWidget:
+        page = self._page_for_feature(feature_id)
+        if page is not None:
+            return page
+        placeholder = self.tab_by_feature_id.get(feature_id)
+        if placeholder is not None:
+            return placeholder
+        return QWidget()
+
+    def _feature_title(self, feature_id: str) -> str:
+        item = FEATURE_BY_ID.get(feature_id)
+        return self.i18n.t(item.title_key if item is not None else feature_id)
+
+    def _visible_feature_ids(self) -> list[str]:
+        return [self.feature_by_tab.get(self.tabs.widget(index), "") for index in range(self.tabs.count())]
 
     def _ensure_feature_page(self, feature_id: str) -> QWidget:
         self.feature_gate.assert_enabled(feature_id)

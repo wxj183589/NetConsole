@@ -38,13 +38,21 @@
       "visible": false,
       "enabled": false
     },
-    "rail.train_online": {
+    "devices.external_terminal": {
       "visible": true,
       "enabled": true
     },
-    "rail.car_network_diagnostic": {
+    "devices.securecrt_sessions": {
       "visible": true,
       "enabled": true
+    },
+    "rail.train_online": {
+      "visible": false,
+      "enabled": false
+    },
+    "rail.car_network_diagnostic": {
+      "visible": false,
+      "enabled": false
     },
     "rail.trackside_ap_business": {
       "visible": true,
@@ -71,6 +79,10 @@
       "enabled": true
     },
     "ac.fit_ap_resources": {
+      "visible": true,
+      "enabled": true
+    },
+    "ac.fit_ap_extensions": {
       "visible": true,
       "enabled": true
     },
