@@ -91,8 +91,12 @@ class RailTransitPage(QWidget):
                     first_show_refresh()
                 else:
                     self.online_mr_analysis_page.refresh_all()
-        elif self.mesh_page is not None:
-            self.mesh_page.refresh_all()
+        elif feature_id == "rail.raw_mesh_log_analysis" and self.mesh_page is not None:
+            first_show_refresh = getattr(self.mesh_page, "first_show_refresh", None)
+            if callable(first_show_refresh):
+                first_show_refresh()
+            elif not getattr(self.mesh_page, "has_loaded", False):
+                self.mesh_page.refresh_all()
 
     def on_tab_changed(self, index: int) -> None:
         start = perf_counter()

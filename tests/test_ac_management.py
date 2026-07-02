@@ -4068,10 +4068,11 @@ def test_trackside_ap_business_moved_to_rail_transit_first_tab_and_exports(tmp_p
     assert "Indoor Switch TX Power(dBm)" not in headers
     assert sheet.cell(2, headers.index("Link") + 1).value == "DOWN"
     assert sheet.cell(2, headers.index("Port Type") + 1).value == "unknown"
+    assert sheet.cell(2, headers.index("Switch Optical Status") + 1).value == format_trackside_display_value("switch_optical_status", page.filtered_trackside_rows()[0])
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
     assert sheet["A1"].alignment.horizontal == "center"
-    assert sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
+    assert sheet["A2"].fill.fgColor.rgb == "00FFE4E6"
 
 
 def test_trackside_ap_business_visible_columns_hide_internal_fields(tmp_path):
@@ -4915,7 +4916,7 @@ def test_rail_transit_lazy_refreshes_only_current_tab(tmp_path, monkeypatch):
     page._ensure_feature_page("rail.raw_mesh_log_analysis")
     monkeypatch.setattr(page.vehicle_mr_online_page, "refresh_all", lambda: calls.append("vehicle"))
     monkeypatch.setattr(page.trackside_page, "refresh_async", lambda force=False: calls.append(f"trackside:{force}"))
-    monkeypatch.setattr(page.mesh_page, "refresh_all", lambda: calls.append("mesh"))
+    monkeypatch.setattr(page.mesh_page, "first_show_refresh", lambda force=False: calls.append(f"mesh_first:{force}"))
     assert page.online_mr_page is None
     page.tabs.setCurrentIndex(0)
     calls.clear()
@@ -4927,7 +4928,7 @@ def test_rail_transit_lazy_refreshes_only_current_tab(tmp_path, monkeypatch):
     assert calls == ["vehicle", "trackside:False"]
 
     page.tabs.setCurrentIndex(3)
-    assert calls == ["vehicle", "trackside:False", "mesh"]
+    assert calls == ["vehicle", "trackside:False", "mesh_first:False"]
 
 
 def test_trackside_ap_search_filter_is_debounced(tmp_path):

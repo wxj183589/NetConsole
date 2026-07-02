@@ -18,9 +18,11 @@ from netconsole.services.trackside_ap_business import (
     build_trackside_ap_business_rows,
     enrich_trackside_export_rows,
     filter_station_switch_devices,
+    format_trackside_display_value,
     is_trackside_ap_interface,
     merge_fit_ap_rows_by_identity,
     optical_change_text,
+    trackside_row_status,
 )
 from netconsole.core.paths import PathResolver
 
@@ -209,6 +211,74 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
     assert rows[0]["switch_optical_status"] == "normal"
     assert rows[0]["ap_rx_power"] == "-7"
     assert rows[0]["ap_optical_status"] == "normal"
+
+
+def test_trackside_business_marks_link_down_with_light_as_link_abnormal():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "link_status": "DOWN", "port_status": "access"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-7.77", "rx_low_warning": "-20", "rx_low_alarm": "-25"}]},
+        [],
+    )
+
+    assert rows[0]["switch_optical_status"] == "link_abnormal"
+    assert format_trackside_display_value("switch_optical_status", rows[0]) == "链路异常"
+    assert trackside_row_status(rows[0]) == "link_abnormal"
+
+
+def test_trackside_business_keeps_link_up_with_light_normal():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "link_status": "UP", "port_status": "access"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-7.77", "rx_low_warning": "-20", "rx_low_alarm": "-25"}]},
+        [],
+    )
+
+    assert rows[0]["switch_optical_status"] == "normal"
+
+
+@pytest.mark.parametrize(
+    ("optical", "expected"),
+    [
+        ({"rx_power": None, "rx_low_warning": "-20", "rx_low_alarm": "-25"}, "no_light"),
+        ({"rx_power": "-36.00", "rx_low_warning": "-20", "rx_low_alarm": "-25"}, "no_light"),
+        ({"rx_power": "-7.77", "status": "no_module"}, "no_module"),
+    ],
+)
+def test_trackside_business_does_not_mark_link_down_without_valid_light(optical, expected):
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "link_status": "DOWN", "port_status": "access"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", **optical}]},
+        [],
+    )
+
+    assert rows[0]["switch_optical_status"] == expected
+
+
+def test_trackside_business_keeps_switch_offline_over_link_abnormal():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "description": "To AP",
+                    "link_status": "DOWN",
+                    "port_status": "access",
+                    "switch_collection_status": "switch_offline",
+                }
+            ]
+        },
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-7.77", "rx_low_warning": "-20", "rx_low_alarm": "-25"}]},
+        [],
+    )
+
+    assert rows[0]["switch_optical_status"] == "offline"
 
 
 def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():

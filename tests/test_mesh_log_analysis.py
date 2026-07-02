@@ -149,6 +149,9 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
 
     page = MeshLogAnalysisPage(repository, I18n("zh_CN"), "demo", PathResolver(tmp_path))
 
+    assert page.has_loaded is False
+    assert page.mr_table.rowCount() == 0
+    page.refresh_all()
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR2", "MR10"]
     assert page.create_mr_button.parent() is None
     assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "raw").exists()
@@ -450,6 +453,23 @@ def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
     assert second_status["file_status"] == "deleted"
 
 
+def test_list_source_files_uses_cached_file_status_without_path_exists(tmp_path, monkeypatch):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.579\n" + LINE_A + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+
+    monkeypatch.setattr(Path, "exists", lambda _path: (_ for _ in ()).throw(AssertionError("Path.exists should not be called")))
+
+    rows = repo.list_source_files()
+
+    assert len(rows) == 1
+    assert rows[0]["file_status"] == "ok"
+    assert rows[0]["file_exists"] == 1
+
+
 def test_counter_reset_generates_event_without_negative_delta(tmp_path):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
@@ -616,6 +636,8 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [source])
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.link_table.setColumnWidth(3, 260)
+    page.refresh_all()
+    page.tabs.setCurrentWidget(page.link_table)
     page.refresh_current_mr_data()
     assert page.link_table.columnWidth(3) == 260
     assert page.link_table.rowCount() == 2

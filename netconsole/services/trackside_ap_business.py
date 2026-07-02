@@ -373,6 +373,7 @@ def build_trackside_ap_business_rows(
                 continue
             interface_name = str(interface.get("interface_name") or "")
             normalized_interface = normalize_interface_name(interface_name).casefold()
+            link_state = normalize_link_state(interface.get("link_status") or interface.get("link"))
             optical = optical_index.get(normalized_interface, {})
             lldp = lldp_index.get(normalized_interface, {})
             historical_lldp = _find_historical_lldp_row(historical_lldp_index, device_names, interface_name)
@@ -394,9 +395,11 @@ def build_trackside_ap_business_rows(
                 or fit_ap_optical_by_name_mac.get(neighbor_mac)
                 or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
             )
+            switch_collection_status = _switch_collection_status(device, interface, optical)
             switch_result = compute_optical_severity(
                 {
                     "module_present": bool(_has_optical_module_data(optical)),
+                    "no_module": _explicit_no_module(optical),
                     "switch_rx_power": optical.get("rx_power"),
                     "switch_port_status": optical.get("port_status"),
                     "alarm_low": optical.get("rx_low_alarm"),
@@ -406,8 +409,9 @@ def build_trackside_ap_business_rows(
                 }
             )
             switch_status = switch_result.severity
-            switch_collection_status = _switch_collection_status(device, interface, optical)
             switch_offline = _is_switch_collection_offline(switch_collection_status)
+            if _should_mark_switch_link_abnormal(link_state, switch_result, optical, switch_collection_status):
+                switch_status = "link_abnormal"
             ap_candidate = {
                 "ap_mac": normalize_mac(fit_ap.get("ap_mac")) or neighbor_mac,
                 "ap_name": fit_ap.get("ap_name") or (historical_lldp or {}).get("ap_name"),
@@ -456,7 +460,7 @@ def build_trackside_ap_business_rows(
                     "device_uuid": device_uuid,
                     "device_name": device.name,
                     "interface_name": interface_name,
-                    "link_status": "DOWN" if switch_offline else normalize_link_state(interface.get("link_status") or interface.get("link")),
+                    "link_status": "DOWN" if switch_offline else link_state,
                     "protocol_status": interface.get("protocol_status") or interface.get("protocol"),
                     "description": interface.get("description"),
                     "port_type": _port_type(interface.get("port_status")),
@@ -1355,6 +1359,29 @@ def _compute_ap_optical_status_from_row(row: dict[str, object | None]) -> str:
     ).severity
 
 
+def _switch_has_valid_light(optical: dict[str, object | None]) -> bool:
+    rx_power = _float_value((optical or {}).get("rx_power"))
+    return rx_power is not None and rx_power > -35
+
+
+def _should_mark_switch_link_abnormal(
+    link_state: object,
+    switch_result: object,
+    optical: dict[str, object | None],
+    switch_collection_status: object,
+) -> bool:
+    if normalize_link_state(link_state) != "DOWN":
+        return False
+    if _is_switch_collection_offline(switch_collection_status):
+        return False
+    severity = str(getattr(switch_result, "severity", "") or "").strip().casefold()
+    if severity in {"no_module", "no_light"}:
+        return False
+    if _explicit_no_module(optical):
+        return False
+    return _switch_has_valid_light(optical or {})
+
+
 def _has_valid_rx_power(value: object) -> bool:
     return _float_value(value) is not None
 
@@ -1594,9 +1621,12 @@ def _offline_ledger_to_trackside_rows(
         interface_key = normalize_interface_name(row.get("historical_switch_interface")).casefold()
         interface = interface_indexes.get(device_uuid, {}).get(interface_key, {})
         optical = optical_indexes.get(device_uuid, {}).get(interface_key, {})
+        link_state = normalize_link_state(interface.get("link_status") or interface.get("link"))
+        switch_collection_status = row.get("switch_collection_status") or interface.get("switch_collection_status") or interface.get("collection_status")
         switch_result = compute_optical_severity(
             {
                 "module_present": bool(_has_optical_module_data(optical)),
+                "no_module": _explicit_no_module(optical),
                 "switch_rx_power": optical.get("rx_power"),
                 "switch_port_status": optical.get("port_status"),
                 "alarm_low": optical.get("rx_low_alarm"),
@@ -1605,6 +1635,9 @@ def _offline_ledger_to_trackside_rows(
                 "device_type": "switch",
             }
         )
+        switch_status = switch_result.severity
+        if _should_mark_switch_link_abnormal(link_state, switch_result, optical, switch_collection_status):
+            switch_status = "link_abnormal"
         result.append(
             {
                 "site": row.get("site"),
@@ -1613,7 +1646,7 @@ def _offline_ledger_to_trackside_rows(
                 "device_uuid": device_uuid or row.get("device_uuid"),
                 "device_name": row.get("historical_switch_name"),
                 "interface_name": row.get("historical_switch_interface"),
-                "link_status": normalize_link_state(interface.get("link_status") or interface.get("link")),
+                "link_status": link_state,
                 "protocol_status": interface.get("protocol_status"),
                 "description": interface.get("description") or row.get("offline_remark"),
                 "port_type": _port_type(interface.get("port_status")),
@@ -1623,7 +1656,7 @@ def _offline_ledger_to_trackside_rows(
                 "vlan": interface.get("vlan"),
                 "switch_rx_power": optical.get("rx_power"),
                 "switch_tx_power": optical.get("tx_power"),
-                "switch_optical_status": switch_result.severity,
+                "switch_optical_status": switch_status,
                 "ap_mac": row.get("ap_mac"),
                 "ap_name": row.get("ap_name"),
                 "ap_ip": row.get("ap_ip"),
@@ -1640,7 +1673,7 @@ def _offline_ledger_to_trackside_rows(
                 "offline_reason": row.get("offline_reason") or "ac_idle",
                 "status_reason": row.get("status_reason") or "AC FIT-AP状态为Idle，轨旁AP离线",
                 "data_source": row.get("data_source") or "historical",
-                "switch_collection_status": row.get("switch_collection_status") or interface.get("switch_collection_status") or interface.get("collection_status"),
+                "switch_collection_status": switch_collection_status,
                 "offline_remark": row.get("offline_remark"),
             }
         )

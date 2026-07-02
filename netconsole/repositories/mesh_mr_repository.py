@@ -446,12 +446,10 @@ class MeshMrRepository:
         result: list[dict[str, object]] = []
         for row in rows:
             data = dict(row)
-            path = Path(str(data.get("archived_path") or ""))
             deleted = bool(str(data.get("deleted_at") or ""))
             parsed_deleted = bool(str(data.get("parsed_deleted_at") or ""))
             file_status = str(data.get("file_status") or "").strip()
-            exists = path.exists() if path else False
-            data["file_exists"] = 1 if exists and not deleted else 0
+            exists = bool(int(data.get("file_exists") or 0)) and not deleted
             if str(data.get("delete_error") or ""):
                 data["file_status"] = "delete_failed"
             elif deleted and parsed_deleted:
@@ -464,6 +462,7 @@ class MeshMrRepository:
                 data["file_status"] = "ok"
             else:
                 data["file_status"] = "missing"
+            data["file_exists"] = 1 if exists else 0
             result.append(data)
         return result
 

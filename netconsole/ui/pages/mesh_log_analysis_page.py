@@ -265,12 +265,14 @@ class MeshLogAnalysisPage(QWidget):
         self.mr_selection_timer = QTimer(self)
         self.mr_selection_timer.setSingleShot(True)
         self.mr_selection_timer.setInterval(120)
+        self.has_loaded = False
+        self.is_loading = False
+        self.load_generation = 0
         self.column_states: dict[str, MeshTableColumnState] = {}
         self._build_layout()
         self._connect_signals()
         self.retranslate()
         self._setup_column_states()
-        self.refresh_all()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
@@ -292,7 +294,8 @@ class MeshLogAnalysisPage(QWidget):
         self.current_profile = None
         self.current_source_file_id = None
         self.current_source_file_name = None
-        self.refresh_all()
+        self.has_loaded = False
+        self.first_show_refresh(force=True)
 
     @staticmethod
     def _make_group_repository(repository: DeviceRepository | None, site_name: str) -> DeviceGroupRepository | None:
@@ -503,7 +506,7 @@ class MeshLogAnalysisPage(QWidget):
         self.import_folder_button.clicked.connect(self.import_folder)
         self.show_all_sources_button.clicked.connect(self.show_all_source_files)
         self.cancel_button.clicked.connect(self.cancel_import)
-        self.refresh_button.clicked.connect(lambda: self.refresh_all())
+        self.refresh_button.clicked.connect(lambda: self.first_show_refresh(force=True))
         self.open_folder_button.clicked.connect(self.open_mr_folder)
         self.generate_report_button.clicked.connect(self.generate_report)
         self.export_link_button.clicked.connect(self.export_link_details)
@@ -654,10 +657,45 @@ class MeshLogAnalysisPage(QWidget):
             self.progress_label.setText("正在取消报告生成...")
             self.report_worker.cancel()
 
+    def first_show_refresh(self, force: bool = False) -> None:
+        if self.is_loading:
+            return
+        if self.has_loaded and not force:
+            return
+        self.is_loading = True
+        self.load_generation += 1
+        generation = self.load_generation
+        start = perf_counter()
+        self.progress_bar.setRange(0, 0)
+        self.progress_label.setText("正在加载 MR 原始MESH日志分析，请稍候……")
+        self.refresh_button.setEnabled(False)
+        app_logger.log_info("MESH_PAGE_FIRST_SHOW", f"generation={generation}")
+        app_logger.log_info("UI_PAGE_PROFILE", "page=rail.raw_mesh_log_analysis phase=first_show.begin elapsed_ms=0 rows=0")
+        QTimer.singleShot(30, lambda: self._run_first_show_refresh(generation, start))
+
+    def _run_first_show_refresh(self, generation: int, start: float) -> None:
+        if generation != self.load_generation:
+            return
+        try:
+            self.refresh_all()
+            self.has_loaded = True
+        except Exception as exc:
+            self.progress_label.setText(str(exc))
+            app_logger.log_error("MESH_PAGE_FIRST_SHOW_FAILED", str(exc))
+        finally:
+            self.is_loading = False
+            self.refresh_button.setEnabled(True)
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            elapsed_ms = (perf_counter() - start) * 1000
+            app_logger.log_info("UI_PAGE_PROFILE", f"page=rail.raw_mesh_log_analysis phase=first_show.end elapsed_ms={elapsed_ms:.1f} rows={len(self.profiles)}")
+
     def refresh_all(self, select_mr_id: str | None = None) -> None:
         profile_start = perf_counter()
         current_id = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
+        sync_start = perf_counter()
         self.profiles = self._vehicle_mr_profiles()
+        app_logger.log_info("MESH_PROFILE_SYNC", f"elapsed_ms={(perf_counter() - sync_start) * 1000:.1f} rows={len(self.profiles)}")
         self.profile_by_id = {profile.mr_id: profile for profile in self.profiles}
         sorting = self.mr_table.isSortingEnabled()
         sort_column = self.mr_table.horizontalHeader().sortIndicatorSection()
@@ -689,7 +727,7 @@ class MeshLogAnalysisPage(QWidget):
             self.current_profile = None
             self.current_source_file_id = None
             self.current_source_file_name = None
-        self.refresh_current_mr_data()
+            self.refresh_current_mr_data(current_tab_only=True)
         self._log_page_profile("refresh", profile_start, rows=len(self.profiles))
 
     def _vehicle_mr_profiles(self) -> list[MeshMrProfile]:
@@ -777,14 +815,22 @@ class MeshLogAnalysisPage(QWidget):
             return
         repo = self._repo()
         self._ensure_current_derived_analysis(repo)
+        render_start = perf_counter()
         self._render_tab(tab, repo)
+        app_logger.log_info(
+            "MESH_RENDER_CURRENT_TAB",
+            f"elapsed_ms={(perf_counter() - render_start) * 1000:.1f} rows={self._current_rendered_rows()} mr_id={self.current_profile.mr_id if self.current_profile else ''} tab={tab}",
+        )
         self.dirty_tabs.discard(tab)
 
     def _render_tab(self, tab: str, repo: MeshMrRepository) -> None:
+        render_start = perf_counter()
         if tab == "source":
             self._render_sources(repo)
+            app_logger.log_info("MESH_RENDER_SOURCE_TABLE", f"elapsed_ms={(perf_counter() - render_start) * 1000:.1f} rows={self.source_table.rowCount()}")
         elif tab == "link":
             self._render_links(repo)
+            app_logger.log_info("MESH_RENDER_LINK_TABLE", f"elapsed_ms={(perf_counter() - render_start) * 1000:.1f} rows={self.link_table.rowCount()}")
         elif tab == "active_build_order":
             self._render_active_build_order(repo)
         elif tab == "event":
