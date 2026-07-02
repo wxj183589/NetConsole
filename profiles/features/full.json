@@ -9,6 +9,7 @@
     "module.config_collection": {"visible": true, "enabled": true},
     "module.file_management": {"visible": true, "enabled": true},
     "module.network_tools": {"visible": true, "enabled": true},
+    "network_tools.toolbox": {"visible": true, "enabled": true},
     "module.logs": {"visible": true, "enabled": true},
     "module.system_settings": {"visible": true, "enabled": true},
     "rail.train_online": {"visible": true, "enabled": true},

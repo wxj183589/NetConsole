@@ -191,6 +191,12 @@ class PathResolver:
     def network_tools_root(self, site_name: str = "demo") -> Path:
         return self.site_files_dir(site_name) / "network_tools"
 
+    def toolbox_root(self, site_name: str = "demo") -> Path:
+        return self.network_tools_root(site_name) / "toolbox"
+
+    def toolbox_outputs_dir(self, site_name: str = "demo") -> Path:
+        return self.toolbox_root(site_name) / "outputs"
+
     def iperf_root(self, site_name: str = "demo") -> Path:
         return self.network_tools_root(site_name) / "iperf"
 

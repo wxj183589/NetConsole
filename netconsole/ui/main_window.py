@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         elif page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
-            page = NetworkToolsPage(self.i18n, self.site.name, self.paths)
+            page = NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
             self.network_tools_page = page
         elif page_id == "wifi_survey":
             from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
         if page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
-            return NetworkToolsPage(self.i18n, self.site.name, self.paths)
+            return NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
         if page_id == "wifi_survey":
             from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
 

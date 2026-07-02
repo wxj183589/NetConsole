@@ -30,6 +30,10 @@
       "visible": true,
       "enabled": true
     },
+    "network_tools.toolbox": {
+      "visible": true,
+      "enabled": true
+    },
     "module.logs": {
       "visible": true,
       "enabled": true
