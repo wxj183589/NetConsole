@@ -339,9 +339,9 @@ def collect_trackside_optical(
     skipped = [*switch_skipped]
     session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     session_dir = paths.trackside_ap_update_session_dir(site_name, session_id)
-    parsed_dir = session_dir / "parsed"
-    exports_dir = session_dir / "exports"
-    for directory in (parsed_dir, exports_dir):
+    parsed_dir = paths.trackside_ap_update_parsed_session_dir(site_name, session_id)
+    exports_dir = paths.trackside_ap_update_outputs_session_dir(site_name, session_id)
+    for directory in (session_dir, parsed_dir, exports_dir):
         directory.mkdir(parents=True, exist_ok=True)
     started_at = _now()
     cancel_event = cancel_event or Event()

@@ -822,11 +822,11 @@ def test_read_collect_log_text_reads_existing_file(tmp_path):
 
 
 def test_read_collect_log_text_resolves_relative_path_from_site_root(tmp_path):
-    raw_log = tmp_path / "raw" / "collect" / "run-1" / "device.log"
+    raw_log = tmp_path / "files" / "config_center" / "raw_logs" / "collect" / "run-1" / "device.log"
     raw_log.parent.mkdir(parents=True)
     raw_log.write_text("raw output", encoding="utf-8")
 
-    path, text = read_collect_log_text("raw/collect/run-1/device.log", tmp_path)
+    path, text = read_collect_log_text("files/config_center/raw_logs/collect/run-1/device.log", tmp_path)
 
     assert path == raw_log
     assert text == "raw output"

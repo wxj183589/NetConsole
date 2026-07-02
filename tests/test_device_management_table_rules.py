@@ -20,9 +20,10 @@ from netconsole.services.external_terminal import (
     _safe_command,
     available_external_terminal_configs,
     build_external_terminal_command,
+    build_winscp_command,
     launch_external_terminal,
 )
-from netconsole.services.netmiko_connection import choose_connection_target
+from netconsole.services.netmiko_connection import ConnectionTarget, choose_connection_target
 from netconsole.services.securecrt_session_export import export_securecrt_sessions, sanitize_path_part
 from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
@@ -90,6 +91,26 @@ def test_putty_command_passes_password_and_masks_safe_command():
 
     assert args == [r"C:\Tools\putty.exe", "-ssh", "admin@10.0.0.1", "-P", "22", "-pw", "secret"]
     assert "secret" not in _safe_command(args, device)
+
+
+def test_winscp_command_uses_sftp_and_masks_password():
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="sec ret", telnet_enabled=0)
+    target = choose_connection_target(device)
+
+    args = build_winscp_command(device, target, r"C:\Tools\WinSCP.exe")
+
+    assert args == [r"C:\Tools\WinSCP.exe", "sftp://admin:sec%20ret@10.0.0.1:22/", "/newinstance"]
+    assert "sec ret" not in _safe_command(args, device)
+    assert "sec%20ret" not in _safe_command(args, device)
+
+
+def test_winscp_tunnel_target_uses_localhost_port():
+    device = Device(name="SW1", ssh_password="secret")
+    target = ConnectionTarget("SSH", "hp_comware", "127.0.0.1", 32022, "admin", "secret", via_tunnel=True)
+
+    args = build_winscp_command(device, target, r"C:\Tools\WinSCP.exe")
+
+    assert args[1] == "sftp://admin:secret@127.0.0.1:32022/"
 
 
 def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(monkeypatch):
@@ -273,7 +294,8 @@ def test_choose_devices_for_export_uses_selected_when_available():
 
 def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monkeypatch):
     paths = PathResolver(tmp_path)
-    diagnostic_dir = paths.ensure_site_dirs("demo") / "raw" / "diagnostic"
+    paths.ensure_site_dirs("demo")
+    diagnostic_dir = paths.config_center_raw_logs_dir("demo", "20260618", "diagnostic")
     diagnostic_dir.mkdir(parents=True, exist_ok=True)
     first = diagnostic_dir / "SW01_diag_20260618_101200.txt"
     second = diagnostic_dir / "SW02_diag_20260618_101300.txt"
@@ -286,8 +308,20 @@ def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monk
 
     result = open_diagnostic_folder_for_results(
         [
-            DiagnosticDownloadResult(1, "SW01", "20260618_101200", "raw/diagnostic/SW01_diag_20260618_101200.txt", "success"),
-            DiagnosticDownloadResult(2, "SW02", "20260618_101300", "raw/diagnostic/SW02_diag_20260618_101300.txt", "success"),
+            DiagnosticDownloadResult(
+                1,
+                "SW01",
+                "20260618_101200",
+                "files/config_center/raw_logs/20260618/diagnostic/SW01_diag_20260618_101200.txt",
+                "success",
+            ),
+            DiagnosticDownloadResult(
+                2,
+                "SW02",
+                "20260618_101300",
+                "files/config_center/raw_logs/20260618/diagnostic/SW02_diag_20260618_101300.txt",
+                "success",
+            ),
         ],
         "demo",
         paths,
@@ -300,7 +334,8 @@ def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monk
 def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
     paths = PathResolver(tmp_path)
     app_logger.configure_path_resolver(paths)
-    diagnostic_dir = paths.ensure_site_dirs("demo") / "raw" / "diagnostic"
+    paths.ensure_site_dirs("demo")
+    diagnostic_dir = paths.config_center_raw_logs_dir("demo", "20260618", "diagnostic")
     diagnostic_dir.mkdir(parents=True, exist_ok=True)
     diagnostic_file = diagnostic_dir / "SW01_diag_20260618_101200.txt"
     diagnostic_file.write_text("first", encoding="utf-8")
@@ -313,7 +348,15 @@ def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
     monkeypatch.setattr("os.startfile", fail_open, raising=False)
 
     result = open_diagnostic_folder_for_results(
-        [DiagnosticDownloadResult(1, "SW01", "20260618_101200", "raw/diagnostic/SW01_diag_20260618_101200.txt", "success")],
+        [
+            DiagnosticDownloadResult(
+                1,
+                "SW01",
+                "20260618_101200",
+                "files/config_center/raw_logs/20260618/diagnostic/SW01_diag_20260618_101200.txt",
+                "success",
+            )
+        ],
         "demo",
         paths,
     )

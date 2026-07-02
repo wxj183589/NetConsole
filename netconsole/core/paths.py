@@ -8,7 +8,7 @@ from netconsole.core.runtime_environment import ensure_runtime_dir
 from netconsole.core.runtime_environment import validate_runtime_write_path
 
 
-SITE_DIRS = ("db", "parsed", "reports", "backups", "tasks", "metrics")
+SITE_MIN_DIRS = ("db",)
 
 
 def _default_app_root() -> Path:
@@ -74,20 +74,56 @@ class PathResolver:
     def site_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "devices.db"
 
+    def site_tasks_db_path(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "db" / "tasks.db"
+
+    def site_files_dir(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "files"
+
+    def site_cache_dir(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "cache"
+
     def site_metrics_dir(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "metrics"
+        return self.site_cache_dir(site_name) / "metrics"
+
+    def site_backups_dir(self, site_name: str = "demo") -> Path:
+        return self.site_files_dir(site_name) / "backups"
+
+    def site_imports_dir(self, site_name: str = "demo") -> Path:
+        return self.site_files_dir(site_name) / "imports"
+
+    def config_center_root(self, site_name: str = "demo") -> Path:
+        return self.site_files_dir(site_name) / "config_center"
+
+    def config_center_raw_logs_root(self, site_name: str = "demo") -> Path:
+        return self.config_center_root(site_name) / "raw_logs"
+
+    def config_center_raw_logs_dir(self, site_name: str, date_name: str, safe_device_name: str) -> Path:
+        return self.config_center_raw_logs_root(site_name) / date_name / safe_device_name
+
+    def config_center_snapshots_root(self, site_name: str = "demo") -> Path:
+        return self.config_center_root(site_name) / "snapshots"
+
+    def config_center_device_snapshots_dir(self, site_name: str, safe_device_name: str) -> Path:
+        return self.config_center_snapshots_root(site_name) / safe_device_name
+
+    def config_center_outputs_dir(self, site_name: str = "demo") -> Path:
+        return self.config_center_root(site_name) / "outputs"
 
     def site_downloads_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "downloads"
+        return self.site_files_dir(site_name) / "file_manager" / "downloads"
 
     def file_downloads_root(self, site_name: str = "demo") -> Path:
-        return self.site_downloads_root(site_name) / "files"
+        return self.site_downloads_root(site_name)
 
     def device_file_download_dir(self, site_name: str, safe_device_name: str) -> Path:
         return self.file_downloads_root(site_name) / safe_device_name
 
+    def rail_transit_root(self, site_name: str = "demo") -> Path:
+        return self.site_files_dir(site_name) / "rail_transit"
+
     def site_mesh_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "rail_transit" / "mesh"
+        return self.rail_transit_root(site_name) / "mr_raw_mesh"
 
     def mesh_catalog_path(self, site_name: str = "demo") -> Path:
         return self.site_mesh_root(site_name) / "catalog.sqlite"
@@ -105,16 +141,16 @@ class PathResolver:
         return self.mesh_mr_root(site_name, safe_mr_name) / "parsed"
 
     def mesh_mr_export_dir(self, site_name: str, safe_mr_name: str) -> Path:
-        return self.mesh_mr_root(site_name, safe_mr_name) / "exports"
+        return self.mesh_mr_root(site_name, safe_mr_name) / "outputs"
 
     def mesh_mr_online_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
-        return self.mesh_mr_root(site_name, safe_mr_name) / "online_sessions"
+        return self.online_mr_sessions_root(site_name, safe_mr_name)
 
     def mesh_mr_online_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
         return self.mesh_mr_online_sessions_root(site_name, safe_mr_name) / session_id
 
     def online_mr_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "rail_transit" / "online_mr"
+        return self.rail_transit_root(site_name) / "online_mr"
 
     def online_mr_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
         return self.online_mr_root(site_name) / safe_mr_name / "sessions"
@@ -123,46 +159,79 @@ class PathResolver:
         return self.online_mr_sessions_root(site_name, safe_mr_name) / session_id
 
     def trackside_ap_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "rail_transit" / "trackside_ap"
+        return self.rail_transit_root(site_name) / "trackside_ap"
+
+    def trackside_ap_raw_dir(self, site_name: str = "demo") -> Path:
+        return self.trackside_ap_root(site_name) / "raw"
+
+    def trackside_ap_parsed_dir(self, site_name: str = "demo") -> Path:
+        return self.trackside_ap_root(site_name) / "parsed"
+
+    def trackside_ap_outputs_dir(self, site_name: str = "demo") -> Path:
+        return self.trackside_ap_root(site_name) / "outputs"
 
     def trackside_ap_optical_sessions_root(self, site_name: str = "demo") -> Path:
-        return self.trackside_ap_root(site_name) / "optical_sessions"
+        return self.trackside_ap_raw_dir(site_name) / "optical_sessions"
 
     def trackside_ap_optical_session_dir(self, site_name: str, session_id: str) -> Path:
         return self.trackside_ap_optical_sessions_root(site_name) / session_id
 
     def trackside_ap_update_sessions_root(self, site_name: str = "demo") -> Path:
-        return self.trackside_ap_root(site_name) / "update_sessions"
+        return self.trackside_ap_raw_dir(site_name) / "update_sessions"
 
     def trackside_ap_update_session_dir(self, site_name: str, session_id: str) -> Path:
         return self.trackside_ap_update_sessions_root(site_name) / session_id
 
+    def trackside_ap_update_parsed_session_dir(self, site_name: str, session_id: str) -> Path:
+        return self.trackside_ap_parsed_dir(site_name) / "update_sessions" / session_id
+
+    def trackside_ap_update_outputs_session_dir(self, site_name: str, session_id: str) -> Path:
+        return self.trackside_ap_outputs_dir(site_name) / "update_sessions" / session_id
+
     def network_tools_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "network_tools"
+        return self.site_files_dir(site_name) / "network_tools"
 
     def iperf_root(self, site_name: str = "demo") -> Path:
         return self.network_tools_root(site_name) / "iperf"
 
     def iperf_server_dir(self, site_name: str = "demo") -> Path:
-        return self.iperf_root(site_name) / "server"
+        return self.iperf_root(site_name) / "raw" / "server"
 
     def iperf_client_dir(self, site_name: str = "demo") -> Path:
-        return self.iperf_root(site_name) / "client"
+        return self.iperf_root(site_name) / "raw" / "client"
 
     def iperf_db_path(self, site_name: str = "demo") -> Path:
-        return self.iperf_root(site_name) / "iperf_results.sqlite"
+        return self.iperf_root(site_name) / "parsed" / "iperf_results.sqlite"
+
+    def iperf_outputs_dir(self, site_name: str = "demo") -> Path:
+        return self.iperf_root(site_name) / "outputs"
 
     def wireless_scan_root(self, site_name: str = "demo") -> Path:
         return self.network_tools_root(site_name) / "wireless_scan"
 
     def wireless_scan_db_path(self, site_name: str = "demo") -> Path:
-        return self.wireless_scan_root(site_name) / "wireless_scan.sqlite"
+        return self.wireless_scan_root(site_name) / "parsed" / "wireless_scan.sqlite"
 
     def wireless_scan_raw_dir(self, site_name: str = "demo") -> Path:
         return self.wireless_scan_root(site_name) / "raw"
 
     def wireless_scan_export_dir(self, site_name: str = "demo") -> Path:
-        return self.wireless_scan_root(site_name) / "exports"
+        return self.wireless_scan_root(site_name) / "outputs"
+
+    def wireless_scan_projects_dir(self, site_name: str = "demo") -> Path:
+        return self.wireless_scan_root(site_name) / "projects"
+
+    def car_network_diagnostic_root(self, site_name: str = "demo") -> Path:
+        return self.rail_transit_root(site_name) / "car_network_diagnostic"
+
+    def car_network_diagnostic_raw_dir(self, site_name: str = "demo") -> Path:
+        return self.car_network_diagnostic_root(site_name) / "raw"
+
+    def car_network_diagnostic_parsed_dir(self, site_name: str = "demo") -> Path:
+        return self.car_network_diagnostic_root(site_name) / "parsed"
+
+    def car_network_diagnostic_outputs_dir(self, site_name: str = "demo") -> Path:
+        return self.car_network_diagnostic_root(site_name) / "outputs"
 
     @property
     def shared_runtime_dir(self) -> Path:
@@ -178,13 +247,20 @@ class PathResolver:
 
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
-        for dirname in SITE_DIRS:
+        ensure_runtime_dir(site_path)
+        for dirname in SITE_MIN_DIRS:
             ensure_runtime_dir(site_path / dirname)
-        ensure_runtime_dir(self.file_downloads_root(site_name))
-        ensure_runtime_dir(self.site_mesh_root(site_name))
-        ensure_runtime_dir(self.trackside_ap_optical_sessions_root(site_name))
-        ensure_runtime_dir(self.trackside_ap_update_sessions_root(site_name))
         return site_path
+
+    def ensure_site_files_dir(self, site_name: str = "demo") -> Path:
+        path = self.site_files_dir(site_name)
+        ensure_runtime_dir(path)
+        return path
+
+    def ensure_site_cache_dir(self, site_name: str = "demo") -> Path:
+        path = self.site_cache_dir(site_name)
+        ensure_runtime_dir(path)
+        return path
 
     def ensure_project_dirs(self) -> None:
         runtime_paths = (

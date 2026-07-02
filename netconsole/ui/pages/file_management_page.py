@@ -37,6 +37,7 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
+from netconsole.services.external_terminal import launch_winscp
 from netconsole.services.file_transfer_service import (
     FILE_TRANSFER_MAX_CONCURRENCY,
     FileTransferService,
@@ -51,7 +52,6 @@ from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.path_preference_service import PathPreferenceService
-from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 
@@ -253,6 +253,7 @@ class FileManagementPage(QWidget):
         self.mesh_import_workers: dict[int, MeshAutoImportWorker] = {}
         self.connect_worker: SftpConnectWorker | None = None
         self.list_worker: SftpListWorker | None = None
+        self.active_winscp_sessions: list[object] = []
 
         self.site_label = QLabel()
         self.group_label = QLabel()
@@ -263,6 +264,7 @@ class FileManagementPage(QWidget):
         self.ip_label = QLabel()
         self.type_label = QLabel()
         self.connect_button = QPushButton()
+        self.external_winscp_button = QPushButton()
         self.disconnect_button = QPushButton()
         self.connection_status_label = QLabel()
         self.protocol_label = QLabel()
@@ -305,6 +307,7 @@ class FileManagementPage(QWidget):
             self.ip_label,
             self.type_label,
             self.connect_button,
+            self.external_winscp_button,
             self.disconnect_button,
             self.connection_status_label,
             self.protocol_label,
@@ -328,6 +331,7 @@ class FileManagementPage(QWidget):
         self.device_search_edit.textChanged.connect(lambda _text: self.refresh_devices())
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
         self.connect_button.clicked.connect(self.connect_sftp)
+        self.external_winscp_button.clicked.connect(self.open_external_winscp)
         self.disconnect_button.clicked.connect(self.disconnect_sftp)
         self.local_up_button.clicked.connect(self.local_up)
         self.local_refresh_button.clicked.connect(self.refresh_local)
@@ -355,6 +359,7 @@ class FileManagementPage(QWidget):
     def _apply_feature_gate(self) -> None:
         apply_feature_to_widget(self.feature_gate, "file.mesh_log_download", self.remote_mesh_logs_button)
         apply_feature_to_widget(self.feature_gate, "file.mesh_log_download", self.download_button)
+        apply_feature_to_widget(self.feature_gate, "file.external_winscp", self.external_winscp_button)
 
     def _local_panel(self) -> QWidget:
         panel = QWidget()
@@ -393,6 +398,7 @@ class FileManagementPage(QWidget):
         self.group_label.setText(self.i18n.t("groups.group"))
         self.device_search_edit.setPlaceholderText("搜索设备 / IP / 站点 / 分组 / 类型")
         self.connect_button.setText(self.i18n.t("file_management.connect"))
+        self.external_winscp_button.setText(self.i18n.t("file_management.external_winscp"))
         self.disconnect_button.setText(self.i18n.t("file_management.disconnect"))
         self.local_title.setText(self.i18n.t("file_management.local_files"))
         self.remote_title.setText(self.i18n.t("file_management.remote_files"))
@@ -500,6 +506,7 @@ class FileManagementPage(QWidget):
         self.disconnect_sftp()
         device = self.current_device()
         self.connect_button.setEnabled(device is not None)
+        self.external_winscp_button.setEnabled(device is not None)
         self.update_device_labels()
         self.remote_files = []
         self.checked_remote_paths.clear()
@@ -537,13 +544,20 @@ class FileManagementPage(QWidget):
         return self.local_path
 
     def is_vehicle_mr_device(self, device: Device) -> bool:
-        if device.group_id is None or self.group_repository is None:
-            return False
-        try:
-            group = self.group_repository.get(int(device.group_id))
-        except Exception:
-            return False
-        return group.name == VEHICLE_MR_GROUP_NAME
+        values = (device.device_type, device.name, device.system_name)
+        return any("MR" in str(value or "").upper() for value in values)
+
+    def open_external_winscp(self) -> None:
+        device = self.current_device()
+        if device is None:
+            QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_device"))
+            return
+        result = launch_winscp(device, self.settings, self.active_winscp_sessions)
+        if result.success:
+            app_logger.log_info("WINSCP_LAUNCHED", f"device={device.name or device.primary_address}, command={result.safe_command}")
+            QMessageBox.information(self, self.i18n.t("file_management.external_winscp"), result.message)
+        else:
+            QMessageBox.warning(self, self.i18n.t("file_management.external_winscp"), result.message)
 
     def connect_sftp(self) -> None:
         device = self.current_device()

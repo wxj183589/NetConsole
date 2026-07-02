@@ -23,10 +23,30 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.sites_dir == tmp_path / "data" / "sites"
     assert paths.site_dir() == site
     assert paths.site_db_path() == site / "db" / "devices.db"
-    assert paths.site_metrics_dir() == site / "metrics"
-    for dirname in ("db", "parsed", "reports", "backups", "tasks", "metrics"):
-        assert (site / dirname).is_dir()
-    assert not (site / "raw").exists()
+    assert paths.site_metrics_dir() == site / "cache" / "metrics"
+    assert (site / "db").is_dir()
+    for dirname in ("raw", "parsed", "reports", "downloads", "tasks", "metrics", "rail_transit", "network_tools", "backups"):
+        assert not (site / dirname).exists()
+    assert not (site / "files").exists()
+    assert not (site / "cache").exists()
+
+
+def test_path_resolver_site_paths_use_files_and_cache_layout(tmp_path):
+    paths = PathResolver(tmp_path)
+    site = paths.site_dir("demo")
+
+    assert paths.config_center_raw_logs_root("demo") == site / "files" / "config_center" / "raw_logs"
+    assert paths.config_center_device_snapshots_dir("demo", "SW1") == site / "files" / "config_center" / "snapshots" / "SW1"
+    assert paths.config_center_outputs_dir("demo") == site / "files" / "config_center" / "outputs"
+    assert paths.device_file_download_dir("demo", "SW1") == site / "files" / "file_manager" / "downloads" / "SW1"
+    assert paths.mesh_mr_raw_dir("demo", "MR1") == site / "files" / "rail_transit" / "mr_raw_mesh" / "MR1" / "raw"
+    assert paths.online_mr_session_dir("demo", "MR1", "s1") == site / "files" / "rail_transit" / "online_mr" / "MR1" / "sessions" / "s1"
+    assert paths.trackside_ap_raw_dir("demo") == site / "files" / "rail_transit" / "trackside_ap" / "raw"
+    assert paths.car_network_diagnostic_outputs_dir("demo") == site / "files" / "rail_transit" / "car_network_diagnostic" / "outputs"
+    assert paths.iperf_db_path("demo") == site / "files" / "network_tools" / "iperf" / "parsed" / "iperf_results.sqlite"
+    assert paths.wireless_scan_raw_dir("demo") == site / "files" / "network_tools" / "wireless_scan" / "raw"
+    assert paths.site_backups_dir("demo") == site / "files" / "backups"
+    assert paths.site_metrics_dir("demo") == site / "cache" / "metrics"
 
 
 def test_path_resolver_creates_project_dirs(tmp_path):

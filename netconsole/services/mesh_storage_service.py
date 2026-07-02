@@ -48,7 +48,7 @@ class MeshStorageService:
             mr_id=str(uuid4()),
             display_name=name,
             safe_folder_name=safe,
-            relative_folder_path=f"rail_transit/mesh/{safe}",
+            relative_folder_path=f"files/rail_transit/mr_raw_mesh/{safe}",
             linked_device_id=linked_device_id,
             created_at=now,
             updated_at=now,

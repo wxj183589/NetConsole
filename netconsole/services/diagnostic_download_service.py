@@ -85,7 +85,8 @@ class DiagnosticDownloadService:
         )
 
     def _write_diagnostic_file(self, device: Device, timestamp: str, text: str) -> Path:
-        directory = self.paths.ensure_site_dirs(self.site_name) / "raw" / "diagnostic"
+        date_name = timestamp.split("_", 1)[0] if "_" in timestamp else timestamp[:8]
+        directory = self.paths.config_center_raw_logs_dir(self.site_name, date_name, "diagnostic")
         directory.mkdir(parents=True, exist_ok=True)
         path = unique_path(directory / f"{safe_device_name(device.name or device.system_name or 'device')}_diag_{timestamp}.txt")
         path.write_text(clean_h3c_device_text(text), encoding="utf-8")

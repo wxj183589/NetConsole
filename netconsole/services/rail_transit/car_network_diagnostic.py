@@ -1096,7 +1096,7 @@ def _sort_nodes(nodes: list[CarNetworkNode]) -> list[CarNetworkNode]:
 
 
 def car_network_root(paths: PathResolver, site_name: str) -> Path:
-    root = paths.site_dir(site_name) / "rail_transit" / "car_network"
+    root = paths.car_network_diagnostic_parsed_dir(site_name)
     root.mkdir(parents=True, exist_ok=True)
     return root
 

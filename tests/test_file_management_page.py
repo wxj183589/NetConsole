@@ -286,7 +286,7 @@ def test_file_management_mesh_logs_for_vehicle_mr_use_mesh_raw_dir(tmp_path):
     database.initialize()
     repository = DeviceRepository(database)
     group = DeviceGroupRepository(database, "demo").create(VEHICLE_MR_GROUP_NAME)
-    device = repository.create(Device(name="MR2", primary_address="192.0.2.10", group_id=group.id))
+    device = repository.create(Device(name="MR2", primary_address="192.0.2.10", group_id=group.id, device_type="MR"))
     paths = PathResolver(tmp_path)
     page = FileManagementPage(repository, I18n("zh_CN"), "demo", paths)
     remote = RemoteDeviceFile("meshlog.log", "flash:/meshlog.log", 1, "2026-06-29 12:00:00", "meshlog")
@@ -333,7 +333,7 @@ def test_file_management_non_vehicle_mr_keeps_normal_download_dir(tmp_path):
     database.initialize()
     repository = DeviceRepository(database)
     group = DeviceGroupRepository(database, "demo").create("车站")
-    device = repository.create(Device(name="SW1", primary_address="192.0.2.20", group_id=group.id))
+    device = repository.create(Device(name="SW1", primary_address="192.0.2.20", group_id=group.id, device_type="SW"))
     paths = PathResolver(tmp_path)
     page = FileManagementPage(repository, I18n("zh_CN"), "demo", paths)
     page.local_path = paths.device_file_download_dir("demo", "SW1")
@@ -365,7 +365,7 @@ def test_file_management_default_local_dir_uses_downloads_not_raw(tmp_path):
 
     relative_path = page.default_local_dir(device).relative_to(page.paths.site_dir("demo")).as_posix()
 
-    assert relative_path.startswith("downloads/files/")
+    assert relative_path.startswith("files/file_manager/downloads/")
     assert "/raw/" not in f"/{relative_path}/"
 
 

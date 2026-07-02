@@ -215,8 +215,8 @@ AC_FEATURE_ORDER = (
     "ac.trackside_ap_plan",
     "ac.ap_online_overview",
     "ac.fit_ap_resources",
-    "ac.fit_ap_extensions",
     "ac.fit_ap_optical",
+    "ac.fit_ap_extensions",
 )
 
 

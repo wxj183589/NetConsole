@@ -25,6 +25,19 @@ def test_site_manager_creates_demo_and_chinese_site(tmp_path):
     assert chinese.database_path == tmp_path / "data" / "sites" / chinese_site_name / "db" / "devices.db"
 
 
+def test_new_site_root_has_only_minimal_layout(tmp_path):
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+
+    site = manager.create_site("A")
+
+    root_names = {path.name for path in site.root_path.iterdir()}
+    assert {"db", "site_meta.json"}.issubset(root_names)
+    assert not {"raw", "parsed", "reports", "downloads", "tasks", "metrics", "rail_transit", "network_tools", "backups"} & root_names
+    assert "files" not in root_names
+    assert "cache" not in root_names
+
+
 def test_demo_site_has_demo_data_and_new_site_is_empty(tmp_path):
     manager = SiteManager(PathResolver(tmp_path))
 

@@ -252,7 +252,7 @@ def test_realtime_session_collects_config_inside_same_session(tmp_path: Path) ->
 
     meta = collector.start()
 
-    config_path = collector.session.session_dir / "config" / "current_configuration.txt"
+    config_path = collector.session.session_dir / "outputs" / "current_configuration.txt"
     root_config_dir = collector.session.session_dir.parent.parent / "config"
     saved_meta = json.loads((collector.session.session_dir / "session_meta.json").read_text(encoding="utf-8"))
     assert meta.session_id == collector.session.meta.session_id
@@ -263,7 +263,7 @@ def test_realtime_session_collects_config_inside_same_session(tmp_path: Path) ->
     assert saved_meta["config_collect_enabled"] is True
     assert saved_meta["config_collect_status"] == "success"
     assert saved_meta["config_file_path"] == str(config_path)
-    assert saved_meta["raw_log_path"] == str(collector.session.session_dir / "terminal_monitor_raw.txt")
+    assert saved_meta["raw_log_path"] == str(collector.session.session_dir / "raw" / "terminal_monitor_raw.txt")
     assert "display current-configuration" in config_path.read_text(encoding="utf-8")
 
 
@@ -274,13 +274,13 @@ def test_config_only_session_writes_config_and_meta(tmp_path: Path) -> None:
 
     meta = collector.collect_config_only()
 
-    config_path = collector.session.session_dir / "config" / "current_configuration.txt"
+    config_path = collector.session.session_dir / "outputs" / "current_configuration.txt"
     saved_meta = json.loads((collector.session.session_dir / "session_meta.json").read_text(encoding="utf-8"))
     assert meta.session_type == "config_only"
     assert saved_meta["session_type"] == "config_only"
     assert saved_meta["config_collect_status"] == "success"
     assert saved_meta["config_file_path"] == str(config_path)
-    assert saved_meta["raw_log_path"] == str(collector.session.session_dir / "terminal_monitor_raw.txt")
+    assert saved_meta["raw_log_path"] == str(collector.session.session_dir / "raw" / "terminal_monitor_raw.txt")
     assert saved_meta["ended_at"]
     assert connection.commands == list(CONFIG_COLLECT_COMMANDS)
 
@@ -307,7 +307,7 @@ def test_terminal_monitor_raw_receives_collector_raw_output(tmp_path: Path) -> N
     collector.start()
     collector.run_once(TASK_MESH_LINK)
 
-    terminal_raw = collector.session.session_dir / "terminal_monitor_raw.txt"
+    terminal_raw = collector.session.session_dir / "raw" / "terminal_monitor_raw.txt"
     text = terminal_raw.read_text(encoding="utf-8")
     assert "display wlan mesh-link" in text
     assert LINE_A in text

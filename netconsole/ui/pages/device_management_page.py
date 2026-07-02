@@ -445,12 +445,23 @@ class DeviceManagementPage(QWidget):
         return [self.repository.get(current_id)] if current_id is not None else []
 
     def _filtered_devices(self):
+        selected_group_data = self.group_filter.currentData()
         return self.repository.list(
             search=self.search_input.text().strip() or None,
             vendor=self.vendor_filter.currentData(),
             device_type=self.type_filter.currentData(),
-            group_filter=group_filter_to_repository_value(self.group_filter.currentData()),
+            group_filter=self._repository_group_filter_value(selected_group_data),
         )
+
+    def _repository_group_filter_value(self, value: object) -> int | str | None:
+        try:
+            return group_filter_to_repository_value(value)
+        except (TypeError, ValueError) as exc:
+            app_logger.log_warning(
+                "DEVICE_GROUP_FILTER_INVALID_VALUE",
+                f"site_name={self.site_name}, selected_text={self.group_filter.currentText()}, selected_data={value}, error={exc}",
+            )
+            return None
 
     @staticmethod
     def _open_folder(path: Path) -> None:
@@ -556,11 +567,21 @@ class DeviceManagementPage(QWidget):
             return []
 
     def refresh(self) -> None:
+        selected_group_data = self.group_filter.currentData()
+        repository_group_filter = self._repository_group_filter_value(selected_group_data)
         devices = self.repository.list(
             search=self.search_input.text().strip() or None,
             vendor=self.vendor_filter.currentData(),
             device_type=self.type_filter.currentData(),
-            group_filter=group_filter_to_repository_value(self.group_filter.currentData()),
+            group_filter=repository_group_filter,
+        )
+        app_logger.log_info(
+            "DEVICE_GROUP_FILTER_APPLIED",
+            (
+                f"site_name={self.site_name}, selected_text={self.group_filter.currentText()}, "
+                f"selected_data={selected_group_data}, selected_data_type={type(selected_group_data).__name__}, "
+                f"repository_filter_value={repository_group_filter}, result_count={len(devices)}"
+            ),
         )
         self.table.set_group_names({int(group.id): group.name for group in self._list_groups() if group.id is not None})
         self.table.set_external_terminal_action_state(
@@ -624,6 +645,7 @@ class DeviceManagementPage(QWidget):
         self.search_input.clear()
         self.vendor_filter.setCurrentIndex(0)
         self.type_filter.setCurrentIndex(0)
+        self._populate_filters()
         self.group_filter.setCurrentIndex(0)
         self.refresh()
 

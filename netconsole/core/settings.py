@@ -25,6 +25,7 @@ DEFAULT_SETTINGS = {
     "external_terminal/securecrt_path": "",
     "external_terminal/xshell_path": "",
     "external_terminal/putty_path": "",
+    "external_terminal/winscp_path": "",
     "external_terminal/pass_password": False,
     "external_terminal/securecrt_sessions_root": "",
     "external_terminal/securecrt_template_ini": "",

@@ -154,15 +154,15 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
     page.refresh_all()
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR2", "MR10"]
     assert page.create_mr_button.parent() is None
-    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "raw").exists()
-    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "parsed").exists()
-    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2" / "exports").exists()
+    assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2" / "raw").exists()
+    assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2" / "parsed").exists()
+    assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2" / "outputs").exists()
 
     repository.update_group(int(mr2.id), station.id)
     page.refresh_all()
 
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR10"]
-    assert Path(tmp_path / "data" / "sites" / "demo" / "rail_transit" / "mesh" / "MR2").exists()
+    assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2").exists()
 
 
 def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, monkeypatch):

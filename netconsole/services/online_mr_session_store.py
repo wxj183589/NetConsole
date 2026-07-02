@@ -52,7 +52,7 @@ class OnlineMrSessionStore:
         started = now or datetime.now()
         session_id = f"{started:%Y%m%d_%H%M%S}_{id(config) & 0xFFFFFF:06x}"
         session_dir = self.paths.online_mr_session_dir(config.site, config.safe_mr_name, session_id)
-        for relative in ("raw", "parsed", "view", "summary", "logs", "exports", "config"):
+        for relative in ("raw", "parsed", "view", "logs", "outputs"):
             (session_dir / relative).mkdir(parents=True, exist_ok=True)
         enabled = bool(config.collect_config_on_start) if config_collect_enabled is None else bool(config_collect_enabled)
         meta = OnlineMrSessionMeta(
@@ -76,7 +76,7 @@ class OnlineMrSessionStore:
             session_type=session_type,
             config_collect_enabled=enabled,
             config_collect_status="skipped" if not enabled else "pending",
-            raw_log_path=str(session_dir / "terminal_monitor_raw.txt"),
+            raw_log_path=str(session_dir / "raw" / "terminal_monitor_raw.txt"),
         )
         session = OnlineMrSession(session_dir, meta)
         session.initialize_database()
@@ -296,8 +296,7 @@ class OnlineMrSession:
             path = self.session_dir / "raw" / raw_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(exist_ok=True)
-        (self.session_dir / "terminal_monitor_raw.txt").touch(exist_ok=True)
-        (self.session_dir / "config").mkdir(parents=True, exist_ok=True)
+        (self.session_dir / "raw" / "terminal_monitor_raw.txt").touch(exist_ok=True)
 
     def update_status(self, status: str) -> None:
         self.meta.status = status
@@ -318,7 +317,7 @@ class OnlineMrSession:
         return path
 
     def write_current_configuration(self, raw_text: str) -> Path:
-        path = self.session_dir / "config" / "current_configuration.txt"
+        path = self.session_dir / "outputs" / "current_configuration.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(raw_text.rstrip() + "\n", encoding="utf-8", errors="replace")
         return path
@@ -366,7 +365,7 @@ class OnlineMrSession:
         return f"raw/{raw_name}", offset_start, offset_start + len(payload.encode("utf-8"))
 
     def append_terminal_monitor_raw(self, text: str, collected_at: datetime | None = None) -> Path:
-        path = self.session_dir / "terminal_monitor_raw.txt"
+        path = self.session_dir / "raw" / "terminal_monitor_raw.txt"
         stamp = (collected_at or datetime.now()).isoformat(sep=" ", timespec="milliseconds")
         payload = text if text.endswith("\n") else f"{text}\n"
         with path.open("a", encoding="utf-8", errors="replace") as file:

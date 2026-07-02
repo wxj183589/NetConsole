@@ -138,10 +138,10 @@ def collect_h3c_ac_resources(
     collect_run_uuid = str(uuid4())
     started_at = _now()
     persist_raw_logs = _persist_raw_logs()
-    run_dir = paths.ensure_site_dirs(site_name) / "raw" / "ac" / collect_run_uuid
+    run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
     raw_log_file = run_dir / f"{ac_device.device_uuid}.log"
     commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
-    relative_raw_log_path = f"raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log" if persist_raw_logs else ""
+    relative_raw_log_path = f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log" if persist_raw_logs else ""
     result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
 
     fact_repository.create_collect_run(
@@ -150,7 +150,7 @@ def collect_h3c_ac_resources(
             "collect_type": "ac_resources",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
+            "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )
@@ -322,7 +322,7 @@ def collect_h3c_fit_ap_optical(
     collect_run_uuid = str(uuid4())
     started_at = _now()
     persist_raw_logs = _persist_raw_logs()
-    run_dir = paths.ensure_site_dirs(site_name) / "raw" / "ac" / collect_run_uuid
+    run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
     fit_ap_dir = run_dir / "fit_ap"
     fact_repository.create_collect_run(
         {
@@ -330,7 +330,7 @@ def collect_h3c_fit_ap_optical(
             "collect_type": "fit_ap_optical",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
+            "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )
@@ -882,7 +882,7 @@ def _collect_single_fit_ap_optical(
     ap_ip = str(ap_row.get("ap_ip") or "")
     raw_log_file = fit_ap_dir / f"{_safe_filename(ap_name)}.log"
     commands_file = fit_ap_dir / f"{_safe_filename(ap_name)}_commands.jsonl"
-    relative_raw_log_path = f"raw/ac/{collect_run_uuid}/fit_ap/{_safe_filename(ap_name)}.log" if _persist_raw_logs() else ""
+    relative_raw_log_path = f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}/fit_ap/{_safe_filename(ap_name)}.log" if _persist_raw_logs() else ""
     collected_at = _now()
     base = {
         "ac_device_uuid": ac_device.device_uuid,

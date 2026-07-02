@@ -720,7 +720,7 @@ class VehicleMrOnlineStore:
     def __init__(self, paths: PathResolver, site_name: str) -> None:
         self.paths = paths
         self.site_name = site_name
-        self.db_path = paths.site_dir(site_name) / "rail_transit" / "vehicle_mr_online" / "vehicle_mr_online.sqlite"
+        self.db_path = paths.online_mr_root(site_name) / "parsed" / "vehicle_mr_online.sqlite"
         self.initialize()
 
     def initialize(self) -> None:
@@ -1598,6 +1598,6 @@ class VehicleMrOnlineCollector:
 
 
 def ensure_vehicle_mr_root(paths: PathResolver, site_name: str) -> Path:
-    root = paths.site_dir(site_name) / "rail_transit" / "vehicle_mr_online"
+    root = paths.online_mr_root(site_name)
     root.mkdir(parents=True, exist_ok=True)
     return root

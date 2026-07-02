@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-PROTECTED_CATEGORIES = {"database", "reports", "backups", "exports", "config", "file_downloads"}
-CLEANABLE_CATEGORIES = {"legacy_debug_data", "runtime_cache", "debug_logs"}
+PROTECTED_CATEGORIES = {"database", "config_center", "file_manager", "rail_transit", "network_tools", "backups", "config"}
+CLEANABLE_CATEGORIES = {"cache", "debug_logs"}
 
 
 @dataclass(frozen=True)
@@ -19,18 +19,17 @@ class DiskCategory:
 def scan_data_disk(data_dir: Path, runtime_dir: Path | None = None) -> list[DiskCategory]:
     data_root = Path(data_dir)
     runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root.parent / "runtime"
+    sites_root = data_root / "sites"
     categories = [
-        DiskCategory("database", data_root / "sites", _size_matching(data_root / "sites", {".db", ".sqlite", ".sqlite3"}), False),
-        DiskCategory("reports", data_root, _size_named_dirs(data_root, {"reports"}), False),
-        DiskCategory("backups", data_root, _size_named_dirs(data_root, {"backups", "db_backup"}), False),
-        DiskCategory("exports", data_root, _size_named_dirs(data_root, {"exports", "export"}), False),
+        DiskCategory("database", sites_root, _size_site_children(sites_root, "db"), False),
+        DiskCategory("config_center", sites_root, _size_site_children(sites_root, "files/config_center"), False),
+        DiskCategory("file_manager", sites_root, _size_site_children(sites_root, "files/file_manager"), False),
+        DiskCategory("rail_transit", sites_root, _size_site_children(sites_root, "files/rail_transit"), False),
+        DiskCategory("network_tools", sites_root, _size_site_children(sites_root, "files/network_tools"), False),
+        DiskCategory("backups", sites_root, _size_site_children(sites_root, "files/backups"), False),
         DiskCategory("config", data_root / "config", _dir_size(data_root / "config"), False),
-        DiskCategory("file_downloads", data_root, _size_named_dirs(data_root, {"downloads", "downloaded_files", "file_management"}), False),
-        DiskCategory("mesh_archives", data_root, _size_named_dirs(data_root, {"archive", "archives"}), False),
-        DiskCategory("online_mr_data", data_root, _size_named_dirs(data_root, {"online_mr"}), False),
-        DiskCategory("legacy_debug_data", data_root, _size_named_dirs(data_root, {"raw"}), True),
+        DiskCategory("cache", data_root, _size_site_children(sites_root, "cache") + _dir_size(runtime_root / "cache"), True),
         DiskCategory("debug_logs", data_root, _size_named_dirs(data_root, {"debug", "logs"}), True),
-        DiskCategory("runtime_cache", runtime_root / "cache", _dir_size(runtime_root / "cache"), True),
     ]
     return categories
 
@@ -43,12 +42,12 @@ def clean_data_disk(data_dir: Path, runtime_dir: Path | None = None, categories:
     data_root = Path(data_dir)
     runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root.parent / "runtime"
     result: dict[str, int] = {}
-    if "legacy_debug_data" in requested:
-        result["legacy_debug_data"] = _remove_named_dirs(data_root, {"raw"})
     if "debug_logs" in requested:
         result["debug_logs"] = _remove_named_dirs(data_root, {"debug", "logs"})
-    if "runtime_cache" in requested:
-        result["runtime_cache"] = _clear_dir(runtime_root / "cache")
+    if "cache" in requested:
+        removed = _clear_site_children(data_root / "sites", "cache")
+        removed += _clear_dir(runtime_root / "cache")
+        result["cache"] = removed
     return result
 
 
@@ -68,6 +67,28 @@ def _size_matching(path: Path, suffixes: set[str]) -> int:
     if not path.exists():
         return 0
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file() and item.suffix.casefold() in suffixes)
+
+
+def _size_site_children(sites_root: Path, relative: str) -> int:
+    if not sites_root.exists():
+        return 0
+    total = 0
+    parts = Path(relative).parts
+    for site in sites_root.iterdir():
+        if site.is_dir():
+            total += _dir_size(site.joinpath(*parts))
+    return total
+
+
+def _clear_site_children(sites_root: Path, relative: str) -> int:
+    if not sites_root.exists():
+        return 0
+    removed = 0
+    parts = Path(relative).parts
+    for site in sites_root.iterdir():
+        if site.is_dir():
+            removed += _clear_dir(site.joinpath(*parts))
+    return removed
 
 
 def _size_named_dirs(root: Path, names: set[str]) -> int:

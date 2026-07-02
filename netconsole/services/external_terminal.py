@@ -2,24 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import subprocess
+import threading
 from typing import Protocol
 from urllib.parse import quote
 
 from netconsole.models.device import Device
-from netconsole.services.netmiko_connection import ConnectionTarget, connection_targets, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import ConnectionTarget, connection_targets, prepared_connection_target, sanitize_sensitive_text
 
 
 class ExternalTerminalType:
     SECURECRT = "securecrt"
     XSHELL = "xshell"
     PUTTY = "putty"
+    WINSCP = "winscp"
 
 
 TERMINAL_LABELS = {
     ExternalTerminalType.SECURECRT: "SecureCRT",
     ExternalTerminalType.XSHELL: "Xshell",
     ExternalTerminalType.PUTTY: "PuTTY",
+    ExternalTerminalType.WINSCP: "WinSCP",
 }
 
 
@@ -28,6 +32,12 @@ TERMINAL_SETTING_KEYS = {
     ExternalTerminalType.XSHELL: "external_terminal/xshell_path",
     ExternalTerminalType.PUTTY: "external_terminal/putty_path",
 }
+
+WINSCP_SETTING_KEY = "external_terminal/winscp_path"
+WINSCP_COMMON_PATHS = (
+    r"C:\Program Files (x86)\WinSCP\WinSCP.exe",
+    r"C:\Program Files\WinSCP\WinSCP.exe",
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,14 @@ class ExternalTerminalConfig:
 
 @dataclass(frozen=True)
 class ExternalTerminalLaunchResult:
+    success: bool
+    message: str
+    args: list[str]
+    safe_command: str = ""
+
+
+@dataclass(frozen=True)
+class WinScpLaunchResult:
     success: bool
     message: str
     args: list[str]
@@ -107,6 +125,67 @@ def build_external_terminal_command(
         raise ValueError(f"不支持的外部终端类型: {terminal_type}")
 
     raise ValueError(f"不支持的连接协议: {target.protocol}")
+
+
+def find_winscp_exe(settings: SettingsLike | None = None) -> str:
+    configured = ""
+    if settings is not None:
+        configured = str(settings.get_value(WINSCP_SETTING_KEY, "") or "").strip()
+    if configured and Path(configured).is_file():
+        return configured
+    path_candidate = shutil.which("WinSCP.exe") or shutil.which("winscp.exe")
+    if path_candidate:
+        return path_candidate
+    for candidate in WINSCP_COMMON_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    return ""
+
+
+def build_winscp_command(device: Device, target: ConnectionTarget, exe_path: str) -> list[str]:
+    exe = str(exe_path or "").strip()
+    if not exe:
+        raise ValueError("未找到 WinSCP，请先配置 WinSCP.exe 路径。")
+    if str(target.protocol or "").casefold() != "ssh":
+        raise ValueError("当前设备未配置 SSH/SFTP 登录信息。")
+    username = quote(str(target.username or ""), safe="")
+    password = quote(str(target.password or ""), safe="")
+    auth = username
+    if password:
+        auth = f"{username}:{password}"
+    url = f"sftp://{auth}@{target.host}:{int(target.port)}/" if auth else f"sftp://{target.host}:{int(target.port)}/"
+    return [exe, url, "/newinstance"]
+
+
+def launch_winscp(device: Device, settings: SettingsLike | None = None, sessions: list[object] | None = None) -> WinScpLaunchResult:
+    exe = find_winscp_exe(settings)
+    if not exe:
+        return WinScpLaunchResult(False, "未找到 WinSCP，请先配置 WinSCP.exe 路径。", [])
+    target = next((item for item in connection_targets(device) if str(item.protocol or "").casefold() == "ssh"), None)
+    if target is None or not str(target.username or "").strip():
+        return WinScpLaunchResult(False, "当前设备未配置 SSH/SFTP 登录信息。", [])
+    if target.via_tunnel:
+        thread = threading.Thread(target=_launch_winscp_via_tunnel, args=(device, target, exe, sessions), daemon=True)
+        thread.start()
+        if sessions is not None:
+            sessions.append(thread)
+        args_preview = [exe, "sftp://***@127.0.0.1:0/", "/newinstance"]
+        return WinScpLaunchResult(True, "已启动 WinSCP。", args_preview, _safe_command(args_preview, device))
+    try:
+        args = build_winscp_command(device, target, exe)
+        subprocess.Popen(args, shell=False)
+    except Exception as exc:
+        return WinScpLaunchResult(False, sanitize_sensitive_text(str(exc), device), [])
+    return WinScpLaunchResult(True, "已启动 WinSCP。", args, _safe_command(args, device))
+
+
+def _launch_winscp_via_tunnel(device: Device, target: ConnectionTarget, exe: str, sessions: list[object] | None) -> None:
+    with prepared_connection_target(target) as prepared:
+        args = build_winscp_command(device, prepared, exe)
+        process = subprocess.Popen(args, shell=False)
+        if sessions is not None:
+            sessions.append(process)
+        process.wait()
 
 
 def launch_external_terminal(device: Device, config: ExternalTerminalConfig) -> ExternalTerminalLaunchResult:

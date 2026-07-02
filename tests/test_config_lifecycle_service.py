@@ -4,6 +4,7 @@ from netconsole.models.device import Device
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.services import command_guard
 from netconsole.services.config_lifecycle_service import (
+    BatchConfigItemResult,
     ConfigLifecycleService,
     ConfigOperationResult,
     compare_config_text,
@@ -24,11 +25,17 @@ def test_config_snapshot_storage_uses_required_site_device_structure(tmp_path):
     device_uuid = "123e4567-e89b-42d3-a456-426614174000"
     device = Device(id=7, device_uuid=device_uuid, name="核心交换机 1", ip_address="192.0.2.10")
 
-    snapshot = service._write_snapshot(device, "running", "20260618_101200", "line 1\n", raw_log_path=f"raw/config/核心交换机_1__{device_uuid}/logs/run.log")
+    snapshot = service._write_snapshot(
+        device,
+        "running",
+        "20260618_101200",
+        "line 1\n",
+        raw_log_path=f"files/config_center/raw_logs/20260618/核心交换机_1__{device_uuid}/run.log",
+    )
 
     assert snapshot.type == "running"
     assert snapshot.timestamp == "20260618_101200"
-    assert snapshot.file_path == f"raw/config/核心交换机_1__{device_uuid}/running/20260618_101200.txt"
+    assert snapshot.file_path == f"files/config_center/snapshots/核心交换机_1__{device_uuid}/running/20260618_101200.txt"
     assert (paths.site_dir("demo") / snapshot.file_path).read_text(encoding="utf-8") == "line 1\n"
     assert len(snapshot.hash) == 64
 
@@ -197,6 +204,40 @@ def test_batch_config_download_keeps_failures_isolated():
     results = run_batch_config_download(devices, FakeService)
 
     assert [item.success for item in sorted(results, key=lambda item: item.device_name)] == [True, False]
+
+
+def test_batch_zip_export_uses_current_results_structure(tmp_path):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    service = ConfigLifecycleService("demo", db, paths)
+    device = Device(id=1, device_uuid="123e4567-e89b-42d3-a456-426614174001", name="SW-A")
+    raw_log_path = "files/config_center/raw_logs/20260618/SW-A/run.log"
+    running = service._write_snapshot(device, "running", "20260618_101200", "sysname SW-A\n", raw_log_path=raw_log_path)
+    diff = service._write_snapshot(device, "diff", "20260618_101200", "--- saved\n+++ running\n", raw_log_path=raw_log_path)
+    raw_log = paths.site_dir("demo") / raw_log_path
+    raw_log.parent.mkdir(parents=True, exist_ok=True)
+    raw_log.write_text("raw", encoding="utf-8")
+    raw_log.with_suffix(".jsonl").write_text("{}", encoding="utf-8")
+    target = tmp_path / "batch.zip"
+
+    service.export_batch_zip(
+        [
+            BatchConfigItemResult("SW-A", str(device.device_uuid), True, "ok", "20260618_101200", 2, 10, [running, diff], str(raw_log)),
+            BatchConfigItemResult("SW-B", "uuid-b", False, "failed", "", 0, 10, [], error_message="timeout"),
+        ],
+        target,
+    )
+
+    import zipfile
+
+    with zipfile.ZipFile(target) as archive:
+        names = set(archive.namelist())
+        assert "SW-A/running_20260618_101200.txt" in names
+        assert "SW-A/diff_20260618_101200.diff" in names
+        assert "SW-A/logs/run.log" in names
+        assert "SW-A/logs/run.jsonl" in names
+        assert "failed_devices.txt" in names
 
 
 def test_config_lifecycle_command_context_allows_only_required_commands():

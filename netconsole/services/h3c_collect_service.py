@@ -74,10 +74,10 @@ def collect_h3c_device_details(
     collect_run_uuid = str(uuid4())
     started_at = _now()
     persist_raw_logs = _persist_raw_logs()
-    run_dir = paths.ensure_site_dirs(site_name) / "raw" / "collect" / collect_run_uuid
+    run_dir = paths.config_center_raw_logs_root(site_name) / "collect" / collect_run_uuid
     raw_log_file = run_dir / f"{device.device_uuid}.log"
     commands_file = run_dir / f"{device.device_uuid}_commands.jsonl"
-    relative_raw_log_path = f"raw/collect/{collect_run_uuid}/{device.device_uuid}.log" if persist_raw_logs else ""
+    relative_raw_log_path = f"files/config_center/raw_logs/collect/{collect_run_uuid}/{device.device_uuid}.log" if persist_raw_logs else ""
     result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
 
     repository.create_collect_run(
@@ -86,7 +86,7 @@ def collect_h3c_device_details(
             "collect_type": "device_details",
             "status": "running",
             "started_at": started_at,
-            "raw_log_dir": f"raw/collect/{collect_run_uuid}" if persist_raw_logs else None,
+            "raw_log_dir": f"files/config_center/raw_logs/collect/{collect_run_uuid}" if persist_raw_logs else None,
             "created_at": started_at,
         }
     )

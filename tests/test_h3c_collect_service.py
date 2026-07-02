@@ -197,7 +197,7 @@ def test_optical_refresh_service_runs_three_commands_and_writes_interfaces_optic
             "model": "S6850",
             "collected_at": "2026-06-16T00:00:00",
             "updated_at": "2026-06-16T00:00:00",
-            "raw_log_path": "raw/collect/old/device.log",
+            "raw_log_path": "files/config_center/raw_logs/collect/old/device.log",
         }
     )
     repository.replace_optical_modules(

@@ -38,7 +38,7 @@ def test_diagnostic_download_writes_file_and_records_result(tmp_path, monkeypatc
     assert result.device_name == "核心交换机1"
     assert result.timestamp == "20260618_203010"
     assert result.status == "success"
-    assert result.file_path == "raw/diagnostic/核心交换机1_diag_20260618_203010.txt"
+    assert result.file_path == "files/config_center/raw_logs/20260618/diagnostic/核心交换机1_diag_20260618_203010.txt"
     assert commands == ["screen-length disable", "display diagnostic-information", "n"]
     text = (paths.site_dir("demo") / result.file_path).read_text(encoding="utf-8")
     assert "output:display diagnostic-information" in text
@@ -71,7 +71,13 @@ def test_batch_diagnostic_download_keeps_failures_isolated():
                 raise RuntimeError("boom")
             from netconsole.services.diagnostic_download_service import DiagnosticDownloadResult
 
-            return DiagnosticDownloadResult(device.id, device.name, "20260618_203010", "raw/diagnostic/a.txt", "success")
+            return DiagnosticDownloadResult(
+                device.id,
+                device.name,
+                "20260618_203010",
+                "files/config_center/raw_logs/20260618/diagnostic/a.txt",
+                "success",
+            )
 
     results = run_batch_diagnostic_download(devices, FakeService)
 

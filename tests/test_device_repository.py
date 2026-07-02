@@ -2,6 +2,7 @@ from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository, DuplicateGroupName
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.device_group_service import group_filter_to_repository_value
 
 
 def make_repository(tmp_path):
@@ -153,6 +154,22 @@ def test_device_groups_are_site_scoped_and_filter_devices(tmp_path):
     groups.delete(int(core.id))
 
     assert repository.get(int(grouped.id)).group_id is None
+
+
+def test_group_filter_value_keeps_group_id_for_repository_filter(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    repository = DeviceRepository(db)
+    groups = DeviceGroupRepository(db, "demo")
+    target_group = groups.create("Onboard")
+    other_group = groups.create("Station")
+    target = repository.create(Device(name="MR-A", ip_address="10.0.0.1", group_id=target_group.id))
+    repository.create(Device(name="SW-A", ip_address="10.0.0.2", group_id=other_group.id))
+
+    group_filter = group_filter_to_repository_value(target_group.id)
+
+    assert isinstance(group_filter, int)
+    assert [device.id for device in repository.list(group_filter=group_filter)] == [target.id]
 
 
 def test_repository_updates_https_port(tmp_path):

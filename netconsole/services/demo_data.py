@@ -185,7 +185,7 @@ def insert_demo_collected_data(repository: DeviceRepository, devices: list[Devic
             "status": "success",
             "started_at": "2026-06-13T09:00:00",
             "ended_at": "2026-06-13T09:00:30",
-            "raw_log_dir": "raw/collect/demo-collect-run-0001",
+            "raw_log_dir": "files/config_center/raw_logs/collect/demo-collect-run-0001",
             "created_at": "2026-06-13T09:00:00",
         }
     )
@@ -209,7 +209,7 @@ def insert_demo_collected_data(repository: DeviceRepository, devices: list[Devic
                 "uptime": "12 days, 03:21:00",
                 "collected_at": collected_at,
                 "collect_run_uuid": run_uuid,
-                "raw_log_path": f"raw/collect/{run_uuid}/{device_uuid}.log",
+                "raw_log_path": f"files/config_center/raw_logs/collect/{run_uuid}/{device_uuid}.log",
                 "updated_at": collected_at,
             }
         )
@@ -291,7 +291,7 @@ def insert_demo_ac_management(ac_repository: AcRepository, ac_uuid: str, run_uui
             "software_version": "Comware V7 Demo",
             "collected_at": collected_at,
             "collect_run_uuid": run_uuid,
-            "raw_log_path": f"raw/ac/{run_uuid}/{ac_uuid}.log",
+            "raw_log_path": f"files/rail_transit/trackside_ap/raw/ac/{run_uuid}/{ac_uuid}.log",
             "updated_at": collected_at,
         }
     )
@@ -332,7 +332,7 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
     ):
         for index, (collected_at, rx_power) in enumerate(samples, start=1):
             history_run_uuid = f"demo-history-{device_uuid[-4:]}-{index}"
-            raw_log_path = f"raw/collect/{history_run_uuid}/{device_uuid}.log"
+            raw_log_path = f"files/config_center/raw_logs/collect/{history_run_uuid}/{device_uuid}.log"
             fact_repository.append_interface_history(
                 _demo_interface(
                     interface_name,
@@ -418,7 +418,7 @@ def _demo_interface(
         "vlan": vlan,
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "raw_log_path": raw_log_path or f"files/config_center/raw_logs/collect/{run_uuid}/{device_uuid}.log",
         "updated_at": collected_at,
     }
 
@@ -453,7 +453,7 @@ def _demo_optical_module(
         "status": "normal",
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "raw_log_path": raw_log_path or f"files/config_center/raw_logs/collect/{run_uuid}/{device_uuid}.log",
         "updated_at": collected_at,
     }
 
@@ -478,7 +478,7 @@ def _demo_lldp(
         "neighbor_device_uuid": neighbor_device_uuid,
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": raw_log_path or f"raw/collect/{run_uuid}/{device_uuid}.log",
+        "raw_log_path": raw_log_path or f"files/config_center/raw_logs/collect/{run_uuid}/{device_uuid}.log",
         "updated_at": collected_at,
     }
 
@@ -521,7 +521,7 @@ def _demo_fit_ap_resource(
         "ap_optical_power": "",
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": f"raw/ac/{run_uuid}/{ac_uuid}.log",
+        "raw_log_path": f"files/rail_transit/trackside_ap/raw/ac/{run_uuid}/{ac_uuid}.log",
         "updated_at": collected_at,
     }
 
@@ -553,6 +553,6 @@ def _demo_fit_ap_optical(
         "error_message": "",
         "collected_at": collected_at,
         "collect_run_uuid": run_uuid,
-        "raw_log_path": f"raw/ac/{run_uuid}/fit_ap/{ap_name}.log",
+        "raw_log_path": f"files/rail_transit/trackside_ap/raw/ac/{run_uuid}/fit_ap/{ap_name}.log",
         "updated_at": collected_at,
     }

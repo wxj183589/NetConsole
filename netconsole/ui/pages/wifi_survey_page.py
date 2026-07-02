@@ -348,7 +348,7 @@ class WifiSurveyPage(QWidget):
         if not size.isValid():
             QMessageBox.warning(self, "无线测试", "无法读取图纸文件")
             return
-        target_dir = self.paths.site_dir(self.site_name) / "reports" / "wifi_survey" / "floorplans"
+        target_dir = self.paths.wireless_scan_projects_dir(self.site_name) / "wifi_survey" / "floorplans"
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / source.name
         counter = 1
@@ -849,7 +849,7 @@ class WifiSurveyPage(QWidget):
                 writer.writerow({field: (self.current_session["name"] if field == "session_name" else row.get(field)) for field in fields})
 
     def _export_dir(self) -> Path:
-        path = self.paths.site_dir(self.site_name) / "reports" / "wifi_survey"
+        path = self.paths.wireless_scan_export_dir(self.site_name) / "wifi_survey"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -5,28 +5,22 @@ def test_data_disk_manager_cleans_only_legacy_debug_debug_and_runtime_cache(tmp_
     data = tmp_path / "data"
     runtime = tmp_path / "runtime"
     db = data / "sites" / "demo" / "db" / "devices.db"
-    report = data / "reports" / "report.xlsx"
-    backup = data / "backups" / "backup.zip"
-    site_report = data / "sites" / "demo" / "reports" / "site-report.xlsx"
-    site_backup = data / "sites" / "demo" / "backups" / "site-backup.zip"
-    site_export = data / "sites" / "demo" / "exports" / "devices.csv"
-    legacy_debug = data / "sites" / "demo" / "raw" / "session.txt"
-    file_download = data / "sites" / "demo" / "downloads" / "show.cfg"
-    mesh_archive = data / "sites" / "demo" / "mesh" / "archive" / "mesh.zip"
-    online_mr = data / "sites" / "demo" / "online_mr" / "MR-1" / "sessions" / "s1" / "collection.log"
+    config_center = data / "sites" / "demo" / "files" / "config_center" / "snapshots" / "SW1" / "running" / "a.txt"
+    backup = data / "sites" / "demo" / "files" / "backups" / "backup.zip"
+    file_download = data / "sites" / "demo" / "files" / "file_manager" / "downloads" / "SW1" / "show.cfg"
+    rail_transit = data / "sites" / "demo" / "files" / "rail_transit" / "online_mr" / "MR-1" / "sessions" / "s1" / "raw" / "collection.log"
+    network_tools = data / "sites" / "demo" / "files" / "network_tools" / "iperf" / "raw" / "client.log"
+    site_cache = data / "sites" / "demo" / "cache" / "metrics" / "m.json"
     debug = data / "debug" / "debug.log"
     cache = runtime / "cache" / "offline.json"
     for path, text in (
         (db, "db"),
-        (report, "report"),
+        (config_center, "config-center"),
         (backup, "backup"),
-        (site_report, "site-report"),
-        (site_backup, "site-backup"),
-        (site_export, "site-export"),
-        (legacy_debug, "legacy-debug"),
         (file_download, "file-download"),
-        (mesh_archive, "mesh-archive"),
-        (online_mr, "online-mr"),
+        (rail_transit, "rail-transit"),
+        (network_tools, "network-tools"),
+        (site_cache, "site-cache"),
         (debug, "debug"),
         (cache, "cache"),
     ):
@@ -34,31 +28,25 @@ def test_data_disk_manager_cleans_only_legacy_debug_debug_and_runtime_cache(tmp_
         path.write_text(text, encoding="utf-8")
 
     before = {item.name: item for item in scan_data_disk(data, runtime)}
-    removed = clean_data_disk(data, runtime, {"legacy_debug_data", "debug_logs", "runtime_cache"})
+    removed = clean_data_disk(data, runtime, {"cache", "debug_logs"})
 
     assert before["database"].bytes == 2
-    assert before["reports"].bytes >= len("site-report")
-    assert before["backups"].bytes >= len("site-backup")
-    assert before["exports"].bytes >= len("site-export")
-    assert "raw_logs" not in before
-    assert before["file_downloads"].cleanable is False
-    assert before["mesh_archives"].cleanable is False
-    assert before["online_mr_data"].cleanable is False
-    assert before["legacy_debug_data"].cleanable is True
-    assert removed["legacy_debug_data"] == len("legacy-debug")
+    assert before["config_center"].bytes == len("config-center")
+    assert before["backups"].bytes == len("backup")
+    assert before["file_manager"].bytes == len("file-download")
+    assert before["rail_transit"].bytes == len("rail-transit")
+    assert before["network_tools"].bytes == len("network-tools")
+    assert before["cache"].cleanable is True
     assert removed["debug_logs"] == 5
-    assert removed["runtime_cache"] == 5
+    assert removed["cache"] == len("site-cache") + 5
     assert db.exists()
-    assert report.exists()
     assert backup.exists()
-    assert site_report.exists()
-    assert site_backup.exists()
-    assert site_export.exists()
+    assert config_center.exists()
     assert file_download.exists()
-    assert mesh_archive.exists()
-    assert online_mr.exists()
-    assert not legacy_debug.exists()
+    assert rail_transit.exists()
+    assert network_tools.exists()
     assert not debug.exists()
+    assert not site_cache.exists()
     assert not cache.exists()
 
 

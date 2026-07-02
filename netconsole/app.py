@@ -57,7 +57,8 @@ def _backup_site_databases(paths: PathResolver) -> list[Path]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backups: list[Path] = []
     for database_path in _site_database_paths(paths):
-        backup_dir = database_path.parents[1] / "db_backup"
+        site_name = database_path.parents[1].name
+        backup_dir = paths.site_backups_dir(site_name) / "db"
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / f"{database_path.stem}_{timestamp}{database_path.suffix}"
         shutil.copy2(database_path, backup_path)

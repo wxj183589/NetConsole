@@ -1130,7 +1130,7 @@ AP name                  RID State Channel          BW    Usage TxPower Clients
         },
         "ac-1",
         "run-1",
-        "raw/ac/run-1/ac.log",
+        "files/rail_transit/trackside_ap/raw/ac/run-1/ac.log",
     )
 
     assert resources[0]["ap_name"] == "站厅_AP-01"
@@ -3774,7 +3774,8 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
     assert any(connection.commands == list(TRACKSIDE_OPTICAL_COMMANDS) for connection in FakeOpticalConnection.instances)
     assert not (result.session_dir / "raw").exists()
     assert (result.session_dir / "session_meta.json").exists()
-    with sqlite3.connect(result.session_dir / "parsed" / "trackside_update_results.sqlite") as conn:
+    parsed_dir = PathResolver(tmp_path).trackside_ap_update_parsed_session_dir("demo", result.session_id)
+    with sqlite3.connect(parsed_dir / "trackside_update_results.sqlite") as conn:
         rows = conn.execute("SELECT device_name, rx_power, error_message FROM optical_results").fetchall()
     assert len(rows) >= 2
     assert any(row[1] == "-6.10" for row in rows)
@@ -3807,7 +3808,7 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
 
     def fake_resource_collect(ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True):
         resource_calls.append((ac_device.device_uuid, site_name, refresh_ac_overview))
-        run_dir = paths.site_dir(site_name) / "raw" / "ac" / "resource-run"
+        run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / "resource-run"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "resource.log").write_text("resource raw", encoding="utf-8")
         repository.replace_fit_ap_resources(
@@ -3832,7 +3833,7 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         target_stations=None,
     ):
         fit_calls.append((ac_device.device_uuid, site_name, max_workers, target_ap_uuids, target_ap_macs, target_ap_names, target_stations))
-        run_dir = paths.site_dir(site_name) / "raw" / "ac" / "fit-run" / "fit_ap"
+        run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / "fit-run" / "fit_ap"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "AP1.log").write_text("fit raw", encoding="utf-8")
         return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), "fit-run", 2, 0, None)
@@ -5017,8 +5018,8 @@ def test_ac_management_apply_feature_gate_readds_session_full_tabs(tmp_path):
         "Trackside AP Plan",
         "AP Online Overview",
         "FIT-AP Resources",
-        "FIT-AP Extensions",
         "FIT-AP Optical",
+        "FIT-AP Extensions",
     ]
 
     gate.disable_session_override(reason="test")

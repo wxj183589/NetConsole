@@ -57,7 +57,7 @@ class PathPreferenceService:
         return self.get_default_mesh_import_dir(site_name)
 
     def get_default_mesh_import_dir(self, site_name: str) -> Path:
-        site_downloads = self.paths.site_dir(site_name) / "downloads" / "files"
+        site_downloads = self.paths.file_downloads_root(site_name)
         site_downloads.mkdir(parents=True, exist_ok=True)
         candidates: list[Path] = []
         candidates.append(site_downloads)

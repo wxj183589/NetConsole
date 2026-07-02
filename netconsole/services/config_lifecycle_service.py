@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shutil
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -62,6 +63,9 @@ class BatchConfigItemResult:
     timestamp: str
     snapshot_count: int
     elapsed_ms: int
+    snapshots: list[ConfigSnapshot]
+    raw_log_path: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,28 @@ class ConfigLifecycleService:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target_path)
 
+    def export_batch_zip(self, batch_results: list[BatchConfigItemResult], target_zip_path: Path) -> None:
+        target_zip_path.parent.mkdir(parents=True, exist_ok=True)
+        failures: list[str] = []
+        used_folders: dict[str, int] = {}
+        with zipfile.ZipFile(target_zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for item in batch_results:
+                if not item.success:
+                    message = item.error_message or item.result_text or "failed"
+                    failures.append(f"{item.device_name or item.device_uuid}\t{message}")
+                    continue
+                folder = unique_export_folder_name(item.device_name, item.device_uuid, used_folders)
+                for snapshot in item.snapshots:
+                    source = self._absolute_snapshot_path(snapshot)
+                    if not source.exists():
+                        continue
+                    suffix = "diff" if snapshot.type == "diff" else "txt"
+                    archive.write(source, f"{folder}/{snapshot.type}_{snapshot.timestamp}.{suffix}")
+                for log_path in self._batch_log_paths(item):
+                    archive.write(log_path, f"{folder}/logs/{log_path.name}")
+            if failures:
+                archive.writestr("failed_devices.txt", "\n".join(failures) + "\n")
+
     def delete_snapshot(self, snapshot: ConfigSnapshot) -> None:
         path = self._absolute_snapshot_path(snapshot)
         if path.exists():
@@ -272,13 +298,29 @@ class ConfigLifecycleService:
                 file.write(json.dumps({key: result.get(key) for key in ("command", "success", "error_message", "started_at", "ended_at")}, ensure_ascii=False) + "\n")
 
     def _raw_log_file(self, device: Device, timestamp: str, collect_uuid: str) -> Path:
-        return self._device_config_dir(device) / "logs" / f"{timestamp}_{collect_uuid}.log"
+        date_name = timestamp.split("_", 1)[0] if "_" in timestamp else timestamp[:8]
+        return self.paths.config_center_raw_logs_dir(self.site_name, date_name, device_config_dir_name(device)) / f"{timestamp}_{collect_uuid}.log"
 
     def _device_config_dir(self, device: Device) -> Path:
-        return self.paths.ensure_site_dirs(self.site_name) / "raw" / "config" / device_config_dir_name(device)
+        return self.paths.config_center_device_snapshots_dir(self.site_name, device_config_dir_name(device))
 
     def _absolute_snapshot_path(self, snapshot: ConfigSnapshot) -> Path:
         return self.paths.site_dir(self.site_name) / snapshot.file_path
+
+    def _batch_log_paths(self, item: BatchConfigItemResult) -> list[Path]:
+        paths: list[Path] = []
+        candidates = [item.raw_log_path]
+        candidates.extend(snapshot.raw_log_path for snapshot in item.snapshots)
+        for raw in candidates:
+            if not raw:
+                continue
+            path = Path(raw)
+            if not path.is_absolute():
+                path = self.paths.site_dir(self.site_name) / path
+            for candidate in (path, path.with_suffix(".jsonl")):
+                if candidate.exists() and candidate not in paths:
+                    paths.append(candidate)
+        return paths
 
     def _relative_to_site(self, path: Path) -> str:
         return path.resolve().relative_to(self.paths.site_dir(self.site_name).resolve()).as_posix()
@@ -407,6 +449,20 @@ def safe_device_id(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_.-]+", "_", str(value or "unknown")).strip("._ ") or "unknown"
 
 
+def unique_export_folder_name(device_name: str, device_uuid: str, used: dict[str, int]) -> str:
+    base = safe_device_name(device_name or device_uuid or "device")
+    count = used.get(base, 0)
+    used[base] = count + 1
+    if count == 0:
+        return base
+    suffix = safe_device_id(device_uuid)[:8] or f"{count + 1:02d}"
+    candidate = f"{base}_{suffix}"
+    if candidate not in used:
+        used[candidate] = 1
+        return candidate
+    return f"{base}_{count + 1:02d}"
+
+
 def run_batch_config_download(
     devices: list[Device],
     service_factory: Callable[[], ConfigLifecycleService],
@@ -430,16 +486,22 @@ def run_batch_config_download(
                     timestamp=result.timestamp,
                     snapshot_count=len(result.snapshots),
                     elapsed_ms=elapsed_ms,
+                    snapshots=result.snapshots,
+                    raw_log_path=result.raw_log_path,
+                    error_message=result.error_message,
                 )
             except Exception as exc:
+                message = sanitize_sensitive_text(str(exc), device)
                 item = BatchConfigItemResult(
                     device_name=str(device.name or ""),
                     device_uuid=str(device.device_uuid or ""),
                     success=False,
-                    result_text=sanitize_sensitive_text(str(exc), device),
+                    result_text=message,
                     timestamp="",
                     snapshot_count=0,
                     elapsed_ms=elapsed_ms,
+                    snapshots=[],
+                    error_message=message,
                 )
             results.append(item)
     return results
