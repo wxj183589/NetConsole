@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import locale
 import re
 import socket
 import subprocess
@@ -12,6 +13,7 @@ from typing import Callable
 
 
 Runner = Callable[[list[str], int], subprocess.CompletedProcess]
+IP_RE = r"[0-9a-fA-F:.]+"
 
 
 @dataclass(frozen=True)
@@ -48,24 +50,25 @@ def run_single_ping(
     count: int = 4,
     size: int = 32,
     timeout_ms: int = 1500,
+    source_ip: str = "",
     runner: Runner | None = None,
 ) -> PingResult:
     target = target.strip()
     if not target:
         raise ValueError("请输入目标主机。")
     runner = runner or _default_ping_runner
-    args = _ping_args(target, count=count, size=size, timeout_ms=timeout_ms)
+    args = _ping_args(target, count=count, size=size, timeout_ms=timeout_ms, source_ip=source_ip)
     try:
         completed = runner(args, max(int(timeout_ms / 1000 * max(count, 1)) + 5, 5))
     except Exception as exc:
         return PingResult(target=target, status="failed", timestamp=_now(), error=str(exc))
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
     parsed = parse_ping_output(output, target=target)
-    status = "online" if completed.returncode == 0 and (parsed.received > 0 or parsed.latency_ms is not None) else "offline"
+    online = completed.returncode == 0 and parsed.received > 0 and parsed.latency_ms is not None
     return PingResult(
         target=target,
         resolved_ip=parsed.resolved_ip,
-        status=status,
+        status="online" if online else _fallback_status(output),
         latency_ms=parsed.latency_ms,
         min_ms=parsed.min_ms,
         max_ms=parsed.max_ms,
@@ -74,7 +77,7 @@ def run_single_ping(
         sent=parsed.sent or count,
         received=parsed.received,
         timestamp=_now(),
-        error="" if status == "online" else _trim_output(output),
+        error="" if online else _trim_output(output),
         raw_output=output,
     )
 
@@ -86,13 +89,25 @@ def run_batch_ping(
     size: int = 32,
     timeout_ms: int = 1500,
     concurrency: int = 100,
+    source_ip: str = "",
     runner: Runner | None = None,
 ) -> list[PingResult]:
     cleaned = [target.strip() for target in targets if target.strip()]
     concurrency = max(1, min(int(concurrency), 500))
     results: list[PingResult] = []
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [executor.submit(run_single_ping, target, count=count, size=size, timeout_ms=timeout_ms, runner=runner) for target in cleaned]
+        futures = [
+            executor.submit(
+                run_single_ping,
+                target,
+                count=count,
+                size=size,
+                timeout_ms=timeout_ms,
+                source_ip=source_ip,
+                runner=runner,
+            )
+            for target in cleaned
+        ]
         for future in as_completed(futures):
             results.append(future.result())
     return sorted(results, key=lambda item: cleaned.index(item.target) if item.target in cleaned else 0)
@@ -128,46 +143,107 @@ def run_tcp_ping(
 
 
 def parse_ping_output(output: str, *, target: str = "") -> PingResult:
-    resolved_ip = ""
-    first_line = output.splitlines()[0] if output.splitlines() else ""
-    match = re.search(r"\[([0-9a-fA-F:.]+)\]|(?:Pinging|正在 Ping)\s+[^[]*\[?([0-9a-fA-F:.]+)\]?", first_line)
-    if match:
-        resolved_ip = next((group for group in match.groups() if group), "")
-    latencies = [float(value) for value in re.findall(r"(?:time|时间)[=<]\s*(\d+(?:\.\d+)?)\s*ms", output, flags=re.IGNORECASE)]
-    sent = received = 0
+    resolved_ip = _resolved_ip_from_output(output, target)
+    valid_latencies: list[float] = []
+    for line in output.splitlines():
+        reply_ip = _reply_ip(line)
+        if not reply_ip or not _is_target_reply(reply_ip, target, resolved_ip) or _is_unreachable_line(line):
+            continue
+        latency = _latency_from_line(line)
+        if latency is not None:
+            valid_latencies.append(latency)
+    sent = 0
     loss: float | None = None
     stats = re.search(r"Packets:\s*Sent\s*=\s*(\d+),\s*Received\s*=\s*(\d+),\s*Lost\s*=\s*(\d+)\s*\((\d+)%", output, re.IGNORECASE)
     if not stats:
-        stats = re.search(r"数据包:\s*已发送\s*=\s*(\d+)，\s*已接收\s*=\s*(\d+)，\s*丢失\s*=\s*(\d+)\s*\((\d+)%", output)
+        stats = re.search(r"已发送\s*=\s*(\d+)[，,]\s*已接收\s*=\s*(\d+)[，,]\s*丢失\s*=\s*(\d+)\s*\((\d+)%", output)
     if stats:
         sent = int(stats.group(1))
-        received = int(stats.group(2))
         loss = float(stats.group(4))
-    avg_match = re.search(r"(?:Average|平均)\s*=\s*(\d+(?:\.\d+)?)\s*ms", output, re.IGNORECASE)
-    min_match = re.search(r"(?:Minimum|最短)\s*=\s*(\d+(?:\.\d+)?)\s*ms", output, re.IGNORECASE)
-    max_match = re.search(r"(?:Maximum|最长)\s*=\s*(\d+(?:\.\d+)?)\s*ms", output, re.IGNORECASE)
+    received = len(valid_latencies)
+    min_ms = min(valid_latencies) if valid_latencies else None
+    max_ms = max(valid_latencies) if valid_latencies else None
+    avg_ms = round(sum(valid_latencies) / len(valid_latencies), 2) if valid_latencies else None
     return PingResult(
         target=target,
         resolved_ip=resolved_ip,
-        latency_ms=latencies[-1] if latencies else None,
-        min_ms=float(min_match.group(1)) if min_match else (min(latencies) if latencies else None),
-        max_ms=float(max_match.group(1)) if max_match else (max(latencies) if latencies else None),
-        avg_ms=float(avg_match.group(1)) if avg_match else (round(sum(latencies) / len(latencies), 2) if latencies else None),
+        latency_ms=valid_latencies[-1] if valid_latencies else None,
+        min_ms=min_ms,
+        max_ms=max_ms,
+        avg_ms=avg_ms,
         packet_loss_percent=loss,
         sent=sent,
-        received=received or len(latencies),
+        received=received,
         raw_output=output,
     )
 
 
-def _ping_args(target: str, *, count: int, size: int, timeout_ms: int) -> list[str]:
+def _ping_args(target: str, *, count: int, size: int, timeout_ms: int, source_ip: str = "") -> list[str]:
+    source_ip = source_ip.strip()
     if sys.platform.startswith("win"):
-        return ["ping", "-n", str(count), "-l", str(size), "-w", str(timeout_ms), target]
-    return ["ping", "-c", str(count), "-s", str(size), "-W", str(max(1, int(timeout_ms / 1000))), target]
+        args = ["ping"]
+        if source_ip:
+            args.extend(["-S", source_ip])
+        args.extend(["-n", str(count), "-l", str(size), "-w", str(timeout_ms), target])
+        return args
+    args = ["ping"]
+    if source_ip:
+        args.extend(["-I", source_ip])
+    args.extend(["-c", str(count), "-s", str(size), "-W", str(max(1, int(timeout_ms / 1000))), target])
+    return args
 
 
 def _default_ping_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    completed = subprocess.run(args, capture_output=True, timeout=timeout)
+    return subprocess.CompletedProcess(
+        completed.args,
+        completed.returncode,
+        _decode_output(completed.stdout),
+        _decode_output(completed.stderr),
+    )
+
+
+def _resolved_ip_from_output(output: str, target: str) -> str:
+    first_line = output.splitlines()[0] if output.splitlines() else ""
+    match = re.search(r"\[(" + IP_RE + r")\]|(?:Pinging|正在 Ping)\s+[^[]*\[?(" + IP_RE + r")\]?", first_line, re.IGNORECASE)
+    if match:
+        return next((group for group in match.groups() if group), "")
+    return target if _looks_like_ip(target) else ""
+
+
+def _reply_ip(line: str) -> str:
+    match = re.search(r"(?:Reply from|来自)\s+(" + IP_RE + r")", line, re.IGNORECASE)
+    return match.group(1).rstrip(":") if match else ""
+
+
+def _is_target_reply(reply_ip: str, target: str, resolved_ip: str) -> bool:
+    expected = {value for value in (target.strip(), resolved_ip.strip()) if value and _looks_like_ip(value)}
+    return reply_ip in expected
+
+
+def _latency_from_line(line: str) -> float | None:
+    match = re.search(r"(?:time|时间)[=<]\s*(\d+(?:\.\d+)?)\s*ms", line, re.IGNORECASE)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def _is_unreachable_line(line: str) -> bool:
+    lowered = line.lower()
+    return "unreachable" in lowered or "无法访问目标主机" in line or "无法访问" in line
+
+
+def _fallback_status(output: str) -> str:
+    lowered = output.lower()
+    if "unreachable" in lowered or "无法访问" in output:
+        return "unreachable"
+    if "timed out" in lowered or "请求超时" in output or "timeout" in lowered:
+        return "timeout"
+    return "offline"
+
+
+def _looks_like_ip(value: str) -> bool:
+    return bool(re.fullmatch(IP_RE, value.strip()))
 
 
 def _now() -> str:
@@ -175,5 +251,24 @@ def _now() -> str:
 
 
 def _trim_output(output: str) -> str:
-    text = " ".join(output.split())
-    return text[:300]
+    text = " ".join(output.split()).replace("\ufffd", "")
+    return text[:300] or "命令执行失败：Ping 输出解析失败"
+
+
+def _decode_output(data: bytes | str | None) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data.replace("\ufffd", "")
+    encodings = [
+        locale.getpreferredencoding(False),
+        "gbk",
+        "gb18030",
+        "utf-8",
+    ]
+    for encoding in dict.fromkeys(item for item in encodings if item):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("gb18030", errors="replace").replace("\ufffd", "")

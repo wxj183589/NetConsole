@@ -50,7 +50,7 @@ ALLOWED_RUNTIME = (
     "netconsole/assets",
     "netconsole/assets/changelog.md",
 )
-ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "runtime")
+ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "runtime", "tools")
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",
     "--windowed",

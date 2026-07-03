@@ -21,8 +21,8 @@ from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 
 BACKENDS = ("pyinstaller", "nuitka")
 BUILD_EDITIONS = ("internal", "customer", "both")
-NUITKA_ALLOWED_RELEASE_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime"})
-PYINSTALLER_ALLOWED_APP_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime"})
+NUITKA_ALLOWED_RELEASE_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime", "tools"})
+PYINSTALLER_ALLOWED_APP_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime", "tools"})
 FORBIDDEN_RELEASE_DIR_NAMES = frozenset({"docs", "tests", "project", "netconsole"})
 
 
@@ -116,6 +116,7 @@ def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) 
     run(command)
     (app_dist / "data").mkdir(parents=True, exist_ok=True)
     (app_dist / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
+    copy_release_tools(config, app_dist)
     clean_build_spec.validate_dist()
     final_app = release_root / config.app_name
     validate_payload_source(app_dist, PYINSTALLER_ALLOWED_APP_ITEMS)
@@ -143,8 +144,10 @@ def build_nuitka(config: BuildConfig, *, jobs: str, smoke_test: bool, make_zip: 
         raise BuildError(f"Nuitka onefile output not found: {built_exe}")
     final_exe = release_root / f"{config.app_name}.exe"
     shutil.copy2(built_exe, final_exe)
+    copy_release_tools(config, release_root)
     prepare_writable_release_dirs(release_root)
     validate_release_app_dir(release_root, NUITKA_ALLOWED_RELEASE_ITEMS)
+    validate_release_fping(release_root)
     if smoke_test:
         run_packaged_smoke(final_exe, release_root)
     if make_zip:
@@ -174,6 +177,7 @@ def create_edition_releases(
         install_runtime_feature_files(destination, edition=edition, profile=profile, admin_unlock_password=unlock_password)
         validate_embedded_feature_gate(destination, edition=edition, profile=profile)
         validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
+        validate_release_fping(destination)
         if make_zip:
             zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
             zip_directory(destination, zip_path, destination, NUITKA_ALLOWED_RELEASE_ITEMS)
@@ -318,6 +322,23 @@ def copy_tree(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination)
+
+
+def copy_release_tools(config: BuildConfig, release_root: Path) -> None:
+    destination = release_root / "tools"
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(config.tools_dir, destination)
+
+
+def validate_release_fping(release_root: Path) -> None:
+    fping_dir = release_root / "tools" / "fping_v5"
+    exe = fping_dir / "fping.exe"
+    dlls = list(fping_dir.glob("*.dll"))
+    if not exe.is_file():
+        raise BuildError(f"Release is missing fping.exe: {exe}")
+    if not dlls:
+        raise BuildError(f"Release is missing fping runtime DLLs: {fping_dir}")
 
 
 def prepare_writable_release_dirs(release_root: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import re
 from dataclasses import dataclass
 
 
@@ -17,7 +18,6 @@ def ipv4_calculate(text: str) -> dict[str, object]:
     hosts = list(network.hosts())
     first = hosts[0] if hosts else None
     last = hosts[-1] if hosts else None
-    wildcard = ipaddress.IPv4Address(int(network.hostmask))
     note = ""
     if network.prefixlen == 31:
         note = "/31 是点到点特殊网段，两个地址在 P2P 场景都可用。"
@@ -30,7 +30,7 @@ def ipv4_calculate(text: str) -> dict[str, object]:
         "broadcast": str(network.broadcast_address),
         "netmask": str(network.netmask),
         "prefix_length": network.prefixlen,
-        "wildcard": str(wildcard),
+        "wildcard": str(ipaddress.IPv4Address(int(network.hostmask))),
         "total_addresses": network.num_addresses,
         "usable_hosts": len(hosts),
         "first_usable": str(first) if first is not None else "-",
@@ -63,25 +63,8 @@ def ipv6_calculate(text: str) -> dict[str, object]:
 
 def plan_vlsm(parent_text: str, requests_text: str) -> TableResult:
     parent = _parse_ipv4_network(parent_text)
-    requests: list[tuple[int, str, int]] = []
     errors: list[str] = []
-    for line_no, raw in enumerate(requests_text.splitlines(), start=1):
-        line = raw.strip()
-        if not line:
-            continue
-        parts = [part.strip() for part in line.split(",", 1)]
-        if len(parts) != 2 or not parts[0]:
-            errors.append(f"第 {line_no} 行格式应为：名称,主机数")
-            continue
-        try:
-            hosts = int(parts[1])
-        except ValueError:
-            errors.append(f"第 {line_no} 行主机数不是整数")
-            continue
-        if hosts <= 0:
-            errors.append(f"第 {line_no} 行主机数必须为正整数")
-            continue
-        requests.append((line_no, parts[0], hosts))
+    requests = _parse_vlsm_requests(requests_text, errors)
     if errors:
         return TableResult([], {}, errors)
     sorted_requests = sorted(requests, key=lambda item: item[2], reverse=True)
@@ -133,20 +116,19 @@ def summarize_routes(text: str) -> TableResult:
     collapsed = list(ipaddress.collapse_addresses(unique))
     input_total = sum(item.num_addresses for item in unique)
     output_total = sum(item.num_addresses for item in collapsed)
-    rows = []
-    for network in collapsed:
-        rows.append(
-            {
-                "summary": str(network),
-                "network": str(network.network_address),
-                "prefix": network.prefixlen,
-                "netmask": str(network.netmask),
-                "wildcard": str(network.hostmask),
-                "range": f"{network.network_address} - {network.broadcast_address}",
-                "total_addresses": network.num_addresses,
-                "full_cover": True,
-            }
-        )
+    rows = [
+        {
+            "summary": str(network),
+            "network": str(network.network_address),
+            "prefix": network.prefixlen,
+            "netmask": str(network.netmask),
+            "wildcard": str(network.hostmask),
+            "range": f"{network.network_address} - {network.broadcast_address}",
+            "total_addresses": network.num_addresses,
+            "full_cover": True,
+        }
+        for network in collapsed
+    ]
     return TableResult(
         rows,
         {
@@ -183,6 +165,29 @@ def wildcard_calculate(text: str) -> TableResult:
         except ValueError as exc:
             errors.append(f"第 {line_no} 行错误：{exc}")
     return TableResult(rows, {"count": len(rows)}, errors)
+
+
+def _parse_vlsm_requests(requests_text: str, errors: list[str]) -> list[tuple[int, str, int]]:
+    requests: list[tuple[int, str, int]] = []
+    normalized = requests_text.replace("，", ",").replace("、", ",")
+    item_pattern = re.compile(r"([^,\s]+)\s*,?\s*(\d+)")
+    for line_no, raw in enumerate(normalized.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        matches = list(item_pattern.finditer(line))
+        consumed = "".join(match.group(0) for match in matches)
+        if not matches or _compact(consumed) != _compact(line):
+            errors.append(f"第 {line_no} 行格式应为：名称,主机数")
+            continue
+        for match in matches:
+            name = match.group(1).strip()
+            hosts = int(match.group(2))
+            if hosts <= 0:
+                errors.append(f"第 {line_no} 行主机数必须为正整数")
+                continue
+            requests.append((line_no, name, hosts))
+    return requests
 
 
 def _parse_ipv4_network(text: str) -> ipaddress.IPv4Network:
@@ -293,3 +298,7 @@ def _ipv6_type(address: ipaddress.IPv6Address) -> str:
     if address.is_global:
         return "Global"
     return "Reserved"
+
+
+def _compact(text: str) -> str:
+    return text.replace(",", "").replace(" ", "").replace("\t", "")
