@@ -7,6 +7,7 @@ import re
 from netconsole.models.wireless_scan_models import TracksideBssidMatch
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.network_tools.wireless_channel_analyzer import format_h3c_mac, normalize_mac
+from netconsole.utils.station_normalize import normalize_station_value
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class TracksideApIdentity:
     ap_name: str
     ap_mac: str
     station: str = ""
+    serial_number: str = ""
     location: str = ""
     mileage: str = ""
     direction: str = ""
@@ -93,6 +95,7 @@ class TracksideApBssidResolver:
             ap_name=ap.ap_name or "-",
             ap_mac=format_h3c_mac(ap.ap_mac),
             station=ap.station,
+            serial_number=ap.serial_number,
             location=ap.location,
             mileage=ap.mileage,
             direction=ap.direction,
@@ -108,7 +111,8 @@ def _identity(row: dict[str, object]) -> TracksideApIdentity:
     return TracksideApIdentity(
         ap_name=ap_name,
         ap_mac=str(row.get("ap_mac") or ""),
-        station=str(row.get("site_name") or row.get("site") or ""),
+        station=normalize_station_value(row),
+        serial_number=_serial_number(row),
         location=str(row.get("metadata_location_note") or row.get("location_note") or ""),
         mileage=str(row.get("metadata_mileage") or row.get("mileage") or ""),
         direction=str(row.get("metadata_direction") or row.get("direction") or ""),
@@ -123,6 +127,7 @@ def _candidate_payload(ap: TracksideApIdentity, radio_id: int | None, rule: str)
         "ap_name": ap.ap_name,
         "ap_mac": format_h3c_mac(ap.ap_mac),
         "station": ap.station,
+        "serial_number": ap.serial_number,
         "location": ap.location,
         "mileage": ap.mileage,
         "direction": ap.direction,
@@ -160,6 +165,14 @@ def _extract_radio_macs(row: dict[str, object]) -> tuple[tuple[str, int | None, 
 def _radio_id_from_key(key: str) -> int | None:
     match = re.search(r"(?:rid|radio)[_-]?([12])", key)
     return int(match.group(1)) if match else None
+
+
+def _serial_number(row: dict[str, object]) -> str:
+    for key in ("serial_number", "serial", "sn", "device_sn"):
+        text = str(row.get(key) or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _name_key(value: object) -> str:

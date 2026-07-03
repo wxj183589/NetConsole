@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.services.network_tools.iperf_parser import parse_iperf_line
 
 
@@ -284,6 +285,7 @@ class IperfProcessRunner:
             creationflags=creationflags,
             cwd=self.iperf_path.parent,
         )
+        shutdown_manager.register_process(self.process, "iperf3", kind="internal_tool", shutdown_policy="terminate")
         status = "DONE"
         try:
             assert self.process.stdout is not None
@@ -305,6 +307,8 @@ class IperfProcessRunner:
             status = "FAILED"
             raise
         finally:
+            if self.process is not None:
+                shutdown_manager.unregister_process(self.process)
             self.last_status = status
             if self.store:
                 self.store.finish_run(self.run_id, status)
@@ -316,8 +320,3 @@ class IperfProcessRunner:
         if self.process.poll() is not None:
             return
         self.process.terminate()
-        try:
-            self.process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=2)

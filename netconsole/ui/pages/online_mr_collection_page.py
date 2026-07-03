@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import time
+import traceback
 import weakref
 from collections import deque
 from dataclasses import dataclass, field
@@ -12,12 +13,13 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QDoubleValidator, QTextCursor
+from PySide6.QtGui import QColor, QDoubleValidator, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -46,6 +48,7 @@ from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, 
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
+from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import (
     STATE_COLLECTING,
@@ -89,10 +92,12 @@ from netconsole.services.online_mr.parser.event_parser_engine import EventParser
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
 from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
+from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 from netconsole.ui.online_mr_parse_worker import OnlineMrParseWorker
-from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
+from netconsole.ui.widgets.scrollable_matplotlib_view import AnalysisChartHoverController, ScrollableMatplotlibView
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
 
 
@@ -102,8 +107,10 @@ TABLE_WIDTH_KEYS = {
     "channel_busy": "online_mr/table_widths/channel_busy",
     "statistics": "online_mr/table_widths/statistics",
     "switch_history": "online_mr/table_widths/switch_history",
+    "active_link_switch_logs": "online_mr/table_widths/active_link_switch_logs",
     "interface_rate": "online_mr/table_widths/interface_rate",
     "iperf": "online_mr/table_widths/iperf",
+    "diagnosis": "online_mr/table_widths/diagnosis",
     "history_sessions": "online_mr/table_widths/history_sessions",
 }
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
@@ -250,6 +257,10 @@ class OnlineMrCollectionPage(QWidget):
         feature_gate: FeatureGate | None = None,
     ) -> None:
         super().__init__()
+        self._closing = False
+        self._destroyed = False
+        self._ui_updates_enabled = True
+        self._shutdown_requested = False
         self.repository = repository
         self.i18n = i18n
         self.site_name = site_name
@@ -305,6 +316,11 @@ class OnlineMrCollectionPage(QWidget):
         self._view_device_user_selected = False
         self._fping_target_user_edited: dict[int, bool] = {1: False, 2: False}
         self._updating_fping_targets = False
+        self._fping_status_texts: dict[int, str] = {1: "Ping 1: idle", 2: "Ping 2: idle"}
+        self._available_device_count = 0
+        self._selected_device_count = 0
+        self._running_count = 0
+        self._collection_status = "STOPPED"
         self.output_widgets_by_device_id: dict[int, QTextEdit] = {}
         self.output_titles_by_device_id: dict[int, QLabel] = {}
         self.output_buffers_by_device_id: dict[int, deque[str]] = {}
@@ -334,6 +350,8 @@ class OnlineMrCollectionPage(QWidget):
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
         self.parse_session_button = QPushButton()
+        self.force_parse_button = QPushButton()
+        self.export_analysis_report_button = QPushButton()
         self.session_search_input = QLineEdit()
         self.session_select_combo = QComboBox()
         self.session_history_rows: list[dict[str, object]] = []
@@ -402,17 +420,18 @@ class OnlineMrCollectionPage(QWidget):
         self._no_wheel_filter = NoWheelValueChangeFilter(self)
 
         self.summary_table = QTableWidget(0, 16)
-        self.mesh_table = QTableWidget(0, 10)
-        self.channel_table = QTableWidget(0, 6)
+        self.mesh_table = QTableWidget(0, 11)
+        self.channel_table = QTableWidget(0, 7)
         self.events_table = QTableWidget(0, 6)
         self.statistics_text = QTextEdit()
-        self.switch_history_table = QTableWidget(0, 10)
+        self.switch_history_table = QTableWidget(0, 13)
         self.switch_history_text = QTextEdit()
-        self.interface_rate_table = QTableWidget(0, 6)
+        self.active_link_switch_table = QTableWidget(0, 16)
+        self.interface_rate_table = QTableWidget(0, 9)
         self.iperf_table = QTableWidget(0, 5)
         self.diagnosis_table = QTableWidget(0, 14)
         self.history_table = QTableWidget(0, 9)
-        for table in (self.summary_table, self.mesh_table, self.channel_table, self.events_table, self.switch_history_table, self.interface_rate_table, self.iperf_table, self.diagnosis_table, self.history_table):
+        for table in (self.summary_table, self.mesh_table, self.channel_table, self.events_table, self.switch_history_table, self.active_link_switch_table, self.interface_rate_table, self.iperf_table, self.diagnosis_table, self.history_table):
             configure_readonly_table(table)
             self._configure_online_table(table)
         self.statistics_text.setReadOnly(True)
@@ -436,6 +455,8 @@ class OnlineMrCollectionPage(QWidget):
         self.analysis_chart_pages: dict[str, QWidget] = {}
         self.analysis_chart_placeholders: dict[str, QLabel] = {}
         self.analysis_chart_canvases: dict[str, object] = {}
+        self.analysis_chart_views: dict[str, ScrollableMatplotlibView] = {}
+        self.analysis_chart_hover_controllers: dict[str, AnalysisChartHoverController] = {}
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(self.throttle.interval_ms)
         self.refresh_timer.timeout.connect(self._flush_snapshot)
@@ -468,6 +489,67 @@ class OnlineMrCollectionPage(QWidget):
         self.reconcile_timer.start()
         if not self.analysis_only:
             self.attach_to_running_collections()
+        self.destroyed.connect(lambda _obj=None: self._mark_destroyed())
+
+    def _mark_destroyed(self) -> None:
+        self._destroyed = True
+        self._ui_updates_enabled = False
+
+    def _can_update_ui(self) -> bool:
+        if self._closing or self._destroyed or self._shutdown_requested:
+            return False
+        if not self._ui_updates_enabled:
+            return False
+        if shutdown_manager.is_shutting_down():
+            return False
+        return self.window() is not None
+
+    def prepare_close(self, reason: str = "window_close") -> None:
+        self.prepare_shutdown(reason)
+
+    def prepare_shutdown(self, reason: str = "app_exit") -> None:
+        if self._shutdown_requested:
+            return
+        self._closing = True
+        self._shutdown_requested = True
+        self._ui_updates_enabled = False
+        app_logger.log_info("ONLINE_MR_PAGE_PREPARE_SHUTDOWN", f"site={self.site_name} reason={reason}")
+        self.stop_runtime_activity()
+
+    def stop_runtime_activity(self) -> None:
+        for timer in self._runtime_timers():
+            timer.stop()
+        self.throttle.pending_snapshot = None
+        self.output_dirty_devices.clear()
+        self._device_refresh_pending = False
+        self._history_refresh_pending = False
+        self._detach_from_runtime_site()
+        self._request_workers_stop_for_shutdown()
+
+    def _runtime_timers(self) -> tuple[QTimer, ...]:
+        return (
+            self.session_filter_timer,
+            self.refresh_timer,
+            self.output_render_timer,
+            self.reconcile_timer,
+            self.stop_animation_timer,
+        )
+
+    def _request_workers_stop_for_shutdown(self) -> None:
+        for worker in list(self.iperf_workers_by_device_id.values()) + list(self.iperf_workers.values()):
+            worker.stop()
+        for worker in list(self.fping_workers_by_device_id.values()) + list(self.fping_workers.values()):
+            worker.stop()
+        seen: set[int] = set()
+        for worker in list(self.config_workers.values()) + list(self.workers_by_device_id.values()) + list(self.workers.values()):
+            marker = id(worker)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            try:
+                worker.cancel()
+            except Exception as exc:
+                app_logger.log_error("ONLINE_MR_SHUTDOWN_WORKER_CANCEL_FAILED", f"site={self.site_name} error={exc}")
 
     def _bind_runtime_site(self, site_name: str) -> None:
         self.runtime.unobserve(getattr(self, "site_name", site_name), self)
@@ -520,6 +602,8 @@ class OnlineMrCollectionPage(QWidget):
         app_logger.log_info("ONLINE_MR_UI_DETACH_RUNTIME", f"site={self.site_name}")
 
     def _clear_runtime_view(self) -> None:
+        if not self._can_update_ui():
+            return
         self.selected_device_ids.clear()
         self.summary_table.setRowCount(0)
         self.mesh_table.setRowCount(0)
@@ -557,7 +641,14 @@ class OnlineMrCollectionPage(QWidget):
         self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
         app_logger.log_info("ONLINE_MR_CROSS_SITE_STATE_FILTERED", f"site={self.site_name} source=site_switch")
 
+    def _append_runtime_log(self, message: str) -> None:
+        if not self._can_update_ui():
+            return
+        self.log_text.append(message)
+
     def _connect_runtime_worker(self, session_id: str, worker: OnlineMrCollectorWorker) -> None:
+        if self._shutdown_requested:
+            return
         if session_id in self._attached_worker_sessions:
             return
         worker.snapshot.connect(self.throttle.enqueue)
@@ -585,7 +676,7 @@ class OnlineMrCollectionPage(QWidget):
         return len({id(worker) for worker in list(self.workers.values()) + list(self.workers_by_device_id.values())})
 
     def closeEvent(self, event) -> None:
-        self._detach_from_runtime_site()
+        self.prepare_shutdown("close_event")
         super().closeEvent(event)
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
@@ -593,6 +684,8 @@ class OnlineMrCollectionPage(QWidget):
         self.set_site(site_name)
 
     def set_site(self, site_name: str) -> None:
+        if self._shutdown_requested:
+            return
         if site_name == self.site_name:
             self.attach_to_running_collections()
             self._schedule_device_refresh(refresh_tools=False)
@@ -609,9 +702,11 @@ class OnlineMrCollectionPage(QWidget):
         app_logger.log_info("ONLINE_MR_SITE_CONTEXT_SWITCHED", f"old_site={old_site} new_site={site_name}")
 
     def first_show_refresh(self) -> None:
+        if not self._can_update_ui():
+            return
         if self.site_name not in self._stale_sessions_checked_sites:
             self._stale_sessions_checked_sites.add(self.site_name)
-            QTimer.singleShot(0, lambda site_name=self.site_name: self.store.mark_stale_sessions_aborted(site_name))
+            QTimer.singleShot(0, lambda site_name=self.site_name: None if self._shutdown_requested else self.store.mark_stale_sessions_aborted(site_name))
         self._first_show_refreshed = True
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self.filter_hint_label.setText(self.i18n.t("app.loading"))
@@ -621,6 +716,8 @@ class OnlineMrCollectionPage(QWidget):
             self._schedule_device_refresh(refresh_tools=False)
 
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
+        if not self._can_update_ui():
+            return
         profile_start = time.perf_counter()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self._clear_peer_identity_cache()
@@ -651,15 +748,21 @@ class OnlineMrCollectionPage(QWidget):
         self.peer_station_cache.clear()
         self.peer_name_cache.clear()
         self._peer_name_cache_loaded = False
+        if not self._can_update_ui():
+            return
         self._refresh_top_metrics()
 
     def _schedule_device_refresh(self, refresh_tools: bool = False) -> None:
+        if not self._can_update_ui():
+            return
         if self._device_refresh_pending:
             return
         self._device_refresh_pending = True
 
         def run() -> None:
             self._device_refresh_pending = False
+            if not self._can_update_ui():
+                return
             self.refresh_all(defer_heavy=True, refresh_tools=refresh_tools)
 
         QTimer.singleShot(0, run)
@@ -688,6 +791,10 @@ class OnlineMrCollectionPage(QWidget):
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
+        self.force_parse_button.setText(self.i18n.t("online_mr.force_reparse"))
+        self.force_parse_button.setVisible(self.analysis_only)
+        self.export_analysis_report_button.setText(self.i18n.t("online_mr.export_analysis_report"))
+        self.export_analysis_report_button.setVisible(self.analysis_only)
         self.device_search_input.setPlaceholderText(self.i18n.t("online_mr.device_search_placeholder"))
         self.session_search_input.setPlaceholderText(self.i18n.t("online_mr.search_device"))
         self.auto_reconnect_check.setText(self.i18n.t("online_mr.auto_reconnect"))
@@ -731,26 +838,27 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.device_name"),
                 self.i18n.t("online_mr.host"),
                 self.i18n.t("online_mr.status"),
-                "Peer Name",
+                self.i18n.t("online_mr.peer_name"),
                 "MR RSSI",
-                "归属站点",
+                self.i18n.t("online_mr.peer_site"),
                 self.i18n.t("online_mr.ping_loss_rate"),
-                "Ping延迟",
+                self.i18n.t("online_mr.ping_latency"),
                 self.i18n.t("online_mr.collected"),
                 self.i18n.t("online_mr.failed"),
                 self.i18n.t("online_mr.reconnects"),
-                "最后采集",
-                "IPERF Mbps",
+                self.i18n.t("online_mr.last_collection"),
+                self.i18n.t("online_mr.avg_bandwidth"),
                 self.i18n.t("iperf.retransmits"),
                 self.i18n.t("online_mr.session"),
                 "ID",
             ]
         )
-        self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.state"), "PeerName", "PeerMac", "MR RSSI", "BSSID", "Interface", "归属站点", "Online time"])
-        self.channel_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), "CtlBusy", "TxBusy", "RxBusy", self.i18n.t("online_mr.raw")])
+        self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.link_state"), self.i18n.t("online_mr.peer_name"), self.i18n.t("online_mr.peer_mac"), "MR侧RSSI", "BSSID", self.i18n.t("online_mr.mesh_interface"), self.i18n.t("online_mr.peer_site"), self.i18n.t("online_mr.online_time")])
+        self.channel_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.ctl_busy"), self.i18n.t("online_mr.tx_busy"), self.i18n.t("online_mr.rx_busy"), self.i18n.t("online_mr.raw")])
         self.events_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.type"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer"), self.i18n.t("online_mr.to_peer"), self.i18n.t("online_mr.details")])
-        self.switch_history_table.setHorizontalHeaderLabels(["切换时间", "Radio", "原PeerName", "新PeerName", "原PeerMac", "新PeerMac", "原归属站点", "新归属站点", "原因/类型", "原始内容"])
-        self.interface_rate_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.direction"), self.i18n.t("online_mr.interface"), self.i18n.t("online_mr.usage_percent"), "PPS", self.i18n.t("online_mr.raw")])
+        self.switch_history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.switch_time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer_name"), self.i18n.t("online_mr.to_peer_name"), self.i18n.t("online_mr.from_peer_mac"), self.i18n.t("online_mr.to_peer_mac"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_peer_site"), self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.in_out_rssi"), self.i18n.t("online_mr.active_duration"), self.i18n.t("online_mr.raw")])
+        self.active_link_switch_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.device_name"), self.i18n.t("online_mr.from_ap_name"), self.i18n.t("online_mr.from_radio_mac"), self.i18n.t("online_mr.from_rssi"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_ap_name"), self.i18n.t("online_mr.to_radio_mac"), self.i18n.t("online_mr.to_rssi"), self.i18n.t("online_mr.to_peer_site"), self.i18n.t("online_mr.peer_quantity"), self.i18n.t("online_mr.link_quantity"), self.i18n.t("online_mr.switch_reason_code"), self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.raw_log")])
+        self.interface_rate_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.direction"), self.i18n.t("online_mr.interface"), self.i18n.t("online_mr.usage_percent"), self.i18n.t("online_mr.total_pps"), self.i18n.t("online_mr.broadcast_pps"), self.i18n.t("online_mr.multicast_pps"), self.i18n.t("online_mr.raw")])
         self.iperf_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), "Mbps", self.i18n.t("iperf.retransmits"), self.i18n.t("iperf.transfer"), self.i18n.t("online_mr.raw")])
         self.diagnosis_table.setHorizontalHeaderLabels(
             [
@@ -761,16 +869,17 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("mesh_analysis.min_rssi"),
                 self.i18n.t("online_mr.ping_loss_rate"),
                 self.i18n.t("online_mr.latest_ping_latency"),
-                "IPERF Avg Mbps",
-                "IPERF Max Mbps",
-                "Avg TxBusy",
-                "Avg RxBusy",
-                "In PPS",
-                "Out PPS",
+                self.i18n.t("online_mr.avg_bandwidth"),
+                self.i18n.t("online_mr.max_bandwidth"),
+                self.i18n.t("online_mr.avg_tx_busy"),
+                self.i18n.t("online_mr.avg_rx_busy"),
+                self.i18n.t("online_mr.in_pps"),
+                self.i18n.t("online_mr.out_pps"),
                 self.i18n.t("online_mr.status"),
             ]
         )
         self.history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.session"), self.i18n.t("online_mr.start_time"), self.i18n.t("online_mr.end_time"), self.i18n.t("online_mr.status"), self.i18n.t("online_mr.mesh_ok_fail"), self.i18n.t("online_mr.busy_ok_fail"), self.i18n.t("online_mr.reconnects"), "MR", self.i18n.t("online_mr.directory")])
+        self._apply_online_table_styles()
         if self.analysis_only:
             labels = (
                 self.i18n.t("online_mr.history_sessions"),
@@ -778,6 +887,7 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.channel_busy"),
                 self.i18n.t("online_mr.ap_radio_statistics"),
                 self.i18n.t("online_mr.switch_history"),
+                self.i18n.t("online_mr.active_link_switch_logs"),
                 self.i18n.t("online_mr.interface_rate"),
                 self.i18n.t("online_mr.analysis_charts"),
                 self.i18n.t("online_mr.traffic_test"),
@@ -939,6 +1049,11 @@ class OnlineMrCollectionPage(QWidget):
             view_layout.addWidget(self.view_device_combo)
         self.parse_session_button.setMinimumWidth(140)
         view_layout.addWidget(self.parse_session_button)
+        self.force_parse_button.setMinimumWidth(110)
+        view_layout.addWidget(self.force_parse_button)
+        self.export_analysis_report_button.setMinimumWidth(130)
+        self.export_analysis_report_button.setVisible(self.analysis_only)
+        view_layout.addWidget(self.export_analysis_report_button)
         view_layout.addStretch(1)
         self._build_analysis_chart_placeholders()
         if self.analysis_only:
@@ -947,6 +1062,7 @@ class OnlineMrCollectionPage(QWidget):
             self.tabs.addTab(self.channel_table, "")
             self.tabs.addTab(self.statistics_text, "")
             self.tabs.addTab(self.switch_history_panel, "")
+            self.tabs.addTab(self.active_link_switch_table, "")
             self.tabs.addTab(self.interface_rate_table, "")
             self.tabs.addTab(self.analysis_charts, "")
             self.tabs.addTab(self.iperf_table, "")
@@ -997,6 +1113,9 @@ class OnlineMrCollectionPage(QWidget):
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
+        self.force_parse_button.clicked.connect(lambda: self.parse_selected_session(force_reparse=True))
+        self.export_analysis_report_button.clicked.connect(self.export_analysis_report)
+        self.session_select_combo.currentIndexChanged.connect(lambda _index: self._refresh_parse_button_state())
         self.output_toggle.toggled.connect(self._output_render_toggled)
         self.fping_device_combo_1.currentIndexChanged.connect(lambda _index: self._fping_device_changed(1))
         self.fping_device_combo_2.currentIndexChanged.connect(lambda _index: self._fping_device_changed(2))
@@ -1149,6 +1268,8 @@ class OnlineMrCollectionPage(QWidget):
     def _start_stop_animation(self, task_count: int) -> None:
         self._stopping_task_count = max(1, int(task_count))
         self._stop_animation_step = 0
+        if not self._can_update_ui():
+            return
         self.stop_animation_timer.start()
         self._tick_stop_animation()
         app_logger.log_info(
@@ -1161,6 +1282,9 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_animation_timer.stop()
 
     def _tick_stop_animation(self) -> None:
+        if not self._can_update_ui():
+            self.stop_animation_timer.stop()
+            return
         if self._stopping_task_count <= 0:
             self.stop_animation_timer.stop()
             return
@@ -1173,9 +1297,11 @@ class OnlineMrCollectionPage(QWidget):
     def _analysis_chart_titles() -> tuple[tuple[str, str], ...]:
         return (
             ("rssi", "主链路 RSSI"),
+            ("ping_loss", "Ping 丢包率"),
             ("ping", "Ping 延迟"),
             ("interface", "接口 PPS"),
             ("busy", "信道繁忙度"),
+            ("switch_rssi", "主链路切换前后信号"),
         )
 
     def _install_no_wheel_filter_for_controls(self, root_widget: QWidget) -> None:
@@ -1414,7 +1540,7 @@ class OnlineMrCollectionPage(QWidget):
                 return Path(str(session_dir))
         return None
 
-    def parse_selected_session(self) -> None:
+    def parse_selected_session(self, *, force_reparse: bool = False) -> None:
         session_dir = self._selected_session_dir_for_parse()
         if session_dir is None:
             QMessageBox.warning(
@@ -1430,17 +1556,86 @@ class OnlineMrCollectionPage(QWidget):
         if not raw_dir.exists():
             QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Raw directory was not found: {raw_dir}")
             return
+        if not force_reparse and self._load_cached_parse_if_valid(session_dir):
+            return
         self._log_page_profile("parse.start", time.perf_counter(), rows=1)
         self.parse_session_button.setEnabled(False)
+        self.force_parse_button.setEnabled(False)
         self.log_text.append(f"Start parsing collection data: {session_dir}")
-        self.parse_worker = OnlineMrParseWorker(session_dir, parent=self)
+        self.parse_worker = OnlineMrParseWorker(session_dir, parent=self, force_reparse=True)
         self.parse_worker.completed.connect(lambda summary, d=session_dir: self._parse_completed(d, summary))
         self.parse_worker.failed.connect(self._parse_failed)
         self.parse_worker.start()
 
+    def _load_cached_parse_if_valid(self, session_dir: Path) -> bool:
+        from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
+
+        try:
+            summary = OnlineMrDiagnosisParser(session_dir).cached_summary_if_valid()
+        except Exception:
+            QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), self.i18n.t("online_mr.parsed_cache_unavailable"))
+            return False
+        if summary is None:
+            return False
+        profile_start = time.perf_counter()
+        rows = self._load_offline_analysis(session_dir)
+        self._log_page_profile("load.cached_analysis", profile_start, rows=rows)
+        self.log_text.append(f"Loaded parsed cache: {session_dir}")
+        self.tabs.setCurrentWidget(self.diagnosis_table)
+        self._refresh_parse_button_state()
+        return True
+
+    def _refresh_parse_button_state(self) -> None:
+        if not self.analysis_only:
+            self.parse_session_button.setText(self.i18n.t("online_mr.parse_collection_data"))
+            return
+        session_dir = self._selected_session_dir_for_parse()
+        if session_dir is None:
+            self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session"))
+            return
+        from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
+
+        try:
+            status = OnlineMrDiagnosisParser(session_dir).cache_status()
+        except Exception:
+            status = "broken"
+        if status == "valid":
+            key = "online_mr.load_parsed_cache"
+        elif status in {"stale", "broken"}:
+            key = "online_mr.reparse_selected_session"
+        else:
+            key = "online_mr.parse_selected_session"
+        self.parse_session_button.setText(self.i18n.t(key))
+
+    def export_analysis_report(self) -> None:
+        session_dir = self._selected_session_dir_for_parse()
+        if session_dir is None:
+            QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), self.i18n.t("online_mr.no_session_selected"))
+            return
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not db_path.exists():
+            QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), "请先解析或加载已解析结果后再导出分析报表")
+            return
+        default_path = session_dir / "exports" / f"车载MR分析报表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        path_text, _filter = QFileDialog.getSaveFileName(self, self.i18n.t("online_mr.export_analysis_report"), str(default_path), "Excel (*.xlsx)")
+        if not path_text:
+            return
+        try:
+            from netconsole.services.vehicle_mr_offline_excel_report import VehicleMrOfflineExcelReportExporter
+
+            output_path = VehicleMrOfflineExcelReportExporter().export(session_dir, Path(path_text))
+        except Exception as exc:
+            QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), str(exc))
+            return
+        QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
+
     def _parse_completed(self, session_dir: Path, summary) -> None:
+        if not self._can_update_ui():
+            self.parse_worker = None
+            return
         profile_start = time.perf_counter()
         self.parse_session_button.setEnabled(True)
+        self.force_parse_button.setEnabled(True)
         self.log_text.append(
             f"Parse completed: active_segments={summary.active_segments}, "
             f"mesh_samples={getattr(summary, 'mesh_samples', 0)}, "
@@ -1467,22 +1662,40 @@ class OnlineMrCollectionPage(QWidget):
             self.log_text.append(message)
             QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
         self.parse_worker = None
+        self._refresh_parse_button_state()
 
     def _parse_failed(self, message: str) -> None:
+        if not self._can_update_ui():
+            self.parse_worker = None
+            return
         self.parse_session_button.setEnabled(True)
+        self.force_parse_button.setEnabled(True)
         self.parse_worker = None
         QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), message)
 
     def _load_offline_analysis(self, session_dir: Path) -> int:
-        self._load_mesh_link_details(session_dir)
-        self._load_channel_busy_details(session_dir)
-        self._load_interface_rate_details(session_dir)
-        self._load_iperf_details(session_dir)
-        self._load_link_switch_history(session_dir)
-        self._load_radio_statistics_details(session_dir)
-        rows = self._load_diagnosis_results(session_dir)
-        self._render_analysis_charts(session_dir)
+        self._safe_load_analysis_table("mesh_link", session_dir, self._load_mesh_link_details)
+        self._safe_load_analysis_table("channel_busy", session_dir, self._load_channel_busy_details)
+        self._safe_load_analysis_table("interface_rate", session_dir, self._load_interface_rate_details)
+        self._safe_load_analysis_table("iperf", session_dir, self._load_iperf_details)
+        self._safe_load_analysis_table("switch_history", session_dir, self._load_link_switch_history)
+        self._safe_load_analysis_table("active_link_switch_logs", session_dir, self._load_active_link_switch_logs)
+        self._safe_load_analysis_table("radio_statistics", session_dir, self._load_radio_statistics_details)
+        rows = self._safe_load_analysis_table("diagnosis", session_dir, self._load_diagnosis_results)
+        self._safe_load_analysis_table("analysis_charts", session_dir, self._render_analysis_charts)
         return rows
+
+    def _safe_load_analysis_table(self, table_name: str, session_dir: Path, loader) -> int:
+        try:
+            result = loader(session_dir)
+            return int(result or 0)
+        except Exception as exc:
+            stack = traceback.format_exc()
+            message = f"table={table_name} session_dir={session_dir} error={exc}\n{stack}"
+            app_logger.log_error("ONLINE_MR_ANALYSIS_TABLE_LOAD_FAILED", message)
+            if hasattr(self, "log_text") and self.log_text is not None:
+                self.log_text.append(f"加载分析表格失败：{table_name}，已跳过。{exc}")
+            return 0
 
     def _load_mesh_link_details(self, session_dir: Path) -> int:
         from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrRawBlockSplitter
@@ -1492,6 +1705,7 @@ class OnlineMrCollectionPage(QWidget):
         if not raw_path.exists():
             return 0
         count = 0
+        self.mesh_table.setUpdatesEnabled(False)
         for block in OnlineMrRawBlockSplitter().split(raw_path):
             records, _status, _error = parse_mesh_link_text(block.text, block.collected_at)
             for record in records:
@@ -1499,11 +1713,15 @@ class OnlineMrCollectionPage(QWidget):
                 peer_mac = record.peer_mac_raw or record.peer_mac_h3c()
                 peer_name = str(metrics.get("peer_name") or "")
                 station = ""
-                if peer_mac:
-                    station = str((self._resolve_peer_cached(peer_mac) or {}).get("peer_site") or "")
-                if not station and peer_name:
+                if peer_name:
                     station = str((self._resolve_peer_cached(peer_name) or {}).get("peer_site") or "")
+                if not station and peer_mac:
+                    station = str((self._resolve_peer_cached(peer_mac) or {}).get("peer_site") or "")
+                if not station and metrics.get("bssid"):
+                    station = str((self._resolve_peer_cached(str(metrics.get("bssid"))) or {}).get("peer_site") or "")
+                row = self.mesh_table.rowCount()
                 values = [
+                    row + 1,
                     block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
                     record.radio,
                     record.link_state,
@@ -1515,13 +1733,17 @@ class OnlineMrCollectionPage(QWidget):
                     station,
                     metrics.get("online_time") or "",
                 ]
-                row = self.mesh_table.rowCount()
                 self.mesh_table.insertRow(row)
+                active = str(record.link_state or "").upper() == "ACTIVE"
                 for column, value in enumerate(values):
-                    self.mesh_table.setItem(row, column, QTableWidgetItem(self._summary_text(value)))
+                    self._set_table_item(self.mesh_table, row, column, value, active=active)
                 count += 1
                 if count >= 5000:
-                    return count
+                    break
+            if count >= 5000:
+                break
+        self.mesh_table.setUpdatesEnabled(True)
+        self._auto_fit_online_table(self.mesh_table, "mesh_link")
         return count
 
     def _load_link_switch_history(self, session_dir: Path) -> int:
@@ -1541,6 +1763,7 @@ class OnlineMrCollectionPage(QWidget):
                     for row in rows[:200]
                 ]
                 self.switch_history_text.setPlainText("\n".join(summary))
+                self._auto_fit_online_table(self.switch_history_table, "switch_history")
                 return len(rows)
 
         raw_path = session_dir / "raw" / "mesh_link_raw.log"
@@ -1561,9 +1784,13 @@ class OnlineMrCollectionPage(QWidget):
             peer = _normalize_mac_key(active.peer_mac_raw) or active.peer_mac_raw or active.peer_mac_h3c()
             if not peer:
                 continue
-            station = str((self._resolve_peer_cached(active.peer_mac_raw or peer) or {}).get("peer_site") or "")
-            if not station and peer_name:
+            station = ""
+            if peer_name:
                 station = str((self._resolve_peer_cached(peer_name) or {}).get("peer_site") or "")
+            if not station:
+                station = str((self._resolve_peer_cached(active.peer_mac_raw or peer) or {}).get("peer_site") or "")
+            if not station and metrics.get("bssid"):
+                station = str((self._resolve_peer_cached(str(metrics.get("bssid"))) or {}).get("peer_site") or "")
             if last_peer and last_peer != peer:
                 parsed = {
                     "switch_time": block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
@@ -1583,6 +1810,7 @@ class OnlineMrCollectionPage(QWidget):
             last_peer_name = peer_name
             last_station = station
         self.switch_history_text.setPlainText("\n".join(lines) if lines else "未检测到主链路切换")
+        self._auto_fit_online_table(self.switch_history_table, "switch_history")
         return len(lines)
 
     def _append_switch_history_table_row(self, parsed: dict[str, object]) -> None:
@@ -1596,22 +1824,87 @@ class OnlineMrCollectionPage(QWidget):
             to_station = str((self._resolve_peer_cached(to_mac) or {}).get("peer_site") or "")
         if not to_station and parsed.get("to_peer_name"):
             to_station = str((self._resolve_peer_cached(str(parsed.get("to_peer_name"))) or {}).get("peer_site") or "")
+        row = self.switch_history_table.rowCount()
         values = [
+            row + 1,
             parsed.get("switch_time"),
             parsed.get("radio") or 1,
-            parsed.get("from_peer_name"),
+            parsed.get("from_peer_name") or "-",
             parsed.get("to_peer_name"),
-            from_mac,
+            from_mac or "-",
             to_mac,
             from_station,
             to_station,
             parsed.get("reason") or parsed.get("role"),
+            _format_in_out_rssi(parsed.get("in_rssi"), parsed.get("out_rssi")),
+            parsed.get("active_time"),
             parsed.get("raw_line"),
         ]
-        row = self.switch_history_table.rowCount()
         self.switch_history_table.insertRow(row)
+        reason = str(parsed.get("reason") or parsed.get("role") or "")
+        warning = "fault" in reason.lower()
         for column, value in enumerate(values):
-            self.switch_history_table.setItem(row, column, QTableWidgetItem(self._summary_text(value)))
+            self._set_table_item(self.switch_history_table, row, column, value, emphasize=column in {4, 6, 8}, warning=warning)
+
+    def _load_active_link_switch_logs(self, session_dir: Path) -> int:
+        import sqlite3
+
+        self.active_link_switch_table.setRowCount(0)
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not db_path.exists():
+            self.active_link_switch_table.setToolTip(self.i18n.t("online_mr.active_link_switch_logs_empty"))
+            return 0
+        try:
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT source, log_time, device_name,
+                           from_peer_name, from_peer_mac, from_peer_rssi, from_station, from_serial_number, from_resolve_rule,
+                           to_peer_name, to_peer_mac, to_peer_rssi, to_station, to_serial_number, to_resolve_rule,
+                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_line
+                    FROM live_active_link_switch_logs
+                    WHERE source = 'terminal_monitor'
+                    ORDER BY log_time ASC, id ASC
+                    LIMIT 5000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            self.active_link_switch_table.setToolTip(self.i18n.t("online_mr.active_link_switch_logs_empty"))
+            return 0
+        if not rows:
+            self.active_link_switch_table.setToolTip(self.i18n.t("online_mr.active_link_switch_logs_empty"))
+            return 0
+        self.active_link_switch_table.setToolTip("")
+        for row_data in rows:
+            row = self.active_link_switch_table.rowCount()
+            self.active_link_switch_table.insertRow(row)
+            from_empty = str(row_data[8] or "") == "empty_link"
+            to_empty = str(row_data[14] or "") == "empty_link"
+            values = [
+                row + 1,
+                row_data[1],
+                row_data[2],
+                self.i18n.t("online_mr.empty_link") if from_empty else row_data[3],
+                "-" if from_empty else row_data[4],
+                "-" if from_empty else row_data[5],
+                row_data[6] or "-",
+                self.i18n.t("online_mr.empty_link") if to_empty else row_data[9],
+                "-" if to_empty else row_data[10],
+                "-" if to_empty else row_data[11],
+                row_data[12] or "-",
+                row_data[15],
+                row_data[16],
+                row_data[17],
+                row_data[18],
+                row_data[19],
+            ]
+            reason_code = row_data[17]
+            warning = reason_code == 4 or to_empty
+            active = from_empty and not to_empty
+            for column, value in enumerate(values):
+                self._set_table_item(self.active_link_switch_table, row, column, value, active=active and column in {7, 8, 9, 10, 14}, emphasize=column in {7, 8, 9, 10}, warning=warning and column in {0, 7, 9, 14, 15})
+        self._auto_fit_online_table(self.active_link_switch_table, "active_link_switch_logs")
+        return len(rows)
 
     def _load_channel_busy_details(self, session_dir: Path) -> int:
         import sqlite3
@@ -1630,14 +1923,19 @@ class OnlineMrCollectionPage(QWidget):
                 LIMIT 5000
                 """
             ).fetchall()
-        for row_data in rows:
-            parsed = parse_channel_busy_text(str(row_data[4] or ""))
-            ctl_busy = parsed[0].get("ctl_busy") if parsed else None
-            values = [row_data[0], row_data[1], ctl_busy, row_data[2], row_data[3], row_data[4]]
-            row = self.channel_table.rowCount()
-            self.channel_table.insertRow(row)
-            for column, value in enumerate(values):
-                self.channel_table.setItem(row, column, QTableWidgetItem(self._summary_text(value)))
+        self.channel_table.setUpdatesEnabled(False)
+        try:
+            for row_data in rows:
+                row = self.channel_table.rowCount()
+                self.channel_table.insertRow(row)
+                parsed = parse_channel_busy_text(str(row_data[4] or ""))
+                ctl_busy = parsed[0].get("ctl_busy") if parsed else None
+                values = [row + 1, row_data[0], row_data[1], ctl_busy, row_data[2], row_data[3], row_data[4]]
+                for column, value in enumerate(values):
+                    self._set_table_item(self.channel_table, row, column, value)
+        finally:
+            self.channel_table.setUpdatesEnabled(True)
+        self._auto_fit_online_table(self.channel_table, "channel_busy")
         return len(rows)
 
     def _load_interface_rate_details(self, session_dir: Path) -> int:
@@ -1650,7 +1948,7 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT collected_at, direction, interface_name, usage_percent, total_pps, raw_line
+                SELECT collected_at, direction, interface_name, usage_percent, total_pps, broadcast_pps, multicast_pps, raw_line
                 FROM live_interface_rates
                 ORDER BY collected_at ASC
                 LIMIT 5000
@@ -1659,8 +1957,10 @@ class OnlineMrCollectionPage(QWidget):
         for row_data in rows:
             row = self.interface_rate_table.rowCount()
             self.interface_rate_table.insertRow(row)
-            for column, value in enumerate(row_data):
-                self.interface_rate_table.setItem(row, column, QTableWidgetItem(self._summary_text(value)))
+            values = [row + 1, *row_data]
+            for column, value in enumerate(values):
+                self._set_table_item(self.interface_rate_table, row, column, value)
+        self._auto_fit_online_table(self.interface_rate_table, "interface_rate")
         return len(rows)
 
     def _load_iperf_details(self, session_dir: Path) -> int:
@@ -1684,7 +1984,8 @@ class OnlineMrCollectionPage(QWidget):
             self.iperf_table.insertRow(row)
             values = [row_data[0], None if row_data[1] is None else f"{float(row_data[1]):.2f}", row_data[2], row_data[3], row_data[4]]
             for column, value in enumerate(values):
-                self.iperf_table.setItem(row, column, QTableWidgetItem(self._summary_text(value)))
+                self._set_table_item(self.iperf_table, row, column, value)
+        self._auto_fit_online_table(self.iperf_table, "iperf")
         return len(rows)
 
     def _load_radio_statistics_details(self, session_dir: Path) -> int:
@@ -1755,91 +2056,91 @@ class OnlineMrCollectionPage(QWidget):
             in_pps, out_pps = self._interface_pps_from_details(row_data[13])
             values = list(row_data[:2]) + [row_data[2], row_data[3], row_data[4], row_data[5], row_data[6], row_data[8], row_data[9], row_data[10], row_data[11], in_pps, out_pps, row_data[12]]
             for column, value in enumerate(values):
-                self.diagnosis_table.setItem(row, column, QTableWidgetItem("-" if value in {None, ""} else str(value)))
+                self._set_table_item(self.diagnosis_table, row, column, value)
+        self._auto_fit_online_table(self.diagnosis_table, "diagnosis")
         return len(rows)
 
     def _render_analysis_charts(self, session_dir: Path) -> None:
-        import sqlite3
-
         db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
         if not db_path.exists():
             for key, title in self._analysis_chart_titles():
-                self._plot_analysis_chart(key, title, "", [])
+                self._plot_analysis_chart(key, title, "", [], empty_text="未解析到图表数据")
             return
-        with sqlite3.connect(db_path) as conn:
-            rssi_rows = conn.execute(
-                """
-                SELECT s.collected_at, l.local_rssi_db
-                FROM live_samples s
-                JOIN live_mesh_links l ON l.sample_id = s.id
-                WHERE UPPER(l.link_state) = 'ACTIVE' AND l.local_rssi_db IS NOT NULL
-                ORDER BY s.collected_at ASC
-                LIMIT 5000
-                """
-            ).fetchall()
-            ping_rows = conn.execute(
-                """
-                SELECT collected_at, latency_ms
-                FROM ping_samples
-                WHERE success = 1 AND latency_ms IS NOT NULL
-                ORDER BY collected_at ASC
-                LIMIT 5000
-                """
-            ).fetchall()
-            interface_rows = conn.execute(
-                """
-                SELECT direction, total_pps
-                FROM live_interface_rates
-                WHERE direction IS NOT NULL AND total_pps IS NOT NULL
-                ORDER BY collected_at ASC
-                LIMIT 10000
-                """
-            ).fetchall()
-            busy_rows = conn.execute(
-                """
-                SELECT cb.tx_busy, cb.rx_busy, cb.raw_text
-                FROM live_channel_busy cb
-                JOIN live_samples s ON s.id = cb.sample_id
-                ORDER BY s.collected_at ASC
-                LIMIT 5000
-                """
-            ).fetchall()
-        self._plot_analysis_chart("rssi", "主链路 RSSI", "RSSI", [("MR RSSI", [row[1] for row in rssi_rows if row[1] is not None])])
-        self._plot_analysis_chart("ping", "Ping 延迟", "ms", [("RTT", [row[1] for row in ping_rows if row[1] is not None])])
-        inbound = [row[1] for row in interface_rows if str(row[0]).lower() == "inbound" and row[1] is not None]
-        outbound = [row[1] for row in interface_rows if str(row[0]).lower() == "outbound" and row[1] is not None]
-        self._plot_analysis_chart("interface", "接口 PPS", "pps", [("Inbound", inbound), ("Outbound", outbound)])
-        ctl_values: list[object] = []
-        tx_values: list[object] = []
-        rx_values: list[object] = []
-        for tx_busy, rx_busy, raw_text in busy_rows:
-            parsed = parse_channel_busy_text(str(raw_text or ""))
-            ctl_values.append(parsed[0].get("ctl_busy") if parsed else None)
-            tx_values.append(tx_busy)
-            rx_values.append(rx_busy)
-        self._plot_analysis_chart("busy", "信道繁忙度", "%", [("CtlBusy", ctl_values), ("TxBusy", tx_values), ("RxBusy", rx_values)])
+        from netconsole.services.online_mr_chart_builder import OnlineMrChartBuilder
 
-    def _plot_analysis_chart(self, key: str, title: str, ylabel: str, series: list[tuple[str, list[object]]]) -> None:
+        builder = OnlineMrChartBuilder(db_path)
+        rssi_interactive_points = builder.build_active_rssi_interactive_points()
+        charts = {
+            "rssi": builder.build_active_rssi_series(),
+            "ping_loss": builder.build_ping_loss_series(),
+            "ping": builder.build_ping_latency_series(),
+            "interface": builder.build_interface_rate_series(),
+            "busy": builder.build_channel_busy_series(),
+            "switch_rssi": builder.build_switch_rssi_series(),
+        }
+        for key, chart in charts.items():
+            self._plot_analysis_chart(
+                key,
+                chart.title,
+                chart.y_label,
+                [(series.name, series.points) for series in chart.series],
+                empty_text=chart.empty_message,
+                hover_points=rssi_interactive_points if key == "rssi" else None,
+            )
+
+    def _plot_analysis_chart(
+        self,
+        key: str,
+        title: str,
+        ylabel: str,
+        series: list[tuple[str, list[object]]],
+        *,
+        empty_text: str = "无数据",
+        hover_points: list[object] | None = None,
+    ) -> None:
         canvas = self._ensure_analysis_chart_canvas(key)
+        self._clear_analysis_chart_hover(key)
         figure = canvas.figure
         figure.clear()
         axis = figure.add_subplot(111)
         plotted = False
+        total_points = 0
         for label, values in series:
-            numeric = [float(value) for value in values if value is not None]
-            if not numeric:
+            points = [_chart_point(value) for value in values]
+            points = [point for point in points if point is not None]
+            if not points:
                 continue
-            x_values = list(range(1, len(numeric) + 1))
-            axis.plot(x_values, numeric, linewidth=1.2, label=label)
+            total_points += len(points)
+            segments = _split_chart_segments(points, max_gap_seconds=60 if key == "switch_rssi" else 180)
+            first_segment = True
+            for segment in segments:
+                x_values = [point[0] for point in segment]
+                y_values = [point[1] for point in segment]
+                plot_label = label if first_segment else None
+                if key == "switch_rssi":
+                    axis.plot(x_values, y_values, linewidth=1.0, marker="o", markersize=4, label=plot_label)
+                elif key == "rssi":
+                    axis.plot(x_values, y_values, linewidth=1.2, marker="o", markersize=2.5, label=plot_label)
+                else:
+                    axis.plot(x_values, y_values, linewidth=1.2, label=plot_label)
+                first_segment = False
             plotted = True
+        self._resize_analysis_chart_canvas(key, total_points)
+        if key in {"rssi", "switch_rssi"} and plotted:
+            if ylabel:
+                axis.set_ylabel(f"{ylabel}（设备原始值）")
+            else:
+                axis.set_ylabel("RSSI（设备原始值）")
         axis.set_title(title)
-        axis.set_xlabel("Sample")
-        axis.set_ylabel(ylabel)
+        axis.set_xlabel("时间")
+        if key not in {"rssi", "switch_rssi"}:
+            axis.set_ylabel(ylabel)
         if plotted:
             axis.grid(True, alpha=0.25)
             axis.legend(loc="best")
+            figure.autofmt_xdate()
         else:
-            axis.text(0.5, 0.5, "无数据", ha="center", va="center", transform=axis.transAxes)
+            axis.text(0.5, 0.5, empty_text, ha="center", va="center", transform=axis.transAxes)
             axis.set_xticks([])
             axis.set_yticks([])
         try:
@@ -1848,14 +2149,14 @@ class OnlineMrCollectionPage(QWidget):
             apply_cjk_font(axis)
         except Exception:
             pass
+        if key == "rssi" and hover_points:
+            self.analysis_chart_hover_controllers[key] = AnalysisChartHoverController(canvas, axis, hover_points, _online_mr_active_rssi_tooltip_text)
         canvas.draw_idle()
 
     def _ensure_analysis_chart_canvas(self, key: str):
         canvas = self.analysis_chart_canvases.get(key)
         if canvas is not None:
             return canvas
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-        from matplotlib.figure import Figure
 
         page = self.analysis_chart_pages[key]
         layout = page.layout()
@@ -1863,13 +2164,29 @@ class OnlineMrCollectionPage(QWidget):
         if placeholder is not None and layout is not None:
             layout.removeWidget(placeholder)
             placeholder.deleteLater()
-        figure = Figure(figsize=(7, 3), tight_layout=True)
-        canvas = FigureCanvasQTAgg(figure)
-        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        view = ScrollableMatplotlibView(page)
+        canvas = view.canvas
         if layout is not None:
-            layout.addWidget(canvas, 1)
+            layout.addWidget(view, 1)
+        self.analysis_chart_views[key] = view
         self.analysis_chart_canvases[key] = canvas
         return canvas
+
+    def _resize_analysis_chart_canvas(self, key: str, point_count: int) -> None:
+        view = self.analysis_chart_views.get(key)
+        if view is None:
+            return
+        width = 1300
+        if point_count > 120:
+            width += min(6700, (point_count - 120) * 8)
+        if key in {"interface", "busy"}:
+            width += 200
+        view.set_preferred_plot_width(width)
+
+    def _clear_analysis_chart_hover(self, key: str) -> None:
+        controller = self.analysis_chart_hover_controllers.pop(key, None)
+        if controller is not None:
+            controller.disconnect()
 
     @staticmethod
     def _interface_pps_from_details(details_json: object) -> tuple[object, object]:
@@ -1885,6 +2202,9 @@ class OnlineMrCollectionPage(QWidget):
         return inbound.get("avg_pps"), outbound.get("avg_pps")
 
     def _worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
+        if self._shutdown_requested:
+            worker.cancel()
+            return
         self.manager.register(meta.session_id, worker)
         self._attached_worker_sessions.add(meta.session_id)
         if meta.device_id is not None:
@@ -1907,6 +2227,9 @@ class OnlineMrCollectionPage(QWidget):
         self._fill_history()
 
     def _config_worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
+        if self._shutdown_requested:
+            worker.cancel()
+            return
         if meta.session_dir:
             self.session_dirs[meta.session_id] = Path(meta.session_dir)
             if meta.device_id is not None:
@@ -1920,12 +2243,16 @@ class OnlineMrCollectionPage(QWidget):
 
     def _config_worker_completed(self, session_id: str, worker_key: str) -> None:
         self.config_workers.pop(worker_key, None)
+        if not self._can_update_ui():
+            return
         self.session_history_changed.emit()
         self._fill_history()
         self._update_action_state()
 
     def _config_worker_failed(self, message: str, worker_key: str, device_id: int | None) -> None:
         self.config_workers.pop(worker_key, None)
+        if not self._can_update_ui():
+            return
         if device_id is not None:
             self._update_device_status(device_id, self.i18n.t("online_mr.config_collect_failed"))
         self.log_text.append(f"{self.i18n.t('online_mr.config_collect_failed')}: {message}")
@@ -1938,6 +2265,8 @@ class OnlineMrCollectionPage(QWidget):
     def _worker_failed(self, message: str, device_id: int | None = None) -> None:
         session_id = self._session_id_for_device(device_id) if device_id is not None else None
         self._finalize_collection_state(device_id=device_id, session_id=session_id, final_status="FAILED", reason=message)
+        if not self._can_update_ui():
+            return
         QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
 
     def _finalize_collection_state(
@@ -1973,17 +2302,24 @@ class OnlineMrCollectionPage(QWidget):
             self.fping_workers_by_device_id.pop(device_id, None)
             self._last_active_peer_by_device_id.pop(device_id, None)
             self._stream_sample_count_by_device_id.pop(device_id, None)
-            self._update_device_status(device_id, self._status_text(final_status))
-            self._update_summary_status_by_device(device_id, final_status)
         app_logger.log_info(
             "ONLINE_MR_COLLECTION_FINALIZED",
             f"device_id={device_id} session_id={session_id} new_status={final_status} reason={reason or ''} workers_count={len(self.workers)} manager_running_count={self.manager.running_count()}",
         )
+        if not self._can_update_ui():
+            self._running_count = self._site_running_count()
+            return
+        if device_id is not None:
+            self._update_device_status(device_id, self._status_text(final_status))
+            self._update_summary_status_by_device(device_id, final_status)
         self._reconcile_collection_state()
         self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
         if not self.workers_by_device_id:
             self._stop_stop_animation()
-        self.running_count_label.setText(str(self._site_running_count()))
+        self._running_count = self._site_running_count()
+        if not self._can_update_ui():
+            return
+        self.running_count_label.setText(str(self._running_count))
         self._refresh_top_metrics()
         self._fill_view_devices(prefer_device_id=device_id)
         self._fill_history()
@@ -2014,7 +2350,7 @@ class OnlineMrCollectionPage(QWidget):
             return
         bus = self._ensure_event_pipeline(meta.session_id, Path(meta.session_dir))
         worker = FpingV5ProbeWorker(session, config, tool, event_bus=bus, source_device_id=meta.device_id, parent=self)
-        worker.failed.connect(lambda message: self.log_text.append(f"Fping: {message}"))
+        worker.failed.connect(lambda message: self._append_runtime_log(f"Fping: {message}"))
         worker.completed.connect(lambda _status, session_id=meta.session_id, device_id=meta.device_id: self._fping_completed(session_id, device_id))
         self.fping_workers[meta.session_id] = worker
         if meta.device_id is not None:
@@ -2054,10 +2390,10 @@ class OnlineMrCollectionPage(QWidget):
         session_dir = Path(meta.session_dir)
         log_file = session_dir / "raw" / "iperf_client_raw.log"
         worker = IperfProcessWorker(tool, command, log_file, store=None, session_id=meta.session_id, device_id=meta.device_id, config=client_config, mode="client", parent=self)
-        worker.line_received.connect(lambda line: self.log_text.append(f"IPERF: {line}"))
+        worker.line_received.connect(lambda line: self._append_runtime_log(f"IPERF: {line}"))
         worker.interval_received.connect(lambda row, device_id=meta.device_id: self._append_iperf_interval(device_id, row))
         worker.completed.connect(lambda _run_id, session_id=meta.session_id, device_id=meta.device_id: self._iperf_completed(session_id, device_id))
-        worker.failed.connect(lambda message: self.log_text.append(f"IPERF: {message}"))
+        worker.failed.connect(lambda message: self._append_runtime_log(f"IPERF: {message}"))
         self.iperf_workers[meta.session_id] = worker
         if meta.device_id is not None:
             self.iperf_workers_by_device_id[int(meta.device_id)] = worker
@@ -2071,6 +2407,9 @@ class OnlineMrCollectionPage(QWidget):
     def _append_iperf_interval(self, device_id: int | None, row: dict[str, object]) -> None:
         if device_id is not None:
             self.latest_iperf_by_device_id[int(device_id)] = row
+        if not self._can_update_ui():
+            return
+        if device_id is not None:
             self._publish_iperf_event(int(device_id), row)
         table_row = self.iperf_table.rowCount()
         self.iperf_table.insertRow(table_row)
@@ -2082,7 +2421,7 @@ class OnlineMrCollectionPage(QWidget):
             row.get("raw_line", ""),
         ]
         for column, value in enumerate(values):
-            self.iperf_table.setItem(table_row, column, QTableWidgetItem(str(value)))
+            self._set_table_item(self.iperf_table, table_row, column, value)
         if device_id is not None:
             self._update_summary_iperf(int(device_id), row)
         self._trim_table(self.iperf_table)
@@ -2111,6 +2450,9 @@ class OnlineMrCollectionPage(QWidget):
         )
 
     def _flush_snapshot(self) -> None:
+        if not self._can_update_ui():
+            self.throttle.pending_snapshot = None
+            return
         snapshot = self.throttle.flush()
         if snapshot is None:
             self._refresh_realtime_view()
@@ -2141,6 +2483,8 @@ class OnlineMrCollectionPage(QWidget):
         return bus
 
     def _handle_raw_stream_event(self, event: OnlineMrEvent) -> None:
+        if self._shutdown_requested:
+            return
         session_dir = self.session_dirs.get(event.session_id)
         if session_dir is None:
             return
@@ -2189,6 +2533,9 @@ class OnlineMrCollectionPage(QWidget):
             self.output_dirty_devices.add(device_id)
 
     def _flush_output_buffers(self) -> None:
+        if not self._can_update_ui():
+            self.output_dirty_devices.clear()
+            return
         if not self.output_render_enabled:
             return
         dirty = list(self.output_dirty_devices)
@@ -2361,6 +2708,8 @@ class OnlineMrCollectionPage(QWidget):
             )
 
     def _refresh_realtime_view(self) -> None:
+        if not self._can_update_ui():
+            return
         now = datetime.now()
         for session_id, buffer in list(self.realtime_buffers.items()):
             device_id = self.session_to_device_id.get(session_id)
@@ -2429,19 +2778,7 @@ class OnlineMrCollectionPage(QWidget):
             SUMMARY_COL_IPERF_RETRANS: state.retrans,
         }
         for column, value in values.items():
-            item = QTableWidgetItem(self._summary_text(value))
-            if column in {
-                SUMMARY_COL_STATUS,
-                SUMMARY_COL_MR_RSSI,
-                SUMMARY_COL_PING_LOSS,
-                SUMMARY_COL_PING_LATENCY,
-                SUMMARY_COL_COLLECTED,
-                SUMMARY_COL_FAILED,
-                SUMMARY_COL_RECONNECTS,
-                SUMMARY_COL_IPERF_MBPS,
-                SUMMARY_COL_IPERF_RETRANS,
-            }:
-                item.setTextAlignment(Qt.AlignCenter)
+            item = make_table_item(self._summary_text(value))
             self.summary_table.setItem(row, column, item)
         app_logger.log_info(
             "ONLINE_MR_REALTIME_SUMMARY_UPDATED",
@@ -2475,19 +2812,7 @@ class OnlineMrCollectionPage(QWidget):
             state.device_id,
         ]
         for column, value in enumerate(values):
-            item = QTableWidgetItem(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
-            if column in {
-                SUMMARY_COL_STATUS,
-                SUMMARY_COL_MR_RSSI,
-                SUMMARY_COL_PING_LOSS,
-                SUMMARY_COL_PING_LATENCY,
-                SUMMARY_COL_COLLECTED,
-                SUMMARY_COL_FAILED,
-                SUMMARY_COL_RECONNECTS,
-                SUMMARY_COL_IPERF_MBPS,
-                SUMMARY_COL_IPERF_RETRANS,
-            }:
-                item.setTextAlignment(Qt.AlignCenter)
+            item = make_table_item(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
             self.summary_table.setItem(row, column, item)
         return row
 
@@ -2503,14 +2828,17 @@ class OnlineMrCollectionPage(QWidget):
             if key not in self.peer_station_cache:
                 try:
                     resolved = self.peer_mapping_service.resolve_peer_mac(text)
-                    self.peer_station_cache[key] = {
+                    payload = {
                         "peer_ap_name": resolved.ap_name or "",
                         "peer_site": resolved.site or "",
                         "peer_radio_label": resolved.radio or "",
                         "peer_radio_mac": resolved.radio_mac or "",
+                        "peer_serial_number": resolved.serial_number or "",
+                        "serial_number": resolved.serial_number or "",
                         "peer_mac": resolved.peer_mac or text,
                         "match_rule": resolved.source,
                     }
+                    self.peer_station_cache[key] = payload if _is_valid_peer_resolution(payload) else {}
                 except Exception:
                     self.peer_station_cache[key] = {}
             return self.peer_station_cache.get(key)
@@ -2532,11 +2860,12 @@ class OnlineMrCollectionPage(QWidget):
                 continue
             self.peer_name_cache[key] = {
                 "peer_ap_name": name,
-                "peer_site": row.get("site") or row.get("site_name") or row.get("station") or "",
+                "peer_site": normalize_station_value(row),
                 "peer_radio_label": "",
                 "peer_radio_mac": "",
                 "peer_mac": row.get("ap_mac") or "",
-                "serial_number": row.get("serial_number") or "",
+                "peer_serial_number": row.get("serial_number") or row.get("serial") or row.get("sn") or row.get("device_sn") or "",
+                "serial_number": row.get("serial_number") or row.get("serial") or row.get("sn") or row.get("device_sn") or "",
                 "match_rule": "ap_name",
             }
 
@@ -2561,8 +2890,7 @@ class OnlineMrCollectionPage(QWidget):
             SUMMARY_COL_PING_LATENCY: None if latency is None else f"{latency:.2f} ms",
         }
         for column, value in values.items():
-            item = QTableWidgetItem(self._summary_text(value))
-            item.setTextAlignment(Qt.AlignCenter)
+            item = make_table_item(self._summary_text(value))
             self.summary_table.setItem(row, column, item)
 
     def _format_ping_status(self, payload: dict[str, object]) -> str:
@@ -2709,7 +3037,10 @@ class OnlineMrCollectionPage(QWidget):
         finally:
             self.device_table.setUpdatesEnabled(True)
             self._updating_device_checks = False
-        self.available_device_count_label.setText(str(len(self.available_devices)))
+        self._available_device_count = len(self.available_devices)
+        if not self._can_update_ui():
+            return
+        self.available_device_count_label.setText(str(self._available_device_count))
         if not self.available_devices:
             self.filter_hint_label.setText(self.i18n.t("online_mr.no_vehicle_fat_ap"))
         elif not self.filtered_devices:
@@ -2778,25 +3109,33 @@ class OnlineMrCollectionPage(QWidget):
             self._view_device_user_selected = True
 
     def _update_selected_count(self) -> None:
-        self.selected_device_count_label.setText(str(len(self.selected_device_ids)))
-        self.running_count_label.setText(str(self._site_running_count()))
+        self._selected_device_count = len(self.selected_device_ids)
+        self._running_count = self._site_running_count()
+        if not self._can_update_ui():
+            return
+        self.selected_device_count_label.setText(str(self._selected_device_count))
+        self.running_count_label.setText(str(self._running_count))
         self._refresh_top_metrics()
 
     def _update_action_state(self) -> None:
+        if not self._can_update_ui():
+            return
         if not self.workers and not self.workers_by_device_id:
             self._prune_orphan_summary_rows()
         selected = self._selected_devices()
         selected_ids = {device.id for device in selected if device.id is not None}
         running_selected = any(device_id in self.workers_by_device_id for device_id in selected_ids)
         can_start = bool(selected) and len(selected) <= 2 and self.manager.running_count() < self.manager.max_concurrent
-        self.start_button.setEnabled(can_start)
-        self.stop_selected_button.setEnabled(running_selected)
-        self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers))
+        stopping = self.status_value == "STOPPING"
+        self.start_button.setEnabled(can_start and not stopping)
+        self.stop_selected_button.setEnabled(running_selected and not stopping)
+        self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers) and not stopping)
         self.collect_config_button.setEnabled(len(selected) == 1 and not running_selected)
         if not self.feature_gate.is_enabled("online_mr.collect_config_once"):
             self.collect_config_button.setEnabled(False)
         self.open_button.setEnabled(True)
-        self.running_count_label.setText(str(self._site_running_count()))
+        self._running_count = self._site_running_count()
+        self.running_count_label.setText(str(self._running_count))
         self._refresh_top_metrics()
         self._refresh_collection_animation()
 
@@ -2806,6 +3145,8 @@ class OnlineMrCollectionPage(QWidget):
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.enable_iperf_check)
 
     def _reconcile_collection_state(self) -> None:
+        if not self._can_update_ui():
+            return
         self._prune_orphan_summary_rows()
         self._restore_runtime_summary_rows()
         if not self.workers and not self.workers_by_device_id:
@@ -2813,7 +3154,8 @@ class OnlineMrCollectionPage(QWidget):
             self._stop_stop_animation()
         elif self.status_value != "STOPPING":
             self._set_status("COLLECTING")
-        self.running_count_label.setText(str(self._site_running_count()))
+        self._running_count = self._site_running_count()
+        self.running_count_label.setText(str(self._running_count))
         self._refresh_top_metrics()
         app_logger.log_info(
             "ONLINE_MR_UI_STATE_RECONCILED",
@@ -2842,9 +3184,11 @@ class OnlineMrCollectionPage(QWidget):
             self._insert_summary_row_for_state(state)
 
     def _refresh_top_metrics(self) -> None:
-        self.available_metric_label.setText(f"{self.i18n.t('online_mr.available_devices')}: {self.available_device_count_label.text() or '0'}")
-        self.selected_metric_label.setText(f"{self.i18n.t('online_mr.selected_devices')}: {self.selected_device_count_label.text() or '0'}")
-        self.running_metric_label.setText(f"{self.i18n.t('online_mr.running_collectors')}: {self.running_count_label.text() or '0'}")
+        if not self._can_update_ui():
+            return
+        self.available_metric_label.setText(f"{self.i18n.t('online_mr.available_devices')}: {self._available_device_count}")
+        self.selected_metric_label.setText(f"{self.i18n.t('online_mr.selected_devices')}: {self._selected_device_count}")
+        self.running_metric_label.setText(f"{self.i18n.t('online_mr.running_collectors')}: {self._running_count}")
 
     def _refresh_fping_device_choices(self) -> None:
         selected = [device for device in self._selected_devices() if device.id is not None]
@@ -2961,33 +3305,41 @@ class OnlineMrCollectionPage(QWidget):
     def _set_ping_status(self, device_id: int | None, status: str) -> None:
         if device_id is None:
             return
-        for combo, label, name in (
-            (self.fping_device_combo_1, self.fping_status_label_1, "Ping 1"),
-            (self.fping_device_combo_2, self.fping_status_label_2, "Ping 2"),
+        for index, combo, label, name in (
+            (1, self.fping_device_combo_1, self.fping_status_label_1, "Ping 1"),
+            (2, self.fping_device_combo_2, self.fping_status_label_2, "Ping 2"),
         ):
             if combo.currentData() == device_id:
-                label.setText(f"{name}: {status}")
+                text = f"{name}: {status}"
+                self._fping_status_texts[index] = text
+                if self._can_update_ui():
+                    label.setText(text)
 
     def _refresh_ping_status_labels(self) -> None:
-        for combo, label, name in (
-            (self.fping_device_combo_1, self.fping_status_label_1, "Ping 1"),
-            (self.fping_device_combo_2, self.fping_status_label_2, "Ping 2"),
+        for index, combo, label, name in (
+            (1, self.fping_device_combo_1, self.fping_status_label_1, "Ping 1"),
+            (2, self.fping_device_combo_2, self.fping_status_label_2, "Ping 2"),
         ):
             value = combo.currentData()
             if value is None:
-                label.setText(f"{name}: idle")
+                text = f"{name}: idle"
             elif int(value) in self.fping_workers_by_device_id:
-                label.setText(f"{name}: running")
+                text = f"{name}: running"
             else:
-                label.setText(f"{name}: ready")
+                text = f"{name}: ready"
+            self._fping_status_texts[index] = text
+            if self._can_update_ui():
+                label.setText(text)
 
     def _refresh_collection_animation(self) -> None:
+        if not self._can_update_ui():
+            return
         selected = [device for device in self._selected_devices() if device.id is not None][:2]
         if not selected and not self.workers_by_device_id:
             self.collect_status_label_1.setText(
                 "暂无运行采集\n"
-                f"{self.fping_status_label_1.text()}\n"
-                f"{self.fping_status_label_2.text()}"
+                f"{self._fping_status_texts.get(1, 'Ping 1: idle')}\n"
+                f"{self._fping_status_texts.get(2, 'Ping 2: idle')}"
             )
             self.collect_card_1.setTitle("实时采集")
             self.collect_card_1.setVisible(True)
@@ -3012,24 +3364,28 @@ class OnlineMrCollectionPage(QWidget):
             card.setVisible(True)
             device = selected[index]
             card.setTitle(device.name)
-            ping_label = self.fping_status_label_1 if index == 0 else self.fping_status_label_2
+            ping_text = self._fping_status_texts.get(index + 1, f"Ping {index + 1}: idle")
             worker = self.workers_by_device_id.get(int(device.id))
             if worker is None:
-                label.setText(f"状态：已停止\nMesh：-\nBusy：-\nStats：-\n{ping_label.text()}")
+                label.setText(f"状态：已停止\nMesh：-\nBusy：-\nStats：-\n{ping_text}")
                 progress.setRange(0, 1)
                 progress.setValue(0)
                 continue
             collector = getattr(worker, "collector", None)
             if collector is None:
-                label.setText(f"状态：{self._status_text('COLLECTING')}\nMesh：正常  Busy：-  Stats：-\n{ping_label.text()}")
+                label.setText(f"状态：{self._status_text('COLLECTING')}\nMesh：正常  Busy：-  Stats：-\n{ping_text}")
                 progress.setRange(0, 0)
                 continue
             snapshot = collector.snapshot()
+            if snapshot.status == STATE_STOPPING or self.status_value == "STOPPING":
+                label.setText(f"状态：正在停止...\n正在通知采集线程停止\n正在停止 SSH repeat / terminal monitor\n正在停止 fping / iperf")
+                progress.setRange(0, 0)
+                continue
             modules = ["mesh", "busy", "stats"]
             if int(device.id) in self.fping_workers_by_device_id:
                 modules.append("ping")
             realtime = self._realtime_status_for_device(int(device.id))
-            ping_text = realtime if realtime else ping_label.text()
+            ping_text = realtime if realtime else ping_text
             session_text = "" if str(snapshot.session_id or "").startswith("pending:") else snapshot.session_id
             label.setText(
                 f"状态：{self._status_text(snapshot.status)}  会话：{session_text or '-'}\n"
@@ -3087,17 +3443,23 @@ class OnlineMrCollectionPage(QWidget):
         worker.start()
 
     def _realtime_parse_completed(self, session_dir: Path, summary) -> None:
+        if not self._can_update_ui():
+            self.realtime_parse_worker = None
+            return
         self.log_text.append(
             f"Realtime parse completed: mesh_samples={getattr(summary, 'mesh_samples', 0)}, "
             f"switch_history_samples={getattr(summary, 'switch_history_samples', 0)}, "
             f"ping_samples={summary.ping_samples}, iperf_samples={summary.iperf_samples}"
         )
         current = self.tabs.currentWidget()
-        if current in {self.diagnosis_table, self.analysis_charts, self.switch_history_panel}:
+        if current in {self.diagnosis_table, self.analysis_charts, self.switch_history_panel, self.active_link_switch_table}:
             self._load_offline_analysis(session_dir)
         self.realtime_parse_worker = None
 
     def _realtime_parse_failed(self, message: str) -> None:
+        if not self._can_update_ui():
+            self.realtime_parse_worker = None
+            return
         self.log_text.append(f"Realtime parse failed: {message}")
         self.realtime_parse_worker = None
 
@@ -3194,7 +3556,7 @@ class OnlineMrCollectionPage(QWidget):
                     row_data.get("session_dir", ""),
                 ]
                 for column, value in enumerate(values):
-                    item = QTableWidgetItem(str(value))
+                    item = make_table_item(value)
                     if column == 8 and row_data.get("config_file_path"):
                         item.setToolTip(f"{self.i18n.t('online_mr.config_file_path')}: {row_data.get('config_file_path')}")
                     self.history_table.setItem(row, column, item)
@@ -3202,6 +3564,7 @@ class OnlineMrCollectionPage(QWidget):
             self.history_table.setUpdatesEnabled(True)
         if self.analysis_only:
             self._refresh_session_select_combo()
+        self._auto_fit_online_table(self.history_table, "history_sessions")
         self._log_page_profile("load.history", profile_start, rows=len(rows))
 
     def _refresh_session_select_combo(self) -> None:
@@ -3228,6 +3591,7 @@ class OnlineMrCollectionPage(QWidget):
             self.session_search_input.setToolTip(self.i18n.t("online_mr.session_filter_empty"))
         else:
             self.session_search_input.setToolTip("")
+        self._refresh_parse_button_state()
 
     def _matches_session_search(self, row: dict[str, object], keyword: str) -> bool:
         if not keyword:
@@ -3278,17 +3642,24 @@ class OnlineMrCollectionPage(QWidget):
         return
 
     def _schedule_history_refresh(self, refresh_tools: bool = False) -> None:
+        if not self._can_update_ui():
+            return
         if self._history_refresh_pending:
             return
         self._history_refresh_pending = True
 
         def run() -> None:
+            self._history_refresh_pending = False
+            if not self._can_update_ui():
+                return
             self._fill_history()
             self._refresh_tool_status_once(force=refresh_tools)
 
         QTimer.singleShot(0, run)
 
     def _refresh_tool_status_once(self, force: bool = False) -> None:
+        if not self._can_update_ui():
+            return
         if self._tool_status_loaded and not force:
             return
         self._refresh_fping_tool_status()
@@ -3380,19 +3751,7 @@ class OnlineMrCollectionPage(QWidget):
             row_key,
         ]
         for column, value in enumerate(values):
-            item = QTableWidgetItem(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
-            if column in {
-                SUMMARY_COL_STATUS,
-                SUMMARY_COL_MR_RSSI,
-                SUMMARY_COL_PING_LOSS,
-                SUMMARY_COL_PING_LATENCY,
-                SUMMARY_COL_COLLECTED,
-                SUMMARY_COL_FAILED,
-                SUMMARY_COL_RECONNECTS,
-                SUMMARY_COL_IPERF_MBPS,
-                SUMMARY_COL_IPERF_RETRANS,
-            }:
-                item.setTextAlignment(Qt.AlignCenter)
+            item = make_table_item(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
             self.summary_table.setItem(row, column, item)
         app_logger.log_info(
             "ONLINE_MR_REALTIME_SUMMARY_UPDATED",
@@ -3436,8 +3795,8 @@ class OnlineMrCollectionPage(QWidget):
         row = self._find_row(self.summary_table, str(device_id), column=SUMMARY_COL_DEVICE_ID)
         if row < 0:
             return
-        self.summary_table.setItem(row, SUMMARY_COL_IPERF_MBPS, QTableWidgetItem(f"{float(row_data.get('bitrate_mbps') or 0):.2f}"))
-        self.summary_table.setItem(row, SUMMARY_COL_IPERF_RETRANS, QTableWidgetItem(str(row_data.get("retransmits", 0))))
+        self.summary_table.setItem(row, SUMMARY_COL_IPERF_MBPS, make_table_item(f"{float(row_data.get('bitrate_mbps') or 0):.2f}"))
+        self.summary_table.setItem(row, SUMMARY_COL_IPERF_RETRANS, make_table_item(row_data.get("retransmits", 0)))
 
     def _update_summary_status_by_device(self, device_id: int | None, status: str) -> None:
         if device_id is None:
@@ -3445,8 +3804,7 @@ class OnlineMrCollectionPage(QWidget):
         row = self._find_row(self.summary_table, str(device_id), column=SUMMARY_COL_DEVICE_ID)
         if row < 0:
             return
-        item = QTableWidgetItem(self._status_text(status))
-        item.setTextAlignment(Qt.AlignCenter)
+        item = make_table_item(self._status_text(status))
         self.summary_table.setItem(row, SUMMARY_COL_STATUS, item)
 
     def _append_mesh_snapshot(self, snapshot: OnlineMrSnapshot) -> None:
@@ -3459,10 +3817,22 @@ class OnlineMrCollectionPage(QWidget):
         if not peer_info and peer_name:
             peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
         peer_site = str(getattr(snapshot, "peer_station", "") or getattr(snapshot, "peer_site", "") or peer_info.get("peer_site") or "")
-        values = [snapshot.last_collection_time, 1, "ACTIVE", peer_name or peer_info.get("peer_ap_name") or "", snapshot.active_peer, snapshot.local_rssi, "", "", peer_site, ""]
+        values = [row + 1, snapshot.last_collection_time, 1, "ACTIVE", peer_name or peer_info.get("peer_ap_name") or "", snapshot.active_peer, snapshot.local_rssi, "", "", peer_site, ""]
         for column, value in enumerate(values):
-            self.mesh_table.setItem(row, column, QTableWidgetItem("" if value is None else str(value)))
+            self._set_table_item(self.mesh_table, row, column, value, active=True)
         self._trim_table(self.mesh_table)
+
+    def _set_table_item(self, table: QTableWidget, row: int, column: int, value: object, *, active: bool = False, emphasize: bool = False, warning: bool = False) -> None:
+        item = make_table_item(self._summary_text(value))
+        if active or emphasize:
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+        if active:
+            item.setForeground(QColor("#22c55e"))
+        elif warning:
+            item.setForeground(QColor("#f59e0b"))
+        table.setItem(row, column, item)
 
     def _trim_table(self, table: QTableWidget, max_rows: int = 5000) -> None:
         while table.rowCount() > max_rows:
@@ -3794,25 +4164,51 @@ class OnlineMrCollectionPage(QWidget):
         )
 
     def _configure_online_table(self, table: QTableWidget) -> None:
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table.setAlternatingRowColors(True)
+        apply_analysis_table_style(table)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        table.setWordWrap(False)
-        table.setTextElideMode(Qt.ElideRight)
-        table.verticalHeader().setDefaultSectionSize(32)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setStretchLastSection(False)
         table.setMinimumHeight(260 if table is self.device_table else 250 if table is not self.summary_table else 120)
         if table is self.device_table:
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
             table.setColumnWidth(0, 48)
             for column, width in ((1, 210), (2, 130), (3, 65), (4, 60), (5, 85), (6, 70), (7, 90), (8, 90)):
                 table.setColumnWidth(column, width)
-            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+
+    def _apply_online_table_styles(self) -> None:
+        for table in (
+            self.summary_table,
+            self.mesh_table,
+            self.channel_table,
+            self.events_table,
+            self.switch_history_table,
+            self.active_link_switch_table,
+            self.interface_rate_table,
+            self.iperf_table,
+            self.diagnosis_table,
+            self.history_table,
+        ):
+            apply_analysis_table_style(table)
+
+    def _auto_fit_online_table(self, table: QTableWidget, name: str) -> None:
+        min_widths, max_widths = self._analysis_table_width_bounds(name)
+        auto_fit_table_columns(table, min_widths=min_widths, max_widths=max_widths)
+
+    @staticmethod
+    def _analysis_table_width_bounds(name: str) -> tuple[dict[int, int], dict[int, int]]:
+        min_bounds: dict[str, dict[int, int]] = {
+            "mesh_link": {0: 60, 1: 190, 2: 80, 3: 100, 4: 150, 5: 150, 6: 90, 7: 150, 8: 160, 9: 140, 10: 120},
+            "channel_busy": {0: 60, 1: 190, 2: 80, 3: 150, 4: 120, 5: 120, 6: 700},
+            "switch_history": {0: 60, 1: 190, 2: 80, 3: 150, 4: 150, 5: 150, 6: 150, 7: 140, 8: 140, 9: 220, 10: 100, 11: 130, 12: 700},
+            "active_link_switch_logs": {0: 60, 1: 190, 2: 160, 3: 150, 4: 150, 5: 80, 6: 140, 7: 150, 8: 150, 9: 80, 10: 140, 11: 90, 12: 90, 13: 100, 14: 260, 15: 700},
+            "interface_rate": {0: 60, 1: 190, 2: 100, 3: 120, 4: 100, 5: 100, 6: 100, 7: 100, 8: 700},
+            "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 80, 5: 130, 6: 80, 7: 90, 8: 90, 9: 90, 10: 90, 11: 190, 12: 100, 13: 80, 14: 170, 15: 80},
+            "statistics": {0: 180, 1: 120, 2: 90, 3: 180, 4: 180, 5: 320},
+            "iperf": {0: 180, 1: 100, 2: 90, 3: 120, 4: 700},
+            "diagnosis": {0: 190, 1: 190, 2: 170, 3: 90, 4: 90, 5: 90, 6: 110, 7: 110, 8: 110, 9: 130, 10: 130, 11: 100, 12: 100, 13: 100},
+            "history_sessions": {0: 170, 1: 170, 2: 170, 3: 110, 4: 120, 5: 120, 6: 100, 7: 120, 8: 700},
+        }
+        max_bounds = {column: 900 if width >= 700 else max(width, 420) for column, width in min_bounds.get(name, {}).items()}
+        return min_bounds.get(name, {}), max_bounds
 
     def _load_all_table_widths(self) -> None:
         tables = {
@@ -3821,18 +4217,22 @@ class OnlineMrCollectionPage(QWidget):
             "channel_busy": self.channel_table,
             "statistics": self.events_table,
             "switch_history": self.switch_history_table,
+            "active_link_switch_logs": self.active_link_switch_table,
             "interface_rate": self.interface_rate_table,
             "iperf": self.iperf_table,
+            "diagnosis": self.diagnosis_table,
             "history_sessions": self.history_table,
         }
         defaults = {
-            "session_summary": [180, 130, 90, 190, 80, 120, 80, 90, 90, 90, 90, 160, 100, 80, 170, 80],
-            "mesh_link": [180, 90, 110, 160, 180, 90, 160, 160, 120, 140],
-            "channel_busy": [180, 90, 90, 90, 90, 360],
+            "session_summary": [180, 130, 90, 190, 80, 130, 80, 90, 90, 90, 90, 190, 100, 80, 170, 80],
+            "mesh_link": [70, 190, 90, 110, 160, 170, 90, 160, 150, 130, 140],
+            "channel_busy": [60, 190, 80, 150, 120, 120, 700],
             "statistics": [180, 120, 90, 180, 180, 320],
-            "switch_history": [170, 80, 150, 150, 150, 150, 120, 120, 150, 360],
-            "interface_rate": [180, 110, 180, 120, 100, 360],
+            "switch_history": [70, 190, 90, 150, 150, 150, 150, 130, 130, 150, 120, 140, 500],
+            "active_link_switch_logs": [60, 190, 160, 150, 150, 80, 140, 150, 150, 80, 140, 90, 90, 100, 260, 700],
+            "interface_rate": [60, 190, 100, 120, 100, 100, 100, 100, 700],
             "iperf": [180, 100, 90, 120, 520],
+            "diagnosis": [190, 190, 170, 90, 90, 90, 110, 110, 110, 130, 130, 100, 100, 100],
             "history_sessions": [170, 170, 170, 110, 120, 120, 100, 120, 360],
         }
         for name, table in tables.items():
@@ -3844,11 +4244,8 @@ class OnlineMrCollectionPage(QWidget):
                 table.setColumnWidth(column, max(int(width), int(default_width)))
             if table is self.summary_table:
                 header = table.horizontalHeader()
-                for column in (SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_PEER_SITE, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION):
-                    header.setSectionResizeMode(column, QHeaderView.Stretch)
                 for column in range(table.columnCount()):
-                    if column not in {SUMMARY_COL_ACTIVE_PEER, SUMMARY_COL_PEER_SITE, SUMMARY_COL_LAST_COLLECTION, SUMMARY_COL_SESSION}:
-                        header.setSectionResizeMode(column, QHeaderView.Interactive)
+                    header.setSectionResizeMode(column, QHeaderView.Interactive)
             table.horizontalHeader().sectionResized.connect(lambda _idx, _old, _new, n=name, t=table: self._save_table_widths(n, t))
 
     def _save_table_widths(self, name: str, table: QTableWidget) -> None:
@@ -3857,6 +4254,9 @@ class OnlineMrCollectionPage(QWidget):
 
     def _set_status(self, status: str) -> None:
         self.status_value = status
+        self._collection_status = status
+        if not self._can_update_ui():
+            return
         self.status_label.setText(self._status_text(status))
         color = {
             "COLLECTING": "#1f7a4d",
@@ -3898,3 +4298,111 @@ def _normalize_mac_key(value: object) -> str:
 
 def _normalize_peer_name_key(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def _format_in_out_rssi(in_rssi: object, out_rssi: object) -> str:
+    left = str(in_rssi or "").strip()
+    right = str(out_rssi or "").strip()
+    if not left and not right:
+        return ""
+    return f"{left or '-'}/{right or '-'}"
+
+
+def _chart_point(value: object) -> tuple[datetime, float] | None:
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        return None
+    try:
+        x_value = datetime.fromisoformat(str(value[0]).replace(" ", "T"))
+        y_value = float(value[1])
+    except (TypeError, ValueError):
+        return None
+    return x_value, y_value
+
+
+def _split_chart_segments(points: list[tuple[datetime, float]], *, max_gap_seconds: int) -> list[list[tuple[datetime, float]]]:
+    if not points:
+        return []
+    ordered = sorted(points, key=lambda point: point[0])
+    segments: list[list[tuple[datetime, float]]] = [[ordered[0]]]
+    for point in ordered[1:]:
+        gap_seconds = (point[0] - segments[-1][-1][0]).total_seconds()
+        if gap_seconds > max_gap_seconds:
+            segments.append([point])
+        else:
+            segments[-1].append(point)
+    return segments
+
+
+def _online_mr_active_rssi_tooltip_text(point: object) -> str:
+    return "\n".join(
+        [
+            "采样时间:",
+            _display_value(getattr(point, "timestamp_label", "")),
+            "",
+            "主链路:",
+            f"设备名称: {_display_value(getattr(point, 'device_name', None))}",
+            f"射频ID: {_display_value(getattr(point, 'radio_id', None))}",
+            f"主链路AP: {_display_value(getattr(point, 'peer_name', None))} / {_display_value(getattr(point, 'station', None))}",
+            f"对端MAC: {_display_value(getattr(point, 'peer_mac', None))}",
+            f"BSSID: {_display_value(getattr(point, 'bssid', None))}",
+            f"Mesh接口: {_display_value(getattr(point, 'mesh_interface', None))}",
+            f"MR侧RSSI: {_display_value(getattr(point, 'rssi', None))}",
+            f"链路状态: {_display_value(getattr(point, 'link_state', None))}",
+            f"在线时长: {_format_duration_value(getattr(point, 'online_time', None))}",
+            "",
+            "空口:",
+            f"控制信道繁忙度: {_format_percent_value(getattr(point, 'ctl_busy', None))}",
+            f"发送繁忙度: {_format_percent_value(getattr(point, 'tx_busy', None))}",
+            f"接收繁忙度: {_format_percent_value(getattr(point, 'rx_busy', None))}",
+            "",
+            "Ping:",
+            f"丢包率: {_format_percent_value(getattr(point, 'ping_loss', None))}",
+            f"平均延迟: {_format_ms_value(getattr(point, 'ping_avg_latency', None))}",
+            f"最大延迟: {_format_ms_value(getattr(point, 'ping_max_latency', None))}",
+            "",
+            "接口:",
+            f"入方向总PPS: {_display_value(getattr(point, 'inbound_pps', None))}",
+            f"出方向总PPS: {_display_value(getattr(point, 'outbound_pps', None))}",
+        ]
+    )
+
+
+def _display_value(value: object) -> str:
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    if not text:
+        return "-"
+    if text.endswith(".0"):
+        return text[:-2]
+    return text
+
+
+def _format_percent_value(value: object) -> str:
+    text = _display_value(value)
+    return text if text == "-" or text.endswith("%") else f"{text}%"
+
+
+def _format_ms_value(value: object) -> str:
+    text = _display_value(value)
+    return text if text == "-" or text.endswith("ms") else f"{text} ms"
+
+
+def _format_duration_value(value: object) -> str:
+    if value is None or str(value).strip() == "":
+        return "-"
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        return _display_value(value)
+    hours, remainder = divmod(max(0, seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h {minutes:02d}m {secs:02d}s"
+
+
+def _is_valid_peer_resolution(value: dict[str, object]) -> bool:
+    if not value:
+        return False
+    if str(value.get("match_rule") or "").strip().lower() == "unresolved":
+        return False
+    return any(str(value.get(key) or "").strip() for key in ("peer_ap_name", "peer_site", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output
+from netconsole.core.shutdown_manager import shutdown_manager
 
 
 ProgressCallback = Callable[[PingResult], None]
@@ -72,6 +73,7 @@ def scan_targets(
             stderr=subprocess.STDOUT,
             creationflags=CREATE_NO_WINDOW,
         )
+        shutdown_manager.register_process(process, "fping", kind="internal_tool", shutdown_policy="terminate")
         assert process.stdout is not None
         non_json_lines: list[str] = []
         for raw_line in process.stdout:
@@ -92,6 +94,8 @@ def scan_targets(
             detail = " ".join(non_json_lines)[:300] or str(return_code)
             return [], FpingAvailability(False, availability.path, availability.version, f"fping 执行失败：{detail}", True, availability.supports_source_ip)
     finally:
+        if "process" in locals():
+            shutdown_manager.unregister_process(process)
         try:
             target_file.unlink()
         except OSError:

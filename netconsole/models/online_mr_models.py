@@ -46,6 +46,12 @@ INIT_COMMANDS: tuple[str, ...] = (
     "probe",
 )
 
+TERMINAL_MONITOR_INIT_COMMANDS: tuple[str, ...] = (
+    "screen-length disable",
+    "terminal monitor",
+    "terminal logging level 7",
+)
+
 TASK_COMMANDS: dict[str, tuple[str, ...]] = {
     TASK_MESH_LINK: ("display clock", "display wlan mesh-link"),
     TASK_CHANNEL_BUSY: ("display clock", "display ar5drv 1 channelbusy"),
@@ -361,6 +367,9 @@ class OnlineMrConnection:
         raise NotImplementedError
 
     def run_repeat_stream(self, commands, raw_path, stop_event, timeout: int, line_callback=None) -> None:
+        raise NotImplementedError
+
+    def run_terminal_monitor_stream(self, commands, stop_event, timeout: int, line_callback=None) -> None:
         raise NotImplementedError
 
     def close(self) -> None:

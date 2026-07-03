@@ -22,6 +22,7 @@ class RealtimeMRState:
     peer_mac: str | None = None
     peer_station: str | None = None
     peer_site: str | None = None
+    peer_serial_number: str | None = None
     mr_rssi: int | None = None
     link_state: str | None = None
     ctl_busy: float | None = None
@@ -112,18 +113,20 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
         state.retry_count = retry if retry is not None else state.retry_count
         state.retry = retry if retry is not None else state.retry
-        if resolve_peer and (not state.peer_name or not state.peer_station):
+        if resolve_peer and (not state.peer_name or not state.peer_station or not state.peer_serial_number):
             resolved: dict[str, object] = {}
-            for lookup_key in (state.peer_mac, state.peer_name):
+            for lookup_key in (state.peer_name, state.peer_mac, payload.get("peer_mac_normalized"), payload.get("bssid")):
                 if not lookup_key:
                     continue
-                resolved = resolve_peer(lookup_key) or {}
-                if resolved:
+                candidate = resolve_peer(str(lookup_key)) or {}
+                if _is_resolved_peer(candidate):
+                    resolved = candidate
                     break
             state.peer_name = _text(resolved.get("peer_ap_name") or resolved.get("ap_name")) or state.peer_name
             resolved_site = _text(resolved.get("peer_site") or resolved.get("site"))
             state.peer_station = resolved_site or state.peer_station
             state.peer_site = resolved_site or state.peer_site
+            state.peer_serial_number = _text(resolved.get("peer_serial_number") or resolved.get("serial_number")) or state.peer_serial_number
     elif event.module == "busy":
         state.ctl_busy = _float_or_none(payload.get("ctl_busy")) if payload.get("ctl_busy") is not None else state.ctl_busy
         state.tx_busy = _float_or_none(payload.get("tx_busy")) if payload.get("tx_busy") is not None else state.tx_busy
@@ -146,6 +149,14 @@ def _has_any(payload: dict[str, object], *keys: str) -> bool:
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _is_resolved_peer(value: dict[str, object]) -> bool:
+    if not value:
+        return False
+    if _text(value.get("match_rule")).lower() == "unresolved":
+        return False
+    return any(_text(value.get(key)) for key in ("peer_ap_name", "peer_site", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
 
 
 def _int_or_none(*values: object) -> int | None:

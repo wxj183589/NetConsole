@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from netconsole.core.database import Database
@@ -1093,3 +1094,31 @@ def test_rail_transit_contains_car_network_tab_and_train_from_devices(tmp_path: 
     assert page.car_network_page.train_table.item(0, 0).text() == "06车"
     assert page.car_network_page.train_table.item(0, 1).text() == "未检测"
     assert not hasattr(page.car_network_page, "generate_button")
+
+
+def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    store = CarNetworkPointTableStore(paths, "demo")
+    store.save(
+        [
+            CarNetworkNode(f"LC{train_no}", "TC1-MR", "MR", train_no=train_no, tc="TC1", end="CT")
+            for train_no in ["02", "03", "04", "05", "07", "08", "06"]
+        ]
+    )
+
+    page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
+
+    assert [train.train_no for train in page.trains] == ["02", "03", "04", "05", "06", "07", "08"]
+    assert [page.train_table.item(row, 0).data(Qt.UserRole) for row in range(page.train_table.rowCount())] == [
+        "LC02",
+        "LC03",
+        "LC04",
+        "LC05",
+        "LC06",
+        "LC07",
+        "LC08",
+    ]

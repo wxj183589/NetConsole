@@ -157,8 +157,8 @@ def test_local_route_rows_reuse_service_sorting_and_display_fields() -> None:
 
     rows = normalize_routes(routes, adapters)
 
-    assert [row.destination_prefix for row in rows] == ["0.0.0.0/0", "10.0.0.0/24", "192.168.1.99/32", "172.16.0.0/16"]
-    assert rows[3].next_hop == "\u5728\u94fe\u8def\u4e0a"
+    assert [row.destination_prefix for row in rows] == ["0.0.0.0/0", "10.0.0.0/24", "172.16.0.0/16", "192.168.1.99/32"]
+    assert rows[2].next_hop == "\u5728\u94fe\u8def\u4e0a"
     assert rows[1].policy_store == "PersistentStore"
 
 
@@ -216,8 +216,9 @@ def test_toolbox_route_page_is_scrollable_and_uses_route_columns(tmp_path) -> No
     rows = page._route_rows_for_display()
 
     assert isinstance(page.tabs.widget(2), QScrollArea)
-    assert list(rows[0]) == ["order_index", "destination_prefix", "next_hop", "interface_alias", "metric", "policy_store", "persistent", "source", "interface_index"]
+    assert list(rows[0]) == ["order_index", "destination_prefix", "next_hop", "interface_alias", "metric", "policy_store", "persistent", "source", "_interface_index"]
     assert rows[0]["metric"] == 1
+    assert page.routes_panel.result_table.minimumHeight() >= 480
 
 
 def test_local_adapter_config_page_does_not_expose_route_tab(tmp_path) -> None:

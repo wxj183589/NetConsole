@@ -11,13 +11,16 @@ from pathlib import Path
 from netconsole.services.fping_legacy_parser import parse_fping_lines
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
 from netconsole.services.network_tools.iperf_runner import IperfResultStore
+from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
 from netconsole.services.online_mr_session_store import OnlineMrSession
+from netconsole.services.online_mr_terminal_log_parser import ActiveLinkSwitchLog, parse_active_link_switch_logs
 
 
 RAW_BLOCK_RE = re.compile(r"(?m)^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) >>> (?P<command>.+)$")
 STREAM_START_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[collector=(?P<collector>[^\]]+)\] START commands:\s*$")
 RX_LINE_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?) \[collector=[^\]]+\] RX ?(?P<text>.*)$")
+PARSER_VERSION = "online_mr_diagnosis_v5"
 
 
 def strip_stream_rx_prefix(line: str) -> str:
@@ -56,8 +59,10 @@ class OnlineMrParseSummary:
     ping_samples: int = 0
     iperf_samples: int = 0
     switch_history_samples: int = 0
+    active_link_switch_logs: int = 0
     active_segments: int = 0
     issues: int = 0
+    cache_used: bool = False
 
 
 def _float_or_none(*values: object) -> float | None:
@@ -159,14 +164,19 @@ class OnlineMrDiagnosisParser:
         self.meta = self._load_meta()
         self.splitter = OnlineMrRawBlockSplitter()
 
-    def parse(self) -> OnlineMrParseSummary:
+    def parse(self, *, force: bool = True) -> OnlineMrParseSummary:
         self._ensure_tables()
+        if not force:
+            cached = self.cached_summary_if_valid()
+            if cached is not None:
+                return cached
         self._reset_parsed_tables()
         summary = OnlineMrParseSummary()
         session = OnlineMrSession(self.session_dir, self.meta)
         summary.mesh_samples = self._parse_mesh(session)
         summary.channel_samples = self._parse_channel_busy(session)
         summary.radio_stats_samples = self._parse_radio_statistics(session)
+        summary.active_link_switch_logs = self._parse_terminal_monitor_switch_logs()
         summary.interface_samples = self._parse_interface_rate(session)
         summary.switch_history_samples = self._parse_switch_history()
         summary.ping_samples = self._parse_fping(session)
@@ -178,7 +188,98 @@ class OnlineMrDiagnosisParser:
         if summary.active_segments == 0 and self._has_any_valid_data(summary):
             summary.active_segments = self._insert_normal_data_segment(summary)
         summary.issues = self._issue_count()
+        self._write_parse_metadata(summary, "OK", "")
         return summary
+
+    def cached_summary_if_valid(self) -> OnlineMrParseSummary | None:
+        if not self.db_path.exists():
+            return None
+        self._ensure_tables()
+        fingerprint = self.raw_fingerprint()
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT row_counts, status
+                FROM online_parse_metadata
+                WHERE session_id = ? AND parser_version = ? AND raw_fingerprint = ?
+                ORDER BY parsed_at DESC
+                LIMIT 1
+                """,
+                (self.meta.session_id, PARSER_VERSION, fingerprint),
+            ).fetchone()
+        if not row or row[1] != "OK":
+            return None
+        try:
+            counts = json.loads(row[0] or "{}")
+        except json.JSONDecodeError:
+            return None
+        required_tables = ("live_samples", "live_mesh_links", "live_channel_busy", "live_events", "live_active_link_switch_logs", "active_segments")
+        with sqlite3.connect(self.db_path) as conn:
+            existing = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if any(table not in existing for table in required_tables):
+            return None
+        summary = OnlineMrParseSummary()
+        for key, value in counts.items():
+            if hasattr(summary, key):
+                try:
+                    setattr(summary, key, int(value))
+                except (TypeError, ValueError):
+                    pass
+        summary.cache_used = True
+        return summary
+
+    def cache_status(self) -> str:
+        if not self.db_path.exists():
+            return "missing"
+        try:
+            return "valid" if self.cached_summary_if_valid() is not None else "stale"
+        except sqlite3.Error:
+            return "broken"
+
+    def raw_fingerprint(self) -> str:
+        raw_root = self.raw_dir
+        items: list[dict[str, object]] = []
+        if raw_root.exists():
+            for path in sorted(raw_root.rglob("*")):
+                if not path.is_file():
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                items.append(
+                    {
+                        "path": path.relative_to(raw_root).as_posix(),
+                        "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                )
+        return json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _write_parse_metadata(self, summary: OnlineMrParseSummary, status: str, error_summary: str) -> None:
+        row_counts = {
+            key: value
+            for key, value in summary.__dict__.items()
+            if isinstance(value, (int, float)) and key != "cache_used"
+        }
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM online_parse_metadata WHERE session_id = ?", (self.meta.session_id,))
+            conn.execute(
+                """
+                INSERT INTO online_parse_metadata (
+                    session_id, parsed_at, parser_version, raw_fingerprint, row_counts, status, error_summary
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.meta.session_id,
+                    datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                    PARSER_VERSION,
+                    self.raw_fingerprint(),
+                    json.dumps(row_counts, ensure_ascii=False, sort_keys=True),
+                    status,
+                    error_summary,
+                ),
+            )
 
     def _load_meta(self):
         from netconsole.models.online_mr_models import OnlineMrSessionMeta
@@ -297,6 +398,144 @@ class OnlineMrDiagnosisParser:
                 ],
             )
         return len(rows)
+
+    def _parse_terminal_monitor_switch_logs(self) -> int:
+        path = self.raw_dir / "terminal_monitor_raw.log"
+        if not path.exists():
+            self._issue("terminal_monitor_raw.log", "terminal-monitor", "当前会话没有 terminal_monitor_raw.log，无法解析 WMESH 主链路切换日志。", "")
+            return 0
+        text = read_text_with_retry(path, retries=2, interval=0.05)
+        if "WMESH/5/MESH_ACTIVELINK_SWITCH" not in text:
+            self._issue("terminal_monitor_raw.log", "terminal-monitor", "terminal_monitor_raw.log 中未发现 WMESH/5/MESH_ACTIVELINK_SWITCH。", "")
+            return 0
+        rows = parse_active_link_switch_logs(text, device_name=str(self.meta.device_name or ""), fallback_year=self.meta.started_at.year)
+        if not rows:
+            self._issue("terminal_monitor_raw.log", "terminal-monitor", "WMESH 主链路切换日志格式未匹配。", text[:500])
+            return 0
+        resolver = ApRadioMappingService(str(self.meta.site or ""), self._path_resolver())
+        enriched = [self._enrich_switch_log(row, resolver) for row in rows]
+        self._write_active_link_switch_logs(enriched, "terminal_monitor")
+        return len(enriched)
+
+    def _enrich_switch_log(self, row: ActiveLinkSwitchLog, resolver: ApRadioMappingService) -> ActiveLinkSwitchLog:
+        from_info = self._resolve_switch_endpoint(row.from_peer_name, row.from_peer_mac, row.from_is_empty_link, resolver)
+        to_info = self._resolve_switch_endpoint(row.to_peer_name, row.to_peer_mac, row.to_is_empty_link, resolver)
+        return ActiveLinkSwitchLog(
+            log_time=row.log_time,
+            device_name=row.device_name,
+            raw_line=row.raw_line,
+            from_peer_name=row.from_peer_name,
+            from_peer_mac=row.from_peer_mac,
+            from_peer_rssi=row.from_peer_rssi,
+            to_peer_name=row.to_peer_name,
+            to_peer_mac=row.to_peer_mac,
+            to_peer_rssi=row.to_peer_rssi,
+            peer_quantity=row.peer_quantity,
+            link_quantity=row.link_quantity,
+            switch_reason_code=row.switch_reason_code,
+            switch_reason_text=row.switch_reason_text,
+            from_station=from_info["station"],
+            to_station=to_info["station"],
+            from_serial_number=from_info["serial_number"],
+            to_serial_number=to_info["serial_number"],
+            from_resolve_rule=from_info["resolve_rule"],
+            to_resolve_rule=to_info["resolve_rule"],
+            source=row.source,
+            from_is_empty_link=row.from_is_empty_link,
+            to_is_empty_link=row.to_is_empty_link,
+        )
+
+    def _resolve_switch_endpoint(self, peer_name: str, radio_mac: str, is_empty_link: bool, resolver: ApRadioMappingService) -> dict[str, str]:
+        if is_empty_link:
+            return {"station": "-", "serial_number": "-", "resolve_rule": "empty_link"}
+        for candidate in (peer_name, radio_mac):
+            text = str(candidate or "").strip()
+            if not text or text == "0000-0000-0000":
+                continue
+            try:
+                resolved = resolver.resolve_peer_mac(text)
+            except Exception:
+                continue
+            if str(resolved.source or "").lower() == "unresolved":
+                continue
+            if any((resolved.ap_name, resolved.site, resolved.serial_number, resolved.radio_mac)):
+                return {
+                    "station": str(resolved.site or "-"),
+                    "serial_number": str(resolved.serial_number or "-"),
+                    "resolve_rule": str(resolved.source or ""),
+                }
+        return {"station": "-", "serial_number": "-", "resolve_rule": "unresolved"}
+
+    def _write_active_link_switch_logs(self, rows: list[ActiveLinkSwitchLog], source: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM live_active_link_switch_logs WHERE session_id = ? AND source = ?", (self.meta.session_id, source))
+            if not rows:
+                return
+            conn.executemany(
+                """
+                INSERT INTO live_active_link_switch_logs (
+                    session_id, source, device_name, log_time,
+                    from_peer_name, from_peer_mac, from_peer_rssi, from_station, from_serial_number, from_resolve_rule,
+                    to_peer_name, to_peer_mac, to_peer_rssi, to_station, to_serial_number, to_resolve_rule,
+                    peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_line, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        self.meta.session_id,
+                        row.source,
+                        row.device_name,
+                        row.log_time.isoformat(sep=" ", timespec="milliseconds"),
+                        row.from_peer_name,
+                        row.from_peer_mac,
+                        row.from_peer_rssi,
+                        row.from_station,
+                        row.from_serial_number,
+                        row.from_resolve_rule,
+                        row.to_peer_name,
+                        row.to_peer_mac,
+                        row.to_peer_rssi,
+                        row.to_station,
+                        row.to_serial_number,
+                        row.to_resolve_rule,
+                        row.peer_quantity,
+                        row.link_quantity,
+                        row.switch_reason_code,
+                        row.switch_reason_text,
+                        row.raw_line,
+                        datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                    )
+                    for row in rows
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row.log_time.isoformat(sep=" ", timespec="milliseconds"),
+                        "ACTIVE_LINK_SWITCH_LOG",
+                        1,
+                        None if row.from_is_empty_link else row.from_peer_mac,
+                        None if row.to_is_empty_link else row.to_peer_mac,
+                        json.dumps(row.__dict__, ensure_ascii=False, default=str),
+                    )
+                    for row in rows
+                ],
+            )
+
+    def _path_resolver(self):
+        from netconsole.core.paths import PathResolver
+
+        resolved = self.session_dir.resolve()
+        parts = resolved.parts
+        if "data" in parts:
+            data_index = parts.index("data")
+            if data_index > 0:
+                return PathResolver(Path(*parts[:data_index]))
+        return PathResolver(Path.cwd())
 
     def _find_switch_history_file(self) -> Path:
         preferred = self.raw_dir / "switch_history_latest.log"
@@ -557,6 +796,16 @@ class OnlineMrDiagnosisParser:
                     message TEXT,
                     raw_text TEXT
                 );
+                CREATE TABLE IF NOT EXISTS online_parse_metadata (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    parsed_at TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    raw_fingerprint TEXT NOT NULL,
+                    row_counts TEXT DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    error_summary TEXT DEFAULT ''
+                );
                 CREATE TABLE IF NOT EXISTS live_events (
                     event_time TEXT NOT NULL,
                     event_type TEXT NOT NULL,
@@ -564,6 +813,31 @@ class OnlineMrDiagnosisParser:
                     from_peer_mac TEXT,
                     to_peer_mac TEXT,
                     details_json TEXT DEFAULT '{}'
+                );
+                CREATE TABLE IF NOT EXISTS live_active_link_switch_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    source TEXT,
+                    device_name TEXT,
+                    log_time TEXT,
+                    from_peer_name TEXT,
+                    from_peer_mac TEXT,
+                    from_peer_rssi INTEGER,
+                    from_station TEXT,
+                    from_serial_number TEXT,
+                    from_resolve_rule TEXT,
+                    to_peer_name TEXT,
+                    to_peer_mac TEXT,
+                    to_peer_rssi INTEGER,
+                    to_station TEXT,
+                    to_serial_number TEXT,
+                    to_resolve_rule TEXT,
+                    peer_quantity INTEGER,
+                    link_quantity INTEGER,
+                    switch_reason_code INTEGER,
+                    switch_reason_text TEXT,
+                    raw_line TEXT,
+                    created_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS active_segments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -614,6 +888,7 @@ class OnlineMrDiagnosisParser:
                 "live_radio_statistics_raw_index",
                 "live_interface_rates",
                 "live_events",
+                "live_active_link_switch_logs",
                 "ping_samples",
                 "ping_summary",
                 "iperf_runs",
@@ -621,6 +896,7 @@ class OnlineMrDiagnosisParser:
                 "active_segments",
                 "active_segment_metrics",
                 "online_parse_issues",
+                "online_parse_metadata",
             ):
                 if table in existing_tables:
                     conn.execute(f"DELETE FROM {table}")

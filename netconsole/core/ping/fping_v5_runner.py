@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.ping.fping_v5_models import FpingV5CheckResult, FpingV5Paths, FpingV5Sample
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
 
@@ -74,6 +75,7 @@ def run_fping_v5_json(
             bufsize=1,
             creationflags=creationflags,
         )
+        shutdown_manager.register_process(process, "fping", kind="internal_tool", shutdown_policy="terminate")
         if process.stdout is None:
             return
         for line in process.stdout:
@@ -95,6 +97,7 @@ def run_fping_v5_json(
     finally:
         if process is not None:
             _stop_process(process)
+            shutdown_manager.unregister_process(process)
         if raw_file is not None:
             raw_file.close()
         if jsonl_file is not None:

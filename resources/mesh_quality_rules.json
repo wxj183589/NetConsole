@@ -1,0 +1,76 @@
+{
+  "default_profile": "PIS_WIFI6_40_80_STANDARD",
+  "profiles": {
+    "PIS_WIFI6_40_80_STANDARD": {
+      "label": "PIS - Wi-Fi6 - 40/80M - 标准场景",
+      "mesh": {
+        "rssi_excellent": 42,
+        "rssi_good": 32,
+        "rssi_warning": 26,
+        "rssi_bad": 20,
+        "usable_backup_rssi": 32,
+        "strong_backup_rssi": 42,
+        "busy_warning": 60,
+        "busy_bad": 75,
+        "no_backup_min_seconds": 5,
+        "bad_link_min_seconds": 3,
+        "late_switch_window_seconds": 5,
+        "service_interrupt_window_seconds": 5,
+        "flap_switch_window_seconds": 30,
+        "short_active_seconds": 5
+      },
+      "fping": {
+        "loss_warning_percent": 1,
+        "loss_bad_percent": 3,
+        "loss_critical_percent": 10,
+        "consecutive_loss_warning_seconds": 1,
+        "consecutive_loss_bad_seconds": 3,
+        "latency_warning_ms": 50,
+        "latency_bad_ms": 100,
+        "latency_critical_ms": 200,
+        "jitter_warning_ms": 20,
+        "jitter_bad_ms": 50
+      }
+    },
+    "DCS_WIFI6_DOT11A_20_REMOTE": {
+      "label": "DCS - Wi-Fi6设备-dot11a/20M - 远距离",
+      "mesh": {
+        "rssi_excellent": 35,
+        "rssi_good": 28,
+        "rssi_warning": 22,
+        "rssi_bad": 18,
+        "usable_backup_rssi": 28,
+        "strong_backup_rssi": 35,
+        "busy_warning": 55,
+        "busy_bad": 70,
+        "no_backup_min_seconds": 15,
+        "bad_link_min_seconds": 5,
+        "late_switch_window_seconds": 8,
+        "service_interrupt_window_seconds": 8,
+        "flap_switch_window_seconds": 45,
+        "short_active_seconds": 5
+      },
+      "fping": {
+        "loss_warning_percent": 0.5,
+        "loss_bad_percent": 2,
+        "loss_critical_percent": 5,
+        "consecutive_loss_warning_seconds": 1,
+        "consecutive_loss_bad_seconds": 2,
+        "latency_warning_ms": 50,
+        "latency_bad_ms": 100,
+        "latency_critical_ms": 200,
+        "jitter_warning_ms": 20,
+        "jitter_bad_ms": 50
+      }
+    }
+  },
+  "score_weights": {
+    "fping": 30,
+    "mesh_rssi": 20,
+    "switch_quality": 15,
+    "channel_busy": 15,
+    "link_stability": 10,
+    "backup_link": 5,
+    "data_integrity": 5
+  }
+}

@@ -14,6 +14,7 @@ class PeerResolveResult:
     site: str | None
     radio: str | None
     radio_mac: str | None
+    serial_number: str | None
     source: str
 
 
@@ -30,13 +31,14 @@ class ApRadioMappingService:
         peer = normalize_mac(peer_mac)
         resolved = self._mesh_service.resolve(peer)
         if not peer or not resolved:
-            return PeerResolveResult(peer, None, None, None, None, "unresolved")
+            return PeerResolveResult(peer, None, None, None, None, None, "unresolved")
         return PeerResolveResult(
             peer_mac=peer,
             ap_name=str(resolved.get("peer_ap_name") or "") or None,
             site=str(resolved.get("peer_site") or "") or None,
             radio=str(resolved.get("peer_radio_label") or "") or None,
             radio_mac=format_h3c_mac(str(resolved.get("peer_radio_mac") or peer)),
+            serial_number=str(resolved.get("peer_serial_number") or resolved.get("serial_number") or "") or None,
             source=str(resolved.get("match_rule") or "h3c_rule"),
         )
 

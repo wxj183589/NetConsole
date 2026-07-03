@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -921,6 +922,11 @@ class NetworkToolboxPage(QWidget):
     def _routes_page(self) -> QWidget:
         page, grid, actions, panel = self._tool_page("local_routes")
         self.routes_panel = panel
+        panel.setMinimumHeight(640)
+        panel.result_table.setMinimumHeight(480)
+        panel.summary_text.setMaximumHeight(72)
+        panel.result_table.horizontalHeader().setStretchLastSection(True)
+        panel.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.current_route_rows: list[dict[str, object]] = []
         self.route_status = QLabel("\u7ba1\u7406\u5458\u6743\u9650\uff1a\u662f" if is_admin() else "\u7ba1\u7406\u5458\u6743\u9650\uff1a\u5426\uff0c\u4ec5\u53ef\u67e5\u770b\u8def\u7531\u548c\u751f\u6210\u547d\u4ee4\u9884\u89c8")
         self.route_filter = QComboBox()
@@ -1165,7 +1171,7 @@ class NetworkToolboxPage(QWidget):
             "policy_store": row.policy_store or "-",
             "persistent": row.persistent,
             "source": row.source or "-",
-            "interface_index": row.interface_index,
+            "_interface_index": row.interface_index,
         }
 
     def _selected_route_payload(self) -> dict[str, object] | None:
@@ -1183,7 +1189,7 @@ class NetworkToolboxPage(QWidget):
         next_hop = str(payload.get("next_hop") or "")
         self.route_gateway.setText("" if next_hop == "\u5728\u94fe\u8def\u4e0a" else next_hop)
         try:
-            self.route_interface_index.setValue(int(payload.get("interface_index") or 0))
+            self.route_interface_index.setValue(int(payload.get("_interface_index") or 0))
         except (TypeError, ValueError):
             self.route_interface_index.setValue(0)
 
@@ -1451,7 +1457,7 @@ def _display_row(row: object) -> dict[str, object]:
         raw = {"value": row}
     result: dict[str, object] = {}
     for key, value in raw.items():
-        if key == "raw_output":
+        if key == "raw_output" or str(key).startswith("_"):
             continue
         label = DISPLAY_HEADERS.get(str(key), str(key))
         result[label] = _translate_value(key, value)
@@ -1462,7 +1468,7 @@ def _translate_value(key: object, value: object) -> object:
     if key == "status" and isinstance(value, str):
         return STATUS_LABELS.get(value, value)
     if isinstance(value, bool):
-        return "是" if value else "否"
+        return "\u662f" if value else "\u5426"
     return value
 
 

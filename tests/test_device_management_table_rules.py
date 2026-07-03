@@ -73,6 +73,33 @@ def test_external_terminal_missing_exe_returns_failure():
     assert "SecureCRT" in result.message
 
 
+def test_external_terminal_launch_registers_as_ignored_external_tool(monkeypatch):
+    device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 1234
+
+    monkeypatch.setattr("netconsole.services.external_terminal.Path.is_file", lambda _self: True)
+    monkeypatch.setattr("netconsole.services.external_terminal.subprocess.Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(
+        "netconsole.services.external_terminal.shutdown_manager.register_process",
+        lambda process, name="", **kwargs: calls.append({"process": process, "name": name, **kwargs}),
+    )
+
+    result = launch_external_terminal(device, ExternalTerminalConfig(exe_path=r"C:\Tools\SecureCRT.exe"))
+
+    assert result.success is True
+    assert calls == [
+        {
+            "process": calls[0]["process"],
+            "name": "SecureCRT",
+            "kind": "external_tool",
+            "shutdown_policy": "ignore",
+        }
+    ]
+
+
 def test_securecrt_command_passes_password_and_masks_safe_command():
     device = Device(name="SW1", ip_address="10.0.0.1", ssh_enabled=1, ssh_username="admin", ssh_password="secret", telnet_enabled=0)
     target = choose_connection_target(device)

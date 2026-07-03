@@ -23,10 +23,13 @@ from netconsole.models.online_mr_models import (
 from netconsole.services.online_mr_parser import parse_interface_rate_text
 
 
+DEVICE_TERMINAL_MONITOR_RAW_FILE = "terminal_monitor_raw.log"
+COLLECTOR_OUTPUT_RAW_FILE = "collector_output_raw.log"
+
 RAW_FILES = {
     "init": "init_raw.log",
     TASK_CONFIG_COLLECT: "config_collect_raw.log",
-    TASK_TERMINAL_MONITOR: "terminal_monitor_raw.log",
+    TASK_TERMINAL_MONITOR: DEVICE_TERMINAL_MONITOR_RAW_FILE,
     TASK_MESH_LINK: "mesh_link_raw.log",
     TASK_CHANNEL_BUSY: "channel_busy_raw.log",
     TASK_AP_RADIO_STATISTICS: "ap_radio_statistics_raw.log",
@@ -76,7 +79,7 @@ class OnlineMrSessionStore:
             session_type=session_type,
             config_collect_enabled=enabled,
             config_collect_status="skipped" if not enabled else "pending",
-            raw_log_path=str(session_dir / "raw" / "terminal_monitor_raw.txt"),
+            raw_log_path=str(session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE),
         )
         session = OnlineMrSession(session_dir, meta)
         session.initialize_database()
@@ -292,11 +295,10 @@ class OnlineMrSession:
             )
 
     def ensure_raw_files(self) -> None:
-        for raw_name in set(RAW_FILES.values()) | {"fping_v5_samples.jsonl", "fping_v5_final_summary.json"}:
+        for raw_name in set(RAW_FILES.values()) | {COLLECTOR_OUTPUT_RAW_FILE, "fping_v5_samples.jsonl", "fping_v5_final_summary.json"}:
             path = self.session_dir / "raw" / raw_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(exist_ok=True)
-        (self.session_dir / "raw" / "terminal_monitor_raw.txt").touch(exist_ok=True)
 
     def update_status(self, status: str) -> None:
         self.meta.status = status
@@ -361,15 +363,23 @@ class OnlineMrSession:
         with path.open("a", encoding="utf-8") as file:
             file.write(payload)
             file.flush()
-        self.append_terminal_monitor_raw(payload)
+        self.append_collector_output_raw(payload)
         return f"raw/{raw_name}", offset_start, offset_start + len(payload.encode("utf-8"))
 
-    def append_terminal_monitor_raw(self, text: str, collected_at: datetime | None = None) -> Path:
-        path = self.session_dir / "raw" / "terminal_monitor_raw.txt"
+    def append_collector_output_raw(self, text: str, collected_at: datetime | None = None) -> Path:
+        path = self.session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE
         stamp = (collected_at or datetime.now()).isoformat(sep=" ", timespec="milliseconds")
         payload = text if text.endswith("\n") else f"{text}\n"
         with path.open("a", encoding="utf-8", errors="replace") as file:
             file.write(f"{stamp} {payload}")
+            file.flush()
+        return path
+
+    def append_device_terminal_monitor_raw(self, text: str) -> Path:
+        path = self.session_dir / "raw" / DEVICE_TERMINAL_MONITOR_RAW_FILE
+        payload = text if text.endswith("\n") else f"{text}\n"
+        with path.open("a", encoding="utf-8", errors="replace") as file:
+            file.write(payload)
             file.flush()
         return path
 

@@ -36,11 +36,13 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import icon_path
 from netconsole.core.settings import SettingsStore
+from netconsole.core.shutdown_manager import CallbackTask, shutdown_manager
 from netconsole.core.sites import Site, SiteManager
 from netconsole.core import version as version_info
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.dialogs.about_dialog import AboutRepositoryDialog
 from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
+from netconsole.ui.dialogs.shutdown_progress_dialog import ShutdownProgressDialog
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
 from netconsole.ui.theme import apply_global_theme
@@ -117,6 +119,8 @@ class MainWindow(QMainWindow):
         self.sidebar_toggle_button = QPushButton()
         self.sidebar_toggle_button.setObjectName("sidebarToggleButton")
         self.data_disk_dialog = None
+        self.shutdown_dialog: ShutdownProgressDialog | None = None
+        self._force_close = False
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
         self.device_page.groups_changed.connect(self.refresh_group_filters)
@@ -688,11 +692,11 @@ class MainWindow(QMainWindow):
         self.always_on_top_button.setText(self.i18n.t("window.cancel_always_on_top" if enabled else "window.always_on_top"))
 
     def closeEvent(self, event) -> None:
-        if self.app_is_exiting:
-            background_task_manager.stop_all()
-            self._close_detached_windows()
-            app_logger.log_info("APP_EXIT", "software closed")
-            super().closeEvent(event)
+        if self._force_close:
+            event.accept()
+            return
+        if self.app_is_exiting and shutdown_manager.is_shutting_down():
+            event.ignore()
             return
         behavior = self.settings.close_behavior
         has_tasks = self.has_background_tasks()
@@ -701,28 +705,50 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if behavior == "exit" and not has_tasks:
-            self.app_is_exiting = True
-            background_task_manager.stop_all()
-            self._close_detached_windows()
-            app_logger.log_info("APP_EXIT", "software closed")
-            super().closeEvent(event)
+            event.ignore()
+            self.request_app_exit("main_window_close")
             return
         choice = self.ask_close_behavior(has_tasks)
         if choice == "minimize_to_tray" and self.tray_available:
             self.hide_to_tray()
             event.ignore()
         elif choice == "exit":
-            self.app_is_exiting = True
-            background_task_manager.stop_all()
-            self._close_detached_windows()
-            app_logger.log_info("APP_EXIT", "software closed")
-            super().closeEvent(event)
+            event.ignore()
+            self.request_app_exit("main_window_close_confirmed")
         else:
             event.ignore()
 
     def _close_detached_windows(self) -> None:
         for window in list(self.detached_windows):
             window.close()
+
+    def request_app_exit(self, reason: str) -> None:
+        if not shutdown_manager.request_exit(reason):
+            if self.shutdown_dialog is not None:
+                self.shutdown_dialog.show()
+                self.shutdown_dialog.raise_()
+            return
+        self.app_is_exiting = True
+        background_task_manager.app_is_exiting = True
+        shutdown_manager.register_task(
+            CallbackTask(
+                "background_tasks",
+                background_task_manager.stop_all,
+                lambda: background_task_manager.active_count() > 0,
+            ),
+            allow_during_shutdown=True,
+        )
+        self.shutdown_dialog = ShutdownProgressDialog(shutdown_manager, self)
+        self.shutdown_dialog.finished.connect(self._finish_app_exit)
+        self.shutdown_dialog.start()
+
+    def _finish_app_exit(self) -> None:
+        app_logger.log_info("APP_EXIT", "software closed")
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        self._force_close = True
+        self.close()
+        QApplication.quit()
 
     def apply_initial_geometry(self) -> None:
         screen = QApplication.primaryScreen()
@@ -999,6 +1025,4 @@ class MainWindow(QMainWindow):
             self._update_tray_text()
 
     def exit_from_tray(self) -> None:
-        self.app_is_exiting = True
-        background_task_manager.stop_all()
-        QApplication.quit()
+        self.request_app_exit("tray_exit")

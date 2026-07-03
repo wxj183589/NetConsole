@@ -378,6 +378,25 @@ def test_mesh_peer_mapping_service_uses_h3c_radio_rule_fields(tmp_path):
     assert resolved["peer_radio_label"] == "radio2"
 
 
+def test_mesh_peer_mapping_service_returns_serial_number_for_h3c_peer_mac(tmp_path):
+    paths = PathResolver(tmp_path)
+    service = MeshPeerMappingService("demo", paths)
+    service._resolver = TracksideApBssidResolver(
+        [{"ap_name": "bc5a-3457-cbe0", "ap_mac": "bc5a-3457-cbe0", "station": "03镇驼站", "serial_number": "TEST-SN-001"}]
+    )
+
+    resolved = service.resolve("bc5a-3457-cbef")
+
+    assert resolved is not None
+    assert resolved["peer_ap_name"] == "bc5a-3457-cbe0"
+    assert resolved["peer_ap_mac"] == "bc5a3457cbe0"
+    assert resolved["peer_radio_mac"] == "bc5a3457cbef"
+    assert resolved["peer_site"] == "03镇驼站"
+    assert resolved["peer_serial_number"] == "TEST-SN-001"
+    assert resolved["serial_number"] == "TEST-SN-001"
+    assert resolved["peer_radio_label"] == "radio1"
+
+
 def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")

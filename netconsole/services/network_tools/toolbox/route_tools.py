@@ -68,25 +68,19 @@ def sort_route_rows(rows: Iterable[LocalRouteRow]) -> list[LocalRouteRow]:
     return sorted(rows, key=route_sort_key)
 
 
-def route_sort_key(route: LocalRouteRow | RouteInfo) -> tuple[int, int, int, int, int, str]:
+def route_sort_key(route: LocalRouteRow | RouteInfo) -> tuple[int, int, int, str]:
     destination_prefix = str(getattr(route, "destination_prefix", "") or "")
-    next_hop = str(getattr(route, "next_hop", "") or "").strip().lower()
-    source = str(getattr(route, "source", "") or "").lower()
-    policy_store = str(getattr(route, "policy_store", "") or "").lower()
-    persistent = bool(getattr(route, "persistent", False)) or policy_store == "persistentstore"
     order_index = int(getattr(route, "order_index", 0) or 0)
     try:
         network = ipaddress.IPv4Network(destination_prefix, strict=False)
         prefix_length = network.prefixlen
+        network_value = int(network.network_address)
         network_text = str(network.network_address)
     except ValueError:
         prefix_length = int(getattr(route, "prefix_length", 32) or 32)
+        network_value = 2**32 - 1
         network_text = str(getattr(route, "destination", destination_prefix))
-    default_rank = 0 if prefix_length == 0 else 1
-    static_rank = 0 if persistent or any(token in source for token in ("manual", "profile", "persistent", "route add")) else 1
-    on_link_rank = 1 if next_hop in {"", "0.0.0.0", "在链路上"} else 0
-    host_rank = 1 if prefix_length == 32 else 0
-    return (default_rank, static_rank, on_link_rank, host_rank, order_index, network_text)
+    return (network_value, prefix_length, order_index, network_text)
 
 
 def parse_powershell_routes_json(routes_json: str, interfaces_json: str = "[]", adapters_json: str = "[]") -> list[LocalRouteRow]:

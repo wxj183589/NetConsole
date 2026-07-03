@@ -701,19 +701,34 @@ def test_close_event_minimizes_to_tray(tmp_path, monkeypatch):
     assert fake_tray.instances[-1].messages
 
 
-def test_close_event_exit_stops_background_tasks(tmp_path, monkeypatch):
+def test_close_event_exit_requests_shutdown_flow(tmp_path, monkeypatch):
     QApplication.instance() or QApplication([])
     context = create_demo_context(PathResolver(tmp_path))
     window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
-    stopped: list[bool] = []
+    requested: list[str] = []
     monkeypatch.setattr(window, "ask_close_behavior", lambda has_tasks: "exit")
-    monkeypatch.setattr("netconsole.ui.main_window.background_task_manager.stop_all", lambda: stopped.append(True))
+    monkeypatch.setattr(window, "request_app_exit", lambda reason: requested.append(reason))
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert requested == ["main_window_close_confirmed"]
+
+
+def test_force_close_accepts_main_window_close_event(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    requested: list[str] = []
+    monkeypatch.setattr(window, "request_app_exit", lambda reason: requested.append(reason))
+    window._force_close = True
     event = QCloseEvent()
 
     window.closeEvent(event)
 
     assert event.isAccepted()
-    assert stopped == [True]
+    assert requested == []
 
 
 def test_tray_double_click_shows_window(tmp_path, monkeypatch):

@@ -239,6 +239,7 @@ def parse_switch_history_text(raw_text: str, collected_at: datetime | None = Non
                 "from_peer_name": "",
                 "to_peer_name": peer_name,
                 "from_peer_mac": "",
+                "from_peer_mac_normalized": "",
                 "to_peer_mac": peer_mac_raw,
                 "to_peer_mac_normalized": normalize_peer_mac(peer_mac_raw),
                 "reason": (match.group("reason") or "").strip(),
@@ -249,6 +250,14 @@ def parse_switch_history_text(raw_text: str, collected_at: datetime | None = Non
                 "raw_line": line.strip(),
             }
         )
+    rows.sort(key=lambda row: str(row.get("switch_time") or ""))
+    previous: dict[str, object] | None = None
+    for row in rows:
+        if previous is not None:
+            row["from_peer_name"] = previous.get("to_peer_name") or ""
+            row["from_peer_mac"] = previous.get("to_peer_mac") or ""
+            row["from_peer_mac_normalized"] = previous.get("to_peer_mac_normalized") or ""
+        previous = row
     return rows
 
 

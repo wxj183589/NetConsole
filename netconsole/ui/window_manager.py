@@ -3,6 +3,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
+from netconsole.ui.window_registry import window_registry
+
 
 class WindowManager:
     def __init__(self) -> None:
@@ -17,11 +19,13 @@ class WindowManager:
         if window not in self.child_windows:
             self.child_windows.append(window)
         self.child_on_top[window] = always_on_top
+        window_registry.register(window)
 
     def unregister_child_window(self, window: QWidget) -> None:
         if window in self.child_windows:
             self.child_windows.remove(window)
         self.child_on_top.pop(window, None)
+        window_registry.unregister(window)
 
     def set_child_on_top(self, window: QWidget, enabled: bool) -> None:
         self.register_child_window(window, enabled)

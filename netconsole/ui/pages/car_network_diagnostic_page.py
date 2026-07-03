@@ -60,7 +60,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     node_from_mapping,
     normalize_train_network_defaults,
 )
-from netconsole.services.vehicle_mr_online import normalize_train_no
+from netconsole.services.vehicle_mr_online import normalize_train_no, train_sort_key
 from netconsole.ui.car_network_diagnostic_worker import CarNetworkDiagnosticWorker
 from netconsole.ui.table_utils import configure_readonly_table
 
@@ -236,6 +236,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.trains = build_car_network_trains(self.repository, self.site_name)
         if not self.trains:
             self.trains = self._fallback_trains_from_nodes(stored_nodes)
+        self.trains = self._sorted_trains(self.trains)
         self.nodes = self._view_nodes(stored_nodes)
         if self.trains and self.current_train_id not in {train.train_id for train in self.trains}:
             self.current_train_id = self.trains[0].train_id
@@ -686,7 +687,7 @@ class CarNetworkDiagnosticPage(QWidget):
 
     def _fill_train_table(self) -> None:
         self.train_table.setRowCount(0)
-        for train in self.trains:
+        for train in self._sorted_trains(self.trains):
             row = self.train_table.rowCount()
             self.train_table.insertRow(row)
             tc1 = train.tc1_device.name if train.tc1_device else "-"
@@ -870,9 +871,11 @@ class CarNetworkDiagnosticPage(QWidget):
             seen.add(key)
             train_no = node.train_no or normalize_train_no(node.train_id)
             trains.append(CarNetworkTrain(node.train_id or f"列车{train_no}", train_no, f"{train_no}车" if train_no else node.train_id))
-        if not trains:
-            return trains
-        return trains
+        return self._sorted_trains(trains)
+
+    @staticmethod
+    def _sorted_trains(trains: list[CarNetworkTrain]) -> list[CarNetworkTrain]:
+        return sorted(trains, key=lambda train: train_sort_key((train.train_id, train.train_no)))
 
     def _update_buttons(self) -> None:
         running = self.worker is not None

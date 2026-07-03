@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QLabel, QMenu, QMessageBox, QTableWidget
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QLabel, QMenu, QMessageBox, QTableWidget, QTableWidgetItem
 
 from netconsole.ui.render.table_render_engine import apply_table_style
 from netconsole.ui.theme.qt_theme_engine import LIGHT_APP_STYLESHEET
@@ -17,9 +18,133 @@ def configure_readonly_table(table: QTableWidget) -> None:
     apply_table_style(table)
 
 
+def make_table_item(value: object, align: Qt.AlignmentFlag | Qt.Alignment = Qt.AlignCenter, tooltip: bool = True) -> QTableWidgetItem:
+    item = QTableWidgetItem("" if value is None else str(value))
+    item.setTextAlignment(align)
+    if tooltip:
+        item.setToolTip(item.text())
+    return item
+
+
+def set_table_item_centered(item: QTableWidgetItem) -> QTableWidgetItem:
+    item.setTextAlignment(Qt.AlignCenter)
+    if not item.toolTip():
+        item.setToolTip(item.text())
+    return item
+
+
+def apply_analysis_table_style(
+    table: QTableWidget,
+    *,
+    raw_columns: set[int] | None = None,
+    width_overrides: dict[int, int] | None = None,
+) -> None:
+    _ = (raw_columns, width_overrides)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.ElideRight)
+    table.setAlternatingRowColors(True)
+    table.verticalHeader().setDefaultSectionSize(34)
+    header = table.horizontalHeader()
+    header.setDefaultAlignment(Qt.AlignCenter)
+    header.setSectionResizeMode(QHeaderView.Interactive)
+    header.setStretchLastSection(False)
+    for column in range(table.columnCount()):
+        header_item = table.horizontalHeaderItem(column)
+        if header_item is not None:
+            header_item.setTextAlignment(Qt.AlignCenter)
+            header_item.setToolTip(header_item.text())
+
+
 def make_text_selectable(label: QLabel) -> QLabel:
     label.setTextInteractionFlags(Qt.TextSelectableByMouse)
     return label
+
+
+def auto_fit_table_columns(
+    table: QTableWidget,
+    *,
+    max_rows: int = 500,
+    min_widths: dict[int, int] | None = None,
+    max_widths: dict[int, int] | None = None,
+    padding: int = 32,
+) -> None:
+    if table.columnCount() <= 0:
+        return
+    min_widths = dict(min_widths or {})
+    max_widths = dict(max_widths or {})
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.Interactive)
+    header.setStretchLastSection(False)
+    row_indexes = _sample_table_rows(table.rowCount(), max_rows)
+    header_metrics = QFontMetrics(header.font())
+    cell_metrics = QFontMetrics(table.font())
+    for column in range(table.columnCount()):
+        header_item = table.horizontalHeaderItem(column)
+        header_text = header_item.text() if header_item is not None else ""
+        width = header_metrics.horizontalAdvance(header_text)
+        for row in row_indexes:
+            item = table.item(row, column)
+            if item is None:
+                continue
+            width = max(width, cell_metrics.horizontalAdvance(item.text()))
+            if not item.toolTip():
+                item.setToolTip(item.text())
+            item.setTextAlignment(Qt.AlignCenter)
+        minimum = int(min_widths.get(column, _default_min_width(header_text)))
+        maximum = int(max_widths.get(column, _default_max_width(header_text)))
+        table.setColumnWidth(column, max(minimum, min(width + padding, maximum)))
+    viewport_width = max(0, table.viewport().width() - table.verticalScrollBar().sizeHint().width())
+    total_width = sum(table.columnWidth(column) for column in range(table.columnCount()))
+    if 0 < total_width < viewport_width:
+        last = table.columnCount() - 1
+        header_text = table.horizontalHeaderItem(last).text() if table.horizontalHeaderItem(last) else ""
+        maximum = int(max_widths.get(last, _default_max_width(header_text)))
+        table.setColumnWidth(last, min(maximum, table.columnWidth(last) + viewport_width - total_width))
+
+
+def _sample_table_rows(row_count: int, max_rows: int) -> list[int]:
+    if row_count <= 0:
+        return []
+    max_rows = max(1, int(max_rows))
+    if row_count <= max_rows:
+        return list(range(row_count))
+    tail_count = min(50, max_rows // 5)
+    head_count = max_rows - tail_count
+    return list(range(head_count)) + list(range(row_count - tail_count, row_count))
+
+
+def _default_min_width(header_text: str) -> int:
+    text = str(header_text or "")
+    if text in {"序号"}:
+        return 60
+    if "时间" in text:
+        return 190
+    if "MAC" in text or "AP" in text or "对端" in text or "名称" in text:
+        return 150
+    if "站点" in text:
+        return 130
+    if "原因" in text:
+        return 240
+    if "RSSI" in text or "数量" in text or "PPS" in text or "ID" in text or "利用率" in text:
+        return 80
+    return 90
+
+
+def _default_max_width(header_text: str) -> int:
+    text = str(header_text or "")
+    if "原始" in text or "日志" in text or "内容" in text or "目录" in text or "详情" in text:
+        return 900
+    if "原因" in text:
+        return 360
+    if "站点" in text:
+        return 240
+    if "时间" in text:
+        return 260
+    return 420
 
 
 def auto_resize_table_columns(

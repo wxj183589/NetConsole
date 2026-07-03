@@ -59,6 +59,7 @@ class TracksideBssidMatch:
     ap_name: str = "-"
     ap_mac: str = ""
     station: str = ""
+    serial_number: str = ""
     location: str = ""
     mileage: str = ""
     direction: str = ""

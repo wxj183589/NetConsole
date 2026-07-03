@@ -14,6 +14,7 @@ from netconsole.models.online_mr_models import (
     EVENT_COMMAND_FAILED,
     EVENT_RECONNECT,
     INIT_COMMANDS,
+    TERMINAL_MONITOR_INIT_COMMANDS,
     STATE_COLLECTING,
     STATE_CONNECTING,
     STATE_FAILED,
@@ -171,6 +172,34 @@ class NetmikoShellConnection(OnlineMrConnection):
                 pass
             writer_thread.join(timeout=3)
 
+    def run_terminal_monitor_stream(
+        self,
+        commands: tuple[str, ...],
+        stop_event: Event,
+        timeout: int,
+        line_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if self.connection is None:
+            raise OnlineMrConnectionError("connection is closed")
+        writer = getattr(self.connection, "write_channel", None)
+        reader = getattr(self.connection, "read_channel", None)
+        if not callable(writer) or not callable(reader):
+            raise OnlineMrConnectionError("interactive shell is unavailable")
+        for command in commands:
+            writer(f"{command}\n")
+            time.sleep(0.05)
+        idle_started = time.monotonic()
+        while not stop_event.is_set():
+            chunk = reader()
+            if chunk:
+                idle_started = time.monotonic()
+                if line_callback is not None:
+                    line_callback(normalize_command_output(chunk))
+                continue
+            if time.monotonic() - idle_started > max(3, timeout):
+                idle_started = time.monotonic()
+            time.sleep(0.05)
+
     def close(self) -> None:
         if self.connection is not None:
             self.connection.disconnect()
@@ -275,8 +304,10 @@ class OnlineMrCollector:
         self._stream_stop = Event()
         self._stream_threads: list[Thread] = []
         self._stream_connections: list[OnlineMrConnection] = []
-        self._terminal_write_queue: Queue[tuple[datetime | None, str] | None] = Queue(maxsize=20000)
-        self._terminal_writer_thread: Thread | None = None
+        self._collector_output_queue: Queue[tuple[datetime | None, str] | None] = Queue(maxsize=20000)
+        self._collector_output_writer_thread: Thread | None = None
+        self._device_terminal_queue: Queue[str | None] = Queue(maxsize=20000)
+        self._device_terminal_writer_thread: Thread | None = None
 
     def start(self) -> OnlineMrSessionMeta:
         self.session = self.store.create_session(
@@ -423,7 +454,8 @@ class OnlineMrCollector:
     def stop(self) -> None:
         self.request_stop()
         self._join_stream_threads(3)
-        self._stop_terminal_writer()
+        self._stop_collector_output_writer()
+        self._stop_device_terminal_writer()
         self._close_stream_connections()
         self._close_main_connection()
         if self.session:
@@ -437,10 +469,6 @@ class OnlineMrCollector:
         self._stream_stop.set()
         if self.session:
             self._set_status(STATE_STOPPING)
-        for stream_connection in list(self._stream_connections):
-            self._interrupt_connection(stream_connection)
-        if self.connection is not None:
-            self._interrupt_connection(self.connection)
 
     def _join_stream_threads(self, timeout: float) -> None:
         for thread in list(self._stream_threads):
@@ -601,7 +629,9 @@ class OnlineMrCollector:
             TASK_INTERFACE_RATE,
         ]
         enabled = self.config.tasks.enabled_tasks()
-        self._start_terminal_writer()
+        self._start_collector_output_writer()
+        self._start_device_terminal_writer()
+        self._start_terminal_monitor_thread()
         for task_type in stream_tasks:
             if task_type in enabled:
                 self._start_repeat_thread(task_type)
@@ -626,7 +656,7 @@ class OnlineMrCollector:
             except Exception as exc:
                 self._record_command_failure("init", command, exc)
         commands = self._repeat_commands(task_type)
-        self._enqueue_terminal_monitor_raw(
+        self._enqueue_collector_output_raw(
             f"[collector=repeat] START task={task_type}\n" + "\n".join(commands) + "\n"
         )
         raw_path = session.session_dir / "raw" / {
@@ -680,7 +710,7 @@ class OnlineMrCollector:
             payload={"task_type": task_type, "line": line},
             raw=line,
         )
-        self._enqueue_terminal_monitor_raw(f"[collector=repeat] {task_type} {line}", timestamp)
+        self._enqueue_collector_output_raw(f"[collector=repeat] {task_type} {line}", timestamp)
         if self.realtime_cache:
             self.realtime_cache.append_raw_event(
                 event.session_id,
@@ -695,6 +725,53 @@ class OnlineMrCollector:
             )
         if self._stream_event_callback is not None:
             self._stream_event_callback(event)
+
+    def _start_terminal_monitor_thread(self) -> None:
+        session = self._session()
+        connection: OnlineMrConnection | None = None
+
+        def target() -> None:
+            nonlocal connection
+            while not self._stream_stop.is_set():
+                if connection is None:
+                    try:
+                        connection = self.connection_factory(self.config)
+                        self._stream_connections.append(connection)
+                    except Exception as exc:
+                        session.log("WARNING", f"terminal monitor connection failed: {exc}")
+                        if not self.config.auto_reconnect:
+                            return
+                        self.sleeper(float(self.config.reconnect_interval))
+                        continue
+                try:
+                    runner = getattr(connection, "run_terminal_monitor_stream", None)
+                    if callable(runner):
+                        runner(
+                            TERMINAL_MONITOR_INIT_COMMANDS,
+                            self._stream_stop,
+                            self.config.command_timeout,
+                            line_callback=self._enqueue_device_terminal_monitor_raw,
+                        )
+                    else:
+                        for command in TERMINAL_MONITOR_INIT_COMMANDS:
+                            connection.send_command(command, self.config.command_timeout)
+                        session.log("WARNING", "terminal monitor stream unavailable on connection")
+                    return
+                except Exception as exc:
+                    session.log("WARNING", f"terminal monitor stream failed: {exc}")
+                    if not self.config.auto_reconnect or self._stream_stop.is_set():
+                        return
+                    self.sleeper(float(self.config.reconnect_interval))
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
+                    connection = None
+                    continue
+
+        thread = Thread(target=target, name="online-mr-terminal-monitor", daemon=True)
+        self._stream_threads.append(thread)
+        thread.start()
 
     def _reconnect(self) -> None:
         if not self.config.auto_reconnect:
@@ -746,44 +823,84 @@ class OnlineMrCollector:
         session.meta.stats = self.stats.as_dict()
         session.write_meta()
 
-    def _start_terminal_writer(self) -> None:
-        if self._terminal_writer_thread is not None and self._terminal_writer_thread.is_alive():
+    def _start_collector_output_writer(self) -> None:
+        if self._collector_output_writer_thread is not None and self._collector_output_writer_thread.is_alive():
             return
 
         def write_loop() -> None:
             while True:
-                item = self._terminal_write_queue.get()
+                item = self._collector_output_queue.get()
                 if item is None:
                     break
                 stamp, text = item
                 try:
                     if self.session is not None:
-                        self.session.append_terminal_monitor_raw(text, stamp)
+                        self.session.append_collector_output_raw(text, stamp)
                 except Exception as exc:
                     if self.session is not None:
                         try:
-                            self.session.log("WARNING", f"terminal raw writer failed: {exc}")
+                            self.session.log("WARNING", f"collector output writer failed: {exc}")
                         except Exception:
                             pass
 
-        self._terminal_writer_thread = Thread(target=write_loop, name="online-mr-terminal-writer", daemon=True)
-        self._terminal_writer_thread.start()
+        self._collector_output_writer_thread = Thread(target=write_loop, name="online-mr-collector-output-writer", daemon=True)
+        self._collector_output_writer_thread.start()
 
-    def _enqueue_terminal_monitor_raw(self, text: str, stamp: datetime | None = None) -> None:
+    def _enqueue_collector_output_raw(self, text: str, stamp: datetime | None = None) -> None:
         try:
-            self._terminal_write_queue.put_nowait((stamp, text))
+            self._collector_output_queue.put_nowait((stamp, text))
         except Exception:
             pass
 
-    def _stop_terminal_writer(self) -> None:
-        if self._terminal_writer_thread is None:
+    def _stop_collector_output_writer(self) -> None:
+        if self._collector_output_writer_thread is None:
             return
         try:
-            self._terminal_write_queue.put(None, timeout=1)
+            self._collector_output_queue.put(None, timeout=1)
         except Exception:
             pass
-        self._terminal_writer_thread.join(timeout=3)
-        self._terminal_writer_thread = None
+        self._collector_output_writer_thread.join(timeout=3)
+        self._collector_output_writer_thread = None
+
+    def _start_device_terminal_writer(self) -> None:
+        if self._device_terminal_writer_thread is not None and self._device_terminal_writer_thread.is_alive():
+            return
+
+        def write_loop() -> None:
+            while True:
+                text = self._device_terminal_queue.get()
+                if text is None:
+                    break
+                try:
+                    if self.session is not None:
+                        self.session.append_device_terminal_monitor_raw(text)
+                except Exception as exc:
+                    if self.session is not None:
+                        try:
+                            self.session.log("WARNING", f"device terminal monitor writer failed: {exc}")
+                        except Exception:
+                            pass
+
+        self._device_terminal_writer_thread = Thread(target=write_loop, name="online-mr-device-terminal-writer", daemon=True)
+        self._device_terminal_writer_thread.start()
+
+    def _enqueue_device_terminal_monitor_raw(self, text: str) -> None:
+        if not text:
+            return
+        try:
+            self._device_terminal_queue.put_nowait(text)
+        except Exception:
+            pass
+
+    def _stop_device_terminal_writer(self) -> None:
+        if self._device_terminal_writer_thread is None:
+            return
+        try:
+            self._device_terminal_queue.put(None, timeout=1)
+        except Exception:
+            pass
+        self._device_terminal_writer_thread.join(timeout=3)
+        self._device_terminal_writer_thread = None
 
     def _register_realtime_session(self, session_type: str = "realtime") -> None:
         if self.realtime_cache is None or self.session is None:

@@ -9,6 +9,7 @@ from typing import Protocol
 from urllib.parse import quote
 
 from netconsole.models.device import Device
+from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.services.netmiko_connection import ConnectionTarget, connection_targets, prepared_connection_target, sanitize_sensitive_text
 
 
@@ -173,7 +174,8 @@ def launch_winscp(device: Device, settings: SettingsLike | None = None, sessions
         return WinScpLaunchResult(True, "已启动 WinSCP。", args_preview, _safe_command(args_preview, device))
     try:
         args = build_winscp_command(device, target, exe)
-        subprocess.Popen(args, shell=False)
+        process = subprocess.Popen(args, shell=False)
+        shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
     except Exception as exc:
         return WinScpLaunchResult(False, sanitize_sensitive_text(str(exc), device), [])
     return WinScpLaunchResult(True, "已启动 WinSCP。", args, _safe_command(args, device))
@@ -183,9 +185,13 @@ def _launch_winscp_via_tunnel(device: Device, target: ConnectionTarget, exe: str
     with prepared_connection_target(target) as prepared:
         args = build_winscp_command(device, prepared, exe)
         process = subprocess.Popen(args, shell=False)
+        shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
         if sessions is not None:
             sessions.append(process)
-        process.wait()
+        try:
+            process.wait()
+        finally:
+            shutdown_manager.unregister_process(process)
 
 
 def launch_external_terminal(device: Device, config: ExternalTerminalConfig) -> ExternalTerminalLaunchResult:
@@ -201,7 +207,8 @@ def launch_external_terminal(device: Device, config: ExternalTerminalConfig) -> 
         return ExternalTerminalLaunchResult(False, "外部终端暂不支持内部临时隧道，请使用直连地址或先配置外部终端可访问的地址。", [])
     try:
         args = build_external_terminal_command(device, target, config.terminal_type, str(exe), config.include_password)
-        subprocess.Popen(args, shell=False)
+        process = subprocess.Popen(args, shell=False)
+        shutdown_manager.register_process(process, TERMINAL_LABELS.get(config.terminal_type, "external_terminal"), kind="external_tool", shutdown_policy="ignore")
     except Exception as exc:
         return ExternalTerminalLaunchResult(False, sanitize_sensitive_text(str(exc), device), [])
     return ExternalTerminalLaunchResult(True, "已启动外部终端", args, _safe_command(args, device))
