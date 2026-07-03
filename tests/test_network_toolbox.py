@@ -19,8 +19,9 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
     wildcard_calculate,
 )
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output, _ping_args, parse_ping_output, run_single_ping, run_tcp_ping
-from netconsole.services.network_tools.toolbox.route_tools import parse_powershell_routes_json
-from netconsole.services.windows_network_manager import NetworkAdapterInfo
+from netconsole.services.network_tools.toolbox.route_tools import normalize_routes, parse_powershell_routes_json
+from netconsole.services.windows_network_manager import NetworkAdapterInfo, RouteInfo
+from netconsole.ui.pages.network_adapter_route_page import NetworkAdapterRoutePage
 from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, NetworkPingHostResult, NetworkToolboxPage, ToolResultPanel
 
 
@@ -145,6 +146,22 @@ def test_parse_powershell_route_json_maps_interface_fields() -> None:
     assert rows[0].metric == 5
 
 
+def test_local_route_rows_reuse_service_sorting_and_display_fields() -> None:
+    routes = [
+        RouteInfo("192.168.1.99/32", order_index=0, next_hop="192.168.1.1", interface_index=1, route_metric=20, source="NetMgmt"),
+        RouteInfo("10.0.0.0/24", order_index=1, next_hop="192.168.1.1", interface_index=1, route_metric=10, policy_store="PersistentStore", persistent=True),
+        RouteInfo("172.16.0.0/16", order_index=2, next_hop="0.0.0.0", interface_index=1, route_metric=5, source="Local"),
+        RouteInfo("0.0.0.0/0", order_index=3, next_hop="192.168.1.254", interface_index=1, route_metric=1, source="Dhcp"),
+    ]
+    adapters = [NetworkAdapterInfo(name="Ethernet", interface_index=1, ipv4_addresses=["192.168.1.10/24"])]
+
+    rows = normalize_routes(routes, adapters)
+
+    assert [row.destination_prefix for row in rows] == ["0.0.0.0/0", "10.0.0.0/24", "192.168.1.99/32", "172.16.0.0/16"]
+    assert rows[3].next_hop == "\u5728\u94fe\u8def\u4e0a"
+    assert rows[1].policy_store == "PersistentStore"
+
+
 def test_network_ping_adapter_mock_autofills_cidr(tmp_path) -> None:
     _app()
 
@@ -183,6 +200,36 @@ def test_network_ping_tab_uses_page_scroll_area(tmp_path) -> None:
     action_buttons = [button for button in page.ping_tabs.widget(3).findChildren(type(page.network_ping_panel.clear_button)) if button.objectName() == "networkPingActionButton"]
     assert action_buttons
     assert all(button.minimumHeight() >= 32 for button in action_buttons)
+
+
+def test_toolbox_route_page_is_scrollable_and_uses_route_columns(tmp_path) -> None:
+    _app()
+
+    class FakeManager:
+        def list_adapters(self):
+            return [NetworkAdapterInfo(name="Ethernet", interface_index=1, ipv4_addresses=["192.168.1.10/24"])]
+
+        def list_routes(self):
+            return [RouteInfo("0.0.0.0/0", next_hop="192.168.1.1", interface_index=1, route_metric=1, policy_store="ActiveStore")]
+
+    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=FakeManager())
+    rows = page._route_rows_for_display()
+
+    assert isinstance(page.tabs.widget(2), QScrollArea)
+    assert list(rows[0]) == ["order_index", "destination_prefix", "next_hop", "interface_alias", "metric", "policy_store", "persistent", "source", "interface_index"]
+    assert rows[0]["metric"] == 1
+
+
+def test_local_adapter_config_page_does_not_expose_route_tab(tmp_path) -> None:
+    _app()
+
+    class FakeManager:
+        pass
+
+    page = NetworkAdapterRoutePage(I18n(), PathResolver(app_root=tmp_path, data_root=tmp_path), manager=FakeManager())
+
+    assert page.tabs.count() == 1
+    assert all(page.tabs.tabText(index) != "\u8def\u7531\u914d\u7f6e" for index in range(page.tabs.count()))
 
 
 def test_tool_result_panel_state_is_not_shared(tmp_path) -> None:

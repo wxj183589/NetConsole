@@ -386,7 +386,8 @@ class NetworkAdapterRoutePage(QWidget):
         self.apply_route_button.setText(self.i18n.t("network_manager.apply_route"))
         self.remove_route_button.setText(self.i18n.t("network_manager.remove_route"))
         self.tabs.setTabText(0, self.i18n.t("network_manager.adapter_config"))
-        self.tabs.setTabText(1, self.i18n.t("network_manager.route_config"))
+        if self.tabs.count() > 1:
+            self.tabs.setTabText(1, self.i18n.t("network_manager.route_config"))
         self._sync_permission_state()
 
     def _build_ui(self) -> None:
@@ -431,7 +432,7 @@ class NetworkAdapterRoutePage(QWidget):
         adapter_splitter.setStretchFactor(1, 5)
         adapter_splitter.setSizes([320, 420])
 
-        route_page = QWidget()
+        route_page = QWidget(self)
         route_layout = QVBoxLayout(route_page)
         route_layout.addWidget(QLabel("当前路由表"))
         route_filter_row = QHBoxLayout()
@@ -458,7 +459,6 @@ class NetworkAdapterRoutePage(QWidget):
         route_layout.addWidget(edit_group)
 
         self.tabs.addTab(adapter_page, "")
-        self.tabs.addTab(route_page, "")
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         main_splitter = QSplitter(Qt.Vertical)
@@ -1309,7 +1309,7 @@ def _network_page_build_ui_split(self) -> None:
     adapter_splitter.setStretchFactor(1, 4)
     adapter_layout.addWidget(adapter_splitter)
 
-    route_page = QWidget()
+    route_page = QWidget(self)
     route_layout = QVBoxLayout(route_page)
     route_layout.addWidget(QLabel("当前路由表"))
     route_filter_row = QHBoxLayout()
@@ -1336,7 +1336,6 @@ def _network_page_build_ui_split(self) -> None:
     route_layout.addWidget(edit_route_group)
 
     self.tabs.addTab(adapter_page, "")
-    self.tabs.addTab(route_page, "")
     layout = QVBoxLayout(self)
     layout.addLayout(top)
     main_splitter = QSplitter(Qt.Vertical)

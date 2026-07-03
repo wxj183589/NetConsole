@@ -2919,8 +2919,8 @@ TRANSLATIONS["en_US"].update(
 
 TRANSLATIONS["zh_CN"].update(
     {
-        "network_tools.local_network_manager": "\u672c\u5730\u7f51\u5361/\u8def\u7531\u7ba1\u7406",
-        "network_manager.title": "\u672c\u5730\u7f51\u5361/\u8def\u7531\u7ba1\u7406",
+        "network_tools.local_network_manager": "\u672c\u5730\u7f51\u5361\u914d\u7f6e",
+        "network_manager.title": "\u672c\u5730\u7f51\u5361\u914d\u7f6e",
         "network_manager.open_as_admin": "\u4ee5\u7ba1\u7406\u5458\u6743\u9650\u6253\u5f00\u7f51\u7edc\u7ba1\u7406",
         "network_manager.open_connections": "\u6253\u5f00\u7f51\u7edc\u8fde\u63a5",
         "network_manager.adapter_config": "\u672c\u5730\u7f51\u5361\u914d\u7f6e",
@@ -2939,8 +2939,8 @@ TRANSLATIONS["zh_CN"].update(
 
 TRANSLATIONS["en_US"].update(
     {
-        "network_tools.local_network_manager": "Local Adapter / Route Manager",
-        "network_manager.title": "Local Adapter / Route Manager",
+        "network_tools.local_network_manager": "Local Adapter Config",
+        "network_manager.title": "Local Adapter Config",
         "network_manager.open_as_admin": "Open Network Manager as Administrator",
         "network_manager.open_connections": "Open Network Connections",
         "network_manager.adapter_config": "Local Adapter Config",

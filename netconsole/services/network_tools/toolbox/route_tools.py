@@ -12,6 +12,8 @@ from netconsole.services.windows_network_manager import NetworkAdapterInfo, Rout
 
 @dataclass(frozen=True)
 class LocalRouteRow:
+    order_index: int
+    destination_prefix: str
     destination: str
     prefix_length: int
     netmask: str
@@ -20,9 +22,10 @@ class LocalRouteRow:
     interface_alias: str
     interface_ip: str
     metric: int
+    policy_store: str
+    persistent: bool
     source: str
     on_link: bool
-    persistent: bool
 
 
 def list_local_routes(manager: WindowsNetworkManager | None = None) -> list[LocalRouteRow]:
@@ -42,6 +45,8 @@ def normalize_routes(routes: Iterable[RouteInfo], adapters: Iterable[NetworkAdap
         on_link = next_hop in {"", "0.0.0.0"}
         rows.append(
             LocalRouteRow(
+                order_index=int(route.order_index or 0),
+                destination_prefix=str(network),
                 destination=str(network.network_address),
                 prefix_length=network.prefixlen,
                 netmask=str(network.netmask),
@@ -50,12 +55,38 @@ def normalize_routes(routes: Iterable[RouteInfo], adapters: Iterable[NetworkAdap
                 interface_alias=route.interface_alias or (adapter.name if adapter else ""),
                 interface_ip=", ".join(adapter.ipv4_addresses) if adapter else "",
                 metric=int(route.route_metric or 0),
+                policy_store=route.policy_store or "",
+                persistent=bool(route.persistent) or str(route.policy_store or "").lower() == "persistentstore",
                 source=route.source or route.policy_store or "",
                 on_link=on_link,
-                persistent=bool(route.persistent),
             )
         )
-    return rows
+    return sort_route_rows(rows)
+
+
+def sort_route_rows(rows: Iterable[LocalRouteRow]) -> list[LocalRouteRow]:
+    return sorted(rows, key=route_sort_key)
+
+
+def route_sort_key(route: LocalRouteRow | RouteInfo) -> tuple[int, int, int, int, int, str]:
+    destination_prefix = str(getattr(route, "destination_prefix", "") or "")
+    next_hop = str(getattr(route, "next_hop", "") or "").strip().lower()
+    source = str(getattr(route, "source", "") or "").lower()
+    policy_store = str(getattr(route, "policy_store", "") or "").lower()
+    persistent = bool(getattr(route, "persistent", False)) or policy_store == "persistentstore"
+    order_index = int(getattr(route, "order_index", 0) or 0)
+    try:
+        network = ipaddress.IPv4Network(destination_prefix, strict=False)
+        prefix_length = network.prefixlen
+        network_text = str(network.network_address)
+    except ValueError:
+        prefix_length = int(getattr(route, "prefix_length", 32) or 32)
+        network_text = str(getattr(route, "destination", destination_prefix))
+    default_rank = 0 if prefix_length == 0 else 1
+    static_rank = 0 if persistent or any(token in source for token in ("manual", "profile", "persistent", "route add")) else 1
+    on_link_rank = 1 if next_hop in {"", "0.0.0.0", "在链路上"} else 0
+    host_rank = 1 if prefix_length == 32 else 0
+    return (default_rank, static_rank, on_link_rank, host_rank, order_index, network_text)
 
 
 def parse_powershell_routes_json(routes_json: str, interfaces_json: str = "[]", adapters_json: str = "[]") -> list[LocalRouteRow]:
@@ -66,12 +97,13 @@ def parse_powershell_routes_json(routes_json: str, interfaces_json: str = "[]", 
     ip_by_index = {int(row.get("InterfaceIndex") or 0): str(row.get("IPAddress") or row.get("IPv4Address") or "") for row in interface_rows if isinstance(row, dict)}
     routes = []
     adapters = []
-    for row in route_rows:
+    for fallback_index, row in enumerate(route_rows):
         if not isinstance(row, dict):
             continue
         routes.append(
             RouteInfo(
                 destination_prefix=str(row.get("DestinationPrefix") or "0.0.0.0/0"),
+                order_index=int(row.get("OrderIndex") if row.get("OrderIndex") is not None else fallback_index),
                 next_hop=str(row.get("NextHop") or ""),
                 interface_index=int(row.get("InterfaceIndex") or 0),
                 interface_alias=alias_by_index.get(int(row.get("InterfaceIndex") or 0), ""),
@@ -102,7 +134,7 @@ def build_add_route_command(destination: str, gateway: str, *, interface_index: 
 def build_delete_route_command(destination: str, gateway: str = "", *, interface_index: int | None = None) -> str:
     network = _parse_destination(destination)
     parts = [f"Remove-NetRoute -DestinationPrefix '{network}'", "-Confirm:$false"]
-    if gateway:
+    if gateway and gateway != "在链路上":
         ipaddress.IPv4Address(gateway)
         parts.append(f"-NextHop '{gateway}'")
     if interface_index:
