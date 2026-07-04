@@ -1437,7 +1437,10 @@ class AcManagementPage(QWidget):
         profile = H3cAcCommandProfile(device)
         commands = getattr(profile, f"{action}_commands")
         command_text = "\n".join(commands)
-        if QMessageBox.question(self, title, f"确认对当前AC执行以下命令？\n\n{command_text}") != QMessageBox.Yes:
+        confirm_text = f"确认对当前AC执行以下命令？\n\n{command_text}"
+        if action == "persist_auto_ap":
+            confirm_text = f"该操作会将新上线 AP 固化，并执行 save force 保存配置。\n\n{confirm_text}"
+        if QMessageBox.question(self, title, confirm_text) != QMessageBox.Yes:
             return
         self._set_update_running(True, f"正在执行：{title}...")
         self.action_thread = AcCommandActionThread(device, self.site_name, action, parent=self)
@@ -1524,6 +1527,9 @@ class AcManagementPage(QWidget):
     def _finish_ac_action(self, result, title: str) -> None:
         self._set_update_running(False)
         if result.success:
+            if getattr(result, "action", "") == "persist_auto_ap":
+                self.status_label.setText("一键固化新上线AP完成，已执行 save force")
+                return
             self.status_label.setText(f"{title}执行成功")
             return
         self.status_label.setText(f"{title}执行失败")

@@ -80,6 +80,7 @@ class H3cAcCommandProfile:
         return (
             "system-view",
             "wlan auto-ap persistent all",
+            "save force",
             "return",
             "quit",
         )

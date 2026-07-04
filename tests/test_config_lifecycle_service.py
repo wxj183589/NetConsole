@@ -10,6 +10,7 @@ from netconsole.services.config_lifecycle_service import (
     compare_config_text,
     clean_config_for_diff,
     device_config_dir_name,
+    extract_h3c_configuration_body,
     run_batch_config_download,
     safe_device_name,
 )
@@ -78,6 +79,71 @@ def test_config_snapshot_listing_filters_missing_files_as_source_of_truth(tmp_pa
     assert service.list_device_snapshots(device) == []
 
 
+def test_extract_h3c_configuration_body_trims_command_echo_and_prompt():
+    raw = """display current-configuration
+#
+ version 9.1.081, Release 1608P01
+#
+ sysname NBDT12HX-WX3540X-AC1
+#
+return
+<NBDT12HX-WX3540X-AC1>
+"""
+
+    assert extract_h3c_configuration_body(raw) == """#
+ version 9.1.081, Release 1608P01
+#
+ sysname NBDT12HX-WX3540X-AC1
+#
+return"""
+
+
+def test_extract_h3c_saved_configuration_body_trims_saved_echo_and_prompt():
+    raw = """display saved-configuration
+#
+ version 9.1.081, Release 1608P01
+#
+return
+<NBDT12HX-WX3540X-AC1>
+"""
+
+    result = extract_h3c_configuration_body(raw)
+
+    assert result.splitlines()[0] == "#"
+    assert result.splitlines()[-1] == "return"
+    assert "display saved-configuration" not in result
+    assert "<NBDT12HX-WX3540X-AC1>" not in result
+
+
+def test_snapshot_text_cleans_legacy_running_snapshot_on_read(tmp_path):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    service = ConfigLifecycleService("demo", db, paths)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    snapshot = service._write_snapshot(device, "running", "20260618_101200", "display current-configuration\n#\nsysname SW01\n#\nreturn\n<SW01>\n")
+
+    text = service.snapshot_text(snapshot)
+
+    assert text == "#\nsysname SW01\n#\nreturn"
+    assert "display current-configuration" not in text
+    assert "<SW01>" not in text
+
+
+def test_copy_snapshot_exports_clean_running_text_for_legacy_snapshot(tmp_path):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    service = ConfigLifecycleService("demo", db, paths)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    snapshot = service._write_snapshot(device, "running", "20260618_101200", "display current-configuration\n#\nsysname SW01\n#\nreturn\n<SW01>\n")
+    target = tmp_path / "exported.txt"
+
+    service.copy_snapshot(snapshot, target)
+
+    assert target.read_text(encoding="utf-8") == "#\nsysname SW01\n#\nreturn"
+
+
 def test_compare_config_text_reports_unified_diff_added_and_removed_lines():
     result = compare_config_text(
         "display current-configuration\nsysname SW01\ninterface GigabitEthernet1/0/1\ndescription uplink\n",
@@ -108,7 +174,7 @@ return
 display saved-configuration
 """
 
-    assert clean_config_for_diff(raw) == "#\nversion 7.1.070\nsysname SW01\ninterface GigabitEthernet1/0/1\n description uplink"
+    assert clean_config_for_diff(raw) == "#\nversion 7.1.070\nsysname SW01\ninterface GigabitEthernet1/0/1\n description uplink\nreturn"
 
 
 def test_save_force_only_executes_save_force_and_writes_saved_status_snapshot(tmp_path, monkeypatch):
@@ -167,6 +233,12 @@ def test_fetch_configs_is_read_only_and_never_runs_save_force(tmp_path, monkeypa
     assert commands == ["screen-length disable", "display current-configuration", "display saved-configuration"]
     assert "save force" not in commands
     assert [snapshot.type for snapshot in result.snapshots] == ["running", "saved", "diff"]
+    running_text = (paths.site_dir("demo") / result.snapshots[0].file_path).read_text(encoding="utf-8")
+    saved_text = (paths.site_dir("demo") / result.snapshots[1].file_path).read_text(encoding="utf-8")
+    assert running_text.splitlines()[0] == "#"
+    assert running_text.splitlines()[-1] == "return"
+    assert saved_text.splitlines()[0] == "#"
+    assert saved_text.splitlines()[-1] == "return"
 
 
 def test_compare_latest_running_between_devices_uses_snapshot_files(tmp_path):

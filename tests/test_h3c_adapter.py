@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from netconsole.adapters.h3c.h3c_adapter import H3CAdapter
-from netconsole.adapters.h3c.h3c_command_profile import H3CCommandProfile
+from netconsole.adapters.h3c.h3c_command_profile import H3CCommandProfile, H3cAcCommandProfile
 from netconsole.adapters.h3c.h3c_connection import H3CConnection, execute_h3c_command
 from netconsole.adapters.h3c.h3c_interface_parser import classify_interface, normalize_interface
 from netconsole.adapters.h3c.h3c_parser import H3CParser
@@ -48,6 +48,20 @@ def test_command_profile_switches_v5_v7_v9_commands():
     assert H3CCommandProfile(Device(remark="Comware V5")).get_command("interface") == "display interface"
     assert H3CCommandProfile(Device(remark="Comware V7")).get_command("interface") == "display interface brief"
     assert H3CCommandProfile(Device(remark="Comware V9")).get_command("optical") == "display optical-module"
+
+
+def test_ac_persist_auto_ap_commands_include_save_force_only_in_action_profile():
+    profile = H3cAcCommandProfile(Device(device_type="AC", device_vendor="H3C"))
+
+    assert profile.persist_auto_ap_commands == (
+        "system-view",
+        "wlan auto-ap persistent all",
+        "save force",
+        "return",
+        "quit",
+    )
+    assert "save force" not in profile.fit_ap_resource_commands
+    assert "save force" not in profile.enable_ap_remote_login_commands
 
 
 def test_parser_interfaces_keep_management_ports_and_chinese_descriptions():

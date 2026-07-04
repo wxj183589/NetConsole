@@ -29,10 +29,12 @@ RUNNING_COMMAND = "display current-configuration"
 SAVED_COMMAND = "display saved-configuration"
 SAVE_FORCE_COMMAND = "save force"
 SCREEN_LENGTH_COMMAND = "screen-length disable"
-DIFF_IGNORED_COMMANDS = {RUNNING_COMMAND.casefold(), SAVED_COMMAND.casefold()}
 CONFIG_BODY_START_PATTERN = re.compile(r"^(#|version\b|sysname\b|vlan\b|interface\b)", re.IGNORECASE)
-CONFIG_BODY_END_PATTERN = re.compile(r"^(return|quit)\s*$", re.IGNORECASE)
 PROMPT_PATTERN = re.compile(r"^\s*(<[^<>]+>|\[[^\[\]]+\])\s*$")
+CONFIG_COMMAND_ECHOES = {
+    RUNNING_COMMAND.casefold(),
+    SAVED_COMMAND.casefold(),
+}
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class ConfigOperationResult:
     diff: ConfigDiffResult | None = None
     raw_log_path: str | None = None
     error_message: str | None = None
+    warning_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,12 +148,17 @@ class ConfigLifecycleService:
                 app_logger.log_error("CONFIG_FETCH_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
                 return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
             relative_raw_log_path = self._relative_to_site(raw_log_file)
-            running_snapshot = self._write_snapshot(device, "running", timestamp, str(running_result["output"]), raw_log_path=relative_raw_log_path)
-            saved_snapshot = self._write_snapshot(device, "saved", timestamp, str(saved_result["output"]), raw_log_path=relative_raw_log_path)
-            diff = compare_config_text(str(running_result["output"]), str(saved_result["output"]))
+            running_output = str(running_result["output"])
+            saved_output = str(saved_result["output"])
+            clean_running = self._snapshot_body_text(device, "running", running_output)
+            clean_saved = self._snapshot_body_text(device, "saved", saved_output)
+            running_snapshot = self._write_snapshot(device, "running", timestamp, clean_running, raw_log_path=relative_raw_log_path)
+            saved_snapshot = self._write_snapshot(device, "saved", timestamp, clean_saved, raw_log_path=relative_raw_log_path)
+            diff = compare_config_text(clean_running, clean_saved)
             diff_snapshot = self._write_snapshot(device, "diff", timestamp, diff.raw_diff, raw_log_path=relative_raw_log_path)
+            warning_message = "配置正文裁剪失败，已保留原始输出用于排查" if not (_has_complete_config_body(running_output) and _has_complete_config_body(saved_output)) else None
             app_logger.log_info("CONFIG_FETCH_SUCCESS", self._detail(device, raw_log_path=raw_log_file))
-            return ConfigOperationResult(True, str(device.device_uuid), timestamp, [running_snapshot, saved_snapshot, diff_snapshot], diff, str(raw_log_file))
+            return ConfigOperationResult(True, str(device.device_uuid), timestamp, [running_snapshot, saved_snapshot, diff_snapshot], diff, str(raw_log_file), warning_message=warning_message)
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc), device)
             self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results, message)
@@ -184,12 +192,18 @@ class ConfigLifecycleService:
 
     def snapshot_text(self, snapshot: ConfigSnapshot) -> str:
         path = self._absolute_snapshot_path(snapshot)
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        if snapshot.type in {"running", "saved"}:
+            return extract_h3c_configuration_body(text)
+        return text
 
     def copy_snapshot(self, snapshot: ConfigSnapshot, target_path: Path) -> None:
         source = self._absolute_snapshot_path(snapshot)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target_path)
+        if snapshot.type in {"running", "saved"}:
+            target_path.write_text(self.snapshot_text(snapshot), encoding="utf-8")
+        else:
+            shutil.copyfile(source, target_path)
 
     def export_batch_zip(self, batch_results: list[BatchConfigItemResult], target_zip_path: Path) -> None:
         target_zip_path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,7 +221,11 @@ class ConfigLifecycleService:
                     if not source.exists():
                         continue
                     suffix = "diff" if snapshot.type == "diff" else "txt"
-                    archive.write(source, f"{folder}/{snapshot.type}_{snapshot.timestamp}.{suffix}")
+                    archive_name = f"{folder}/{snapshot.type}_{snapshot.timestamp}.{suffix}"
+                    if snapshot.type in {"running", "saved"}:
+                        archive.writestr(archive_name, self.snapshot_text(snapshot))
+                    else:
+                        archive.write(source, archive_name)
                 for log_path in self._batch_log_paths(item):
                     archive.write(log_path, f"{folder}/logs/{log_path.name}")
             if failures:
@@ -243,6 +261,12 @@ class ConfigLifecycleService:
                 raw_log_path=raw_log_path,
             )
         )
+
+    def _snapshot_body_text(self, device: Device, snapshot_type: str, text: str) -> str:
+        body = extract_h3c_configuration_body(text)
+        if snapshot_type in {"running", "saved"} and not _has_complete_config_body(text):
+            app_logger.log_warning("CONFIG_BODY_EXTRACT_FALLBACK", self._detail(device, error="配置正文裁剪失败，已保留原始输出用于排查"))
+        return body
 
     def _run_command(self, connection, command: str, device: Device, read_timeout: int = 60) -> dict[str, object]:
         started_at = datetime.now().isoformat(timespec="seconds")
@@ -376,26 +400,62 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def extract_h3c_configuration_body(raw_text: str) -> str:
+    lines = clean_h3c_device_text(raw_text).splitlines()
+    start_index: int | None = None
+    end_index: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip() == "#":
+            start_index = index
+            break
+    if start_index is not None:
+        for index in range(len(lines) - 1, start_index - 1, -1):
+            if lines[index].strip().casefold() == "return":
+                end_index = index
+                break
+    if start_index is not None and end_index is not None:
+        return "\n".join(line.rstrip() for line in lines[start_index : end_index + 1])
+    return _fallback_clean_config_output(lines)
+
+
 def clean_config_for_diff(text: str) -> str:
+    return extract_h3c_configuration_body(text)
+
+
+def _has_complete_config_body(raw_text: str) -> bool:
+    lines = clean_h3c_device_text(raw_text).splitlines()
+    has_start = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "#":
+            has_start = True
+        if has_start and stripped.casefold() == "return":
+            return True
+    return False
+
+
+def _fallback_clean_config_output(lines: list[str]) -> str:
     body_lines: list[str] = []
+    fallback_lines: list[str] = []
     in_body = False
-    for line in clean_h3c_device_text(text).splitlines():
+    for line in lines:
         stripped = line.strip()
         normalized = stripped.casefold()
-        if not stripped or normalized in DIFF_IGNORED_COMMANDS:
+        if not stripped or normalized in CONFIG_COMMAND_ECHOES:
             continue
         if PROMPT_PATTERN.match(stripped):
             if in_body:
                 break
             continue
+        fallback_lines.append(line.rstrip())
         if not in_body:
             if not CONFIG_BODY_START_PATTERN.match(stripped):
                 continue
             in_body = True
-        if CONFIG_BODY_END_PATTERN.match(stripped):
-            break
         body_lines.append(line.rstrip())
-    return "\n".join(body_lines)
+        if stripped.casefold() == "return":
+            break
+    return "\n".join(body_lines or fallback_lines)
 
 
 def save_status_snapshot_text(device: Device, timestamp: str, output: str) -> str:
@@ -482,7 +542,7 @@ def run_batch_config_download(
                     device_name=str(device.name or ""),
                     device_uuid=str(device.device_uuid or ""),
                     success=result.success,
-                    result_text=result.error_message or ("成功" if result.success else "失败"),
+                    result_text=result.error_message or result.warning_message or ("成功" if result.success else "失败"),
                     timestamp=result.timestamp,
                     snapshot_count=len(result.snapshots),
                     elapsed_ms=elapsed_ms,

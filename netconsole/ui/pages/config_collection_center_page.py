@@ -76,10 +76,15 @@ class ConfigCollectionCenterPage(QWidget):
         self.export_diff_button = QPushButton()
         self.delete_button = QPushButton()
         self.refresh_button = QPushButton()
+        self.toggle_sidebar_button = QPushButton()
         self.running_text = QTextEdit()
         self.saved_text = QTextEdit()
         self.diff_viewer = ConfigDiffViewer(i18n)
         self.tabs = QTabWidget()
+        self.left_panel = QWidget()
+        self.splitter = QSplitter(Qt.Horizontal)
+        self._left_collapsed = False
+        self._left_last_width = 320
 
         self._configure_tables()
         for editor in (self.running_text, self.saved_text):
@@ -96,8 +101,7 @@ class ConfigCollectionCenterPage(QWidget):
             file_actions.addWidget(button)
         file_actions.addStretch(1)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
+        left_layout = QVBoxLayout(self.left_panel)
         left_layout.addWidget(self.title_label)
         left_layout.addWidget(self.search_input)
         group_row = QHBoxLayout()
@@ -116,14 +120,17 @@ class ConfigCollectionCenterPage(QWidget):
         self.tabs.addTab(self.saved_text, "")
         self.tabs.addTab(self.diff_viewer, "")
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
-        splitter.addWidget(self.tabs)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
+        self.splitter.addWidget(self.left_panel)
+        self.splitter.addWidget(self.tabs)
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setStretchFactor(1, 3)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(splitter)
+        sidebar_row = QHBoxLayout()
+        sidebar_row.addWidget(self.toggle_sidebar_button)
+        sidebar_row.addStretch(1)
+        layout.addLayout(sidebar_row)
+        layout.addWidget(self.splitter)
 
         self.device_table.itemSelectionChanged.connect(self.refresh_snapshots)
         self.device_table.itemChanged.connect(self._device_item_changed)
@@ -135,6 +142,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.fetch_button.clicked.connect(self.download_configs)
         self.compare_button.clicked.connect(self.compare_configs)
         self.refresh_button.clicked.connect(self.refresh)
+        self.toggle_sidebar_button.clicked.connect(self.toggle_sidebar)
         self.open_dir_button.clicked.connect(self.open_device_config_dir)
         self.download_button.clicked.connect(self.download_selected_snapshot)
         self.export_batch_button.clicked.connect(self.export_current_batch)
@@ -156,6 +164,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.fetch_button.setText(self.t("config_center.btn.download_config"))
         self.compare_button.setText(self.t("config_center.btn.compare_config"))
         self.refresh_button.setText(self.t("config_center.btn.refresh"))
+        self._sync_sidebar_button_text()
         self.open_dir_button.setText(self.t("config_center.btn.open_config_dir"))
         self.download_button.setText(self.t("config_center.btn.download_snapshot"))
         self.export_batch_button.setText(self.t("config_center.btn.export_batch"))
@@ -209,6 +218,21 @@ class ConfigCollectionCenterPage(QWidget):
         index = self.group_filter.findData(current if current is not None else ALL_GROUPS)
         self.group_filter.setCurrentIndex(index if index >= 0 else 0)
         self.group_filter.blockSignals(False)
+
+    def toggle_sidebar(self) -> None:
+        sizes = self.splitter.sizes()
+        if self._left_collapsed:
+            restored = max(self._left_last_width, 240)
+            total = sum(sizes) or self.width() or 1000
+            self.splitter.setSizes([restored, max(total - restored, 300)])
+            self._left_collapsed = False
+        else:
+            if sizes and sizes[0] > 0:
+                self._left_last_width = sizes[0]
+            total = sum(sizes) or self.width() or 1000
+            self.splitter.setSizes([0, max(total, 300)])
+            self._left_collapsed = True
+        self._sync_sidebar_button_text()
 
     def _group_filter_changed(self) -> None:
         self.refresh()
@@ -309,10 +333,12 @@ class ConfigCollectionCenterPage(QWidget):
             self._show_info("config_center.msg.need_snapshots")
             return
         diff = self.service.compare_snapshots(running[0], saved[0])
-        self.running_text.setPlainText(self.service.snapshot_text(running[0]))
-        self.saved_text.setPlainText(self.service.snapshot_text(saved[0]))
+        running_text = self.service.snapshot_text(running[0])
+        saved_text = self.service.snapshot_text(saved[0])
+        self.running_text.setPlainText(running_text)
+        self.saved_text.setPlainText(saved_text)
         self.current_raw_diff = diff.raw_diff
-        self.diff_viewer.set_diff(self.t("config_center.tab.saved"), self.t("config_center.tab.running"), self.service.snapshot_text(saved[0]), self.service.snapshot_text(running[0]), diff.raw_diff)
+        self.diff_viewer.set_diff(self.t("config_center.tab.running"), self.t("config_center.tab.saved"), running_text, saved_text, diff.raw_diff)
         self.tabs.setCurrentWidget(self.diff_viewer)
         self.status_label.setText(self.t("config_center.status.latest_compare_done"))
 
@@ -343,7 +369,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.current_batch_results = []
         self.refresh_snapshots()
         if result.success:
-            self.status_label.setText(self.t("config_center.status.done"))
+            self.status_label.setText(result.warning_message or self.t("config_center.status.done"))
             self._show_result_snapshots(result.snapshots, result.diff)
         else:
             message = result.error_message or self.t("config_center.status.failed")
@@ -445,7 +471,7 @@ class ConfigCollectionCenterPage(QWidget):
             saved = next((snapshot for snapshot in snapshots if snapshot.type == "saved"), None)
             self.current_raw_diff = diff.raw_diff
             if running is not None and saved is not None:
-                self.diff_viewer.set_diff(self.t("config_center.tab.saved"), self.t("config_center.tab.running"), self.service.snapshot_text(saved), self.service.snapshot_text(running), diff.raw_diff)
+                self.diff_viewer.set_diff(self.t("config_center.tab.running"), self.t("config_center.tab.saved"), self.service.snapshot_text(running), self.service.snapshot_text(saved), diff.raw_diff)
             else:
                 self.diff_viewer.set_message(diff.raw_diff)
             self.tabs.setCurrentWidget(self.diff_viewer)
@@ -538,6 +564,9 @@ class ConfigCollectionCenterPage(QWidget):
         self.export_batch_button.setEnabled(bool(self.current_batch_results) and any(item.success for item in self.current_batch_results) and self.worker is None)
         self.export_diff_button.setEnabled(bool(self.current_raw_diff) and self.worker is None)
         self.delete_button.setEnabled(has_snapshot and self.worker is None)
+
+    def _sync_sidebar_button_text(self) -> None:
+        self.toggle_sidebar_button.setText(self.t("config_center.btn.expand_sidebar") if self._left_collapsed else self.t("config_center.btn.collapse_sidebar"))
 
     def _snapshot_size(self, snapshot: ConfigSnapshot) -> str:
         path = self.paths.site_dir(self.site_name) / snapshot.file_path

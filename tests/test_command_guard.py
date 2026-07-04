@@ -144,11 +144,14 @@ def test_ac_collect_contexts_are_split_by_purpose():
 
 
 def test_ac_persist_auto_ap_context_allows_only_fixed_sequence_commands():
-    for command in ("system-view", "wlan auto-ap persistent all", "return", "quit"):
+    for command in ("system-view", "wlan auto-ap persistent all", "save force", "return", "quit"):
         assert is_command_allowed(command, "ac_persist_auto_ap")
 
-    for command in ("probe", "wlan ap-execute all exec-console enable", "display wlan ap all", "save force"):
+    for command in ("probe", "wlan ap-execute all exec-console enable", "display wlan ap all"):
         assert not is_command_allowed(command, "ac_persist_auto_ap")
+
+    assert not is_command_allowed("save force", "ac_fit_ap_resource_collect")
+    assert not is_command_allowed("save force", "ac_enable_ap_remote_login")
 
 
 def test_command_guard_logs_rejected_command(tmp_path):

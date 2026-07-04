@@ -112,6 +112,7 @@ SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
 SAFE_PERSIST_AUTO_AP_COMMANDS = {
     "system-view",
     "wlan auto-ap persistent all",
+    "save force",
     "return",
     "quit",
 }

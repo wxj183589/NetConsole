@@ -4,12 +4,42 @@ import difflib
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.services.config_lifecycle_service import clean_config_for_diff
 from netconsole.ui.render.table_render_engine import apply_table_style
+from netconsole.ui.table_utils import auto_fit_table_columns
+
+
+DIFF_COLORS = {
+    "=": ("#1f2b3a", "#f5f7fa"),
+    "-": ("#4a2428", "#ffd8dc"),
+    "+": ("#1f3d2b", "#d8ffe3"),
+    "~": ("#4a3a1f", "#fff0c2"),
+}
+LINE_NUMBER_BACKGROUND = "#182333"
+LINE_NUMBER_FOREGROUND = "#c9d4e2"
+SELECTED_BACKGROUND = "#2f5f9e"
+SELECTED_FOREGROUND = "#ffffff"
+DIFF_TABLE_STYLESHEET = f"""
+QTableWidget {{
+    font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+    font-size: 12px;
+    gridline-color: #334155;
+}}
+QTableWidget::item {{
+    padding: 4px 6px;
+}}
+QTableWidget::item:selected {{
+    background-color: {SELECTED_BACKGROUND};
+    color: {SELECTED_FOREGROUND};
+}}
+QTableWidget::item:focus {{
+    outline: none;
+}}
+"""
 
 
 @dataclass(frozen=True)
@@ -33,6 +63,7 @@ class ConfigDiffViewer(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
         self.table.setVerticalScrollMode(QTableWidget.ScrollPerPixel)
+        self._configure_table_style()
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table, 1)
@@ -56,8 +87,12 @@ class ConfigDiffViewer(QWidget):
         self.table.setSpan(0, 0, 1, 5)
         item = QTableWidgetItem(message)
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        item.setForeground(QColor(DIFF_COLORS["="][1]))
+        item.setBackground(QColor(DIFF_COLORS["="][0]))
+        item.setFont(self.table.font())
         self.table.setItem(0, 0, item)
         apply_table_style(self.table)
+        self._configure_table_style()
 
     def set_diff(self, left_title: str, right_title: str, left_text: str, right_text: str, raw_diff: str = "") -> None:
         self.table.clearSpans()
@@ -89,13 +124,28 @@ class ConfigDiffViewer(QWidget):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                item.setFont(self.table.font())
                 item.setToolTip(value)
                 if column in {0, 2, 3}:
                     item.setTextAlignment(Qt.AlignCenter)
-                item.setBackground(_status_color(row.status))
+                _apply_diff_item_colors(item, row.status, column)
                 self.table.setItem(row_index, column, item)
-        self.table.resizeColumnsToContents()
         apply_table_style(self.table)
+        self._configure_table_style()
+        auto_fit_table_columns(
+            self.table,
+            min_widths={0: 76, 1: 420, 2: 70, 3: 76, 4: 420},
+            max_widths={1: 1000, 4: 1000},
+            padding=36,
+        )
+
+    def _configure_table_style(self) -> None:
+        font = QFont("Consolas")
+        font.setStyleHint(QFont.Monospace)
+        font.setPointSize(12)
+        self.table.setFont(font)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.setStyleSheet(DIFF_TABLE_STYLESHEET)
 
 
 def build_side_by_side_rows(left_lines: list[str], right_lines: list[str]) -> tuple[list[SideBySideDiffRow], int, int, int]:
@@ -135,11 +185,11 @@ def build_side_by_side_rows(left_lines: list[str], right_lines: list[str]) -> tu
     return rows, added, deleted, modified_blocks
 
 
-def _status_color(status: str) -> QColor:
-    if status == "+":
-        return QColor(225, 245, 232)
-    if status == "-":
-        return QColor(252, 228, 228)
-    if status == "~":
-        return QColor(255, 246, 204)
-    return QColor(0, 0, 0, 0)
+def _apply_diff_item_colors(item: QTableWidgetItem, status: str, column: int) -> None:
+    if column in {0, 3}:
+        item.setBackground(QColor(LINE_NUMBER_BACKGROUND))
+        item.setForeground(QColor(LINE_NUMBER_FOREGROUND))
+        return
+    background, foreground = DIFF_COLORS.get(status, DIFF_COLORS["="])
+    item.setBackground(QColor(background))
+    item.setForeground(QColor(foreground))
