@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.models.device import Device
-from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
+from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_info, collect_h3c_fit_ap_optical, collect_h3c_fit_ap_resources, run_h3c_ac_action
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY
 
 
@@ -26,7 +26,7 @@ class AcResourceCollectThread(QThread):
     def run(self) -> None:
         self.collect_started.emit()
         try:
-            result = collect_h3c_ac_resources(
+            result = collect_h3c_fit_ap_resources(
                 self.device,
                 self.site_name,
                 progress=self.progress.emit,
@@ -36,6 +36,68 @@ class AcResourceCollectThread(QThread):
             self.collect_failed.emit(str(exc))
             return
         self.collect_finished.emit(result)
+
+
+class AcInfoCollectThread(QThread):
+    collect_started = Signal()
+    progress = Signal(str)
+    collect_finished = Signal(object)
+    collect_failed = Signal(str)
+
+    def __init__(self, device: Device, site_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.device = device
+        self.site_name = site_name
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        self.collect_started.emit()
+        try:
+            result = collect_h3c_ac_info(
+                self.device,
+                self.site_name,
+                progress=self.progress.emit,
+                should_cancel=lambda: self._cancel_requested,
+            )
+        except Exception as exc:
+            self.collect_failed.emit(str(exc))
+            return
+        self.collect_finished.emit(result)
+
+
+class AcCommandActionThread(QThread):
+    action_started = Signal()
+    progress = Signal(str)
+    action_finished = Signal(object)
+    action_failed = Signal(str)
+
+    def __init__(self, device: Device, site_name: str, action: str, parent=None) -> None:
+        super().__init__(parent)
+        self.device = device
+        self.site_name = site_name
+        self.action = action
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        self.action_started.emit()
+        try:
+            result = run_h3c_ac_action(
+                self.device,
+                self.site_name,
+                self.action,
+                progress=self.progress.emit,
+                should_cancel=lambda: self._cancel_requested,
+            )
+        except Exception as exc:
+            self.action_failed.emit(str(exc))
+            return
+        self.action_finished.emit(result)
 
 
 class FitApOpticalCollectThread(QThread):

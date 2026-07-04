@@ -31,6 +31,7 @@ from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTER
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, open_diagnostic_folder_for_results, select_device_id_for_connection
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
+from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 
 
 def app():
@@ -478,6 +479,7 @@ def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
     assert table.columnWidth(table._column_index("select")) == DEVICE_COLUMN_WIDTHS["select"]
     assert table.columnWidth(table._column_index("name")) == DEVICE_COLUMN_WIDTHS["name"]
     assert table.columnWidth(table._column_index("primary_address")) == DEVICE_COLUMN_WIDTHS["primary_address"]
+    assert isinstance(table.itemDelegateForColumn(CHECK_COLUMN), CheckBoxOnlyDelegate)
     assert action_widget.layout().spacing() == 6
     assert action_widget.layout().contentsMargins().left() == 0
     assert action_widget.layout().contentsMargins().top() == 0
@@ -511,10 +513,12 @@ def test_header_checkbox_selects_and_clears_current_devices():
     table._header_clicked(CHECK_COLUMN)
     assert table.checked_device_ids() == [1, 2]
     assert table.horizontalHeaderItem(CHECK_COLUMN).checkState() == Qt.Checked
+    assert all(is_checked_value(table.item(row, CHECK_COLUMN).checkState()) for row in range(table.rowCount()))
 
     table._header_clicked(CHECK_COLUMN)
     assert table.checked_device_ids() == []
     assert table.horizontalHeaderItem(CHECK_COLUMN).checkState() == Qt.Unchecked
+    assert all(not is_checked_value(table.item(row, CHECK_COLUMN).checkState()) for row in range(table.rowCount()))
 
 
 class PageRepository:

@@ -100,6 +100,7 @@ from netconsole.ui.online_mr_parse_worker import OnlineMrParseWorker
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.scrollable_matplotlib_view import AnalysisChartHoverController, ScrollableMatplotlibView
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
+from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
 
 
 TABLE_WIDTH_KEYS = {
@@ -957,6 +958,7 @@ class OnlineMrCollectionPage(QWidget):
         self.device_table.setMinimumHeight(260)
         self.device_table.setMaximumHeight(330)
         self._configure_online_table(self.device_table)
+        install_checkbox_only_delegate(self.device_table, 0)
 
         self.advanced_box = self._advanced_box()
         self.period_box = self._period_box()
@@ -3043,9 +3045,7 @@ class OnlineMrCollectionPage(QWidget):
         try:
             self.device_table.setRowCount(len(self.filtered_devices))
             for row, device in enumerate(self.filtered_devices):
-                check_item = QTableWidgetItem("")
-                check_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-                check_item.setCheckState(Qt.Checked if device.id in self.selected_device_ids else Qt.Unchecked)
+                check_item = create_checkable_table_item(device.id in self.selected_device_ids)
                 self.device_table.setItem(row, 0, check_item)
                 protocol, port, username, _password = connection_fields_from_device(device)
                 values = [
@@ -3103,14 +3103,14 @@ class OnlineMrCollectionPage(QWidget):
             device = self.filtered_devices[item.row()]
             if device.id is not None:
                 changed_device_id = int(device.id)
-                if item.checkState() == Qt.Checked:
+                if is_checked_value(item.checkState()):
                     self.selected_device_ids.add(int(device.id))
                 else:
                     self.selected_device_ids.discard(int(device.id))
         selected = self._selected_devices()
         if len(selected) > 2:
             self._updating_device_checks = True
-            item.setCheckState(Qt.Unchecked)
+            set_table_row_checked(self.device_table, item.row(), False, 0)
             self._updating_device_checks = False
             if changed_device_id is not None:
                 self.selected_device_ids.discard(changed_device_id)

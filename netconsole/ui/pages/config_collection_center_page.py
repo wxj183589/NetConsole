@@ -33,6 +33,7 @@ from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.config_diff_viewer import ConfigDiffViewer
+from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_all_table_rows_checked
 
 
 DEVICE_COLUMNS = ("select", "name", "device_type", "station")
@@ -454,14 +455,15 @@ class ConfigCollectionCenterPage(QWidget):
         set_table_column_fields(self.snapshot_table, SNAPSHOT_COLUMNS)
         configure_readonly_table(self.device_table)
         configure_readonly_table(self.snapshot_table)
+        install_checkbox_only_delegate(self.device_table, CHECK_COLUMN)
         self.device_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.snapshot_table.setSelectionBehavior(QTableWidget.SelectRows)
 
     def _set_checkbox(self, row: int, device: Device) -> None:
-        item = QTableWidgetItem()
-        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-        item.setCheckState(Qt.Checked if device.id in self.checked_device_ids else Qt.Unchecked)
-        item.setData(Qt.UserRole, int(device.id) if device.id is not None else None)
+        item = create_checkable_table_item(
+            device.id in self.checked_device_ids,
+            user_data=int(device.id) if device.id is not None else None,
+        )
         self.device_table.setItem(row, CHECK_COLUMN, item)
 
     def _device_item_changed(self, item: QTableWidgetItem) -> None:
@@ -470,7 +472,7 @@ class ConfigCollectionCenterPage(QWidget):
         device_id = item.data(Qt.UserRole)
         if device_id is None:
             return
-        if item.checkState() == Qt.Checked:
+        if is_checked_value(item.checkState()):
             self.checked_device_ids.add(int(device_id))
         else:
             self.checked_device_ids.discard(int(device_id))
@@ -489,12 +491,11 @@ class ConfigCollectionCenterPage(QWidget):
         visible_ids = {int(device.id) for device in self.devices if device.id is not None}
         if not checked:
             self.checked_device_ids.difference_update(visible_ids)
-        state = Qt.Checked if checked else Qt.Unchecked
+        set_all_table_rows_checked(self.device_table, checked, CHECK_COLUMN)
         for row, device in enumerate(self.devices):
             item = self.device_table.item(row, CHECK_COLUMN)
             if item is None:
                 continue
-            item.setCheckState(state)
             if checked and device.id is not None:
                 self.checked_device_ids.add(int(device.id))
         self._updating_checks = False

@@ -13,6 +13,7 @@ from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.optical_severity_engine import display_optical_status
+from netconsole.services.fit_ap_link_info import lldp_source_label
 
 
 AP_RADIO_HISTORY_COLUMNS = (
@@ -25,6 +26,9 @@ AP_RADIO_HISTORY_COLUMNS = (
 )
 AP_LLDP_HISTORY_COLUMNS = (
     ("history.collected_at", "collected_at"),
+    ("LLDP来源", "source"),
+    ("是否变化", "is_changed"),
+    ("冲突标记", "conflict_flag"),
     ("details.local_interface", "local_interface"),
     ("ac.lldp_neighbor", "lldp_neighbor"),
     ("ap.neighbor_interface", "neighbor_interface"),
@@ -258,4 +262,10 @@ class ApHistoryDialog(QWidget):
 def _history_display_value(row: dict[str, object | None], field: str, color_field: str | None = None, language: str = "zh") -> str:
     if color_field and field == color_field:
         return display_optical_status(row.get(field), language)
+    if field == "source":
+        return lldp_source_label(row.get(field))
+    if field == "is_changed":
+        return "是" if str(row.get(field) or "") not in {"", "0"} else "否"
+    if field == "conflict_flag":
+        return "冲突" if str(row.get(field) or "") not in {"", "0"} else "正常"
     return str(row.get(field) or "")

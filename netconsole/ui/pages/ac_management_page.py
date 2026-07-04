@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -32,6 +34,7 @@ from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, 
 from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
 from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import (
     build_switch_data_lookup,
@@ -42,6 +45,7 @@ from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
@@ -74,8 +78,10 @@ from netconsole.services.ap_online_overview import (
     write_ap_online_overview_sheet as _write_ap_online_overview_sheet,
 )
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
+from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
+from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
-from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
+from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
@@ -86,8 +92,9 @@ from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_tab
 from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
 from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
-from netconsole.ui.table_utils import auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
+from netconsole.ui.table_utils import auto_fit_table_columns, auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
 from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThread
+from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.interface_sort import interface_sort_key
 
@@ -117,12 +124,52 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("AP_IP", "ap_ip"),
     ("AP_MAC", "ap_mac"),
     ("details.model", "model"),
-    ("SN", "serial_number"),
     ("field.status", "state_display"),
     ("AP组", "group_name"),
     ("ac.online_time", "online_time"),
+    ("RID1信道", "rid1_channel"),
+    ("RID1频宽", "rid1_bandwidth"),
+    ("RID1功率", "rid1_tx_power"),
+    ("RID2信道", "rid2_channel"),
+    ("RID2频宽", "rid2_bandwidth"),
+    ("RID2功率", "rid2_tx_power"),
+    ("ac.site", "site"),
+    ("ac.mileage", "mileage"),
+    ("ac.location_note", "location_note"),
+    ("ac.direction", "direction"),
     ("field.updated_at", "updated_at"),
 )
+
+FIT_AP_RESOURCE_COLUMN_MIN_WIDTHS = {
+    "select": 46,
+    "ap_name": 130,
+    "apid": 70,
+    "ap_ip": 110,
+    "ap_mac": 130,
+    "model": 90,
+    "state_display": 90,
+    "group_name": 110,
+    "online_time": 100,
+    "rid1_channel": 80,
+    "rid1_bandwidth": 80,
+    "rid1_tx_power": 80,
+    "rid2_channel": 80,
+    "rid2_bandwidth": 80,
+    "rid2_tx_power": 80,
+    "site": 130,
+    "mileage": 90,
+    "location_note": 160,
+    "direction": 70,
+    "updated_at": 150,
+}
+
+FIT_AP_RESOURCE_COLUMN_MAX_WIDTHS = {
+    "select": 54,
+    "ap_name": 320,
+    "ap_mac": 170,
+    "location_note": 360,
+    "updated_at": 220,
+}
 
 AP_EXTENSION_COLUMNS = (
     ("ID", "id"),
@@ -449,7 +496,7 @@ def _fit_ap_optical_export_value(row: dict[str, object | None], field: str) -> s
         if bool(row.get("is_ap_offline")):
             return OFFLINE_AP_STATUS_TEXT
         return display_optical_status(evaluate_fit_ap_ap_status(row))
-    return _display_value(row.get(field))
+    return _display_link_value(row, field)
 
 
 def _to_float(value: object) -> float | None:
@@ -473,6 +520,30 @@ def _normalize_mac_text(value: object) -> str:
 
 def _display_value(value: object) -> str:
     return str(value) if value not in (None, "") else "-"
+
+
+def _display_link_value(row: dict[str, object | None], field: str) -> str:
+    value = row.get(field)
+    if field == "lldp_source":
+        return lldp_source_label(value)
+    if field in {"lldp_match_status", "optical_match_status", "link_match_status"}:
+        return lldp_display_status(value)
+    return _display_value(value)
+
+
+def build_fit_ap_resource_table_row(row: dict[str, object | None]) -> dict[str, object | None]:
+    fields = {field for _key, field in FIT_AP_RESOURCE_COLUMNS if field != "select"}
+    keep_fields = fields | {"ap_uuid", "state_raw", "state", "ap_name", "ap_mac", "serial_number"}
+    return {field: row.get(field) for field in keep_fields}
+
+
+def _friendly_external_terminal_error(message: object) -> str:
+    text = str(message or "").strip()
+    if "未配置" in text or "No external terminal path" in text:
+        return "未配置外部终端路径"
+    if "未找到" in text or "not found" in text.casefold():
+        return "外部终端路径不存在"
+    return text or "启动外部终端失败"
 
 
 def _evaluate_ap_result(row: dict[str, object | None]):
@@ -573,8 +644,11 @@ class AcManagementPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.feature_gate = feature_gate or default_feature_gate()
+        self.settings = SettingsStore(PathResolver())
         self.ac_devices: list[Device] = []
         self.resource_thread: AcResourceCollectThread | None = None
+        self.ac_info_thread: AcInfoCollectThread | None = None
+        self.action_thread: AcCommandActionThread | None = None
         self.optical_thread: FitApOpticalCollectThread | None = None
         self.trackside_export_thread: TracksideApBusinessExportThread | None = None
         app_events.ac_summary_changed.connect(self._handle_ac_summary_changed)
@@ -605,6 +679,9 @@ class AcManagementPage(QWidget):
 
         self.device_combo = QComboBox()
         self.open_web_button = QPushButton()
+        self.update_ac_info_button = QPushButton()
+        self.persist_auto_ap_button = QPushButton()
+        self.enable_ap_remote_login_button = QPushButton()
         self.refresh_button = QPushButton()
         self.cancel_update_button = QPushButton()
         self.cancel_update_button.setVisible(False)
@@ -675,6 +752,7 @@ class AcManagementPage(QWidget):
         self.trackside_plan_page = TracksideApPlanPage(self.repository, self.i18n, self.site_name)
 
         configure_readonly_table(self.resources_table)
+        install_checkbox_only_delegate(self.resources_table, CHECK_COLUMN)
         configure_readonly_table(self.extension_table)
         configure_readonly_table(self.extension_summary_table)
         configure_readonly_table(self.extension_issue_table)
@@ -710,7 +788,6 @@ class AcManagementPage(QWidget):
         self.overview_inner_tabs.currentChanged.connect(self.handle_overview_inner_tab_changed)
         self.resources_table.horizontalHeader().sectionClicked.connect(self._resource_header_clicked)
         self.resources_table.itemChanged.connect(self.update_selection_state)
-        self.resources_table.doubleClicked.connect(lambda index: self.open_ap_detail(index.row()))
         self.resources_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.resources_table.customContextMenuRequested.connect(self.show_resource_context_menu)
         self.extension_table.doubleClicked.connect(lambda index: self.edit_ap_extension_point(index.row()))
@@ -724,6 +801,9 @@ class AcManagementPage(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.device_combo, 1)
         top.addWidget(self.open_web_button)
+        top.addWidget(self.update_ac_info_button)
+        top.addWidget(self.persist_auto_ap_button)
+        top.addWidget(self.enable_ap_remote_login_button)
         top.addWidget(self.cancel_update_button)
         top.addWidget(self.status_label)
 
@@ -840,6 +920,9 @@ class AcManagementPage(QWidget):
 
         self.device_combo.currentIndexChanged.connect(self.refresh_data)
         self.open_web_button.clicked.connect(self.open_web)
+        self.update_ac_info_button.clicked.connect(self.refresh_ac_info)
+        self.persist_auto_ap_button.clicked.connect(lambda: self.run_ac_action("persist_auto_ap", "一键固化新上线AP"))
+        self.enable_ap_remote_login_button.clicked.connect(lambda: self.run_ac_action("enable_ap_remote_login", "一键开启AP远程登入"))
         self.refresh_button.clicked.connect(self.refresh_ac_resources)
         self.cancel_update_button.clicked.connect(self.cancel_current_update)
         self.batch_delete_button.clicked.connect(self.batch_delete_aps)
@@ -888,6 +971,9 @@ class AcManagementPage(QWidget):
         self._reconcile_feature_tabs()
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.refresh_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.export_button)
+        apply_feature_to_widget(self.feature_gate, "ac.ac_info_update", self.update_ac_info_button)
+        apply_feature_to_widget(self.feature_gate, "ac.ac_actions", self.persist_auto_ap_button)
+        apply_feature_to_widget(self.feature_gate, "ac.ac_actions", self.enable_ap_remote_login_button)
         for widget in (
             self.extension_import_standard_button,
             self.extension_import_smart_button,
@@ -973,6 +1059,9 @@ class AcManagementPage(QWidget):
 
     def retranslate(self) -> None:
         self.open_web_button.setText(self.i18n.t("ac.open_web"))
+        self.update_ac_info_button.setText("更新AC信息")
+        self.persist_auto_ap_button.setText("一键固化新上线AP")
+        self.enable_ap_remote_login_button.setText("一键开启AP远程登入")
         self.refresh_button.setText(self.i18n.t("details.refresh"))
         self.cancel_update_button.setText(self.i18n.t("ac.cancel_update"))
         self.batch_delete_button.setText(self.i18n.t("devices.batch_delete"))
@@ -1280,6 +1369,9 @@ class AcManagementPage(QWidget):
         self.cancel_update_button.setVisible(running)
         self.cancel_update_button.setEnabled(running)
         self.device_combo.setEnabled(not running)
+        self.update_ac_info_button.setEnabled(not running)
+        self.persist_auto_ap_button.setEnabled(not running)
+        self.enable_ap_remote_login_button.setEnabled(not running)
         self.refresh_button.setEnabled(not running)
         self.refresh_optical_button.setEnabled(not running)
         self.batch_delete_button.setEnabled(False if running else selected_count > 0)
@@ -1299,6 +1391,10 @@ class AcManagementPage(QWidget):
     def cancel_current_update(self) -> None:
         if self.resource_thread is not None and self.resource_thread.isRunning():
             self.resource_thread.cancel()
+        if self.ac_info_thread is not None and self.ac_info_thread.isRunning():
+            self.ac_info_thread.cancel()
+        if self.action_thread is not None and self.action_thread.isRunning():
+            self.action_thread.cancel()
         if self.optical_thread is not None and self.optical_thread.isRunning():
             self.optical_thread.cancel()
         self.cancel_update_button.setEnabled(False)
@@ -1318,6 +1414,39 @@ class AcManagementPage(QWidget):
         self.resource_thread.finished.connect(self.resource_thread.deleteLater)
         self.resource_thread.finished.connect(lambda: setattr(self, "resource_thread", None))
         self.resource_thread.start()
+
+    def refresh_ac_info(self) -> None:
+        self.feature_gate.assert_enabled("ac.ac_info_update")
+        device = self.current_device()
+        if not self._ensure_h3c_ac_selected(device):
+            return
+        self._set_update_running(True, "正在更新AC信息...")
+        self.ac_info_thread = AcInfoCollectThread(device, self.site_name, parent=self)
+        self.ac_info_thread.progress.connect(self._set_update_progress)
+        self.ac_info_thread.collect_finished.connect(self._finish_ac_info_collect)
+        self.ac_info_thread.collect_failed.connect(self._fail_resource_collect)
+        self.ac_info_thread.finished.connect(self.ac_info_thread.deleteLater)
+        self.ac_info_thread.finished.connect(lambda: setattr(self, "ac_info_thread", None))
+        self.ac_info_thread.start()
+
+    def run_ac_action(self, action: str, title: str) -> None:
+        self.feature_gate.assert_enabled("ac.ac_actions")
+        device = self.current_device()
+        if not self._ensure_h3c_ac_selected(device):
+            return
+        profile = H3cAcCommandProfile(device)
+        commands = getattr(profile, f"{action}_commands")
+        command_text = "\n".join(commands)
+        if QMessageBox.question(self, title, f"确认对当前AC执行以下命令？\n\n{command_text}") != QMessageBox.Yes:
+            return
+        self._set_update_running(True, f"正在执行：{title}...")
+        self.action_thread = AcCommandActionThread(device, self.site_name, action, parent=self)
+        self.action_thread.progress.connect(self._set_update_progress)
+        self.action_thread.action_finished.connect(lambda result, action_title=title: self._finish_ac_action(result, action_title))
+        self.action_thread.action_failed.connect(self._fail_resource_collect)
+        self.action_thread.finished.connect(self.action_thread.deleteLater)
+        self.action_thread.finished.connect(lambda: setattr(self, "action_thread", None))
+        self.action_thread.start()
 
     def refresh_fit_ap_optical(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_optical")
@@ -1371,6 +1500,44 @@ class AcManagementPage(QWidget):
         device = self.current_device()
         app_logger.log_info("AC_HTTPS_PORT_UI_REFRESHED", f"device={device.name if device else ''}, ui_port={device.https_port if device else None}")
 
+    def _finish_ac_info_collect(self, result) -> None:
+        self._set_update_progress(self.i18n.t("ac.refreshing_page"))
+        self._set_update_running(False)
+        if not result.success and result.error_message:
+            self.status_label.setText(self.i18n.t("ac.status.failed"))
+            if result.error_message != "用户已取消更新":
+                QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+            else:
+                self.status_label.setText(self.i18n.t("ac.update_cancelled"))
+            self.refresh_devices()
+            return
+        self.refresh_devices()
+        if getattr(result, "https_port_collected", False) and result.https_port is not None:
+            if not getattr(result, "https_port_persisted", False):
+                self._apply_transient_https_port(result.https_port)
+                self.status_label.setText(f"AC信息更新完成；HTTPS端口 {result.https_port} 已解析但保存失败")
+            else:
+                self.status_label.setText(f"AC信息更新完成；HTTPS端口 {result.https_port}")
+        else:
+            self.status_label.setText("AC信息更新完成；HTTPS端口未解析，打开网页时将使用默认443")
+
+    def _finish_ac_action(self, result, title: str) -> None:
+        self._set_update_running(False)
+        if result.success:
+            self.status_label.setText(f"{title}执行成功")
+            return
+        self.status_label.setText(f"{title}执行失败")
+        QMessageBox.warning(self, title, result.error_message or "命令执行失败")
+
+    def _ensure_h3c_ac_selected(self, device: Device | None) -> bool:
+        if device is None:
+            QMessageBox.information(self, self.i18n.t("ac.title"), "请先选择 AC")
+            return False
+        if str(device.device_vendor or "").upper() != "H3C" or str(device.device_type or "").upper() != "AC":
+            QMessageBox.warning(self, self.i18n.t("ac.title"), "该功能只支持 H3C AC 设备")
+            return False
+        return True
+
     def _apply_transient_https_port(self, port: int) -> None:
         device = self.current_device()
         if device is None:
@@ -1419,7 +1586,7 @@ class AcManagementPage(QWidget):
             key = str(item.data(Qt.UserRole) or "").strip()
             if not key:
                 continue
-            if item.checkState() == Qt.Checked:
+            if is_checked_value(item.checkState()):
                 self.selected_ap_keys.add(key)
             else:
                 self.selected_ap_keys.discard(key)
@@ -1457,10 +1624,10 @@ class AcManagementPage(QWidget):
 
     def _set_all_checked(self, checked: bool) -> None:
         self.resources_table.blockSignals(True)
+        set_all_table_rows_checked(self.resources_table, checked, CHECK_COLUMN)
         for row in range(self.resources_table.rowCount()):
             item = self.resources_table.item(row, CHECK_COLUMN)
             if item:
-                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                 key = str(item.data(Qt.UserRole) or "").strip()
                 if key:
                     if checked:
@@ -1476,12 +1643,12 @@ class AcManagementPage(QWidget):
 
     def invert_selection(self) -> None:
         self.resources_table.blockSignals(True)
+        invert_table_rows_checked(self.resources_table, CHECK_COLUMN)
         for row in range(self.resources_table.rowCount()):
             item = self.resources_table.item(row, CHECK_COLUMN)
             if item:
                 key = str(item.data(Qt.UserRole) or "").strip()
-                checked = item.checkState() != Qt.Checked
-                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                checked = is_checked_value(item.checkState())
                 if key:
                     if checked:
                         self.selected_ap_keys.add(key)
@@ -1752,6 +1919,13 @@ class AcManagementPage(QWidget):
                 for row in rows
                 if search in _normalize_resource_search(row.get("ap_name"))
                 or search in _normalize_resource_search(row.get("ap_mac"))
+                or search in _normalize_resource_search(row.get("ap_ip"))
+                or search in _normalize_resource_search(row.get("serial_number"))
+                or search in _normalize_resource_search(row.get("rid1_bbssid"))
+                or search in _normalize_resource_search(row.get("rid2_bbssid"))
+                or search in _normalize_resource_search(row.get("rid3_bbssid"))
+                or search in _normalize_resource_search(row.get("lldp_neighbor_mac"))
+                or search in _normalize_resource_search(row.get("lldp_neighbor_interface"))
             ]
         group = str(filters.get("group") or "").strip()
         if group:
@@ -1769,7 +1943,7 @@ class AcManagementPage(QWidget):
         rows, state = paginate_rows(self.filtered_resource_rows(), self.resource_page_size, self.resource_page)
         self.resource_page = state.current_page
         self.resources_pagination.set_state(state)
-        self._set_rows(self.resources_table, FIT_AP_RESOURCE_COLUMNS, rows)
+        self._set_rows(self.resources_table, FIT_AP_RESOURCE_COLUMNS, [build_fit_ap_resource_table_row(row) for row in rows])
         self.update_selection_state()
 
     def current_resource_page_rows(self) -> list[dict[str, object | None]]:
@@ -2078,18 +2252,76 @@ class AcManagementPage(QWidget):
         menu = create_table_context_menu(self.resources_table, row, column, self.i18n.language, include_history=False)
         menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
         refresh_ap = QAction(self.i18n.t("ap.refresh_optical_current"), menu)
+        open_terminal = QAction("打开外部终端", menu)
         detail = QAction(self.i18n.t("ap.view_details"), menu)
         if menu.actions():
             menu.insertAction(menu.actions()[0], refresh_ap)
+            menu.insertAction(menu.actions()[0], open_terminal)
             menu.insertAction(menu.actions()[0], detail)
         else:
             menu.addAction(refresh_ap)
+            menu.addAction(open_terminal)
             menu.addAction(detail)
         refresh_ap.setEnabled(row >= 0 and self.optical_thread is None and self.resource_thread is None)
+        open_terminal.setEnabled(row >= 0)
         detail.setEnabled(row >= 0)
         refresh_ap.triggered.connect(lambda: self.refresh_resource_ap_optical(row))
+        open_terminal.triggered.connect(lambda: self.open_resource_ap_external_terminal(row))
         detail.triggered.connect(lambda: self.open_ap_detail(row))
         return menu
+
+    def open_resource_ap_external_terminal(self, row: int) -> None:
+        rows = self.current_resource_page_rows()
+        if row < 0 or row >= len(rows):
+            return
+        current_row = rows[row]
+        ap_name = str(current_row.get("ap_name") or "").strip() or "FIT-AP"
+        ap_ip = str(current_row.get("ap_ip") or "").strip()
+        if not ap_ip:
+            message = "当前 AP 没有 IP，无法打开外部终端"
+            self.status_label.setText(message)
+            QMessageBox.information(self, "打开外部终端", message)
+            return
+        config = self._select_external_terminal_config()
+        if config is None:
+            return
+        self.status_label.setText(f"正在打开外部终端：{ap_name} {ap_ip}")
+        device = Device(
+            name=ap_name,
+            ip_address=ap_ip,
+            device_vendor="H3C",
+            device_type="FIT-AP",
+            ssh_enabled=0,
+            telnet_enabled=1,
+            telnet_port=23,
+            telnet_username="",
+            telnet_password="h3capadmin",
+            username="",
+            password="h3capadmin",
+            protocol="Telnet",
+            port=23,
+        )
+        result = launch_external_terminal(device, config)
+        if result.success:
+            self.status_label.setText(f"已打开外部终端：{ap_ip}")
+            return
+        reason = _friendly_external_terminal_error(result.message)
+        self.status_label.setText(f"打开外部终端失败：{reason}")
+        QMessageBox.warning(self, "打开外部终端", f"打开外部终端失败：{reason}")
+
+    def _select_external_terminal_config(self):
+        configs = available_external_terminal_configs(self.settings)
+        if not configs:
+            QMessageBox.information(self, "打开外部终端", self.i18n.t("external_terminal.not_configured"))
+            self.status_label.setText("打开外部终端失败：未配置外部终端路径")
+            return None
+        if len(configs) == 1:
+            return configs[0]
+        labels = [TERMINAL_LABELS.get(config.terminal_type, config.terminal_type) for config in configs]
+        label, accepted = QInputDialog.getItem(self, self.i18n.t("external_terminal.select_terminal"), self.i18n.t("external_terminal.select_terminal"), labels, 0, False)
+        if not accepted:
+            return None
+        return configs[labels.index(label)]
 
     def refresh_resource_ap_optical(self, row: int) -> None:
         device = self.current_device()
@@ -2287,17 +2519,16 @@ class AcManagementPage(QWidget):
             for row_index, row in enumerate(rows):
                 for column_index, (_key, field) in enumerate(columns):
                     if field == "select":
-                        item = QTableWidgetItem("")
-                        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
                         key = self._ap_selection_key(row)
-                        item.setCheckState(Qt.Checked if key in self.selected_ap_keys else Qt.Unchecked)
-                        item.setData(Qt.UserRole, key)
+                        item = create_checkable_table_item(key in self.selected_ap_keys, user_data=key)
                     else:
                         value = row.get(field)
                         if table is self.optical_table and field == "switch_optical_status":
                             value = display_optical_status(evaluate_fit_ap_switch_status(row), self.i18n.language)
                         elif table is self.optical_table and field == "optical_alarm_status":
                             value = OFFLINE_AP_STATUS_TEXT if bool(row.get("is_ap_offline")) else display_optical_status(evaluate_fit_ap_ap_status(row), self.i18n.language)
+                        elif field in {"lldp_source", "lldp_match_status", "optical_match_status", "link_match_status"}:
+                            value = _display_link_value(row, field)
                         elif field in {"switch_optical_status", "ap_optical_status"}:
                             value = display_optical_status(str(value or ""), self.i18n.language) if value else value
                         item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
@@ -2326,17 +2557,29 @@ class AcManagementPage(QWidget):
             table.setUpdatesEnabled(True)
             if table is self.overview_table:
                 self._updating_online_summary = previous_updating_online_summary
-        if table is self.optical_table:
-            self._resize_optical_columns()
-        elif table is self.overview_table:
-            auto_resize_table_columns(table)
-        elif table is self.trackside_table:
-            auto_resize_table_columns(table)
-        else:
-            auto_resize_table_columns(table)
+            if table is self.resources_table:
+                self._resize_resource_columns()
+            elif table is self.optical_table:
+                self._resize_optical_columns()
+            elif table is self.overview_table:
+                auto_resize_table_columns(table)
+            elif table is self.trackside_table:
+                auto_resize_table_columns(table)
+            else:
+                auto_resize_table_columns(table)
 
     def _resize_optical_columns(self) -> None:
         auto_resize_table_columns(self.optical_table)
+
+    def _resize_resource_columns(self) -> None:
+        fields = [field for _key, field in FIT_AP_RESOURCE_COLUMNS]
+        min_widths = {index: FIT_AP_RESOURCE_COLUMN_MIN_WIDTHS.get(field, 90) for index, field in enumerate(fields)}
+        max_widths = {index: FIT_AP_RESOURCE_COLUMN_MAX_WIDTHS.get(field, 260) for index, field in enumerate(fields)}
+        auto_fit_table_columns(self.resources_table, min_widths=min_widths, max_widths=max_widths, padding=28)
+        header = self.resources_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.resources_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
     def _apply_overview_color(self, item: QTableWidgetItem, row: dict[str, object | None], field: str) -> None:
         total = int(row.get("total") or 0)

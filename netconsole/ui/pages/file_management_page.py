@@ -54,6 +54,7 @@ from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
 
 
 LOCAL_COLUMNS = (("name", "file_management.name"), ("size", "file_management.size"), ("modified", "file_management.modified"), ("type", "file_management.type"))
@@ -290,6 +291,7 @@ class FileManagementPage(QWidget):
         self.remote_table = QTableWidget(0, len(REMOTE_COLUMNS))
         set_table_column_fields(self.remote_table, [field for field, _key in REMOTE_COLUMNS])
         configure_readonly_table(self.remote_table)
+        install_checkbox_only_delegate(self.remote_table, REMOTE_CHECK_COLUMN)
 
         self.queue_title = QLabel()
         self.queue_table = QTableWidget(0, len(QUEUE_COLUMNS))
@@ -671,11 +673,9 @@ class FileManagementPage(QWidget):
                 table_item.setData(Qt.UserRole, row)
                 table_item.setToolTip(values.get(field, ""))
                 if field == "select":
-                    table_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                    table_item.setTextAlignment(Qt.AlignCenter)
                     if not item.is_dir:
-                        table_item.setFlags(table_item.flags() | Qt.ItemIsUserCheckable)
-                        table_item.setCheckState(Qt.Checked if item.remote_path in self.checked_remote_paths else Qt.Unchecked)
+                        table_item = create_checkable_table_item(item.remote_path in self.checked_remote_paths, user_data=row)
+                        table_item.setToolTip(values.get(field, ""))
                     else:
                         table_item.setFlags(Qt.ItemIsEnabled)
                 elif field == "size":
@@ -927,7 +927,7 @@ class FileManagementPage(QWidget):
         remote_file = self.remote_file_for_table_row(item.row())
         if remote_file is None or remote_file.is_dir:
             return
-        if item.checkState() == Qt.Checked:
+        if is_checked_value(item.checkState()):
             self.checked_remote_paths.add(remote_file.remote_path)
         else:
             self.checked_remote_paths.discard(remote_file.remote_path)
@@ -971,7 +971,14 @@ class FileManagementPage(QWidget):
             self.checked_remote_paths.discard(remote_file.remote_path)
         else:
             self.checked_remote_paths.add(remote_file.remote_path)
-        self.populate_remote_table()
+        for row in range(self.remote_table.rowCount()):
+            row_file = self.remote_file_for_table_row(row)
+            if row_file is not None and row_file.remote_path == remote_file.remote_path:
+                self._updating_remote_checks = True
+                set_table_row_checked(self.remote_table, row, remote_file.remote_path in self.checked_remote_paths, REMOTE_CHECK_COLUMN)
+                self._updating_remote_checks = False
+                break
+        self.update_download_button()
 
     def update_download_button(self) -> None:
         count = len(self.checked_remote_files_in_view_order())

@@ -66,6 +66,8 @@ class FakeAcConnection:
             "display wlan ap all": "AP name APID State Model Serial ID Group name Online time Clients Mode IP address\nAP-A 1 R/M WA6624X SN-A G 1:00 0 Fit 10.0.0.1\n",
             "display wlan ap all address": "AP name IP address MAC address\nAP-A 10.0.0.1 30f5-277a-1780\n",
             "display wlan ap all radio": "AP name RID State Channel BW Usage TxPower Clients\nAP-A 1 Up 1 20 0 20 0\n",
+            "display wlan ap all radio verbose filter bbssid": "",
+            "display wlan ap all lldp": "",
         }[command]
 
     def disconnect(self):

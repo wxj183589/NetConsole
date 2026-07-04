@@ -74,6 +74,7 @@ from netconsole.ui.pages.online_mr_collection_page import (
     natural_device_sort_key,
     safe_device_folder_name,
 )
+from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, make_table_item
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector
@@ -1321,6 +1322,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.device_table.maximumHeight() <= 330
     assert page.device_table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
     assert page.device_table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel
+    assert isinstance(page.device_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
     assert page.main_work_panel.layout().columnStretch(0) == 6
     assert page.main_work_panel.layout().columnStretch(1) == 4
     assert page.device_panel.minimumHeight() >= 280

@@ -5,6 +5,7 @@ import re
 from uuid import uuid4
 
 from netconsole.core import app_logger
+from netconsole.services.fit_ap_link_info import merge_lldp_payload, normalize_interface_key, normalize_lldp_payload, optical_payload_from_row, resolve_fit_ap_link_info, resolve_optical_match_status
 from netconsole.utils.station_normalize import normalize_station_value
 
 from netconsole.core.database import Database
@@ -81,7 +82,26 @@ FIT_AP_RESOURCE_FIELDS = (
     "rid3_channel",
     "rid3_bandwidth",
     "rid3_tx_power",
+    "rid1_bbssid",
+    "rid2_bbssid",
+    "rid3_bbssid",
     "lldp_neighbor",
+    "lldp_source",
+    "lldp_confidence",
+    "lldp_collected_at",
+    "lldp_local_interface",
+    "lldp_local_interface_normalized",
+    "lldp_neighbor_name",
+    "lldp_neighbor_mac",
+    "lldp_neighbor_mac_normalized",
+    "lldp_neighbor_interface",
+    "lldp_match_status",
+    "optical_interface",
+    "optical_interface_normalized",
+    "optical_rx_power",
+    "optical_tx_power",
+    "optical_collected_at",
+    "optical_match_status",
     "ap_optical_power",
     "collected_at",
     "collect_run_uuid",
@@ -226,11 +246,25 @@ FIT_AP_OPTICAL_FIELDS = (
     "ap_ip",
     "site",
     "lldp_neighbor",
+    "lldp_source",
+    "lldp_confidence",
+    "lldp_collected_at",
+    "lldp_local_interface",
+    "lldp_local_interface_normalized",
+    "lldp_neighbor_name",
+    "lldp_neighbor_mac",
+    "lldp_neighbor_mac_normalized",
+    "lldp_neighbor_interface",
+    "lldp_match_status",
     "neighbor_interface",
     "neighbor_mac",
     "neighbor_device_name",
     "neighbor_rx_power",
+    "optical_interface",
+    "optical_interface_normalized",
     "interface_name",
+    "link_match_status",
+    "source",
     "temperature",
     "voltage",
     "bias_current",
@@ -267,6 +301,15 @@ FIT_AP_OPTICAL_HISTORY_FIELDS = (
     "ap_ip",
     "site",
     "lldp_neighbor",
+    "lldp_local_interface",
+    "lldp_local_interface_normalized",
+    "lldp_neighbor_name",
+    "lldp_neighbor_mac",
+    "lldp_neighbor_mac_normalized",
+    "lldp_neighbor_interface",
+    "link_match_status",
+    "source",
+    "session_id",
     "neighbor_interface",
     "neighbor_mac",
     "neighbor_device_name",
@@ -305,11 +348,18 @@ FIT_AP_LLDP_HISTORY_FIELDS = (
     "ap_uuid",
     "ap_name",
     "ap_mac",
+    "source",
     "local_interface",
+    "local_interface_normalized",
     "lldp_neighbor",
     "neighbor_interface",
     "neighbor_mac",
+    "neighbor_mac_normalized",
     "neighbor_device_name",
+    "neighbor_name",
+    "session_id",
+    "is_changed",
+    "conflict_flag",
     "collected_at",
     "collect_run_uuid",
     "raw_log_path",
@@ -324,6 +374,7 @@ FIT_AP_RADIO_HISTORY_FIELDS = (
     "channel",
     "bandwidth",
     "tx_power",
+    "bbssid",
     "collected_at",
     "collect_run_uuid",
     "raw_log_path",
@@ -365,6 +416,24 @@ AC_AP_DYNAMIC_SUMMARY_FIELDS = (
     "total_ap_licenses",
     "local_ap_licenses",
     "remaining_local_ap_licenses",
+    "collected_at",
+    "collect_run_uuid",
+    "raw_log_path",
+    "updated_at",
+)
+AC_AP_STATIC_SUMMARY_FIELDS = (
+    "cpu_usage",
+    "cpu_5s",
+    "cpu_1m",
+    "cpu_5m",
+    "memory_usage",
+    "memory_total",
+    "memory_used",
+    "memory_free",
+    "memory_free_ratio",
+    "model",
+    "serial_number",
+    "software_version",
     "collected_at",
     "collect_run_uuid",
     "raw_log_path",
@@ -470,6 +539,28 @@ class AcRepository:
             conn.commit()
         return self.get_ac_ap_summary(ac_device_uuid) or payload
 
+    def upsert_ac_ap_static_summary(self, ac_device_uuid: str, data: dict[str, object | None]) -> dict[str, object | None]:
+        if not ac_device_uuid:
+            raise ValueError("ac_device_uuid is required")
+        payload = self._payload(AC_AP_STATIC_SUMMARY_FIELDS, data)
+        payload["ac_device_uuid"] = ac_device_uuid
+        self._set_time_defaults(payload)
+        fields = ("ac_device_uuid", *AC_AP_STATIC_SUMMARY_FIELDS)
+        columns = ", ".join(fields)
+        placeholders = ", ".join("?" for _ in fields)
+        updates = ", ".join(f"{field} = excluded.{field}" for field in AC_AP_STATIC_SUMMARY_FIELDS)
+        with self.database.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO ac_ap_summary ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT(ac_device_uuid) DO UPDATE SET {updates}
+                """,
+                [payload[field] for field in fields],
+            )
+            conn.commit()
+        return self.get_ac_ap_summary(ac_device_uuid) or payload
+
     def get_ac_ap_summary(self, ac_device_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM ac_ap_summary WHERE ac_device_uuid = ?", (ac_device_uuid,)).fetchone()
@@ -493,6 +584,17 @@ class AcRepository:
                 station = normalize_station_value(resource_data)
                 if station and not str(resource_data.get("site") or "").strip():
                     resource_data["site"] = station
+                existing_resource = conn.execute("SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1", (ap_uuid,)).fetchone()
+                if _has_lldp_payload(resource_data):
+                    lldp_data = normalize_lldp_payload(
+                        {
+                            **resource_data,
+                            "lldp_source": resource_data.get("lldp_source") or resource_data.get("source") or "ac_bulk_lldp",
+                        },
+                        str(resource_data.get("lldp_source") or resource_data.get("source") or "ac_bulk_lldp"),
+                    )
+                    resource_data.update(merge_lldp_payload(dict(existing_resource) if existing_resource is not None else {}, lldp_data))
+                    resource_data["lldp_neighbor"] = resource_data.get("lldp_neighbor_name")
                 payload = self._payload(FIT_AP_RESOURCE_FIELDS, resource_data)
                 payload["serial_number"] = self._clean_identity_value(payload.get("serial_number")) or None
                 payload["collected_at"] = payload.get("collected_at") or now
@@ -512,6 +614,7 @@ class AcRepository:
                 self._upsert_ap_entity(conn, payload)
                 self._append_ap_resource_snapshot(conn, payload)
                 self._append_radio_history(conn, payload)
+                self._append_resource_lldp_history(conn, payload)
             if current_uuids:
                 placeholders = ", ".join("?" for _ in current_uuids)
                 conn.execute(f"DELETE FROM ac_fit_ap_resources WHERE ac_device_uuid = ? AND ap_uuid NOT IN ({placeholders})", [ac_device_uuid, *current_uuids])
@@ -882,6 +985,20 @@ class AcRepository:
                 payload["ap_mac"] = payload.get("ap_mac") or resource.get("ap_mac")
                 payload["ap_ip"] = payload.get("ap_ip") or resource.get("ap_ip")
                 payload["site"] = payload.get("site") or resource.get("site_name") or resource.get("site")
+                if _has_lldp_payload(payload):
+                    lldp_data = normalize_lldp_payload(
+                        {**payload, "lldp_source": payload.get("lldp_source") or payload.get("source") or "ap_direct_lldp"},
+                        str(payload.get("lldp_source") or payload.get("source") or "ap_direct_lldp"),
+                    )
+                    payload["_history_lldp_source"] = lldp_data.get("lldp_source")
+                    payload.update(merge_lldp_payload(resource, lldp_data))
+                    payload["lldp_neighbor"] = payload.get("lldp_neighbor_name")
+                    payload["neighbor_device_name"] = payload.get("neighbor_device_name") or payload.get("lldp_neighbor_name")
+                    payload["neighbor_mac"] = payload.get("neighbor_mac") or payload.get("lldp_neighbor_mac")
+                    payload["neighbor_interface"] = payload.get("neighbor_interface") or payload.get("lldp_neighbor_interface")
+                payload.update(resolve_fit_ap_link_info(payload))
+                payload["link_match_status"] = payload.get("link_match_status") or payload.get("optical_match_status") or resolve_optical_match_status(payload, payload)
+                payload["source"] = payload.get("source") or "ap_optical_diag"
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 current_payloads.append(payload)
@@ -916,6 +1033,7 @@ class AcRepository:
             placeholders = ", ".join("?" for _ in FIT_AP_OPTICAL_FIELDS)
             for payload in [*merged.values(), *passthrough]:
                 conn.execute(f"INSERT INTO ac_fit_ap_optical ({columns}) VALUES ({placeholders})", [payload[field] for field in FIT_AP_OPTICAL_FIELDS])
+                self._update_fit_ap_resource_link_info(conn, ac_device_uuid, payload)
             for payload in current_payloads:
                 history_payload = self._payload(FIT_AP_OPTICAL_HISTORY_FIELDS, {**payload, "created_at": now})
                 history_columns = ", ".join(FIT_AP_OPTICAL_HISTORY_FIELDS)
@@ -928,7 +1046,18 @@ class AcRepository:
                     FIT_AP_LLDP_HISTORY_FIELDS,
                     {
                         **payload,
-                        "local_interface": payload.get("interface_name"),
+                        "source": payload.get("_history_lldp_source") or payload.get("lldp_source") or "ap_direct_lldp",
+                        "local_interface": payload.get("lldp_local_interface") or payload.get("interface_name"),
+                        "local_interface_normalized": payload.get("lldp_local_interface_normalized"),
+                        "lldp_neighbor": payload.get("lldp_neighbor_name") or payload.get("lldp_neighbor"),
+                        "neighbor_name": payload.get("lldp_neighbor_name") or payload.get("neighbor_name"),
+                        "neighbor_mac": payload.get("lldp_neighbor_mac") or payload.get("neighbor_mac"),
+                        "neighbor_mac_normalized": payload.get("lldp_neighbor_mac_normalized"),
+                        "neighbor_interface": payload.get("lldp_neighbor_interface") or payload.get("neighbor_interface"),
+                        "neighbor_device_name": payload.get("neighbor_device_name") or payload.get("lldp_neighbor_name"),
+                        "session_id": payload.get("collect_run_uuid"),
+                        "is_changed": self._lldp_history_changed(conn, payload.get("ap_uuid"), payload),
+                        "conflict_flag": 1 if str(payload.get("lldp_match_status") or payload.get("link_match_status") or "") == "conflict" else 0,
                         "created_at": now,
                     },
                 )
@@ -1593,13 +1722,99 @@ class AcRepository:
                 )
             conn.commit()
 
+    def _update_fit_ap_resource_link_info(self, conn, ac_device_uuid: str, payload: dict[str, object | None]) -> None:
+        ap_uuid = payload.get("ap_uuid")
+        if not ap_uuid:
+            return
+        existing = conn.execute(
+            "SELECT * FROM ac_fit_ap_resources WHERE ac_device_uuid = ? AND ap_uuid = ? ORDER BY id DESC LIMIT 1",
+            (ac_device_uuid, ap_uuid),
+        ).fetchone()
+        if existing is None:
+            return
+        existing_data = dict(existing)
+        lldp_payload = merge_lldp_payload(existing_data, payload) if _has_lldp_payload(payload) else {
+            field: existing_data.get(field)
+            for field in (
+                "lldp_source",
+                "lldp_confidence",
+                "lldp_collected_at",
+                "lldp_local_interface",
+                "lldp_local_interface_normalized",
+                "lldp_neighbor_name",
+                "lldp_neighbor_mac",
+                "lldp_neighbor_mac_normalized",
+                "lldp_neighbor_interface",
+                "lldp_match_status",
+            )
+        }
+        resolved_payload = resolve_fit_ap_link_info({**existing_data, **payload})
+        optical_payload = optical_payload_from_row(resolved_payload)
+        optical_payload["optical_match_status"] = payload.get("link_match_status") or payload.get("optical_match_status") or resolve_optical_match_status(lldp_payload, payload)
+        updates = {
+            **lldp_payload,
+            **{
+                field: resolved_payload.get(field)
+                for field in (
+                    "lldp_source",
+                    "lldp_confidence",
+                    "lldp_collected_at",
+                    "lldp_local_interface",
+                    "lldp_local_interface_normalized",
+                    "lldp_neighbor_name",
+                    "lldp_neighbor_mac",
+                    "lldp_neighbor_mac_normalized",
+                    "lldp_neighbor_interface",
+                    "lldp_match_status",
+                )
+            },
+            **optical_payload,
+            "lldp_neighbor": resolved_payload.get("lldp_neighbor_name"),
+            "ap_optical_power": optical_payload.get("optical_rx_power"),
+            "updated_at": payload.get("updated_at") or self._now(),
+        }
+        fields = tuple(field for field, value in updates.items() if value not in (None, ""))
+        if not fields:
+            return
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        conn.execute(
+            f"UPDATE ac_fit_ap_resources SET {assignments} WHERE ac_device_uuid = ? AND ap_uuid = ?",
+            [updates[field] for field in fields] + [ac_device_uuid, ap_uuid],
+        )
+
+    def _lldp_history_changed(self, conn, ap_uuid: object, payload: dict[str, object | None]) -> int:
+        if not ap_uuid:
+            return 1
+        previous = conn.execute(
+            """
+            SELECT * FROM ac_fit_ap_lldp_history
+            WHERE ap_uuid = ?
+            ORDER BY collected_at DESC, id DESC
+            LIMIT 1
+            """,
+            (ap_uuid,),
+        ).fetchone()
+        if previous is None:
+            return 1
+        prev = dict(previous)
+        current = normalize_lldp_payload(payload, str(payload.get("lldp_source") or payload.get("source") or "unknown"))
+        previous_neighbor_name = str(prev.get("neighbor_name") or prev.get("neighbor_device_name") or prev.get("lldp_neighbor") or "")
+        current_neighbor_name = str(current.get("lldp_neighbor_name") or "")
+        return 0 if (
+            str(prev.get("local_interface_normalized") or "") == str(current.get("lldp_local_interface_normalized") or "")
+            and str(prev.get("neighbor_mac_normalized") or "") == str(current.get("lldp_neighbor_mac_normalized") or "")
+            and normalize_interface_key(prev.get("neighbor_interface")) == normalize_interface_key(current.get("lldp_neighbor_interface"))
+            and previous_neighbor_name == current_neighbor_name
+        ) else 1
+
     def _append_radio_history(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()
         for rid in (1, 2, 3):
             channel = payload.get(f"rid{rid}_channel")
             bandwidth = payload.get(f"rid{rid}_bandwidth")
             tx_power = payload.get(f"rid{rid}_tx_power")
-            if not any(value not in (None, "") for value in (channel, bandwidth, tx_power)):
+            bbssid = payload.get(f"rid{rid}_bbssid")
+            if not any(value not in (None, "") for value in (channel, bandwidth, tx_power, bbssid)):
                 continue
             row = {
                 "ac_device_uuid": payload.get("ac_device_uuid"),
@@ -1609,6 +1824,7 @@ class AcRepository:
                 "channel": channel,
                 "bandwidth": bandwidth,
                 "tx_power": tx_power,
+                "bbssid": bbssid,
                 "collected_at": payload.get("collected_at"),
                 "collect_run_uuid": payload.get("collect_run_uuid"),
                 "raw_log_path": payload.get("raw_log_path"),
@@ -1617,6 +1833,47 @@ class AcRepository:
             columns = ", ".join(FIT_AP_RADIO_HISTORY_FIELDS)
             placeholders = ", ".join("?" for _ in FIT_AP_RADIO_HISTORY_FIELDS)
             conn.execute(f"INSERT INTO ac_fit_ap_radio_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_RADIO_HISTORY_FIELDS])
+
+    def _append_resource_lldp_history(self, conn, payload: dict[str, object | None]) -> None:
+        if not any(
+            payload.get(field) not in (None, "")
+            for field in (
+                "lldp_local_interface",
+                "lldp_neighbor_name",
+                "lldp_neighbor_mac",
+                "lldp_neighbor_interface",
+            )
+        ):
+            return
+        now = self._now()
+        row = self._payload(
+            FIT_AP_LLDP_HISTORY_FIELDS,
+            {
+                "ac_device_uuid": payload.get("ac_device_uuid"),
+                "ap_uuid": payload.get("ap_uuid"),
+                "ap_name": payload.get("ap_name"),
+                "ap_mac": payload.get("ap_mac"),
+                "source": payload.get("lldp_source") or "ac_bulk_lldp",
+                "local_interface": payload.get("lldp_local_interface"),
+                "local_interface_normalized": payload.get("lldp_local_interface_normalized"),
+                "lldp_neighbor": payload.get("lldp_neighbor_name"),
+                "neighbor_name": payload.get("lldp_neighbor_name"),
+                "neighbor_interface": payload.get("lldp_neighbor_interface"),
+                "neighbor_mac": payload.get("lldp_neighbor_mac"),
+                "neighbor_mac_normalized": payload.get("lldp_neighbor_mac_normalized"),
+                "neighbor_device_name": payload.get("lldp_neighbor_name"),
+                "session_id": payload.get("collect_run_uuid"),
+                "is_changed": self._lldp_history_changed(conn, payload.get("ap_uuid"), payload),
+                "conflict_flag": 1 if str(payload.get("lldp_match_status") or "") == "conflict" else 0,
+                "collected_at": payload.get("collected_at"),
+                "collect_run_uuid": payload.get("collect_run_uuid"),
+                "raw_log_path": payload.get("raw_log_path"),
+                "created_at": now,
+            },
+        )
+        columns = ", ".join(FIT_AP_LLDP_HISTORY_FIELDS)
+        placeholders = ", ".join("?" for _ in FIT_AP_LLDP_HISTORY_FIELDS)
+        conn.execute(f"INSERT INTO ac_fit_ap_lldp_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_LLDP_HISTORY_FIELDS])
 
     def _append_resource_history(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()
@@ -2329,7 +2586,23 @@ def _has_fit_ap_optical_payload(row: dict[str, object | None]) -> bool:
 
 
 def _has_fit_ap_lldp_payload(row: dict[str, object | None]) -> bool:
-    return any(not _is_empty_identity_value(row.get(field)) for field in ("neighbor_device_name", "neighbor_interface", "lldp_neighbor", "neighbor_mac"))
+    return _has_lldp_payload(row)
+
+
+def _has_lldp_payload(row: dict[str, object | None]) -> bool:
+    return any(
+        not _is_empty_identity_value(row.get(field))
+        for field in (
+            "neighbor_device_name",
+            "neighbor_interface",
+            "lldp_neighbor",
+            "neighbor_mac",
+            "lldp_local_interface",
+            "lldp_neighbor_name",
+            "lldp_neighbor_mac",
+            "lldp_neighbor_interface",
+        )
+    )
 
 
 def _is_empty_identity_value(value: object) -> bool:

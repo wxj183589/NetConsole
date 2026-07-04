@@ -75,10 +75,27 @@ def test_optical_refresh_context_only_allows_optical_refresh_commands():
         assert not is_command_allowed(command, "optical_refresh")
 
 
-def test_ac_enable_ap_console_allows_only_fixed_sequence_commands():
+def test_fit_ap_optical_collect_context_only_allows_ap_link_commands():
     for command in (
         "screen-length disable",
-        "display wlan ap all address",
+        "display lldp neighbor-information list",
+        "display transceiver diagnosis interface",
+    ):
+        assert is_command_allowed(command, "fit_ap_optical_collect")
+
+    for command in (
+        "display interface brief",
+        "display interface",
+        "display version",
+        "display wlan ap all lldp",
+        "system-view",
+        "shutdown",
+    ):
+        assert not is_command_allowed(command, "fit_ap_optical_collect")
+
+
+def test_ac_enable_ap_console_allows_only_fixed_sequence_commands():
+    for command in (
         "system-view",
         "probe",
         "wlan ap-execute all exec-console enable",
@@ -93,6 +110,45 @@ def test_ac_enable_ap_console_allows_only_fixed_sequence_commands():
 
     for command in ("undo lldp global enable", "shutdown", "reboot", "save"):
         assert not is_command_allowed(command, "ac_enable_ap_console")
+
+
+def test_ac_collect_contexts_are_split_by_purpose():
+    for command in (
+        "screen-length disable",
+        "display wlan ap all",
+        "display wlan ap all address",
+        "display wlan ap all radio",
+        "display wlan ap unauthenticated",
+        "display wlan ap all radio verbose filter bbssid",
+        "display wlan ap all lldp",
+    ):
+        assert is_command_allowed(command, "ac_fit_ap_resource_collect")
+        assert not is_command_allowed(command, "ac_info_collect") if command.startswith("display wlan") else True
+
+    for command in (
+        "screen-length disable",
+        "display cpu-usage",
+        "display memory",
+        "display version",
+        "display device",
+        "display device manuinfo",
+        "display ip https",
+        "display ip https | include port",
+    ):
+        assert is_command_allowed(command, "ac_info_collect")
+        assert not is_command_allowed(command, "ac_fit_ap_resource_collect") if command != "screen-length disable" else True
+
+    for command in ("system-view", "wlan auto-ap persistent all", "probe", "wlan ap-execute all exec-console enable"):
+        assert not is_command_allowed(command, "ac_fit_ap_resource_collect")
+        assert not is_command_allowed(command, "ac_info_collect")
+
+
+def test_ac_persist_auto_ap_context_allows_only_fixed_sequence_commands():
+    for command in ("system-view", "wlan auto-ap persistent all", "return", "quit"):
+        assert is_command_allowed(command, "ac_persist_auto_ap")
+
+    for command in ("probe", "wlan ap-execute all exec-console enable", "display wlan ap all", "save force"):
+        assert not is_command_allowed(command, "ac_persist_auto_ap")
 
 
 def test_command_guard_logs_rejected_command(tmp_path):

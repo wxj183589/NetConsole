@@ -28,6 +28,7 @@ def normalize_ap_direction(value: str) -> str:
 AP_METADATA_IMPORT_FIELDS = ["AP名称", "AP_MAC", "归属站点", "里程", "点位说明", "上下行"]
 AP_EXPORT_FIELDS = [
     "AP名称",
+    "APID",
     "AP_IP",
     "AP_MAC",
     "型号",
@@ -35,6 +36,12 @@ AP_EXPORT_FIELDS = [
     "状态",
     "AP组",
     "在线时长",
+    "RID1信道",
+    "RID1频宽",
+    "RID1功率",
+    "RID2信道",
+    "RID2频宽",
+    "RID2功率",
     "归属站点",
     "里程",
     "点位说明",
@@ -148,6 +155,7 @@ class FitApImportExportService:
                 writer.writerow(
                     [
                         row.get("ap_name") or "",
+                        row.get("apid") or "",
                         row.get("ap_ip") or "",
                         row.get("ap_mac") or "",
                         row.get("model") or "",
@@ -155,6 +163,12 @@ class FitApImportExportService:
                         row.get("state_display") or row.get("state") or "",
                         row.get("group_name") or "",
                         row.get("online_time") or "",
+                        row.get("rid1_channel") or "",
+                        row.get("rid1_bandwidth") or "",
+                        row.get("rid1_tx_power") or "",
+                        row.get("rid2_channel") or "",
+                        row.get("rid2_bandwidth") or "",
+                        row.get("rid2_tx_power") or "",
                         row.get("site") or "",
                         row.get("mileage") or "",
                         row.get("location_note") or "",

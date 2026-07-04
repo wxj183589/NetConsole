@@ -14,6 +14,7 @@ from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
 from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ROW_HEIGHT, apply_action_column, apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 
 
 CHECK_COLUMN = 0
@@ -81,6 +82,7 @@ class DeviceTable(QTableWidget):
         self._updating_checks = False
         set_table_column_fields(self, [field for field, _key in COLUMNS])
         configure_readonly_table(self)
+        install_checkbox_only_delegate(self, CHECK_COLUMN)
         self.horizontalHeader().sectionClicked.connect(self._header_clicked)
         self.itemChanged.connect(self._item_changed)
         self.cellClicked.connect(self._cell_clicked)
@@ -163,24 +165,20 @@ class DeviceTable(QTableWidget):
     def invert_checked(self) -> None:
         self._updating_checks = True
         self.selected_device_ids.clear()
+        invert_table_rows_checked(self, CHECK_COLUMN)
         for row in range(self.rowCount()):
             item = self.item(row, CHECK_COLUMN)
             if item is None:
                 continue
-            checked = item.checkState() != Qt.Checked
-            item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
             device_id = item.data(Qt.UserRole)
-            if checked and device_id is not None:
+            if is_checked_value(item.checkState()) and device_id is not None:
                 self.selected_device_ids.add(int(device_id))
         self._updating_checks = False
         self._sync_header_check_state()
         self.selection_changed.emit()
 
     def _set_checkbox_item(self, row: int, device: Device) -> None:
-        item = QTableWidgetItem()
-        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-        item.setCheckState(Qt.Unchecked)
-        item.setData(Qt.UserRole, device.id)
+        item = create_checkable_table_item(False, user_data=device.id)
         self.setItem(row, CHECK_COLUMN, item)
 
     def _action_widget(self, device: Device) -> QWidget:
@@ -206,22 +204,21 @@ class DeviceTable(QTableWidget):
         if section != CHECK_COLUMN:
             return
         header = self.horizontalHeaderItem(CHECK_COLUMN)
-        checked = header is not None and header.checkState() != Qt.Checked
+        checked = header is None or not is_checked_value(header.checkState())
         self._set_all_checked(checked)
 
     def _set_all_checked(self, checked: bool) -> None:
         self._updating_checks = True
-        state = Qt.Checked if checked else Qt.Unchecked
         self.selected_device_ids.clear()
+        set_all_table_rows_checked(self, checked, CHECK_COLUMN)
         for row in range(self.rowCount()):
             item = self.item(row, CHECK_COLUMN)
             if item:
-                item.setCheckState(state)
                 device_id = item.data(Qt.UserRole)
                 if checked and device_id is not None:
                     self.selected_device_ids.add(int(device_id))
         self._updating_checks = False
-        self._set_header_check_state(state)
+        self._set_header_check_state(Qt.Checked if checked else Qt.Unchecked)
         self.selection_changed.emit()
 
     def _item_changed(self, item: QTableWidgetItem) -> None:
@@ -229,7 +226,7 @@ class DeviceTable(QTableWidget):
             return
         device_id = item.data(Qt.UserRole)
         if device_id is not None:
-            if item.checkState() == Qt.Checked:
+            if is_checked_value(item.checkState()):
                 self.selected_device_ids.add(int(device_id))
             else:
                 self.selected_device_ids.discard(int(device_id))

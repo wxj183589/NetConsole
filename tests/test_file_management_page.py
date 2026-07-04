@@ -34,6 +34,7 @@ from netconsole.ui.pages.file_management_page import (
     resolve_local_download_name,
     resolve_local_download_path,
 )
+from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 
 
 def app():
@@ -77,14 +78,19 @@ def test_remote_table_checkboxes_only_select_files(tmp_path):
     assert page.remote_table.horizontalHeaderItem(0).text() == ""
     assert page.remote_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Fixed
     assert page.remote_table.columnWidth(0) == 40
+    assert isinstance(page.remote_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
     directory_item = page.remote_table.item(0, 0)
     assert directory_item.flags() & Qt.ItemIsUserCheckable == Qt.NoItemFlags
+    assert is_checked_value(page.remote_table.item(1, 0).checkState())
+    assert is_checked_value(page.remote_table.item(2, 0).checkState())
     assert page.download_button.isEnabled()
     assert page.download_button.text() == "Download Files (2)"
 
     page.clear_remote_selection()
 
     assert page.checked_remote_paths == set()
+    assert not is_checked_value(page.remote_table.item(1, 0).checkState())
+    assert not is_checked_value(page.remote_table.item(2, 0).checkState())
     assert not page.download_button.isEnabled()
     assert page.download_button.text() == "Download Files"
 

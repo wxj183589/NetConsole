@@ -27,10 +27,33 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
     "display wlan ap all address",
     "display wlan ap all radio",
     "display wlan ap unauthenticated",
+    "display wlan ap all radio verbose filter bbssid",
+    "display wlan ap all lldp",
     "display cpu-usage",
     "display memory",
     "display ip https | include port",
     "display ip https",
+}
+
+SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS = {
+    "screen-length disable",
+    "display wlan ap all",
+    "display wlan ap all address",
+    "display wlan ap all radio",
+    "display wlan ap unauthenticated",
+    "display wlan ap all radio verbose filter bbssid",
+    "display wlan ap all lldp",
+}
+
+SAFE_AC_INFO_COLLECT_COMMANDS = {
+    "screen-length disable",
+    "display cpu-usage",
+    "display memory",
+    "display version",
+    "display device",
+    "display device manuinfo",
+    "display ip https",
+    "display ip https | include port",
 }
 
 SAFE_FIT_AP_COMMANDS = {
@@ -41,6 +64,12 @@ SAFE_FIT_AP_COMMANDS = {
     "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",
     "display interface brief",
+}
+
+SAFE_FIT_AP_OPTICAL_COMMANDS = {
+    "screen-length disable",
+    "display lldp neighbor-information list",
+    "display transceiver diagnosis interface",
 }
 
 SAFE_OPTICAL_REFRESH_COMMANDS = {
@@ -73,8 +102,6 @@ SAFE_FILE_MANAGEMENT_COMMANDS = {
 }
 
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
-    "screen-length disable",
-    "display wlan ap all address",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",
@@ -82,15 +109,27 @@ SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
     "quit",
 }
 
+SAFE_PERSIST_AUTO_AP_COMMANDS = {
+    "system-view",
+    "wlan auto-ap persistent all",
+    "return",
+    "quit",
+}
+
 CONTEXT_COMMANDS = {
     "device_collect": SAFE_DEVICE_COMMANDS,
     "ac_collect": SAFE_AC_COMMANDS,
+    "ac_fit_ap_resource_collect": SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS,
+    "ac_info_collect": SAFE_AC_INFO_COLLECT_COMMANDS,
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
+    "fit_ap_optical_collect": SAFE_FIT_AP_OPTICAL_COMMANDS,
     "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
     "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
     "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
     "file_management": SAFE_FILE_MANAGEMENT_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
+    "ac_persist_auto_ap": SAFE_PERSIST_AUTO_AP_COMMANDS,
+    "ac_enable_ap_remote_login": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
 }
 
 DANGEROUS_PATTERNS = (
@@ -127,6 +166,7 @@ DANGEROUS_PATTERNS = (
 PIPE_ALLOWLIST = {
     "display current-configuration | include sysname",
     "display ip https | include port",
+    "display wlan ap all radio verbose filter bbssid",
 }
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display boot-loader",

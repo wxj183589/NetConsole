@@ -341,7 +341,26 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     rid3_channel TEXT,
     rid3_bandwidth TEXT,
     rid3_tx_power TEXT,
+    rid1_bbssid TEXT,
+    rid2_bbssid TEXT,
+    rid3_bbssid TEXT,
     lldp_neighbor TEXT,
+    lldp_source TEXT,
+    lldp_confidence INTEGER,
+    lldp_collected_at TEXT,
+    lldp_local_interface TEXT,
+    lldp_local_interface_normalized TEXT,
+    lldp_neighbor_name TEXT,
+    lldp_neighbor_mac TEXT,
+    lldp_neighbor_mac_normalized TEXT,
+    lldp_neighbor_interface TEXT,
+    lldp_match_status TEXT,
+    optical_interface TEXT,
+    optical_interface_normalized TEXT,
+    optical_rx_power REAL,
+    optical_tx_power REAL,
+    optical_collected_at TEXT,
+    optical_match_status TEXT,
     ap_optical_power TEXT,
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
@@ -545,9 +564,24 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
     ap_ip TEXT,
     site TEXT,
     lldp_neighbor TEXT,
+    lldp_source TEXT,
+    lldp_confidence INTEGER,
+    lldp_collected_at TEXT,
+    lldp_local_interface TEXT,
+    lldp_local_interface_normalized TEXT,
+    lldp_neighbor_name TEXT,
+    lldp_neighbor_mac TEXT,
+    lldp_neighbor_mac_normalized TEXT,
+    lldp_neighbor_interface TEXT,
+    lldp_match_status TEXT,
     neighbor_interface TEXT,
     neighbor_mac TEXT,
     neighbor_device_name TEXT,
+    optical_interface TEXT,
+    optical_interface_normalized TEXT,
+    link_match_status TEXT,
+    source TEXT,
+    neighbor_name TEXT,
     neighbor_rx_power TEXT,
     interface_name TEXT,
     temperature TEXT,
@@ -640,6 +674,15 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_optical_history (
     ap_ip TEXT,
     site TEXT,
     lldp_neighbor TEXT,
+    lldp_local_interface TEXT,
+    lldp_local_interface_normalized TEXT,
+    lldp_neighbor_name TEXT,
+    lldp_neighbor_mac TEXT,
+    lldp_neighbor_mac_normalized TEXT,
+    lldp_neighbor_interface TEXT,
+    link_match_status TEXT,
+    source TEXT,
+    session_id TEXT,
     neighbor_interface TEXT,
     neighbor_mac TEXT,
     neighbor_device_name TEXT,
@@ -681,11 +724,18 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_lldp_history (
     ap_uuid TEXT NOT NULL,
     ap_name TEXT,
     ap_mac TEXT,
+    source TEXT,
     local_interface TEXT,
+    local_interface_normalized TEXT,
     lldp_neighbor TEXT,
     neighbor_interface TEXT,
     neighbor_mac TEXT,
+    neighbor_mac_normalized TEXT,
     neighbor_device_name TEXT,
+    neighbor_name TEXT,
+    session_id TEXT,
+    is_changed INTEGER DEFAULT 1,
+    conflict_flag INTEGER DEFAULT 0,
     collected_at TEXT,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
@@ -703,6 +753,7 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
     channel TEXT,
     bandwidth TEXT,
     tx_power TEXT,
+    bbssid TEXT,
     collected_at TEXT,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
@@ -940,6 +991,77 @@ class Database:
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
         if self._table_exists(conn, "ac_trackside_ap_plan") and not self._column_exists(conn, "ac_trackside_ap_plan", "remark"):
             conn.execute("ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT")
+        fit_ap_resource_columns = {
+            "rid1_bbssid": "TEXT",
+            "rid2_bbssid": "TEXT",
+            "rid3_bbssid": "TEXT",
+            "lldp_source": "TEXT",
+            "lldp_confidence": "INTEGER",
+            "lldp_collected_at": "TEXT",
+            "lldp_local_interface": "TEXT",
+            "lldp_local_interface_normalized": "TEXT",
+            "lldp_neighbor_name": "TEXT",
+            "lldp_neighbor_mac": "TEXT",
+            "lldp_neighbor_mac_normalized": "TEXT",
+            "lldp_neighbor_interface": "TEXT",
+            "lldp_match_status": "TEXT",
+            "optical_interface": "TEXT",
+            "optical_interface_normalized": "TEXT",
+            "optical_rx_power": "REAL",
+            "optical_tx_power": "REAL",
+            "optical_collected_at": "TEXT",
+            "optical_match_status": "TEXT",
+        }
+        for column, column_type in fit_ap_resource_columns.items():
+            if self._table_exists(conn, "ac_fit_ap_resources") and not self._column_exists(conn, "ac_fit_ap_resources", column):
+                conn.execute(f"ALTER {'TABLE'} ac_fit_ap_resources ADD COLUMN {column} {column_type}")
+        fit_ap_optical_columns = {
+            "lldp_source": "TEXT",
+            "lldp_confidence": "INTEGER",
+            "lldp_collected_at": "TEXT",
+            "lldp_local_interface": "TEXT",
+            "lldp_local_interface_normalized": "TEXT",
+            "lldp_neighbor_name": "TEXT",
+            "lldp_neighbor_mac": "TEXT",
+            "lldp_neighbor_mac_normalized": "TEXT",
+            "lldp_neighbor_interface": "TEXT",
+            "lldp_match_status": "TEXT",
+            "optical_interface": "TEXT",
+            "optical_interface_normalized": "TEXT",
+            "link_match_status": "TEXT",
+            "source": "TEXT",
+        }
+        for column, column_type in fit_ap_optical_columns.items():
+            if self._table_exists(conn, "ac_fit_ap_optical") and not self._column_exists(conn, "ac_fit_ap_optical", column):
+                conn.execute(f"ALTER {'TABLE'} ac_fit_ap_optical ADD COLUMN {column} {column_type}")
+        fit_ap_optical_history_columns = {
+            "lldp_local_interface": "TEXT",
+            "lldp_local_interface_normalized": "TEXT",
+            "lldp_neighbor_name": "TEXT",
+            "lldp_neighbor_mac": "TEXT",
+            "lldp_neighbor_mac_normalized": "TEXT",
+            "lldp_neighbor_interface": "TEXT",
+            "link_match_status": "TEXT",
+            "source": "TEXT",
+            "session_id": "TEXT",
+        }
+        for column, column_type in fit_ap_optical_history_columns.items():
+            if self._table_exists(conn, "ac_fit_ap_optical_history") and not self._column_exists(conn, "ac_fit_ap_optical_history", column):
+                conn.execute(f"ALTER {'TABLE'} ac_fit_ap_optical_history ADD COLUMN {column} {column_type}")
+        if self._table_exists(conn, "ac_fit_ap_radio_history") and not self._column_exists(conn, "ac_fit_ap_radio_history", "bbssid"):
+            conn.execute("ALTER " "TABLE ac_fit_ap_radio_history ADD COLUMN bbssid TEXT")
+        fit_ap_lldp_history_columns = {
+            "source": "TEXT",
+            "local_interface_normalized": "TEXT",
+            "neighbor_mac_normalized": "TEXT",
+            "neighbor_name": "TEXT",
+            "session_id": "TEXT",
+            "is_changed": "INTEGER",
+            "conflict_flag": "INTEGER",
+        }
+        for column, column_type in fit_ap_lldp_history_columns.items():
+            if self._table_exists(conn, "ac_fit_ap_lldp_history") and not self._column_exists(conn, "ac_fit_ap_lldp_history", column):
+                conn.execute(f"ALTER {'TABLE'} ac_fit_ap_lldp_history ADD COLUMN {column} {column_type}")
 
     @staticmethod
     def _all_schema_scripts() -> tuple[str, ...]:

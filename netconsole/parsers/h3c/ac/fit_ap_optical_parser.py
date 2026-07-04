@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 
 from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
+from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import parse_fit_ap_lldp_neighbor
+from netconsole.services.fit_ap_link_info import normalize_interface_key, resolve_optical_match_status
 from netconsole.utils.interface_normalize import normalize_interface_name
 
 
@@ -21,16 +23,31 @@ def parse_fit_ap_optical(
         transceiver_output,
         transceiver_interface_output,
         transceiver_manuinfo_output,
-        preferred_interface=lldp.get("interface_name"),
+        preferred_interface=lldp.get("lldp_local_interface") or lldp.get("interface_name"),
     )
+    link_match_status = resolve_optical_match_status(lldp, transceiver)
     return {
         **lldp,
         **transceiver,
-        "interface_name": transceiver.get("interface_name") or lldp.get("interface_name"),
+        "interface_name": transceiver.get("interface_name") or lldp.get("interface_name") or lldp.get("lldp_local_interface"),
+        "optical_interface": transceiver.get("interface_name"),
+        "optical_interface_normalized": normalize_interface_key(transceiver.get("interface_name")),
+        "link_match_status": link_match_status,
+        "source": "ap_optical_diag",
     }
 
 
 def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
+    direct = parse_fit_ap_lldp_neighbor(output)
+    if any(direct.get(field) for field in ("lldp_neighbor_name", "lldp_local_interface", "lldp_neighbor_mac", "lldp_neighbor_interface")):
+        return {
+            **direct,
+            "lldp_neighbor": direct.get("lldp_neighbor_name"),
+            "interface_name": direct.get("lldp_local_interface"),
+            "neighbor_interface": direct.get("lldp_neighbor_interface"),
+            "neighbor_mac": direct.get("lldp_neighbor_mac"),
+            "neighbor_device_name": direct.get("lldp_neighbor_name"),
+        }
     for line in (output or "").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("-") or stripped.lower().startswith(("chassis id", "system name")):
@@ -136,6 +153,17 @@ def parse_fit_ap_transceiver(
                     break
     _normalize_numeric_fields(result)
     return result
+
+
+def parse_fit_ap_transceiver_diagnosis_snapshots(output: str) -> list[dict[str, object | None]]:
+    snapshots = []
+    for item in parse_transceiver_diagnosis(output):
+        row = dict(item)
+        row["optical_interface"] = row.get("interface_name")
+        row["optical_interface_normalized"] = normalize_interface_key(row.get("interface_name"))
+        _normalize_numeric_fields(row)
+        snapshots.append(row)
+    return snapshots
 
 
 def _select_transceiver_module(

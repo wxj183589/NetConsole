@@ -4,6 +4,7 @@ import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -23,6 +24,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
 from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
+from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label, resolve_fit_ap_link_info
 from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
@@ -35,19 +37,92 @@ from netconsole.core.state_engine import display_optical_status
 
 FIT_AP_DETAIL_TABS = ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
 LLDP_COLUMNS = (
-    ("ac.lldp_neighbor", "lldp_neighbor"),
-    ("ap.neighbor_interface", "neighbor_interface"),
-    ("ap.neighbor_mac", "neighbor_mac"),
-    ("ap.neighbor_device_name", "neighbor_device_name"),
-    ("ap.neighbor_rx_power", "neighbor_rx_power"),
+    ("LLDP本地口", "lldp_local_interface"),
+    ("LLDP邻居名称", "lldp_neighbor_name"),
+    ("LLDP邻居MAC", "lldp_neighbor_mac"),
+    ("LLDP邻居接口", "lldp_neighbor_interface"),
+    ("邻居设备名称", "neighbor_device_name"),
+    ("LLDP来源", "lldp_source"),
+    ("LLDP匹配状态", "lldp_match_status"),
+    ("采集时间", "lldp_collected_at"),
 )
 OPTICAL_COLUMNS = (
-    ("ap.interface", "interface_name"),
+    ("光衰接口", "optical_interface"),
+    ("RX光功率", "optical_rx_power"),
+    ("TX光功率", "optical_tx_power"),
+    ("details.rx_low_alarm", "rx_low_alarm"),
+    ("details.rx_high_alarm", "rx_high_alarm"),
+    ("details.tx_low_alarm", "tx_low_alarm"),
+    ("details.tx_high_alarm", "tx_high_alarm"),
     ("ap.temperature", "temperature"),
-    ("ap.tx_power", "tx_power"),
-    ("ap.rx_power", "rx_power"),
-    ("ap.optical_alarm_status", "optical_alarm_status"),
+    ("details.voltage", "voltage"),
+    ("details.bias_current", "bias_current"),
+    ("光衰匹配状态", "optical_match_status"),
+    ("采集时间", "optical_collected_at"),
 )
+RAW_FIELD_GROUPS = (
+    ("AP基础字段", ("ap_name", "apid", "ap_ip", "ap_mac", "model", "serial_number", "state_display", "state_raw", "group_name", "online_time", "site", "updated_at")),
+    ("AP扩展字段", ("site_name", "mileage", "location_note", "direction")),
+    ("Radio字段", ("rid1_channel", "rid1_bandwidth", "rid1_tx_power", "rid1_bbssid", "rid2_channel", "rid2_bandwidth", "rid2_tx_power", "rid2_bbssid", "rid3_channel", "rid3_bandwidth", "rid3_tx_power", "rid3_bbssid")),
+    ("LLDP字段", ("lldp_local_interface", "lldp_neighbor_name", "lldp_neighbor_mac", "lldp_neighbor_interface", "neighbor_device_name", "lldp_source", "lldp_match_status", "lldp_collected_at")),
+    ("光模块字段", ("optical_interface", "optical_rx_power", "optical_tx_power", "rx_low_alarm", "rx_high_alarm", "tx_low_alarm", "tx_high_alarm", "temperature", "voltage", "bias_current", "optical_match_status", "optical_collected_at")),
+    ("系统字段", ("ap_uuid", "ac_device_uuid", "collect_run_uuid", "raw_log_path", "created_at")),
+)
+RAW_FIELD_LABELS = {
+    "ac_device_uuid": "AC UUID",
+    "ap_uuid": "AP UUID",
+    "ap_name": "AP名称",
+    "apid": "APID",
+    "ap_ip": "AP IP",
+    "ap_mac": "AP MAC",
+    "model": "型号",
+    "serial_number": "SN",
+    "state_display": "状态",
+    "state_raw": "原始状态",
+    "group_name": "AP组",
+    "online_time": "在线时长",
+    "site": "站点",
+    "site_name": "站点",
+    "mileage": "里程",
+    "location_note": "点位说明",
+    "direction": "上下行",
+    "updated_at": "更新时间",
+    "rid1_channel": "RID1信道",
+    "rid1_bandwidth": "RID1频宽",
+    "rid1_tx_power": "RID1功率",
+    "rid1_bbssid": "RID1 BSSID",
+    "rid2_channel": "RID2信道",
+    "rid2_bandwidth": "RID2频宽",
+    "rid2_tx_power": "RID2功率",
+    "rid2_bbssid": "RID2 BSSID",
+    "rid3_channel": "RID3信道",
+    "rid3_bandwidth": "RID3频宽",
+    "rid3_tx_power": "RID3功率",
+    "rid3_bbssid": "RID3 BSSID",
+    "lldp_local_interface": "LLDP本地口",
+    "lldp_neighbor_name": "LLDP邻居名称",
+    "lldp_neighbor_mac": "LLDP邻居MAC",
+    "lldp_neighbor_interface": "LLDP邻居接口",
+    "neighbor_device_name": "邻居设备名称",
+    "lldp_source": "LLDP来源",
+    "lldp_match_status": "LLDP匹配状态",
+    "lldp_collected_at": "LLDP采集时间",
+    "optical_interface": "光衰接口",
+    "optical_rx_power": "RX光功率",
+    "optical_tx_power": "TX光功率",
+    "rx_low_alarm": "RX低告警",
+    "rx_high_alarm": "RX高告警",
+    "tx_low_alarm": "TX低告警",
+    "tx_high_alarm": "TX高告警",
+    "temperature": "温度",
+    "voltage": "电压",
+    "bias_current": "偏置电流",
+    "optical_match_status": "光衰匹配状态",
+    "optical_collected_at": "光衰采集时间",
+    "collect_run_uuid": "采集批次",
+    "raw_log_path": "原始日志路径",
+    "created_at": "创建时间",
+}
 
 
 class FitApDetailDialog(QWidget):
@@ -89,6 +164,7 @@ class FitApDetailDialog(QWidget):
         self.lldp_table = QTableWidget()
         self.optical_table = QTableWidget()
         self.raw_fields_table = QTableWidget()
+        self.show_empty_raw_fields_checkbox = QCheckBox()
         self.raw_fields_pagination = PaginationWidget(self.i18n)
         self.raw_field_rows: list[dict[str, object | None]] = []
         self.raw_fields_page = 1
@@ -133,9 +209,10 @@ class FitApDetailDialog(QWidget):
         self.optical_history_button.clicked.connect(lambda: self.open_history("optical"))
         self.raw_fields_pagination.pageChanged.connect(self.set_raw_fields_page)
         self.raw_fields_pagination.pageSizeChanged.connect(self.set_raw_fields_page_size)
+        self.show_empty_raw_fields_checkbox.toggled.connect(self.refresh_raw_fields_page)
         self.retranslate()
         self.refresh()
-        self.tabs.setCurrentWidget(self.raw_fields_tab)
+        self.tabs.setCurrentWidget(self.basic_tab)
         app_logger.log_info("FIT_AP_DETAIL_OPENED", f"ap_uuid={ap_uuid}, ap={self.ap_name}")
 
     def _build_basic_tab(self) -> None:
@@ -149,6 +226,10 @@ class FitApDetailDialog(QWidget):
             ("field.status", "state_display"),
             ("ac.group_name", "group_name"),
             ("ac.online_time", "online_time"),
+            ("ac.site", "site"),
+            ("ac.mileage", "mileage"),
+            ("ac.location_note", "location_note"),
+            ("ac.direction", "direction"),
             ("field.updated_at", "updated_at"),
         ):
             label = QLabel()
@@ -172,8 +253,8 @@ class FitApDetailDialog(QWidget):
         self.metadata_tab.setLayout(form)
 
     def _build_radio_tab(self) -> None:
-        self.radio_table.setColumnCount(4)
-        set_table_column_fields(self.radio_table, ["rid", "channel", "bandwidth", "tx_power"])
+        self.radio_table.setColumnCount(5)
+        set_table_column_fields(self.radio_table, ["rid", "channel", "bandwidth", "tx_power", "bbssid"])
         layout = QVBoxLayout()
         actions = QHBoxLayout()
         actions.addWidget(self.radio_history_button)
@@ -209,6 +290,7 @@ class FitApDetailDialog(QWidget):
         self.raw_fields_table.setWordWrap(True)
         set_table_column_fields(self.raw_fields_table, ["name", "value"])
         layout = QVBoxLayout()
+        layout.addWidget(self.show_empty_raw_fields_checkbox)
         layout.addWidget(self.raw_fields_table, 1)
         layout.addWidget(self.raw_fields_pagination)
         self.raw_fields_tab.setLayout(layout)
@@ -228,9 +310,10 @@ class FitApDetailDialog(QWidget):
         for index in range(self.basic_tab.layout().rowCount()):
             label = self.basic_tab.layout().itemAt(index, QFormLayout.LabelRole).widget()
             label.setText(self.i18n.t(label.property("translation_key")))
-        self.radio_table.setHorizontalHeaderLabels(["RID", self.i18n.t("ap.channel"), self.i18n.t("ap.bandwidth"), self.i18n.t("ap.tx_power")])
+        self.radio_table.setHorizontalHeaderLabels(["RID", self.i18n.t("ap.channel"), self.i18n.t("ap.bandwidth"), self.i18n.t("ap.tx_power"), "BSSID"])
         self.lldp_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in LLDP_COLUMNS])
         self.optical_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in OPTICAL_COLUMNS])
+        self.show_empty_raw_fields_checkbox.setText("Show empty fields" if self.i18n.language.startswith("en") else "显示空字段")
         field_header = "Field" if self.i18n.language.startswith("en") else "字段"
         self.raw_fields_table.setHorizontalHeaderLabels([field_header, self.i18n.t("field.value")])
         self.raw_fields_pagination.retranslate()
@@ -239,8 +322,16 @@ class FitApDetailDialog(QWidget):
         resource = self.repository.get_fit_ap_resource_by_uuid(self.ac_device_uuid, self.ap_uuid) or self.repository.get_fit_ap_resource(self.ac_device_uuid, self.ap_name) or {}
         optical = self.repository.get_fit_ap_optical_by_uuid(self.ac_device_uuid, self.ap_uuid) or {}
         metadata = self.repository.get_fit_ap_metadata_by_uuid(self.ap_uuid) or {}
+        link_info = resolve_fit_ap_link_info({**resource, **optical})
+        basic_source = {
+            **resource,
+            "site": metadata.get("site_name") or resource.get("site") or optical.get("site"),
+            "mileage": metadata.get("mileage") or resource.get("mileage"),
+            "location_note": metadata.get("location_note") or resource.get("location_note"),
+            "direction": normalize_direction(str(metadata.get("direction") or resource.get("direction") or "")),
+        }
         for field, label in self.basic_labels.items():
-            value = resource.get(field)
+            value = basic_source.get(field)
             if field == "state_display":
                 value = value or resource.get("state")
                 label.setToolTip(f"{self.i18n.t('ap.state_raw')}: {resource.get('state_raw') or resource.get('state') or '-'}")
@@ -252,10 +343,11 @@ class FitApDetailDialog(QWidget):
         index = self.direction_combo.findData(direction)
         self.direction_combo.setCurrentIndex(index if index >= 0 else 0)
         self._set_radio_table(resource)
-        self._set_table(self.lldp_table, LLDP_COLUMNS, [optical] if optical else [])
+        self._set_table(self.lldp_table, LLDP_COLUMNS, [link_info] if link_info else [])
         summary = self.optical_history_service.get_latest_optical_summary(self.ac_device_uuid, self.ap_uuid)
-        self._set_table(self.optical_table, OPTICAL_COLUMNS, [summary] if summary else [])
-        self._set_raw_fields_table(resource, metadata, optical)
+        optical_info = resolve_fit_ap_link_info({**resource, **optical, **(summary or {})})
+        self._set_table(self.optical_table, OPTICAL_COLUMNS, [optical_info] if optical_info else [])
+        self._set_raw_fields_table(resource, metadata, optical_info)
 
     def save_metadata(self) -> None:
         self.repository.upsert_fit_ap_metadata(
@@ -278,7 +370,7 @@ class FitApDetailDialog(QWidget):
     def _set_radio_table(self, row: dict[str, object | None]) -> None:
         self.radio_table.setRowCount(3)
         for index, rid in enumerate((1, 2, 3)):
-            values = [rid, row.get(f"rid{rid}_channel"), row.get(f"rid{rid}_bandwidth"), row.get(f"rid{rid}_tx_power")]
+            values = [rid, row.get(f"rid{rid}_channel"), row.get(f"rid{rid}_bandwidth"), row.get(f"rid{rid}_tx_power"), row.get(f"rid{rid}_bbssid")]
             for column, value in enumerate(values):
                 self.radio_table.setItem(index, column, QTableWidgetItem(str(value) if value not in (None, "") else "-"))
                 self.radio_table.item(index, column).setTextAlignment(Qt.AlignCenter)
@@ -290,34 +382,27 @@ class FitApDetailDialog(QWidget):
         source_rows = rows or [{}]
         for row_index, row in enumerate(source_rows):
             for column_index, (_key, field) in enumerate(columns):
-                value = display_optical_status(compute_ap_status(row), "zh") if field == "optical_alarm_status" else row.get(field)
+                value = display_optical_status(compute_ap_status(row), "zh") if field == "optical_alarm_status" else _detail_display_value(row, field)
                 item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
                 item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(row_index, column_index, item)
         auto_resize_table_columns(table)
 
     def _set_raw_fields_table(self, resource: dict[str, object | None], metadata: dict[str, object | None], optical: dict[str, object | None]) -> None:
-        rows: list[dict[str, object | None]] = []
-        for group, fields, source in (
-            ("resource", FIT_AP_RESOURCE_FIELDS, resource),
-            ("metadata", FIT_AP_METADATA_FIELDS, metadata),
-            ("optical", FIT_AP_OPTICAL_FIELDS, optical),
-        ):
-            field_names = [*fields, *(field for field in source if field not in fields)]
-            rows.extend({"name": f"{group}.{field}", "value": source.get(field)} for field in field_names)
-        self.raw_field_rows = rows
+        self.raw_field_rows = build_fit_ap_detail_fields(resource, metadata, optical, show_empty=True)
         self.raw_fields_page = 1
         self.refresh_raw_fields_page()
 
     def refresh_raw_fields_page(self) -> None:
-        rows, state = paginate_rows(self.raw_field_rows, self.raw_fields_page_size, self.raw_fields_page)
+        source_rows = self.raw_field_rows if self.show_empty_raw_fields_checkbox.isChecked() else [row for row in self.raw_field_rows if not _is_empty_raw_field_value(row.get("value"))]
+        rows, state = paginate_rows(source_rows, self.raw_fields_page_size, self.raw_fields_page)
         self.raw_fields_page = state.current_page
         self.raw_fields_pagination.set_state(state)
         self.raw_fields_table.setUpdatesEnabled(False)
         self.raw_fields_table.setSortingEnabled(False)
         self.raw_fields_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            for column_index, item_value in enumerate((row.get("name"), _format_raw_field_value(row.get("value")))):
+            for column_index, item_value in enumerate((row.get("name"), _format_raw_field_value(row.get("value"), str(row.get("field") or "")))):
                 item = QTableWidgetItem(item_value if item_value not in (None, "") else "-")
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setToolTip(item.text())
@@ -398,9 +483,52 @@ class FitApDetailDialog(QWidget):
         if self.settings.get_value("ac/ap_detail/window_maximized", False):
             self.showMaximized()
 
-def _format_raw_field_value(value: object) -> str:
+
+def _detail_display_value(row: dict[str, object | None], field: str) -> object:
+    value = row.get(field)
+    if field == "lldp_source":
+        return lldp_source_label(value)
+    if field in {"lldp_match_status", "optical_match_status", "link_match_status"}:
+        return lldp_display_status(value)
+    return value
+
+
+def build_fit_ap_detail_fields(
+    resource: dict[str, object | None],
+    metadata: dict[str, object | None],
+    optical: dict[str, object | None],
+    show_empty: bool = False,
+) -> list[dict[str, object | None]]:
+    combined = {**resource, **metadata, **optical}
+    rows: list[dict[str, object | None]] = []
+    used_fields: set[str] = set()
+    for group_label, fields in RAW_FIELD_GROUPS:
+        for field in fields:
+            used_fields.add(field)
+            value = combined.get(field)
+            if not show_empty and _is_empty_raw_field_value(value):
+                continue
+            rows.append({"name": f"{group_label} / {RAW_FIELD_LABELS.get(field, field)}", "field": field, "value": value})
+    for field in sorted(set(combined) - used_fields):
+        value = combined.get(field)
+        if not show_empty and _is_empty_raw_field_value(value):
+            continue
+        rows.append({"name": f"系统字段 / {RAW_FIELD_LABELS.get(field, field)}", "field": field, "value": value})
+    return rows
+
+
+def _is_empty_raw_field_value(value: object) -> bool:
+    text = str(value or "").strip()
+    return text == "" or text in {"-", "N/A", "未知"} or text.casefold() in {"n/a", "unknown", "none", "null"}
+
+
+def _format_raw_field_value(value: object, field: str = "") -> str:
     if value in (None, ""):
         return "-"
+    if field == "lldp_source":
+        return lldp_source_label(value)
+    if field in {"lldp_match_status", "optical_match_status", "link_match_status"}:
+        return lldp_display_status(value)
     if isinstance(value, (dict, list, tuple, set)):
         return json.dumps(value, ensure_ascii=False, indent=2, default=str)
     return str(value)

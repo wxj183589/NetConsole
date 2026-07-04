@@ -8,7 +8,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QSplitter, QTableWidget, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
@@ -21,7 +21,8 @@ from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.state_engine import compute_state, STATUS_COLORS
 from netconsole.models.device import Device
-from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver
+from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import parse_fit_ap_lldp_neighbor
+from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver, parse_fit_ap_transceiver_diagnosis_snapshots
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
@@ -32,10 +33,22 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.fit_ap_import_export import AP_EXTENSION_TEMPLATE_FIELDS, FitApImportExportService
+from netconsole.services.fit_ap_link_info import format_h3c_mac, merge_lldp_payload, normalize_interface_key, normalize_mac as normalize_link_mac, resolve_fit_ap_link_info, resolve_optical_match_status
+from netconsole.services.external_terminal import ExternalTerminalConfig, ExternalTerminalLaunchResult
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
 from netconsole.services.device_web_service import build_https_url, effective_https_port, parse_https_port
-from netconsole.services.h3c_ac_collect_service import FIT_AP_RESOURCE_COMMANDS, FIT_AP_RESOURCE_OPTIONAL_COMMANDS, HTTPS_PORT_COMMANDS, RESOURCE_COMMANDS, collect_h3c_ac_resources
+from netconsole.parsers.h3c.ac.wlan_ap_lldp_parser import parse_wlan_ap_lldp
+from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
+from netconsole.services.h3c_ac_collect_service import (
+    FIT_AP_RESOURCE_COMMANDS,
+    FIT_AP_RESOURCE_OPTIONAL_COMMANDS,
+    HTTPS_PORT_COMMANDS,
+    RESOURCE_COMMANDS,
+    collect_h3c_ac_info,
+    collect_h3c_ac_resources,
+    collect_h3c_fit_ap_resources,
+)
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
 from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
@@ -80,7 +93,6 @@ from netconsole.services.trackside_ap_business import (
     trackside_row_status,
 )
 from netconsole.ui.theme.qt_theme_engine import apply_theme
-from netconsole.ui.render.table_render_engine import AP_MAC_COLUMN_WIDTH, AP_NAME_MIN_WIDTH, MEDIUM_PRIORITY_MAX_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.pagination import paginate_rows
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
@@ -104,11 +116,12 @@ from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.mesh_log_analysis_page import MESH_ANALYSIS_REPORT_ENABLED, MeshLogAnalysisPage
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage, read_trackside_plan_file, _dotted_netmask_to_prefix, _parse_mask_length
 from netconsole.ui.pages.trackside_ap_service_page import TracksideApServicePage
+from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 from netconsole.ui.trackside_optical_worker import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
 from netconsole.ui.ac_collect_worker import AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.dialogs.ap_detail_dialog import ApDetailDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog, export_ap_history_xlsx
-from netconsole.ui.dialogs.fit_ap_detail_dialog import FIT_AP_DETAIL_TABS, OPTICAL_COLUMNS, FitApDetailDialog
+from netconsole.ui.dialogs.fit_ap_detail_dialog import FIT_AP_DETAIL_TABS, LLDP_COLUMNS, OPTICAL_COLUMNS, FitApDetailDialog
 from netconsole.ui.dialogs.station_online_history_dialog import STATION_ONLINE_HISTORY_COLUMNS, StationOnlineHistoryDialog, export_station_online_history_xlsx
 from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
 from netconsole.core.optical_severity_engine import display_optical_status
@@ -145,6 +158,8 @@ class FakeConnection:
             "display wlan ap all address": fixture("display_wlan_ap_all_address.txt"),
             "display wlan ap all radio": fixture("display_wlan_ap_all_radio.txt"),
             "display wlan ap unauthenticated": "Total number of connected auto APs: 0\n\nAP information:\nAP name APID State Model Serial ID Dev-Type Work-mode\n",
+            "display wlan ap all radio verbose filter bbssid": "AP name              RID bbssid\nAP1                  1   0011-2233-4455\n",
+            "display wlan ap all lldp": "AP name                        Local Interface          Neighbor Name                  Neighbor MAC    Neighbor Interface\nAP1                            GE1/0/2                  N/A                            903f-8645-6e00  GigabitEthernet2/0/19\n",
             "display cpu-usage": fixture("display_cpu_usage.txt"),
             "display memory": fixture("display_memory.txt"),
             "display ip https | include port": "HTTPS port: 443\n",
@@ -618,6 +633,57 @@ def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
     assert [row["lldp_neighbor"] for row in history[:2]] == ["SW02", "SW01"]
     assert history[0]["local_interface"] == "GigabitEthernet1/0/2"
     assert history[0]["neighbor_device_name"] == "HX_2"
+
+
+def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "ap-a",
+                "serial_number": "SN-001",
+                "ap_mac": "0011-2233-4455",
+                "lldp_source": "ac_bulk_lldp",
+                "lldp_local_interface": "GE1/0/2",
+                "lldp_neighbor_name": "N/A",
+                "lldp_neighbor_mac": "903f-8645-6e00",
+                "lldp_neighbor_interface": "GE2/0/19",
+                "collected_at": "2026-01-01T00:00:00",
+            }
+        ],
+    )
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+
+    direct_payload = {
+        "ap_uuid": ap_uuid,
+        "ap_name": "ap-a",
+        "ap_mac": "0011-2233-4455",
+        "lldp_source": "ap_direct_lldp",
+        "lldp_local_interface": "GigabitEthernet1/0/2",
+        "lldp_neighbor_name": "HX_1",
+        "lldp_neighbor_mac": "90:3f:86:45:6e:00",
+        "lldp_neighbor_interface": "GigabitEthernet2/0/19",
+        "interface_name": "GigabitEthernet1/0/2",
+        "rx_power": "-7.55",
+        "tx_power": "-6.09",
+        "collected_at": "2026-01-02T00:00:00",
+    }
+    repository.replace_fit_ap_optical("ac-1", [direct_payload])
+    repository.replace_fit_ap_optical("ac-1", [{**direct_payload, "collected_at": "2026-01-03T00:00:00"}])
+
+    resource = repository.get_fit_ap_resource_by_uuid("ac-1", ap_uuid)
+    history = repository.list_fit_ap_lldp_history_by_ap(ap_uuid)
+
+    assert resource["lldp_neighbor_name"] == "HX_1"
+    assert resource["lldp_source"] == "merged"
+    assert resource["lldp_match_status"] == "matched"
+    assert resource["optical_interface"] == "GigabitEthernet1/0/2"
+    assert resource["optical_rx_power"] == -7.55
+    assert resource["optical_match_status"] == "matched"
+    assert [row["source"] for row in history[:3]] == ["ap_direct_lldp", "ap_direct_lldp", "ac_bulk_lldp"]
+    assert history[0]["is_changed"] == 0
+    assert history[1]["is_changed"] == 1
 
 
 def test_fit_ap_optical_failed_row_does_not_overwrite_valid_rx(tmp_path):
@@ -1256,24 +1322,149 @@ def test_real_machine_wlan_parsers_read_large_fixture():
     assert radios["AP-CLD_01"]["rid1_channel"] == "149"
 
 
+def test_wlan_ap_radio_verbose_bbssid_parser_groups_by_ap_name():
+    parsed = parse_wlan_ap_radio_verbose_bbssid(
+        """
+Total number of APs: 932
+
+                             Radio Filtered Information
+  bbssid = Base BSSID
+
+AP name              RID bbssid
+30f5-277a-0ea0       1   30f5-277a-0ea0
+30f5-277a-0ea0       2   30f5-277a-0eb0
+30f5-277a-0ee0       1   30f5-277a-0ee0
+30f5-277a-0ee0       2   30f5-277a-0ef0
+30f5-277a-0f00       1   30f5-277a-0f00
+"""
+    )
+
+    assert parsed["30f5-277a-0ea0"]["rid1_bbssid"] == "30f5-277a-0ea0"
+    assert parsed["30f5-277a-0ea0"]["rid2_bbssid"] == "30f5-277a-0eb0"
+    assert parsed["30f5-277a-0ee0"]["rid2_bbssid"] == "30f5-277a-0ef0"
+
+
+def test_wlan_ap_lldp_parser_keeps_neighbor_interface():
+    parsed = parse_wlan_ap_lldp(
+        """
+AP name                        Local Interface          Neighbor Name                  Neighbor MAC    Neighbor Interface
+30f5-277a-0ea0                 GE1/0/2                  N/A                            903f-8645-6e00  GigabitEthernet2/0/19
+30f5-277a-0ee0                 GE1/0/2                  N/A                            903f-8645-a600  GigabitEthernet2/0/8
+30f5-277a-0f00                 GE1/0/2                  N/A                            903f-8645-fa00  GigabitEthernet2/0/38
+"""
+    )
+
+    assert parsed["30f5-277a-0ea0"]["lldp_local_interface"] == "GigabitEthernet1/0/2"
+    assert parsed["30f5-277a-0ea0"]["lldp_neighbor_name"] == "N/A"
+    assert parsed["30f5-277a-0ea0"]["lldp_neighbor_mac"] == "903f-8645-6e00"
+    assert parsed["30f5-277a-0ea0"]["lldp_neighbor_interface"] == "GigabitEthernet2/0/19"
+    assert parsed["30f5-277a-0ea0"]["lldp_source"] == "ac_bulk_lldp"
+    assert parsed["30f5-277a-0ea0"]["lldp_local_interface_normalized"] == "ge1/0/2"
+    assert parsed["30f5-277a-0ea0"]["lldp_neighbor_mac_normalized"] == "903f86456e00"
+
+
+def test_fit_ap_direct_lldp_parser_normalizes_neighbor_row():
+    parsed = parse_fit_ap_lldp_neighbor(
+        """
+System Name          Local Interface  Chassis ID       Port ID
+HX_1                 GE1/0/2          903f-8645-6e00   GigabitEthernet2/0/19
+"""
+    )
+
+    assert parsed["lldp_source"] == "ap_direct_lldp"
+    assert parsed["lldp_neighbor_name"] == "HX_1"
+    assert parsed["lldp_local_interface"] == "GigabitEthernet1/0/2"
+    assert parsed["lldp_local_interface_normalized"] == "ge1/0/2"
+    assert parsed["lldp_neighbor_mac"] == "903f-8645-6e00"
+    assert parsed["lldp_neighbor_mac_normalized"] == "903f86456e00"
+    assert parsed["lldp_neighbor_interface"] == "GigabitEthernet2/0/19"
+
+
+def test_fit_ap_transceiver_snapshot_parser_marks_optical_interface():
+    snapshots = parse_fit_ap_transceiver_diagnosis_snapshots(
+        """
+GigabitEthernet1/0/2 transceiver diagnostic information:
+Current diagnostic parameters:
+Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+43       3.31       6.10     -7.55         -6.09
+"""
+    )
+
+    assert snapshots[0]["interface_name"] == "GigabitEthernet1/0/2"
+    assert snapshots[0]["optical_interface"] == "GigabitEthernet1/0/2"
+    assert snapshots[0]["optical_interface_normalized"] == "ge1/0/2"
+    assert snapshots[0]["rx_power"] == "-7.55"
+
+
+def test_fit_ap_link_normalization_and_merge_prioritize_ap_direct_lldp():
+    assert normalize_interface_key("GE1/0/2") == normalize_interface_key("GigabitEthernet1/0/2") == "ge1/0/2"
+    assert normalize_link_mac("90:3f:86:45:6e:00") == "903f86456e00"
+    assert format_h3c_mac("903f86456e00") == "903f-8645-6e00"
+
+    merged = merge_lldp_payload(
+        {
+            "lldp_source": "ac_bulk_lldp",
+            "lldp_local_interface": "GE1/0/2",
+            "lldp_neighbor_name": "N/A",
+            "lldp_neighbor_mac": "903f-8645-6e00",
+            "lldp_neighbor_interface": "GE2/0/19",
+        },
+        {
+            "lldp_source": "ap_direct_lldp",
+            "lldp_local_interface": "GigabitEthernet1/0/2",
+            "lldp_neighbor_name": "HX_1",
+            "lldp_neighbor_mac": "90:3f:86:45:6e:00",
+            "lldp_neighbor_interface": "GigabitEthernet2/0/19",
+        },
+    )
+
+    assert merged["lldp_neighbor_name"] == "HX_1"
+    assert merged["lldp_source"] == "merged"
+    assert merged["lldp_confidence"] == 90
+    assert merged["lldp_match_status"] == "matched"
+    assert resolve_optical_match_status(merged, {"optical_interface": "GE1/0/2", "rx_power": "-7.55"}) == "matched"
+    assert resolve_optical_match_status(merged, {"optical_interface": "GE1/0/3", "rx_power": "-7.55"}) == "conflict"
+
+
+def test_fit_ap_link_view_model_maps_legacy_fields_to_current_fields():
+    resolved = resolve_fit_ap_link_info(
+        {
+            "lldp_neighbor": "HX_1",
+            "neighbor_interface": "GigabitEthernet2/0/19",
+            "neighbor_mac": "903f-8645-6e00",
+            "neighbor_device_name": "04-横溪站",
+            "neighbor_rx_power": "-7.55",
+            "interface_name": "GE1/0/2",
+        }
+    )
+
+    assert resolved["lldp_neighbor_name"] == "HX_1"
+    assert resolved["lldp_neighbor_interface"] == "GigabitEthernet2/0/19"
+    assert resolved["lldp_neighbor_mac"] == "903f-8645-6e00"
+    assert resolved["lldp_neighbor_mac_normalized"] == "903f86456e00"
+    assert resolved["neighbor_device_name"] == "04-横溪站"
+    assert resolved["lldp_source"] == "legacy_compat"
+    assert resolved["lldp_match_status"] == "matched"
+    assert resolved["optical_rx_power"] == "-7.55"
+    assert resolved["optical_match_status"] == "matched"
+
+
 def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     connection = FakeConnection()
     monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
     database = make_database(tmp_path)
     repository = AcRepository(database)
 
-    result = collect_h3c_ac_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_fit_ap_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
 
     assert result.success is True
     assert result.summary_updated is True
     assert result.fit_ap_resources_updated == 2
-    assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS, "display ip https"]
+    assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS]
     assert connection.disconnected is True
     assert result.raw_log_path == ""
     assert not (PathResolver(tmp_path).site_dir("demo") / "raw").exists()
     assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["total_aps"] == 2
-    assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["cpu_usage"] == "16%"
-    assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["memory_usage"] == "47%"
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
 
 
@@ -1283,12 +1474,11 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     database = make_database(tmp_path)
     repository = AcRepository(database)
 
-    result = collect_h3c_ac_resources(
+    result = collect_h3c_fit_ap_resources(
         make_ac_device(),
         "demo",
         repository=repository,
         paths=PathResolver(tmp_path),
-        refresh_ac_overview=False,
     )
 
     assert result.success is True
@@ -1328,12 +1518,11 @@ def test_h3c_ac_resource_only_collect_preserves_static_summary_fields(monkeypatc
         }
     )
 
-    collect_h3c_ac_resources(
+    collect_h3c_fit_ap_resources(
         make_ac_device(),
         "demo",
         repository=repository,
         paths=PathResolver(tmp_path),
-        refresh_ac_overview=False,
     )
 
     summary = repository.get_ac_ap_summary(ac_uuid)
@@ -1355,12 +1544,11 @@ def test_h3c_ac_resource_only_collect_does_not_overwrite_summary_when_ap_all_fai
     ac_uuid = "22222222-2222-4222-8222-222222222222"
     repository.upsert_ac_ap_summary({"ac_device_uuid": ac_uuid, "total_aps": 82, "online_aps": 58, "offline_aps": 24})
 
-    result = collect_h3c_ac_resources(
+    result = collect_h3c_fit_ap_resources(
         make_ac_device(),
         "demo",
         repository=repository,
         paths=PathResolver(tmp_path),
-        refresh_ac_overview=False,
     )
 
     summary = repository.get_ac_ap_summary(ac_uuid)
@@ -1388,7 +1576,7 @@ def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
     monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
     messages: list[str] = []
 
-    result = collect_h3c_ac_resources(
+    result = collect_h3c_fit_ap_resources(
         make_ac_device(),
         "demo",
         repository=AcRepository(make_database(tmp_path)),
@@ -1411,7 +1599,7 @@ def test_h3c_ac_collect_service_saves_https_port(monkeypatch, tmp_path):
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
 
     assert result.success is True
     assert result.https_port == 443
@@ -1428,7 +1616,7 @@ def test_h3c_ac_collect_service_saves_non_default_https_port(monkeypatch, tmp_pa
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
 
     assert result.success is True
     assert result.https_port == 10443
@@ -1445,7 +1633,7 @@ def test_h3c_ac_collect_service_reports_https_port_save_failure(monkeypatch, tmp
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
 
     assert result.success is True
     assert result.https_port == 10443
@@ -1474,7 +1662,7 @@ def test_h3c_ac_collect_service_falls_back_to_full_https_command(monkeypatch, tm
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_resources(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
 
     assert result.success is True
     assert result.https_port == 8443
@@ -1490,7 +1678,7 @@ def test_h3c_ac_collect_service_keeps_existing_https_port_on_collect_failure(mon
     ac_device = device_repository.create(make_ac_device())
     device_repository.update_https_port(int(ac_device.id), 443)
 
-    result = collect_h3c_ac_resources(device_repository.get(int(ac_device.id)), "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(device_repository.get(int(ac_device.id)), "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
 
     assert result.success is True
     assert result.https_port is None
@@ -1558,9 +1746,9 @@ def test_h3c_ac_collect_service_validates_commands_before_execution(monkeypatch,
     database = make_database(tmp_path)
     repository = AcRepository(database)
 
-    collect_h3c_ac_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    collect_h3c_fit_ap_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
 
-    assert calls == [(["screen-length disable", *RESOURCE_COMMANDS, *HTTPS_PORT_COMMANDS], "ac_collect")]
+    assert calls == [(["screen-length disable", *RESOURCE_COMMANDS], "ac_fit_ap_resource_collect")]
 
 
 def test_ac_management_page_column_configuration_exists(tmp_path):
@@ -1575,12 +1763,43 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "ap_ip",
         "ap_mac",
         "model",
-        "serial_number",
         "state_display",
         "group_name",
         "online_time",
+        "rid1_channel",
+        "rid1_bandwidth",
+        "rid1_tx_power",
+        "rid2_channel",
+        "rid2_bandwidth",
+        "rid2_tx_power",
+        "site",
+        "mileage",
+        "location_note",
+        "direction",
         "updated_at",
     ]
+    resource_fields = [field for _key, field in FIT_AP_RESOURCE_COLUMNS]
+    for hidden_field in (
+        "rid1_bbssid",
+        "rid2_bbssid",
+        "serial_number",
+        "rid3_channel",
+        "rid3_bandwidth",
+        "rid3_tx_power",
+        "rid3_bbssid",
+        "lldp_local_interface",
+        "lldp_neighbor_name",
+        "lldp_neighbor_mac",
+        "lldp_neighbor_interface",
+        "lldp_source",
+        "lldp_match_status",
+        "optical_interface",
+        "optical_rx_power",
+        "optical_tx_power",
+        "optical_collected_at",
+        "optical_match_status",
+    ):
+        assert hidden_field not in resource_fields
     assert [field for _key, field in FIT_AP_OPTICAL_COLUMNS] == [
         "ap_name",
         "ap_mac",
@@ -1613,7 +1832,8 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
     assert "field.mac_address" not in resource_headers
     assert "AP_MAC" in resource_headers
     assert "AP_IP" in resource_headers
-    assert "SN" in resource_headers
+    assert "SN" not in resource_headers
+    assert isinstance(page.resources_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
     assert page.tabs.tabText(0) == "Trackside AP Plan"
     assert page.tabs.tabText(1) == "AP Online Overview"
     assert page.tabs.tabText(2) == "FIT-AP Resources"
@@ -2169,12 +2389,20 @@ def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):
     fields = [field for _key, field in FIT_AP_RESOURCE_COLUMNS]
     ap_name_column = fields.index("ap_name")
     ap_mac_column = fields.index("ap_mac")
-    widths = page.resources_table.property("netconsole_auto_layout_widths")
+    select_column = fields.index("select")
+    check_item = page.resources_table.item(0, 0)
 
-    assert page.resources_table.horizontalHeader().sectionResizeMode(ap_name_column) == QHeaderView.Stretch
-    assert widths[ap_name_column] >= AP_NAME_MIN_WIDTH
+    assert page.resources_table.cellWidget(0, 0) is None
+    assert check_item is not None
+    assert check_item.flags() & Qt.ItemIsUserCheckable
+    assert check_item.text() == ""
+    assert check_item.textAlignment() == Qt.AlignmentFlag.AlignCenter
+    assert isinstance(page.resources_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
+    assert page.resources_table.horizontalHeader().sectionResizeMode(ap_name_column) == QHeaderView.Interactive
     assert page.resources_table.horizontalHeader().sectionResizeMode(ap_mac_column) == QHeaderView.Interactive
-    assert 112 <= widths[ap_mac_column] <= MEDIUM_PRIORITY_MAX_WIDTH
+    assert page.resources_table.columnWidth(select_column) <= 54
+    assert page.resources_table.columnWidth(ap_name_column) >= 130
+    assert page.resources_table.columnWidth(ap_mac_column) >= 130
     assert page.resources_table.verticalHeader().defaultSectionSize() == 36
     assert page.resources_table.rowHeight(0) == 36
 
@@ -2264,7 +2492,71 @@ def test_fit_ap_resource_selection_survives_filtering(tmp_path):
     assert page.selected_ap_names() == ["ap-1"]
 
     page.invert_selection()
+    assert not is_checked_value(page.resources_table.item(0, 0).checkState())
+    assert is_checked_value(page.resources_table.item(1, 0).checkState())
     assert page.selected_ap_names() == ["ap-2"]
+
+    page._set_all_checked(True)
+    assert all(is_checked_value(page.resources_table.item(row, 0).checkState()) for row in range(page.resources_table.rowCount()))
+    assert page.selected_ap_names() == ["ap-1", "ap-2"]
+
+    page.clear_selection()
+    assert all(not is_checked_value(page.resources_table.item(row, 0).checkState()) for row in range(page.resources_table.rowCount()))
+    assert page.selected_ap_names() == []
+
+
+def test_fit_ap_resource_table_double_click_does_not_open_detail(tmp_path, monkeypatch):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(page.resources_table, FIT_AP_RESOURCE_COLUMNS, [{"ap_uuid": "ap-1", "ap_name": "AP-A"}])
+    opened: list[int] = []
+    monkeypatch.setattr(page, "open_ap_detail", lambda row: opened.append(row))
+
+    page.resources_table.doubleClicked.emit(page.resources_table.model().index(0, 0))
+    page.resources_table.doubleClicked.emit(page.resources_table.model().index(0, 1))
+
+    assert opened == []
+
+
+def test_fit_ap_resource_checkbox_delegate_toggles_check_state(tmp_path):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("en_US"), "demo")
+    page._set_rows(page.resources_table, FIT_AP_RESOURCE_COLUMNS, [{"ap_uuid": "ap-1", "ap_name": "AP-A"}])
+    delegate = page.resources_table.itemDelegateForColumn(0)
+    model = page.resources_table.model()
+    index = model.index(0, 0)
+
+    class EventStub:
+        def __init__(self, event_type, key=None, button=Qt.MouseButton.LeftButton):
+            self._event_type = event_type
+            self._key = key
+            self._button = button
+
+        def type(self):
+            return self._event_type
+
+        def key(self):
+            return self._key
+
+        def button(self):
+            return self._button
+
+    assert isinstance(delegate, CheckBoxOnlyDelegate)
+    assert is_checked_value(Qt.CheckState.Checked)
+    assert is_checked_value(2)
+    assert not is_checked_value(None)
+    assert page.resources_table.item(0, 0).checkState() == Qt.CheckState.Unchecked
+
+    assert delegate.editorEvent(EventStub(QEvent.Type.MouseButtonRelease), model, None, index)
+    assert page.resources_table.item(0, 0).checkState() == Qt.CheckState.Checked
+
+    assert delegate.editorEvent(EventStub(QEvent.Type.KeyPress, Qt.Key.Key_Space), model, None, index)
+    assert page.resources_table.item(0, 0).checkState() == Qt.CheckState.Unchecked
+
+    assert not delegate.editorEvent(EventStub(QEvent.Type.MouseButtonRelease, button=Qt.MouseButton.RightButton), model, None, index)
+    assert page.resources_table.item(0, 0).checkState() == Qt.CheckState.Unchecked
 
 
 def test_fit_ap_optical_table_shows_switch_status_and_ap_alarm_separately(tmp_path):
@@ -2430,6 +2722,57 @@ def test_resource_context_menu_contains_scoped_ap_optical_refresh(tmp_path):
 
     assert "Update This AP Optical" in captured
     assert "View Details" in captured
+    assert "打开外部终端" in captured
+    assert captured[:3] == ["View Details", "打开外部终端", "Update This AP Optical"]
+
+
+def test_fit_ap_resource_external_terminal_uses_existing_launcher(tmp_path, monkeypatch):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("zh_CN"), "demo")
+    page.resource_rows = [{"ap_uuid": "ap-1", "ap_name": "AP-A", "ap_ip": "10.0.0.61", "ap_mac": "0011-2233-4455"}]
+    page.apply_resource_pagination()
+    config = ExternalTerminalConfig(terminal_type="putty", exe_path=r"C:\Tools\putty.exe", include_password=True)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.available_external_terminal_configs", lambda _settings: [config])
+
+    def fake_launch(device, selected_config):
+        captured["device"] = device
+        captured["config"] = selected_config
+        return ExternalTerminalLaunchResult(True, "started", [])
+
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.launch_external_terminal", fake_launch)
+
+    page.open_resource_ap_external_terminal(0)
+
+    device = captured["device"]
+    assert captured["config"] is config
+    assert device.name == "AP-A"
+    assert device.primary_address == "10.0.0.61"
+    assert device.ssh_enabled == 0
+    assert device.telnet_enabled == 1
+    assert device.telnet_port == 23
+    assert device.telnet_username == ""
+    assert device.telnet_password == "h3capadmin"
+    assert "h3capadmin" not in page.status_label.text()
+    assert page.status_label.text() == "已打开外部终端：10.0.0.61"
+
+
+def test_fit_ap_resource_external_terminal_requires_ap_ip(tmp_path, monkeypatch):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = AcManagementPage(context.repository, I18n("zh_CN"), "demo")
+    page.resource_rows = [{"ap_uuid": "ap-1", "ap_name": "AP-A", "ap_ip": "", "ap_mac": "0011-2233-4455"}]
+    page.apply_resource_pagination()
+    messages: list[str] = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.launch_external_terminal", lambda *_args, **_kwargs: pytest.fail("launcher should not be called"))
+
+    page.open_resource_ap_external_terminal(0)
+
+    assert messages == ["当前 AP 没有 IP，无法打开外部终端"]
+    assert page.status_label.text() == "当前 AP 没有 IP，无法打开外部终端"
 
 
 def test_fit_ap_optical_filters_do_not_include_ap_mac(tmp_path):
@@ -5591,6 +5934,13 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     text = export_path.read_text(encoding="utf-8-sig")
     assert "AP名称" in text
     assert "ap-a" in text
+    assert "LLDP" not in text
+    assert "BSSID" not in text
+    assert "RID1信道" in text
+    assert "RID2信道" in text
+    assert "RID3信道" not in text
+    headers = text.splitlines()[0].split(",")
+    assert headers.index("RID2功率") < headers.index("归属站点") < headers.index("更新时间")
 
 
 def test_trackside_ap_plan_remark_persists_and_exports(tmp_path):
@@ -5808,9 +6158,11 @@ def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):
     assert dialog.minimumHeight() == 520
     assert dialog.tabs.count() == 6
     assert FIT_AP_DETAIL_TABS == ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
-    assert dialog.tabs.currentWidget() is dialog.raw_fields_tab
+    assert dialog.tabs.currentWidget() is dialog.basic_tab
     assert dialog.raw_fields_table.columnCount() == 2
-    assert dialog.raw_fields_table.item(0, 0).text().startswith("resource.")
+    assert not dialog.show_empty_raw_fields_checkbox.isChecked()
+    assert dialog.raw_fields_table.item(0, 0).text().startswith("AP基础字段 /")
+    assert not dialog.raw_fields_table.item(0, 0).text().startswith(("resource.", "metadata.", "optical."))
     assert dialog.raw_fields_table.rowCount() > 0
     assert repository.get_fit_ap_metadata("ap-a")["site_name"] == "Station A"
 
@@ -5833,6 +6185,43 @@ def test_ap_detail_main_window_shows_optical_summary_and_history_button(tmp_path
     assert dialog.optical_table.item(0, 0).text() == "WLAN-Radio1/0/1"
     assert not hasattr(dialog, "optical_detail_table")
     assert dialog.optical_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+
+
+def test_ap_detail_lldp_and_optical_tabs_use_resolved_link_fields(tmp_path):
+    app()
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [
+            {
+                "ap_uuid": ap_uuid,
+                "ap_name": "ap-a",
+                "interface_name": "GE1/0/2",
+                "lldp_neighbor": "HX_1",
+                "neighbor_interface": "GigabitEthernet2/0/19",
+                "neighbor_mac": "903f-8645-6e00",
+                "neighbor_device_name": "04-横溪站",
+                "neighbor_rx_power": "-7.55",
+            }
+        ],
+    )
+
+    dialog = FitApDetailDialog(I18n("zh_CN"), repository, "ac-1", ap_uuid)
+    lldp_fields = [field for _key, field in LLDP_COLUMNS]
+    optical_fields = [field for _key, field in OPTICAL_COLUMNS]
+
+    assert dialog.lldp_table.item(0, lldp_fields.index("lldp_neighbor_name")).text() == "HX_1"
+    assert dialog.lldp_table.item(0, lldp_fields.index("lldp_neighbor_interface")).text() == "GigabitEthernet2/0/19"
+    assert dialog.lldp_table.item(0, lldp_fields.index("lldp_neighbor_mac")).text() == "903f-8645-6e00"
+    assert dialog.lldp_table.item(0, lldp_fields.index("neighbor_device_name")).text() == "04-横溪站"
+    assert dialog.lldp_table.item(0, lldp_fields.index("lldp_source")).text() != "未知"
+    assert dialog.lldp_table.item(0, lldp_fields.index("lldp_match_status")).text() == "正常"
+    assert "lldp_neighbor" not in lldp_fields
+    assert "neighbor_rx_power" not in lldp_fields
+    assert dialog.optical_table.item(0, optical_fields.index("optical_rx_power")).text() == "-7.55"
+    assert dialog.optical_table.item(0, optical_fields.index("optical_match_status")).text() == "正常"
 
 
 def test_ap_detail_direction_combo_uses_uplink_downlink_and_saves_chinese(tmp_path):
@@ -6069,6 +6458,9 @@ def test_ap_optical_history_export_contains_full_history(tmp_path, monkeypatch):
 def test_ap_history_column_sets_cover_lldp_and_optical():
     assert [field for _key, field in AP_LLDP_HISTORY_COLUMNS] == [
         "collected_at",
+        "source",
+        "is_changed",
+        "conflict_flag",
         "local_interface",
         "lldp_neighbor",
         "neighbor_interface",

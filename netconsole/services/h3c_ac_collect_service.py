@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
+from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -18,8 +19,10 @@ from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
+from netconsole.parsers.h3c.ac.wlan_ap_lldp_parser import parse_wlan_ap_lldp
 from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
+from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
 from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_ap_unauthenticated_rows, parse_wlan_ap_unauthenticated_summary
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -40,6 +43,8 @@ FIT_AP_RESOURCE_REQUIRED_COMMANDS = (
 )
 FIT_AP_RESOURCE_OPTIONAL_COMMANDS = (
     "display wlan ap unauthenticated",
+    "display wlan ap all radio verbose filter bbssid",
+    "display wlan ap all lldp",
 )
 FIT_AP_RESOURCE_COMMANDS = FIT_AP_RESOURCE_REQUIRED_COMMANDS
 
@@ -50,7 +55,7 @@ AC_OVERVIEW_COMMANDS = (
     "display device",
     "display device manuinfo",
 )
-RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS, *AC_OVERVIEW_COMMANDS)
+RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS)
 
 HTTPS_PORT_COMMANDS = (
     "display ip https",
@@ -58,8 +63,6 @@ HTTPS_PORT_COMMANDS = (
 )
 
 ENABLE_FIT_AP_CONSOLE_COMMANDS = (
-    "screen-length disable",
-    "display wlan ap all address",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",
@@ -71,7 +74,6 @@ FIT_AP_OPTICAL_COMMANDS = (
     "screen-length disable",
     "display lldp neighbor-information list",
     "display transceiver diagnosis interface",
-    "display interface brief",
 )
 BATCH_CONCURRENCY = 50
 DEFAULT_FIT_AP_TELNET_CONCURRENCY = 1000
@@ -100,6 +102,8 @@ class AcResourceCollectResult:
     unauthenticated_updated: bool = False
     unauthenticated_rows_updated: int = 0
     unauthenticated_error: str | None = None
+    bbssid_rows_parsed: int = 0
+    lldp_rows_parsed: int = 0
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,18 @@ class FitApOpticalCollectResult:
     error_message: str | None
 
 
+@dataclass(frozen=True)
+class AcCommandActionResult:
+    success: bool
+    ac_device_uuid: str
+    collect_run_uuid: str
+    raw_log_path: str
+    action: str
+    commands: tuple[str, ...]
+    error_message: str | None
+    command_results: list[CommandResult] = field(default_factory=list)
+
+
 def collect_h3c_ac_resources(
     ac_device: Device,
     site_name: str,
@@ -128,6 +144,53 @@ def collect_h3c_ac_resources(
     progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
     refresh_ac_overview: bool = True,
+) -> AcResourceCollectResult:
+    resource_result = collect_h3c_fit_ap_resources(
+        ac_device,
+        site_name,
+        repository=repository,
+        paths=paths,
+        progress=progress,
+        should_cancel=should_cancel,
+    )
+    if not refresh_ac_overview or not resource_result.success:
+        return resource_result
+    info_result = collect_h3c_ac_info(
+        ac_device,
+        site_name,
+        repository=repository,
+        paths=paths,
+        progress=progress,
+        should_cancel=should_cancel,
+    )
+    return AcResourceCollectResult(
+        success=resource_result.success and info_result.success,
+        ac_device_uuid=resource_result.ac_device_uuid,
+        collect_run_uuid=resource_result.collect_run_uuid,
+        raw_log_path=resource_result.raw_log_path,
+        summary_updated=resource_result.summary_updated or info_result.summary_updated,
+        fit_ap_resources_updated=resource_result.fit_ap_resources_updated,
+        https_port=info_result.https_port,
+        https_port_collected=info_result.https_port_collected,
+        https_port_persisted=info_result.https_port_persisted,
+        https_port_error=info_result.https_port_error,
+        error_message=info_result.error_message or resource_result.error_message,
+        command_results=[*resource_result.command_results, *info_result.command_results],
+        unauthenticated_updated=resource_result.unauthenticated_updated,
+        unauthenticated_rows_updated=resource_result.unauthenticated_rows_updated,
+        unauthenticated_error=resource_result.unauthenticated_error,
+        bbssid_rows_parsed=resource_result.bbssid_rows_parsed,
+        lldp_rows_parsed=resource_result.lldp_rows_parsed,
+    )
+
+
+def collect_h3c_fit_ap_resources(
+    ac_device: Device,
+    site_name: str,
+    repository: AcRepository | None = None,
+    paths: PathResolver | None = None,
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> AcResourceCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -147,7 +210,7 @@ def collect_h3c_ac_resources(
     fact_repository.create_collect_run(
         {
             "collect_run_uuid": collect_run_uuid,
-            "collect_type": "ac_resources",
+            "collect_type": "fit_ap_resources",
             "status": "running",
             "started_at": started_at,
             "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
@@ -165,49 +228,23 @@ def collect_h3c_ac_resources(
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
 
-    target = choose_connection_target(ac_device)
-    if target is None:
-        message = "未启用连接方式"
-        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
-        app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
-        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
-
-    connection = None
     try:
-        commands = [*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS]
-        if refresh_ac_overview:
-            commands.extend(AC_OVERVIEW_COMMANDS)
-        validate_commands = ["screen-length disable", *commands]
-        if refresh_ac_overview:
-            validate_commands.extend(HTTPS_PORT_COMMANDS)
-        command_guard.validate_command_list(validate_commands, "ac_collect")
-        _raise_if_cancelled(should_cancel)
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-        command_results.append(_run_command(connection, "screen-length disable", ac_device, collect_run_uuid, context="ac_collect"))
-        outputs: dict[str, str] = {}
-        for command in commands:
-            _raise_if_cancelled(should_cancel)
-            progress(f"正在执行 {command}...")
-            result = _run_command(connection, command, ac_device, collect_run_uuid, context="ac_collect")
-            command_results.append(result)
-            if result.success:
-                outputs[command] = result.output
-        https_port = None
-        if refresh_ac_overview:
-            progress("正在采集 HTTPS 端口...")
-            https_port, https_results = collect_https_port(connection, ac_device, collect_run_uuid)
-            command_results.extend(https_results)
+        profile = H3cAcCommandProfile(ac_device)
+        command_results, outputs = _execute_h3c_ac_command_list(
+            ac_device,
+            collect_run_uuid,
+            profile.fit_ap_resource_commands,
+            "ac_fit_ap_resource_collect",
+            progress,
+            should_cancel,
+        )
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         _raise_if_cancelled(should_cancel)
         progress("正在解析FIT-AP资源...")
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
         dynamic_summary_updated = _can_update_dynamic_summary(command_results, summary)
-        summary_updated = refresh_ac_overview and any(value is not None for key, value in summary.items() if key != "ac_device_uuid")
         progress("正在写入数据库...")
-        if summary_updated:
-            repository.upsert_ac_ap_summary(summary)
-        elif dynamic_summary_updated:
+        if dynamic_summary_updated:
             repository.upsert_ac_ap_dynamic_summary(str(ac_device.device_uuid), _dynamic_summary_payload(summary))
         if dynamic_summary_updated:
             app_logger.log_info(
@@ -221,7 +258,6 @@ def collect_h3c_ac_resources(
                     ),
                 ),
             )
-        persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port) if refresh_ac_overview else HttpsPortPersistenceResult(None, False)
         resource_commands_ok = all(
             result.success
             for result in command_results
@@ -254,7 +290,9 @@ def collect_h3c_ac_resources(
         elif unauth_result:
             unauthenticated_error = unauth_result.error_message or "display wlan ap unauthenticated failed"
             app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
-        status = "success" if summary_updated or dynamic_summary_updated or resources_persisted else "failed"
+        bbssid_rows = len(parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", "")))
+        lldp_rows = len(parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", "")))
+        status = "success" if dynamic_summary_updated or resources_persisted else "failed"
         error_message = _command_error_summary([result for result in command_results if result.command not in FIT_AP_RESOURCE_OPTIONAL_COMMANDS])
         fact_repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
         if status == "success":
@@ -264,23 +302,25 @@ def collect_h3c_ac_resources(
         else:
             app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
             app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
-        progress(f"更新完成：FIT-AP资源 {len(resources) if resources_persisted else 0} 条")
+        progress(f"FIT-AP资源更新完成：AP {len(resources) if resources_persisted else 0} 条，未认证AP {unauthenticated_rows_updated} 条，BSSID {bbssid_rows} 条，LLDP {lldp_rows} 条")
         return AcResourceCollectResult(
             status == "success",
             str(ac_device.device_uuid),
             collect_run_uuid,
             result_raw_log_path,
-            summary_updated or dynamic_summary_updated,
+            dynamic_summary_updated,
             len(resources) if resources_persisted else 0,
-            https_port,
-            https_port is not None,
-            persistence.persisted,
-            persistence.error_message,
+            None,
+            False,
+            False,
+            None,
             error_message or None,
             command_results,
             unauthenticated_updated,
             unauthenticated_rows_updated,
             unauthenticated_error,
+            bbssid_rows,
+            lldp_rows,
         )
     except CollectionCancelled:
         message = "用户已取消更新"
@@ -295,9 +335,167 @@ def collect_h3c_ac_resources(
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
-    finally:
-        if connection is not None:
-            _disconnect(connection)
+
+
+def collect_h3c_ac_info(
+    ac_device: Device,
+    site_name: str,
+    repository: AcRepository | None = None,
+    paths: PathResolver | None = None,
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+) -> AcResourceCollectResult:
+    progress = progress or (lambda _message: None)
+    should_cancel = should_cancel or (lambda: False)
+    paths = paths or PathResolver()
+    repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
+    fact_repository = DeviceFactRepository(repository.database)
+    ac_device.ensure_device_uuid()
+    collect_run_uuid = str(uuid4())
+    started_at = _now()
+    persist_raw_logs = _persist_raw_logs()
+    run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
+    raw_log_file = run_dir / f"{ac_device.device_uuid}.log"
+    commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
+    relative_raw_log_path = f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log" if persist_raw_logs else ""
+    result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
+    command_results: list[CommandResult] = []
+
+    fact_repository.create_collect_run(
+        {
+            "collect_run_uuid": collect_run_uuid,
+            "collect_type": "ac_info",
+            "status": "running",
+            "started_at": started_at,
+            "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
+            "created_at": started_at,
+        }
+    )
+    progress("正在连接AC...")
+    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+        message = "AC information collection only supports H3C AC devices"
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+
+    try:
+        profile = H3cAcCommandProfile(ac_device)
+        command_results, outputs = _execute_h3c_ac_command_list(
+            ac_device,
+            collect_run_uuid,
+            profile.ac_info_commands,
+            "ac_info_collect",
+            progress,
+            should_cancel,
+        )
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
+        progress("正在解析AC信息...")
+        summary, _resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
+        https_port = _parse_https_port_outputs(outputs, command_results, ac_device, collect_run_uuid)
+        progress("正在写入数据库...")
+        summary_updated = any(summary.get(field) is not None for field in ("cpu_usage", "memory_usage", "model", "serial_number", "software_version"))
+        if summary_updated:
+            repository.upsert_ac_ap_static_summary(str(ac_device.device_uuid), summary)
+        persistence = _update_https_port(repository.database, ac_device, collect_run_uuid, https_port)
+        error_message = _command_error_summary(command_results)
+        status = "success" if summary_updated or https_port is not None else "failed"
+        fact_repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
+        progress(f"AC信息更新完成：HTTPS端口 {https_port or '未解析'}")
+        return AcResourceCollectResult(
+            status == "success",
+            str(ac_device.device_uuid),
+            collect_run_uuid,
+            result_raw_log_path,
+            summary_updated,
+            0,
+            https_port,
+            https_port is not None,
+            persistence.persisted,
+            persistence.error_message,
+            error_message or None,
+            command_results,
+        )
+    except CollectionCancelled:
+        message = "用户已取消更新"
+        fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
+        progress("已取消")
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+    except Exception as exc:
+        message = sanitize_sensitive_text(str(exc), ac_device)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+
+
+def run_h3c_ac_action(
+    ac_device: Device,
+    site_name: str,
+    action: str,
+    commands: tuple[str, ...] | None = None,
+    context: str | None = None,
+    repository: AcRepository | None = None,
+    paths: PathResolver | None = None,
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+) -> AcCommandActionResult:
+    progress = progress or (lambda _message: None)
+    should_cancel = should_cancel or (lambda: False)
+    paths = paths or PathResolver()
+    repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
+    fact_repository = DeviceFactRepository(repository.database)
+    ac_device.ensure_device_uuid()
+    collect_run_uuid = str(uuid4())
+    started_at = _now()
+    persist_raw_logs = _persist_raw_logs()
+    run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
+    raw_log_file = run_dir / f"{ac_device.device_uuid}.log"
+    commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
+    result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
+    command_results: list[CommandResult] = []
+    profile = H3cAcCommandProfile(ac_device)
+    action_commands = commands or getattr(profile, f"{action}_commands")
+    action_context = context or f"ac_{action}"
+
+    fact_repository.create_collect_run(
+        {
+            "collect_run_uuid": collect_run_uuid,
+            "collect_type": f"ac_action:{action}",
+            "status": "running",
+            "started_at": started_at,
+            "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
+            "created_at": started_at,
+        }
+    )
+    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+        message = "AC action only supports H3C AC devices"
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        return AcCommandActionResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, action, tuple(action_commands), message, command_results)
+    try:
+        command_results, _outputs = _execute_h3c_ac_command_list(
+            ac_device,
+            collect_run_uuid,
+            action_commands,
+            action_context,
+            progress,
+            should_cancel,
+            read_timeout=10,
+        )
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
+        error_message = _command_error_summary(command_results)
+        success = not error_message and bool(command_results)
+        fact_repository.update_collect_run_status(collect_run_uuid, "success" if success else "failed", error_message=error_message or None)
+        progress("AC动作执行完成" if success else "AC动作执行失败")
+        return AcCommandActionResult(success, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, action, tuple(action_commands), error_message or None, command_results)
+    except CollectionCancelled:
+        message = "用户已取消更新"
+        fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
+        return AcCommandActionResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, action, tuple(action_commands), message, command_results)
+    except Exception as exc:
+        message = sanitize_sensitive_text(str(exc), ac_device)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        return AcCommandActionResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, action, tuple(action_commands), message, command_results)
 
 
 def collect_h3c_fit_ap_optical(
@@ -754,6 +952,8 @@ def parse_ac_resource_outputs(
     ap_rows = parse_wlan_ap_list(ap_all)
     address_rows = parse_wlan_ap_addresses(outputs.get("display wlan ap all address", ""))
     radio_rows = parse_wlan_ap_radios(outputs.get("display wlan ap all radio", ""))
+    bbssid_rows = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
+    lldp_rows = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
     resources: list[dict[str, object | None]] = []
     for row in ap_rows:
         ap_name = str(row.get("ap_name") or "")
@@ -763,6 +963,8 @@ def parse_ac_resource_outputs(
                 **row,
                 **address_rows.get(ap_name, {}),
                 **radio_rows.get(ap_name, {}),
+                **bbssid_rows.get(ap_name, {}),
+                **lldp_rows.get(ap_name, {}),
                 **metadata,
             }
         )
@@ -823,6 +1025,22 @@ def collect_https_port(connection, ac_device: Device, collect_run_uuid: str) -> 
     return None, results
 
 
+def _parse_https_port_outputs(outputs: dict[str, str], command_results: list[CommandResult], ac_device: Device, collect_run_uuid: str) -> int | None:
+    for command in HTTPS_PORT_COMMANDS:
+        result = next((item for item in command_results if item.command == command), None)
+        if result is None or not result.success:
+            continue
+        app_logger.log_info("AC_HTTPS_PORT_COMMAND_RESULT", _detail(ac_device, collect_run_uuid, command=command, error=f"output_length={len(outputs.get(command, ''))}"))
+        for line in matching_https_port_lines(outputs.get(command, "")):
+            app_logger.log_info("AC_HTTPS_PORT_MATCHED_LINE", _detail(ac_device, collect_run_uuid, error=f'matched_line="{line}"'))
+        port = parse_https_port(outputs.get(command, ""))
+        app_logger.log_info("AC_HTTPS_PORT_PARSED", _detail(ac_device, collect_run_uuid, command=command, error=f"parsed_port={port if port is not None else 'none'}"))
+        if port is not None:
+            return port
+    app_logger.log_info("AC_HTTPS_PORT_NOT_COLLECTED", _detail(ac_device, collect_run_uuid, error="no valid HTTPS port parsed"))
+    return None
+
+
 def _update_https_port(database: Database, ac_device: Device, collect_run_uuid: str, port: int | None) -> HttpsPortPersistenceResult:
     if port is None:
         app_logger.log_info("AC_HTTPS_PORT_NOT_COLLECTED", _detail(ac_device, collect_run_uuid, error="no valid HTTPS port parsed"))
@@ -865,6 +1083,38 @@ def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[Com
         for command in ENABLE_FIT_AP_CONSOLE_COMMANDS:
             results.append(_run_command(connection, command, ac_device, collect_run_uuid, read_timeout=10, context="ac_enable_ap_console"))
         return results
+    finally:
+        if connection is not None:
+            _disconnect(connection)
+
+
+def _execute_h3c_ac_command_list(
+    ac_device: Device,
+    collect_run_uuid: str,
+    commands: tuple[str, ...],
+    context: str,
+    progress: ProgressCallback,
+    should_cancel: CancelCheck,
+    read_timeout: int = 30,
+) -> tuple[list[CommandResult], dict[str, str]]:
+    target = choose_connection_target(ac_device)
+    if target is None:
+        raise RuntimeError("未启用连接方式")
+    command_guard.validate_command_list(commands, context)
+    _raise_if_cancelled(should_cancel)
+    connection = None
+    command_results: list[CommandResult] = []
+    outputs: dict[str, str] = {}
+    try:
+        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        for command in commands:
+            _raise_if_cancelled(should_cancel)
+            progress(f"正在执行 {command}...")
+            result = _run_command(connection, command, ac_device, collect_run_uuid, read_timeout=read_timeout, context=context)
+            command_results.append(result)
+            if result.success:
+                outputs[command] = result.output
+        return command_results, outputs
     finally:
         if connection is not None:
             _disconnect(connection)
@@ -916,10 +1166,10 @@ def _collect_single_fit_ap_optical(
         if target is None:
             raise RuntimeError("AP Telnet target unavailable")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
-        command_guard.validate_command_list(FIT_AP_OPTICAL_COMMANDS, "fit_ap_collect")
+        command_guard.validate_command_list(FIT_AP_OPTICAL_COMMANDS, "fit_ap_optical_collect")
         outputs: dict[str, str] = {}
         for command in FIT_AP_OPTICAL_COMMANDS:
-            result = _run_command(connection, command, temp_device, collect_run_uuid, read_timeout=15, context="fit_ap_collect")
+            result = _run_command(connection, command, temp_device, collect_run_uuid, read_timeout=15, context="fit_ap_optical_collect")
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
