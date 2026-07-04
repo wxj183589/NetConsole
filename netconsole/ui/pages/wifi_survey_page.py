@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -39,6 +38,7 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
 from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, generate_idw_heatmap, render_heatmap_png, rssi_to_color
+from netconsole.ui.table_utils import configure_readable_table_columns
 from netconsole.services.wifi_survey.scanner import WifiObservation, scan_wifi
 from netconsole.services.wifi_survey.signal_query import SignalAtPoint, nearest_point_for_position, query_signal_at_position
 
@@ -152,7 +152,9 @@ class WifiSurveyPage(QWidget):
         self.signal_empty_label = QLabel("该位置暂无可用无线数据")
         self.signal_table = QTableWidget(0, 6)
         self.signal_table.setHorizontalHeaderLabels(["SSID/AP名称", "BSSID/AP_MAC", "频段", "信道", "RSSI", "类型"])
-        self.signal_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        configure_readable_table_columns(self.signal_table)
+        self.signal_table.setColumnWidth(0, 180)
+        self.signal_table.setColumnWidth(1, 150)
         self.signal_table.setMaximumHeight(260)
         self.signal_close_button = QPushButton("关闭")
         popup_layout = QVBoxLayout(self.signal_popup)
@@ -191,7 +193,9 @@ class WifiSurveyPage(QWidget):
         self.network_tree.setHeaderLabels(["SSID / BSSID", "信道", "最近RSSI"])
         self.detail_table = QTableWidget(0, 8)
         self.detail_table.setHorizontalHeaderLabels(["SSID", "BSSID", "RSSI(dBm估算)", "信道", "频率", "频段", "加密", "扫描时间"])
-        self.detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        configure_readable_table_columns(self.detail_table)
+        for column, width in enumerate((180, 150, 130, 80, 90, 80, 120, 170)):
+            self.detail_table.setColumnWidth(column, width)
 
         self._build_layout()
         self._connect_signals()

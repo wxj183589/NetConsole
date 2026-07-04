@@ -1,3 +1,9 @@
+"""NetConsole global table checkbox helpers.
+
+Batch-selection columns must use QTableWidgetItem + CheckBoxOnlyDelegate,
+not QCheckBox cell widgets. See docs/ui_table_guidelines.md.
+"""
+
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QRect, Qt

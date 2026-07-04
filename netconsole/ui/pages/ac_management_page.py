@@ -141,12 +141,12 @@ FIT_AP_RESOURCE_COLUMNS = (
 )
 
 FIT_AP_RESOURCE_COLUMN_MIN_WIDTHS = {
-    "select": 46,
-    "ap_name": 130,
+    "select": 48,
+    "ap_name": 150,
     "apid": 70,
-    "ap_ip": 110,
-    "ap_mac": 130,
-    "model": 90,
+    "ap_ip": 120,
+    "ap_mac": 140,
+    "model": 100,
     "state_display": 90,
     "group_name": 110,
     "online_time": 100,
@@ -158,9 +158,9 @@ FIT_AP_RESOURCE_COLUMN_MIN_WIDTHS = {
     "rid2_tx_power": 80,
     "site": 130,
     "mileage": 90,
-    "location_note": 160,
+    "location_note": 180,
     "direction": 70,
-    "updated_at": 150,
+    "updated_at": 170,
 }
 
 FIT_AP_RESOURCE_COLUMN_MAX_WIDTHS = {
@@ -168,7 +168,7 @@ FIT_AP_RESOURCE_COLUMN_MAX_WIDTHS = {
     "ap_name": 320,
     "ap_mac": 170,
     "location_note": 360,
-    "updated_at": 220,
+    "updated_at": 240,
 }
 
 AP_EXTENSION_COLUMNS = (

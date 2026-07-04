@@ -499,11 +499,10 @@ class NetworkAdapterRoutePage(QWidget):
             table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             for index, width in enumerate(widths):
                 table.setColumnWidth(index, width)
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.adapter_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.adapter_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.route_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.route_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.Interactive)
+            header.setStretchLastSection(False)
+            header.setSectionsMovable(False)
         self.route_profile_table.setColumnWidth(0, 220)
         self.route_edit_table.setColumnWidth(0, 180)
         self.route_edit_table.setColumnWidth(1, 160)
@@ -895,11 +894,10 @@ def _network_page_apply_table_widths(self) -> None:
         table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         for index, width in enumerate(widths):
             table.setColumnWidth(index, width)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-    self.adapter_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-    self.adapter_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-    self.route_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-    self.route_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(False)
     self.route_profile_table.setColumnWidth(0, 220)
     route_widths = [170, 130, 150, 240, 80, 70, 160]
     for index, width in enumerate(route_widths):

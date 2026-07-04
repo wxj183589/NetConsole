@@ -28,10 +28,12 @@ from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, get_
 from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.table_utils import (
     READONLY_TABLE_STYLESHEET,
+    auto_resize_table_columns_to_contents,
     auto_resize_table_columns,
     configure_readonly_table,
     create_table_context_menu,
     format_row_for_copy,
+    setup_readable_table,
 )
 
 
@@ -71,6 +73,23 @@ def test_auto_resize_table_columns_supports_column_min_widths():
     assert table.columnWidth(0) >= 180
 
 
+def test_setup_readable_table_and_alias_apply_project_table_rules():
+    app()
+    table = QTableWidget(1, 2)
+    table.setHorizontalHeaderLabels(["Path", "Status"])
+    table.setItem(0, 0, QTableWidgetItem("flash:/very/long/path/meshlog.log"))
+    table.setItem(0, 1, QTableWidgetItem("Ready"))
+
+    setup_readable_table(table)
+    auto_resize_table_columns_to_contents(table, column_min_widths={0: 240})
+
+    assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Interactive
+    assert table.horizontalHeader().stretchLastSection() is False
+    assert table.wordWrap() is False
+    assert table.columnWidth(0) >= 240
+    assert table.item(0, 0).toolTip() == "flash:/very/long/path/meshlog.log"
+
+
 def test_apply_table_style_prioritizes_ap_name_over_ap_mac():
     app()
     table = QTableWidget(1, 3)
@@ -83,12 +102,12 @@ def test_apply_table_style_prioritizes_ap_name_over_ap_mac():
     apply_table_style(table)
 
     assert table.columnWidth(0) >= AP_NAME_MIN_WIDTH
-    assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Stretch
+    assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Interactive
     assert AP_MAC_COLUMN_WIDTH <= table.columnWidth(1) <= MEDIUM_PRIORITY_MAX_WIDTH
     assert table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Interactive
     assert table.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
     assert table.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
-    assert table.horizontalHeader().stretchLastSection() is True
+    assert table.horizontalHeader().stretchLastSection() is False
 
 
 def test_apply_table_style_caps_vlan_width():
@@ -117,7 +136,8 @@ def test_configure_readonly_table_applies_unified_behavior():
     assert table.verticalHeader().defaultSectionSize() == ROW_HEIGHT
     assert table.rowHeight(0) == ROW_HEIGHT
     assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Interactive
-    assert table.horizontalHeader().stretchLastSection() is True
+    assert table.horizontalHeader().stretchLastSection() is False
+    assert table.wordWrap() is False
 
 
 def test_action_column_is_fixed_and_not_stretched():
@@ -134,7 +154,7 @@ def test_action_column_is_fixed_and_not_stretched():
     assert table.horizontalHeader().stretchLastSection() is False
 
 
-def test_auto_layout_uses_1920_width_without_blank_area():
+def test_auto_layout_uses_content_width_without_stretching_to_viewport():
     app()
     table = QTableWidget(1, 6)
     set_table_column_fields(table, ["select", "ap_name", "ap_mac", "ap_ip", "updated_at", "actions"])
@@ -148,13 +168,14 @@ def test_auto_layout_uses_1920_width_without_blank_area():
     ap_mac_column = 2
     widths = table.property("netconsole_auto_layout_widths")
     used_width = sum(widths.values())
-    assert table.horizontalHeader().sectionResizeMode(ap_name_column) == QHeaderView.Stretch
+    assert table.horizontalHeader().sectionResizeMode(ap_name_column) == QHeaderView.Interactive
     assert widths[ap_name_column] >= 180
     assert 112 <= widths[ap_mac_column] <= MEDIUM_PRIORITY_MAX_WIDTH
-    assert used_width >= int(1920 * 0.95)
+    assert used_width < int(1920 * 0.95)
+    assert table.horizontalHeader().stretchLastSection() is False
 
 
-def test_auto_layout_recalculates_after_table_resize():
+def test_auto_layout_keeps_content_widths_when_viewport_changes():
     app()
     table = QTableWidget(1, 4)
     set_table_column_fields(table, ["ap_name", "ap_mac", "ap_ip", "updated_at"])
@@ -164,7 +185,7 @@ def test_auto_layout_recalculates_after_table_resize():
     initial_width = table.property("netconsole_auto_layout_widths")[0]
     apply_auto_layout(table, 1600)
 
-    assert table.property("netconsole_auto_layout_widths")[0] > initial_width
+    assert table.property("netconsole_auto_layout_widths")[0] == initial_width
 
 
 def test_excel_autosize_weights_chinese_as_double_width():
@@ -173,7 +194,7 @@ def test_excel_autosize_weights_chinese_as_double_width():
     assert weighted_text_length("车站A") == 5
 
 
-def test_calculate_column_widths_uses_header_and_content_with_remaining_space():
+def test_calculate_column_widths_uses_header_and_content_without_viewport_fill():
     app()
     table = QTableWidget(2, 3)
     set_table_column_fields(table, ["ap_name", "ap_mac", "updated_at"])
@@ -188,7 +209,7 @@ def test_calculate_column_widths_uses_header_and_content_with_remaining_space():
     assert widths[0] > widths[1]
     assert widths[0] >= AP_NAME_MIN_WIDTH
     assert AP_MAC_COLUMN_WIDTH <= widths[1] <= MEDIUM_PRIORITY_MAX_WIDTH
-    assert sum(widths.values()) >= int(1200 * 0.9)
+    assert sum(widths.values()) < int(1200 * 0.9)
 
 
 def test_excel_width_calculation_matches_chinese_weighting():

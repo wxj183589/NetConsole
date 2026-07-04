@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QGroupBox,
-    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -57,7 +56,7 @@ from netconsole.services.network_tools.toolbox.route_tools import (
     sort_route_rows,
 )
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
-from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.table_utils import configure_readable_table_columns, configure_readonly_table
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
@@ -925,8 +924,7 @@ class NetworkToolboxPage(QWidget):
         panel.setMinimumHeight(640)
         panel.result_table.setMinimumHeight(480)
         panel.summary_text.setMaximumHeight(72)
-        panel.result_table.horizontalHeader().setStretchLastSection(True)
-        panel.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        configure_readable_table_columns(panel.result_table)
         self.current_route_rows: list[dict[str, object]] = []
         self.route_status = QLabel("\u7ba1\u7406\u5458\u6743\u9650\uff1a\u662f" if is_admin() else "\u7ba1\u7406\u5458\u6743\u9650\uff1a\u5426\uff0c\u4ec5\u53ef\u67e5\u770b\u8def\u7531\u548c\u751f\u6210\u547d\u4ee4\u9884\u89c8")
         self.route_filter = QComboBox()

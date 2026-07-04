@@ -540,9 +540,10 @@ def test_network_manager_page_chinese_headers_and_no_dns_field(monkeypatch, tmp_
     assert page.adapter_table.columnWidth(1) >= 280
     assert edit_route_headers == ["目标网络", "掩码", "下一跳", "出接口", "跃点数", "持久", "备注"]
     assert len(page.findChildren(QSplitter)) >= 2
-    assert page.adapter_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Stretch
-    assert page.adapter_table.horizontalHeader().sectionResizeMode(5) == QHeaderView.Stretch
-    assert page.route_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Stretch
+    assert page.adapter_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Interactive
+    assert page.adapter_table.horizontalHeader().sectionResizeMode(5) == QHeaderView.Interactive
+    assert page.route_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Interactive
+    assert page.adapter_table.horizontalHeader().stretchLastSection() is False
     visible_text = " ".join(
         [
             page.prefix_edit.placeholderText(),

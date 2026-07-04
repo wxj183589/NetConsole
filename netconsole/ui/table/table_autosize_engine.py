@@ -83,6 +83,7 @@ def weighted_text_pixel_width(value: object, char_pixel: int = DEFAULT_CHAR_PIXE
 
 
 def calculate_column_widths(table: QTableWidget, screen_width: int | None = None) -> dict[int, int]:
+    _ = screen_width
     if table.columnCount() <= 0:
         return {}
 
@@ -94,19 +95,7 @@ def calculate_column_widths(table: QTableWidget, screen_width: int | None = None
         priority = _column_priority(field, _header_text(table, column))
         width = _base_column_width(table, column, priority)
         base[column] = AutosizeColumn(width=width, priority=priority)
-
-    available_width = _available_width(table, screen_width)
     target = {column: sizing.width for column, sizing in base.items()}
-    used = sum(target.values())
-    high_columns = [column for column, sizing in base.items() if sizing.priority == "high"]
-    remaining = available_width - used
-    if remaining > 0 and high_columns:
-        per_column = remaining // len(high_columns)
-        extra = remaining - per_column * len(high_columns)
-        for index, column in enumerate(high_columns):
-            target[column] += per_column + (extra if index == len(high_columns) - 1 else 0)
-    elif remaining < 0:
-        target = _compress_columns(target, base, abs(remaining))
     return target
 
 
@@ -115,10 +104,13 @@ def apply_table_autosize(table: QTableWidget, screen_width: int | None = None) -
     if not widths:
         return {}
 
-    _install_resize_hook(table)
     header = table.horizontalHeader()
     header.setSectionResizeMode(QHeaderView.Interactive)
-    header.setStretchLastSection(True)
+    header.setStretchLastSection(False)
+    header.setSectionsMovable(False)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideNone)
     for column, width in widths.items():
         field = _field_for(table, column)
         if field == "actions":
@@ -131,8 +123,7 @@ def apply_table_autosize(table: QTableWidget, screen_width: int | None = None) -
             widths[column] = CHECK_COLUMN_WIDTH
         else:
             table.setColumnWidth(column, width)
-            if _column_priority(field, _header_text(table, column)) == "high":
-                header.setSectionResizeMode(column, QHeaderView.Stretch)
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
     table.setProperty("netconsole_auto_layout_widths", widths)
     return widths
 

@@ -77,7 +77,7 @@ def test_remote_table_checkboxes_only_select_files(tmp_path):
     assert page.checked_remote_paths == {"flash:/a.bin", "flash:/b.zip"}
     assert page.remote_table.horizontalHeaderItem(0).text() == ""
     assert page.remote_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Fixed
-    assert page.remote_table.columnWidth(0) == 40
+    assert page.remote_table.columnWidth(0) == 48
     assert isinstance(page.remote_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
     directory_item = page.remote_table.item(0, 0)
     assert directory_item.flags() & Qt.ItemIsUserCheckable == Qt.NoItemFlags
@@ -142,7 +142,7 @@ def test_file_table_column_widths_are_persisted(tmp_path):
     reopened = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", paths)
 
     assert reopened.local_table.columnWidth(0) == 333
-    assert reopened.remote_table.columnWidth(0) == 40
+    assert reopened.remote_table.columnWidth(0) == 48
     assert reopened.remote_table.columnWidth(1) == 444
 
 

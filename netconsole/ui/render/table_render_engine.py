@@ -86,7 +86,11 @@ def apply_table_policy(table: QTableWidget) -> None:
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setAlternatingRowColors(True)
     table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideNone)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
     table.verticalHeader().setVisible(False)
@@ -95,10 +99,10 @@ def apply_table_policy(table: QTableWidget) -> None:
     header.setDefaultAlignment(Qt.AlignCenter)
     header.setMinimumHeight(34)
     header.setSectionResizeMode(QHeaderView.Interactive)
+    header.setStretchLastSection(False)
+    header.setSectionsMovable(False)
     if not table.property("netconsole_manual_column_widths"):
         apply_auto_layout(table)
-    else:
-        header.setStretchLastSection(False)
 
 
 def apply_table_style(table: QTableWidget) -> None:
@@ -144,10 +148,9 @@ def _apply_stretch_column(table: QTableWidget) -> None:
     fields = _column_fields(table)
     stretch_column = _preferred_stretch_column(table, fields)
     header = table.horizontalHeader()
-    stretch_field = fields[stretch_column] if stretch_column is not None and stretch_column < len(fields) else ""
-    if stretch_column is not None and stretch_field != "actions":
-        header.setSectionResizeMode(stretch_column, QHeaderView.Stretch)
-    header.setStretchLastSection(_field_index(table, "actions") is None)
+    if stretch_column is not None:
+        header.setSectionResizeMode(stretch_column, QHeaderView.Interactive)
+    header.setStretchLastSection(False)
 
 
 def _preferred_stretch_column(table: QTableWidget, fields: list[str]) -> int | None:

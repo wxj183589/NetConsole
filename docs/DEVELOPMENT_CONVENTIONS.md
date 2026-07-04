@@ -85,6 +85,19 @@
 - 对重复点击当前主题应跳过无效全量刷新。
 - 自绘或组合式拓扑控件只保存主题 token 并 `update()`，不要通过事件递归设置样式。
 
+## UI 表格规范
+
+新增或修改表格时，必须遵守 [UI 表格与全选框规范](ui_table_guidelines.md)。
+
+要求：
+
+- 勾选列必须使用全局 `CheckBoxOnlyDelegate`。
+- 不允许 `setCellWidget(QCheckBox)` 作为批量选择列。
+- 全选、反选、清空选择必须同步更新 `CheckStateRole`。
+- 表格列宽必须按内容初始化，并允许用户手动拖动。
+- 不允许默认 `QHeaderView.Stretch` 强行压缩字段。
+- 超宽表格必须使用横向滚动条。
+
 ## Windows 网络调试安全
 
 本地网卡配置和路由管理是高风险功能。调试时：

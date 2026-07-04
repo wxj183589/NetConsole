@@ -19,15 +19,15 @@ from netconsole.ui.widgets.table_check_delegate import create_checkable_table_it
 
 CHECK_COLUMN = 0
 DEVICE_COLUMN_WIDTHS = {
-    "select": 30,
-    "name": 260,
-    "group": 90,
-    "station": 110,
-    "system_name": 130,
+    "select": 48,
+    "name": 180,
+    "group": 100,
+    "station": 160,
+    "system_name": 160,
     "primary_address": 130,
     "backup_address": 130,
-    "protocols": 70,
-    "updated_at": 150,
+    "protocols": 80,
+    "updated_at": 170,
     "actions": 320,
 }
 

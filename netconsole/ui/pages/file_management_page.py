@@ -1041,10 +1041,10 @@ class FileManagementPage(QWidget):
         self._restoring_column_widths = True
         old_blocked = header.blockSignals(True)
         try:
-            header.setSectionResizeMode(0, QHeaderView.Interactive)
-            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setStretchLastSection(False)
+            header.setSectionsMovable(False)
+            for column in range(self.local_table.columnCount()):
+                header.setSectionResizeMode(column, QHeaderView.Interactive)
             has_saved = isinstance(self.settings.get_value("file_manager/local_table/column_widths", None), list)
             if has_saved or not self._local_column_layout_initialized:
                 self.restore_table_column_widths(self.local_table, "file_manager/local_table/column_widths", {0: 280, 1: 90, 2: 150, 3: 80}, {0: 180, 1: 60, 2: 120, 3: 60})
@@ -1059,15 +1059,15 @@ class FileManagementPage(QWidget):
         old_blocked = header.blockSignals(True)
         try:
             header.setMinimumSectionSize(1)
+            header.setStretchLastSection(False)
+            header.setSectionsMovable(False)
+            for column in range(self.remote_table.columnCount()):
+                header.setSectionResizeMode(column, QHeaderView.Interactive)
             header.setSectionResizeMode(0, QHeaderView.Fixed)
-            header.setSectionResizeMode(1, QHeaderView.Interactive)
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-            self.remote_table.setColumnWidth(0, 40)
+            self.remote_table.setColumnWidth(0, 48)
             has_saved = isinstance(self.settings.get_value("file_manager/remote_table/column_widths", None), list)
             if has_saved or not self._remote_column_layout_initialized:
-                self.restore_table_column_widths(self.remote_table, "file_manager/remote_table/column_widths", {0: 40, 1: 350, 2: 90, 3: 150, 4: 80}, {0: 36, 1: 180, 2: 60, 3: 120, 4: 60}, fixed_widths={0: 40})
+                self.restore_table_column_widths(self.remote_table, "file_manager/remote_table/column_widths", {0: 48, 1: 350, 2: 90, 3: 150, 4: 80}, {0: 48, 1: 180, 2: 60, 3: 120, 4: 60}, fixed_widths={0: 48})
                 self._remote_column_layout_initialized = True
         finally:
             header.blockSignals(old_blocked)
@@ -1075,10 +1075,14 @@ class FileManagementPage(QWidget):
 
     def apply_queue_column_layout(self) -> None:
         header = self.queue_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(False)
         for column in range(self.queue_table.columnCount()):
-            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        self.queue_table.setColumnWidth(0, max(180, self.queue_table.columnWidth(0)))
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+        defaults = {0: 220, 1: 150, 2: 320, 3: 320, 4: 100, 5: 110, 6: 100, 7: 100, 8: 150, 9: 120}
+        for column, width in defaults.items():
+            if column < self.queue_table.columnCount():
+                self.queue_table.setColumnWidth(column, max(width, self.queue_table.columnWidth(column)))
 
     def restore_table_column_widths(
         self,
@@ -1112,7 +1116,7 @@ class FileManagementPage(QWidget):
             return
         widths = [max(1, int(table.columnWidth(column))) for column in range(table.columnCount())]
         if key == "file_manager/remote_table/column_widths" and widths:
-            widths[0] = 40
+            widths[0] = 48
         self.settings.set_value(key, widths)
 
     def refresh_local(self, select_path: Path | None = None) -> None:

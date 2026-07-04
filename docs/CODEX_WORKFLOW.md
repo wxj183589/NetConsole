@@ -25,6 +25,18 @@
 - 不把局点、线路、车号、AP、MAC、IP 写死。
 - 不为旧数据加临时兼容补丁。
 
+## UI 表格开发规则
+
+新增或修改表格时，必须遵守 [UI 表格与全选框规范](ui_table_guidelines.md)。
+
+尤其注意：
+
+- 勾选列必须使用全局 `CheckBoxOnlyDelegate`。
+- 不允许 `setCellWidget(QCheckBox)` 作为批量选择列。
+- 表格列宽必须按内容初始化。
+- 不允许默认 `QHeaderView.Stretch` 强行压缩字段。
+- 超宽表格必须使用横向滚动条。
+
 ## 修改范围控制
 
 | 任务类型 | 默认修改范围 |
