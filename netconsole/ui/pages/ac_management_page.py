@@ -97,6 +97,7 @@ from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThre
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.utils.interface_sort import interface_sort_key
+from netconsole.utils.mileage import format_track_mileage, mileage_search_tokens, parse_mileage_to_meters
 
 
 
@@ -531,10 +532,46 @@ def _display_link_value(row: dict[str, object | None], field: str) -> str:
     return _display_value(value)
 
 
+def _display_mileage_for_row(row: dict[str, object | None], field: str) -> str:
+    return format_track_mileage(
+        _mileage_value_for_row(row, field),
+        direction=str(row.get("direction") or row.get("metadata_direction") or ""),
+        line_side=str(row.get("extension_line_side") or row.get("line_side") or ""),
+        mileage_type=str(row.get("mileage_type") or row.get("line_type") or ""),
+    )
+
+
+def _mileage_value_for_row(row: dict[str, object | None], field: str) -> object:
+    if field == "mileage_text":
+        return row.get("mileage_m") if row.get("mileage_m") is not None else row.get("mileage_text")
+    value = row.get(field)
+    if value not in (None, ""):
+        return value
+    if row.get("extension_mileage_m") is not None:
+        return row.get("extension_mileage_m")
+    return row.get("extension_mileage_text")
+
+
+def _mileage_meters_for_row(row: dict[str, object | None], field: str) -> int | float | None:
+    return parse_mileage_to_meters(_mileage_value_for_row(row, field))
+
+
 def build_fit_ap_resource_table_row(row: dict[str, object | None]) -> dict[str, object | None]:
     fields = {field for _key, field in FIT_AP_RESOURCE_COLUMNS if field != "select"}
     keep_fields = fields | {"ap_uuid", "state_raw", "state", "ap_name", "ap_mac", "serial_number"}
-    return {field: row.get(field) for field in keep_fields}
+    result = {field: row.get(field) for field in keep_fields}
+    result["mileage"] = _display_mileage_for_row(row, "mileage")
+    result["_mileage_meters"] = _mileage_meters_for_row(row, "mileage")
+    return result
+
+
+def _resource_mileage_search_text(row: dict[str, object | None]) -> str:
+    tokens = mileage_search_tokens(
+        _mileage_value_for_row(row, "mileage"),
+        direction=str(row.get("direction") or row.get("metadata_direction") or ""),
+        line_side=str(row.get("extension_line_side") or row.get("line_side") or ""),
+    )
+    return " ".join(sorted(tokens))
 
 
 def _friendly_external_terminal_error(message: object) -> str:
@@ -1768,7 +1805,8 @@ class AcManagementPage(QWidget):
         )
         editors: dict[str, QLineEdit] = {}
         for field, label in fields:
-            editor = QLineEdit(str(row.get(field) or ""))
+            value = _display_mileage_for_row(row, field) if field == "mileage_text" and row else row.get(field)
+            editor = QLineEdit("" if value is None else str(value))
             editors[field] = editor
             form.addRow(label, editor)
         buttons = QHBoxLayout()
@@ -1932,6 +1970,8 @@ class AcManagementPage(QWidget):
                 or search in _normalize_resource_search(row.get("rid3_bbssid"))
                 or search in _normalize_resource_search(row.get("lldp_neighbor_mac"))
                 or search in _normalize_resource_search(row.get("lldp_neighbor_interface"))
+                or search in _normalize_resource_search(row.get("mileage"))
+                or search in _normalize_resource_search(_resource_mileage_search_text(row))
             ]
         group = str(filters.get("group") or "").strip()
         if group:
@@ -2537,7 +2577,13 @@ class AcManagementPage(QWidget):
                             value = _display_link_value(row, field)
                         elif field in {"switch_optical_status", "ap_optical_status"}:
                             value = display_optical_status(str(value or ""), self.i18n.language) if value else value
+                        elif field in {"mileage", "mileage_text"}:
+                            value = _display_mileage_for_row(row, field)
                         item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
+                        if field in {"mileage", "mileage_text"}:
+                            meters = row.get("_mileage_meters") if field == "mileage" else _mileage_meters_for_row(row, field)
+                            if meters is not None:
+                                item.setData(Qt.ItemDataRole.UserRole, float(meters))
                         plan_locked = table is self.overview_table and bool(row.get("source") == "trackside_plan" or row.get("remark") == "\u8f68\u65c1AP\u89c4\u5212")
                         if field == "remark":
                             plan_locked = False

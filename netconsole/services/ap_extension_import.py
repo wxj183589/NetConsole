@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.utils.mileage import format_track_mileage, parse_track_mileage
 
 
 STANDARD_TEMPLATE_TYPE = "netconsole_standard_template"
@@ -187,16 +188,8 @@ def normalize_ap_mac(value: object) -> MacNormalizeResult:
 
 
 def parse_mileage(value: object) -> MileageParseResult:
-    raw = "" if value is None else str(value).strip()
-    if not raw:
-        return MileageParseResult(raw=raw, meters=None)
-    text = raw.replace(" ", "").upper()
-    match = re.fullmatch(r"[A-Z]*K?(\d+)\+(\d+(?:\.\d+)?)", text)
-    if match:
-        return MileageParseResult(raw=raw, meters=int(match.group(1)) * 1000 + float(match.group(2)))
-    if re.fullmatch(r"\d+(?:\.\d+)?", text):
-        return MileageParseResult(raw=raw, meters=float(text))
-    return MileageParseResult(raw=raw, meters=None, error="里程无法解析")
+    parsed = parse_track_mileage(value)
+    return MileageParseResult(raw=parsed.raw, meters=parsed.meters, error=parsed.error)
 
 
 class ApExtensionImportService:
@@ -302,6 +295,14 @@ def standard_export_row(row: dict[str, object | None]) -> list[object | None]:
         field_name = STANDARD_HEADER_TO_FIELD.get(header, "")
         if header == "AP MAC":
             values.append(row.get("ap_mac_display") or _mac_display(row.get("ap_mac_norm")))
+        elif header == "里程原文":
+            values.append(
+                format_track_mileage(
+                    row.get("mileage_m") if row.get("mileage_m") is not None else row.get("mileage_text"),
+                    direction=str(row.get("direction") or ""),
+                    line_side=str(row.get("line_side") or ""),
+                )
+            )
         elif header == "更新时间":
             values.append(row.get("updated_at") or datetime.now().isoformat(timespec="seconds"))
         else:
@@ -417,7 +418,7 @@ def _convert_row(
 ) -> dict[str, object | None]:
     source = {field_name: _value_at(values, index) for field_name, index in mapping.items()}
     line_side = _value_at(values, mapping.get("line_side", -1))
-    mileage_text = source.get("mileage_text") or source.get("left_mileage") or source.get("right_mileage") or source.get("start_mileage")
+    mileage_text = source.get("mileage_text") or source.get("mileage_m") or source.get("left_mileage") or source.get("right_mileage") or source.get("start_mileage")
     if source.get("left_mileage"):
         line_side = line_side or "左线"
     elif source.get("right_mileage"):

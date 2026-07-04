@@ -33,6 +33,7 @@ from netconsole.ui.table_utils import auto_resize_table_columns, configure_reado
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.state_engine import display_optical_status
+from netconsole.utils.mileage import format_track_mileage, mileage_storage_text
 
 
 FIT_AP_DETAIL_TABS = ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
@@ -335,12 +336,17 @@ class FitApDetailDialog(QWidget):
             if field == "state_display":
                 value = value or resource.get("state")
                 label.setToolTip(f"{self.i18n.t('ap.state_raw')}: {resource.get('state_raw') or resource.get('state') or '-'}")
+            if field == "mileage":
+                value = format_track_mileage(value, direction=str(basic_source.get("direction") or ""))
             label.setText(str(value) if value not in (None, "") else "-")
         self.site_input.setText(str(metadata.get("site_name") or optical.get("site") or ""))
-        self.mileage_input.setText(str(metadata.get("mileage") or ""))
-        self.location_note_input.setText(str(metadata.get("location_note") or ""))
         direction = normalize_direction(str(metadata.get("direction") or ""))
+        self.mileage_input.setText("" if not metadata.get("mileage") else format_track_mileage(metadata.get("mileage"), direction=direction))
+        self.location_note_input.setText(str(metadata.get("location_note") or ""))
         index = self.direction_combo.findData(direction)
+        if index < 0 and direction:
+            self.direction_combo.addItem(direction, direction)
+            index = self.direction_combo.findData(direction)
         self.direction_combo.setCurrentIndex(index if index >= 0 else 0)
         self._set_radio_table(resource)
         self._set_table(self.lldp_table, LLDP_COLUMNS, [link_info] if link_info else [])
@@ -355,7 +361,7 @@ class FitApDetailDialog(QWidget):
                 "ap_name": self.ap_name,
                 "ap_uuid": self.ap_uuid,
                 "site_name": self.site_input.text().strip(),
-                "mileage": self.mileage_input.text().strip(),
+                "mileage": mileage_storage_text(self.mileage_input.text().strip()),
                 "location_note": self.location_note_input.text().strip(),
                 "direction": normalize_direction(str(self.direction_combo.currentData() or self.direction_combo.currentText())),
             }
@@ -506,6 +512,8 @@ def build_fit_ap_detail_fields(
         for field in fields:
             used_fields.add(field)
             value = combined.get(field)
+            if field == "mileage":
+                value = format_track_mileage(value, direction=str(combined.get("direction") or ""))
             if not show_empty and _is_empty_raw_field_value(value):
                 continue
             rows.append({"name": f"{group_label} / {RAW_FIELD_LABELS.get(field, field)}", "field": field, "value": value})
@@ -540,6 +548,10 @@ def normalize_direction(value: str) -> str:
         return "上行"
     if text.upper() == "CT":
         return "下行"
+    if text.upper() in {"ZDK", "YDK", "CDK", "RDK"}:
+        return text.upper()
+    if text in {"左线", "右线", "出段线", "入段线", "出段", "入段", "出库线", "入库线"}:
+        return text
     if text in {"上行", "下行"}:
         return text
     return ""

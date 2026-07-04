@@ -11,6 +11,7 @@ from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.core.database import Database
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.trackside_ap_business import parse_vlan_set
+from netconsole.utils.mileage import parse_mileage_to_meters
 
 
 TRACKSIDE_AP_PLAN_MODE = "unified"
@@ -794,16 +795,27 @@ class AcRepository:
         clauses: list[str] = []
         params: list[object] = []
         if search:
+            search_clauses = [
+                "ap_mac_display LIKE ?",
+                "ap_mac_norm LIKE ?",
+                "ap_name LIKE ?",
+                "ap_point_code LIKE ?",
+                "station_name LIKE ?",
+                "section_name LIKE ?",
+                "line_side LIKE ?",
+                "direction LIKE ?",
+                "mileage_text LIKE ?",
+                "CAST(mileage_m AS TEXT) LIKE ?",
+                "remark LIKE ?",
+            ]
             clauses.append(
-                """
-                (
-                    ap_mac_display LIKE ? OR ap_mac_norm LIKE ? OR ap_name LIKE ? OR ap_point_code LIKE ?
-                    OR station_name LIKE ? OR section_name LIKE ? OR remark LIKE ?
-                )
-                """
+                f"({' OR '.join(search_clauses + (['mileage_m = ?'] if parse_mileage_to_meters(search) is not None else []))})"
             )
             like = f"%{search}%"
-            params.extend([like] * 7)
+            params.extend([like] * len(search_clauses))
+            parsed_mileage = parse_mileage_to_meters(search)
+            if parsed_mileage is not None:
+                params.append(float(parsed_mileage))
         for field, value in (("station_name", station_name), ("line_side", line_side), ("direction", direction)):
             if value:
                 clauses.append(f"{field} = ?")
@@ -838,6 +850,8 @@ class AcRepository:
         mac = normalize_ap_mac(payload.get("ap_mac_display") or payload.get("ap_mac_norm"))
         payload["ap_mac_norm"] = mac.normalized or str(payload.get("ap_mac_norm") or "").strip().casefold()
         payload["ap_mac_display"] = mac.display or str(payload.get("ap_mac_display") or "").strip()
+        if payload.get("mileage_m") in (None, ""):
+            payload["mileage_m"] = parse_mileage_to_meters(payload.get("mileage_text"))
         payload["created_at"] = payload.get("created_at") or now
         payload["updated_at"] = now
         extension_id = data.get("id")

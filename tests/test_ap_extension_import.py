@@ -10,6 +10,7 @@ from netconsole.services.ap_extension_import import (
     ApExtensionImportService,
     normalize_ap_mac,
     parse_mileage,
+    standard_export_row,
 )
 
 
@@ -31,6 +32,10 @@ def test_parse_mileage_keeps_raw_and_parses_common_forms():
     assert parse_mileage("K6+491").meters == 6491
     assert parse_mileage("DK6+491").meters == 6491
     assert parse_mileage("AK0+207.267").meters == 207.267
+    assert parse_mileage("ZDK0+035").meters == 35
+    assert parse_mileage("YDK1+020").meters == 1020
+    assert parse_mileage("CDK1+170").meters == 1170
+    assert parse_mileage("RDK12+345").meters == 12345
     assert parse_mileage("6491").meters == 6491
     assert parse_mileage("bad").raw == "bad"
     assert parse_mileage("bad").meters is None
@@ -58,6 +63,21 @@ def test_preview_pis_left_right_layout_without_mac(tmp_path):
     assert preview.standard_rows[0]["curve_radius_m"] == 450
     assert preview.standard_rows[1]["line_side"] == "右线"
     assert preview.standard_rows[1]["direction"] == "上行"
+
+
+def test_standard_export_row_formats_mileage_with_line_prefix():
+    row = {
+        "station_name": "金家渡",
+        "line_side": "左线",
+        "direction": "下行",
+        "mileage_text": "K0+035",
+        "mileage_m": 35,
+    }
+
+    values = standard_export_row(row)
+
+    assert values[11] == "ZDK0+035"
+    assert values[12] == 35
 
 
 def test_preview_ap_name_mac_list_uses_segment_title(tmp_path):
@@ -126,3 +146,26 @@ def test_repository_imports_unbound_points_and_matches_resources_by_mac(tmp_path
     assert resource["extension_station_name"] == "金家渡"
     assert resource["extension_power_station"] == "金家渡变电所"
     assert resource["site"] in (None, "")
+
+
+def test_repository_extension_search_matches_prefixed_mileage(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.import_ap_extension_points(
+        [
+            {
+                "station_name": "金家渡",
+                "line_side": "左线",
+                "direction": "下行",
+                "mileage_text": "K0+035",
+                "mileage_m": 35,
+                "ap_point_code": "Z01-01",
+            }
+        ],
+        source_file="design.xlsx",
+        template_type=PIS_LAYOUT_TABLE,
+    )
+
+    rows = repository.list_ap_extension_points(search="ZDK0+035")
+
+    assert len(rows) == 1
+    assert rows[0]["ap_point_code"] == "Z01-01"

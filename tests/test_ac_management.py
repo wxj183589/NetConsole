@@ -5925,15 +5925,16 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     assert result.skipped == 0
     entity = repository.list_ap_entities("ac-1")[0]
     assert entity["station"] == "Station X"
-    assert entity["milestone"] == "K12+450"
+    assert entity["milestone"] == "12450"
     assert entity["location_note"] == "Platform"
     assert entity["direction"] == "上下行"
 
     export_path = tmp_path / "export.csv"
-    service.export_ap_csv(export_path, [{"ap_name": "ap-a", "ap_ip": "10.0.0.1", "state_display": "运行(主)", "site": "体育中心站"}])
+    service.export_ap_csv(export_path, [{"ap_name": "ap-a", "ap_ip": "10.0.0.1", "state_display": "运行(主)", "site": "体育中心站", "mileage": "1020", "direction": "上行"}])
     text = export_path.read_text(encoding="utf-8-sig")
     assert "AP名称" in text
     assert "ap-a" in text
+    assert "YDK1+020" in text
     assert "LLDP" not in text
     assert "BSSID" not in text
     assert "RID1信道" in text
@@ -5941,6 +5942,24 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     assert "RID3信道" not in text
     headers = text.splitlines()[0].split(",")
     assert headers.index("RID2功率") < headers.index("归属站点") < headers.index("更新时间")
+
+
+def test_fit_ap_resource_table_row_formats_mileage_with_extension_line_side():
+    from netconsole.ui.pages.ac_management_page import build_fit_ap_resource_table_row
+
+    row = build_fit_ap_resource_table_row(
+        {
+            "ap_uuid": "ap-1",
+            "ap_name": "AP-1",
+            "mileage": "",
+            "direction": "上行",
+            "extension_line_side": "右线",
+            "extension_mileage_m": 1020,
+        }
+    )
+
+    assert row["mileage"] == "YDK1+020"
+    assert row["_mileage_meters"] == 1020
 
 
 def test_trackside_ap_plan_remark_persists_and_exports(tmp_path):

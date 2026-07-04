@@ -13,6 +13,7 @@ from netconsole.services.ap_extension_import import (
     standard_template_headers,
 )
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.utils.mileage import format_track_mileage, mileage_storage_text, parse_track_mileage
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -22,6 +23,8 @@ def normalize_ap_direction(value: str) -> str:
         return "上行"
     if text.upper() == "CT":
         return "下行"
+    if text.upper() in {"ZDK", "YDK", "CDK", "RDK"}:
+        return text.upper()
     return text
 
 
@@ -131,13 +134,15 @@ class FitApImportExportService:
                 skipped += 1
                 errors.append(f"Row {line_number}: AP_MAC is empty or invalid")
                 continue
+            mileage = parse_track_mileage(payload["里程"])
+            direction = normalize_ap_direction(payload["上下行"]) or mileage.prefix or ""
             matched = self.repository.update_ap_entity_extension_by_mac(
                 ap_mac,
                 {
                     "station": payload["归属站点"],
-                    "milestone": payload["里程"],
+                    "milestone": mileage_storage_text(payload["里程"]),
                     "location_note": payload["点位说明"],
-                    "direction": normalize_ap_direction(payload["上下行"]),
+                    "direction": direction,
                 },
             )
             if not matched:
@@ -170,7 +175,7 @@ class FitApImportExportService:
                         row.get("rid2_bandwidth") or "",
                         row.get("rid2_tx_power") or "",
                         row.get("site") or "",
-                        row.get("mileage") or "",
+                        _format_ap_mileage(row.get("mileage"), row.get("direction"), row.get("extension_line_side") or row.get("line_side")),
                         row.get("location_note") or "",
                         row.get("direction") or "",
                         row.get("updated_at") or "",
@@ -237,13 +242,15 @@ class FitApImportExportService:
 
 def _ap_extension_template_row(row: dict[str, object | None], entity: dict[str, object | None] | None = None) -> list[str]:
     station = normalize_station_value(entity) or normalize_station_value(row)
+    direction = _text(row.get("direction") or (entity or {}).get("direction"))
+    line_side = _text(row.get("extension_line_side") or row.get("line_side"))
     return [
         _text(row.get("ap_name") or (entity or {}).get("ap_name")),
         normalize_ap_mac(row.get("ap_mac") or (entity or {}).get("ap_mac")),
         station,
-        _text(row.get("mileage") or row.get("milestone") or (entity or {}).get("milestone")),
+        _format_ap_mileage(_first_non_empty(row.get("mileage"), row.get("milestone"), (entity or {}).get("milestone")), direction, line_side),
         _text(row.get("location_note") or (entity or {}).get("location_note")),
-        _text(row.get("direction") or (entity or {}).get("direction")),
+        direction,
     ]
 
 
@@ -268,6 +275,18 @@ def _auto_width(sheet) -> None:
 
 def _text(value: object) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _format_ap_mileage(value: object, direction: object = None, line_side: object = None) -> str:
+    display = format_track_mileage(value, direction=str(direction or ""), line_side=str(line_side or ""))
+    return "" if display == "-" else display
+
+
+def _first_non_empty(*values: object) -> object:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return ""
 
 
 def normalize_ap_mac(value: object) -> str:
