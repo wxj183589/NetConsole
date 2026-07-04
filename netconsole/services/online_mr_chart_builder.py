@@ -33,6 +33,9 @@ class InteractiveChartPoint:
     timestamp: datetime
     timestamp_label: str
     device_name: str = ""
+    series_name: str = ""
+    metric_label: str = ""
+    metric_value: object = None
     radio_id: object = None
     peer_name: str = ""
     peer_mac: str = ""
@@ -50,6 +53,14 @@ class InteractiveChartPoint:
     ping_max_latency: object = None
     inbound_pps: object = None
     outbound_pps: object = None
+    traffic_direction: str = ""
+    traffic_rate_mbps: object = None
+    traffic_protocol: str = ""
+    traffic_role: str = ""
+    traffic_jitter_ms: object = None
+    traffic_loss_percent: object = None
+    traffic_retransmits: object = None
+    traffic_transfer_bytes: object = None
     raw: str = ""
 
 
@@ -121,6 +132,9 @@ class OnlineMrChartBuilder:
                     timestamp=timestamp,
                     timestamp_label=str(row[0] or ""),
                     device_name=str(meta.get("device_name") or ""),
+                    series_name="当前Active MR侧RSSI",
+                    metric_label="MR侧RSSI",
+                    metric_value=rssi,
                     radio_id=radio,
                     peer_name=str(row[4] or ""),
                     peer_mac=str(row[4] or row[5] or ""),
@@ -262,6 +276,58 @@ class OnlineMrChartBuilder:
             series=[ChartSeries("入方向总PPS", inbound), ChartSeries("出方向总PPS", outbound)],
             tooltip_rows=tooltip_rows,
             empty_message="未解析到接口PPS",
+        )
+
+    def build_traffic_rate_series(self) -> ChartData:
+        rows = self._query(
+            """
+            SELECT i.interval_center_time, i.collector_time, i.bitrate_mbps, i.retransmits, i.jitter_ms,
+                   i.loss_percent, i.transfer_bytes, i.role, i.raw_line, r.protocol, r.direction,
+                   r.server_ip, r.port
+            FROM iperf_intervals i
+            LEFT JOIN iperf_runs r ON r.run_id = i.run_id
+            WHERE i.bitrate_mbps IS NOT NULL
+            ORDER BY COALESCE(i.interval_center_time, i.collector_time) ASC, i.id ASC
+            LIMIT 20000
+            """
+        )
+        upload: list[tuple[object, object]] = []
+        download: list[tuple[object, object]] = []
+        total_by_time: dict[object, float] = {}
+        tooltips: list[dict[str, object]] = []
+        for row in rows:
+            time_value = row[0] or row[1]
+            if not time_value:
+                continue
+            mbps = float(row[2] or 0)
+            direction = _traffic_direction_label(row[10], row[7])
+            target = download if direction == "下行" else upload
+            target.append((time_value, mbps))
+            total_by_time[time_value] = total_by_time.get(time_value, 0.0) + mbps
+            tooltips.append(
+                {
+                    "time": time_value,
+                    "direction": direction,
+                    "rate_mbps": mbps,
+                    "protocol": str(row[9] or "").upper() or "-",
+                    "role": row[7],
+                    "server_ip": row[11],
+                    "server_port": row[12],
+                    "jitter_ms": row[4],
+                    "loss_percent": row[5],
+                    "retransmits": row[3],
+                    "transfer_bytes": row[6],
+                    "raw": row[8],
+                }
+            )
+
+        total = sorted(total_by_time.items(), key=lambda point: (_parse_time(point[0]) or datetime.max, str(point[0] or "")))
+        return ChartData(
+            title="业务打流",
+            y_label="速率（Mbps）",
+            series=[ChartSeries("上行速率", upload), ChartSeries("下行速率", download), ChartSeries("总吞吐", total)],
+            tooltip_rows=tooltips,
+            empty_message="当前会话无打流数据",
         )
 
     def build_switch_rssi_series(self) -> ChartData:
@@ -471,3 +537,13 @@ def _nearest_by_time(rows: list[dict[str, object]], timestamp: datetime, *, max_
     nearest = min(candidates, key=lambda row: abs((row["timestamp"] - timestamp).total_seconds()))  # type: ignore[operator]
     delta = abs((nearest["timestamp"] - timestamp).total_seconds())  # type: ignore[operator]
     return nearest if delta <= max_seconds else None
+
+
+def _traffic_direction_label(direction: object, role: object) -> str:
+    text = str(direction or "").strip().casefold()
+    role_text = str(role or "").strip().casefold()
+    if text in {"download", "down", "reverse"} or role_text in {"sum_received", "receiver"}:
+        return "下行"
+    if text in {"bidirectional", "both"}:
+        return "双向"
+    return "上行"

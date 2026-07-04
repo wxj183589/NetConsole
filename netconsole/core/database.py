@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.02.ap_extension_points"
+CURRENT_SCHEMA_VERSION = "2026.07.04.trackside_plan_remark"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -600,6 +600,7 @@ CREATE TABLE IF NOT EXISTS ac_trackside_ap_plan (
     mask_length INTEGER,
     ap_gateway TEXT,
     ap_management_vlans TEXT NOT NULL,
+    remark TEXT,
     sort_order INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -901,6 +902,7 @@ class Database:
                     self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
                 )
             )
+            self._apply_additive_schema_updates(conn)
             self._write_schema_version(conn)
             conn.commit()
         except Exception:
@@ -934,6 +936,10 @@ class Database:
         missing = sorted(table for table in required_tables if not self._table_exists(conn, table))
         if missing:
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
+
+    def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
+        if self._table_exists(conn, "ac_trackside_ap_plan") and not self._column_exists(conn, "ac_trackside_ap_plan", "remark"):
+            conn.execute("ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT")
 
     @staticmethod
     def _all_schema_scripts() -> tuple[str, ...]:
@@ -1000,6 +1006,10 @@ class Database:
             (table_name,),
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+        return any(row["name"] == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
 
     @staticmethod
     def _schema_mismatch_message() -> str:

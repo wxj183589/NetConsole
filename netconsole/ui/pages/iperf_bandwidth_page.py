@@ -3,11 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices, QDoubleValidator
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QDoubleValidator, QFontDatabase
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -15,7 +14,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QTabWidget,
+    QSizePolicy,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -50,7 +50,8 @@ class IperfBandwidthPage(QWidget):
         self.server_state = "STOPPED"
         self.current_values: list[float] = []
         self.tool_label = QLabel()
-        self.tabs = QTabWidget()
+        self.tool_label.setWordWrap(True)
+        self.splitter = QSplitter(Qt.Horizontal)
         self.server_status_label = QLabel()
         self.server_status_dot = QLabel()
 
@@ -64,6 +65,7 @@ class IperfBandwidthPage(QWidget):
         self.open_logs_button = QPushButton()
         self.server_output = QTextEdit()
         self.server_output.setReadOnly(True)
+        self.server_output.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
 
         self.client_host_edit = QLineEdit()
         self.client_port_spin = self._spin(1, 65535, 5201)
@@ -83,8 +85,10 @@ class IperfBandwidthPage(QWidget):
         self.client_start_button = QPushButton()
         self.client_stop_button = QPushButton()
         self.client_clear_button = QPushButton()
+        self.client_open_logs_button = QPushButton()
         self.client_output = QTextEdit()
         self.client_output.setReadOnly(True)
+        self.client_output.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.current_mbps_label = QLabel("0")
         self.avg_mbps_label = QLabel("0")
         self.max_mbps_label = QLabel("0")
@@ -105,15 +109,19 @@ class IperfBandwidthPage(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.addWidget(self.tool_label)
-        root.addWidget(self.tabs)
-        self.tabs.addTab(self._server_tab(), "")
-        self.tabs.addTab(self._client_tab(), "")
+        self.splitter.addWidget(self._server_panel())
+        self.splitter.addWidget(self._client_panel())
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        root.addWidget(self.splitter, 1)
 
-    def _server_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+    def _server_panel(self) -> QGroupBox:
+        panel = QGroupBox()
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout = QVBoxLayout(panel)
         box = QGroupBox()
         form = QFormLayout(box)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.addRow(self.i18n.t("iperf.bind_address"), self.server_bind_edit)
         form.addRow(self.i18n.t("iperf.port"), self.server_port_spin)
         form.addRow(self.i18n.t("iperf.interval"), self.server_interval_spin)
@@ -127,13 +135,15 @@ class IperfBandwidthPage(QWidget):
         layout.addWidget(box)
         layout.addLayout(buttons)
         layout.addWidget(self.server_output, 1)
-        return page
+        return panel
 
-    def _client_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+    def _client_panel(self) -> QGroupBox:
+        panel = QGroupBox()
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout = QVBoxLayout(panel)
         box = QGroupBox()
         form = QFormLayout(box)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.client_direction_combo.addItem(self.i18n.t("iperf.upload"), "upload")
         self.client_direction_combo.addItem(self.i18n.t("iperf.download"), "download")
         self.client_direction_combo.addItem(self.i18n.t("iperf.bidirectional"), "bidirectional")
@@ -150,7 +160,7 @@ class IperfBandwidthPage(QWidget):
         form.addRow(self.i18n.t("iperf.target_bandwidth"), bandwidth_row)
         form.addRow("", self.client_bandwidth_hint_label)
         buttons = QHBoxLayout()
-        for button in (self.client_start_button, self.client_stop_button, self.client_clear_button):
+        for button in (self.client_start_button, self.client_stop_button, self.client_clear_button, self.client_open_logs_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         summary = QHBoxLayout()
@@ -168,20 +178,21 @@ class IperfBandwidthPage(QWidget):
         layout.addLayout(summary)
         layout.addWidget(self.interval_table)
         layout.addWidget(self.client_output, 1)
-        return page
+        return panel
 
     def _connect_signals(self) -> None:
         self.server_start_button.clicked.connect(self.start_server)
         self.server_stop_button.clicked.connect(self.stop_server)
         self.server_clear_button.clicked.connect(self.server_output.clear)
-        self.open_logs_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.iperf_root(self.site_name)))))
+        self.open_logs_button.clicked.connect(lambda: self._open_log_dir(self.paths.iperf_server_dir(self.site_name)))
         self.client_start_button.clicked.connect(self.start_client)
         self.client_stop_button.clicked.connect(self.stop_client)
         self.client_clear_button.clicked.connect(self._clear_client)
+        self.client_open_logs_button.clicked.connect(lambda: self._open_log_dir(self.paths.iperf_client_dir(self.site_name)))
 
     def retranslate(self) -> None:
-        self.tabs.setTabText(0, self.i18n.t("iperf.server"))
-        self.tabs.setTabText(1, self.i18n.t("iperf.client"))
+        self.splitter.widget(0).setTitle(self.i18n.t("iperf.server"))
+        self.splitter.widget(1).setTitle(self.i18n.t("iperf.client"))
         self.server_start_button.setText(self.i18n.t("iperf.start_server"))
         self.server_stop_button.setText(self.i18n.t("iperf.stop_server"))
         self.server_clear_button.setText(self.i18n.t("iperf.clear_output"))
@@ -190,6 +201,7 @@ class IperfBandwidthPage(QWidget):
         self.client_start_button.setText(self.i18n.t("iperf.start_client"))
         self.client_stop_button.setText(self.i18n.t("iperf.stop_client"))
         self.client_clear_button.setText(self.i18n.t("iperf.clear_output"))
+        self.client_open_logs_button.setText(self.i18n.t("iperf.open_log_dir"))
         self.client_bandwidth_hint_label.setText(self.i18n.t("iperf.empty_tcp_auto"))
         tooltip = self.i18n.t("iperf.target_bandwidth_tooltip")
         self.client_bandwidth_edit.setToolTip(tooltip)
@@ -274,6 +286,10 @@ class IperfBandwidthPage(QWidget):
     def stop_client(self) -> None:
         if self.client_worker:
             self.client_worker.stop()
+
+    def _open_log_dir(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _append_interval(self, row: dict[str, object]) -> None:
         mbps = float(row.get("bitrate_mbps") or 0)

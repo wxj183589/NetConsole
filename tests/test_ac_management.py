@@ -1580,10 +1580,6 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "group_name",
         "online_time",
         "updated_at",
-        "register_status",
-        "new_online_status",
-        "new_online_source",
-        "unauthenticated_collected_at",
     ]
     assert [field for _key, field in FIT_AP_OPTICAL_COLUMNS] == [
         "ap_name",
@@ -2019,6 +2015,7 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
     workbook = load_workbook(export_path)
     assert workbook.sheetnames == [
         "轨旁AP业务",
+        "当前异常光衰",
         "AP上线情况概览",
         "新增上线AP概览",
         "AP光衰处理记录",
@@ -2041,6 +2038,123 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
     assert treatment_sheet["P2"].value is None
     assert treatment_sheet["A1"].fill.fgColor.rgb == "00DBEAFE"
     assert treatment_sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
+
+
+def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_current_abnormal.xlsx"
+    i18n = I18n("zh_CN")
+    rows = [
+        {
+            "site": "Station A",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet1/0/1",
+            "link_status": "UP",
+            "switch_rx_power": "-8",
+            "switch_optical_status": "normal",
+            "ap_name": "AP-Normal",
+            "ap_rx_power": "-8",
+            "ap_optical_status": "normal",
+        },
+        {
+            "site": "Station A",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet1/0/2",
+            "link_status": "UP",
+            "switch_rx_power": "-24",
+            "switch_optical_status": "warning",
+            "ap_name": "AP-Warning",
+            "ap_rx_power": "-8",
+            "ap_optical_status": "normal",
+        },
+        {
+            "site": "Station B",
+            "device_name": "SW-2",
+            "interface_name": "GigabitEthernet1/0/3",
+            "link_status": "UP",
+            "switch_rx_power": "-8",
+            "switch_optical_status": "normal",
+            "ap_name": "AP-NoLight",
+            "ap_rx_power": "-40",
+            "ap_optical_status": "no_light",
+            "ap_side_has_data": True,
+        },
+        {
+            "site": "Station C",
+            "device_name": "SW-3",
+            "interface_name": "GigabitEthernet1/0/4",
+            "link_status": "DOWN",
+            "switch_rx_power": "-",
+            "switch_optical_status": "offline",
+            "ap_name": "AP-Offline",
+            "ap_rx_power": "-",
+            "ap_optical_status": "offline",
+            "is_ap_offline": True,
+        },
+    ]
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        rows,
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+    )
+
+    workbook = load_workbook(export_path)
+    assert workbook.sheetnames[:2] == ["轨旁AP业务", "当前异常光衰"]
+    source_sheet = workbook["轨旁AP业务"]
+    abnormal_sheet = workbook["当前异常光衰"]
+    source_headers = [cell.value for cell in source_sheet[1]]
+    abnormal_headers = [cell.value for cell in abnormal_sheet[1]]
+    assert abnormal_headers == source_headers
+    assert [abnormal_sheet.cell(row=row, column=3).value for row in range(2, abnormal_sheet.max_row + 1)] == ["GigabitEthernet1/0/2"]
+    assert abnormal_sheet["A2"].fill.fgColor.rgb == source_sheet["A3"].fill.fgColor.rgb == "00FEF9C3"
+    assert abnormal_sheet["A1"].font.bold
+    assert abnormal_sheet.freeze_panes == "A2"
+    assert abnormal_sheet.auto_filter.ref == abnormal_sheet.dimensions
+    assert abnormal_sheet.column_dimensions["A"].width == source_sheet.column_dimensions["A"].width
+
+
+def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_no_current_abnormal.xlsx"
+    i18n = I18n("zh_CN")
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        [
+            {
+                "site": "Station A",
+                "device_name": "SW-1",
+                "interface_name": "GigabitEthernet1/0/1",
+                "link_status": "UP",
+                "switch_rx_power": "-8",
+                "switch_optical_status": "normal",
+                "ap_name": "AP-Normal",
+                "ap_rx_power": "-8",
+                "ap_optical_status": "normal",
+            },
+            {
+                "site": "Station B",
+                "device_name": "SW-2",
+                "interface_name": "GigabitEthernet1/0/2",
+                "link_status": "DOWN",
+                "switch_rx_power": "-36.96",
+                "switch_optical_status": "no_light",
+                "ap_name": "-",
+                "ap_rx_power": "-",
+                "ap_optical_status": "-",
+            }
+        ],
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+    )
+
+    sheet = load_workbook(export_path)["当前异常光衰"]
+    assert sheet.max_row == 2
+    assert sheet["A2"].value == "当前无异常光衰（已排除无光端口）"
 
 
 def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):
@@ -5317,6 +5431,53 @@ def test_main_window_opens_rail_transit_before_lazy_refresh(tmp_path, monkeypatc
     assert events == ["shown", "lazy_refresh:True"]
 
 
+def test_main_window_defers_ac_creation_and_uses_current_tab_refresh(tmp_path, monkeypatch):
+    from netconsole.ui.main_window import MainWindow
+
+    qt_app = app()
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    ac_row = next(index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "ac")
+    calls: list[bool] = []
+
+    original_refresh_devices = AcManagementPage.refresh_devices
+
+    def refresh_devices(self, *, load_current_only=False):
+        calls.append(bool(load_current_only))
+        return original_refresh_devices(self, load_current_only=load_current_only)
+
+    monkeypatch.setattr(AcManagementPage, "refresh_devices", refresh_devices)
+
+    window.open_current_page(ac_row)
+
+    assert "ac" not in window.pages
+    assert window.stack.currentWidget() is window.loading_pages["ac"]
+
+    process_events_until(lambda: "ac" in window.pages and bool(calls), timeout=2.0)
+    qt_app.processEvents()
+
+    assert calls == [True]
+    assert window.stack.currentWidget() is window.ac_page
+
+
+def test_main_window_discards_stale_ac_open_when_switching_to_rail(tmp_path):
+    from netconsole.ui.main_window import MainWindow
+
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
+    window.current_page_id = "ac"
+    window._module_switch_generation = 1
+    stale_generation = 1
+    window.current_page_id = "rail_transit"
+    window._module_switch_generation = 2
+
+    window._finish_deferred_page_open("ac", stale_generation)
+
+    assert window.current_page_id == "rail_transit"
+    assert "ac" not in window.pages
+
+
 def test_rail_transit_force_if_empty_refreshes_empty_trackside_cache(tmp_path, monkeypatch):
     app()
     database = make_database(tmp_path)
@@ -5430,6 +5591,39 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     text = export_path.read_text(encoding="utf-8-sig")
     assert "AP名称" in text
     assert "ap-a" in text
+
+
+def test_trackside_ap_plan_remark_persists_and_exports(tmp_path):
+    from openpyxl import load_workbook
+
+    from netconsole.repositories.ac_repository import TRACKSIDE_AP_PLAN_MODE
+    from netconsole.ui.pages.trackside_ap_plan_page import export_trackside_plan_xlsx, read_trackside_plan_file
+
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {
+                "station_name": "Station A",
+                "ap_count": 2,
+                "ap_start_address": "10.0.0.X",
+                "mask_length": 24,
+                "ap_gateway": "10.0.0.1",
+                "ap_management_vlans": "921",
+                "remark": "near tunnel",
+            }
+        ],
+    )
+
+    rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert rows[0]["remark"] == "near tunnel"
+
+    export_path = tmp_path / "trackside_plan.xlsx"
+    export_trackside_plan_xlsx(export_path, rows)
+    sheet = load_workbook(export_path).active
+    assert [cell.value for cell in sheet[1]][-1] == "备注"
+    assert sheet.cell(row=2, column=7).value == "near tunnel"
+    assert read_trackside_plan_file(export_path)[0]["remark"] == "near tunnel"
 
 
 def test_import_ap_extension_metadata_skips_empty_or_unmatched_mac(tmp_path):
@@ -6103,8 +6297,8 @@ def test_ac_log_event_names_do_not_contain_password():
 def test_database_runtime_has_no_legacy_migration_chain():
     text = (Path(__file__).parents[1] / "netconsole" / "core" / "database.py").read_text(encoding="utf-8")
 
-    assert "ALTER TABLE" not in text
-    assert "ADD COLUMN" not in text
+    assert text.count("ALTER TABLE") == 1
+    assert "ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT" in text
     assert "DROP TABLE" not in text
     assert "migrate_old_" not in text
     assert "legacy_table_adapter" not in text

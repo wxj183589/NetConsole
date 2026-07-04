@@ -438,6 +438,12 @@ def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path
     app = QApplication.instance() or QApplication([])
     assert app is not None
     page = WirelessScanPage(I18n("zh_CN"), "demo", PathResolver(tmp_path))
+    tab_titles = [page.tabs.tabText(index) for index in range(page.tabs.count())]
+    assert page.tabs.count() == 3
+    assert tab_titles == ["扫描结果", "扫描历史", "原始输出"]
+    assert "2.4G信道图" not in tab_titles
+    assert "5G信道图" not in tab_titles
+    assert page.tabs.currentIndex() == 0
     headers = [page.result_table.horizontalHeaderItem(index).text() for index in range(page.result_table.columnCount())]
     assert headers == ["SSID", "MAC地址", "AP_MAC", "AP名称", "射频口", "归属站点", "位置/里程", "RSSI", "信号质量", "信道", "频率", "频段", "频宽", "MIMO", "加密方式", "加密", "认证方式"]
     for hidden in {"匹配状态", "匹配规则", "是否隐藏SSID", "最后扫描时间", "安全类型", "PHY模式", "厂商"}:
@@ -566,3 +572,24 @@ def test_wireless_scan_page_restores_page_settings_and_field_widths(tmp_path, mo
 
     restored._adapters_loaded([WirelessAdapter(name="Adapter A", guid="guid-a"), WirelessAdapter(name="Adapter B", guid="guid-b")])
     assert restored.adapter_combo.currentData().guid == "guid-a"
+
+
+def test_wireless_scan_page_ignores_removed_channel_tab_cache(tmp_path, monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from netconsole.core.i18n import I18n
+    from netconsole.core.settings import SettingsStore
+    from netconsole.ui.pages.wireless_scan_page import WirelessScanPage
+
+    monkeypatch.setattr(WirelessScanPage, "load_adapters", lambda self: None)
+    settings = SettingsStore(PathResolver(tmp_path))
+    settings.values["network_tools/wireless_scan/current_tab"] = 2
+    settings.save()
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    page = WirelessScanPage(I18n("en_US"), "demo", PathResolver(tmp_path))
+
+    assert page.tabs.count() == 3
+    assert page.tabs.currentIndex() == 0
+    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == ["Scan Results", "Scan History", "Raw Output"]

@@ -56,13 +56,16 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     discover_ac_devices,
     discover_core_switch_candidates,
     generate_point_table_from_devices,
+    get_train_sort_key,
     merge_global_config,
     node_from_mapping,
     normalize_train_network_defaults,
+    sort_car_network_trains,
 )
-from netconsole.services.vehicle_mr_online import normalize_train_no, train_sort_key
+from netconsole.services.vehicle_mr_online import normalize_train_no
 from netconsole.ui.car_network_diagnostic_worker import CarNetworkDiagnosticWorker
 from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.theme.qt_theme_engine import current_theme_mode, current_theme_tokens
 
 
 STATE_LABELS = {
@@ -161,9 +164,16 @@ class CarNetworkDiagnosticPage(QWidget):
         self.main_splitter: QSplitter | None = None
         self.left_panel: QWidget | None = None
         self.left_content: QWidget | None = None
+        self.progress_state = "running"
+        self.status_badge_state = "pending"
+        self.cross_tc_status = "skipped"
+        self.topology_title_labels: list[QLabel] = []
+        self.topology_line_labels: list[QLabel] = []
+        self._applying_theme = False
+        self._last_theme_key: str | None = None
+        self._last_page_stylesheet: str | None = None
 
         self.title_label = QLabel("车内通信检测系统")
-        self.title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         self.start_button = QPushButton("开始检测")
         self.start_button.setObjectName("carNetworkPrimaryButton")
         self.refresh_button = QPushButton("刷新")
@@ -171,7 +181,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.export_button = QPushButton("导出点表")
         self.point_table_button = QPushButton("打开点表")
         self.status_label = QLabel("未检测")
-        self.status_label.setStyleSheet(_badge_style("pending"))
+        self._set_status_badge_state("pending")
         self.toggle_left_button = QPushButton("收起 «")
         self.toggle_left_button.setFixedWidth(76)
         self.progress_bar = QProgressBar()
@@ -248,6 +258,57 @@ class CarNetworkDiagnosticPage(QWidget):
     def retranslate(self) -> None:
         self.title_label.setText("车内通信检测系统")
 
+    def apply_theme(self, force: bool = False) -> None:
+        if self._applying_theme:
+            return
+        tokens = current_theme_tokens()
+        theme_key = current_theme_mode()
+        page_stylesheet = _page_style(tokens)
+        visual_refresh_only = not force and self._last_theme_key == theme_key and self._last_page_stylesheet == page_stylesheet
+        self._applying_theme = True
+        previous_updates_enabled = self.updatesEnabled()
+        try:
+            self.setUpdatesEnabled(False)
+            self._apply_visual_style(tokens, page_stylesheet, update_page_stylesheet=not visual_refresh_only)
+            self._last_theme_key = theme_key
+            self._last_page_stylesheet = page_stylesheet
+        finally:
+            self.setUpdatesEnabled(previous_updates_enabled)
+            self._applying_theme = False
+        self.update()
+
+    def _refresh_table_item_theme(self) -> None:
+        for row in range(self.train_table.rowCount()):
+            status_item = self.train_table.item(row, 1)
+            if status_item is not None:
+                fg, bg = _status_cell_colors(status_item.text())
+                status_item.setForeground(QBrush(QColor(fg)))
+                status_item.setBackground(QBrush(QColor(bg)))
+        for table in (self.tc1_table, self.tc2_table):
+            for row in range(table.rowCount()):
+                status_item = table.item(row, 2)
+                status = status_item.text() if status_item is not None else ""
+                running = "检测中" in status
+                for column in range(table.columnCount()):
+                    item = table.item(row, column)
+                    if item is not None:
+                        _style_result_item(item, column, status, running=running)
+
+    def _refresh_visual_states(self) -> None:
+        self._refresh_topology()
+        self._refresh_table_item_theme()
+        self._set_progress_state(self.progress_state)
+        self._set_status_badge_state(self.status_badge_state)
+        self.cross_tc_label.setStyleSheet(_cross_tc_ping_style(self.cross_tc_status))
+
+    def _set_progress_state(self, state: str) -> None:
+        self.progress_state = state
+        self.progress_bar.setStyleSheet(_progress_bar_style(state))
+
+    def _set_status_badge_state(self, state: str) -> None:
+        self.status_badge_state = state
+        self.status_label.setStyleSheet(_badge_style(state))
+
     def start_diagnostic(self) -> None:
         if self.worker is not None:
             self.worker.cancel()
@@ -271,12 +332,12 @@ class CarNetworkDiagnosticPage(QWidget):
         self.log_lines = []
         self.log_output.clear()
         self.progress_bar.setValue(0)
-        self.progress_bar.setStyleSheet(_progress_bar_style("running"))
+        self._set_progress_state("running")
         self.stage_label.setText("当前阶段：准备检测")
         self.task_label.setText("当前任务：读取点表")
         self.task_count_label.setText("已完成 0 / 0 项")
         self.status_label.setText("检测中")
-        self.status_label.setStyleSheet(_badge_style("running"))
+        self._set_status_badge_state("running")
         self._refresh_topology()
         self._fill_point_rows()
         ac_devices = discover_ac_devices(self.repository)
@@ -297,7 +358,7 @@ class CarNetworkDiagnosticPage(QWidget):
             "selected_count": len(core_devices),
         }
         self.status_label.setText("正在连接无线控制器...")
-        self.status_label.setStyleSheet(_badge_style("running"))
+        self._set_status_badge_state("running")
         self.worker = CarNetworkDiagnosticWorker(
             train_nodes,
             train,
@@ -397,11 +458,11 @@ class CarNetworkDiagnosticPage(QWidget):
         self._apply_cross_tc_ping(result.cross_tc_ping)
         self.status_label.setText(result.conclusion)
         self.progress_bar.setValue(100)
-        self.progress_bar.setStyleSheet(_progress_bar_style("ok" if result.status == "ok" else "fail"))
+        self._set_progress_state("ok" if result.status == "ok" else "fail")
         self.stage_label.setText("当前阶段：检测完成")
         self.task_label.setText(f"当前任务：{result.conclusion}")
         self.append_log(f"结论：{result.conclusion}")
-        self.status_label.setStyleSheet(_badge_style("ok" if result.status == "ok" else "fail" if result.status == "offline" else "unstable"))
+        self._set_status_badge_state("ok" if result.status == "ok" else "fail" if result.status == "offline" else "unstable")
         self.json_output.setPlainText(json.dumps(result.to_json_dict(), ensure_ascii=False, indent=2))
         self._fill_train_table()
         self._refresh_topology()
@@ -414,8 +475,8 @@ class CarNetworkDiagnosticPage(QWidget):
         self.stage_label.setText("当前阶段：检测失败")
         self.task_label.setText(f"当前任务：{message}")
         self.append_log(f"检测失败：{message}")
-        self.status_label.setStyleSheet(_badge_style("fail"))
-        self.progress_bar.setStyleSheet(_progress_bar_style("fail"))
+        self._set_status_badge_state("fail")
+        self._set_progress_state("fail")
         self._update_buttons()
 
     def import_points(self) -> None:
@@ -475,7 +536,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.last_result = None
         self._apply_cross_tc_ping({})
         self.status_label.setText("未检测")
-        self.status_label.setStyleSheet(_badge_style("pending"))
+        self._set_status_badge_state("pending")
         self.json_output.clear()
         self._refresh_topology()
         self._fill_point_rows()
@@ -579,30 +640,28 @@ class CarNetworkDiagnosticPage(QWidget):
         self._apply_left_panel_state()
         splitter.splitterMoved.connect(self._save_left_width)
         root.addWidget(splitter, 1)
-        self._apply_visual_style()
+        self.apply_theme(force=True)
 
-    def _apply_visual_style(self) -> None:
-        self.setStyleSheet(_page_style())
-        self.title_label.setStyleSheet("color: #F8FAFC; font-size: 18px; font-weight: 700;")
-        self.stage_label.setStyleSheet("color: #F8FAFC; font-size: 12px; font-weight: 600;")
-        self.task_label.setStyleSheet("color: #CBD5E1; font-size: 12px;")
-        self.task_count_label.setStyleSheet("color: #CBD5E1; font-size: 12px; font-weight: 600;")
-        self.scope_hint_label.setStyleSheet("color: #CBD5E1; font-size: 12px; padding: 4px 2px;")
-        self.progress_bar.setStyleSheet(_progress_bar_style("running"))
-        self.log_output.setStyleSheet(
-            "QPlainTextEdit#carNetworkLogOutput {"
-            "background-color: #020617; color: #E5E7EB; border: 1px solid #334155;"
-            "font-family: Consolas, 'Microsoft YaHei UI'; font-size: 12px; padding: 6px;"
-            "selection-background-color: #1D4ED8; selection-color: #FFFFFF;"
-            "}"
-        )
-        self.json_output.setStyleSheet(
-            "QPlainTextEdit#carNetworkJsonOutput {"
-            "background-color: #0F172A; color: #E5E7EB; border: 1px solid #334155;"
-            "font-family: Consolas, 'Microsoft YaHei UI'; font-size: 12px; padding: 6px;"
-            "selection-background-color: #1D4ED8; selection-color: #FFFFFF;"
-            "}"
-        )
+    def _apply_visual_style(self, tokens: dict[str, str], page_stylesheet: str, *, update_page_stylesheet: bool) -> None:
+        if update_page_stylesheet:
+            self.setStyleSheet(page_stylesheet)
+        self.title_label.setStyleSheet(f"color: {tokens['text_primary']}; font-size: 18px; font-weight: 700;")
+        self.stage_label.setStyleSheet(f"color: {tokens['text_primary']}; font-size: 12px; font-weight: 600;")
+        self.task_label.setStyleSheet(f"color: {tokens['text_secondary']}; font-size: 12px;")
+        self.task_count_label.setStyleSheet(f"color: {tokens['text_secondary']}; font-size: 12px; font-weight: 600;")
+        self.scope_hint_label.setStyleSheet(f"color: {tokens['text_secondary']}; font-size: 12px; padding: 4px 2px;")
+        self.log_output.setStyleSheet(_plain_text_style("carNetworkLogOutput", tokens))
+        self.json_output.setStyleSheet(_plain_text_style("carNetworkJsonOutput", tokens))
+        for table in (self.train_table, self.tc1_table, self.tc2_table):
+            table.setStyleSheet(_result_table_style(tokens))
+            table.viewport().update()
+        for label in self.topology_title_labels:
+            label.setStyleSheet(f"color: {tokens['text_primary']}; font-size: 13px; font-weight: 700;")
+        for label in self.topology_line_labels:
+            font_size = 28 if label.text() == "|" else 14
+            label.setStyleSheet(f"color: {tokens['primary']}; font-size: {font_size}px; font-weight: 800;")
+        self.vrrp_label.setStyleSheet(f"color: {tokens['primary']}; font-size: 13px; font-weight: 800;")
+        self._refresh_visual_states()
 
     def toggle_left_panel(self) -> None:
         if not self.left_collapsed and self.main_splitter is not None:
@@ -639,8 +698,7 @@ class CarNetworkDiagnosticPage(QWidget):
         layout.setVerticalSpacing(8)
         tc1_title = QLabel("TC1端 / CT车头")
         tc2_title = QLabel("TC2端 / CW车尾")
-        for title in (tc1_title, tc2_title):
-            title.setStyleSheet("color: #F8FAFC; font-size: 13px; font-weight: 700;")
+        self.topology_title_labels.extend((tc1_title, tc2_title))
         layout.addWidget(tc1_title, 0, 0, 1, 3, Qt.AlignCenter)
         layout.addWidget(tc2_title, 0, 4, 1, 3, Qt.AlignCenter)
         positions = {
@@ -660,15 +718,14 @@ class CarNetworkDiagnosticPage(QWidget):
         for row, column in ((2, 1), (4, 1), (2, 5), (4, 5)):
             line = QLabel("|")
             line.setAlignment(Qt.AlignCenter)
-            line.setStyleSheet("color: #94A3B8; font-size: 28px; font-weight: 700;")
+            self.topology_line_labels.append(line)
             layout.addWidget(line, row, column)
         left_line = QLabel("----------")
         right_line = QLabel("----------")
         for label in (left_line, right_line):
             label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("color: #60A5FA; font-size: 14px; font-weight: 800;")
+            self.topology_line_labels.append(label)
         self.vrrp_label.setAlignment(Qt.AlignCenter)
-        self.vrrp_label.setStyleSheet("color: #93C5FD; font-size: 13px; font-weight: 800;")
         layout.addWidget(left_line, 3, 2)
         layout.addWidget(self.vrrp_label, 3, 3)
         layout.addWidget(right_line, 3, 4)
@@ -724,6 +781,7 @@ class CarNetworkDiagnosticPage(QWidget):
 
     def _apply_cross_tc_ping(self, payload: dict[str, object]) -> None:
         status = str(payload.get("status") or "skipped")
+        self.cross_tc_status = status
         text = _cross_tc_ping_label(payload)
         self.cross_tc_label.setText(text)
         self.cross_tc_label.setStyleSheet(_cross_tc_ping_style(status))
@@ -859,7 +917,7 @@ class CarNetworkDiagnosticPage(QWidget):
         return [by_name[name] for name in NODE_ORDER if name in by_name]
 
     def _view_nodes(self, stored_nodes: list[CarNetworkNode]) -> list[CarNetworkNode]:
-        return stored_nodes
+        return sorted(stored_nodes, key=lambda node: (get_train_sort_key(node), NODE_ORDER.index(node.node_name) if node.node_name in NODE_ORDER else 99, node.node_name))
 
     def _fallback_trains_from_nodes(self, nodes: list[CarNetworkNode]) -> list[CarNetworkTrain]:
         trains: list[CarNetworkTrain] = []
@@ -875,7 +933,7 @@ class CarNetworkDiagnosticPage(QWidget):
 
     @staticmethod
     def _sorted_trains(trains: list[CarNetworkTrain]) -> list[CarNetworkTrain]:
-        return sorted(trains, key=lambda train: train_sort_key((train.train_id, train.train_no)))
+        return sort_car_network_trains(trains)
 
     def _update_buttons(self) -> None:
         running = self.worker is not None
@@ -1110,7 +1168,7 @@ class PointTableDialog(QDialog):
         self.node_type_filter.clear()
         self.train_filter.addItem("全部", "")
         self.node_type_filter.addItem("全部", "")
-        for train_no in sorted({node.train_no for node in self.nodes if node.train_no}):
+        for train_no in sorted({node.train_no for node in self.nodes if node.train_no}, key=get_train_sort_key):
             self.train_filter.addItem(train_no, train_no)
         for node_type in sorted({node.node_type for node in self.nodes if node.node_type}):
             self.node_type_filter.addItem(node_type, node_type)
@@ -1127,7 +1185,7 @@ class PointTableDialog(QDialog):
             "address_mapping_mode": MAPPING_MODE_OPTIONS,
         }
         try:
-            for node in self.nodes:
+            for node in sorted(self.nodes, key=lambda item: (get_train_sort_key(item), NODE_ORDER.index(item.node_name) if item.node_name in NODE_ORDER else 99, item.node_name)):
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 self.table.setRowHeight(row, 38)
@@ -1378,13 +1436,14 @@ def _cross_tc_ping_tooltip(payload: dict[str, object]) -> str:
 
 
 def _cross_tc_ping_style(status: str) -> str:
+    tokens = current_theme_tokens()
     fg, bg, border = {
         "checking": ("#075985", "#E0F2FE", "#38BDF8"),
         "ok": ("#14532D", "#DCFCE7", "#22C55E"),
         "loss": ("#713F12", "#FEF3C7", "#FACC15"),
         "fail": ("#7F1D1D", "#FECACA", "#EF4444"),
-        "skipped": ("#E5E7EB", "#475569", "#64748B"),
-    }.get(status, ("#E5E7EB", "#475569", "#64748B"))
+        "skipped": (tokens["text_muted"], tokens["surface_alt"], tokens["border_strong"]),
+    }.get(status, (tokens["text_muted"], tokens["surface_alt"], tokens["border_strong"]))
     return (
         f"QLabel {{ color: {fg}; background-color: {bg}; border: 2px solid {border}; "
         "border-radius: 4px; font-size: 12px; font-weight: 700; padding: 4px 10px; }}"
@@ -1409,131 +1468,153 @@ def _state_dot(state: str) -> str:
     return {"ok": "●", "fail": "●", "unstable": "●", "running": "●", "not_applicable": "○"}.get(state, "○")
 
 
-def _page_style() -> str:
-    return """
-QWidget {
-    background-color: #0F172A;
-    color: #CBD5E1;
+def _page_style(tokens: dict[str, str] | None = None) -> str:
+    tokens = tokens or current_theme_tokens()
+    return f"""
+QWidget {{
+    background-color: {tokens['background']};
+    color: {tokens['text_secondary']};
     font-size: 12px;
-}
-QGroupBox {
-    background-color: #111827;
-    color: #F8FAFC;
-    border: 1px solid #334155;
+}}
+QGroupBox {{
+    background-color: {tokens['surface']};
+    color: {tokens['text_primary']};
+    border: 1px solid {tokens['border']};
     border-radius: 6px;
     margin-top: 10px;
     font-weight: 700;
-}
-QGroupBox::title {
+}}
+QGroupBox::title {{
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
-}
-QLabel {
-    color: #CBD5E1;
-}
-QPushButton {
-    background-color: #1F2937;
-    color: #F8FAFC;
-    border: 1px solid #334155;
+}}
+QLabel {{
+    color: {tokens['text_secondary']};
+}}
+QPushButton {{
+    background-color: {tokens['surface']};
+    color: {tokens['text_primary']};
+    border: 1px solid {tokens['border_strong']};
     border-radius: 4px;
     padding: 5px 10px;
     min-height: 24px;
-}
-QPushButton:hover {
-    background-color: #334155;
-    border-color: #475569;
-}
-QPushButton:disabled {
-    background-color: #1F2937;
-    color: #64748B;
-    border-color: #334155;
-}
-QPushButton#carNetworkPrimaryButton {
-    background-color: #2563EB;
+}}
+QPushButton:hover {{
+    background-color: {tokens['hover']};
+    border-color: {tokens['primary']};
+}}
+QPushButton:disabled {{
+    background-color: {tokens['panel']};
+    color: {tokens['text_muted']};
+    border-color: {tokens['border']};
+}}
+QPushButton#carNetworkPrimaryButton {{
+    background-color: {tokens['primary']};
     color: #FFFFFF;
-    border-color: #3B82F6;
+    border-color: {tokens['primary_hover']};
     font-weight: 700;
-}
-QPushButton#carNetworkPrimaryButton[danger="true"] {
-    background-color: #DC2626;
-    border-color: #EF4444;
-}
-QTableWidget {
-    background-color: #1F2937;
-    alternate-background-color: #26364A;
-    color: #F8FAFC;
-    gridline-color: #334155;
-    selection-background-color: #1D4ED8;
-    selection-color: #FFFFFF;
-}
-QTableWidget::item:selected {
-    background-color: #1D4ED8;
-    color: #FFFFFF;
-}
-QHeaderView::section {
-    background-color: #1E293B;
-    color: #F8FAFC;
-    border: 1px solid #334155;
+}}
+QPushButton#carNetworkPrimaryButton[danger="true"] {{
+    background-color: {tokens['danger']};
+    border-color: {tokens['danger']};
+}}
+QTableWidget {{
+    background-color: {tokens['surface']};
+    alternate-background-color: {tokens['surface_alt']};
+    color: {tokens['text_primary']};
+    gridline-color: {tokens['border']};
+    selection-background-color: {tokens['selected']};
+    selection-color: {tokens['selected_text']};
+}}
+QTableWidget::item:selected {{
+    background-color: {tokens['selected']};
+    color: {tokens['selected_text']};
+}}
+QHeaderView::section {{
+    background-color: {tokens['panel']};
+    color: {tokens['text_primary']};
+    border: 1px solid {tokens['border']};
     padding: 6px;
     font-weight: 700;
-}
-QScrollBar:vertical, QScrollBar:horizontal {
-    background: #111827;
-    border: 1px solid #334155;
-}
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #475569;
+}}
+QScrollBar:vertical, QScrollBar:horizontal {{
+    background: {tokens['scrollbar_bg']};
+    border: 1px solid {tokens['border']};
+}}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+    background: {tokens['scrollbar_handle']};
     border-radius: 4px;
-}
+}}
+QScrollBar::handle:hover {{
+    background: {tokens['scrollbar_handle_hover']};
+}}
 """
 
 
-def _result_table_style() -> str:
-    return """
-QTableWidget {
-    background-color: #1F2937;
-    alternate-background-color: #26364A;
-    color: #F8FAFC;
-    gridline-color: #334155;
-    selection-background-color: #1D4ED8;
-    selection-color: #FFFFFF;
+def _plain_text_style(object_name: str, tokens: dict[str, str] | None = None) -> str:
+    tokens = tokens or current_theme_tokens()
+    return f"""
+QPlainTextEdit#{object_name} {{
+    background-color: {tokens['log_background']};
+    color: {tokens['log_text']};
+    border: 1px solid {tokens['border']};
+    font-family: Consolas, 'Microsoft YaHei UI';
     font-size: 12px;
-}
-QTableWidget::item {
+    padding: 6px;
+    selection-background-color: {tokens['selected']};
+    selection-color: {tokens['selected_text']};
+}}
+"""
+
+
+def _result_table_style(tokens: dict[str, str] | None = None) -> str:
+    tokens = tokens or current_theme_tokens()
+    return f"""
+QTableWidget {{
+    background-color: {tokens['surface']};
+    alternate-background-color: {tokens['surface_alt']};
+    color: {tokens['text_primary']};
+    gridline-color: {tokens['border']};
+    selection-background-color: {tokens['selected']};
+    selection-color: {tokens['selected_text']};
+    font-size: 12px;
+}}
+QTableWidget::item {{
     padding: 5px;
-    color: #F8FAFC;
-}
-QTableWidget::item:selected {
-    background-color: #1D4ED8;
-    color: #FFFFFF;
-}
-QTableWidget::item:hover {
-    background-color: #334155;
-    color: #FFFFFF;
-}
-QHeaderView::section {
-    background-color: #1E293B;
-    color: #F8FAFC;
-    border: 1px solid #334155;
+    color: {tokens['text_primary']};
+}}
+QTableWidget::item:selected {{
+    background-color: {tokens['selected']};
+    color: {tokens['selected_text']};
+}}
+QTableWidget::item:hover {{
+    background-color: {tokens['hover']};
+    color: {tokens['text_primary']};
+}}
+QHeaderView::section {{
+    background-color: {tokens['panel']};
+    color: {tokens['text_primary']};
+    border: 1px solid {tokens['border']};
     padding: 6px;
     font-weight: 700;
     font-size: 12px;
-}
-QTableCornerButton::section {
-    background-color: #1E293B;
-    border: 1px solid #334155;
-}
+}}
+QTableCornerButton::section {{
+    background-color: {tokens['panel']};
+    border: 1px solid {tokens['border']};
+}}
 """
 
 
 def _progress_bar_style(state: str) -> str:
+    tokens = current_theme_tokens()
     chunk = {"ok": "#22C55E", "fail": "#EF4444"}.get(state, "#38BDF8")
     return f"""
 QProgressBar {{
-    background-color: #1F2937;
-    color: #F8FAFC;
-    border: 1px solid #334155;
+    background-color: {tokens['surface_alt']};
+    color: {tokens['text_primary']};
+    border: 1px solid {tokens['border']};
     border-radius: 5px;
     min-height: 12px;
     text-align: center;
@@ -1548,6 +1629,7 @@ QProgressBar::chunk {{
 
 
 def _status_cell_colors(status: str) -> tuple[str, str]:
+    tokens = current_theme_tokens()
     text = (status or "").strip()
     lowered = text.lower()
     if text == "OK" or lowered == "ok" or any(word in text for word in ("正常", "成功", "可管理", "在线")):
@@ -1559,16 +1641,17 @@ def _status_cell_colors(status: str) -> tuple[str, str]:
     if any(word in text for word in ("故障", "失败", "不通", "离线", "超时", "异常")):
         return "#FEE2E2", "#7F1D1D"
     if any(word in text for word in ("跳过", "未检测", "不适用")) or text in {"", "-"}:
-        return "#D1D5DB", "#374151"
-    return "#F8FAFC", "#374151"
+        return tokens["text_muted"], tokens["surface_alt"]
+    return tokens["text_primary"], tokens["surface_alt"]
 
 
 def _style_result_item(item: QTableWidgetItem, column: int, status: str, *, running: bool = False) -> None:
+    tokens = current_theme_tokens()
     if running:
         item.setForeground(QBrush(QColor("#FFFFFF")))
         item.setBackground(QBrush(QColor("#075985")))
         return
-    item.setForeground(QBrush(QColor("#F8FAFC" if column != 5 else "#E5E7EB")))
+    item.setForeground(QBrush(QColor(tokens["text_primary"] if column != 5 else tokens["text_secondary"])))
     item.setBackground(QBrush())
     if column == 2:
         fg, bg = _status_cell_colors(status)
@@ -1577,13 +1660,14 @@ def _style_result_item(item: QTableWidgetItem, column: int, status: str, *, runn
 
 
 def _node_style(state: str) -> str:
+    tokens = current_theme_tokens()
     fg, bg, border, border_width = {
         "ok": ("#052E16", "#BBF7D0", "#22C55E", 2),
         "fail": ("#7F1D1D", "#FECACA", "#EF4444", 2),
         "unstable": ("#713F12", "#FEF08A", "#FACC15", 2),
-        "running": ("#0F172A", "#DBEAFE", "#3B82F6", 3),
-        "not_applicable": ("#D1D5DB", "#374151", "#6B7280", 2),
-    }.get(state, ("#F8FAFC", "#374151", "#6B7280", 2))
+        "running": ("#FFFFFF", tokens["primary"], tokens["primary_hover"], 3),
+        "not_applicable": (tokens["text_muted"], tokens["surface_alt"], tokens["border_strong"], 2),
+    }.get(state, (tokens["text_primary"], tokens["surface_alt"], tokens["border_strong"], 2))
     return (
         "QPushButton {"
         f"color: {fg}; background: {bg}; border: {border_width}px solid {border};"
@@ -1593,10 +1677,11 @@ def _node_style(state: str) -> str:
 
 
 def _badge_style(state: str) -> str:
+    tokens = current_theme_tokens()
     fg, bg = {
         "ok": ("#DCFCE7", "#14532D"),
         "fail": ("#FEE2E2", "#7F1D1D"),
         "unstable": ("#FEF3C7", "#713F12"),
         "running": ("#FFFFFF", "#075985"),
-    }.get(state, ("#D1D5DB", "#374151"))
+    }.get(state, (tokens["text_muted"], tokens["surface_alt"]))
     return f"QLabel {{ color: {fg}; background: {bg}; border-radius: 4px; padding: 3px 8px; font-weight: 600; }}"

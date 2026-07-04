@@ -1599,6 +1599,42 @@ def test_online_mr_analysis_charts_render_from_parsed_sqlite(tmp_path: Path) -> 
     assert not switch_axis.collections
 
 
+def test_online_mr_traffic_chart_renders_iperf_and_empty_state(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    with sqlite3.connect(session.db_path) as conn:
+        conn.execute(
+            "INSERT INTO iperf_runs (run_id, session_id, mode, protocol, server_ip, port, direction, started_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("run-1", session.meta.session_id, "client", "TCP", "10.0.0.10", 5201, "upload", "2026-07-03 19:00:00.000", "PARSED"),
+        )
+        conn.execute(
+            """
+            INSERT INTO iperf_intervals (
+                run_id, session_id, collector_time, interval_start_sec, interval_end_sec, interval_center_time,
+                transfer_bytes, bitrate_mbps, retransmits, role, jitter_ms, loss_percent, raw_line
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("run-1", session.meta.session_id, "2026-07-03 19:00:01.000", 0, 1, "2026-07-03 19:00:00.500", 1024, 88.1, 2, "sender", None, None, "iperf"),
+        )
+
+    page._render_analysis_charts(session.session_dir)
+
+    traffic_axis = page.analysis_chart_canvases["traffic"].figure.axes[0]
+    assert traffic_axis.lines
+    assert "traffic" in page.analysis_chart_hover_controllers
+    tooltip = page.analysis_chart_hover_controllers["traffic"].tooltip_text(0)
+    assert "打流:" in tooltip
+    assert "速率: 88.10 Mbps" in tooltip
+    assert "协议: TCP" in tooltip
+
+    empty_page, _repository, _groups = _online_page_with_devices(tmp_path / "empty")
+    empty_session = OnlineMrSessionStore(PathResolver(tmp_path / "empty")).create_session(config)
+    empty_page._render_analysis_charts(empty_session.session_dir)
+    empty_axis = empty_page.analysis_chart_canvases["traffic"].figure.axes[0]
+    assert "当前会话无打流数据" in empty_axis.texts[0].get_text()
+
+
 def test_online_mr_active_rssi_interactive_points_fill_nearby_metrics(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)

@@ -23,6 +23,7 @@ TRACKSIDE_PLAN_FIELDS = (
     "mask_length",
     "ap_gateway",
     "ap_management_vlans",
+    "remark",
     "sort_order",
     "created_at",
     "updated_at",
@@ -2158,6 +2159,7 @@ class AcRepository:
         payload["mask_length"] = row.get("mask_length")
         payload["sort_order"] = row.get("sort_order") if row.get("sort_order") is not None else sort_order
         payload["ap_management_vlans"] = str(row.get("ap_management_vlans") or "").strip()
+        payload["remark"] = str(row.get("remark") or "").strip()
         payload["created_at"] = row.get("created_at") or now
         payload["updated_at"] = now
         return payload

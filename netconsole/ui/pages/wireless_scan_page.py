@@ -46,6 +46,9 @@ from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.wireless_scan_worker import WirelessAdapterLoadWorker, WirelessScanWorker
 
 
+WIRELESS_SCAN_TAB_KEYS = ("results", "history", "raw")
+
+
 class WirelessScanPage(QWidget):
     def __init__(self, i18n: I18n, site_name: str, paths: PathResolver) -> None:
         super().__init__()
@@ -84,8 +87,6 @@ class WirelessScanPage(QWidget):
         self.summary_label = QLabel()
         self.tabs = QTabWidget()
         self.result_table = QTableWidget(0, len(WIRELESS_SCAN_DISPLAY_COLUMNS))
-        self.channel_24g = QTextEdit()
-        self.channel_5g = QTextEdit()
         self.history_table = QTableWidget(0, 7)
         self.raw_text = QTextEdit()
         self.refresh_timer = QTimer(self)
@@ -95,8 +96,7 @@ class WirelessScanPage(QWidget):
         self.settings_timer.setSingleShot(True)
         self.settings_timer.setInterval(300)
         self.settings_timer.timeout.connect(self.save_settings)
-        for widget in (self.channel_24g, self.channel_5g, self.raw_text):
-            widget.setReadOnly(True)
+        self.raw_text.setReadOnly(True)
         configure_readonly_table(self.result_table)
         configure_readonly_table(self.history_table)
         self.result_table.setSortingEnabled(False)
@@ -157,8 +157,6 @@ class WirelessScanPage(QWidget):
         root.addWidget(self.summary_label)
         root.addWidget(self.status_label)
         self.tabs.addTab(self.result_table, "")
-        self.tabs.addTab(self.channel_24g, "")
-        self.tabs.addTab(self.channel_5g, "")
         self.tabs.addTab(self.history_table, "")
         self.tabs.addTab(self.raw_text, "")
         root.addWidget(self.tabs, 1)
@@ -222,10 +220,8 @@ class WirelessScanPage(QWidget):
             ]
         )
         self.tabs.setTabText(0, self.i18n.t("wireless_scan.scan_results"))
-        self.tabs.setTabText(1, self.i18n.t("wireless_scan.channel_24g"))
-        self.tabs.setTabText(2, self.i18n.t("wireless_scan.channel_5g"))
-        self.tabs.setTabText(3, self.i18n.t("wireless_scan.scan_history"))
-        self.tabs.setTabText(4, self.i18n.t("wireless_scan.raw_output"))
+        self.tabs.setTabText(1, self.i18n.t("wireless_scan.scan_history"))
+        self.tabs.setTabText(2, self.i18n.t("wireless_scan.raw_output"))
         self._refresh_external_button()
 
     def load_adapters(self) -> None:
@@ -273,8 +269,6 @@ class WirelessScanPage(QWidget):
         rows = self._sort_rows(rows)
         self.filtered_rows = rows
         self._render_results(rows)
-        self._render_channel_text(rows, "2.4G", self.channel_24g)
-        self._render_channel_text(rows, "5G", self.channel_5g)
 
     def export_current(self) -> None:
         if not self.current_rows:
@@ -409,13 +403,6 @@ class WirelessScanPage(QWidget):
             )
         )
 
-    def _render_channel_text(self, rows: list[dict[str, object]], band: str, target: QTextEdit) -> None:
-        lines = []
-        for row in sorted([row for row in rows if row.get("band") == band], key=lambda item: (item.get("channel") or 0, -(item.get("rssi_dbm") or -999))):
-            marker = "*" if row.get("matched_trackside_ap") else "-"
-            lines.append(f"{marker} CH {row.get('channel') or '-'}  {row.get('rssi_dbm') or '-'} dBm  {row.get('matched_ap_name') or row.get('ssid') or row.get('bssid')}")
-        target.setPlainText("\n".join(lines) if lines else self.i18n.t("wireless_scan.no_results"))
-
     def _toggle_auto_refresh(self, checked: bool) -> None:
         if checked:
             self.refresh_timer.start()
@@ -457,8 +444,7 @@ class WirelessScanPage(QWidget):
             self.only_trackside_check.setChecked(bool(self.settings.get_value("network_tools/wireless_scan/trackside_only", False)))
             _set_combo_data(self.band_filter, self.settings.get_value("network_tools/wireless_scan/band_filter", ""))
             _set_combo_data(self.radio_filter, self.settings.get_value("network_tools/wireless_scan/radio_filter", ""))
-            tab_index = _int_setting(self.settings, "network_tools/wireless_scan/current_tab", 0, 0, max(0, self.tabs.count() - 1))
-            self.tabs.setCurrentIndex(tab_index)
+            self._restore_current_tab()
             sort_column = _int_setting(self.settings, "network_tools/wireless_scan/sort_column", -1, -1, len(WIRELESS_SCAN_DISPLAY_COLUMNS) - 1)
             self.sort_column = sort_column if sort_column >= 0 else None
             order = str(self.settings.get_value("network_tools/wireless_scan/sort_order", "asc") or "asc")
@@ -484,7 +470,7 @@ class WirelessScanPage(QWidget):
                 "network_tools/wireless_scan/trackside_only": self.only_trackside_check.isChecked(),
                 "network_tools/wireless_scan/band_filter": self.band_filter.currentData() or "",
                 "network_tools/wireless_scan/radio_filter": self.radio_filter.currentData() or "",
-                "network_tools/wireless_scan/current_tab": self.tabs.currentIndex(),
+                "network_tools/wireless_scan/current_tab_key": self._current_tab_key(),
                 "network_tools/wireless_scan/sort_column": self.sort_column if self.sort_column is not None else -1,
                 "network_tools/wireless_scan/sort_order": "desc" if self.sort_order == Qt.DescendingOrder else "asc",
                 "network_tools/wireless_scan/external_path": str(self.settings.get_value("network_tools/wireless_scan/external_path", "") or ""),
@@ -495,6 +481,19 @@ class WirelessScanPage(QWidget):
     def _schedule_save_settings(self, *_args: object) -> None:
         if not self._restoring_settings:
             self.settings_timer.start()
+
+    def _current_tab_key(self) -> str:
+        index = self.tabs.currentIndex()
+        if 0 <= index < len(WIRELESS_SCAN_TAB_KEYS):
+            return WIRELESS_SCAN_TAB_KEYS[index]
+        return WIRELESS_SCAN_TAB_KEYS[0]
+
+    def _restore_current_tab(self) -> None:
+        tab_key = str(self.settings.get_value("network_tools/wireless_scan/current_tab_key", "") or "")
+        if tab_key in WIRELESS_SCAN_TAB_KEYS:
+            self.tabs.setCurrentIndex(WIRELESS_SCAN_TAB_KEYS.index(tab_key))
+            return
+        self.tabs.setCurrentIndex(0)
 
     def _raw_output_with_debug(self) -> str:
         if _actual_scan_source(self.current_rows) != "wlan_api":

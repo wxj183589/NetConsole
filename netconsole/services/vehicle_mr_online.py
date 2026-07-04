@@ -14,6 +14,7 @@ from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.online_mr_collector import NetmikoShellConnection
+from netconsole.utils.natural_sort import train_natural_sort_key
 
 
 VEHICLE_INIT_COMMAND = "screen-length disable"
@@ -387,14 +388,9 @@ def parse_train_identity_from_device(device: Device) -> TrainIdentity | None:
     )
 
 
-def train_sort_key(train: VehicleMrTrainState | tuple[str, str]) -> tuple[str, int, str]:
+def train_sort_key(train: VehicleMrTrainState | tuple[str, str]) -> tuple[object, ...]:
     train_id, train_no = (train.train_id, train.train_no) if isinstance(train, VehicleMrTrainState) else train
-    prefix = train_id.rsplit("-LC", 1)[0] if "-LC" in train_id else train_id
-    try:
-        number = int(train_no)
-    except (TypeError, ValueError):
-        number = 10**9
-    return prefix, number, train_id
+    return train_natural_sort_key(train_no, train_id)
 
 
 def build_registered_trains(devices: list[Device], group_names: dict[int, str] | None = None) -> dict[str, VehicleMrTrainState]:

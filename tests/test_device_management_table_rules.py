@@ -591,7 +591,17 @@ def test_top_toolbar_omits_edit_delete_and_contains_batch_refresh_details():
     assert "Delete" not in top_buttons
     assert page.batch_refresh_details_button.text() == "Batch Refresh Details"
     assert page.external_terminal_button.text() == "External Terminal Config"
-    assert top_buttons[-2:] == ["Invert Selection", "External Terminal Config"]
+    assert top_buttons[:7] == [
+        "Add",
+        "Test Connection",
+        "External Terminal Config",
+        "Generate CRT Sessions",
+        "Clear Selection",
+        "Invert Selection",
+        "Batch Delete",
+    ]
+    assert "Device Details" not in top_buttons
+    assert "Refresh" not in top_buttons
     assert page.action_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert page.selection_label.parent() is page
 

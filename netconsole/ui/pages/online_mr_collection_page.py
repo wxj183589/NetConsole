@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDoubleValidator, QTextCursor
@@ -455,6 +456,8 @@ class OnlineMrCollectionPage(QWidget):
         self.analysis_chart_pages: dict[str, QWidget] = {}
         self.analysis_chart_placeholders: dict[str, QLabel] = {}
         self.analysis_chart_canvases: dict[str, object] = {}
+        self.analysis_chart_axes: dict[str, object] = {}
+        self.analysis_chart_xsyncing = False
         self.analysis_chart_views: dict[str, ScrollableMatplotlibView] = {}
         self.analysis_chart_hover_controllers: dict[str, AnalysisChartHoverController] = {}
         self.refresh_timer = QTimer(self)
@@ -1300,6 +1303,7 @@ class OnlineMrCollectionPage(QWidget):
             ("ping_loss", "Ping 丢包率"),
             ("ping", "Ping 延迟"),
             ("interface", "接口 PPS"),
+            ("traffic", "业务打流"),
             ("busy", "信道繁忙度"),
             ("switch_rssi", "主链路切换前后信号"),
         )
@@ -2075,6 +2079,7 @@ class OnlineMrCollectionPage(QWidget):
             "ping_loss": builder.build_ping_loss_series(),
             "ping": builder.build_ping_latency_series(),
             "interface": builder.build_interface_rate_series(),
+            "traffic": builder.build_traffic_rate_series(),
             "busy": builder.build_channel_busy_series(),
             "switch_rssi": builder.build_switch_rssi_series(),
         }
@@ -2086,6 +2091,7 @@ class OnlineMrCollectionPage(QWidget):
                 [(series.name, series.points) for series in chart.series],
                 empty_text=chart.empty_message,
                 hover_points=rssi_interactive_points if key == "rssi" else None,
+                tooltip_rows=chart.tooltip_rows,
             )
 
     def _plot_analysis_chart(
@@ -2097,12 +2103,14 @@ class OnlineMrCollectionPage(QWidget):
         *,
         empty_text: str = "无数据",
         hover_points: list[object] | None = None,
+        tooltip_rows: list[dict[str, object]] | None = None,
     ) -> None:
         canvas = self._ensure_analysis_chart_canvas(key)
         self._clear_analysis_chart_hover(key)
         figure = canvas.figure
         figure.clear()
         axis = figure.add_subplot(111)
+        self.analysis_chart_axes[key] = axis
         plotted = False
         total_points = 0
         for label, values in series:
@@ -2149,9 +2157,30 @@ class OnlineMrCollectionPage(QWidget):
             apply_cjk_font(axis)
         except Exception:
             pass
-        if key == "rssi" and hover_points:
-            self.analysis_chart_hover_controllers[key] = AnalysisChartHoverController(canvas, axis, hover_points, _online_mr_active_rssi_tooltip_text)
+        self._connect_analysis_chart_axis_sync(key, axis)
+        chart_hover_points = hover_points or _analysis_chart_generic_hover_points(key, title, series, tooltip_rows or [])
+        if chart_hover_points:
+            tooltip_builder = _online_mr_active_rssi_tooltip_text if key == "rssi" and hover_points else _online_mr_generic_chart_tooltip_text
+            self.analysis_chart_hover_controllers[key] = AnalysisChartHoverController(canvas, axis, chart_hover_points, tooltip_builder)
         canvas.draw_idle()
+
+    def _connect_analysis_chart_axis_sync(self, key: str, axis) -> None:
+        axis.callbacks.connect("xlim_changed", lambda changed_axis, source_key=key: self._sync_analysis_chart_xlimits(source_key, changed_axis.get_xlim()))
+
+    def _sync_analysis_chart_xlimits(self, source_key: str, limits: tuple[float, float]) -> None:
+        if self.analysis_chart_xsyncing:
+            return
+        self.analysis_chart_xsyncing = True
+        try:
+            for key, axis in self.analysis_chart_axes.items():
+                if key == source_key:
+                    continue
+                axis.set_xlim(limits)
+                canvas = self.analysis_chart_canvases.get(key)
+                if canvas is not None:
+                    canvas.draw_idle()
+        finally:
+            self.analysis_chart_xsyncing = False
 
     def _ensure_analysis_chart_canvas(self, key: str):
         canvas = self.analysis_chart_canvases.get(key)
@@ -4333,6 +4362,60 @@ def _split_chart_segments(points: list[tuple[datetime, float]], *, max_gap_secon
     return segments
 
 
+def _analysis_chart_generic_hover_points(
+    key: str,
+    title: str,
+    series: list[tuple[str, list[object]]],
+    tooltip_rows: list[dict[str, object]],
+) -> list[object]:
+    rows_by_time: dict[str, dict[str, object]] = {}
+    for row in tooltip_rows:
+        time_value = str(row.get("time") or row.get("collected_at") or "").strip()
+        if time_value:
+            rows_by_time.setdefault(time_value, row)
+    points: list[object] = []
+    for series_name, values in series:
+        for value in values:
+            point = _chart_point(value)
+            if point is None:
+                continue
+            timestamp, metric_value = point
+            timestamp_label = str(value[0]) if isinstance(value, (tuple, list)) and value else timestamp.isoformat(sep=" ", timespec="milliseconds")
+            detail = rows_by_time.get(timestamp_label, {})
+            points.append(
+                SimpleNamespace(
+                    timestamp=timestamp,
+                    timestamp_label=timestamp_label,
+                    series_name=series_name,
+                    metric_label=_chart_metric_label(key, title),
+                    metric_value=metric_value,
+                    detail=detail,
+                    traffic_direction=detail.get("direction", ""),
+                    traffic_rate_mbps=detail.get("rate_mbps", metric_value),
+                    traffic_protocol=detail.get("protocol", ""),
+                    traffic_role=detail.get("role", ""),
+                    traffic_jitter_ms=detail.get("jitter_ms"),
+                    traffic_loss_percent=detail.get("loss_percent"),
+                    traffic_retransmits=detail.get("retransmits"),
+                    traffic_transfer_bytes=detail.get("transfer_bytes"),
+                    raw=detail.get("raw", ""),
+                )
+            )
+    points.sort(key=lambda item: item.timestamp)
+    return points
+
+
+def _chart_metric_label(key: str, title: str) -> str:
+    return {
+        "ping_loss": "丢包率",
+        "ping": "延迟",
+        "interface": "接口 PPS",
+        "traffic": "打流速率",
+        "busy": "信道繁忙度",
+        "switch_rssi": "RSSI",
+    }.get(key, title)
+
+
 def _online_mr_active_rssi_tooltip_text(point: object) -> str:
     return "\n".join(
         [
@@ -4367,6 +4450,50 @@ def _online_mr_active_rssi_tooltip_text(point: object) -> str:
     )
 
 
+def _online_mr_generic_chart_tooltip_text(point: object) -> str:
+    detail = getattr(point, "detail", {}) or {}
+    lines = [
+        "采样时间:",
+        _display_value(getattr(point, "timestamp_label", "")),
+        "",
+        "图表:",
+        f"曲线: {_display_value(getattr(point, 'series_name', None))}",
+        f"{_display_value(getattr(point, 'metric_label', None))}: {_display_value(getattr(point, 'metric_value', None))}",
+    ]
+    if getattr(point, "traffic_rate_mbps", None) is not None or detail.get("direction"):
+        lines.extend(
+            [
+                "",
+                "打流:",
+                f"方向: {_display_value(getattr(point, 'traffic_direction', None))}",
+                f"速率: {_format_bitrate_mbps(getattr(point, 'traffic_rate_mbps', None))}",
+                f"协议: {_display_value(getattr(point, 'traffic_protocol', None))}",
+                f"角色: {_display_value(getattr(point, 'traffic_role', None))}",
+                f"服务端: {_display_value(detail.get('server_ip'))}:{_display_value(detail.get('server_port'))}",
+                f"Jitter: {_format_ms_value(getattr(point, 'traffic_jitter_ms', None))}",
+                f"丢包率: {_format_percent_value(getattr(point, 'traffic_loss_percent', None))}",
+                f"TCP重传: {_display_value(getattr(point, 'traffic_retransmits', None))}",
+            ]
+        )
+    for label, field in (
+        ("目标地址", "target"),
+        ("射频ID", "radio"),
+        ("方向", "direction"),
+        ("接口", "interfaces"),
+        ("控制信道繁忙度", "ctl_busy"),
+        ("发送繁忙度", "tx_busy"),
+        ("接收繁忙度", "rx_busy"),
+        ("切换前 AP", "from_peer_name"),
+        ("切换后 AP", "to_peer_name"),
+        ("切换前 MAC", "from_peer_mac"),
+        ("切换后 MAC", "to_peer_mac"),
+        ("切换原因", "reason_text"),
+    ):
+        if field in detail:
+            lines.append(f"{label}: {_display_value(detail.get(field))}")
+    return "\n".join(lines)
+
+
 def _display_value(value: object) -> str:
     if value is None:
         return "-"
@@ -4386,6 +4513,21 @@ def _format_percent_value(value: object) -> str:
 def _format_ms_value(value: object) -> str:
     text = _display_value(value)
     return text if text == "-" or text.endswith("ms") else f"{text} ms"
+
+
+def _format_bitrate_mbps(value: object) -> str:
+    try:
+        mbps = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    bps = mbps * 1_000_000
+    if bps >= 1_000_000_000:
+        return f"{bps / 1_000_000_000:.2f} Gbps"
+    if bps >= 1_000_000:
+        return f"{bps / 1_000_000:.2f} Mbps"
+    if bps >= 1_000:
+        return f"{bps / 1_000:.2f} Kbps"
+    return f"{bps:.0f} bps"
 
 
 def _format_duration_value(value: object) -> str:

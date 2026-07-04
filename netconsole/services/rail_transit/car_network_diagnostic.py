@@ -36,9 +36,9 @@ from netconsole.services.vehicle_mr_online import (
     normalize_train_no,
     parse_train_identity,
     canonical_peer_name,
-    train_sort_key,
 )
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.utils.natural_sort import train_natural_sort_key
 
 try:
     from netmiko import ConnectHandler
@@ -157,6 +157,20 @@ class CarNetworkTrain:
         if self.tc2_device is not None:
             result["TC2-MR"] = self.tc2_device
         return result
+
+
+def get_train_sort_key(value: CarNetworkTrain | CarNetworkNode | tuple[object, ...] | object) -> tuple[object, ...]:
+    if isinstance(value, CarNetworkTrain):
+        return train_natural_sort_key(value.train_no, value.display_name, value.train_id)
+    if isinstance(value, CarNetworkNode):
+        return train_natural_sort_key(value.train_no, value.display_name, value.train_id)
+    if isinstance(value, tuple):
+        return train_natural_sort_key(*value)
+    return train_natural_sort_key(value)
+
+
+def sort_car_network_trains(trains: Iterable[CarNetworkTrain]) -> list[CarNetworkTrain]:
+    return sorted(trains, key=get_train_sort_key)
 
 
 @dataclass(frozen=True)
@@ -442,7 +456,7 @@ def build_car_network_trains(repository, site_name: str) -> list[CarNetworkTrain
         )
         for item in by_no.values()
     ]
-    return sorted(trains, key=lambda train: train_sort_key((train.train_id, train.train_no)))
+    return sort_car_network_trains(trains)
 
 
 def build_train_3sw_bindings(repository, site_name: str, trains: list[CarNetworkTrain]) -> dict[str, dict[str, Device]]:
@@ -715,7 +729,7 @@ def generate_point_table_from_devices(
         discovered_keys.add((_device_id(device), node_name))
         train_nos.add(train_no)
 
-    for train_no in sorted(train_nos, key=lambda value: train_sort_key((value, value))):
+    for train_no in sorted(train_nos, key=get_train_sort_key):
         train_id = _train_id_for_no(train_no, [*existing_nodes, *generated])
         existing_for_train = [node for node in [*existing_nodes, *generated] if node.train_no == train_no or node.train_id == train_id]
         present = {node.node_name for node in existing_for_train}
@@ -1092,7 +1106,7 @@ def _dedupe_nodes(nodes: list[CarNetworkNode]) -> list[CarNetworkNode]:
 
 def _sort_nodes(nodes: list[CarNetworkNode]) -> list[CarNetworkNode]:
     order = {name: index for index, name in enumerate(NODE_ORDER)}
-    return sorted(nodes, key=lambda node: (train_sort_key((node.train_id, node.train_no)), order.get(node.node_name, 99), node.node_name))
+    return sorted(nodes, key=lambda node: (get_train_sort_key(node), order.get(node.node_name, 99), node.node_name))
 
 
 def car_network_root(paths: PathResolver, site_name: str) -> Path:
@@ -1110,11 +1124,11 @@ class CarNetworkPointTableStore:
         if not self.path.exists():
             return []
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        return [node_from_mapping(row) for row in data]
+        return _sort_nodes([node_from_mapping(row) for row in data])
 
     def save(self, nodes: Iterable[CarNetworkNode]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps([asdict(node) for node in nodes], ensure_ascii=False, indent=2), encoding="utf-8")
+        self.path.write_text(json.dumps([asdict(node) for node in _sort_nodes(list(nodes))], ensure_ascii=False, indent=2), encoding="utf-8")
 
     def import_file(self, path: Path) -> int:
         nodes = [node_from_mapping(row) for row in read_point_table_file(path)]
@@ -1122,7 +1136,7 @@ class CarNetworkPointTableStore:
         return len(nodes)
 
     def export_file(self, path: Path, nodes: Iterable[CarNetworkNode] | None = None) -> None:
-        write_point_table_file(path, list(nodes or self.load()))
+        write_point_table_file(path, _sort_nodes(list(nodes or self.load())))
 
 
 class CarNetworkGlobalConfigStore:
@@ -1341,6 +1355,7 @@ class CarNetworkDiagnosticService:
         finish_task({"task_id": "summary", "layer": "诊断汇总", "status": result.status, "message": result.conclusion})
         emit("stage", "检测完成")
         return result
+
 
     def _raise_if_cancelled(self) -> None:
         if self.cancel_checker is not None and self.cancel_checker():

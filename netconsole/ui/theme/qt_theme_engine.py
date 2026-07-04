@@ -3,6 +3,58 @@ from __future__ import annotations
 from PySide6.QtWidgets import QApplication, QWidget
 
 
+THEME_TOKENS = {
+    "light": {
+        "background": "#f7f8fa",
+        "surface": "#ffffff",
+        "surface_alt": "#f8fafc",
+        "panel": "#f3f4f6",
+        "text_primary": "#111827",
+        "text_secondary": "#1f2933",
+        "text_muted": "#6b7280",
+        "border": "#dde3ea",
+        "border_strong": "#cbd5df",
+        "hover": "#eef5ff",
+        "selected": "#dbeafe",
+        "selected_text": "#111827",
+        "primary": "#2563eb",
+        "primary_hover": "#1d4ed8",
+        "primary_soft": "#e8f1ff",
+        "danger": "#b91c1c",
+        "danger_surface": "#fee2e2",
+        "scrollbar_bg": "#f3f4f6",
+        "scrollbar_handle": "#cbd5df",
+        "scrollbar_handle_hover": "#94a3b8",
+        "log_background": "#ffffff",
+        "log_text": "#111827",
+    },
+    "dark": {
+        "background": "#111827",
+        "surface": "#1f2937",
+        "surface_alt": "#273549",
+        "panel": "#1f2937",
+        "text_primary": "#ffffff",
+        "text_secondary": "#e5e7eb",
+        "text_muted": "#94a3b8",
+        "border": "#374151",
+        "border_strong": "#475569",
+        "hover": "#334155",
+        "selected": "rgba(37, 99, 235, 0.28)",
+        "selected_text": "#ffffff",
+        "primary": "#3b82f6",
+        "primary_hover": "#60a5fa",
+        "primary_soft": "#1e3a8a",
+        "danger": "#fca5a5",
+        "danger_surface": "#7f1d1d",
+        "scrollbar_bg": "#111827",
+        "scrollbar_handle": "#334155",
+        "scrollbar_handle_hover": "#475569",
+        "log_background": "#111827",
+        "log_text": "#e5e7eb",
+    },
+}
+
+
 LIGHT_APP_STYLESHEET = """
 QWidget {
     background-color: #f7f8fa;
@@ -423,7 +475,12 @@ def apply_theme(mode: str) -> None:
     app = QApplication.instance()
     if app is None:
         return
-    app.setStyleSheet(stylesheet_for_theme(mode))
+    theme_mode = "dark" if mode == "dark" else "light"
+    stylesheet = stylesheet_for_theme(theme_mode)
+    if app.property("netconsoleTheme") == theme_mode and app.styleSheet() == stylesheet:
+        return
+    app.setProperty("netconsoleTheme", theme_mode)
+    app.setStyleSheet(stylesheet)
     for widget in app.topLevelWidgets():
         _refresh_widget_tree(widget)
 
@@ -441,3 +498,19 @@ def _refresh_widget_tree(widget: QWidget) -> None:
         child.style().unpolish(child)
         child.style().polish(child)
         child.update()
+
+
+def current_theme_mode() -> str:
+    app = QApplication.instance()
+    if app is None:
+        return "light"
+    value = app.property("netconsoleTheme")
+    return "dark" if value == "dark" else "light"
+
+
+def theme_tokens_for(mode: str) -> dict[str, str]:
+    return dict(THEME_TOKENS["dark" if mode == "dark" else "light"])
+
+
+def current_theme_tokens() -> dict[str, str]:
+    return theme_tokens_for(current_theme_mode())

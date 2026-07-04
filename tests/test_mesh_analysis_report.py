@@ -108,6 +108,7 @@ def test_template_overview_fields_explain_selected_evaluation_context():
 def test_mesh_report_settings_dialog_applies_scenario_template():
     from PySide6.QtWidgets import QApplication, QScrollArea
     from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
+    from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
     app = QApplication.instance() or QApplication([])
     assert app is not None
@@ -127,6 +128,48 @@ def test_mesh_report_settings_dialog_applies_scenario_template():
     assert options.backup_available_threshold == 28
     assert options.no_backup_min_seconds == 15
     assert dialog.findChild(QScrollArea) is not None
+    assert isinstance(dialog.rssi_good_spin, NoWheelSpinBox)
+
+
+def test_mesh_report_threshold_spinboxes_ignore_mouse_wheel():
+    from PySide6.QtWidgets import QApplication
+    from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
+    from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
+
+    class FakeWheelEvent:
+        def __init__(self) -> None:
+            self.ignored = False
+
+        def ignore(self) -> None:
+            self.ignored = True
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    dialog = MeshReportSettingsDialog(I18n("zh_CN"), "MR-01")
+    threshold_spins = [
+        dialog.rssi_excellent_spin,
+        dialog.rssi_good_spin,
+        dialog.rssi_warning_spin,
+        dialog.rssi_bad_spin,
+        dialog.backup_available_spin,
+        dialog.backup_strong_spin,
+        dialog.busy_warning_spin,
+        dialog.busy_bad_spin,
+        dialog.no_backup_spin,
+        dialog.weak_active_spin,
+        dialog.switch_late_spin,
+        dialog.switch_target_spin,
+        dialog.flap_window_spin,
+        dialog.short_segment_spin,
+    ]
+
+    for spin in threshold_spins:
+        assert isinstance(spin, NoWheelSpinBox)
+        before = spin.value()
+        event = FakeWheelEvent()
+        spin.wheelEvent(event)
+        assert spin.value() == before
+        assert event.ignored is True
 
 
 def test_flap_detects_aba_inside_window_and_ignores_non_flap():

@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QApplication,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +21,7 @@ from PySide6.QtWidgets import (
 from netconsole.core.i18n import I18n
 from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.mesh_quality_analysis import get_threshold_template, load_threshold_templates
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
 class MeshReportSettingsDialog(QDialog):
@@ -224,8 +224,8 @@ class MeshReportSettingsDialog(QDialog):
         self.short_segment_spin.setValue(rules.short_active_segment_seconds)
 
     @staticmethod
-    def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
-        spin = QSpinBox()
+    def _spin(minimum: int, maximum: int, value: int) -> NoWheelSpinBox:
+        spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
         return spin

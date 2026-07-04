@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTabWidget
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.i18n import I18n
@@ -155,6 +155,19 @@ def test_network_tools_iperf_page_uses_bandwidth_value_and_unit(tmp_path: Path) 
     )
     args = build_iperf_client_args(tmp_path / "iperf3.exe", config)
     assert args[args.index("-b") + 1] == "50M"
+
+
+def test_iperf_page_shows_server_and_client_panels_together(tmp_path: Path) -> None:
+    _qt_app()
+    (tmp_path / "tools" / "iperf").mkdir(parents=True)
+    (tmp_path / "tools" / "iperf" / "iperf3.exe").write_text("fake", encoding="utf-8")
+    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
+
+    assert page.splitter.count() == 2
+    assert page.splitter.widget(0).title() == "Server"
+    assert page.splitter.widget(1).title() == "Client"
+    assert page.server_output.parentWidget() is not page.client_output.parentWidget()
+    assert page.findChildren(QTabWidget) == []
 
 
 def test_iperf_page_spinbox_wheel_does_not_change_value(tmp_path: Path) -> None:

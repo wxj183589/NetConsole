@@ -228,7 +228,11 @@ def _point_timestamp_number(point: object) -> float:
 
 
 def _point_value(point: object) -> float | None:
-    try:
-        return float(getattr(point, "rssi"))
-    except (TypeError, ValueError):
-        return None
+    for attr in ("metric_value", "rssi", "traffic_rate_mbps"):
+        try:
+            value = getattr(point, attr)
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None

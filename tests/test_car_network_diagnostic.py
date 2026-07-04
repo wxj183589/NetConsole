@@ -18,6 +18,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     CarNetworkGlobalConfigStore,
     CarNetworkNode,
     CarNetworkPointTableStore,
+    CarNetworkTrain,
     PingResult,
     SshResult,
     apply_address_mapping,
@@ -28,12 +29,14 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     discover_core_switches,
     evaluate_diagnostic,
     generate_point_table_from_devices,
+    get_train_sort_key,
     match_train_mr_in_mesh_links,
     merge_train_nodes,
     normalize_train_network_defaults,
     parse_ping_output,
     probe_ac_mesh_links,
     run_ac_commands,
+    sort_car_network_trains,
 )
 from netconsole.services.vehicle_mr_online import (
     H3CComwareV9VehicleMrMeshLinkParser,
@@ -45,6 +48,7 @@ from netconsole.services.vehicle_mr_online import (
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.car_network_diagnostic_page import PointTableDialog
 from netconsole.ui.pages import car_network_diagnostic_page as car_page
+from netconsole.ui.theme.qt_theme_engine import apply_theme, current_theme_tokens
 
 
 REAL_MESH_OUTPUT = """AP name: 30f5-2787-8080
@@ -387,7 +391,7 @@ def test_cross_tc_ping_ui_status_color_mapping() -> None:
     assert "#22C55E" in car_page._cross_tc_ping_style("ok")
     assert "#FACC15" in car_page._cross_tc_ping_style("loss")
     assert "#EF4444" in car_page._cross_tc_ping_style("fail")
-    assert "#64748B" in car_page._cross_tc_ping_style("skipped")
+    assert "#6b7280" in car_page._cross_tc_ping_style("skipped")
     assert car_page._cross_tc_ping_label({"status": "loss", "loss_percent": 2.0}) == "跨TC通信：丢包 2.0%"
 
 
@@ -511,6 +515,46 @@ def test_old_point_table_ap_names_are_imported_as_mr(tmp_path: Path) -> None:
     loaded = store.load()
     assert loaded[0].node_name == "TC1-MR"
     assert loaded[0].node_type == "MR"
+
+
+def test_train_natural_sort_key_orders_train_numbers() -> None:
+    names = ["01\u8f66", "02\u8f66", "10\u8f66", "06\u8f66", "03\u8f66"]
+
+    assert sorted(names, key=get_train_sort_key) == ["01\u8f66", "02\u8f66", "03\u8f66", "06\u8f66", "10\u8f66"]
+
+
+def test_car_network_train_sort_uses_train_no_before_train_id() -> None:
+    trains = [
+        CarNetworkTrain("LC01", "01", "01\u8f66"),
+        CarNetworkTrain("LC02", "02", "02\u8f66"),
+        CarNetworkTrain("LC10", "10", "10\u8f66"),
+        CarNetworkTrain("ZZZ-LC06", "06", "06\u8f66"),
+        CarNetworkTrain("LC03", "03", "03\u8f66"),
+    ]
+
+    assert [train.train_no for train in sort_car_network_trains(trains)] == ["01", "02", "03", "06", "10"]
+
+
+def test_point_table_store_sorts_load_save_and_export_by_train_no(tmp_path: Path) -> None:
+    store = CarNetworkPointTableStore(PathResolver(tmp_path), "demo")
+    nodes = [
+        CarNetworkNode("LC01", "TC1-MR", "MR", train_no="01"),
+        CarNetworkNode("LC02", "TC1-MR", "MR", train_no="02"),
+        CarNetworkNode("LC10", "TC1-MR", "MR", train_no="10"),
+        CarNetworkNode("ZZZ-LC06", "TC1-MR", "MR", train_no="06"),
+        CarNetworkNode("LC03", "TC1-MR", "MR", train_no="03"),
+    ]
+
+    store.save(nodes)
+
+    assert [node.train_no for node in store.load()] == ["01", "02", "03", "06", "10"]
+
+    export_path = tmp_path / "points.csv"
+    store.export_file(export_path, nodes)
+    imported = CarNetworkPointTableStore(PathResolver(tmp_path), "imported")
+    imported.import_file(export_path)
+
+    assert [node.train_no for node in imported.load()] == ["01", "02", "03", "06", "10"]
 
 
 def test_ac_online_matches_mr_device_name() -> None:
@@ -1106,19 +1150,74 @@ def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Pat
     store.save(
         [
             CarNetworkNode(f"LC{train_no}", "TC1-MR", "MR", train_no=train_no, tc="TC1", end="CT")
-            for train_no in ["02", "03", "04", "05", "07", "08", "06"]
+            for train_no in [f"{index:02d}" for index in range(1, 6)]
         ]
+        + [
+            CarNetworkNode(f"LC{train_no}", "TC1-MR", "MR", train_no=train_no, tc="TC1", end="CT")
+            for train_no in [f"{index:02d}" for index in range(7, 19)]
+        ]
+        + [CarNetworkNode("ZZZ-LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT")]
     )
 
     page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
 
-    assert [train.train_no for train in page.trains] == ["02", "03", "04", "05", "06", "07", "08"]
-    assert [page.train_table.item(row, 0).data(Qt.UserRole) for row in range(page.train_table.rowCount())] == [
-        "LC02",
-        "LC03",
-        "LC04",
-        "LC05",
-        "LC06",
-        "LC07",
-        "LC08",
-    ]
+    assert [train.train_no for train in page.trains] == [f"{index:02d}" for index in range(1, 19)]
+    assert [page.train_table.item(row, 0).data(Qt.UserRole) for row in range(page.train_table.rowCount())][5] == "ZZZ-LC06"
+
+
+def test_car_network_page_styles_follow_global_theme(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+
+    apply_theme("light")
+    page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
+    light_tokens = current_theme_tokens()
+
+    assert light_tokens["background"] in page.styleSheet()
+    assert light_tokens["surface"] in page.styleSheet()
+    assert light_tokens["log_background"] in page.log_output.styleSheet()
+    assert light_tokens["surface"] in page.tc1_table.styleSheet()
+    assert "#0F172A" not in page.styleSheet()
+    assert "#020617" not in page.log_output.styleSheet()
+
+    apply_theme("dark")
+    page.apply_theme()
+    dark_tokens = current_theme_tokens()
+
+    assert dark_tokens["background"] in page.styleSheet()
+    assert dark_tokens["surface"] in page.tc1_table.styleSheet()
+    assert dark_tokens["log_background"] in page.log_output.styleSheet()
+    assert dark_tokens["surface_alt"] in page.node_buttons["TC1-MR"].styleSheet()
+
+
+def test_car_network_theme_apply_does_not_use_change_event_or_reload_data(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    store = CarNetworkPointTableStore(paths, "demo")
+    store.save([CarNetworkNode("LC01", "TC1-MR", "MR", train_no="01", tc="TC1", end="CT")])
+
+    apply_theme("light")
+    page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
+    page.log_lines = ["keep-log"]
+    page.log_output.setPlainText("keep-log")
+    page.train_table.selectRow(0)
+    row_count = page.train_table.rowCount()
+    current_train_id = page.current_train_id
+    style_sheet = page.styleSheet()
+
+    assert "changeEvent" not in car_page.CarNetworkDiagnosticPage.__dict__
+
+    page.apply_theme()
+    page.apply_theme()
+
+    assert page.train_table.rowCount() == row_count
+    assert page.current_train_id == current_train_id
+    assert page.log_lines == ["keep-log"]
+    assert page.log_output.toPlainText() == "keep-log"
+    assert page.styleSheet() == style_sheet

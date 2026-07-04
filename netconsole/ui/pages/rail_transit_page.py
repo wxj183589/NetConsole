@@ -131,6 +131,10 @@ class RailTransitPage(QWidget):
     def restyle_visible_link_rows(self) -> None:
         if self.mesh_page is not None:
             self.mesh_page.restyle_visible_link_rows()
+        if self.car_network_page is not None:
+            apply_theme = getattr(self.car_network_page, "apply_theme", None)
+            if callable(apply_theme):
+                apply_theme()
 
     def refresh_groups(self) -> None:
         if self.online_mr_page is not None:

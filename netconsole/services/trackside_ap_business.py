@@ -183,6 +183,8 @@ TRACKSIDE_EXPORT_HEADER_FILL = "DBEAFE"
 TRACKSIDE_EXPORT_NORMAL_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["normal"]
 TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
 TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
+CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
+CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无光端口）"
 
 AP_SIDE_DISPLAY_FIELDS = {"ap_rx_power", "ap_tx_power"}
 AP_SIDE_MISSING_DISPLAY = "-"
@@ -1514,6 +1516,9 @@ def export_trackside_ap_business_xlsx(
     _format_export_sheet(sheet, alignment, border, header_font, header_fill)
     sheet.auto_filter.ref = sheet.dimensions
     log_write_phase("write_trackside_sheet", phase_start, rows=len(rows))
+    phase_start = perf_counter()
+    build_current_optical_abnormal_sheet(workbook, sheet, rows)
+    log_write_phase("write_current_optical_abnormal_sheet", phase_start, rows=sum(1 for row in rows if is_current_optical_abnormal_export_row(row)))
     if progress_callback:
         progress_callback("trackside.export.progress_overview")
     phase_start = perf_counter()
@@ -2178,6 +2183,107 @@ def _format_export_sheet(sheet, alignment, border, header_font, header_fill=None
                 cell.font = header_font
                 if header_fill is not None:
                     cell.fill = header_fill
+
+
+def is_no_light_optical_row(row: dict[str, object | None]) -> bool:
+    status_values = [
+        row.get("switch_optical_status"),
+        row.get("ap_optical_status"),
+        row.get("optical_alarm_status"),
+        row.get("alarm_status"),
+        row.get("current_status"),
+        row.get("status"),
+        row.get("raw_status"),
+        row.get("ap_raw_status"),
+        row.get("module_status"),
+        row.get("transceiver_status"),
+    ]
+    status_text = " ".join(str(value or "") for value in status_values).strip().casefold()
+    return any(
+        token in status_text
+        for token in (
+            "no_light",
+            "no light",
+            "no-light",
+            "no_module",
+            "no module",
+            "no-module",
+            "no transceiver",
+            "no-transceiver",
+            "无光",
+            "无光模块",
+            "未插光模块",
+            "光模块不存在",
+        )
+    )
+
+
+def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
+    return trackside_row_status(row) in OPTICAL_TREATMENT_ISSUE_STATUSES and not is_no_light_optical_row(row)
+
+
+def is_current_optical_abnormal_row(row: dict[str, object | None]) -> bool:
+    return is_current_optical_abnormal_export_row(row)
+
+
+def build_current_optical_abnormal_sheet(workbook, source_sheet, rows: list[dict[str, object | None]]) -> None:
+    from copy import copy
+
+    if CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE in workbook.sheetnames:
+        del workbook[CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE]
+    source_index = workbook.worksheets.index(source_sheet)
+    sheet = workbook.create_sheet(CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE, source_index + 1)
+    _copy_worksheet_columns(source_sheet, sheet)
+    _copy_worksheet_row(source_sheet, sheet, 1, 1)
+    target_row = 2
+    for source_row, data in enumerate(rows, start=2):
+        if not is_current_optical_abnormal_export_row(data):
+            continue
+        _copy_worksheet_row(source_sheet, sheet, source_row, target_row)
+        target_row += 1
+    if target_row == 2:
+        cell = sheet.cell(row=2, column=1, value=CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT)
+        header_cell = source_sheet.cell(row=1, column=1)
+        cell.font = copy(header_cell.font)
+        cell.fill = copy(header_cell.fill)
+        cell.border = copy(header_cell.border)
+        cell.alignment = copy(header_cell.alignment)
+        cell.number_format = header_cell.number_format
+        cell.protection = copy(header_cell.protection)
+        sheet.row_dimensions[2].height = 22
+    sheet.freeze_panes = source_sheet.freeze_panes
+    sheet.auto_filter.ref = sheet.dimensions
+
+
+def _copy_worksheet_columns(source_sheet, target_sheet) -> None:
+    from copy import copy
+
+    for key, dimension in source_sheet.column_dimensions.items():
+        target = target_sheet.column_dimensions[key]
+        target.width = dimension.width
+        target.hidden = dimension.hidden
+        target.outlineLevel = dimension.outlineLevel
+        target.collapsed = dimension.collapsed
+        if dimension.style:
+            target.style = copy(dimension.style)
+
+
+def _copy_worksheet_row(source_sheet, target_sheet, source_row: int, target_row: int) -> None:
+    from copy import copy
+
+    target_sheet.row_dimensions[target_row].height = source_sheet.row_dimensions[source_row].height
+    for source_cell in source_sheet[source_row]:
+        target_cell = target_sheet.cell(row=target_row, column=source_cell.column, value=source_cell.value)
+        target_cell.font = copy(source_cell.font)
+        target_cell.fill = copy(source_cell.fill)
+        target_cell.border = copy(source_cell.border)
+        target_cell.alignment = copy(source_cell.alignment)
+        target_cell.number_format = source_cell.number_format
+        target_cell.protection = copy(source_cell.protection)
+        if source_cell.hyperlink:
+            target_cell._hyperlink = copy(source_cell.hyperlink)
+        if source_cell.comment:
+            target_cell.comment = copy(source_cell.comment)
 
 
 def _append_export_rows_sheet(

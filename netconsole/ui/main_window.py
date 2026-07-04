@@ -77,6 +77,9 @@ class MainWindow(QMainWindow):
         self.activated_pages: set[str] = set()
         self.preloaded_pages: set[str] = set()
         self.preload_failures: dict[str, str] = {}
+        self.current_page_id = "devices"
+        self._module_switch_generation = 0
+        self._activation_generation = 0
         self.app_is_exiting = False
         self.tray_notice_shown_this_session = False
         self.sidebar_collapsed = self._read_sidebar_collapsed_setting()
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
         self.loading_overlay = LoadingOverlay(self.stack)
         self.device_page = DeviceManagementPage(repository, i18n, site.name)
         self.disabled_pages: dict[str, QWidget] = {}
+        self.loading_pages: dict[str, QWidget] = {}
         self.config_collection_page: QWidget | None = None
         self.file_management_page: QWidget | None = None
         self.rail_transit_page: QWidget | None = None
@@ -194,12 +198,27 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         page_id = self.navigation.item(row).data(256)
-        page = self.get_or_create_page(str(page_id))
-        if not self._is_page_enabled(str(page_id)):
+        page_id = str(page_id)
+        if not self._is_page_enabled(page_id):
+            page = self.get_or_create_page(page_id)
+            self.stack.setCurrentWidget(page)
             return
+        if page_id == self.current_page_id and page_id in self.pages:
+            return
+        self.current_page_id = page_id
+        self._module_switch_generation += 1
+        switch_generation = self._module_switch_generation
         if page_id == "rail_transit":
             app_logger.log_info("RAIL_TRANSIT_OPEN_REQUESTED", self.site.name)
+        if page_id in {"ac", "rail_transit"} and page_id not in self.pages:
+            self.show_page_loading(page_id)
+            self.stack.setCurrentWidget(self._loading_page(page_id))
+            QTimer.singleShot(0, lambda page_id=page_id, generation=switch_generation: self._finish_deferred_page_open(page_id, generation))
+            return
+        page = self.get_or_create_page(page_id)
         self.stack.setCurrentWidget(page)
+        if page_id == "devices":
+            self.hide_page_loading()
         if page_id == "rail_transit":
             app_logger.log_info("RAIL_TRANSIT_PAGE_SHOWN", self.site.name)
         else:
@@ -212,17 +231,48 @@ class MainWindow(QMainWindow):
             }.get(str(page_id), "DEVICE_PAGE_OPENED")
             app_logger.log_info(event, self.site.name)
         if page_id != "devices":
-            self.show_page_loading(str(page_id))
+            self.show_page_loading(page_id)
         if page_id == "rail_transit":
-            QTimer.singleShot(0, lambda: self.activate_page("rail_transit", force_if_empty=True))
+            self._schedule_page_activation("rail_transit", force_if_empty=True)
         elif page_id == "ac":
-            QTimer.singleShot(0, lambda: self.activate_page("ac"))
-        elif str(page_id) not in self.preloaded_pages:
-            QTimer.singleShot(0, lambda page_id=str(page_id): self.activate_page(page_id))
+            self._schedule_page_activation("ac")
+        elif page_id not in self.preloaded_pages:
+            self._schedule_page_activation(page_id)
         else:
             self.hide_page_loading()
 
-    def get_or_create_page(self, page_id: str) -> QWidget:
+    def _finish_deferred_page_open(self, page_id: str, generation: int) -> None:
+        if generation != self._module_switch_generation or page_id != self.current_page_id:
+            return
+        page = self.get_or_create_page(page_id, activate_on_create=False)
+        if generation != self._module_switch_generation or page_id != self.current_page_id:
+            return
+        self.stack.setCurrentWidget(page)
+        if page_id == "rail_transit":
+            app_logger.log_info("RAIL_TRANSIT_PAGE_SHOWN", self.site.name)
+            self._schedule_page_activation("rail_transit", force_if_empty=True)
+        elif page_id == "ac":
+            app_logger.log_info("AC_PAGE_OPENED", self.site.name)
+            self._schedule_page_activation("ac")
+
+    def _schedule_page_activation(self, page_id: str, *, force_if_empty: bool = False) -> None:
+        self._activation_generation += 1
+        activation_generation = self._activation_generation
+        QTimer.singleShot(
+            0,
+            lambda page_id=page_id, generation=activation_generation, force_if_empty=force_if_empty: self._activate_page_if_current(
+                page_id,
+                generation,
+                force_if_empty=force_if_empty,
+            ),
+        )
+
+    def _activate_page_if_current(self, page_id: str, generation: int, *, force_if_empty: bool = False) -> None:
+        if generation != self._activation_generation or page_id != self.current_page_id:
+            return
+        self.activate_page(page_id, force_if_empty=force_if_empty)
+
+    def get_or_create_page(self, page_id: str, *, activate_on_create: bool = True) -> QWidget:
         if not self._is_page_enabled(page_id):
             return self._disabled_page(page_id)
         if page_id in self.pages:
@@ -230,7 +280,7 @@ class MainWindow(QMainWindow):
         if page_id == "ac":
             from netconsole.ui.pages.ac_management_page import AcManagementPage
 
-            page = AcManagementPage(self.repository, self.i18n, self.site.name, self.feature_gate)
+            page = AcManagementPage(self.repository, self.i18n, self.site.name, self.feature_gate, eager_load=activate_on_create)
             self.ac_page = page
         elif page_id == "config_collection":
             from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
@@ -271,6 +321,16 @@ class MainWindow(QMainWindow):
         self.pages[page_id] = page
         self.stack.addWidget(page)
         app_logger.log_info(f"PAGE_CREATED:{page_id}", self._startup_elapsed_detail())
+        return page
+
+    def _loading_page(self, page_id: str) -> QWidget:
+        page = self.loading_pages.get(page_id)
+        if page is None:
+            label = QLabel(self.i18n.t({"ac": "app.loading_ac", "rail_transit": "app.loading_rail_transit"}.get(page_id, "app.loading")))
+            label.setAlignment(Qt.AlignCenter)
+            self.loading_pages[page_id] = label
+            self.stack.addWidget(label)
+            page = label
         return page
 
     def create_detached_page(self, page_id: str) -> QWidget:
@@ -440,7 +500,11 @@ class MainWindow(QMainWindow):
             if page_id == "logs" and self.log_page is not None:
                 self.log_page.refresh()
             elif page_id == "ac" and self.ac_page is not None:
-                self.ac_page.refresh_devices()
+                refresh_current = getattr(self.ac_page, "refresh_current_async_or_lazy", None)
+                if callable(refresh_current):
+                    refresh_current(force_if_empty=force_if_empty)
+                else:
+                    self.ac_page.refresh_devices()
             elif page_id == "config_collection" and self.config_collection_page is not None:
                 self.config_collection_page.refresh()
             elif page_id == "file_management" and self.file_management_page is not None:
@@ -591,6 +655,9 @@ class MainWindow(QMainWindow):
         self.retranslate()
 
     def set_theme(self, theme: str) -> None:
+        if theme == self.current_theme:
+            self._sync_theme_buttons()
+            return
         self.current_theme = theme
         self.settings.set_theme(theme)
         self.apply_style(theme)

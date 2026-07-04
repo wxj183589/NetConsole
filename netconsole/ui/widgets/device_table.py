@@ -18,7 +18,7 @@ from netconsole.ui.table_utils import configure_readonly_table
 
 CHECK_COLUMN = 0
 DEVICE_COLUMN_WIDTHS = {
-    "select": 48,
+    "select": 30,
     "name": 260,
     "group": 90,
     "station": 110,
@@ -281,6 +281,9 @@ class DeviceTable(QTableWidget):
                 self.setColumnWidth(column, width)
             if field == "select":
                 header.setSectionResizeMode(column, QHeaderView.Fixed)
+                item = self.horizontalHeaderItem(column)
+                if item is not None:
+                    item.setTextAlignment(Qt.AlignCenter)
             else:
                 header.setSectionResizeMode(column, QHeaderView.Interactive)
 

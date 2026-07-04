@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, QThread, Signal
+from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -122,10 +122,6 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("AP组", "group_name"),
     ("ac.online_time", "online_time"),
     ("field.updated_at", "updated_at"),
-    ("ac.register_status", "register_status"),
-    ("ac.new_online_status", "new_online_status"),
-    ("ac.new_online_source", "new_online_source"),
-    ("ac.unauthenticated_collected_at", "unauthenticated_collected_at"),
 )
 
 AP_EXTENSION_COLUMNS = (
@@ -567,6 +563,7 @@ class AcManagementPage(QWidget):
         i18n: I18n,
         site_name: str = "demo",
         feature_gate: FeatureGate | None = None,
+        eager_load: bool = True,
     ) -> None:
         super().__init__()
         self.device_repository = device_repository
@@ -587,6 +584,11 @@ class AcManagementPage(QWidget):
         self.offline_ap_stats: dict[str, object | None] = {}
         self.offline_ap_ledger_rows: list[dict[str, object | None]] = []
         self._offline_ap_context_loaded = False
+        self._device_list_loaded = False
+        self._loaded_feature_ids: set[str] = set()
+        self.tab_by_feature_id: dict[str, QWidget] = {}
+        self._ui_ready = False
+        self._refreshing_current = False
         self.offline_load_thread: OfflineApLedgerLoadThread | None = None
         self.offline_cache_path = PathResolver().offline_ap_cache_path
         self._overview_uses_trackside_plan = False
@@ -805,25 +807,14 @@ class AcManagementPage(QWidget):
 
         overview_tab = QWidget()
         overview_layout = QVBoxLayout()
-        overview_actions = QHBoxLayout()
-        overview_actions.addWidget(self.export_overview_button)
-        overview_actions.addWidget(self.save_overview_history_button)
-        overview_actions.addWidget(self.view_overview_history_button)
-        overview_actions.addStretch(1)
         self.overview_inner_tabs.addTab(self.overview_table, "")
         self.overview_inner_tabs.addTab(self.offline_stats_table, "")
         self.overview_inner_tabs.addTab(self.offline_ledger_table, "")
-        overview_layout.addLayout(overview_actions)
         overview_layout.addWidget(self.offline_loading_spinner)
         overview_layout.addWidget(self.offline_loading_label)
         overview_layout.addWidget(self.overview_inner_tabs, 1)
         overview_tab.setLayout(overview_layout)
 
-        self.tabs.addTab(self.trackside_plan_page, "")
-        self.tabs.addTab(overview_tab, "")
-        self.tabs.addTab(resources_tab, "")
-        self.tabs.addTab(optical_tab, "")
-        self.tabs.addTab(extension_tab, "")
         self.tab_by_feature_id = {
             "ac.trackside_ap_plan": self.trackside_plan_page,
             "ac.ap_online_overview": overview_tab,
@@ -831,7 +822,13 @@ class AcManagementPage(QWidget):
             "ac.fit_ap_extensions": extension_tab,
             "ac.fit_ap_optical": optical_tab,
         }
-        self._apply_feature_gate()
+        with QSignalBlocker(self.tabs):
+            self.tabs.addTab(self.trackside_plan_page, "")
+            self.tabs.addTab(overview_tab, "")
+            self.tabs.addTab(resources_tab, "")
+            self.tabs.addTab(optical_tab, "")
+            self.tabs.addTab(extension_tab, "")
+            self._apply_feature_gate()
         # Trackside AP Service is mounted under Rail Transit.
 
         layout = QVBoxLayout()
@@ -882,7 +879,10 @@ class AcManagementPage(QWidget):
         self.trackside_pagination.pageSizeChanged.connect(self.set_trackside_page_size)
         self.trackside_plan_page.plan_saved.connect(self._handle_trackside_plan_saved)
         self.retranslate()
-        self.refresh_devices()
+        self.tabs.currentChanged.connect(self._on_current_tab_changed)
+        self._ui_ready = True
+        if eager_load:
+            self.refresh_devices()
 
     def _apply_feature_gate(self) -> None:
         self._reconcile_feature_tabs()
@@ -963,6 +963,8 @@ class AcManagementPage(QWidget):
         self.fact_repository = DeviceFactRepository(device_repository.database)
         self.import_export_service = FitApImportExportService(self.repository)
         self.site_name = site_name
+        self._device_list_loaded = False
+        self._loaded_feature_ids.clear()
         self.trackside_plan_page.repository = self.repository
         self.trackside_plan_page.site_name = site_name
         self.trackside_plan_page.refresh()
@@ -1053,9 +1055,10 @@ class AcManagementPage(QWidget):
             label = self.i18n.t(label_key)
             item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else self.i18n.t("trackside.tooltip.default", label=label))
 
-    def refresh_devices(self) -> None:
+    def refresh_devices(self, *, load_current_only: bool = False) -> None:
         current_uuid = self.current_device_uuid()
         self.ac_devices = self.device_repository.list(vendor="H3C", device_type="AC")
+        self._device_list_loaded = True
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for device in self.ac_devices:
@@ -1063,7 +1066,83 @@ class AcManagementPage(QWidget):
         index = self.device_combo.findData(current_uuid)
         self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.ac_devices else -1))
         self.device_combo.blockSignals(False)
-        self.refresh_data()
+        if load_current_only:
+            self.refresh_current_tab_data()
+        else:
+            self.refresh_data()
+
+    def refresh_current_async_or_lazy(self, force_if_empty: bool = False) -> None:
+        if not self._ui_ready or self._refreshing_current:
+            return
+        feature_id = self._current_feature_id()
+        if feature_id is None:
+            return
+        if not self.feature_gate.is_enabled(feature_id):
+            return
+        if not force_if_empty and feature_id in self._loaded_feature_ids:
+            return
+        self._refreshing_current = True
+        try:
+            if not self._device_list_loaded:
+                self.refresh_devices(load_current_only=True)
+            else:
+                self.refresh_current_tab_data(feature_id)
+        finally:
+            self._refreshing_current = False
+
+    def _on_current_tab_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        self.refresh_current_async_or_lazy()
+
+    def refresh_current_tab_data(self, feature_id: str | None = None) -> None:
+        if not self._ui_ready:
+            return
+        if not self._device_list_loaded:
+            self.refresh_devices(load_current_only=True)
+            return
+        feature_id = feature_id or self._current_feature_id()
+        if feature_id is None:
+            return
+        if not self.feature_gate.is_enabled(feature_id):
+            return
+        ac_uuid = self.current_device_uuid()
+        if not ac_uuid:
+            self.refresh_data()
+            return
+        self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
+        if feature_id == "ac.trackside_ap_plan":
+            self.trackside_plan_page.refresh()
+        elif feature_id == "ac.ap_online_overview":
+            resources = self._load_resource_rows(ac_uuid)
+            self.refresh_overview_table(resources)
+        elif feature_id == "ac.fit_ap_resources":
+            self._load_resource_rows(ac_uuid)
+        elif feature_id == "ac.fit_ap_optical":
+            resources = self._load_resource_rows(ac_uuid)
+            self._load_optical_rows(ac_uuid, resources)
+        elif feature_id == "ac.fit_ap_extensions":
+            self.refresh_ap_extensions()
+        if feature_id:
+            self._loaded_feature_ids.add(feature_id)
+
+    def _load_resource_rows(self, ac_uuid: str) -> list[dict[str, object | None]]:
+        resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        self.resource_rows = resources
+        valid_keys = {self._ap_selection_key(row) for row in resources}
+        self.selected_ap_keys.intersection_update({key for key in valid_keys if key})
+        self._set_resource_filter_items(resources)
+        self.apply_resource_pagination()
+        self.update_selection_state()
+        self.update_open_web_button()
+        return resources
+
+    def _load_optical_rows(self, ac_uuid: str, resources: list[dict[str, object | None]]) -> None:
+        self._rebuild_device_optical_status_lookup()
+        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
+        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(current_optical_rows, resources, self._device_optical_status_lookup))
+        self._set_site_filter_items(self.optical_rows)
+        self.apply_optical_filters()
 
     def refresh_data(self) -> None:
         ac_uuid = self.current_device_uuid()

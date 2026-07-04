@@ -165,21 +165,19 @@ class DeviceManagementPage(QWidget):
         self.external_terminal_button.setParent(self.action_content)
         for button in (
             self.add_button,
-            self.detail_button,
             self.test_connection_button,
-            self.diagnostic_download_button,
+            self.external_terminal_button,
             self.generate_crt_sessions_button,
+            self.clear_selection_button,
+            self.invert_selection_button,
+            self.batch_delete_button,
+            self.diagnostic_download_button,
             self.manage_groups_button,
             self.assign_group_button,
             self.batch_refresh_details_button,
-            self.batch_delete_button,
-            self.refresh_button,
             self.import_csv_button,
             self.export_csv_button,
             self.export_template_button,
-            self.clear_selection_button,
-            self.invert_selection_button,
-            self.external_terminal_button,
         ):
             actions.addWidget(button)
         actions.addStretch(1)

@@ -34,8 +34,9 @@ TRACKSIDE_PLAN_COLUMNS = (
     ("ac.trackside_plan.mask", "mask_length"),
     ("ac.trackside_plan.ap_gateway", "ap_gateway"),
     ("ac.trackside_plan.ap_management_vlan", "ap_management_vlans"),
+    ("field.remark", "remark"),
 )
-TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN"]
+TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]
 TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "station_name": 260,
     "ap_count": 90,
@@ -43,6 +44,7 @@ TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "mask_length": 140,
     "ap_gateway": 170,
     "ap_management_vlans": 170,
+    "remark": 220,
 }
 MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
 
