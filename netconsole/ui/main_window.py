@@ -45,13 +45,14 @@ from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
 from netconsole.ui.dialogs.shutdown_progress_dialog import ShutdownProgressDialog
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
+from netconsole.ui.shell import AppFramelessMainWindow
 from netconsole.ui.theme import apply_global_theme
 from netconsole.ui.widgets.loading_overlay import LoadingOverlay
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import fit_default_window_size
 
 
-class MainWindow(QMainWindow):
+class MainWindow(AppFramelessMainWindow):
     def __init__(
         self,
         site: Site,
@@ -138,6 +139,7 @@ class MainWindow(QMainWindow):
         self.en_button.clicked.connect(lambda: self.switch_language("en_US"))
         self.light_theme_button.clicked.connect(lambda: self.set_theme("light"))
         self.dark_theme_button.clicked.connect(lambda: self.set_theme("dark"))
+        self.title_bar.theme_requested.connect(self.set_theme)
         self.about_button.clicked.connect(self.show_about_dialog)
         self.version_button.clicked.connect(self.show_changelog_dialog)
         self.data_disk_button.clicked.connect(self.show_data_disk_manager)
@@ -644,6 +646,7 @@ class MainWindow(QMainWindow):
             self.ac_page.set_repository(self.repository, site.name)
         self._sync_detached_pages_to_current_site()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
+        self.set_title_bar_context(site_name=self.site.name, status="就绪")
 
     def refresh_group_filters(self) -> None:
         if self.config_collection_page is not None:
@@ -684,6 +687,7 @@ class MainWindow(QMainWindow):
         if self.rail_transit_page is not None:
             self.rail_transit_page.restyle_visible_link_rows()
         self._sync_theme_buttons()
+        self.set_title_bar_theme(theme)
         app_logger.log_info("THEME_CHANGED", theme)
         self._update_tray_text()
 
@@ -851,6 +855,8 @@ class MainWindow(QMainWindow):
 
     def retranslate(self) -> None:
         self.setWindowTitle(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        self.set_title_bar_context(site_name=self.site.name, status="就绪")
+        self.set_title_bar_theme(self.current_theme)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
         self.new_site_button.setText(self.i18n.t("site.new"))
         self.switch_site_button.setText(self.i18n.t("site.switch"))

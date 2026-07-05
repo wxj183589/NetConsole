@@ -8,6 +8,7 @@ NetConsole 是一个 Windows 本地桌面网络运维工具，当前实现为 Py
 - [开发约定](docs/DEVELOPMENT_CONVENTIONS.md)
 - [Codex 工作流](docs/CODEX_WORKFLOW.md)
 - [构建与发布](docs/BUILD_AND_RELEASE.md)
+- [第三方依赖说明](docs/THIRD_PARTY_DEPENDENCIES.md)
 
 ## 开发环境启动
 
@@ -53,3 +54,7 @@ runtime/
 发布包规则、白名单和禁入目录见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
 
 发布包需要保留 `_internal`、`data`、`runtime` 目录，以及 PySide6、网络工具和 VC++ 运行库等运行依赖。
+
+## 许可证与第三方依赖
+
+NetConsole 当前按非商业 GPLv3 项目分发。界面美化使用 `PySide6-Fluent-Widgets==1.11.2`，即 QFluentWidgets 免费版；商业用途需要购买 QFluentWidgets 商业授权。不要混装 PyQt / PyQt6 / PySide2 版本的 Fluent Widgets，详见 [第三方依赖说明](docs/THIRD_PARTY_DEPENDENCIES.md)。

@@ -140,7 +140,7 @@ def test_settings_store_persists_theme(tmp_path):
     paths = PathResolver(tmp_path)
     store = SettingsStore(paths)
 
-    assert store.theme == "dark"
+    assert store.theme == "light"
 
     store.set_theme("light")
 

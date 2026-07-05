@@ -8,7 +8,7 @@ from netconsole.core.paths import PathResolver
 
 
 DEFAULT_SETTINGS = {
-    "theme": "dark",
+    "theme": "light",
     "last_export_path": "",
     "file_transfer_max_concurrency": 1,
     "trackside_ap/max_device_concurrency": 1000,

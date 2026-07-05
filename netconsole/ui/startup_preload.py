@@ -10,6 +10,7 @@ from netconsole.core import app_logger
 from netconsole.core.bootstrap import AppContext, create_demo_context
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
+from netconsole.ui.app_window_factory import create_app_window
 from netconsole.ui.main_window import MainWindow
 from netconsole.ui.widgets.startup_splash import StartupSplash
 
@@ -89,13 +90,22 @@ class StartupPreloadManager:
         if self.context is None:
             self._load_current_site()
         assert self.context is not None
-        self.window = MainWindow(
-            site=self.context.site,
-            repository=self.context.repository,
-            i18n=self.i18n,
-            paths=self.context.paths,
-            startup_started_at=self.started_at,
-        )
+        if getattr(MainWindow, "__module__", "") != "netconsole.ui.main_window":
+            self.window = MainWindow(
+                site=self.context.site,
+                repository=self.context.repository,
+                i18n=self.i18n,
+                paths=self.context.paths,
+                startup_started_at=self.started_at,
+            )
+        else:
+            self.window = create_app_window(
+                site=self.context.site,
+                repository=self.context.repository,
+                i18n=self.i18n,
+                paths=self.context.paths,
+                startup_started_at=self.started_at,
+            )
 
     def _preload_page(self, page_id: str) -> None:
         if self.window is None:

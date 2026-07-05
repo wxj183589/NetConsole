@@ -81,6 +81,12 @@ Nuitka：
 - 最终目录也会准备 `data/`、`runtime/`、`tools/`。
 - 发布目录和 zip 均需通过白名单校验。
 
+## QFluentWidgets 打包要求
+
+- 只打包 `PySide6-Fluent-Widgets==1.11.2` 对应的 `qfluentwidgets`，不要混入 PyQt / PyQt6 / PySide2 版本。
+- 保留 `qfluentwidgets` 包内资源、图标和样式文件。
+- Mica / Acrylic / 毛玻璃效果默认关闭；打包后即使特效不可用，也必须降级为普通背景并正常启动。
+
 ## 内部版和客户版
 
 发布脚本支持：

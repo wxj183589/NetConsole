@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QApplication, QWidget
 
+from netconsole.ui.shell.fluent_bridge import apply_fluent_theme
+
 
 THEME_TOKENS = {
     "light": {
@@ -70,6 +72,36 @@ QLabel {
     background-color: transparent;
     color: #1f2933;
 }
+#appShell {
+    background-color: #dfe6ee;
+}
+#appContent {
+    background-color: #f6f8fb;
+}
+#appTitleBar {
+    background-color: #ffffff;
+    border-bottom: 1px solid #dde3ea;
+}
+#appTitleText {
+    color: #111827;
+    font-weight: 600;
+    font-size: 14px;
+}
+#appTitleMeta {
+    color: #334155;
+    padding-left: 12px;
+}
+#appTitleStatus {
+    color: #2563eb;
+    background-color: #e8f1ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 4px;
+    padding: 3px 8px;
+}
+#leftSidebar {
+    background-color: #ffffff;
+    border-right: 1px solid #dde3ea;
+}
 #navigation, #systemPanel {
     background-color: #ffffff;
     border: 1px solid #dde3ea;
@@ -100,6 +132,7 @@ QPushButton {
     background-color: #ffffff;
     border: 1px solid #cbd5df;
     border-radius: 4px;
+    min-height: 26px;
     padding: 6px 10px;
     color: #111827;
 }
@@ -131,7 +164,33 @@ QPushButton#dangerButton {
     color: #b91c1c;
     font-weight: 600;
 }
-QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {
+QPushButton#titleBarToolButton, QPushButton#titleBarMinButton, QPushButton#titleBarMaxButton, QPushButton#titleBarCloseButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    min-height: 28px;
+    padding: 0;
+}
+QPushButton#titleBarToolButton:hover, QPushButton#titleBarMinButton:hover, QPushButton#titleBarMaxButton:hover {
+    background-color: #eef5ff;
+    border-color: #bfdbfe;
+}
+QPushButton#titleBarCloseButton:hover {
+    background-color: #fee2e2;
+    border-color: #fecaca;
+    color: #b91c1c;
+}
+QLineEdit, QComboBox, QSpinBox {
+    background-color: #ffffff;
+    border: 1px solid #cbd5df;
+    border-radius: 4px;
+    min-height: 28px;
+    padding: 5px;
+    color: #111827;
+    selection-background-color: #dbeafe;
+    selection-color: #111827;
+}
+QTextEdit, QPlainTextEdit {
     background-color: #ffffff;
     border: 1px solid #cbd5df;
     border-radius: 4px;
@@ -208,7 +267,7 @@ QTabBar::tab:selected {
 QTabBar::tab:hover {
     background-color: #eef5ff;
 }
-QTableWidget {
+QTableWidget, QTableView {
     background-color: #ffffff;
     alternate-background-color: #f8fafc;
     color: #111827;
@@ -217,13 +276,13 @@ QTableWidget {
     selection-background-color: #dbeafe;
     selection-color: #111827;
 }
-QTableWidget::item {
+QTableWidget::item, QTableView::item {
     padding: 4px;
 }
-QTableWidget::item:hover {
+QTableWidget::item:hover, QTableView::item:hover {
     background-color: #eef5ff;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTableView::item:selected {
     background-color: #dbeafe;
     color: #111827;
 }
@@ -271,6 +330,36 @@ QLabel {
     background-color: transparent;
     color: #e5e7eb;
 }
+#appShell {
+    background-color: #111827;
+}
+#appContent {
+    background-color: #111827;
+}
+#appTitleBar {
+    background-color: #1f2937;
+    border-bottom: 1px solid #374151;
+}
+#appTitleText {
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 14px;
+}
+#appTitleMeta {
+    color: #cbd5e1;
+    padding-left: 12px;
+}
+#appTitleStatus {
+    color: #dbeafe;
+    background-color: #1e3a8a;
+    border: 1px solid #2563eb;
+    border-radius: 4px;
+    padding: 3px 8px;
+}
+#leftSidebar {
+    background-color: #1f2937;
+    border-right: 1px solid #374151;
+}
 #navigation, #systemPanel {
     background-color: #1f2937;
     border: 1px solid #374151;
@@ -302,6 +391,7 @@ QPushButton {
     background-color: #1f2937;
     border: 1px solid #374151;
     border-radius: 4px;
+    min-height: 26px;
     padding: 6px 10px;
     color: #ffffff;
 }
@@ -333,7 +423,33 @@ QPushButton#dangerButton {
     color: #fca5a5;
     font-weight: 600;
 }
-QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {
+QPushButton#titleBarToolButton, QPushButton#titleBarMinButton, QPushButton#titleBarMaxButton, QPushButton#titleBarCloseButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    min-height: 28px;
+    padding: 0;
+}
+QPushButton#titleBarToolButton:hover, QPushButton#titleBarMinButton:hover, QPushButton#titleBarMaxButton:hover {
+    background-color: #273549;
+    border-color: #475569;
+}
+QPushButton#titleBarCloseButton:hover {
+    background-color: #7f1d1d;
+    border-color: #991b1b;
+    color: #ffffff;
+}
+QLineEdit, QComboBox, QSpinBox {
+    background-color: #1f2937;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    min-height: 28px;
+    padding: 5px;
+    color: #e5e7eb;
+    selection-background-color: rgba(37, 99, 235, 0.28);
+    selection-color: #ffffff;
+}
+QTextEdit, QPlainTextEdit {
     background-color: #1f2937;
     border: 1px solid #374151;
     border-radius: 4px;
@@ -412,7 +528,7 @@ QTabBar::tab:hover {
     background-color: #334155;
     color: #ffffff;
 }
-QTableWidget {
+QTableWidget, QTableView {
     background-color: #1f2937;
     alternate-background-color: #273549;
     color: #e5e7eb;
@@ -421,13 +537,13 @@ QTableWidget {
     selection-background-color: rgba(37, 99, 235, 0.28);
     selection-color: #ffffff;
 }
-QTableWidget::item {
+QTableWidget::item, QTableView::item {
     padding: 4px;
 }
-QTableWidget::item:hover {
+QTableWidget::item:hover, QTableView::item:hover {
     background-color: #334155;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTableView::item:selected {
     background-color: rgba(37, 99, 235, 0.28);
     color: #ffffff;
 }
@@ -476,6 +592,7 @@ def apply_theme(mode: str) -> None:
     if app is None:
         return
     theme_mode = "dark" if mode == "dark" else "light"
+    apply_fluent_theme(theme_mode)
     stylesheet = stylesheet_for_theme(theme_mode)
     if app.property("netconsoleTheme") == theme_mode and app.styleSheet() == stylesheet:
         return

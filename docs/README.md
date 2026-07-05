@@ -12,7 +12,8 @@
 6. [数据目录规范](DATA_LAYOUT.md)
 7. [轨道交通业务规则](RAIL_TRANSIT_RULES.md)
 8. [构建与发布](BUILD_AND_RELEASE.md)
-9. [开发历史](DEVELOPMENT_HISTORY.md)
+9. [第三方依赖说明](THIRD_PARTY_DEPENDENCIES.md)
+10. [开发历史](DEVELOPMENT_HISTORY.md)
 
 ## 现有编号文档
 

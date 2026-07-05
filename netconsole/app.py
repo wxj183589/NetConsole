@@ -19,6 +19,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.resources import icon_path
 from netconsole.core.settings import SettingsStore
 from netconsole.core import version as version_info
+from netconsole.ui.app_window_factory import create_app_window
 from netconsole.ui.main_window import MainWindow
 from netconsole.ui.startup_preload import StartupPreloadManager
 from netconsole.ui.widgets.startup_splash import StartupSplash
@@ -33,15 +34,18 @@ def build_window(started_at: float | None = None) -> MainWindow:
     context = create_demo_context()
     app_logger.log_info("SITE_LOADED", f"site={context.site.name} {_elapsed_detail(started_at)}")
     i18n = I18n()
-    return MainWindow(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
+    return create_app_window(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
 
 
 def open_admin_network_manager(window: MainWindow) -> None:
-    index = window.navigation.find_page("network_tools")
-    if index >= 0:
-        window.navigation.setCurrentRow(index)
     page = window.get_or_create_page("network_tools")
     window.stack.setCurrentWidget(page)
+    navigation = getattr(window, "navigation", None)
+    find_page = getattr(navigation, "find_page", None)
+    if callable(find_page):
+        index = find_page("network_tools")
+        if index >= 0:
+            navigation.setCurrentRow(index)
     tabs = getattr(page, "tabs", None)
     if tabs is not None and tabs.count() >= 3:
         tabs.setCurrentIndex(2)
