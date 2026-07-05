@@ -59,17 +59,22 @@ TUNNEL_FIELDS = (
     "tunnel2_password",
 )
 SNMP_FIELDS = (
+    "snmp_enabled",
     "snmp_v1_enabled",
     "snmp_v2c_enabled",
     "snmp_v3_enabled",
     "snmp_port",
     "snmp_ro_community",
     "snmp_rw_community",
+    "snmpv3_username",
     "snmpv3_security_level",
     "snmpv3_auth_protocol",
     "snmpv3_auth_password",
     "snmpv3_priv_protocol",
     "snmpv3_priv_password",
+    "snmp_context_name",
+    "snmp_timeout_ms",
+    "snmp_retries",
 )
 
 
@@ -171,17 +176,22 @@ class DeviceDialog(QDialog):
         right_snmp = QFormLayout()
         snmp_layout.addLayout(left_snmp, 1)
         snmp_layout.addLayout(right_snmp, 1)
+        self._add_checkbox(left_snmp, "snmp_enabled")
         self._add_checkbox(left_snmp, "snmp_v1_enabled")
         self._add_checkbox(left_snmp, "snmp_v2c_enabled")
         self._add_checkbox(left_snmp, "snmp_v3_enabled")
         self._add_spin(left_snmp, "snmp_port", 1, 65535)
+        self._add_spin(left_snmp, "snmp_timeout_ms", 100, 60000)
+        self._add_spin(left_snmp, "snmp_retries", 0, 10)
         self._add_line(left_snmp, "snmp_ro_community")
         self._add_line(left_snmp, "snmp_rw_community")
+        self._add_line(right_snmp, "snmpv3_username")
         self._add_combo(right_snmp, "snmpv3_security_level", SNMPV3_SECURITY_LEVELS)
         self._add_combo(right_snmp, "snmpv3_auth_protocol", SNMPV3_AUTH_PROTOCOLS)
         self._add_line(right_snmp, "snmpv3_auth_password", password=True)
         self._add_combo(right_snmp, "snmpv3_priv_protocol", SNMPV3_PRIV_PROTOCOLS)
         self._add_line(right_snmp, "snmpv3_priv_password", password=True)
+        self._add_line(right_snmp, "snmp_context_name")
         self.snmp_panel.setVisible(False)
         scroll_layout.addWidget(self.snmp_panel)
         scroll_layout.addStretch(1)
@@ -287,10 +297,13 @@ class DeviceDialog(QDialog):
             "tunnel1_port": 22,
             "tunnel2_enabled": 0,
             "tunnel2_port": 22,
+            "snmp_enabled": 1,
             "snmp_v1_enabled": 0,
             "snmp_v2c_enabled": 1,
             "snmp_v3_enabled": 0,
             "snmp_port": 161,
+            "snmp_timeout_ms": 2000,
+            "snmp_retries": 1,
             "snmpv3_security_level": "noAuthNoPriv",
             "snmpv3_auth_protocol": "SHA",
             "snmpv3_priv_protocol": "AES128",
@@ -441,11 +454,13 @@ class DeviceDialog(QDialog):
         show_auth = enabled and level in {"AuthNoPriv", "AuthPriv"}
         show_priv = enabled and level == "AuthPriv"
         visibility = {
+            "snmpv3_username": enabled,
             "snmpv3_security_level": enabled,
             "snmpv3_auth_protocol": show_auth,
             "snmpv3_auth_password": show_auth,
             "snmpv3_priv_protocol": show_priv,
             "snmpv3_priv_password": show_priv,
+            "snmp_context_name": enabled,
         }
         for field, visible in visibility.items():
             self.inputs[field].setVisible(visible)

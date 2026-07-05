@@ -100,7 +100,7 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
     assert ledger[0]["ap_status"] == "Idle"
     assert ledger[0]["site"] == "Device DB Site"
     assert ledger[0]["historical_switch_name"] == "SW-1"
-    assert ledger[0]["historical_switch_interface"] == "GE1/0/1"
+    assert ledger[0]["historical_switch_interface"] == "GigabitEthernet1/0/1"
     assert "ap_rx_power" not in ledger[0]
     assert "switch_rx_power" not in ledger[0]
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from netconsole.core.database import Database
+from netconsole.core.sqlite_utils import run_sqlite_with_retry
 from netconsole.models.device_group import DeviceGroup
 
 
@@ -26,9 +27,10 @@ class DeviceGroupRepository:
         self.site_id = site_id
 
     def list(self) -> list[DeviceGroup]:
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
+        def _list_rows():
+            with self.database.connect() as conn:
+                return conn.execute(
+                    """
                 SELECT * FROM device_groups
                 WHERE site_id = ?
                 ORDER BY
@@ -42,9 +44,11 @@ class DeviceGroupRepository:
                         ELSE 100000 + sort_order
                     END ASC,
                     name COLLATE NOCASE ASC
-                """,
-                (self.site_id,),
-            ).fetchall()
+                    """,
+                    (self.site_id,),
+                ).fetchall()
+
+        rows = run_sqlite_with_retry(_list_rows)
         return [DeviceGroup(**dict(row)) for row in rows]
 
     def get(self, group_id: int) -> DeviceGroup:

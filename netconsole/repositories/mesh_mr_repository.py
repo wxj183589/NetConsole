@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from statistics import median
 
+from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.models.mesh_log_models import (
     EVENT_ACTIVE_SWITCH,
     EVENT_COUNTER_RESET,
@@ -67,10 +68,10 @@ class MeshMrRepository:
     def initialize(self) -> None:
         is_new_database = not self.path.exists()
         with self._connect() as conn:
+            initialize_sqlite_wal(conn)
             conn.executescript(
                 """
                 PRAGMA foreign_keys = ON;
-                PRAGMA journal_mode = WAL;
                 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_' || 'version', '1');
                 CREATE TABLE IF NOT EXISTS source_files (
@@ -1352,14 +1353,7 @@ class MeshMrRepository:
         return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA temp_store = MEMORY")
-        return conn
+        return connect_sqlite(self.path, foreign_keys=True, temp_store_memory=True)
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

@@ -88,6 +88,7 @@ class H3cAcCommandProfile:
     @property
     def enable_ap_remote_login_commands(self) -> tuple[str, ...]:
         return (
+            "screen-length disable",
             "system-view",
             "probe",
             "wlan ap-execute all exec-console enable",

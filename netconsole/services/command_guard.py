@@ -102,6 +102,7 @@ SAFE_FILE_MANAGEMENT_COMMANDS = {
 }
 
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
+    "screen-length disable",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",

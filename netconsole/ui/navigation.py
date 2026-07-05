@@ -17,6 +17,7 @@ class Navigation(QListWidget):
         ("module.wifi_survey", "nav.wifi_survey", "wifi_survey", "WiFi"),
         ("module.config_collection", "nav.config_collection", "config_collection", "Cfg"),
         ("module.file_management", "nav.file_management", "file_management", "File"),
+        ("module.snmp_center", "nav.snmp_center", "snmp_center", "SNMP"),
         ("module.network_tools", "nav.network_tools", "network_tools", "Net"),
         ("module.logs", "nav.logs", "logs", "Log"),
         ("system.feature_flags", "system.feature_flags", "feature_flags", "Flag"),

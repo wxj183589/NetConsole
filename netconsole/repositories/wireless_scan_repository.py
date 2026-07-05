@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.models.wireless_scan_models import WirelessScanResult
 
 
@@ -15,6 +16,7 @@ class WirelessScanRepository:
 
     def initialize(self) -> None:
         with self._connect() as conn:
+            initialize_sqlite_wal(conn)
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS wireless_scan_runs (
@@ -128,9 +130,7 @@ class WirelessScanRepository:
         return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return connect_sqlite(self.path)
 
     @staticmethod
     def _ensure_results_columns(conn: sqlite3.Connection) -> None:

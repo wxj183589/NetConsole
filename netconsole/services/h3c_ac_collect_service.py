@@ -63,11 +63,41 @@ HTTPS_PORT_COMMANDS = (
 )
 
 ENABLE_FIT_AP_CONSOLE_COMMANDS = (
+    "screen-length disable",
     "system-view",
     "probe",
     "wlan ap-execute all exec-console enable",
     "return",
     "quit",
+)
+ENABLE_FIT_AP_CONSOLE_TIMEOUTS = {
+    "screen-length disable": 15,
+    "system-view": 15,
+    "probe": 30,
+    "wlan ap-execute all exec-console enable": 120,
+    "return": 30,
+    "quit": 30,
+}
+ENABLE_FIT_AP_CONSOLE_TAIL_COMMANDS = {"return", "quit"}
+ENABLE_FIT_AP_CONSOLE_MAIN_COMMAND = "wlan ap-execute all exec-console enable"
+READ_TIMEOUT_MARKERS = (
+    "read_channel_timing's absolute timer expired",
+    "continually outputting data",
+    "readtimeout",
+)
+CLI_FAILURE_MARKERS = (
+    "% Unrecognized command",
+    "% Incomplete command",
+    "% Ambiguous command",
+    "Error:",
+    "Failed",
+    "Permission denied",
+    "Invalid",
+    "错误",
+    "失败",
+    "权限不足",
+    "命令不完整",
+    "无法识别",
 )
 
 FIT_AP_OPTICAL_COMMANDS = (
@@ -472,6 +502,7 @@ def run_h3c_ac_action(
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
         return AcCommandActionResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, action, tuple(action_commands), message, command_results)
     try:
+        per_command_read_timeout = ENABLE_FIT_AP_CONSOLE_TIMEOUTS if action == "enable_ap_remote_login" else None
         command_results, _outputs = _execute_h3c_ac_command_list(
             ac_device,
             collect_run_uuid,
@@ -480,6 +511,8 @@ def run_h3c_ac_action(
             progress,
             should_cancel,
             read_timeout=10,
+            per_command_read_timeout=per_command_read_timeout,
+            detect_cli_failures=action == "enable_ap_remote_login",
         )
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         error_message = _command_error_summary(command_results)
@@ -1081,7 +1114,19 @@ def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[Com
         command_guard.validate_command_list(ENABLE_FIT_AP_CONSOLE_COMMANDS, "ac_enable_ap_console")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         for command in ENABLE_FIT_AP_CONSOLE_COMMANDS:
-            results.append(_run_command(connection, command, ac_device, collect_run_uuid, read_timeout=10, context="ac_enable_ap_console"))
+            result = _run_command(
+                connection,
+                command,
+                ac_device,
+                collect_run_uuid,
+                read_timeout=ENABLE_FIT_AP_CONSOLE_TIMEOUTS.get(command, 30),
+                context="ac_enable_ap_console",
+                preserve_echo=True,
+                detect_cli_failures=True,
+            )
+            if _should_treat_enable_console_timeout_as_success(results, result):
+                result = _success_with_read_timeout_warning(result, ac_device, collect_run_uuid)
+            results.append(result)
         return results
     finally:
         if connection is not None:
@@ -1096,6 +1141,8 @@ def _execute_h3c_ac_command_list(
     progress: ProgressCallback,
     should_cancel: CancelCheck,
     read_timeout: int = 30,
+    per_command_read_timeout: dict[str, int] | None = None,
+    detect_cli_failures: bool = False,
 ) -> tuple[list[CommandResult], dict[str, str]]:
     target = choose_connection_target(ac_device)
     if target is None:
@@ -1110,7 +1157,19 @@ def _execute_h3c_ac_command_list(
         for command in commands:
             _raise_if_cancelled(should_cancel)
             progress(f"正在执行 {command}...")
-            result = _run_command(connection, command, ac_device, collect_run_uuid, read_timeout=read_timeout, context=context)
+            timeout = per_command_read_timeout.get(command, read_timeout) if per_command_read_timeout else read_timeout
+            result = _run_command(
+                connection,
+                command,
+                ac_device,
+                collect_run_uuid,
+                read_timeout=timeout,
+                context=context,
+                preserve_echo=bool(per_command_read_timeout),
+                detect_cli_failures=detect_cli_failures,
+            )
+            if _should_treat_enable_console_timeout_as_success(command_results, result):
+                result = _success_with_read_timeout_warning(result, ac_device, collect_run_uuid)
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
@@ -1235,7 +1294,16 @@ def _collect_single_fit_ap_optical(
             _disconnect(connection)
 
 
-def _run_command(connection, command: str, device: Device, collect_run_uuid: str, read_timeout: int = 30, context: str = "ac_collect") -> CommandResult:
+def _run_command(
+    connection,
+    command: str,
+    device: Device,
+    collect_run_uuid: str,
+    read_timeout: int = 30,
+    context: str = "ac_collect",
+    preserve_echo: bool = False,
+    detect_cli_failures: bool = False,
+) -> CommandResult:
     reason = command_guard.command_reject_reason(command, context)
     if reason:
         command_guard.log_command_rejected(command, context, reason)
@@ -1246,13 +1314,55 @@ def _run_command(connection, command: str, device: Device, collect_run_uuid: str
             connection,
             command,
             read_timeout=read_timeout,
+            strip_prompt=False if preserve_echo else None,
+            strip_command=False if preserve_echo else None,
             use_timing=True,
             encoding=netmiko_connection.encoding_for_vendor(device.device_vendor),
         )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         return CommandResult(command=command, success=False, error_message=message)
-    return CommandResult(command=command, success=True, output=str(output or ""))
+    output_text = str(output or "")
+    if detect_cli_failures and _contains_cli_failure(output_text):
+        return CommandResult(command=command, success=False, output=output_text, error_message=_cli_failure_summary(output_text))
+    return CommandResult(command=command, success=True, output=output_text)
+
+
+def _should_treat_enable_console_timeout_as_success(previous_results: list[CommandResult], result: CommandResult) -> bool:
+    if result.success or result.command not in ENABLE_FIT_AP_CONSOLE_TAIL_COMMANDS:
+        return False
+    if not _is_read_timeout_message(result.error_message or ""):
+        return False
+    combined_text = "\n".join([*(item.output or "" for item in previous_results), result.output or "", result.error_message or ""])
+    if _contains_cli_failure(combined_text):
+        return False
+    return any(item.command == ENABLE_FIT_AP_CONSOLE_MAIN_COMMAND and item.success for item in previous_results)
+
+
+def _success_with_read_timeout_warning(result: CommandResult, device: Device, collect_run_uuid: str) -> CommandResult:
+    warning = "warning: read timeout after command, treated as success because key commands completed"
+    app_logger.log_warning(
+        "AC_ENABLE_AP_CONSOLE_READ_TIMEOUT_TREATED_SUCCESS",
+        _detail(device, collect_run_uuid, command=result.command, error=warning),
+    )
+    output = "\n".join(part for part in (result.output, warning) if part)
+    return CommandResult(command=result.command, success=True, output=output, error_message=warning)
+
+
+def _is_read_timeout_message(message: str) -> bool:
+    normalized = str(message or "").casefold()
+    return any(marker in normalized for marker in READ_TIMEOUT_MARKERS)
+
+
+def _contains_cli_failure(text: str) -> bool:
+    return any(marker.casefold() in str(text or "").casefold() for marker in CLI_FAILURE_MARKERS)
+
+
+def _cli_failure_summary(output: str) -> str:
+    for line in str(output or "").splitlines():
+        if _contains_cli_failure(line):
+            return line.strip()[:200] or "命令执行失败"
+    return "命令执行失败"
 
 
 def _write_raw_files(

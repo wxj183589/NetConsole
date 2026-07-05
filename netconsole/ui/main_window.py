@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.loading_pages: dict[str, QWidget] = {}
         self.config_collection_page: QWidget | None = None
         self.file_management_page: QWidget | None = None
+        self.snmp_center_page: QWidget | None = None
         self.rail_transit_page: QWidget | None = None
         self.network_tools_page: QWidget | None = None
         self.wifi_survey_page: QWidget | None = None
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
                 "ac": "AC_PAGE_OPENED",
                 "config_collection": "CONFIG_COLLECTION_PAGE_OPENED",
                 "file_management": "FILE_MANAGEMENT_PAGE_OPENED",
+                "snmp_center": "SNMP_CENTER_PAGE_OPENED",
                 "network_tools": "NETWORK_TOOLS_PAGE_OPENED",
             }.get(str(page_id), "DEVICE_PAGE_OPENED")
             app_logger.log_info(event, self.site.name)
@@ -297,6 +299,11 @@ class MainWindow(QMainWindow):
 
             page = RailTransitPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
             self.rail_transit_page = page
+        elif page_id == "snmp_center":
+            from netconsole.ui.pages.snmp_center_page import SnmpCenterPage
+
+            page = SnmpCenterPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
+            self.snmp_center_page = page
         elif page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
@@ -353,6 +360,10 @@ class MainWindow(QMainWindow):
             from netconsole.ui.pages.rail_transit_page import RailTransitPage
 
             return RailTransitPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
+        if page_id == "snmp_center":
+            from netconsole.ui.pages.snmp_center_page import SnmpCenterPage
+
+            return SnmpCenterPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
         if page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
@@ -411,6 +422,8 @@ class MainWindow(QMainWindow):
                 page.refresh_devices()
             elif page_id == "rail_transit" and hasattr(page, "refresh_current_async_or_lazy"):
                 page.refresh_current_async_or_lazy(force_if_empty=True)
+            elif page_id == "snmp_center" and hasattr(page, "start_snmp_service_async"):
+                page.start_snmp_service_async()
             elif page_id == "network_tools" and hasattr(page, "refresh_all"):
                 page.refresh_all()
         except Exception as exc:
@@ -511,6 +524,8 @@ class MainWindow(QMainWindow):
                 self.file_management_page.refresh_devices()
             elif page_id == "rail_transit" and self.rail_transit_page is not None:
                 self.rail_transit_page.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
+            elif page_id == "snmp_center" and self.snmp_center_page is not None:
+                self.snmp_center_page.start_snmp_service_async()
             elif page_id == "network_tools" and self.network_tools_page is not None:
                 self.network_tools_page.refresh_all()
             elif page_id == "wifi_survey":
@@ -527,6 +542,7 @@ class MainWindow(QMainWindow):
             "rail_transit": "app.loading_rail_transit",
             "ac": "app.loading_ac",
             "file_management": "app.loading_file_management",
+            "snmp_center": "app.loading",
             "network_tools": "app.loading_network_tools",
             "logs": "app.loading_logs",
         }.get(page_id, "app.loading")
@@ -618,6 +634,8 @@ class MainWindow(QMainWindow):
             self.file_management_page.set_repository(self.repository, site.name)
         if self.rail_transit_page is not None:
             self.rail_transit_page.set_repository(self.repository, site.name)
+        if self.snmp_center_page is not None:
+            self.snmp_center_page.set_repository(self.repository, site.name)
         if self.network_tools_page is not None:
             self.network_tools_page.set_site(site.name)
         if self.wifi_survey_page is not None:
@@ -647,6 +665,8 @@ class MainWindow(QMainWindow):
             self.file_management_page.refresh_devices(trigger_device_change=False)
         if self.rail_transit_page is not None and hasattr(self.rail_transit_page, "mark_devices_changed"):
             self.rail_transit_page.mark_devices_changed()
+        if self.snmp_center_page is not None:
+            self.snmp_center_page.refresh_all()
         self._refresh_detached_device_dependents()
 
     def switch_language(self, language: str) -> None:

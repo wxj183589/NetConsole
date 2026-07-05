@@ -1567,6 +1567,12 @@ class AcManagementPage(QWidget):
             if getattr(result, "action", "") == "persist_auto_ap":
                 self.status_label.setText("一键固化新上线AP完成，已执行 save force")
                 return
+            if getattr(result, "action", "") == "enable_ap_remote_login" and any(
+                item.success and str(item.error_message or "").startswith("warning: read timeout")
+                for item in getattr(result, "command_results", [])
+            ):
+                self.status_label.setText("一键开启AP远程登入完成；设备尾部回显读取超时，已按命令成功处理")
+                return
             self.status_label.setText(f"{title}执行成功")
             return
         self.status_label.setText(f"{title}执行失败")

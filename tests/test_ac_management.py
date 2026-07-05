@@ -68,6 +68,7 @@ from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_DEVICE_COLUMNS,
     TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS,
     TREATMENT_CLOSED_LABEL,
@@ -82,6 +83,7 @@ from netconsole.services.trackside_ap_business import (
     format_ap_side_alarm,
     format_trackside_display_value,
     has_ap_side_optical_data,
+    is_current_optical_abnormal_row,
     is_trackside_ap_interface,
     normalize_link_state,
     normalize_vlan_text,
@@ -168,6 +170,34 @@ class FakeConnection:
             "display device": fixture("display_device_ac.txt"),
             "display device manuinfo": fixture("display_device_manuinfo.txt"),
         }[command]
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+class FakeTimingConnection:
+    def __init__(self, outputs=None):
+        self.commands = []
+        self.calls = []
+        self.disconnected = False
+        self.outputs = outputs or {}
+
+    def send_command_timing(self, command, **kwargs):
+        self.commands.append(command)
+        self.calls.append(
+            {
+                "command": command,
+                "read_timeout": kwargs.get("read_timeout"),
+                "strip_prompt": kwargs.get("strip_prompt"),
+                "strip_command": kwargs.get("strip_command"),
+            }
+        )
+        if command in self.outputs:
+            value = self.outputs[command]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return f"<AC>{command}\nCommand {command} Result=Success\n<AC>"
 
     def disconnect(self):
         self.disconnected = True
@@ -1468,6 +1498,83 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
 
 
+def test_enable_ap_remote_login_uses_per_command_timeouts(monkeypatch, tmp_path):
+    connection = FakeTimingConnection()
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    device = make_ac_device()
+    device.device_vendor = "H3C"
+
+    result = h3c_ac_collect_service.run_h3c_ac_action(
+        device,
+        "demo",
+        "enable_ap_remote_login",
+        repository=AcRepository(make_database(tmp_path)),
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is True
+    assert connection.commands == [
+        "screen-length disable",
+        "system-view",
+        "probe",
+        "wlan ap-execute all exec-console enable",
+        "return",
+        "quit",
+    ]
+    timeouts = {call["command"]: call["read_timeout"] for call in connection.calls}
+    assert timeouts["screen-length disable"] == 15
+    assert timeouts["system-view"] == 15
+    assert timeouts["probe"] == 30
+    assert timeouts["wlan ap-execute all exec-console enable"] == 120
+    assert timeouts["return"] == 30
+    assert timeouts["quit"] == 30
+    assert all(call["strip_prompt"] is False and call["strip_command"] is False for call in connection.calls)
+
+
+def test_enable_ap_remote_login_treats_tail_read_timeout_as_success(monkeypatch, tmp_path):
+    timeout = RuntimeError(
+        "return: read_channel_timing's absolute timer expired. "
+        "The network device was continually outputting data for longer than 10 seconds."
+    )
+    connection = FakeTimingConnection({"return": timeout})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    device = make_ac_device()
+    device.device_vendor = "H3C"
+
+    result = h3c_ac_collect_service.run_h3c_ac_action(
+        device,
+        "demo",
+        "enable_ap_remote_login",
+        repository=AcRepository(make_database(tmp_path)),
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is True
+    return_result = next(item for item in result.command_results if item.command == "return")
+    assert return_result.success is True
+    assert str(return_result.error_message).startswith("warning: read timeout")
+    assert "treated as success" in return_result.output
+    assert connection.commands[-1] == "quit"
+
+
+def test_enable_ap_remote_login_keeps_real_command_error_failed(monkeypatch, tmp_path):
+    connection = FakeTimingConnection({"wlan ap-execute all exec-console enable": "% Unrecognized command found at '^' position."})
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    device = make_ac_device()
+    device.device_vendor = "H3C"
+
+    result = h3c_ac_collect_service.run_h3c_ac_action(
+        device,
+        "demo",
+        "enable_ap_remote_login",
+        repository=AcRepository(make_database(tmp_path)),
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is False
+    assert "% Unrecognized command" in str(result.error_message)
+
+
 def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_path):
     connection = FakeConnection()
     monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
@@ -2260,6 +2367,47 @@ def test_trackside_ap_business_export_includes_new_online_and_treatment_sheets(t
     assert treatment_sheet["A2"].fill.fgColor.rgb == "00FEE2E2"
 
 
+def test_trackside_export_omits_ap_port_change_columns_and_sheet(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_without_ap_port_change.xlsx"
+    i18n = I18n("zh_CN")
+    rows = [
+        {
+            "site": "Station A",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/6",
+            "link_status": "UP",
+            "switch_rx_power": "-8",
+            "switch_optical_status": "normal",
+            "ap_mac": "0011-2233-4455",
+            "ap_name": "AP-1",
+            "ap_rx_power": "-8",
+            "ap_optical_status": "normal",
+            "ap_port_change": "N/A GigabitEthernet2/0/6 -> SW-1 GigabitEthernet2/0/6",
+            "ap_port_change_reason": "交换机变化",
+            "previous_switch": "N/A",
+            "previous_interface": "GigabitEthernet2/0/6",
+            "current_switch": "SW-1",
+            "current_interface": "GigabitEthernet2/0/6",
+            "history_compared_at": "2026-07-04T15:59:07",
+        }
+    ]
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        rows,
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
+    )
+
+    workbook = load_workbook(export_path)
+    assert "AP端口变化" not in workbook.sheetnames
+    headers = [cell.value for cell in workbook["轨旁AP业务"][1]]
+    for forbidden in ("AP端口变化", "AP端口变化原因", "上次交换机", "上次端口", "本次交换机", "本次端口", "历史对比时间"):
+        assert forbidden not in headers
+
+
 def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_path):
     from openpyxl import load_workbook
 
@@ -2305,12 +2453,25 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
             "device_name": "SW-3",
             "interface_name": "GigabitEthernet1/0/4",
             "link_status": "DOWN",
-            "switch_rx_power": "-",
-            "switch_optical_status": "offline",
+            "switch_rx_power": "-36.96",
+            "switch_optical_status": "no_light",
             "ap_name": "AP-Offline",
-            "ap_rx_power": "-",
+            "ap_mac": "30f5-2787-91c0",
+            "ap_rx_power": "-7.99",
             "ap_optical_status": "offline",
             "is_ap_offline": True,
+        },
+        {
+            "site": "Station D",
+            "device_name": "SW-4",
+            "interface_name": "GigabitEthernet1/0/5",
+            "link_status": "DOWN",
+            "switch_rx_power": "-36.96",
+            "switch_optical_status": "no_light",
+            "ap_mac": "-",
+            "ap_name": "-",
+            "ap_rx_power": "-",
+            "ap_optical_status": "-",
         },
     ]
 
@@ -2327,8 +2488,10 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     abnormal_sheet = workbook["当前异常光衰"]
     source_headers = [cell.value for cell in source_sheet[1]]
     abnormal_headers = [cell.value for cell in abnormal_sheet[1]]
-    assert abnormal_headers == source_headers
-    assert [abnormal_sheet.cell(row=row, column=3).value for row in range(2, abnormal_sheet.max_row + 1)] == ["GigabitEthernet1/0/2"]
+    assert abnormal_headers == [*source_headers, "异常原因", "异常侧", "异常等级", "异常说明"]
+    assert [abnormal_sheet.cell(row=row, column=3).value for row in range(2, abnormal_sheet.max_row + 1)] == ["GigabitEthernet1/0/2", "GigabitEthernet1/0/4"]
+    reason_column = abnormal_headers.index("异常原因") + 1
+    assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP离线"
     assert abnormal_sheet["A2"].fill.fgColor.rgb == source_sheet["A3"].fill.fgColor.rgb == "00FEF9C3"
     assert abnormal_sheet["A1"].font.bold
     assert abnormal_sheet.freeze_panes == "A2"
@@ -2374,7 +2537,51 @@ def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_p
 
     sheet = load_workbook(export_path)["当前异常光衰"]
     assert sheet.max_row == 2
-    assert sheet["A2"].value == "当前无异常光衰（已排除无光端口）"
+    assert sheet["A2"].value == "当前无异常光衰（已排除无 AP 绑定或 AP 未离线的无光端口）"
+
+
+def test_current_optical_abnormal_includes_ap_offline_but_excludes_unbound_no_light():
+    assert is_current_optical_abnormal_row(
+        {
+            "link_status": "DOWN",
+            "switch_rx_power": "-36.96",
+            "switch_optical_status": "no_light",
+            "ap_mac": "30f5-2787-91c0",
+            "ap_name": "30f5-2787-91c0",
+            "ap_rx_power": "-7.99",
+            "ap_optical_status": "offline",
+        }
+    )
+    assert not is_current_optical_abnormal_row(
+        {
+            "link_status": "DOWN",
+            "switch_rx_power": "-36.96",
+            "switch_optical_status": "no_light",
+            "ap_mac": "-",
+            "ap_name": "-",
+            "ap_rx_power": "-",
+            "ap_optical_status": "-",
+        }
+    )
+    assert not is_current_optical_abnormal_row(
+        {
+            "link_status": "DOWN",
+            "switch_rx_power": "-36.96",
+            "switch_optical_status": "no_light",
+            "ap_mac": "30f5-xxxx-yyyy",
+            "ap_name": "30f5-xxxx-yyyy",
+            "ap_optical_status": "normal",
+        }
+    )
+    assert is_current_optical_abnormal_row(
+        {
+            "ap_mac": "30f5-2787-afc0",
+            "ap_name": "30f5-2787-afc0",
+            "ap_rx_power": "-22.01",
+            "ap_optical_status": "alarm",
+            "ap_side_has_data": True,
+        }
+    )
 
 
 def test_fit_ap_resource_table_prioritizes_ap_name_over_ap_mac(tmp_path):

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.models.mesh_log_models import MeshMrProfile
 
 
@@ -25,6 +26,7 @@ class MeshCatalogRepository:
 
     def initialize(self) -> None:
         with self._connect() as conn:
+            initialize_sqlite_wal(conn)
             conn.executescript(
                 """
                 PRAGMA foreign_keys = ON;
@@ -129,9 +131,7 @@ class MeshCatalogRepository:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return connect_sqlite(self.path, foreign_keys=True)
 
     def _profile_values(self, profile: MeshMrProfile) -> tuple[object, ...]:
         return (

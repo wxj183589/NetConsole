@@ -48,7 +48,7 @@ def test_navigation_includes_file_management_page():
     page_ids = [navigation.item(index).data(256) for index in range(navigation.count())]
     labels = [navigation.item(index).text() for index in range(navigation.count())]
 
-    assert page_ids == ["devices", "ac", "rail_transit", "wifi_survey", "config_collection", "file_management", "network_tools", "logs", "feature_flags"]
+    assert page_ids == ["devices", "ac", "rail_transit", "wifi_survey", "config_collection", "file_management", "snmp_center", "network_tools", "logs", "feature_flags"]
     assert "file_management" in page_ids
     assert "File Management" in labels
 

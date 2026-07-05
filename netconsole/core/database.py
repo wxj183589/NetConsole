@@ -3,8 +3,10 @@
 import sqlite3
 from pathlib import Path
 
+from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
-CURRENT_SCHEMA_VERSION = "2026.07.04.trackside_plan_remark"
+
+CURRENT_SCHEMA_VERSION = "2026.07.05.snmp_center_device_fields"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -47,17 +49,22 @@ CREATE TABLE IF NOT EXISTS devices (
     telnet_username TEXT,
     telnet_password TEXT,
     snmp_version TEXT,
+    snmp_enabled INTEGER DEFAULT 1,
     snmp_v1_enabled INTEGER DEFAULT 0,
     snmp_v2c_enabled INTEGER DEFAULT 1,
     snmp_v3_enabled INTEGER DEFAULT 0,
     snmp_port INTEGER DEFAULT 161,
     snmp_ro_community TEXT,
     snmp_rw_community TEXT,
+    snmpv3_username TEXT,
     snmpv3_security_level TEXT,
     snmpv3_auth_protocol TEXT,
     snmpv3_auth_password TEXT,
     snmpv3_priv_protocol TEXT,
     snmpv3_priv_password TEXT,
+    snmp_context_name TEXT,
+    snmp_timeout_ms INTEGER DEFAULT 2000,
+    snmp_retries INTEGER DEFAULT 1,
     https_port INTEGER,
     tunnel_enabled INTEGER DEFAULT 0,
     tunnel1_enabled INTEGER DEFAULT 0,
@@ -938,16 +945,13 @@ class Database:
         return self.path.exists()
 
     def connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        return connect_sqlite(self.path, foreign_keys=True)
 
     def initialize(self) -> None:
         existed = self.exists()
         conn = self.connect()
         try:
+            initialize_sqlite_wal(conn)
             conn.executescript(
                 "\n".join(
                     self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
@@ -1062,6 +1066,16 @@ class Database:
         for column, column_type in fit_ap_lldp_history_columns.items():
             if self._table_exists(conn, "ac_fit_ap_lldp_history") and not self._column_exists(conn, "ac_fit_ap_lldp_history", column):
                 conn.execute(f"ALTER {'TABLE'} ac_fit_ap_lldp_history ADD COLUMN {column} {column_type}")
+        device_snmp_columns = {
+            "snmp_enabled": "INTEGER DEFAULT 1",
+            "snmpv3_username": "TEXT",
+            "snmp_context_name": "TEXT",
+            "snmp_timeout_ms": "INTEGER DEFAULT 2000",
+            "snmp_retries": "INTEGER DEFAULT 1",
+        }
+        for column, column_type in device_snmp_columns.items():
+            if self._table_exists(conn, "devices") and not self._column_exists(conn, "devices", column):
+                conn.execute(f"ALTER {'TABLE'} devices ADD COLUMN {column} {column_type}")
 
     @staticmethod
     def _all_schema_scripts() -> tuple[str, ...]:

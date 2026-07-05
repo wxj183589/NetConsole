@@ -96,6 +96,7 @@ def test_fit_ap_optical_collect_context_only_allows_ap_link_commands():
 
 def test_ac_enable_ap_console_allows_only_fixed_sequence_commands():
     for command in (
+        "screen-length disable",
         "system-view",
         "probe",
         "wlan ap-execute all exec-console enable",

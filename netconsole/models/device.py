@@ -26,6 +26,7 @@ class Device:
     port: int | None = 22
     username: str | None = None
     password: str | None = None
+    snmp_enabled: int = 1
     ssh_enabled: int = 1
     ssh_port: int = 22
     telnet_enabled: int = 0
@@ -41,11 +42,15 @@ class Device:
     snmp_port: int | None = 161
     snmp_ro_community: str | None = None
     snmp_rw_community: str | None = None
+    snmpv3_username: str | None = None
     snmpv3_security_level: str | None = None
     snmpv3_auth_protocol: str | None = None
     snmpv3_auth_password: str | None = None
     snmpv3_priv_protocol: str | None = None
     snmpv3_priv_password: str | None = None
+    snmp_context_name: str | None = None
+    snmp_timeout_ms: int | None = 2000
+    snmp_retries: int | None = 1
     https_port: int | None = None
     tunnel_enabled: int = 0
     tunnel1_enabled: int = 0

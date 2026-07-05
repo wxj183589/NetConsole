@@ -35,6 +35,10 @@ TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
     "switch_collection_status",
     "ap_rx_low_alarm",
     "ap_rx_low_warning",
+    "switch_system_name",
+    "switch_primary_address",
+    "switch_backup_address",
+    "switch_identity",
 }
 
 TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
@@ -71,12 +75,6 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("trackside_ap.last_collected_at", "updated_at"),
     ("trackside.export.switch_optical_change", "switch_optical_change"),
     ("trackside.export.ap_optical_change", "ap_optical_change"),
-    ("trackside.export.ap_port_change", "ap_port_change"),
-    ("trackside.export.previous_switch", "previous_switch"),
-    ("trackside.export.previous_interface", "previous_interface"),
-    ("trackside.export.current_switch", "current_switch"),
-    ("trackside.export.current_interface", "current_interface"),
-    ("trackside.export.history_compared_at", "history_compared_at"),
 )
 
 NEW_ONLINE_AP_OVERVIEW_COLUMNS = (
@@ -184,7 +182,13 @@ TRACKSIDE_EXPORT_NORMAL_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["normal"]
 TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
 TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
 CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
-CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无光端口）"
+CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定或 AP 未离线的无光端口）"
+CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS = (
+    ("异常原因", "reason"),
+    ("异常侧", "side"),
+    ("异常等级", "level"),
+    ("异常说明", "detail"),
+)
 
 AP_SIDE_DISPLAY_FIELDS = {"ap_rx_power", "ap_tx_power"}
 AP_SIDE_MISSING_DISPLAY = "-"
@@ -461,6 +465,10 @@ def build_trackside_ap_business_rows(
                     "serial_number": fit_ap.get("serial_number") or fit_ap_resource_by_identity.get(ap_identity_key(fit_ap) or ("", ""), {}).get("serial_number"),
                     "device_uuid": device_uuid,
                     "device_name": device.name,
+                    "switch_system_name": device.system_name,
+                    "switch_primary_address": device.primary_address,
+                    "switch_backup_address": device.backup_address,
+                    "switch_identity": device_uuid,
                     "interface_name": interface_name,
                     "link_status": "DOWN" if switch_offline else link_state,
                     "protocol_status": interface.get("protocol_status") or interface.get("protocol"),
@@ -1765,13 +1773,11 @@ def enrich_trackside_export_rows(
 ) -> list[dict[str, object | None]]:
     switch_history_by_interface = _switch_optical_history_by_interface(switch_optical_history_rows or [])
     ap_history_by_identity = _ap_optical_history_by_identity(ap_optical_history_rows or [])
-    ap_lldp_history_by_identity = _ap_optical_history_by_identity(ap_lldp_history_rows or [])
     enriched: list[dict[str, object | None]] = []
     for row in rows:
         item = dict(row)
         _apply_switch_optical_change(item, fact_repository, switch_history_by_interface)
         _apply_ap_optical_change(item, ac_repository, ap_history_by_identity)
-        _apply_ap_port_change(item, ac_repository, ap_lldp_history_by_identity)
         enriched.append(item)
     return enriched
 
@@ -1782,18 +1788,6 @@ def optical_change_text(previous_status: object, current_status: object) -> str:
     if previous and current and previous != current:
         return f"{previous} → {current}"
     return "-"
-
-
-def ap_port_change_text(previous_switch: object, previous_interface: object, current_switch: object, current_interface: object) -> str:
-    previous_switch_text = str(previous_switch or "").strip()
-    previous_interface_text = str(previous_interface or "").strip()
-    current_switch_text = str(current_switch or "").strip()
-    current_interface_text = str(current_interface or "").strip()
-    if not all((previous_switch_text, previous_interface_text, current_switch_text, current_interface_text)):
-        return "-"
-    if previous_switch_text == current_switch_text and normalize_interface_name(previous_interface_text).casefold() == normalize_interface_name(current_interface_text).casefold():
-        return "-"
-    return f"AP端口变化: {previous_switch_text} {previous_interface_text} → {current_switch_text} {current_interface_text}"
 
 
 def _apply_switch_optical_change(
@@ -1909,64 +1903,6 @@ def _latest_valid_ap_optical_history(rows: list[dict[str, object | None]]) -> di
     if not candidates:
         return None
     return max(candidates, key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))))
-
-
-def _apply_ap_port_change(
-    row: dict[str, object | None],
-    ac_repository,
-    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
-) -> None:
-    row.setdefault("ap_port_change", "-")
-    row["current_switch"] = row.get("device_name") or "-"
-    row["current_interface"] = row.get("interface_name") or "-"
-    previous = _ap_port_transition_baseline_before(
-        _ap_history_for_trackside(row, history_by_identity or {}),
-        row.get("updated_at"),
-        row.get("device_name"),
-        row.get("interface_name"),
-    )
-    if previous:
-        previous_switch = _previous_lldp_switch(previous)
-        previous_interface = _previous_lldp_interface(previous)
-        row["previous_switch"] = previous_switch or "-"
-        row["previous_interface"] = previous_interface or "-"
-        row["ap_port_change"] = ap_port_change_text(previous_switch, previous_interface, row.get("device_name"), row.get("interface_name"))
-        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at") or "-"
-        return
-    if ac_repository is None:
-        row.setdefault("previous_switch", "-")
-        row.setdefault("previous_interface", "-")
-        row.setdefault("history_compared_at", "-")
-        return
-    getter = getattr(ac_repository, "get_previous_ap_lldp_history", None)
-    previous = getter(ap_identity_filter(row), str(row.get("updated_at") or "")) if callable(getter) else None
-    previous_switch = _previous_lldp_switch(previous or {})
-    previous_interface = _previous_lldp_interface(previous or {})
-    row["previous_switch"] = previous_switch or "-"
-    row["previous_interface"] = previous_interface or "-"
-    row["ap_port_change"] = ap_port_change_text(previous_switch, previous_interface, row.get("device_name"), row.get("interface_name"))
-    row["history_compared_at"] = (previous or {}).get("collected_at") or (previous or {}).get("created_at") or row.get("history_compared_at") or "-"
-
-
-def _ap_port_transition_baseline_before(
-    rows: list[dict[str, object | None]],
-    before: object,
-    current_switch: object,
-    current_interface: object,
-) -> dict[str, object | None] | None:
-    current_switch_text = str(current_switch or "").strip()
-    current_interface_key = normalize_interface_name(current_interface).casefold()
-    if not current_switch_text or not current_interface_key:
-        return None
-    for row in _history_rows_before(rows, before):
-        previous_switch = str(_previous_lldp_switch(row) or "").strip()
-        previous_interface_key = normalize_interface_name(_previous_lldp_interface(row)).casefold()
-        if not previous_switch or not previous_interface_key:
-            continue
-        if previous_switch.casefold() == current_switch_text.casefold() and previous_interface_key == current_interface_key:
-            continue
-        return row
-    return None
 
 
 def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
@@ -2218,8 +2154,89 @@ def is_no_light_optical_row(row: dict[str, object | None]) -> bool:
     )
 
 
+def has_valid_ap_binding(row: dict[str, object | None]) -> bool:
+    return not _is_missing_display(row.get("ap_mac")) or not _is_missing_display(row.get("ap_name"))
+
+
+def _normalized_optical_status(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return {
+        "正常": "normal",
+        "偏低关注": "notice",
+        "提示告警": "warning",
+        "低告警": "warning",
+        "高告警": "warning",
+        "一般告警": "alarm",
+        "严重告警": "alarm",
+        "链路异常": "link_abnormal",
+        "链路断开": "link_down",
+        "无光": "no_light",
+        "无光模块": "no_module",
+        "未插光模块": "no_module",
+        "离线": "offline",
+        "交换机离线": "offline",
+        "-": "",
+    }.get(text, text)
+
+
+def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
+    if not has_valid_ap_binding(row):
+        return False
+    status = _normalized_optical_status(row.get("ap_optical_status") or row.get("optical_alarm_status") or row.get("alarm_status"))
+    return bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"} or status == "offline"
+
+
+def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
+    if not has_valid_ap_binding(row):
+        return False
+    if _is_ap_offline_abnormal(row):
+        return True
+    status = _normalized_optical_status(row.get("ap_optical_status") or row.get("optical_alarm_status") or row.get("alarm_status"))
+    if status in {"notice", "warning", "alarm"}:
+        return True
+    if status in {"", "unknown"} and _has_valid_rx_power(row.get("ap_rx_power")):
+        return _normalized_optical_status(_compute_ap_optical_status_from_row(row)) in {"notice", "warning", "alarm"}
+    return False
+
+
+def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
+    if not has_valid_ap_binding(row):
+        return False
+    status = _normalized_optical_status(row.get("switch_optical_status"))
+    if status in {"notice", "warning", "alarm"}:
+        return True
+    if status in {"", "unknown"} and _has_valid_rx_power(row.get("switch_rx_power")):
+        computed = compute_optical_severity(
+            {
+                "module_present": True,
+                "rx_power": row.get("switch_rx_power"),
+                "alarm_low": row.get("switch_rx_low_alarm"),
+                "warning_low": row.get("switch_rx_low_warning"),
+                "port_status": row.get("link_status") or row.get("link"),
+            }
+        ).severity
+        return computed in {"notice", "warning", "alarm"}
+    return False
+
+
+def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, str]:
+    if _is_ap_offline_abnormal(row):
+        detail = "交换机侧无光，AP侧离线" if is_no_light_optical_row(row) or normalize_link_state(row.get("link_status") or row.get("link")) == "DOWN" else "AP侧离线"
+        return {"reason": "AP离线", "side": "AP侧", "level": "离线", "detail": detail}
+    if _is_ap_side_current_abnormal(row):
+        return {"reason": "AP侧光衰告警", "side": "AP侧", "level": display_optical_status(_normalized_optical_status(row.get("ap_optical_status"))), "detail": ""}
+    if _is_switch_side_current_abnormal(row):
+        return {"reason": "交换机侧光衰告警", "side": "交换机侧", "level": display_optical_status(_normalized_optical_status(row.get("switch_optical_status"))), "detail": ""}
+    return {"reason": "", "side": "", "level": "", "detail": ""}
+
+
 def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
-    return trackside_row_status(row) in OPTICAL_TREATMENT_ISSUE_STATUSES and not is_no_light_optical_row(row)
+    if _is_ap_offline_abnormal(row):
+        return True
+    if _is_ap_side_current_abnormal(row):
+        return True
+    return _is_switch_side_current_abnormal(row)
+
 
 
 def is_current_optical_abnormal_row(row: dict[str, object | None]) -> bool:
@@ -2228,6 +2245,7 @@ def is_current_optical_abnormal_row(row: dict[str, object | None]) -> bool:
 
 def build_current_optical_abnormal_sheet(workbook, source_sheet, rows: list[dict[str, object | None]]) -> None:
     from copy import copy
+    from openpyxl.utils import get_column_letter
 
     if CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE in workbook.sheetnames:
         del workbook[CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE]
@@ -2235,11 +2253,21 @@ def build_current_optical_abnormal_sheet(workbook, source_sheet, rows: list[dict
     sheet = workbook.create_sheet(CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE, source_index + 1)
     _copy_worksheet_columns(source_sheet, sheet)
     _copy_worksheet_row(source_sheet, sheet, 1, 1)
+    extra_start_column = source_sheet.max_column + 1
+    header_style_cell = source_sheet.cell(row=1, column=source_sheet.max_column)
+    for offset, (header, _field) in enumerate(CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS):
+        column = extra_start_column + offset
+        _copy_cell_style(header_style_cell, sheet.cell(row=1, column=column, value=header))
+        sheet.column_dimensions[get_column_letter(column)].width = max(12, len(header) + 4)
     target_row = 2
     for source_row, data in enumerate(rows, start=2):
         if not is_current_optical_abnormal_export_row(data):
             continue
         _copy_worksheet_row(source_sheet, sheet, source_row, target_row)
+        reason = current_optical_abnormal_reason(data)
+        data_style_cell = source_sheet.cell(row=source_row, column=source_sheet.max_column)
+        for offset, (_header, field) in enumerate(CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS):
+            _copy_cell_style(data_style_cell, sheet.cell(row=target_row, column=extra_start_column + offset, value=reason.get(field, "")))
         target_row += 1
     if target_row == 2:
         cell = sheet.cell(row=2, column=1, value=CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT)
@@ -2269,21 +2297,29 @@ def _copy_worksheet_columns(source_sheet, target_sheet) -> None:
 
 
 def _copy_worksheet_row(source_sheet, target_sheet, source_row: int, target_row: int) -> None:
-    from copy import copy
-
     target_sheet.row_dimensions[target_row].height = source_sheet.row_dimensions[source_row].height
     for source_cell in source_sheet[source_row]:
         target_cell = target_sheet.cell(row=target_row, column=source_cell.column, value=source_cell.value)
-        target_cell.font = copy(source_cell.font)
-        target_cell.fill = copy(source_cell.fill)
-        target_cell.border = copy(source_cell.border)
-        target_cell.alignment = copy(source_cell.alignment)
-        target_cell.number_format = source_cell.number_format
-        target_cell.protection = copy(source_cell.protection)
+        _copy_cell_style(source_cell, target_cell)
         if source_cell.hyperlink:
+            from copy import copy
+
             target_cell._hyperlink = copy(source_cell.hyperlink)
         if source_cell.comment:
+            from copy import copy
+
             target_cell.comment = copy(source_cell.comment)
+
+
+def _copy_cell_style(source_cell, target_cell) -> None:
+    from copy import copy
+
+    target_cell.font = copy(source_cell.font)
+    target_cell.fill = copy(source_cell.fill)
+    target_cell.border = copy(source_cell.border)
+    target_cell.alignment = copy(source_cell.alignment)
+    target_cell.number_format = source_cell.number_format
+    target_cell.protection = copy(source_cell.protection)
 
 
 def _append_export_rows_sheet(

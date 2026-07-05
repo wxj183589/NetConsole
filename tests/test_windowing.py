@@ -170,7 +170,7 @@ def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
     window.show_changelog_dialog()
     assert isinstance(window.changelog_dialog, ChangelogDialog)
     assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
-    window.app_is_exiting = True
+    window._force_close = True
     window.close()
 
 
@@ -197,7 +197,7 @@ def test_main_window_version_button_shift_alt_click_opens_admin_unlock(tmp_path,
     assert window.eventFilter(window.version_button, FakeMousePress()) is True
     assert opened == [True]
 
-    window.app_is_exiting = True
+    window._force_close = True
     window.close()
 
 
@@ -222,7 +222,7 @@ def test_main_window_refresh_feature_flags_updates_detached_pages(tmp_path):
 
     assert calls == ["apply", "reload"]
 
-    window.app_is_exiting = True
+    window._force_close = True
     detached.close()
     window.close()
 
@@ -263,7 +263,7 @@ def test_main_window_sidebar_state_persists_and_survives_theme_switch(tmp_path):
     first = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
 
     first.set_sidebar_collapsed(True)
-    first.app_is_exiting = True
+    first._force_close = True
     first.close()
 
     reopened = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
@@ -414,7 +414,7 @@ def test_ui_version_text_uses_shared_version_source(tmp_path, monkeypatch):
     assert changelog.windowTitle() == "Changelog v9.9.9"
     splash.close()
     changelog.close()
-    window.app_is_exiting = True
+    window._force_close = True
     window.close()
 
 
