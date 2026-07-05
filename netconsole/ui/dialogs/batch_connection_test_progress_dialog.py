@@ -13,6 +13,28 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 
 
+BATCH_CONNECTION_COLUMN_MIN_WIDTHS = {
+    0: 170,
+    1: 120,
+    2: 80,
+    3: 110,
+    4: 80,
+    5: 120,
+    6: 100,
+    7: 260,
+}
+BATCH_CONNECTION_COLUMN_MAX_WIDTHS = {
+    0: 220,
+    1: 150,
+    2: 100,
+    3: 140,
+    4: 100,
+    5: 180,
+    6: 120,
+    7: 520,
+}
+
+
 class BatchConnectionTestProgressDialog(QDialog):
     def __init__(self, i18n: I18n, total: int, parent=None) -> None:
         super().__init__(parent, Qt.Window)
@@ -113,5 +135,12 @@ class BatchConnectionTestProgressDialog(QDialog):
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
             item.setTextAlignment(Qt.AlignCenter)
+            if value:
+                item.setToolTip(value)
             self.table.setItem(row, column, item)
-        auto_resize_table_columns(self.table)
+        auto_resize_table_columns(
+            self.table,
+            column_min_widths=BATCH_CONNECTION_COLUMN_MIN_WIDTHS,
+            column_max_widths=BATCH_CONNECTION_COLUMN_MAX_WIDTHS,
+            long_text_max_width=520,
+        )

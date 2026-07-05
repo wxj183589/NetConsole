@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
-from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
+from netconsole.services.network_tools.iperf_parser import parse_iperf_error_lines, parse_iperf_lines, read_iperf_text
 from netconsole.services.online_mr.core.event_model import (
     EVENT_BUSY_SAMPLE,
     EVENT_FPING_V5_SAMPLE,
     EVENT_INTERFACE_SAMPLE,
+    EVENT_IPERF3_ERROR,
     EVENT_IPERF3_SAMPLE,
     EVENT_MESH_SAMPLE,
     EVENT_STATS_SAMPLE,
@@ -101,8 +102,9 @@ class SessionAdapter:
                 )
                 continue
             for row in parse_iperf_lines(text.splitlines()):
+                timestamp = _datetime_from_payload(row.get("collector_time")) or datetime.now()
                 yield OnlineMrEvent(
-                    timestamp=datetime.now(),
+                    timestamp=timestamp,
                     session_id=self.session_id,
                     device_id=self.device_id,
                     source="iperf3",
@@ -111,3 +113,24 @@ class SessionAdapter:
                     payload=row,
                     raw=str(row.get("raw_line") or ""),
                 )
+            for error in parse_iperf_error_lines(text.splitlines()):
+                timestamp = _datetime_from_payload(error.get("collector_time")) or datetime.now()
+                yield OnlineMrEvent(
+                    timestamp=timestamp,
+                    session_id=self.session_id,
+                    device_id=self.device_id,
+                    source="iperf3",
+                    module="iperf",
+                    event_type=EVENT_IPERF3_ERROR,
+                    payload=error,
+                    raw=str(error.get("raw_line") or ""),
+                )
+
+
+def _datetime_from_payload(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("T", " "))
+    except ValueError:
+        return None

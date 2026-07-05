@@ -86,7 +86,7 @@ def apply_table_policy(table: QTableWidget) -> None:
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setAlternatingRowColors(True)
     table.setWordWrap(False)
-    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)

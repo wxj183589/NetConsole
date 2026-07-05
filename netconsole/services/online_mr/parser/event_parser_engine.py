@@ -4,7 +4,7 @@ import re
 from collections import defaultdict, deque
 from typing import Any
 
-from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_SAMPLE, OnlineMrEvent
+from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_ERROR, EVENT_IPERF3_SAMPLE, OnlineMrEvent
 from netconsole.services.online_mr_parser import (
     parse_ap_radio_statistics_text,
     parse_channel_busy_text,
@@ -23,6 +23,8 @@ class EventParserEngine:
             self.samples["fping"].append(self.parse_fping_v5(event))
         elif event.module == "iperf" and event.event_type == EVENT_IPERF3_SAMPLE:
             self.samples["iperf"].append(self.parse_iperf3(event))
+        elif event.module == "iperf" and event.event_type == EVENT_IPERF3_ERROR:
+            self.samples["iperf"].append(self.parse_iperf_error(event))
         elif event.module == "mesh":
             self.samples["mesh"].append(self.parse_mesh(event))
         elif event.module == "busy":
@@ -94,8 +96,19 @@ class EventParserEngine:
         payload = dict(event.payload)
         throughput = _extract_iperf_mbps(payload)
         payload["throughput_mbps"] = throughput
-        payload["throughput_score"] = max(0.0, min(100.0, throughput)) if throughput is not None else 0.0
+        if payload.get("zero_sample_type") == "isolated_report_gap":
+            payload["throughput_score"] = 100.0
+        else:
+            payload["throughput_score"] = max(0.0, min(100.0, throughput)) if throughput is not None else 0.0
         payload["timestamp"] = event.timestamp
+        return payload
+
+    def parse_iperf_error(self, event: OnlineMrEvent) -> dict[str, Any]:
+        payload = dict(event.payload)
+        payload["timestamp"] = event.timestamp
+        payload["throughput_mbps"] = None
+        payload["throughput_score"] = 0.0
+        payload["iperf_error"] = True
         return payload
 
     def latest(self, module: str) -> dict[str, Any] | None:
@@ -125,6 +138,8 @@ def _extract_iperf_mbps(payload: dict[str, Any]) -> float | None:
         return float(payload["bits_per_second"]) / 1_000_000.0
     if payload.get("throughput_mbps") is not None:
         return float(payload["throughput_mbps"])
+    if payload.get("bitrate_mbps") is not None:
+        return float(payload["bitrate_mbps"])
     return None
 
 

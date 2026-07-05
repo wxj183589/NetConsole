@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QHeaderView, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QTableWidget, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -22,6 +22,7 @@ from netconsole.models.online_mr_models import (
     CONFIG_COLLECT_COMMANDS,
     FpingConfig,
     INIT_COMMANDS,
+    IperfTrafficConfig,
     TERMINAL_MONITOR_INIT_COMMANDS,
     STATE_ABORTED,
     STATE_COLLECTING,
@@ -1286,7 +1287,9 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.view_device_combo.maximumWidth() <= 360
     assert page.device_table.columnCount() == 9
     assert page.enable_iperf_check.isChecked() is False
-    assert page.iperf_bandwidth_unit_combo.currentText() == "M"
+    assert page.iperf_tcp_threshold_edit.text() == "600"
+    assert not page.iperf_tcp_threshold_edit.isHidden()
+    assert page.iperf_udp_bitrate_edit.isHidden()
     assert page.iperf_bandwidth_hint_label.text()
     assert page.connection_box.maximumHeight() <= 76
     assert page.connection_box.layout().count() >= 10
@@ -1329,11 +1332,44 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.right_control_scroll.minimumWidth() >= 560
     assert page.right_control_scroll.maximumWidth() <= 700
     assert page.ping_box.minimumHeight() >= 220
-    assert page.ping_box.maximumHeight() <= 280
+    assert page.ping_box.maximumHeight() <= 380
+    assert page.fping_preset_combo.currentData() == "pis_high_ping_acceptance"
+    assert page.fping_loss_warn_edit.text() == "0.7"
+    assert page.fping_loss_warn_edit.minimumWidth() >= 100
     assert page.fping_device_combo_1.minimumWidth() >= 220
     assert page.fping_device_combo_1.maximumWidth() <= 360
     assert page.fping_target_label_1.minimumWidth() >= 160
-    assert page.fping_target_label_1.maximumWidth() <= 260
+    assert page.fping_target_label_1.maximumWidth() <= 320
+    numeric_spins = (
+        page.mesh_interval,
+        page.channel_interval,
+        page.statistics_interval,
+        page.switch_interval,
+        page.interface_rate_interval,
+        page.reconnect_interval,
+        page.max_reconnect,
+        page.duration_minutes,
+        page.fping_packet_size,
+        page.fping_interval_ms,
+        page.fping_loss_threshold_ms,
+        page.fping_latency_warn_ms,
+        page.iperf_port_spin,
+        page.iperf_parallel_spin,
+        page.iperf_interval_spin,
+        page.iperf_duration_spin,
+        page.iperf_packet_length_spin,
+    )
+    for spin in numeric_spins:
+        assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+        assert spin.minimumWidth() >= 100
+        assert spin.maximumWidth() <= 120
+    assert page.fping_packet_size.maximum() == 65535
+    assert page.fping_interval_ms.minimum() == 1
+    assert page.fping_loss_threshold_ms.maximum() == 60000
+    assert page.fping_latency_warn_ms.value() == 100
+    assert page.max_reconnect.maximum() == 999
+    assert page.duration_minutes.maximum() == 1440
+    assert page.iperf_duration_spin.minimum() == 1
     assert page.summary_table.minimumHeight() >= 120
     assert page.summary_table.maximumHeight() > 1000
     assert page.tabs.minimumHeight() >= 180
@@ -1381,6 +1417,78 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     combo_wheel = FakeWheelEvent()
     assert page._no_wheel_filter.eventFilter(page.radio_port, combo_wheel) is True
     assert combo_wheel.ignored is True
+
+
+def test_online_mr_high_ping_presets_fill_common_parameters_only(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    page.fping_target_label_1.setText("10.10.10.1")
+    page.fping_target_label_2.setText("10.10.10.2")
+
+    preset_index = page.fping_preset_combo.findData("cbtc_dcs_attkping_256b")
+    assert preset_index >= 0
+    page.fping_preset_combo.setCurrentIndex(preset_index)
+
+    assert page.fping_packet_size.value() == 256
+    assert page.fping_interval_ms.value() == 30
+    assert page.fping_loss_threshold_ms.value() == 100
+    assert page.fping_loss_warn_edit.text() == "5"
+    assert page.fping_latency_warn_ms.value() == 100
+    assert page.fping_target_label_1.text() == "10.10.10.1"
+    assert page.fping_target_label_2.text() == "10.10.10.2"
+
+    page.fping_packet_size.setValue(1400)
+
+    assert page.fping_preset_combo.currentData() == ""
+    assert page.fping_packet_size.value() == 1400
+
+
+def test_online_mr_iperf_protocol_switches_separate_threshold_controls(tmp_path: Path) -> None:
+    _qt_app()
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    page = OnlineMrCollectionPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+
+    assert page.iperf_protocol_combo.currentText() == "TCP"
+    assert not page.iperf_tcp_threshold_edit.isHidden()
+    assert page.iperf_udp_bitrate_edit.isHidden()
+    assert page.iperf_udp_threshold_edit.isHidden()
+
+    page.iperf_protocol_combo.setCurrentText("UDP")
+
+    assert page.iperf_tcp_threshold_edit.isHidden()
+    assert not page.iperf_udp_bitrate_edit.isHidden()
+    assert not page.iperf_udp_threshold_edit.isHidden()
+    assert not page.iperf_packet_length_spin.isHidden()
+
+
+def test_online_mr_iperf_cbtc_dcs_presets_fill_fields_without_clearing_server(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    page.iperf_server_edit.setText("10.122.100.10")
+
+    udp_index = page.iperf_preset_combo.findData("cbtc_dcs_udp_1_3m_64b")
+    assert udp_index >= 0
+    page.iperf_preset_combo.setCurrentIndex(udp_index)
+
+    assert page.iperf_server_edit.text() == "10.122.100.10"
+    assert page.iperf_protocol_combo.currentText() == "UDP"
+    assert page.iperf_direction_combo.currentData() == "download"
+    assert page.iperf_udp_bitrate_edit.text() == "1.3"
+    assert page.iperf_udp_threshold_edit.text() == "1.3"
+    assert page.iperf_packet_length_spin.value() == 64
+    assert page.iperf_parallel_spin.value() == 1
+    assert page.iperf_interval_spin.value() == 1
+    assert page.iperf_duration_spin.value() == 600
+
+    tcp_index = page.iperf_preset_combo.findData("cbtc_dcs_tcp_observation")
+    assert tcp_index >= 0
+    page.iperf_preset_combo.setCurrentIndex(tcp_index)
+
+    assert page.iperf_server_edit.text() == "10.122.100.10"
+    assert page.iperf_protocol_combo.currentText() == "TCP"
+    assert page.iperf_tcp_threshold_edit.text() == "1"
+    assert not page.iperf_tcp_pacing_check.isChecked()
+    assert page.iperf_tcp_pacing_edit.text() == ""
 
 
 def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
@@ -2392,7 +2500,6 @@ def test_online_mr_iperf_controls_ignore_mouse_wheel(tmp_path: Path) -> None:
     combo_indexes = {
         page.iperf_protocol_combo: page.iperf_protocol_combo.currentIndex(),
         page.iperf_direction_combo: page.iperf_direction_combo.currentIndex(),
-        page.iperf_bandwidth_unit_combo: page.iperf_bandwidth_unit_combo.currentIndex(),
     }
 
     for widget, value in spin_values.items():
@@ -2472,8 +2579,7 @@ def test_online_mr_builds_config_from_device_management_and_device_session_dir(t
     page.refresh_all()
     page.enable_iperf_check.setChecked(True)
     page.iperf_server_edit.setText("10.0.0.1")
-    page.iperf_bandwidth_edit.setText("100")
-    page.iperf_bandwidth_unit_combo.setCurrentText("M")
+    page.iperf_tcp_threshold_edit.setText("100")
 
     config = page._build_config_for_device(device)
     assert config is not None
@@ -2484,7 +2590,19 @@ def test_online_mr_builds_config_from_device_management_and_device_session_dir(t
     assert config.password == "secret"
     assert [target.method for target in config.connection_targets] == ["primary_direct"]
     assert config.iperf.enabled is True
-    assert config.iperf.target_bandwidth == "100M"
+    assert config.iperf.target_bandwidth is None
+    assert config.iperf.tcp_report_threshold_mbps == 100.0
+    assert config.iperf.normalized().target_bandwidth is None
+    assert config.iperf.normalized().report_threshold_mbps == 100.0
+    assert config.fping.preset_key == "pis_high_ping_acceptance"
+    assert config.fping.preset_name == "PIS 高频 Ping / 验收"
+    assert config.fping.packet_size == 64
+    assert config.fping.interval_ms == 10
+    assert config.fping.loss_threshold_ms == 100
+    assert config.fping.loss_warn_percent == 0.7
+    assert config.fping.latency_warn_ms == 100
+    assert config.fping.as_dict()["packet_size_bytes"] == 64
+    assert config.fping.as_dict()["timeout_ms"] == 100
     assert config.safe_mr_name == safe_device_folder_name(device)
     session = OnlineMrSessionStore(page.paths).create_session(config)
     assert f"__{device.id}" in str(session.session_dir)
@@ -2648,6 +2766,80 @@ def test_online_mr_stop_all_covers_session_workers_and_probe_workers(tmp_path: P
     assert iperf_worker.stopped is True
     assert page.status_value == "STOPPING"
     assert page.stop_animation_timer.isActive()
+
+
+def test_online_mr_reuses_one_iperf_worker_for_same_batch_config(tmp_path: Path, monkeypatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    tool = tmp_path / "tools" / "iperf" / "iperf3.exe"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("fake", encoding="utf-8")
+    session_a = tmp_path / "session-a"
+    session_b = tmp_path / "session-b"
+    (session_a / "raw").mkdir(parents=True)
+    (session_b / "raw").mkdir(parents=True)
+
+    class FakeSignal:
+        def __init__(self) -> None:
+            self.callbacks = []
+
+        def connect(self, callback) -> None:
+            self.callbacks.append(callback)
+
+    class FakeIperfWorker:
+        instances = []
+
+        def __init__(self, _tool, _command, log_file, **_kwargs) -> None:
+            self.log_file = Path(log_file)
+            self.mirrors: list[Path] = []
+            self.started = False
+            self.line_received = FakeSignal()
+            self.interval_received = FakeSignal()
+            self.error_received = FakeSignal()
+            self.completed = FakeSignal()
+            self.failed = FakeSignal()
+            FakeIperfWorker.instances.append(self)
+
+        def isRunning(self) -> bool:
+            return self.started
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def add_mirror_log_file(self, path: Path, context=None) -> None:
+            self.mirrors.append((Path(path), context or {}))
+
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.IperfProcessWorker", FakeIperfWorker)
+    iperf = IperfTrafficConfig(enabled=True, server_ip="192.0.2.254", port=5201, protocol="TCP", direction="upload", parallel=1, target_bandwidth=None, follow_collection=True)
+    config = OnlineMrConnectionConfig(
+        site="demo",
+        mr_id="mr",
+        mr_name="MR",
+        safe_mr_name="MR",
+        device_id=1,
+        device_name="MR",
+        host="192.0.2.1",
+        iperf=iperf,
+        duration_minutes=1,
+    )
+    ssh_worker = SimpleNamespace(collector=SimpleNamespace(config=config))
+    meta_a = SimpleNamespace(session_id="s-a", session_dir=session_a, device_id=1)
+    meta_b = SimpleNamespace(session_id="s-b", session_dir=session_b, device_id=2)
+    page.session_to_device_id["s-a"] = 1
+    page.session_to_device_id["s-b"] = 2
+
+    page._start_iperf_worker(meta_a, ssh_worker)
+    page._start_iperf_worker(meta_b, ssh_worker)
+
+    assert len(FakeIperfWorker.instances) == 1
+    worker = FakeIperfWorker.instances[0]
+    assert page.iperf_workers["s-a"] is worker
+    assert page.iperf_workers["s-b"] is worker
+    assert worker.mirrors[0][0] == session_b / "raw" / "iperf_client_raw.log"
+    assert worker.mirrors[0][1]["session_id"] == "s-b"
+    assert worker.mirrors[0][1]["device_id"] == 2
 
 
 def test_online_mr_stop_all_does_not_block_on_slow_connection(tmp_path: Path) -> None:

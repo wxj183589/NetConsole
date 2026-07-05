@@ -22,19 +22,20 @@ def build_iperf3_json_args(iperf_path: Path, config: IperfClientConfig) -> list[
         str(cfg.interval_seconds),
         "-t",
         str(cfg.duration_seconds),
-        "-J",
+        "--json",
         "--forceflush",
     ]
     if cfg.protocol == "UDP":
         args.append("-u")
-    if cfg.parallel > 1:
-        args.extend(["-P", str(cfg.parallel)])
+    args.extend(["-P", str(cfg.parallel)])
     if cfg.direction == "download":
         args.append("-R")
     elif cfg.direction == "bidirectional":
         args.append("--bidir")
     if cfg.target_bandwidth:
         args.extend(["-b", cfg.target_bandwidth])
+    if cfg.protocol == "UDP" and cfg.packet_length:
+        args.extend(["-l", str(cfg.packet_length)])
     return args
 
 

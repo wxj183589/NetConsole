@@ -2339,6 +2339,8 @@ def make_table(headers: list[str]) -> QTableWidget:
     table.setAlternatingRowColors(True)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
     table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
     table.horizontalHeader().setStretchLastSection(False)
     return table
@@ -2352,6 +2354,8 @@ def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
             item.setToolTip(item.text())
             table.setItem(row_index, column, item)
     table.resizeColumnsToContents()
+    for column in range(table.columnCount()):
+        table.setColumnWidth(column, max(90, min(table.columnWidth(column), 520)))
 
 
 def _compare_table_row(row: dict[str, object]) -> list[Any]:
@@ -2385,7 +2389,7 @@ def configure_table_view(table: QTableView, width_by_header: dict[str, int] | No
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setWordWrap(False)
-    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
     header = table.horizontalHeader()
     header.setDefaultAlignment(Qt.AlignCenter)
     header.setSectionResizeMode(QHeaderView.Interactive)
@@ -2414,7 +2418,7 @@ def configure_tree_widget(tree: QTreeWidget, width_by_column: dict[int, int] | N
     tree.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
     tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-    tree.setTextElideMode(Qt.TextElideMode.ElideNone)
+    tree.setTextElideMode(Qt.TextElideMode.ElideRight)
     header = tree.header()
     header.setDefaultAlignment(Qt.AlignCenter)
     header.setSectionResizeMode(QHeaderView.Interactive)

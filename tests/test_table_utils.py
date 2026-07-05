@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHeaderView, QSizePolicy, QTableWidget, QTableWidgetItem
 
 from netconsole.ui.render.table_render_engine import (
@@ -35,6 +36,9 @@ from netconsole.ui.table_utils import (
     format_row_for_copy,
     setup_readable_table,
 )
+from netconsole.core.i18n import I18n
+from netconsole.ui.batch_connection_worker import BatchConnectionTestItemResult
+from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
 
 
 def app():
@@ -88,6 +92,51 @@ def test_setup_readable_table_and_alias_apply_project_table_rules():
     assert table.wordWrap() is False
     assert table.columnWidth(0) >= 240
     assert table.item(0, 0).toolTip() == "flash:/very/long/path/meshlog.log"
+
+
+def test_long_text_columns_are_capped_and_elided():
+    app()
+    table = QTableWidget(1, 3)
+    table.setHorizontalHeaderLabels(["设备名称", "状态", "错误信息"])
+    table.setItem(0, 0, QTableWidgetItem("核心设备名称"))
+    table.setItem(0, 1, QTableWidgetItem("失败"))
+    long_error = "TCP connection to device failed. " * 40
+    table.setItem(0, 2, QTableWidgetItem(long_error))
+
+    configure_readonly_table(table)
+    auto_resize_table_columns_to_contents(table, column_min_widths={0: 170, 1: 80}, column_max_widths={2: 520})
+
+    assert table.textElideMode() == Qt.TextElideMode.ElideRight
+    assert table.wordWrap() is False
+    assert table.columnWidth(0) >= 170
+    assert table.columnWidth(2) <= 520
+    assert table.item(0, 2).toolTip() == long_error
+
+
+def test_batch_connection_result_error_column_does_not_expand_unbounded():
+    app()
+    dialog = BatchConnectionTestProgressDialog(I18n("zh_CN"), 1)
+    long_error = "TCP connection to device failed. Common causes of this problem are network ACLs or wrong port. " * 20
+
+    dialog.add_result(
+        0,
+        BatchConnectionTestItemResult(
+            device_name="核心设备",
+            primary_address="10.0.0.1",
+            protocol="SSH",
+            method="password",
+            success=False,
+            prompt="Core>",
+            elapsed_ms=1234,
+            error_message=long_error,
+        ),
+    )
+
+    assert dialog.table.textElideMode() == Qt.TextElideMode.ElideRight
+    assert dialog.table.columnWidth(0) >= 170
+    assert dialog.table.columnWidth(1) >= 120
+    assert dialog.table.columnWidth(7) <= 520
+    assert dialog.table.item(0, 7).toolTip() == long_error
 
 
 def test_apply_table_style_prioritizes_ap_name_over_ap_mac():

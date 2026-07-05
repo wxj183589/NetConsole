@@ -26,11 +26,11 @@
       "visible": true,
       "enabled": true
     },
-    "module.network_tools": {
-      "visible": true,
-      "enabled": true
+    "module.snmp_center": {
+      "visible": false,
+      "enabled": false
     },
-    "network_tools.toolbox": {
+    "module.network_tools": {
       "visible": true,
       "enabled": true
     },
@@ -86,11 +86,19 @@
       "visible": true,
       "enabled": true
     },
-    "ac.fit_ap_extensions": {
+    "ac.ac_info_update": {
+      "visible": true,
+      "enabled": true
+    },
+    "ac.ac_actions": {
       "visible": true,
       "enabled": true
     },
     "ac.fit_ap_optical": {
+      "visible": true,
+      "enabled": true
+    },
+    "ac.fit_ap_extensions": {
       "visible": true,
       "enabled": true
     },
@@ -99,6 +107,14 @@
       "enabled": true
     },
     "file.mesh_auto_import": {
+      "visible": true,
+      "enabled": true
+    },
+    "file.external_winscp": {
+      "visible": true,
+      "enabled": true
+    },
+    "network_tools.toolbox": {
       "visible": true,
       "enabled": true
     },

@@ -15,6 +15,46 @@ from netconsole.ui.theme.qt_theme_engine import LIGHT_APP_STYLESHEET
 
 
 READONLY_TABLE_STYLESHEET = LIGHT_APP_STYLESHEET
+DEFAULT_TABLE_MIN_WIDTH = 80
+DEFAULT_TABLE_MAX_WIDTH = 320
+LONG_TEXT_MAX_WIDTH = 520
+LONG_TEXT_HEADER_TOKENS = {
+    "错误信息",
+    "异常信息",
+    "备注",
+    "路径",
+    "文件路径",
+    "命令输出",
+    "配置摘要",
+    "描述",
+    "原因",
+    "详情",
+    "日志",
+    "error",
+    "exception",
+    "remark",
+    "note",
+    "path",
+    "output",
+    "description",
+    "detail",
+    "message",
+    "summary",
+}
+LONG_TEXT_FIELD_NAMES = {
+    "error_message",
+    "exception_message",
+    "remark",
+    "note",
+    "path",
+    "file_path",
+    "raw_log_path",
+    "command_output",
+    "config_summary",
+    "description",
+    "details",
+    "message",
+}
 
 
 def configure_readonly_table(table: QTableWidget) -> None:
@@ -52,7 +92,7 @@ def apply_analysis_table_style(
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setWordWrap(False)
-    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
     table.setAlternatingRowColors(True)
     table.verticalHeader().setDefaultSectionSize(34)
     header = table.horizontalHeader()
@@ -78,7 +118,7 @@ def configure_readable_table_columns(table: QTableWidget) -> None:
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setWordWrap(False)
-    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
     header = table.horizontalHeader()
     header.setDefaultAlignment(Qt.AlignCenter)
     header.setSectionResizeMode(QHeaderView.Interactive)
@@ -114,12 +154,19 @@ def auto_fit_table_columns(
     max_rows: int = 500,
     min_widths: dict[int, int] | None = None,
     max_widths: dict[int, int] | None = None,
+    column_min_widths: dict[str, int] | None = None,
+    column_max_widths: dict[str, int] | None = None,
+    default_min_width: int = DEFAULT_TABLE_MIN_WIDTH,
+    default_max_width: int = DEFAULT_TABLE_MAX_WIDTH,
+    long_text_max_width: int = LONG_TEXT_MAX_WIDTH,
     padding: int = 32,
 ) -> None:
     if table.columnCount() <= 0:
         return
     min_widths = dict(min_widths or {})
     max_widths = dict(max_widths or {})
+    column_min_widths = dict(column_min_widths or {})
+    column_max_widths = dict(column_max_widths or {})
     header = table.horizontalHeader()
     configure_readable_table_columns(table)
     header.setSectionResizeMode(QHeaderView.Interactive)
@@ -139,10 +186,16 @@ def auto_fit_table_columns(
                     continue
                 text = item.text()
                 width = max(width, cell_metrics.horizontalAdvance(text))
-                if text and not item.toolTip():
-                    item.setToolTip(text)
-            minimum = int(min_widths.get(column, _default_min_width(header_text)))
-            maximum = int(max_widths.get(column, _default_max_width(header_text)))
+                _ensure_item_tooltip(item)
+            field = _field_text(table, column)
+            minimum = _column_bound(column, header_text, field, min_widths, column_min_widths, default_min_width, _default_min_width(header_text))
+            maximum = _column_bound(column, header_text, field, max_widths, column_max_widths, default_max_width, _default_max_width(header_text))
+            if _is_long_text_column(header_text, field):
+                if column in max_widths:
+                    maximum = int(max_widths[column])
+                else:
+                    maximum = int(column_max_widths.get(field, column_max_widths.get(header_text, long_text_max_width)))
+            maximum = max(int(maximum), int(minimum))
             table.setColumnWidth(column, max(minimum, min(width + padding, maximum)))
     finally:
         table.blockSignals(old_blocked)
@@ -151,7 +204,13 @@ def auto_fit_table_columns(
     if 0 < total_width < viewport_width:
         last = table.columnCount() - 1
         header_text = table.horizontalHeaderItem(last).text() if table.horizontalHeaderItem(last) else ""
-        maximum = int(max_widths.get(last, _default_max_width(header_text)))
+        field = _field_text(table, last)
+        maximum = _column_bound(last, header_text, field, max_widths, column_max_widths, default_max_width, _default_max_width(header_text))
+        if _is_long_text_column(header_text, field):
+            if last in max_widths:
+                maximum = int(max_widths[last])
+            else:
+                maximum = int(column_max_widths.get(field, column_max_widths.get(header_text, long_text_max_width)))
         table.setColumnWidth(last, min(maximum, table.columnWidth(last) + viewport_width - total_width))
 
 
@@ -199,8 +258,10 @@ def _default_min_width(header_text: str) -> int:
 
 def _default_max_width(header_text: str) -> int:
     text = str(header_text or "")
+    if _is_long_text_column(text, ""):
+        return LONG_TEXT_MAX_WIDTH
     if "原始" in text or "日志" in text or "内容" in text or "目录" in text or "详情" in text:
-        return 900
+        return LONG_TEXT_MAX_WIDTH
     if "原因" in text:
         return 360
     if "站点" in text:
@@ -216,6 +277,8 @@ def auto_resize_table_columns(
     max_width: int = 420,
     stretch_columns: set[int] | None = None,
     column_min_widths: dict[int, int] | None = None,
+    column_max_widths: dict[int, int] | None = None,
+    long_text_max_width: int = LONG_TEXT_MAX_WIDTH,
 ) -> None:
     _ = stretch_columns
     if table.columnCount() <= 0:
@@ -225,7 +288,9 @@ def auto_resize_table_columns(
     for column, width in (column_min_widths or {}).items():
         min_widths[int(column)] = max(min_widths.get(int(column), int(min_width)), int(width))
     max_widths = {column: max(int(max_width), min_widths[column]) for column in range(table.columnCount())}
-    auto_fit_table_columns(table, min_widths=min_widths, max_widths=max_widths)
+    for column, width in (column_max_widths or {}).items():
+        max_widths[int(column)] = max(int(width), min_widths.get(int(column), int(min_width)))
+    auto_fit_table_columns(table, min_widths=min_widths, max_widths=max_widths, long_text_max_width=long_text_max_width)
 
 
 def auto_resize_table_columns_to_contents(
@@ -233,13 +298,61 @@ def auto_resize_table_columns_to_contents(
     min_width: int = 90,
     max_width: int = 420,
     column_min_widths: dict[int, int] | None = None,
+    column_max_widths: dict[int, int] | None = None,
+    long_text_max_width: int = LONG_TEXT_MAX_WIDTH,
 ) -> None:
-    auto_resize_table_columns(table, min_width=min_width, max_width=max_width, column_min_widths=column_min_widths)
+    auto_resize_table_columns(
+        table,
+        min_width=min_width,
+        max_width=max_width,
+        column_min_widths=column_min_widths,
+        column_max_widths=column_max_widths,
+        long_text_max_width=long_text_max_width,
+    )
 
 
 def _header_text(table: QTableWidget, column: int) -> str:
     item = table.horizontalHeaderItem(column)
     return item.text() if item else ""
+
+
+def _field_text(table: QTableWidget, column: int) -> str:
+    fields = table.property("netconsole_column_fields")
+    if isinstance(fields, (list, tuple)) and column < len(fields):
+        return str(fields[column] or "")
+    return ""
+
+
+def _column_bound(
+    column: int,
+    header_text: str,
+    field: str,
+    by_index: dict[int, int],
+    by_name: dict[str, int],
+    default: int,
+    inferred: int,
+) -> int:
+    if column in by_index:
+        return int(by_index[column])
+    if field and field in by_name:
+        return int(by_name[field])
+    if header_text and header_text in by_name:
+        return int(by_name[header_text])
+    return max(int(default), int(inferred))
+
+
+def _is_long_text_column(header_text: str, field: str) -> bool:
+    normalized_header = str(header_text or "").strip().casefold()
+    normalized_field = str(field or "").strip().casefold()
+    if normalized_field in LONG_TEXT_FIELD_NAMES:
+        return True
+    return any(token.casefold() in normalized_header for token in LONG_TEXT_HEADER_TOKENS)
+
+
+def _ensure_item_tooltip(item: QTableWidgetItem) -> None:
+    text = item.text()
+    if text and not item.toolTip():
+        item.setToolTip(text)
 
 
 def attach_table_context_menu(table: QTableWidget, language: str = "zh_CN", history_callback=None, include_history: bool = True) -> None:

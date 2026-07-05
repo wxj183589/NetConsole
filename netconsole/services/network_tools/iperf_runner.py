@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from netconsole.core.shutdown_manager import shutdown_manager
-from netconsole.services.network_tools.iperf_parser import parse_iperf_line
+from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_line
 
 
 @dataclass(frozen=True)
@@ -25,12 +27,22 @@ class IperfClientConfig:
     direction: str = "upload"
     target_bandwidth: str | None = None
     follow_collection: bool = False
+    tcp_block_size: str | None = None
+    packet_length: int | None = None
+    tcp_report_threshold_mbps: float | None = None
+    tcp_pacing_enabled: bool = False
+    tcp_pacing_mbps: float | None = None
+    udp_bitrate_mbps: float | None = None
+    udp_report_threshold_mbps: float | None = None
 
     def normalized(self) -> "IperfClientConfig":
         protocol = str(self.protocol or "TCP").upper()
         bandwidth = normalize_bandwidth_text(self.target_bandwidth)
         if protocol == "UDP" and not bandwidth:
             bandwidth = "10M"
+        tcp_block_size = normalize_block_size_text(self.tcp_block_size)
+        if protocol == "TCP" and not tcp_block_size and _bandwidth_mbps(bandwidth) is not None and _bandwidth_mbps(bandwidth) <= 2:
+            tcp_block_size = "16K"
         return IperfClientConfig(
             server_ip=str(self.server_ip or "").strip(),
             port=max(1, min(65535, int(self.port or 5201))),
@@ -41,6 +53,13 @@ class IperfClientConfig:
             direction=str(self.direction or "upload").lower(),
             target_bandwidth=bandwidth,
             follow_collection=bool(self.follow_collection),
+            tcp_block_size=tcp_block_size,
+            packet_length=max(1, int(self.packet_length)) if self.packet_length else None,
+            tcp_report_threshold_mbps=_optional_float(self.tcp_report_threshold_mbps),
+            tcp_pacing_enabled=bool(self.tcp_pacing_enabled),
+            tcp_pacing_mbps=_optional_float(self.tcp_pacing_mbps),
+            udp_bitrate_mbps=_optional_float(self.udp_bitrate_mbps),
+            udp_report_threshold_mbps=_optional_float(self.udp_report_threshold_mbps),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -74,6 +93,48 @@ def normalize_bandwidth_text(value: object, unit: str = "M") -> str | None:
     return f"{numeric:g}{unit}"
 
 
+def normalize_block_size_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    suffix = text[-1:].upper()
+    if suffix in {"K", "M"}:
+        numeric_text = text[:-1].strip()
+    else:
+        suffix = "K"
+        numeric_text = text
+    if not re.fullmatch(r"(?:0|[1-9]\d*)(?:\.\d+)?", numeric_text):
+        raise ValueError("invalid block size value")
+    numeric = float(numeric_text)
+    if numeric <= 0:
+        raise ValueError("invalid block size value")
+    return f"{numeric:g}{suffix}"
+
+
+def _bandwidth_mbps(value: str | None) -> float | None:
+    if not value:
+        return None
+    match = re.fullmatch(r"(?P<num>(?:0|[1-9]\d*)(?:\.\d+)?)(?P<unit>[KMG])", str(value).strip(), re.IGNORECASE)
+    if not match:
+        return None
+    numeric = float(match.group("num"))
+    unit = match.group("unit").upper()
+    if unit == "K":
+        return numeric / 1000.0
+    if unit == "G":
+        return numeric * 1000.0
+    return numeric
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_iperf_server_args(iperf_path: Path, config: IperfServerConfig) -> list[str]:
     args = [str(iperf_path), "-s", "-p", str(int(config.port)), "-i", str(max(1, int(config.interval_seconds))), "--forceflush"]
     if config.bind_ip.strip():
@@ -99,14 +160,17 @@ def build_iperf_client_args(iperf_path: Path, config: IperfClientConfig) -> list
     ]
     if cfg.protocol == "UDP":
         args.append("-u")
-    if cfg.parallel > 1:
-        args.extend(["-P", str(cfg.parallel)])
+    args.extend(["-P", str(cfg.parallel)])
     if cfg.direction == "download":
         args.append("-R")
     elif cfg.direction == "bidirectional":
         args.append("--bidir")
     if cfg.target_bandwidth:
         args.extend(["-b", cfg.target_bandwidth])
+    if cfg.protocol == "TCP" and cfg.tcp_block_size:
+        args.extend(["-l", cfg.tcp_block_size])
+    if cfg.protocol == "UDP" and cfg.packet_length:
+        args.extend(["-l", str(cfg.packet_length)])
     return args
 
 
@@ -240,9 +304,11 @@ class IperfProcessRunner:
         session_id: str = "",
         device_id: int | None = None,
         started_at: datetime | None = None,
-        line_callback: Callable[[str, dict[str, object] | None], None] | None = None,
+        line_callback: Callable[..., None] | None = None,
         config: IperfClientConfig | None = None,
         mode: str = "client",
+        mirror_log_files: list[Path] | None = None,
+        context: dict[str, object] | None = None,
     ) -> None:
         self.iperf_path = iperf_path
         self.command = command
@@ -255,9 +321,61 @@ class IperfProcessRunner:
         self.line_callback = line_callback
         self.config = config
         self.mode = mode
+        self.mirror_contexts: dict[Path, dict[str, object]] = {}
+        self.context: dict[str, object] = {"mode": mode, "run_id": self.run_id}
+        if session_id:
+            self.context.setdefault("session_id", session_id)
+        if device_id is not None:
+            self.context.setdefault("device_id", device_id)
+        self.context.update(context or {})
+        self.context.setdefault("command", " ".join(str(part) for part in self.command))
+        if self.config is not None:
+            cfg = self.config.normalized()
+            self.context.setdefault("server", cfg.server_ip)
+            self.context.setdefault("port", cfg.port)
+            self.context.setdefault("protocol", cfg.protocol)
+            self.context.setdefault("direction", cfg.direction)
+            self.context.setdefault("bandwidth", cfg.target_bandwidth or "")
+            self.context.setdefault("tcp_block_size", cfg.tcp_block_size or "")
+        batch_key = self.context.get("batch_key") or self.context.get("batch_id")
+        if batch_key and not self.context.get("batch_key_hash"):
+            self.context["batch_key_hash"] = hashlib.sha1(str(batch_key).encode("utf-8")).hexdigest()[:8]
+        for path in mirror_log_files or []:
+            mirror = Path(path)
+            if mirror != self.log_file:
+                self.mirror_contexts[mirror] = dict(self.context)
         self.process: subprocess.Popen | None = None
         self.stop_requested = False
         self.last_status = "CREATED"
+        self.last_error_code = ""
+        self._log_lock = threading.RLock()
+
+    def add_mirror_log_file(self, log_file: Path, context: dict[str, object] | None = None) -> None:
+        log_file = Path(log_file)
+        if log_file == self.log_file:
+            return
+        with self._log_lock:
+            if log_file in self.mirror_contexts:
+                return
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            mirror_context = dict(self.context)
+            mirror_context.update(context or {})
+            batch_key = mirror_context.get("batch_key") or mirror_context.get("batch_id")
+            if batch_key and not mirror_context.get("batch_key_hash"):
+                mirror_context["batch_key_hash"] = hashlib.sha1(str(batch_key).encode("utf-8")).hexdigest()[:8]
+            prior_lines: list[str] = []
+            if self.log_file.exists():
+                prior_lines = [
+                    line
+                    for line in self.log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line and not line.startswith("#")
+                ]
+            with log_file.open("w", encoding="utf-8") as file:
+                for line in self._start_header_lines(self.started_at, mirror_context):
+                    file.write(line + "\n")
+                for line in prior_lines:
+                    file.write(line + "\n")
+            self.mirror_contexts[log_file] = mirror_context
 
     def start(self) -> None:
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -273,31 +391,36 @@ class IperfProcessRunner:
                 config=self.config,
             )
         self.last_status = "RUNNING"
+        self._write_headers()
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        self.process = subprocess.Popen(
-            self.command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=creationflags,
-            cwd=self.iperf_path.parent,
-        )
-        shutdown_manager.register_process(self.process, "iperf3", kind="internal_tool", shutdown_policy="terminate")
+        return_code: int | None = None
         status = "DONE"
         try:
+            self.process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creationflags,
+                cwd=self.iperf_path.parent,
+            )
+            shutdown_manager.register_process(self.process, "iperf3", kind="internal_tool", shutdown_policy="terminate")
             assert self.process.stdout is not None
-            with self.log_file.open("a", encoding="utf-8") as file:
-                for line in self.process.stdout:
-                    file.write(line)
-                    file.flush()
-                    row = parse_iperf_line(line.rstrip(), self.started_at)
-                    if row and self.store:
-                        self.store.append_interval(self.run_id, row, self.session_id)
-                    if self.line_callback:
-                        self.line_callback(line.rstrip(), row)
+            for line in self.process.stdout:
+                raw_line = line.rstrip("\r\n")
+                now = datetime.now()
+                stamped_line = format_iperf_log_line(now, raw_line, self.context)
+                self._write_line(stamped_line)
+                row = parse_iperf_line(stamped_line, self.started_at, collector_time=now)
+                error = parse_iperf_error_line(stamped_line, self.started_at)
+                if error:
+                    self.last_error_code = str(error.get("error_code") or "")
+                if row and self.store:
+                    self.store.append_interval(self.run_id, row, self.session_id)
+                self._emit_line(stamped_line, row, error)
             return_code = self.process.wait()
             if self.stop_requested:
                 status = "STOPPED"
@@ -305,8 +428,14 @@ class IperfProcessRunner:
                 status = f"FAILED:{return_code}"
         except Exception:
             status = "FAILED"
+            self._write_line(
+                format_iperf_log_line(datetime.now(), "iperf run finished, status=FAILED, error=runner_exception", self.context)
+            )
             raise
         finally:
+            if return_code is not None and return_code != 0:
+                self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
+            self._write_footers(status, return_code)
             if self.process is not None:
                 shutdown_manager.unregister_process(self.process)
             self.last_status = status
@@ -320,3 +449,45 @@ class IperfProcessRunner:
         if self.process.poll() is not None:
             return
         self.process.terminate()
+
+    def _start_header_lines(self, timestamp: datetime, context: dict[str, object]) -> list[str]:
+        return format_iperf_log_header(context, timestamp)
+
+    def _write_headers(self) -> None:
+        with self._log_lock:
+            targets = [(self.log_file, self.context), *sorted(self.mirror_contexts.items())]
+            for path, context in targets:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("w", encoding="utf-8") as file:
+                    for line in self._start_header_lines(self.started_at, context):
+                        file.write(line + "\n")
+
+    def _write_footers(self, status: str, return_code: int | None) -> None:
+        lines = format_iperf_log_footer(datetime.now(), status, return_code, self.last_error_code)
+        with self._log_lock:
+            for path in [self.log_file, *sorted(self.mirror_contexts)]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as file:
+                    for line in lines:
+                        file.write(line + "\n")
+                    file.flush()
+
+    def _write_lines(self, lines: list[str]) -> None:
+        for line in lines:
+            self._write_line(line)
+
+    def _write_line(self, line: str) -> None:
+        with self._log_lock:
+            for path in [self.log_file, *sorted(self.mirror_contexts)]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as file:
+                    file.write(line + "\n")
+                    file.flush()
+
+    def _emit_line(self, line: str, row: dict[str, object] | None, error: dict[str, object] | None) -> None:
+        if self.line_callback is None:
+            return
+        try:
+            self.line_callback(line, row, error)
+        except TypeError:
+            self.line_callback(line, row)

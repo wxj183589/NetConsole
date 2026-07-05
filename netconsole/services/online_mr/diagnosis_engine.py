@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from netconsole.services.online_mr.core.realtime_model import RealtimeMRState
-from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_SAMPLE, OnlineMrEvent
+from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_ERROR, EVENT_IPERF3_SAMPLE, OnlineMrEvent
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,9 @@ class OnlineMrDiagnosisEngine:
             self.module_scores["fping"] = max(0.0, min(100.0, 100.0 - loss))
             if loss > self.ping_loss_threshold_percent:
                 self._issue(event, "PING_LOSS", f"Ping loss {loss:.2f}%")
+        elif event.event_type == EVENT_IPERF3_ERROR:
+            self.module_scores["iperf"] = 0.0
+            self._issue(event, "IPERF_ERROR", str(event.payload.get("error_message") or "iperf error"))
         elif event.event_type == EVENT_IPERF3_SAMPLE or event.module == "iperf":
             self.module_scores["iperf"] = _iperf_score(event.payload)
         if event.module == "mesh":
@@ -75,7 +78,11 @@ def _bounded(value: float) -> float:
 
 
 def _iperf_score(payload: dict[str, object]) -> float:
+    if payload.get("zero_sample_type") == "isolated_report_gap":
+        return 100.0
     value = payload.get("throughput_score") or payload.get("throughput_mbps")
+    if value is None and payload.get("bitrate_mbps") is not None:
+        value = payload.get("bitrate_mbps")
     if value is None:
         end = payload.get("end")
         if isinstance(end, dict):

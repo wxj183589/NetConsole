@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.services.fping_legacy_parser import parse_fping_lines
-from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
+from netconsole.services.network_tools.iperf_parser import parse_iperf_error_lines, parse_iperf_lines, read_iperf_text, summarize_iperf_zero_samples
 from netconsole.services.network_tools.iperf_runner import IperfResultStore
 from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
@@ -58,6 +58,10 @@ class OnlineMrParseSummary:
     interface_samples: int = 0
     ping_samples: int = 0
     iperf_samples: int = 0
+    iperf_zero_sample_count: int = 0
+    iperf_isolated_gap_count: int = 0
+    iperf_stall_count: int = 0
+    iperf_error_count: int = 0
     switch_history_samples: int = 0
     active_link_switch_logs: int = 0
     active_segments: int = 0
@@ -181,6 +185,10 @@ class OnlineMrDiagnosisParser:
         summary.switch_history_samples = self._parse_switch_history()
         summary.ping_samples = self._parse_fping(session)
         summary.iperf_samples = self._parse_iperf()
+        summary.iperf_zero_sample_count = getattr(self, "_last_iperf_zero_sample_count", 0)
+        summary.iperf_isolated_gap_count = getattr(self, "_last_iperf_isolated_gap_count", 0)
+        summary.iperf_stall_count = getattr(self, "_last_iperf_stall_count", 0)
+        summary.iperf_error_count = getattr(self, "_last_iperf_error_count", 0)
         replay = self._replay_events()
         summary.active_segments = OnlineMrTimelineFusionService(self.db_path, self.meta.session_id).rebuild()
         if summary.active_segments == 0 and replay.events > 0:
@@ -635,15 +643,30 @@ class OnlineMrDiagnosisParser:
         )
         path: Path | None = None
         rows: list[dict[str, object]] = []
+        errors: list[dict[str, object]] = []
         for candidate in candidates:
             if not candidate.exists():
                 continue
-            candidate_rows = parse_iperf_lines(read_iperf_text(candidate).splitlines(), self.meta.started_at)
-            if candidate_rows:
+            lines = read_iperf_text(candidate).splitlines()
+            candidate_rows = parse_iperf_lines(lines, self.meta.started_at)
+            candidate_errors = parse_iperf_error_lines(lines, self.meta.started_at)
+            if candidate_rows or candidate_errors:
                 path = candidate
                 rows = candidate_rows
+                errors = candidate_errors
                 break
-        if path is None or not rows:
+        self._last_iperf_error_count = len(errors)
+        zero_summary = summarize_iperf_zero_samples(rows, errors)
+        self._last_iperf_zero_sample_count = zero_summary["iperf_zero_sample_count"]
+        self._last_iperf_isolated_gap_count = zero_summary["iperf_isolated_gap_count"]
+        self._last_iperf_stall_count = zero_summary["iperf_stall_count"]
+        if path is None:
+            return 0
+        if errors:
+            self._write_iperf_error_events(errors, path)
+            for error in errors:
+                self._issue(path.name, "iperf", str(error.get("error_message") or "iperf error"), str(error.get("raw_line") or ""), severity="ERROR")
+        if not rows:
             return 0
         store = IperfResultStore(self.db_path)
         run_id = f"parsed_{self.meta.session_id}"
@@ -653,6 +676,26 @@ class OnlineMrDiagnosisParser:
             store.append_interval(run_id, row, self.meta.session_id)
         store.finish_run(run_id, "PARSED")
         return len(rows)
+
+    def _write_iperf_error_events(self, errors: list[dict[str, object]], path: Path) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(error.get("collector_time") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds")),
+                        "IPERF_ERROR",
+                        None,
+                        None,
+                        None,
+                        json.dumps({"raw_file": path.name, **error}, ensure_ascii=False, default=str),
+                    )
+                    for error in errors
+                ],
+            )
 
     def _ensure_tables(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -926,6 +969,7 @@ class OnlineMrDiagnosisParser:
                 summary.switch_history_samples,
                 summary.ping_samples,
                 summary.iperf_samples,
+                summary.iperf_error_count,
             )
         )
 

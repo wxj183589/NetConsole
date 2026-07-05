@@ -110,7 +110,7 @@ def apply_table_autosize(table: QTableWidget, screen_width: int | None = None) -
     header.setSectionsMovable(False)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     table.setWordWrap(False)
-    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
     for column, width in widths.items():
         field = _field_for(table, column)
         if field == "actions":

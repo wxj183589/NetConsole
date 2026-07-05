@@ -158,19 +158,41 @@ class OnlineMrRadioConfig:
 class FpingConfig:
     enabled: bool = True
     target: str = ""
+    preset_key: str = ""
+    preset_name: str = ""
     packet_size: int = 64
     interval_ms: int = 10
     loss_threshold_ms: int = 100
+    loss_warn_percent: float = 0.7
+    latency_warn_ms: int = 100
     continuous: bool = True
     write_file: bool = True
+
+    @staticmethod
+    def _int_value(value: object, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _float_value(value: object, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def normalized(self) -> "FpingConfig":
         return FpingConfig(
             enabled=bool(self.enabled),
             target=str(self.target).strip(),
-            packet_size=min(1472, max(1, int(self.packet_size))),
-            interval_ms=max(10, int(self.interval_ms)),
-            loss_threshold_ms=min(60000, max(1, int(self.loss_threshold_ms))),
+            preset_key=str(self.preset_key or "").strip(),
+            preset_name=str(self.preset_name or "").strip(),
+            packet_size=min(65535, max(1, self._int_value(self.packet_size, 64))),
+            interval_ms=min(60000, max(1, self._int_value(self.interval_ms, 10))),
+            loss_threshold_ms=min(60000, max(1, self._int_value(self.loss_threshold_ms, 100))),
+            loss_warn_percent=min(100.0, max(0.0, self._float_value(self.loss_warn_percent, 0.7))),
+            latency_warn_ms=min(60000, max(1, self._int_value(self.latency_warn_ms, 100))),
             continuous=bool(self.continuous),
             write_file=bool(self.write_file),
         )
@@ -180,9 +202,15 @@ class FpingConfig:
         return {
             "enabled": normalized.enabled,
             "target": normalized.target,
+            "preset_key": normalized.preset_key,
+            "preset_name": normalized.preset_name,
             "packet_size": normalized.packet_size,
+            "packet_size_bytes": normalized.packet_size,
             "interval_ms": normalized.interval_ms,
             "loss_threshold_ms": normalized.loss_threshold_ms,
+            "timeout_ms": normalized.loss_threshold_ms,
+            "loss_warn_percent": normalized.loss_warn_percent,
+            "latency_warn_ms": normalized.latency_warn_ms,
             "continuous": normalized.continuous,
             "write_file": normalized.write_file,
         }
@@ -193,36 +221,107 @@ class IperfTrafficConfig:
     enabled: bool = False
     server_ip: str = ""
     port: int = 5201
+    preset_key: str = ""
+    preset_name: str = ""
+    test_type: str = ""
+    deployment_mode: str = "ground_server_train_client"
+    business_direction: str = "train_to_ground"
     protocol: str = "TCP"
     direction: str = "upload"
     parallel: int = 1
     interval_seconds: int = 1
     target_bandwidth: str | None = None
+    report_threshold_mbps: float | None = None
+    tcp_report_threshold_mbps: float | None = None
+    tcp_pacing_enabled: bool = False
+    tcp_pacing_mbps: float | None = None
+    udp_bitrate_mbps: float | None = None
+    udp_report_threshold_mbps: float | None = None
+    packet_length: int | None = None
     follow_collection: bool = True
     duration_seconds: int = 0
+    tcp_block_size: str | None = None
 
     def normalized(self) -> "IperfTrafficConfig":
         protocol = str(self.protocol or "TCP").upper()
         direction = str(self.direction or "upload").lower()
         bandwidth = str(self.target_bandwidth or "").strip() or None
+        legacy_threshold = _optional_float(self.report_threshold_mbps)
+        legacy_bandwidth_mbps = _bandwidth_text_to_mbps(bandwidth)
+        tcp_threshold = _optional_float(self.tcp_report_threshold_mbps)
+        tcp_pacing = _optional_float(self.tcp_pacing_mbps)
+        udp_bitrate = _optional_float(self.udp_bitrate_mbps)
+        udp_threshold = _optional_float(self.udp_report_threshold_mbps)
+        if protocol == "TCP":
+            if tcp_threshold is None:
+                tcp_threshold = legacy_threshold if legacy_threshold is not None else legacy_bandwidth_mbps
+            bandwidth = f"{tcp_pacing:g}M" if self.tcp_pacing_enabled and tcp_pacing is not None else None
+        if protocol == "UDP" and not bandwidth and udp_bitrate is not None:
+            bandwidth = f"{udp_bitrate:g}M"
         if protocol == "UDP" and not bandwidth:
             bandwidth = "10M"
+            if udp_bitrate is None:
+                udp_bitrate = 10.0
+        if protocol == "UDP" and udp_bitrate is None:
+            udp_bitrate = _bandwidth_text_to_mbps(bandwidth)
+        if protocol == "UDP" and udp_threshold is None:
+            udp_threshold = legacy_threshold if legacy_threshold is not None else udp_bitrate
+        report_threshold = tcp_threshold if protocol == "TCP" else udp_threshold
         return IperfTrafficConfig(
             enabled=bool(self.enabled),
             server_ip=str(self.server_ip or "").strip(),
             port=max(1, min(65535, int(self.port or 5201))),
+            preset_key=str(self.preset_key or "").strip(),
+            preset_name=str(self.preset_name or "").strip(),
+            test_type=str(self.test_type or "").strip(),
+            deployment_mode=str(self.deployment_mode or "ground_server_train_client").strip(),
+            business_direction=str(self.business_direction or "train_to_ground").strip(),
             protocol=protocol if protocol in {"TCP", "UDP"} else "TCP",
             direction=direction if direction in {"upload", "download", "bidirectional"} else "upload",
             parallel=max(1, int(self.parallel or 1)),
             interval_seconds=max(1, int(self.interval_seconds or 1)),
             target_bandwidth=bandwidth,
+            report_threshold_mbps=report_threshold,
+            tcp_report_threshold_mbps=tcp_threshold,
+            tcp_pacing_enabled=bool(self.tcp_pacing_enabled and tcp_pacing is not None),
+            tcp_pacing_mbps=tcp_pacing if self.tcp_pacing_enabled else None,
+            udp_bitrate_mbps=udp_bitrate,
+            udp_report_threshold_mbps=udp_threshold,
+            packet_length=max(1, int(self.packet_length)) if self.packet_length else None,
             follow_collection=bool(self.follow_collection),
             duration_seconds=max(0, int(self.duration_seconds or 0)),
+            tcp_block_size=str(self.tcp_block_size or "").strip() or None,
         )
 
     def as_dict(self) -> dict[str, object]:
         normalized = self.normalized()
         return dict(normalized.__dict__)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bandwidth_text_to_mbps(value: str | None) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    unit = text[-1:].upper()
+    number_text = text[:-1] if unit in {"K", "M", "G"} else text
+    try:
+        number = float(number_text)
+    except ValueError:
+        return None
+    if unit == "K":
+        return number / 1000.0
+    if unit == "G":
+        return number * 1000.0
+    return number
 
 
 @dataclass

@@ -8,6 +8,7 @@ from netconsole.services.online_mr.core.event_model import (
     EVENT_BUSY_SAMPLE,
     EVENT_FPING_V5_SAMPLE,
     EVENT_INTERFACE_SAMPLE,
+    EVENT_IPERF3_ERROR,
     EVENT_IPERF3_SAMPLE,
     EVENT_MESH_SAMPLE,
     EVENT_RAW_LINE,

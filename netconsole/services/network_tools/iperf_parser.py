@@ -7,6 +7,24 @@ from pathlib import Path
 from statistics import quantiles
 
 
+NETCONSOLE_LOG_PREFIX_RE = re.compile(
+    r"^\[(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)\]\s*(?P<rest>.*)$"
+)
+COMPACT_IPERF_PREFIX_RE = re.compile(
+    r"^IPERF\s+\[(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)\]\s+\[(?P<mode>[^\]]+)\]\s*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+
+IPERF_ERROR_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("server_busy", "server is busy running a test"),
+    ("unable_to_connect", "unable to connect"),
+    ("connection_refused", "connection refused"),
+    ("connection_reset", "connection reset"),
+    ("timed_out", "timed out"),
+    ("interrupted", "interrupt"),
+)
+
+
 INTERVAL_RE = re.compile(
     r"^\s*\[\s*\d+\]\s+"
     r"(?P<start>\d+(?:\.\d+)?)\s*-\s*(?P<end>\d+(?:\.\d+)?)\s+sec\s+"
@@ -34,6 +52,129 @@ def read_iperf_text(path: Path) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def split_iperf_log_prefix(line: str) -> tuple[datetime | None, str]:
+    """Return NetConsole collector timestamp and the original iperf payload."""
+
+    text = str(line or "").strip()
+    if not text or text.startswith("#"):
+        return None, ""
+    if text.casefold().startswith("iperf:"):
+        text = text.split(":", 1)[1].strip()
+    compact = COMPACT_IPERF_PREFIX_RE.match(text)
+    if compact:
+        try:
+            collector_time = datetime.fromisoformat(compact.group("stamp").replace("T", " "))
+        except ValueError:
+            return None, line
+        return collector_time, compact.group("rest").lstrip()
+    match = NETCONSOLE_LOG_PREFIX_RE.match(text)
+    if not match:
+        return None, text
+    stamp = match.group("stamp").replace("T", " ")
+    try:
+        collector_time = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None, line
+    rest = match.group("rest").lstrip()
+    while rest.startswith("["):
+        end = rest.find("]")
+        if end <= 0:
+            break
+        token = rest[1:end]
+        if "=" not in token:
+            break
+        rest = rest[end + 1 :].lstrip()
+    return collector_time, rest
+
+
+def format_iperf_log_line(timestamp: datetime, raw_line: str, context: dict[str, object] | None = None) -> str:
+    mode = str((context or {}).get("mode") or "client").strip() or "client"
+    raw_text = str(raw_line or "").rstrip()
+    error_code = _iperf_error_code(raw_text)
+    if error_code:
+        return f"IPERF [{timestamp.isoformat(sep=' ', timespec='milliseconds')}] [{mode}] ERROR {error_code}: {raw_text}".rstrip()
+    return f"IPERF [{timestamp.isoformat(sep=' ', timespec='milliseconds')}] [{mode}] {raw_text}".rstrip()
+
+
+def format_iperf_log_header(context: dict[str, object], started_at: datetime) -> list[str]:
+    fields: list[tuple[str, object]] = [
+        ("NETCONSOLE_IPERF_LOG_VERSION", 2),
+        ("run_id", context.get("run_id")),
+        ("session_id", context.get("session_id")),
+        ("device_id", context.get("device_id")),
+        ("device_name", context.get("device_name")),
+        ("batch_key_hash", context.get("batch_key_hash")),
+        ("batch_key", context.get("batch_key")),
+        ("mode", context.get("mode")),
+        ("server", context.get("server")),
+        ("port", context.get("port")),
+        ("protocol", context.get("protocol")),
+        ("direction", context.get("direction")),
+        ("bandwidth", context.get("bandwidth")),
+        ("tcp_block_size", context.get("tcp_block_size")),
+        ("started_at", started_at.isoformat(sep=" ", timespec="milliseconds")),
+        ("command", context.get("command")),
+    ]
+    return [f"# {key}={value}" for key, value in fields if value not in (None, "")]
+
+
+def format_iperf_log_footer(finished_at: datetime, status: str, return_code: int | None, error_code: str = "") -> list[str]:
+    lines = [
+        f"# finished_at={finished_at.isoformat(sep=' ', timespec='milliseconds')}",
+        f"# status={status}",
+    ]
+    if return_code is not None:
+        lines.append(f"# return_code={return_code}")
+    if error_code:
+        lines.append(f"# error={error_code}")
+    return lines
+
+
+def parse_iperf_error_line(line: str, started_at: datetime | None = None) -> dict[str, object] | None:
+    collector_time, payload_line = split_iperf_log_prefix(line)
+    message = _strip_compact_error_prefix(payload_line)
+    lowered = message.casefold()
+    if "iperf3: error -" not in lowered and not any(text in lowered for _code, text in IPERF_ERROR_PATTERNS):
+        return None
+    error_code = "iperf_error"
+    for code, text in IPERF_ERROR_PATTERNS:
+        if text in lowered:
+            error_code = code
+            break
+    timestamp = collector_time or started_at or datetime.now()
+    return {
+        "event_type": "error",
+        "collector_time": timestamp.isoformat(sep=" ", timespec="milliseconds"),
+        "error_message": message.strip(),
+        "error_code": error_code,
+        "raw_line": line,
+    }
+
+
+def parse_iperf_error_lines(lines: list[str], started_at: datetime | None = None) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for line in lines:
+        event = parse_iperf_error_line(line, started_at)
+        if event:
+            events.append(event)
+    return events
+
+
+def _iperf_error_code(text: str) -> str:
+    lowered = str(text or "").casefold()
+    if "iperf3: error -" not in lowered and not any(pattern in lowered for _code, pattern in IPERF_ERROR_PATTERNS):
+        return ""
+    for code, pattern in IPERF_ERROR_PATTERNS:
+        if pattern in lowered:
+            return code
+    return "iperf_error"
+
+
+def _strip_compact_error_prefix(text: str) -> str:
+    match = re.match(r"^ERROR(?:\s+(?P<code>[\w-]+))?:\s*(?P<message>.*)$", str(text or "").strip(), re.IGNORECASE)
+    return match.group("message") if match else text
+
+
 def transfer_to_bytes(value: float, unit: str) -> float:
     factors = {"bytes": 1, "kbytes": 1024, "mbytes": 1024**2, "gbytes": 1024**3}
     return value * factors.get(unit.lower(), 1)
@@ -45,7 +186,8 @@ def bitrate_to_mbps(value: float, unit: str) -> float:
 
 
 def parse_iperf_line(line: str, started_at: datetime | None = None, collector_time: datetime | None = None) -> dict[str, object] | None:
-    match = INTERVAL_RE.search(line)
+    prefix_time, payload_line = split_iperf_log_prefix(line)
+    match = INTERVAL_RE.search(payload_line)
     if not match:
         return None
     start = float(match.group("start"))
@@ -56,7 +198,7 @@ def parse_iperf_line(line: str, started_at: datetime | None = None, collector_ti
     row: dict[str, object] = {
         "interval_start_sec": start,
         "interval_end_sec": end,
-        "collector_time": (collector_time or datetime.now()).isoformat(sep=" ", timespec="milliseconds"),
+        "collector_time": (prefix_time or collector_time or datetime.now()).isoformat(sep=" ", timespec="milliseconds"),
         "transfer_value": transfer_value,
         "transfer_unit": transfer_unit,
         "transfer_bytes": transfer_to_bytes(transfer_value, transfer_unit),
@@ -67,8 +209,16 @@ def parse_iperf_line(line: str, started_at: datetime | None = None, collector_ti
         "cwnd": match.group("cwnd") or "",
         "role": (match.group("role") or "interval").lower(),
         "raw_line": line,
+        "raw_iperf_line": payload_line,
+        "zero_sample": False,
+        "zero_sample_type": "",
+        "zero_sample_label": "",
     }
-    udp = UDP_RE.search(line)
+    if _is_zero_iperf_sample(row):
+        row["zero_sample"] = True
+        row["zero_sample_type"] = "unknown"
+        row["zero_sample_label"] = "IPERF零带宽样本"
+    udp = UDP_RE.search(payload_line)
     if udp:
         row.update(
             {
@@ -95,7 +245,60 @@ def parse_iperf_lines(lines: list[str], started_at: datetime | None = None) -> l
         row = parse_iperf_line(line, started_at)
         if row:
             rows.append(row)
+    annotate_iperf_zero_samples(rows, parse_iperf_error_lines(lines, started_at))
     return rows
+
+
+def annotate_iperf_zero_samples(rows: list[dict[str, object]], errors: list[dict[str, object]] | None = None) -> list[dict[str, object]]:
+    error_count = len(errors or [])
+    zero_indexes = [index for index, row in enumerate(rows) if _is_zero_iperf_sample(row)]
+    for row in rows:
+        row["zero_sample"] = False
+        row["zero_sample_type"] = ""
+        row["zero_sample_label"] = ""
+    if not zero_indexes:
+        return rows
+    zero_set = set(zero_indexes)
+    for index in zero_indexes:
+        row = rows[index]
+        row["zero_sample"] = True
+        previous_positive = index > 0 and _is_positive_iperf_sample(rows[index - 1])
+        next_positive = index + 1 < len(rows) and _is_positive_iperf_sample(rows[index + 1])
+        consecutive = (index - 1 in zero_set) or (index + 1 in zero_set)
+        if consecutive:
+            row["zero_sample_type"] = "consecutive_stall"
+            row["zero_sample_label"] = "IPERF流量停顿"
+        elif previous_positive and next_positive and error_count == 0:
+            row["zero_sample_type"] = "isolated_report_gap"
+            row["zero_sample_label"] = "IPERF采样空窗"
+        else:
+            row["zero_sample_type"] = "unknown"
+            row["zero_sample_label"] = "IPERF零带宽样本"
+    return rows
+
+
+def summarize_iperf_zero_samples(rows: list[dict[str, object]], errors: list[dict[str, object]] | None = None) -> dict[str, int]:
+    annotated = annotate_iperf_zero_samples(rows, errors)
+    return {
+        "iperf_zero_sample_count": sum(1 for row in annotated if row.get("zero_sample")),
+        "iperf_isolated_gap_count": sum(1 for row in annotated if row.get("zero_sample_type") == "isolated_report_gap"),
+        "iperf_stall_count": sum(1 for row in annotated if row.get("zero_sample_type") == "consecutive_stall"),
+        "iperf_error_count": len(errors or []),
+    }
+
+
+def _is_zero_iperf_sample(row: dict[str, object]) -> bool:
+    try:
+        return float(row.get("transfer_bytes") or 0) <= 0 and float(row.get("bitrate_mbps") or 0) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_positive_iperf_sample(row: dict[str, object]) -> bool:
+    try:
+        return float(row.get("transfer_bytes") or 0) > 0 and float(row.get("bitrate_mbps") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def parse_iperf_json_text(text: str, started_at: datetime | None = None) -> list[dict[str, object]]:

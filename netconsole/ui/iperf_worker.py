@@ -10,6 +10,7 @@ from netconsole.services.network_tools.iperf_runner import IperfClientConfig, Ip
 class IperfProcessWorker(QThread):
     line_received = Signal(str)
     interval_received = Signal(object)
+    error_received = Signal(object)
     completed = Signal(str)
     failed = Signal(str)
 
@@ -24,6 +25,8 @@ class IperfProcessWorker(QThread):
         device_id: int | None = None,
         config: IperfClientConfig | None = None,
         mode: str = "client",
+        mirror_log_files: list[Path] | None = None,
+        context: dict[str, object] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -38,12 +41,19 @@ class IperfProcessWorker(QThread):
             line_callback=self._line_received,
             config=config,
             mode=mode,
+            mirror_log_files=mirror_log_files,
+            context=context,
         )
 
-    def _line_received(self, line: str, row: dict[str, object] | None) -> None:
+    def _line_received(self, line: str, row: dict[str, object] | None, error: dict[str, object] | None = None) -> None:
         self.line_received.emit(line)
         if row:
             self.interval_received.emit(row)
+        if error:
+            self.error_received.emit(error)
+
+    def add_mirror_log_file(self, log_file: Path, context: dict[str, object] | None = None) -> None:
+        self.runner.add_mirror_log_file(log_file, context=context)
 
     def stop(self) -> None:
         self.runner.stop()

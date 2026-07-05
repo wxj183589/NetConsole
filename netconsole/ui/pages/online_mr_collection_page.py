@@ -68,7 +68,7 @@ from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.network_tools.iperf_runner import IperfClientConfig, build_iperf_client_args, normalize_bandwidth_text
+from netconsole.services.network_tools.iperf_runner import IperfClientConfig, build_iperf_client_args
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager
@@ -77,6 +77,7 @@ from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineM
 from netconsole.services.online_mr.core.event_model import (
     EVENT_BUSY_SAMPLE,
     EVENT_INTERFACE_SAMPLE,
+    EVENT_IPERF3_ERROR,
     EVENT_IPERF3_SAMPLE,
     EVENT_LINK_SWITCH,
     EVENT_MESH_SAMPLE,
@@ -87,6 +88,8 @@ from netconsole.services.online_mr.core.realtime_model import PingConfig, Realti
 from netconsole.services.online_mr.core.realtime_cache import OnlineMrRealtimeCache
 from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.db.event_writer import EventWriter
+from netconsole.services.online_mr.ping_presets import DEFAULT_PING_PRESET_KEY, get_ping_preset, list_ping_presets
+from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_KEY, get_traffic_preset, list_traffic_presets
 from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngine
 from netconsole.services.online_mr.event_bus import OnlineMrEventBus
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
@@ -153,6 +156,8 @@ class OnlineMrRuntimeSiteState:
     workers: dict[str, OnlineMrCollectorWorker] = field(default_factory=dict)
     fping_workers: dict[str, FpingV5ProbeWorker] = field(default_factory=dict)
     iperf_workers: dict[str, IperfProcessWorker] = field(default_factory=dict)
+    iperf_batch_workers: dict[tuple[object, ...], IperfProcessWorker] = field(default_factory=dict)
+    iperf_batch_sessions: dict[tuple[object, ...], set[str]] = field(default_factory=dict)
     session_dirs: dict[str, Path] = field(default_factory=dict)
     session_to_device_id: dict[str, int] = field(default_factory=dict)
     workers_by_device_id: dict[int, OnlineMrCollectorWorker] = field(default_factory=dict)
@@ -226,6 +231,25 @@ def is_fat_ap_device(value: str | None) -> bool:
     return normalize_device_type(value) in {"FATAP", "CLOUDAP"}
 
 
+def _bandwidth_input_to_mbps(value: object, unit: object = "M") -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    unit_text = str(unit or "M").strip().upper()
+    if text[-1:].upper() in {"K", "M", "G"}:
+        unit_text = text[-1:].upper()
+        text = text[:-1].strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if unit_text == "K":
+        return number / 1000.0
+    if unit_text == "G":
+        return number * 1000.0
+    return number
+
+
 def safe_device_folder_name(device: Device) -> str:
     name = re.sub(r'[\\/:*?"<>|]+', "_", str(device.name or "device")).strip(" ._") or "device"
     return f"{name}__{device.id}"
@@ -285,6 +309,8 @@ class OnlineMrCollectionPage(QWidget):
         self.config_workers: dict[str, OnlineMrCollectorWorker] = {}
         self.fping_workers: dict[str, FpingV5ProbeWorker] = {}
         self.iperf_workers: dict[str, IperfProcessWorker] = {}
+        self.iperf_batch_workers: dict[tuple[object, ...], IperfProcessWorker] = {}
+        self.iperf_batch_sessions: dict[tuple[object, ...], set[str]] = {}
         self.session_dirs: dict[str, Path] = {}
         self.session_to_device_id: dict[str, int] = {}
         self.workers_by_device_id: dict[int, OnlineMrCollectorWorker] = {}
@@ -374,14 +400,19 @@ class OnlineMrCollectionPage(QWidget):
         self.collect_config_on_start_check = QCheckBox()
         self.collect_config_on_start_check.setChecked(True)
         self.reconnect_interval = self._interval_spin(1, 3600, 5)
-        self.max_reconnect = self._interval_spin(0, 9999, 0)
-        self.duration_minutes = self._interval_spin(0, 10080, 0)
+        self.max_reconnect = self._interval_spin(0, 999, 0)
+        self.duration_minutes = self._interval_spin(0, 1440, 0)
         self.enable_fping_check = QCheckBox()
         self.enable_fping_check.setChecked(True)
         self.fping_target_edit = QLineEdit()
-        self.fping_packet_size = self._interval_spin(1, 1472, 64)
-        self.fping_interval_ms = self._interval_spin(10, 60000, 10)
+        self.fping_preset_combo = NoWheelComboBox()
+        self.fping_packet_size = self._interval_spin(1, 65535, 64)
+        self.fping_interval_ms = self._interval_spin(1, 60000, 10)
         self.fping_loss_threshold_ms = self._interval_spin(1, 60000, 100)
+        self.fping_loss_warn_edit = QLineEdit()
+        self.fping_loss_warn_edit.setValidator(QDoubleValidator(0.0, 100.0, 3, self))
+        self.fping_loss_warn_edit.setText("0.7")
+        self.fping_latency_warn_ms = self._interval_spin(1, 60000, 100)
         self.fping_tool_label = QLabel()
         self.fping_tool_label.setWordWrap(True)
         self.fping_device_combo_1 = NoWheelComboBox()
@@ -389,7 +420,7 @@ class OnlineMrCollectionPage(QWidget):
         self.fping_target_label_1 = QLineEdit()
         self.fping_target_label_2 = QLineEdit()
         for target_label in (self.fping_target_label_1, self.fping_target_label_2):
-            target_label.setPlaceholderText("-")
+            target_label.setPlaceholderText("默认使用所选设备IP")
         self.fping_status_label_1 = QLabel("Ping 1: idle")
         self.fping_status_label_2 = QLabel("Ping 2: idle")
         self.collect_progress_1 = QProgressBar()
@@ -400,23 +431,30 @@ class OnlineMrCollectionPage(QWidget):
         self.collect_card_1 = QGroupBox("设备 1")
         self.collect_card_2 = QGroupBox("设备 2")
         self.enable_iperf_check = QCheckBox()
+        self.iperf_preset_combo = NoWheelComboBox()
         self.iperf_server_edit = QLineEdit()
-        self.iperf_port_spin = self._no_wheel_spin(1, 65535, 5201)
+        self.iperf_port_spin = self._no_wheel_spin(1, 65535, 5010)
         self.iperf_protocol_combo = NoWheelComboBox()
         self.iperf_protocol_combo.addItems(["TCP", "UDP"])
         self.iperf_direction_combo = NoWheelComboBox()
         self.iperf_parallel_spin = self._no_wheel_spin(1, 128, 1)
         self.iperf_interval_spin = self._no_wheel_spin(1, 3600, 1)
-        self.iperf_bandwidth_edit = QLineEdit()
-        self.iperf_bandwidth_edit.setValidator(QDoubleValidator(0.0, 999999.0, 3, self))
-        self.iperf_bandwidth_unit_combo = NoWheelComboBox()
-        self.iperf_bandwidth_unit_combo.addItems(["K", "M", "G"])
-        self.iperf_bandwidth_unit_combo.setCurrentText("M")
+        self.iperf_tcp_threshold_edit = QLineEdit()
+        self.iperf_tcp_threshold_edit.setValidator(QDoubleValidator(1.0, 10000.0, 3, self))
+        self.iperf_udp_bitrate_edit = QLineEdit()
+        self.iperf_udp_bitrate_edit.setValidator(QDoubleValidator(1.0, 10000.0, 3, self))
+        self.iperf_udp_threshold_edit = QLineEdit()
+        self.iperf_udp_threshold_edit.setValidator(QDoubleValidator(1.0, 10000.0, 3, self))
+        self.iperf_packet_length_spin = self._no_wheel_spin(1, 65535, 1400)
+        self.iperf_tcp_pacing_check = QCheckBox("限制 TCP 发送速率")
+        self.iperf_tcp_pacing_edit = QLineEdit()
+        self.iperf_tcp_pacing_edit.setValidator(QDoubleValidator(1.0, 10000.0, 3, self))
+        self.iperf_tcp_pacing_edit.setEnabled(False)
         self.iperf_bandwidth_hint_label = QLabel()
         self.iperf_bandwidth_hint_label.setWordWrap(True)
         self.iperf_follow_check = QCheckBox()
         self.iperf_follow_check.setChecked(True)
-        self.iperf_duration_spin = self._no_wheel_spin(0, 86400, 0)
+        self.iperf_duration_spin = self._no_wheel_spin(1, 86400, 600)
         self.iperf_tool_label = QLabel()
         self.iperf_tool_label.setWordWrap(True)
         self._no_wheel_filter = NoWheelValueChangeFilter(self)
@@ -484,9 +522,15 @@ class OnlineMrCollectionPage(QWidget):
         self.advanced_detail = QWidget()
         self.labels: dict[str, QLabel] = {}
         self.text_labels: list[tuple[str, QLabel]] = []
+        self._updating_fping_preset = False
+        self._fill_fping_preset_combo()
+        self._updating_iperf_preset = False
+        self._fill_iperf_preset_combo()
 
         self._build_ui()
         self._connect_signals()
+        self._apply_fping_preset(DEFAULT_PING_PRESET_KEY)
+        self._apply_iperf_preset(DEFAULT_TRAFFIC_PRESET_KEY)
         self._refresh_top_metrics()
         self.refresh_timer.start()
         self.output_render_timer.start()
@@ -540,7 +584,12 @@ class OnlineMrCollectionPage(QWidget):
         )
 
     def _request_workers_stop_for_shutdown(self) -> None:
-        for worker in list(self.iperf_workers_by_device_id.values()) + list(self.iperf_workers.values()):
+        seen_iperf_workers: set[int] = set()
+        for worker in list(self.iperf_workers_by_device_id.values()) + list(self.iperf_workers.values()) + list(self.iperf_batch_workers.values()):
+            marker = id(worker)
+            if marker in seen_iperf_workers:
+                continue
+            seen_iperf_workers.add(marker)
             worker.stop()
         for worker in list(self.fping_workers_by_device_id.values()) + list(self.fping_workers.values()):
             worker.stop()
@@ -562,6 +611,8 @@ class OnlineMrCollectionPage(QWidget):
         self.workers = state.workers
         self.fping_workers = state.fping_workers
         self.iperf_workers = state.iperf_workers
+        self.iperf_batch_workers = state.iperf_batch_workers
+        self.iperf_batch_sessions = state.iperf_batch_sessions
         self.session_dirs = state.session_dirs
         self.session_to_device_id = state.session_to_device_id
         self.workers_by_device_id = state.workers_by_device_id
@@ -807,20 +858,26 @@ class OnlineMrCollectionPage(QWidget):
         self.enable_iperf_check.setText(self.i18n.t("online_mr.enable_traffic_test"))
         self.iperf_follow_check.setText(self.i18n.t("iperf.follow_collection"))
         self.iperf_bandwidth_hint_label.setText(self.i18n.t("iperf.tcp_auto_bandwidth_hint"))
-        bandwidth_tooltip = self.i18n.t("iperf.target_bandwidth_tooltip")
-        self.iperf_bandwidth_edit.setToolTip(bandwidth_tooltip)
-        self.iperf_bandwidth_unit_combo.setToolTip(self.i18n.t("iperf.bandwidth_unit"))
+        self.iperf_tcp_threshold_edit.setToolTip(self.i18n.t("iperf.tcp_report_threshold_tooltip"))
+        self.iperf_udp_bitrate_edit.setToolTip(self.i18n.t("iperf.udp_bitrate_tooltip"))
+        self.iperf_udp_threshold_edit.setToolTip(self.i18n.t("iperf.udp_report_threshold_tooltip"))
+        self.iperf_tcp_pacing_check.setToolTip(self.i18n.t("iperf.tcp_pacing_tooltip"))
+        self.iperf_tcp_pacing_edit.setToolTip(self.i18n.t("iperf.tcp_pacing_tooltip"))
+        self.iperf_tcp_pacing_check.setText(self.i18n.t("iperf.tcp_pacing_enabled"))
+        self.iperf_preset_combo.setToolTip(self.i18n.t("iperf.preset"))
         for widget in (
             self.iperf_port_spin,
+            self.iperf_preset_combo,
             self.iperf_protocol_combo,
             self.iperf_direction_combo,
             self.iperf_parallel_spin,
             self.iperf_interval_spin,
-            self.iperf_bandwidth_unit_combo,
             self.iperf_duration_spin,
+            self.iperf_packet_length_spin,
         ):
             widget.setToolTip(self.i18n.t("iperf.no_wheel_hint"))
         self._fill_iperf_direction_combo()
+        self._update_iperf_controls_visibility()
         self._set_status(self.status_value)
         self._refresh_top_metrics()
         self._update_advanced_summary()
@@ -1122,10 +1179,19 @@ class OnlineMrCollectionPage(QWidget):
         self.export_analysis_report_button.clicked.connect(self.export_analysis_report)
         self.session_select_combo.currentIndexChanged.connect(lambda _index: self._refresh_parse_button_state())
         self.output_toggle.toggled.connect(self._output_render_toggled)
+        self.fping_preset_combo.currentIndexChanged.connect(lambda _index: self._fping_preset_changed())
+        self.fping_packet_size.valueChanged.connect(lambda _value: self._mark_fping_preset_custom())
+        self.fping_interval_ms.valueChanged.connect(lambda _value: self._mark_fping_preset_custom())
+        self.fping_loss_threshold_ms.valueChanged.connect(lambda _value: self._mark_fping_preset_custom())
+        self.fping_loss_warn_edit.textChanged.connect(lambda _text: self._mark_fping_preset_custom())
+        self.fping_latency_warn_ms.valueChanged.connect(lambda _value: self._mark_fping_preset_custom())
         self.fping_device_combo_1.currentIndexChanged.connect(lambda _index: self._fping_device_changed(1))
         self.fping_device_combo_2.currentIndexChanged.connect(lambda _index: self._fping_device_changed(2))
         self.fping_target_label_1.textEdited.connect(lambda _text: self._fping_target_edited(1))
         self.fping_target_label_2.textEdited.connect(lambda _text: self._fping_target_edited(2))
+        self.iperf_preset_combo.currentIndexChanged.connect(lambda _index: self._iperf_preset_changed())
+        self.iperf_protocol_combo.currentIndexChanged.connect(lambda _index: self._update_iperf_controls_visibility())
+        self.iperf_tcp_pacing_check.toggled.connect(lambda checked: self.iperf_tcp_pacing_edit.setEnabled(bool(checked)))
 
     def _build_analysis_chart_placeholders(self) -> None:
         if self.analysis_charts.count() > 0:
@@ -1456,7 +1522,12 @@ class OnlineMrCollectionPage(QWidget):
         session_ids: set[str] = set(self.workers)
         session_ids.update(self.session_to_device_id)
 
-        for worker in list(self.iperf_workers_by_device_id.values()):
+        seen_iperf_workers: set[int] = set()
+        for worker in list(self.iperf_workers_by_device_id.values()) + list(self.iperf_batch_workers.values()):
+            marker = id(worker)
+            if marker in seen_iperf_workers:
+                continue
+            seen_iperf_workers.add(marker)
             worker.stop()
         for worker in list(self.fping_workers_by_device_id.values()):
             worker.stop()
@@ -2319,6 +2390,11 @@ class OnlineMrCollectionPage(QWidget):
             self.session_dirs.pop(session_id, None)
             self.fping_workers.pop(session_id, None)
             self.iperf_workers.pop(session_id, None)
+            for batch_key, sessions in list(self.iperf_batch_sessions.items()):
+                sessions.discard(session_id)
+                if not sessions:
+                    self.iperf_batch_sessions.pop(batch_key, None)
+                    self.iperf_batch_workers.pop(batch_key, None)
             self.event_buses.pop(session_id, None)
             self.realtime_buffers.pop(session_id, None)
             self.diagnosis_engines.pop(session_id, None)
@@ -2416,15 +2492,49 @@ class OnlineMrCollectionPage(QWidget):
             direction=config.direction,
             target_bandwidth=config.target_bandwidth,
             follow_collection=config.follow_collection,
+            tcp_block_size=config.tcp_block_size,
+            packet_length=config.packet_length,
+            tcp_report_threshold_mbps=config.tcp_report_threshold_mbps,
+            tcp_pacing_enabled=config.tcp_pacing_enabled,
+            tcp_pacing_mbps=config.tcp_pacing_mbps,
+            udp_bitrate_mbps=config.udp_bitrate_mbps,
+            udp_report_threshold_mbps=config.udp_report_threshold_mbps,
         ).normalized()
         command = build_iperf_client_args(tool, client_config)
         session_dir = Path(meta.session_dir)
         log_file = session_dir / "raw" / "iperf_client_raw.log"
-        worker = IperfProcessWorker(tool, command, log_file, store=None, session_id=meta.session_id, device_id=meta.device_id, config=client_config, mode="client", parent=self)
-        worker.line_received.connect(lambda line: self._append_runtime_log(f"IPERF: {line}"))
-        worker.interval_received.connect(lambda row, device_id=meta.device_id: self._append_iperf_interval(device_id, row))
-        worker.completed.connect(lambda _run_id, session_id=meta.session_id, device_id=meta.device_id: self._iperf_completed(session_id, device_id))
-        worker.failed.connect(lambda message: self._append_runtime_log(f"IPERF: {message}"))
+        batch_key = self._iperf_batch_key(client_config)
+        iperf_context = self._iperf_context_for_meta(meta, client_config, batch_key)
+        existing = self.iperf_batch_workers.get(batch_key)
+        if existing is not None and existing.isRunning():
+            existing.add_mirror_log_file(log_file, context=iperf_context)
+            self.iperf_workers[meta.session_id] = existing
+            self.iperf_batch_sessions.setdefault(batch_key, set()).add(meta.session_id)
+            if meta.device_id is not None:
+                self.iperf_workers_by_device_id[int(meta.device_id)] = existing
+            self._append_runtime_log(f"IPERF: reuse batch worker for session {meta.session_id}")
+            return
+        self.iperf_batch_workers.pop(batch_key, None)
+        self.iperf_batch_sessions.pop(batch_key, None)
+        worker = IperfProcessWorker(
+            tool,
+            command,
+            log_file,
+            store=None,
+            session_id=meta.session_id,
+            device_id=meta.device_id,
+            config=client_config,
+            mode="client",
+            context=iperf_context,
+            parent=self,
+        )
+        worker.line_received.connect(lambda line: self._append_runtime_log(line))
+        worker.interval_received.connect(lambda row, key=batch_key: self._append_iperf_interval_for_batch(key, row))
+        worker.error_received.connect(lambda error, key=batch_key: self._handle_iperf_error_for_batch(key, error))
+        worker.completed.connect(lambda _status, key=batch_key: self._iperf_batch_completed(key))
+        worker.failed.connect(lambda message, key=batch_key: self._iperf_batch_failed(key, message))
+        self.iperf_batch_workers[batch_key] = worker
+        self.iperf_batch_sessions[batch_key] = {meta.session_id}
         self.iperf_workers[meta.session_id] = worker
         if meta.device_id is not None:
             self.iperf_workers_by_device_id[int(meta.device_id)] = worker
@@ -2434,6 +2544,86 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_workers.pop(session_id, None)
         if device_id is not None:
             self.iperf_workers_by_device_id.pop(int(device_id), None)
+
+    def _iperf_batch_key(self, config: IperfClientConfig) -> tuple[object, ...]:
+        cfg = config.normalized()
+        return (
+            self.site_name,
+            cfg.server_ip,
+            cfg.port,
+            cfg.protocol,
+            cfg.direction,
+            cfg.parallel,
+            cfg.target_bandwidth or "",
+            cfg.duration_seconds,
+            cfg.tcp_block_size or "",
+            cfg.packet_length or "",
+            cfg.follow_collection,
+        )
+
+    @staticmethod
+    def _iperf_batch_label(batch_key: tuple[object, ...]) -> str:
+        return "|".join(str(item) for item in batch_key)
+
+    def _iperf_context_for_meta(self, meta, config: IperfClientConfig, batch_key: tuple[object, ...]) -> dict[str, object]:
+        cfg = config.normalized()
+        batch_label = self._iperf_batch_label(batch_key)
+        return {
+            "batch_key": batch_label,
+            "session_id": getattr(meta, "session_id", ""),
+            "device_id": getattr(meta, "device_id", None),
+            "device_name": getattr(meta, "device_name", "") or self._device_name_for_id(getattr(meta, "device_id", None)),
+            "mode": "client",
+            "server": cfg.server_ip,
+            "port": cfg.port,
+            "protocol": cfg.protocol,
+            "direction": cfg.direction,
+            "bandwidth": cfg.target_bandwidth or "",
+            "tcp_report_threshold_mbps": cfg.tcp_report_threshold_mbps or "",
+            "tcp_pacing_enabled": cfg.tcp_pacing_enabled,
+            "tcp_pacing_mbps": cfg.tcp_pacing_mbps or "",
+            "udp_bitrate_mbps": cfg.udp_bitrate_mbps or "",
+            "udp_report_threshold_mbps": cfg.udp_report_threshold_mbps or "",
+            "tcp_block_size": cfg.tcp_block_size or "",
+            "packet_length": cfg.packet_length or "",
+        }
+
+    def _device_name_for_id(self, device_id: int | None) -> str:
+        if device_id is None:
+            return ""
+        for device in self.devices:
+            if device.id == device_id:
+                return device.name
+        return ""
+
+    def _append_iperf_interval_for_batch(self, batch_key: tuple[object, ...], row: dict[str, object]) -> None:
+        for session_id in list(self.iperf_batch_sessions.get(batch_key, set())):
+            device_id = self.session_to_device_id.get(session_id)
+            if device_id is None:
+                continue
+            self._append_iperf_interval(device_id, row)
+
+    def _handle_iperf_error_for_batch(self, batch_key: tuple[object, ...], error: dict[str, object]) -> None:
+        if str(error.get("error_code") or "") == "server_busy":
+            self._append_runtime_log("IPERF：服务端忙")
+        for session_id in list(self.iperf_batch_sessions.get(batch_key, set())):
+            device_id = self.session_to_device_id.get(session_id)
+            if device_id is None:
+                continue
+            self._publish_iperf_error_event(session_id, int(device_id), error)
+
+    def _iperf_batch_completed(self, batch_key: tuple[object, ...]) -> None:
+        sessions = self.iperf_batch_sessions.pop(batch_key, set())
+        worker = self.iperf_batch_workers.pop(batch_key, None)
+        for session_id in sessions:
+            self.iperf_workers.pop(session_id, None)
+            device_id = self.session_to_device_id.get(session_id)
+            if device_id is not None and self.iperf_workers_by_device_id.get(int(device_id)) is worker:
+                self.iperf_workers_by_device_id.pop(int(device_id), None)
+
+    def _iperf_batch_failed(self, batch_key: tuple[object, ...], message: str) -> None:
+        self._append_runtime_log(f"IPERF: {message}")
+        self._iperf_batch_completed(batch_key)
 
     def _append_iperf_interval(self, device_id: int | None, row: dict[str, object]) -> None:
         if device_id is not None:
@@ -2469,7 +2659,7 @@ class OnlineMrCollectionPage(QWidget):
             bus = self._ensure_event_pipeline(session_id, session_dir)
         bus.publish(
             OnlineMrEvent(
-                timestamp=datetime.now(),
+                timestamp=self._iperf_event_time(row),
                 session_id=session_id,
                 device_id=device_id,
                 source="iperf3",
@@ -2479,6 +2669,36 @@ class OnlineMrCollectionPage(QWidget):
                 raw=str(row.get("raw_line") or ""),
             )
         )
+
+    def _publish_iperf_error_event(self, session_id: str, device_id: int, error: dict[str, object]) -> None:
+        bus = self.event_buses.get(session_id)
+        if bus is None:
+            session_dir = self.session_dirs.get(session_id)
+            if session_dir is None:
+                return
+            bus = self._ensure_event_pipeline(session_id, session_dir)
+        bus.publish(
+            OnlineMrEvent(
+                timestamp=self._iperf_event_time(error),
+                session_id=session_id,
+                device_id=device_id,
+                source="iperf3",
+                module="iperf",
+                event_type=EVENT_IPERF3_ERROR,
+                payload=dict(error),
+                raw=str(error.get("raw_line") or ""),
+            )
+        )
+
+    @staticmethod
+    def _iperf_event_time(payload: dict[str, object]) -> datetime:
+        value = payload.get("collector_time")
+        if value:
+            try:
+                return datetime.fromisoformat(str(value).replace("T", " "))
+            except ValueError:
+                pass
+        return datetime.now()
 
     def _flush_snapshot(self) -> None:
         if not self._can_update_ui():
@@ -3013,19 +3233,34 @@ class OnlineMrCollectionPage(QWidget):
             fping=FpingConfig(
                 enabled=self.enable_fping_check.isChecked() and bool(fping_target),
                 target=fping_target,
+                preset_key=self.fping_preset_combo.currentData() or "",
+                preset_name=self.fping_preset_combo.currentText(),
                 packet_size=self.fping_packet_size.value(),
                 interval_ms=self.fping_interval_ms.value(),
                 loss_threshold_ms=self.fping_loss_threshold_ms.value(),
+                loss_warn_percent=self._current_fping_loss_warn_percent(),
+                latency_warn_ms=self.fping_latency_warn_ms.value(),
             ),
             iperf=IperfTrafficConfig(
                 enabled=self.enable_iperf_check.isChecked(),
                 server_ip=self.iperf_server_edit.text().strip(),
                 port=self.iperf_port_spin.value(),
+                preset_key=self.iperf_preset_combo.currentData() or "",
+                preset_name=self.iperf_preset_combo.currentText(),
+                test_type=self._current_iperf_preset().test_type if self._current_iperf_preset() else "",
+                deployment_mode=self._current_iperf_preset().deployment_mode if self._current_iperf_preset() else "ground_server_train_client",
+                business_direction=self._current_iperf_preset().business_direction if self._current_iperf_preset() else ("ground_to_train" if (self.iperf_direction_combo.currentData() or "upload") == "download" else "train_to_ground"),
                 protocol=self.iperf_protocol_combo.currentText(),
                 direction=self.iperf_direction_combo.currentData() or "upload",
                 parallel=self.iperf_parallel_spin.value(),
                 interval_seconds=self.iperf_interval_spin.value(),
-                target_bandwidth=normalize_bandwidth_text(self.iperf_bandwidth_edit.text(), self.iperf_bandwidth_unit_combo.currentText()),
+                target_bandwidth=None,
+                tcp_report_threshold_mbps=self._current_iperf_tcp_threshold_mbps(),
+                tcp_pacing_enabled=self.iperf_tcp_pacing_check.isChecked(),
+                tcp_pacing_mbps=self._current_iperf_tcp_pacing_mbps(),
+                udp_bitrate_mbps=self._current_iperf_udp_bitrate_mbps(),
+                udp_report_threshold_mbps=self._current_iperf_udp_threshold_mbps(),
+                packet_length=self._current_iperf_packet_length(),
                 follow_collection=self.iperf_follow_check.isChecked(),
                 duration_seconds=self.iperf_duration_spin.value(),
             ),
@@ -3878,17 +4113,14 @@ class OnlineMrCollectionPage(QWidget):
         spin = QSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
-        spin.setFixedWidth(72)
-        spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._configure_numeric_spin(spin)
         return spin
 
     def _no_wheel_spin(self, minimum: int, maximum: int, value: int) -> NoWheelSpinBox:
         spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
-        spin.setMaximumWidth(100)
-        spin.setMinimumWidth(72)
-        spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._configure_numeric_spin(spin)
         spin.setToolTip(self.i18n.t("iperf.no_wheel_hint"))
         return spin
 
@@ -3919,8 +4151,11 @@ class OnlineMrCollectionPage(QWidget):
             (self.fping_target_label_1, 160),
             (self.fping_target_label_2, 160),
             (self.iperf_server_edit, 260),
-            (self.iperf_bandwidth_edit, 140),
-            (self.iperf_bandwidth_unit_combo, 80),
+            (self.iperf_preset_combo, 260),
+            (self.iperf_tcp_threshold_edit, 120),
+            (self.iperf_udp_bitrate_edit, 120),
+            (self.iperf_udp_threshold_edit, 120),
+            (self.iperf_tcp_pacing_edit, 120),
             (self.iperf_protocol_combo, 100),
             (self.iperf_direction_combo, 140),
             (self.view_device_combo, 260),
@@ -3948,11 +4183,25 @@ class OnlineMrCollectionPage(QWidget):
             combo.setMaximumWidth(360)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for target in (self.fping_target_label_1, self.fping_target_label_2):
-            target.setMinimumWidth(150)
-            target.setMaximumWidth(240)
-            target.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            target.setMinimumWidth(180)
+            target.setMaximumWidth(320)
+            target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.iperf_server_edit.setMinimumWidth(220)
         self.iperf_server_edit.setMaximumWidth(340)
+
+    def _configure_numeric_spin(self, spin: QAbstractSpinBox) -> None:
+        spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        spin.setMinimumWidth(100)
+        spin.setMaximumWidth(120)
+        spin.setMinimumHeight(28)
+        spin.setKeyboardTracking(False)
+        spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    def _configure_numeric_line_edit(self, edit: QLineEdit) -> None:
+        edit.setMinimumWidth(100)
+        edit.setMaximumWidth(120)
+        edit.setMinimumHeight(28)
+        edit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _period_box(self) -> QGroupBox:
         box = QGroupBox()
@@ -4017,13 +4266,24 @@ class OnlineMrCollectionPage(QWidget):
 
     def _ping_box(self) -> QGroupBox:
         box = QGroupBox()
-        box.setMinimumHeight(220)
-        box.setMaximumHeight(280)
+        box.setMinimumHeight(300)
+        box.setMaximumHeight(380)
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
         layout.addWidget(self.enable_fping_check)
+
+        preset_layout = QHBoxLayout()
+        preset_layout.setSpacing(8)
+        preset_label = self._label("online_mr.ping_preset")
+        preset_label.setMinimumWidth(90)
+        preset_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.fping_preset_combo.setMinimumWidth(220)
+        self.fping_preset_combo.setMaximumWidth(360)
+        preset_layout.addWidget(preset_label)
+        preset_layout.addWidget(self.fping_preset_combo, 1)
+        layout.addLayout(preset_layout)
 
         cards = QHBoxLayout()
         cards.setSpacing(10)
@@ -4034,22 +4294,31 @@ class OnlineMrCollectionPage(QWidget):
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(6)
-        for row, (key, spin, unit) in enumerate(
+        for row, (key, widget, unit) in enumerate(
             (
                 ("online_mr.packet_size", self.fping_packet_size, "online_mr.bytes"),
                 ("online_mr.ping_interval_ms", self.fping_interval_ms, "online_mr.milliseconds"),
                 ("online_mr.loss_threshold_ms", self.fping_loss_threshold_ms, "online_mr.milliseconds"),
+                ("online_mr.loss_warn_percent", self.fping_loss_warn_edit, "online_mr.percent"),
+                ("online_mr.latency_warn_ms", self.fping_latency_warn_ms, "online_mr.milliseconds"),
             ),
             start=0,
         ):
             label = self._label(key)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            spin.setFixedWidth(76)
+            label.setMinimumWidth(90)
+            if isinstance(widget, QAbstractSpinBox):
+                self._configure_numeric_spin(widget)
+            elif isinstance(widget, QLineEdit):
+                self._configure_numeric_line_edit(widget)
             grid.addWidget(label, row, 0)
-            grid.addWidget(spin, row, 1)
+            grid.addWidget(widget, row, 1)
             unit_label = self._text_label(unit)
-            unit_label.setMinimumWidth(48)
+            unit_label.setMinimumWidth(40)
             grid.addWidget(unit_label, row, 2)
+        grid.setColumnMinimumWidth(0, 90)
+        grid.setColumnMinimumWidth(1, 100)
+        grid.setColumnMinimumWidth(2, 40)
         grid.setColumnStretch(3, 1)
         layout.addLayout(grid)
         layout.addWidget(self.fping_tool_label)
@@ -4057,9 +4326,10 @@ class OnlineMrCollectionPage(QWidget):
             combo.setMinimumWidth(220)
             combo.setMaximumWidth(360)
         for target in (self.fping_target_label_1, self.fping_target_label_2):
-            target.setMinimumWidth(160)
-            target.setMaximumWidth(260)
+            target.setMinimumWidth(180)
+            target.setMaximumWidth(320)
             target.setMinimumHeight(28)
+            target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return box
 
     def _ping_endpoint_box(self, title: str, combo: QComboBox, target: QLineEdit) -> QGroupBox:
@@ -4085,8 +4355,10 @@ class OnlineMrCollectionPage(QWidget):
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         grid = QGridLayout(box)
         grid.addWidget(self.enable_iperf_check, 0, 0, 1, 3)
-        grid.addWidget(self._label("iperf.server_address"), 1, 0)
-        grid.addWidget(self.iperf_server_edit, 1, 1, 1, 2)
+        grid.addWidget(self._label("iperf.preset"), 1, 0)
+        grid.addWidget(self.iperf_preset_combo, 1, 1, 1, 2)
+        grid.addWidget(self._label("iperf.server_address"), 2, 0)
+        grid.addWidget(self.iperf_server_edit, 2, 1, 1, 2)
         rows = (
             ("iperf.port", self.iperf_port_spin, None),
             ("iperf.protocol", self.iperf_protocol_combo, None),
@@ -4095,21 +4367,49 @@ class OnlineMrCollectionPage(QWidget):
             ("iperf.interval", self.iperf_interval_spin, "online_mr.seconds"),
             ("iperf.duration", self.iperf_duration_spin, "online_mr.seconds"),
         )
-        for row, (key, widget, unit) in enumerate(rows, start=2):
+        for row, (key, widget, unit) in enumerate(rows, start=3):
             grid.addWidget(self._label(key), row, 0)
             grid.addWidget(widget, row, 1)
             if unit:
                 grid.addWidget(self._text_label(unit), row, 2)
-        bandwidth_row = 8
-        bandwidth_layout = QHBoxLayout()
-        bandwidth_layout.addWidget(self.iperf_bandwidth_edit)
-        bandwidth_layout.addWidget(self.iperf_bandwidth_unit_combo)
-        grid.addWidget(self._label("iperf.target_bandwidth"), bandwidth_row, 0)
-        grid.addLayout(bandwidth_layout, bandwidth_row, 1, 1, 2)
-        grid.addWidget(self.iperf_bandwidth_hint_label, 9, 1, 1, 2)
-        grid.addWidget(self.iperf_follow_check, 10, 0, 1, 3)
-        grid.addWidget(self._label("online_mr.tool_status"), 11, 0)
-        grid.addWidget(self.iperf_tool_label, 11, 1, 1, 2)
+        self.iperf_tcp_threshold_label = self._label("iperf.tcp_report_threshold")
+        tcp_threshold_layout = QHBoxLayout()
+        tcp_threshold_layout.addWidget(self.iperf_tcp_threshold_edit)
+        tcp_threshold_layout.addWidget(QLabel("Mbps"))
+        grid.addWidget(self.iperf_tcp_threshold_label, 9, 0)
+        grid.addLayout(tcp_threshold_layout, 9, 1, 1, 2)
+
+        self.iperf_udp_bitrate_label = self._label("iperf.udp_bitrate")
+        udp_bitrate_layout = QHBoxLayout()
+        udp_bitrate_layout.addWidget(self.iperf_udp_bitrate_edit)
+        udp_bitrate_layout.addWidget(QLabel("Mbps"))
+        grid.addWidget(self.iperf_udp_bitrate_label, 10, 0)
+        grid.addLayout(udp_bitrate_layout, 10, 1, 1, 2)
+
+        self.iperf_udp_threshold_label = self._label("iperf.udp_report_threshold")
+        udp_threshold_layout = QHBoxLayout()
+        udp_threshold_layout.addWidget(self.iperf_udp_threshold_edit)
+        udp_threshold_layout.addWidget(QLabel("Mbps"))
+        grid.addWidget(self.iperf_udp_threshold_label, 11, 0)
+        grid.addLayout(udp_threshold_layout, 11, 1, 1, 2)
+
+        self.iperf_packet_length_label = self._label("iperf.packet_length")
+        grid.addWidget(self.iperf_packet_length_label, 12, 0)
+        grid.addWidget(self.iperf_packet_length_spin, 12, 1)
+        grid.addWidget(QLabel("bytes"), 12, 2)
+
+        self.iperf_tcp_pacing_label = self._label("iperf.tcp_pacing")
+        tcp_pacing_layout = QHBoxLayout()
+        tcp_pacing_layout.addWidget(self.iperf_tcp_pacing_check)
+        tcp_pacing_layout.addWidget(self.iperf_tcp_pacing_edit)
+        tcp_pacing_layout.addWidget(QLabel("Mbps"))
+        grid.addWidget(self.iperf_tcp_pacing_label, 13, 0)
+        grid.addLayout(tcp_pacing_layout, 13, 1, 1, 2)
+
+        grid.addWidget(self.iperf_bandwidth_hint_label, 14, 1, 1, 2)
+        grid.addWidget(self.iperf_follow_check, 15, 0, 1, 3)
+        grid.addWidget(self._label("online_mr.tool_status"), 16, 0)
+        grid.addWidget(self.iperf_tool_label, 16, 1, 1, 2)
         return box
 
     def _fill_iperf_direction_combo(self) -> None:
@@ -4122,6 +4422,153 @@ class OnlineMrCollectionPage(QWidget):
         index = self.iperf_direction_combo.findData(current)
         self.iperf_direction_combo.setCurrentIndex(index if index >= 0 else 0)
         self.iperf_direction_combo.blockSignals(False)
+
+    def _fill_fping_preset_combo(self) -> None:
+        self.fping_preset_combo.blockSignals(True)
+        try:
+            self.fping_preset_combo.clear()
+            self.fping_preset_combo.addItem("自定义", "")
+            for preset in list_ping_presets():
+                self.fping_preset_combo.addItem(preset.name, preset.key)
+            index = self.fping_preset_combo.findData(DEFAULT_PING_PRESET_KEY)
+            self.fping_preset_combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.fping_preset_combo.blockSignals(False)
+
+    def _fping_preset_changed(self) -> None:
+        if self._updating_fping_preset:
+            return
+        self._apply_fping_preset(self.fping_preset_combo.currentData())
+
+    def _apply_fping_preset(self, key: str | None) -> None:
+        preset = get_ping_preset(key)
+        if preset is None:
+            return
+        self._updating_fping_preset = True
+        try:
+            self.fping_packet_size.setValue(preset.packet_size_bytes)
+            self.fping_interval_ms.setValue(preset.interval_ms)
+            self.fping_loss_threshold_ms.setValue(preset.timeout_ms)
+            self.fping_loss_warn_edit.setText(f"{preset.loss_warn_percent:g}")
+            self.fping_latency_warn_ms.setValue(preset.latency_warn_ms)
+        finally:
+            self._updating_fping_preset = False
+
+    def _mark_fping_preset_custom(self) -> None:
+        if self._updating_fping_preset:
+            return
+        custom_index = self.fping_preset_combo.findData("")
+        if custom_index >= 0 and self.fping_preset_combo.currentIndex() != custom_index:
+            self._updating_fping_preset = True
+            try:
+                self.fping_preset_combo.setCurrentIndex(custom_index)
+            finally:
+                self._updating_fping_preset = False
+
+    def _current_fping_loss_warn_percent(self) -> float:
+        try:
+            value = float(self.fping_loss_warn_edit.text().strip())
+        except ValueError:
+            value = 0.7
+        return min(100.0, max(0.0, value))
+
+    def _fill_iperf_preset_combo(self) -> None:
+        self.iperf_preset_combo.blockSignals(True)
+        try:
+            self.iperf_preset_combo.clear()
+            self.iperf_preset_combo.addItem("自定义", "")
+            for preset in list_traffic_presets():
+                self.iperf_preset_combo.addItem(preset.name, preset.key)
+            index = self.iperf_preset_combo.findData(DEFAULT_TRAFFIC_PRESET_KEY)
+            self.iperf_preset_combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.iperf_preset_combo.blockSignals(False)
+
+    def _current_iperf_preset(self):
+        return get_traffic_preset(self.iperf_preset_combo.currentData())
+
+    def _iperf_preset_changed(self) -> None:
+        if self._updating_iperf_preset:
+            return
+        self._apply_iperf_preset(self.iperf_preset_combo.currentData())
+
+    def _apply_iperf_preset(self, key: str | None) -> None:
+        preset = get_traffic_preset(key)
+        if preset is None:
+            self._update_iperf_controls_visibility()
+            return
+        self._updating_iperf_preset = True
+        try:
+            self.iperf_protocol_combo.setCurrentText(preset.protocol)
+            direction_index = self.iperf_direction_combo.findData("download" if preset.reverse else "upload")
+            if direction_index >= 0:
+                self.iperf_direction_combo.setCurrentIndex(direction_index)
+            self.iperf_parallel_spin.setValue(preset.parallel)
+            self.iperf_interval_spin.setValue(preset.interval_sec)
+            self.iperf_duration_spin.setValue(preset.duration_sec)
+            self.iperf_tcp_threshold_edit.setText(f"{preset.report_threshold_mbps:g}" if preset.protocol.upper() == "TCP" else "")
+            self.iperf_udp_bitrate_edit.setText(f"{preset.udp_bitrate_mbps:g}" if preset.udp_bitrate_mbps is not None else "")
+            self.iperf_udp_threshold_edit.setText(f"{preset.report_threshold_mbps:g}" if preset.protocol.upper() == "UDP" else "")
+            self.iperf_packet_length_spin.setValue(int(preset.packet_length or 1400))
+            self.iperf_tcp_pacing_check.setChecked(False)
+            self.iperf_tcp_pacing_edit.clear()
+        finally:
+            self._updating_iperf_preset = False
+        self._update_iperf_controls_visibility()
+
+    def _current_iperf_tcp_threshold_mbps(self) -> float | None:
+        if self.iperf_protocol_combo.currentText().upper() != "TCP":
+            return None
+        return _bandwidth_input_to_mbps(self.iperf_tcp_threshold_edit.text(), "M")
+
+    def _current_iperf_tcp_pacing_mbps(self) -> float | None:
+        if self.iperf_protocol_combo.currentText().upper() != "TCP" or not self.iperf_tcp_pacing_check.isChecked():
+            return None
+        return _bandwidth_input_to_mbps(self.iperf_tcp_pacing_edit.text(), "M")
+
+    def _current_iperf_udp_bitrate_mbps(self) -> float | None:
+        if self.iperf_protocol_combo.currentText().upper() != "UDP":
+            return None
+        return _bandwidth_input_to_mbps(self.iperf_udp_bitrate_edit.text(), "M")
+
+    def _current_iperf_udp_threshold_mbps(self) -> float | None:
+        if self.iperf_protocol_combo.currentText().upper() != "UDP":
+            return None
+        threshold = _bandwidth_input_to_mbps(self.iperf_udp_threshold_edit.text(), "M")
+        return threshold if threshold is not None else self._current_iperf_udp_bitrate_mbps()
+
+    def _current_iperf_packet_length(self) -> int | None:
+        return self.iperf_packet_length_spin.value()
+
+    def _update_iperf_controls_visibility(self) -> None:
+        is_tcp = self.iperf_protocol_combo.currentText().upper() == "TCP"
+        for row, visible in ((9, is_tcp), (10, not is_tcp), (11, not is_tcp), (12, not is_tcp), (13, is_tcp)):
+            self._set_grid_row_visible(self.iperf_box.layout(), row, visible)
+        self.iperf_tcp_pacing_edit.setEnabled(is_tcp and self.iperf_tcp_pacing_check.isChecked())
+        if is_tcp:
+            self.iperf_bandwidth_hint_label.setText("TCP 模式下该值只作为报告验收阈值，不生成 iperf3 -b；TCP 默认自动打满链路。")
+        else:
+            self.iperf_bandwidth_hint_label.setText("UDP 模式下发送速率用于 iperf3 -b，验收阈值只用于报告判定；PIS 模板默认包长 1400。")
+
+    def _set_grid_row_visible(self, layout, row: int, visible: bool) -> None:
+        if not isinstance(layout, QGridLayout):
+            return
+        for column in range(layout.columnCount()):
+            item = layout.itemAtPosition(row, column)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.setVisible(visible)
+                continue
+            child_layout = item.layout()
+            if child_layout is None:
+                continue
+            for index in range(child_layout.count()):
+                child = child_layout.itemAt(index)
+                child_widget = child.widget() if child is not None else None
+                if child_widget is not None:
+                    child_widget.setVisible(visible)
 
     def _advanced_box(self) -> QGroupBox:
         box = QGroupBox()
@@ -4162,7 +4609,7 @@ class OnlineMrCollectionPage(QWidget):
         ):
             label = self._text_label(label_key)
             label.setMinimumHeight(26)
-            spin.setFixedWidth(76)
+            self._configure_numeric_spin(spin)
             spin.setMinimumHeight(26)
             detail_grid.addWidget(label, row, 0)
             detail_grid.addWidget(spin, row, 1)

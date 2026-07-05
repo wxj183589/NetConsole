@@ -10,7 +10,7 @@ from netconsole.core.ping.fping_v5_runner import check_fping_v5_available, resol
 from netconsole.core.ping.fping_v5_stats import FpingV5Stats
 from netconsole.models.online_mr_models import FpingConfig
 from netconsole.services.network_tools.iperf_runner import IperfClientConfig
-from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_SAMPLE, OnlineMrEvent, OnlineMrEventBus
+from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, EVENT_IPERF3_ERROR, EVENT_IPERF3_SAMPLE, OnlineMrEvent, OnlineMrEventBus
 from netconsole.services.online_mr.db.event_db_writer import OnlineMrEventDbWriter
 from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngine
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
@@ -137,7 +137,7 @@ def test_online_mr_event_bus_writes_events_to_db(tmp_path: Path) -> None:
 
 def test_iperf3_json_args_enable_json_output(tmp_path: Path) -> None:
     args = build_iperf3_json_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", interval_seconds=1))
-    assert "-J" in args
+    assert "--json" in args
     assert "--forceflush" in args
 
 
@@ -155,6 +155,24 @@ def test_session_adapter_converts_fping_v5_jsonl_to_events(tmp_path: Path) -> No
     assert len(events) == 1
     assert events[0].event_type == EVENT_FPING_V5_SAMPLE
     assert events[0].source == "fping_v5"
+
+
+def test_session_adapter_converts_timestamped_iperf_log_and_error_to_events(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session"
+    raw_dir = session_dir / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "iperf_client_raw.log").write_text(
+        "[2026-07-05 18:44:01.123] [mode=client] [  5]   0.00-1.01   sec   128 KBytes  1.03 Mbits/sec\n"
+        "[2026-07-05 18:44:02.123] [mode=client] iperf3: error - the server is busy running a test. try again later\n",
+        encoding="utf-8",
+    )
+
+    events = list(SessionAdapter(session_dir, session_id="s1", device_id=7).iter_events())
+
+    assert [event.event_type for event in events] == [EVENT_IPERF3_SAMPLE, EVENT_IPERF3_ERROR]
+    assert events[0].timestamp == datetime(2026, 7, 5, 18, 44, 1, 123000)
+    assert events[0].payload["bitrate_mbps"] == 1.03
+    assert events[1].payload["error_code"] == "server_busy"
 
 
 def test_event_parser_derives_fping_quality_and_iperf_score() -> None:
@@ -185,6 +203,26 @@ def test_event_parser_derives_fping_quality_and_iperf_score() -> None:
     assert parser.latest("fping")["link_quality"] == 97.5
     assert parser.latest("fping")["latency_score"] == 90.0
     assert parser.latest("iperf")["throughput_mbps"] == 88.0
+
+
+def test_event_parser_keeps_iperf_error_as_latest_status() -> None:
+    parser = EventParserEngine()
+    parser.on_event(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 7, 5, 18, 44, 1),
+            session_id="s1",
+            device_id=7,
+            source="iperf3",
+            module="iperf",
+            event_type=EVENT_IPERF3_ERROR,
+            payload={"error_code": "server_busy", "error_message": "busy"},
+        )
+    )
+
+    latest = parser.latest("iperf")
+    assert latest is not None
+    assert latest["iperf_error"] is True
+    assert latest["error_code"] == "server_busy"
 
 
 def test_diagnosis_engine_scores_fping_and_iperf() -> None:
@@ -280,6 +318,24 @@ def test_diagnosis_parser_creates_replay_segment_for_fping_only_session(tmp_path
     assert row == ("EVENT_REPLAY", 0.0, 0.2)
 
 
+def test_diagnosis_parser_records_iperf_busy_error_without_intervals(tmp_path: Path) -> None:
+    session_dir = _write_fping_only_session(tmp_path)
+    (session_dir / "raw" / "fping_v5_samples.jsonl").unlink()
+    (session_dir / "raw" / "iperf_client_raw.log").write_text(
+        "[2026-07-05 18:44:02.123] [mode=client] iperf3: error - the server is busy running a test. try again later\n",
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session_dir).parse()
+
+    assert summary.iperf_samples == 0
+    assert summary.iperf_error_count == 1
+    with sqlite3.connect(session_dir / "parsed" / "online_diagnosis.sqlite") as conn:
+        row = conn.execute("SELECT event_type, details_json FROM live_events WHERE event_type = 'IPERF_ERROR'").fetchone()
+    assert row is not None
+    assert "server_busy" in row[1]
+
+
 def test_fping_v5_worker_publishes_source_device_and_target(tmp_path: Path) -> None:
     events = []
     bus = OnlineMrEventBus()
@@ -312,6 +368,31 @@ def test_fping_v5_worker_publishes_source_device_and_target(tmp_path: Path) -> N
     assert events[0].device_id == 7
     assert events[0].payload["source_device_id"] == 7
     assert events[0].payload["target_ip"] == "127.0.0.1"
+
+
+def test_fping_config_serializes_high_ping_preset_and_compat_keys() -> None:
+    cfg = FpingConfig(
+        target=" 127.0.0.1 ",
+        preset_key="cbtc_dcs_attkping_1256b",
+        preset_name="CBTC/DCS Attkping 等效 1256B",
+        packet_size=1256,
+        interval_ms=30,
+        loss_threshold_ms=100,
+        loss_warn_percent=5.0,
+        latency_warn_ms=100,
+    )
+
+    data = cfg.as_dict()
+
+    assert data["target"] == "127.0.0.1"
+    assert data["preset_key"] == "cbtc_dcs_attkping_1256b"
+    assert data["preset_name"] == "CBTC/DCS Attkping 等效 1256B"
+    assert data["packet_size"] == 1256
+    assert data["packet_size_bytes"] == 1256
+    assert data["loss_threshold_ms"] == 100
+    assert data["timeout_ms"] == 100
+    assert data["loss_warn_percent"] == 5.0
+    assert data["latency_warn_ms"] == 100
 
 
 def _write_fping_only_session(tmp_path: Path) -> Path:
