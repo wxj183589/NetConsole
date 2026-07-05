@@ -29,6 +29,17 @@ class SnmpClient:
         request = SnmpQueryRequest(profile=profile, method="GetNext", oid=normalize_oid(oid), save_history=False)
         return self._single(request, pdu_type=0xA1)
 
+    def get_bulk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10) -> SnmpQueryResult:
+        if profile.version.lower() == "v1":
+            request = SnmpQueryRequest(profile=profile, method="GetBulk", oid=normalize_oid(oid), max_repetitions=max_repetitions, save_history=False)
+            return SnmpQueryResult(request=request, status="unsupported", error_message="SNMPv1 不支持 GetBulk，请使用 GetNext 或 Walk。")
+        request = SnmpQueryRequest(profile=profile, method="GetBulk", oid=normalize_oid(oid), max_repetitions=max_repetitions, save_history=False)
+        return self._bulk(request, request.oid, max_repetitions=max_repetitions)
+
+    def get_subtree(self, profile: SnmpProfile, oid: str, *, max_rows: int = 200, cancel_checker=None) -> SnmpQueryResult:
+        result = self.walk(profile, oid, max_rows=max_rows, cancel_checker=cancel_checker)
+        return SnmpQueryResult(request=SnmpQueryRequest(profile=profile, method="GetSubtree", oid=normalize_oid(oid), max_rows=max_rows, save_history=False), rows=result.rows, status=result.status, error_message=result.error_message, elapsed_ms=result.elapsed_ms)
+
     def walk(self, profile: SnmpProfile, oid: str, *, max_rows: int = 200, cancel_checker=None) -> SnmpQueryResult:
         root = normalize_oid(oid)
         request = SnmpQueryRequest(profile=profile, method="Walk", oid=root, max_rows=max_rows, save_history=False)
@@ -37,24 +48,32 @@ class SnmpClient:
         current = root
         status = "success"
         error = ""
-        for _ in range(max(1, int(max_rows))):
+        limit = max(1, int(max_rows))
+        for _ in range(limit):
             if cancel_checker is not None and cancel_checker():
                 status = "cancelled"
                 error = "查询已取消。"
                 break
             result = self._single(SnmpQueryRequest(profile=profile, method="GetNext", oid=current, save_history=False), pdu_type=0xA1)
             if result.status != "success":
-                status = result.status
-                error = result.error_message
+                status = "empty_table" if result.status == "end_of_mib_view" and not rows else result.status
+                error = result.error_message or empty_walk_message(root)
                 break
             if not result.rows:
                 status = "empty_table" if not rows else "success"
+                error = empty_walk_message(root) if not rows else ""
                 break
             row = result.rows[0]
             if not oid_starts_with(row.oid, root):
+                if not rows:
+                    status = "empty_table"
+                    error = empty_walk_message(root)
                 break
             rows.append(row)
             current = row.oid
+        else:
+            if rows:
+                error = f"已达到最大返回 {limit} 条，查询停止。"
         elapsed = int((time.perf_counter() - started) * 1000)
         return SnmpQueryResult(request=request, rows=rows, status=status, error_message=error, elapsed_ms=elapsed)
 
@@ -68,31 +87,40 @@ class SnmpClient:
         current = root
         status = "success"
         error = ""
-        while len(rows) < max_rows:
+        limit = max(1, int(max_rows))
+        while len(rows) < limit:
             if cancel_checker is not None and cancel_checker():
                 status = "cancelled"
                 error = "查询已取消。"
                 break
             result = self._bulk(request, current, max_repetitions=max_repetitions)
-            if result.status != "success":
+            if result.status != "success" and not result.rows:
                 status = result.status
                 error = result.error_message
                 break
             if not result.rows:
                 status = "empty_table" if not rows else "success"
+                error = empty_walk_message(root) if not rows else ""
                 break
             advanced = False
             for row in result.rows:
+                if row.status != "success":
+                    continue
                 if not oid_starts_with(row.oid, root):
                     advanced = False
                     break
                 rows.append(row)
                 current = row.oid
                 advanced = True
-                if len(rows) >= max_rows:
+                if len(rows) >= limit:
                     break
             if not advanced:
+                if not rows:
+                    status = "empty_table"
+                    error = empty_walk_message(root)
                 break
+        if len(rows) >= limit and not error:
+            error = f"已达到最大返回 {limit} 条，查询停止。"
         elapsed = int((time.perf_counter() - started) * 1000)
         return SnmpQueryResult(request=request, rows=rows, status=status, error_message=error, elapsed_ms=elapsed)
 
@@ -161,7 +189,7 @@ class SnmpClient:
         elapsed = int((time.perf_counter() - started) * 1000)
         status = response.status
         error = response.error_message
-        rows = [SnmpVarBind(oid=row.oid, value=row.value, value_type=row.value_type, decoded_value=str(row.value), latency_ms=elapsed, status=status, error_message=error) for row in response.varbinds]
+        rows = [SnmpVarBind(oid=row.oid, value=row.value, value_type=row.value_type, decoded_value=str(row.value), latency_ms=elapsed, status=row.status, error_message=row.error_message) for row in response.varbinds]
         return SnmpQueryResult(request=request, rows=rows, status=status, error_message=error, elapsed_ms=elapsed)
 
     def _bulk(self, request: SnmpQueryRequest, oid: str, *, max_repetitions: int) -> SnmpQueryResult:
@@ -173,8 +201,14 @@ class SnmpClient:
         except Exception as exc:
             return SnmpQueryResult(request=request, status="failed", error_message=f"SNMP BulkWalk 请求失败：{exc}", elapsed_ms=int((time.perf_counter() - started) * 1000))
         elapsed = int((time.perf_counter() - started) * 1000)
-        rows = [SnmpVarBind(oid=row.oid, value=row.value, value_type=row.value_type, decoded_value=str(row.value), latency_ms=elapsed, status=response.status, error_message=response.error_message) for row in response.varbinds]
-        return SnmpQueryResult(request=request, rows=rows, status=response.status, error_message=response.error_message, elapsed_ms=elapsed)
+        rows = [
+            SnmpVarBind(oid=row.oid, value=row.value, value_type=row.value_type, decoded_value=str(row.value), latency_ms=elapsed, status=row.status, error_message=row.error_message)
+            for row in response.varbinds
+        ]
+        good_rows = [row for row in rows if row.status == "success"]
+        status = "success" if good_rows else response.status
+        error_message = "" if good_rows else response.error_message
+        return SnmpQueryResult(request=request, rows=good_rows, status=status, error_message=error_message, elapsed_ms=elapsed)
 
 
 @dataclass(frozen=True)
@@ -182,6 +216,8 @@ class _WireVarBind:
     oid: str
     value: Any
     value_type: str
+    status: str = "success"
+    error_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -271,10 +307,12 @@ class _SnmpWireClient:
             oid = row_reader.read_oid()
             value_type, value = row_reader.read_value()
             row_status = _value_status(value_type)
+            row_error_message = ""
             if row_status != "success":
                 status = row_status
-                error_message = _status_message(row_status)
-            rows.append(_WireVarBind(oid=oid, value=value, value_type=value_type))
+                row_error_message = _status_message(row_status)
+                error_message = row_error_message
+            rows.append(_WireVarBind(oid=oid, value=value, value_type=value_type, status=row_status, error_message=row_error_message))
         return _WireResponse(status=status, error_message=error_message, varbinds=rows)
 
 
@@ -367,6 +405,10 @@ def oid_starts_with(oid: str, root: str) -> bool:
     oid = normalize_oid(oid)
     root = normalize_oid(root)
     return oid == root or oid.startswith(root + ".")
+
+
+def empty_walk_message(root: str) -> str:
+    return f"返回 0 条：OID {root} 可能不是可查询子树、对象仅用于 Trap、表为空、SNMP view 限制或当前设备不支持。"
 
 
 def _seq(value: bytes) -> bytes:

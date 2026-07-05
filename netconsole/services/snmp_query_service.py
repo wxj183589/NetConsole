@@ -22,11 +22,15 @@ class SnmpQueryService:
             result = self.client.get(request.profile, request.oid)
         elif method in {"getnext", "get_next"}:
             result = self.client.get_next(request.profile, request.oid)
+        elif method in {"getbulk", "get_bulk"}:
+            result = self.client.get_bulk(request.profile, request.oid, max_repetitions=request.max_repetitions)
+        elif method in {"getsubtree", "get_subtree"}:
+            result = self.client.get_subtree(request.profile, request.oid, max_rows=request.max_rows, cancel_checker=cancel_checker)
         elif method == "walk":
             result = self.client.walk(request.profile, request.oid, max_rows=request.max_rows, cancel_checker=cancel_checker)
         elif method in {"bulkwalk", "bulk_walk"}:
             result = self.client.bulk_walk(request.profile, request.oid, max_repetitions=request.max_repetitions, max_rows=request.max_rows, cancel_checker=cancel_checker)
-        elif method == "table_walk":
+        elif method in {"table_walk", "tablewalk"}:
             result = self.client.table_walk(request.profile, request.oid, max_repetitions=request.max_repetitions, max_rows=request.max_rows, cancel_checker=cancel_checker)
         else:
             result = SnmpQueryResult(request=request, status="failed", error_message=f"不支持的查询方式：{request.method}")

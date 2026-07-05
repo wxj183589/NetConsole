@@ -15,6 +15,9 @@ class MibIndexService:
         syntax = str(item.get("syntax") or "")
         if not oid:
             return "", ""
+        access = str(item.get("access") or "").lower()
+        if "notification" in syntax.lower() or access == "accessible-for-notify":
+            return "", "这是 Trap / Notification 或告警绑定变量，主要用于 Trap 解析，不建议主动 Get / Walk。"
         if int(item.get("is_trap") or 0) or int(item.get("is_notification") or 0):
             return "", "这是 Trap / Notification 定义，不支持 Get。可以加入 Trap 解析规则。"
         if int(item.get("is_scalar") or 0):

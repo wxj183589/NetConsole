@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from dataclasses import dataclass
@@ -61,11 +62,13 @@ from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services.snmp_trap_service import SnmpTrapService
 from netconsole.services.topology_service import TopologyService
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
-from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
+from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
 
 
 SNMP_SERVICE_STATE: dict[str, dict[str, object]] = {}
 TEMPORARY_TARGET_KEY = "__temporary_snmp_target__"
+TREE_MODE_GENERAL = "general"
+TREE_MODE_H3C_PRODUCT = "h3c_product"
 RESULT_HEADERS = ["操作", "名称/OID", "值", "类型", "IP:端口", "状态", "耗时(ms)", "原始OID", "索引", "解码索引", "模块", "时间", "错误信息"]
 RESULT_COLUMN_WIDTHS = {
     "操作": 80,
@@ -1020,6 +1023,7 @@ class MibBrowserPage(QWidget):
         self.worker: SnmpQueryWorker | None = None
         self.set_worker: SnmpSetWorker | None = None
         self.tree_worker: MibBrowserTreeLoadWorker | None = None
+        self.product_tree_rebuild_worker: ProductReferenceTreeRebuildWorker | None = None
         self.last_result: SnmpQueryResult | None = None
         self.devices: list[Device] = []
         self.profile_overrides: dict[str, SnmpProfile] = {}
@@ -1029,6 +1033,14 @@ class MibBrowserPage(QWidget):
         self._refreshing_device_groups = False
         self._device_refresh_retry_count = 0
         self._device_group_refresh_retry_count = 0
+        self._tree_task_id = 0
+        self._query_task_id = 0
+        self._product_tree_rebuild_task_id = 0
+        self._set_task_id = 0
+        self.device_search_timer = QTimer(self)
+        self.device_search_timer.setSingleShot(True)
+        self.device_search_timer.setInterval(300)
+        self.device_search_timer.timeout.connect(self.refresh_devices)
         self.device_group_filter = QComboBox()
         self.device_search_input = QLineEdit()
         self.device_search_input.setPlaceholderText("设备名称 / 系统名称 / IP / 备注 / 厂商 / 类型")
@@ -1036,7 +1048,7 @@ class MibBrowserPage(QWidget):
         self.device_combo.setMinimumWidth(240)
         self.oid_input = QLineEdit()
         self.operation_combo = QComboBox()
-        self.operation_combo.addItems(["Get", "Get Next", "Get Bulk", "Get Subtree", "Walk", "Set", "Bulk Walk", "Table Walk"])
+        self.operation_combo.addItems(["Get", "Get Next", "Get Bulk", "Get Subtree", "Walk", "Bulk Walk", "Table Walk", "Set"])
         self.max_repetitions = QSpinBox()
         self.max_repetitions.setRange(1, 50)
         self.max_repetitions.setValue(10)
@@ -1044,10 +1056,21 @@ class MibBrowserPage(QWidget):
         self.max_rows.setRange(1, 10000)
         self.max_rows.setValue(200)
         self.search_input = QLineEdit()
+        self.tree_mode_combo = QComboBox()
+        self.tree_mode_combo.addItem("通用", TREE_MODE_GENERAL)
+        self.tree_mode_combo.addItem("H3C 产品目录", TREE_MODE_H3C_PRODUCT)
+        self.tree_mode_combo.setCurrentIndex(self.tree_mode_combo.findData(TREE_MODE_H3C_PRODUCT))
+        self.rebuild_product_tree_button = QPushButton("重建产品目录树")
+        self.rebuild_product_tree_button.setVisible(False)
         self.module_filter = QComboBox()
+        self.module_filter.setVisible(False)
         self.source_filter = QComboBox()
-        self.source_filter.addItems(["全部", "标准 MIB", "当前设备启用字典", "H3C 通用", "H3C 无线控制器", "H3C V5", "H3C V7/V9", "内置通用", "导入 MIB"])
+        self.source_filter.addItem("标准 MIB 库", "standard")
+        self.source_filter.addItem("H3C V5 MIB 库", "h3c_v5")
+        self.source_filter.addItem("H3C V7/V9 MIB 库", "h3c_v7v9")
+        self.source_filter.setCurrentIndex(self.source_filter.findData("h3c_v7v9"))
         self.only_device_dict = QCheckBox("仅显示当前设备启用字典")
+        self.only_device_dict.setVisible(False)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["名称", "OID", "类型"])
         configure_tree_widget(self.tree, {0: 220, 1: 220, 2: 120})
@@ -1071,12 +1094,17 @@ class MibBrowserPage(QWidget):
         copy_query_oid_button = QPushButton("复制实际查询 OID")
         fill_query_button = QPushButton("填入顶部查询栏")
         run_query_button = QPushButton("立即查询")
+        back_to_column_button = QPushButton("回到列 OID")
+        run_query_button.setVisible(False)
+        self.run_query_button = run_query_button
         set_current_button = QPushButton("Set 当前 OID")
         translate_button = QPushButton("翻译描述")
         self.set_current_button = set_current_button
+        self.back_to_column_button = back_to_column_button
         copy_oid_button.clicked.connect(lambda: self.copy_selected_oid(False))
         copy_query_oid_button.clicked.connect(lambda: self.copy_selected_oid(True))
         fill_query_button.clicked.connect(lambda: self.fill_query_tool(False))
+        back_to_column_button.clicked.connect(self.back_to_column_oid)
         run_query_button.clicked.connect(lambda: self.fill_query_tool(True))
         set_current_button.clicked.connect(self.set_selected_oid)
         translate_button.clicked.connect(self.translate_selected_description)
@@ -1090,7 +1118,9 @@ class MibBrowserPage(QWidget):
         refresh_button = QPushButton("搜索 / 刷新")
         save_template_button = QPushButton("保存为 OID 模板")
         go_button = QPushButton("Go")
+        self.go_button = go_button
         cancel_button = QPushButton("取消")
+        self.cancel_button = cancel_button
         export_button = QPushButton("导出结果")
         advanced_button = QPushButton("高级参数")
         temporary_button = QPushButton("临时 IP")
@@ -1102,13 +1132,13 @@ class MibBrowserPage(QWidget):
         advanced_button.clicked.connect(self.show_advanced_parameters)
         temporary_button.clicked.connect(self.configure_temporary_target)
         self.device_group_filter.currentIndexChanged.connect(self._on_device_group_changed)
-        self.device_search_input.returnPressed.connect(self.refresh_devices)
-        self.device_search_input.textChanged.connect(lambda _text: self.refresh_devices())
+        self.device_search_input.returnPressed.connect(self._refresh_devices_from_search)
+        self.device_search_input.textChanged.connect(lambda _text: self.device_search_timer.start())
         self.device_combo.currentIndexChanged.connect(lambda _index: self._handle_device_changed())
         self.search_input.returnPressed.connect(self.refresh)
-        self.module_filter.currentIndexChanged.connect(lambda _index: self.refresh())
+        self.tree_mode_combo.currentIndexChanged.connect(lambda _index: self.refresh_mib_tree())
+        self.rebuild_product_tree_button.clicked.connect(self._start_rebuild_product_tree)
         self.source_filter.currentIndexChanged.connect(lambda _index: self.refresh())
-        self.only_device_dict.stateChanged.connect(lambda _state: self.refresh())
         self.tree.currentItemChanged.connect(self._show_detail)
         self.tree.itemExpanded.connect(self._load_tree_children)
         self.tree.customContextMenuRequested.connect(self._open_context_menu)
@@ -1122,6 +1152,7 @@ class MibBrowserPage(QWidget):
         target_bar.addWidget(self.device_combo, 1)
         target_bar.addWidget(temporary_button)
         target_bar.addWidget(advanced_button)
+        self.cancel_button.setEnabled(False)
         top = QHBoxLayout()
         top.addWidget(QLabel("OID"))
         top.addWidget(self.oid_input, 2)
@@ -1137,11 +1168,11 @@ class MibBrowserPage(QWidget):
         filter_bar = QHBoxLayout()
         filter_bar.addWidget(QLabel("搜索"))
         filter_bar.addWidget(self.search_input, 1)
+        filter_bar.addWidget(QLabel("树模式"))
+        filter_bar.addWidget(self.tree_mode_combo)
+        filter_bar.addWidget(self.rebuild_product_tree_button)
         filter_bar.addWidget(QLabel("来源"))
         filter_bar.addWidget(self.source_filter)
-        filter_bar.addWidget(QLabel("模块"))
-        filter_bar.addWidget(self.module_filter)
-        filter_bar.addWidget(self.only_device_dict)
         filter_bar.addWidget(refresh_button)
         hint_bar = QHBoxLayout()
         hint_bar.addWidget(self.view_hint, 1)
@@ -1158,7 +1189,7 @@ class MibBrowserPage(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self.operation_label)
         op_buttons = QHBoxLayout()
-        for button in (copy_oid_button, copy_query_oid_button, fill_query_button, run_query_button, set_current_button, translate_button, save_template_button):
+        for button in (copy_oid_button, copy_query_oid_button, fill_query_button, back_to_column_button, run_query_button, set_current_button, translate_button, save_template_button):
             op_buttons.addWidget(button)
         op_buttons.addStretch(1)
         right_layout.addLayout(op_buttons)
@@ -1185,6 +1216,10 @@ class MibBrowserPage(QWidget):
             return
         self.refresh_devices()
 
+    def _refresh_devices_from_search(self) -> None:
+        self.device_search_timer.stop()
+        self.refresh_devices()
+
     def refresh_devices(self) -> None:
         if self._refreshing_devices:
             return
@@ -1204,17 +1239,14 @@ class MibBrowserPage(QWidget):
         group_filter = self.device_group_filter.currentData()
         search = self.device_search_input.text().strip()
         self.devices = self.center.repository.list(search=search or None, group_filter=group_filter if group_filter not in {"", None} else None)
-        if isinstance(current_device, int) and all(device.id != current_device for device in self.devices):
-            try:
-                self.devices.insert(0, self.center.repository.get(current_device))
-            except KeyError:
-                pass
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         if self.temporary_profile is not None:
             self.device_combo.addItem(self.temporary_name or f"临时：{self.temporary_profile.host}", TEMPORARY_TARGET_KEY)
         for device in self.devices:
             self.device_combo.addItem(f"{device.name} / {device.primary_address}", device.id)
+        if self.device_combo.count() == 0:
+            self.device_combo.addItem("当前分组无设备", None)
         index = self.device_combo.findData(current_device)
         if index >= 0:
             self.device_combo.setCurrentIndex(index)
@@ -1223,6 +1255,9 @@ class MibBrowserPage(QWidget):
         elif self.device_combo.count() > 0:
             self.device_combo.setCurrentIndex(0)
         self.device_combo.blockSignals(False)
+        self.go_button.setEnabled(self.device_combo.currentData() is not None)
+        if current_device != self.device_combo.currentData() or self.device_combo.currentData() is None:
+            self._handle_device_changed()
 
     def refresh_device_groups(self) -> None:
         if self._refreshing_device_groups:
@@ -1263,36 +1298,28 @@ class MibBrowserPage(QWidget):
         QTimer.singleShot(500, retry_fn)
 
     def _handle_device_changed(self) -> None:
-        if self.only_device_dict.isChecked() or source_filter_key(self.source_filter.currentText()) == "current_device":
-            self.refresh_mib_tree()
+        return
 
     def refresh_mib_tree(self) -> None:
-        current_module_id = self.module_filter.currentData()
-        self.module_filter.blockSignals(True)
-        self.module_filter.clear()
-        self.module_filter.addItem("全部", "")
-        for row in self.center.global_repo.list_modules():
-            label = module_display_name(row)
-            self.module_filter.addItem(label, int(row.get("id") or 0))
-        index = self.module_filter.findData(current_module_id)
-        if index >= 0:
-            self.module_filter.setCurrentIndex(index)
-        self.module_filter.blockSignals(False)
         self.tree.clear()
         keyword = self.search_input.text().strip()
-        source_filter = source_filter_key(self.source_filter.currentText())
-        dictionary_ids = self._enabled_dictionary_ids() if self.only_device_dict.isChecked() or source_filter == "current_device" else None
-        module_id = int(current_module_id or 0) or None
-        if module_id:
+        source_filter = self._source_filter_key()
+        tree_mode = str(self.tree_mode_combo.currentData() or TREE_MODE_GENERAL)
+        if tree_mode == TREE_MODE_H3C_PRODUCT:
+            self.rebuild_product_tree_button.setVisible(True)
             self._set_view_hint_visible(False)
-            self._start_tree_load("module", module_id=module_id, limit=5000)
+            self._build_product_reference_tree()
             return
-        if not keyword and dictionary_ids == []:
-            self._show_empty_device_view_hint()
-            self.tree.addTopLevelItem(QTreeWidgetItem(["当前设备没有启用字典；请生成推荐 MIB 视图，或取消“仅显示当前设备启用字典”。", "", ""]))
+        if not keyword:
+            self.rebuild_product_tree_button.setVisible(False)
+            self._set_view_hint_visible(False)
+            self._build_base_tree(include_h3c=source_filter != "standard")
+            self.tree.expandToDepth(2)
+            auto_resize_tree_columns(self.tree, {0: 220, 1: 220, 2: 120})
             return
         self._set_view_hint_visible(False)
-        self._start_tree_load("search", keyword=keyword, source_filter=source_filter, dictionary_ids=dictionary_ids, module_id=module_id, limit=5000 if not keyword else 500)
+        self.rebuild_product_tree_button.setVisible(False)
+        self._start_tree_load("search", keyword=keyword, source_filter=source_filter, limit=500)
 
     def _enabled_dictionary_ids(self) -> list[int]:
         device = self._current_device()
@@ -1305,6 +1332,10 @@ class MibBrowserPage(QWidget):
         if device_id == TEMPORARY_TARGET_KEY:
             return None
         return next((device for device in self.devices if device.id == device_id), None)
+
+    def _source_filter_key(self) -> str:
+        value = self.source_filter.currentData()
+        return str(value or source_filter_key(self.source_filter.currentText()))
 
     def _current_target_context(self) -> SnmpTargetContext | None:
         current = self.device_combo.currentData()
@@ -1353,6 +1384,8 @@ class MibBrowserPage(QWidget):
         if self.tree_worker is not None:
             self.tree_worker.cancel()
             self.tree_worker = None
+        self._tree_task_id += 1
+        task_id = self._tree_task_id
         self.tree.clear()
         self.tree.addTopLevelItem(QTreeWidgetItem(["正在后台加载 MIB 节点...", "", ""]))
         self.tree_worker = MibBrowserTreeLoadWorker(
@@ -1364,6 +1397,7 @@ class MibBrowserPage(QWidget):
             module_id=module_id,
             parent_oid=parent_oid,
             limit=limit,
+            task_id=task_id,
             parent=self,
         )
         self.tree_worker.finished_with_result.connect(self._tree_load_finished)
@@ -1371,25 +1405,41 @@ class MibBrowserPage(QWidget):
         self.tree_worker.start()
 
     def _tree_load_finished(self, result: object) -> None:
-        self.tree_worker = None
-        self.tree.clear()
         if isinstance(result, Exception):
+            self.tree_worker = None
+            self.tree.clear()
             self.tree.addTopLevelItem(QTreeWidgetItem([f"加载失败：{result}", "", ""]))
             return
         payload = dict(result) if isinstance(result, dict) else {}
+        if int(payload.get("task_id") or 0) != self._tree_task_id:
+            return
+        self.tree_worker = None
+        self.tree.clear()
+        if payload.get("cancelled"):
+            self.tree.addTopLevelItem(QTreeWidgetItem(["已取消", "", ""]))
+            return
+        if payload.get("error"):
+            self.tree.addTopLevelItem(QTreeWidgetItem([f"加载失败：{payload.get('error')}", "", ""]))
+            return
         rows = list(payload.get("rows") or [])
         mode = str(payload.get("mode") or "")
         if mode == "module":
             self._build_module_tree(int(payload.get("module_id") or 0), rows)
         else:
             seen: set[tuple[str, str, str]] = set()
+            inserted = 0
             for item in rows:
-                key = (str(item.get("module_name") or ""), str(item.get("oid") or ""), str(item.get("name") or ""))
+                oid = normalize_tree_oid(item.get("oid"))
+                if not oid:
+                    continue
+                item = {**item, "oid": oid}
+                key = (str(item.get("module_name") or ""), oid, str(item.get("name") or ""))
                 if key in seen:
                     continue
                 seen.add(key)
                 self._insert_oid_path(item)
-            if not rows:
+                inserted += 1
+            if not inserted:
                 self.tree.addTopLevelItem(QTreeWidgetItem(["未找到匹配的 MIB 节点", "", ""]))
         self.tree.expandToDepth(0)
         auto_resize_tree_columns(self.tree, {0: 220, 1: 220, 2: 120})
@@ -1465,21 +1515,21 @@ class MibBrowserPage(QWidget):
             QMessageBox.information(self, "MIB 视图", "当前设备暂无可用推荐字典，请先导入或初始化 H3C MIB 包。")
             return
         self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), recommendations)
-        self.only_device_dict.setChecked(True)
+        index = self.source_filter.findData("h3c_v7v9")
+        if index >= 0:
+            self.source_filter.setCurrentIndex(index)
         self.refresh()
 
     def use_h3c_v7v9_view(self) -> None:
-        index = self.source_filter.findText("H3C V7/V9")
+        index = self.source_filter.findData("h3c_v7v9")
         if index >= 0:
             self.source_filter.setCurrentIndex(index)
-        self.only_device_dict.setChecked(False)
         self.refresh()
 
     def use_global_h3c_view(self) -> None:
-        index = self.source_filter.findText("全部")
+        index = self.source_filter.findData("h3c_v7v9")
         if index >= 0:
             self.source_filter.setCurrentIndex(index)
-        self.only_device_dict.setChecked(False)
         self.refresh()
 
     def set_query_from_mib(self, oid: str, method: str, object_name: str = "", module_name: str = "") -> None:
@@ -1498,16 +1548,14 @@ class MibBrowserPage(QWidget):
             )
         )
 
-    def _build_base_tree(self, title: str = "H3C 通用 MIB 主树") -> None:
-        root = QTreeWidgetItem([title, "", "view"])
-        root.setData(0, Qt.UserRole, {"name": title, "oid": "", "syntax": "view", "access": "", "status": ""})
-        self.tree.addTopLevelItem(root)
+    def _build_base_tree(self, title: str = "OID 标准树", *, include_h3c: bool = True) -> None:
+        _ = title
 
-        def add_node(parent: QTreeWidgetItem | None, name: str, oid: str, expandable: bool = True) -> QTreeWidgetItem:
+        def add_node(parent: QTreeWidgetItem | None, name: str, oid: str, *, lazy: bool = False, loaded: bool = True) -> QTreeWidgetItem:
             item = QTreeWidgetItem([name, oid, "OBJECT IDENTIFIER"])
             item.setData(0, Qt.UserRole, {"name": name, "oid": oid, "syntax": "OBJECT IDENTIFIER", "access": "not-accessible", "status": "current"})
-            item.setData(0, Qt.UserRole + 1, False)
-            if expandable:
+            item.setData(0, Qt.UserRole + 1, loaded)
+            if lazy:
                 item.addChild(QTreeWidgetItem(["加载中...", "", ""]))
             if parent is None:
                 self.tree.addTopLevelItem(item)
@@ -1515,25 +1563,45 @@ class MibBrowserPage(QWidget):
                 parent.addChild(item)
             return item
 
-        iso = add_node(root, "iso", "1")
+        iso = add_node(None, "iso", "1")
         org = add_node(iso, "org", "1.3")
         dod = add_node(org, "dod", "1.3.6")
         internet = add_node(dod, "internet", "1.3.6.1")
+        add_node(internet, "directory", "1.3.6.1.1", lazy=True, loaded=False)
         mgmt = add_node(internet, "mgmt", "1.3.6.1.2")
-        add_node(mgmt, "mib-2", "1.3.6.1.2.1")
+        mib2 = add_node(mgmt, "mib-2", "1.3.6.1.2.1")
+        for name, oid in (
+            ("system", "1.3.6.1.2.1.1"),
+            ("interfaces", "1.3.6.1.2.1.2"),
+            ("at", "1.3.6.1.2.1.3"),
+            ("ip", "1.3.6.1.2.1.4"),
+            ("icmp", "1.3.6.1.2.1.5"),
+            ("tcp", "1.3.6.1.2.1.6"),
+            ("udp", "1.3.6.1.2.1.7"),
+            ("egp", "1.3.6.1.2.1.8"),
+            ("transmission", "1.3.6.1.2.1.10"),
+            ("snmp", "1.3.6.1.2.1.11"),
+            ("host", "1.3.6.1.2.1.25"),
+        ):
+            add_node(mib2, name, oid, lazy=True, loaded=False)
+        add_node(internet, "experimental", "1.3.6.1.3", lazy=True, loaded=False)
+        if not include_h3c:
+            for item in (iso, org, dod, internet):
+                item.setExpanded(True)
+            return
         private = add_node(internet, "private", "1.3.6.1.4")
         enterprises = add_node(private, "enterprises", "1.3.6.1.4.1")
         h3c = add_node(enterprises, "h3c", "1.3.6.1.4.1.25506")
         common = add_node(h3c, "hh3cCommon", "1.3.6.1.4.1.25506.2")
-        add_node(common, "hh3cDot11", "1.3.6.1.4.1.25506.2.75")
-        root.setExpanded(True)
+        add_node(common, "hh3cDot11", "1.3.6.1.4.1.25506.2.75", lazy=True, loaded=False)
         for item in (iso, org, dod, internet, private, enterprises, h3c, common):
             item.setExpanded(True)
 
     def _insert_oid_path(self, data: dict[str, object]) -> None:
-        oid = str(data.get("oid") or "")
+        oid = normalize_tree_oid(data.get("oid"))
         if not oid:
             return
+        data = {**data, "oid": oid}
         parts = oid.split(".")
         parent: QTreeWidgetItem | None = None
         path = ""
@@ -1568,19 +1636,22 @@ class MibBrowserPage(QWidget):
         data = item.data(0, Qt.UserRole)
         if not isinstance(data, dict):
             return
-        parent_oid = str(data.get("oid") or "")
+        parent_oid = normalize_tree_oid(data.get("oid"))
         if not parent_oid:
             return
         item.takeChildren()
-        source_filter = source_filter_key(self.source_filter.currentText())
-        dictionary_ids = self._enabled_dictionary_ids() if self.only_device_dict.isChecked() or source_filter == "current_device" else None
+        source_filter = self._source_filter_key()
         seen: set[tuple[str, str, str]] = set()
-        for child_data in self.center.global_repo.list_oid_children(parent_oid, source_filter=source_filter, dictionary_ids=dictionary_ids, limit=500):
-            key = (str(child_data.get("module_name") or ""), str(child_data.get("oid") or ""), str(child_data.get("name") or ""))
+        for child_data in self.center.global_repo.list_oid_children(parent_oid, source_filter=source_filter, limit=500):
+            child_oid = normalize_tree_oid(child_data.get("oid"))
+            if not child_oid:
+                continue
+            child_data = {**child_data, "oid": child_oid}
+            key = (str(child_data.get("module_name") or ""), child_oid, str(child_data.get("name") or ""))
             if key in seen:
                 continue
             seen.add(key)
-            child = QTreeWidgetItem([str(child_data.get("name") or ""), str(child_data.get("oid") or ""), mib_node_type(child_data)])
+            child = QTreeWidgetItem([str(child_data.get("name") or ""), child_oid, mib_node_type(child_data)])
             child.setData(0, Qt.UserRole, child_data)
             child.setData(0, Qt.UserRole + 1, False)
             if not int(child_data.get("is_scalar") or 0):
@@ -1589,6 +1660,125 @@ class MibBrowserPage(QWidget):
                 child.setToolTip(column, mib_tooltip(child_data))
             item.addChild(child)
         item.setData(0, Qt.UserRole + 1, True)
+
+    def _build_product_reference_tree(self) -> None:
+        self.tree.clear()
+        references = self.center.global_repo.list_product_references()
+        if not references:
+            self.tree.addTopLevelItem(QTreeWidgetItem(["尚未导入 H3C 产品 MIB 参考表", "", "product_reference"]))
+            auto_resize_tree_columns(self.tree, {0: 260, 1: 220, 2: 120})
+            return
+
+        def node_label(row: dict[str, object]) -> str:
+            node_type = str(row.get("node_type") or "")
+            value = str(
+                row.get("display_name")
+                or row.get("node_name")
+                or row.get("object_name")
+                or row.get("module_name")
+                or row.get("numeric_oid")
+                or row.get("id")
+                or ""
+            )
+            if node_type in {"module", "mib_module"}:
+                return normalize_h3c_module_display_name(value)
+            return value
+
+        def add_reference_node(parent: QTreeWidgetItem, row: dict[str, object]) -> QTreeWidgetItem:
+            node_type = str(row.get("node_type") or "reference")
+            oid = normalize_tree_oid(row.get("numeric_oid")) if node_type in {"object", "trap"} else ""
+            label = node_label(row)
+            module_name = normalize_h3c_module_display_name(row.get("module_name")) if node_type in {"module", "mib_module"} else str(row.get("module_name") or "")
+            data = {
+                "name": str(row.get("object_name") or label),
+                "oid": oid,
+                "module_name": module_name,
+                "syntax": str(row.get("data_type_from_reference") or node_type),
+                "access": str(row.get("access_from_reference") or ""),
+                "status": str(row.get("operation_support") or ""),
+                "description": str(row.get("meaning") or row.get("function_description") or row.get("implementation_spec") or ""),
+                "reference_name": parent.text(0),
+                "is_trap": 1 if node_type == "trap" else 0,
+                "is_notification": 1 if node_type == "notification" else 0,
+            }
+            item = QTreeWidgetItem([label, oid, node_type])
+            item.setData(0, Qt.UserRole, data)
+            item.setData(0, Qt.UserRole + 1, True)
+            for column in range(3):
+                item.setToolTip(column, mib_tooltip(data))
+            parent.addChild(item)
+            for child_row in self.center.global_repo.list_product_reference_tree_nodes(int(row["reference_id"]), int(row["id"])):
+                add_reference_node(item, child_row)
+            return item
+
+        for reference in references:
+            reference_id = int(reference.get("id") or 0)
+            if not reference_id:
+                continue
+            label = str(reference.get("reference_name") or reference.get("source_file") or f"Reference {reference_id}")
+            root = QTreeWidgetItem([label, "", "product_reference"])
+            root.setData(0, Qt.UserRole, {"name": label, "oid": "", "syntax": "product_reference", "access": "", "status": "", "reference_id": reference_id})
+            root.setData(0, Qt.UserRole + 1, True)
+            self.tree.addTopLevelItem(root)
+            top_nodes = self.center.global_repo.list_product_reference_tree_nodes(reference_id, None)
+            if len(top_nodes) == 1 and str(top_nodes[0].get("node_type") or "") == "reference_root":
+                top_nodes = self.center.global_repo.list_product_reference_tree_nodes(reference_id, int(top_nodes[0]["id"]))
+            if not top_nodes:
+                object_count = int(reference.get("object_override_count") or reference.get("object_count") or 0)
+                if object_count > 0:
+                    root.addChild(QTreeWidgetItem(["目录树未生成，可点击“重建产品目录树”修复", "", "rebuild_available"]))
+                else:
+                    root.addChild(QTreeWidgetItem(["参考表未解析到对象，请重新导入 Excel", "", "need_reimport"]))
+            for row in top_nodes:
+                add_reference_node(root, row)
+            root.setExpanded(True)
+        self.tree.expandToDepth(1)
+        auto_resize_tree_columns(self.tree, {0: 260, 1: 220, 2: 140})
+
+    def _selected_product_reference_id(self) -> int | None:
+        current = self.tree.currentItem()
+        while current is not None:
+            data = current.data(0, Qt.UserRole)
+            if isinstance(data, dict) and data.get("reference_id"):
+                return int(data["reference_id"])
+            current = current.parent()
+        references = self.center.global_repo.list_product_references()
+        return int(references[0]["id"]) if references else None
+
+    def _start_rebuild_product_tree(self) -> None:
+        reference_id = self._selected_product_reference_id()
+        if reference_id is None:
+            QMessageBox.information(self, "产品目录树", "当前没有可重建的产品 MIB 参考表。")
+            return
+        if self.product_tree_rebuild_worker is not None:
+            return
+        self._product_tree_rebuild_task_id += 1
+        task_id = self._product_tree_rebuild_task_id
+        self.rebuild_product_tree_button.setEnabled(False)
+        self.path_label.setText("正在后台重建产品 MIB 参考目录树...")
+        self.product_tree_rebuild_worker = ProductReferenceTreeRebuildWorker(self.center.paths.global_mib_db_path(), reference_id, self)
+        self.product_tree_rebuild_worker.finished_with_result.connect(lambda result, task_id=task_id: self._product_tree_rebuild_finished(result, task_id))
+        self.product_tree_rebuild_worker.finished.connect(self.product_tree_rebuild_worker.deleteLater)
+        self.product_tree_rebuild_worker.start()
+
+    def _product_tree_rebuild_finished(self, result: object, task_id: int | None = None) -> None:
+        if task_id is not None and task_id != self._product_tree_rebuild_task_id:
+            return
+        self.product_tree_rebuild_worker = None
+        self.rebuild_product_tree_button.setEnabled(True)
+        if isinstance(result, Exception):
+            self.path_label.setText(f"产品目录树重建失败：{result}")
+            QMessageBox.warning(self, "产品目录树", f"产品目录树重建失败：{result}")
+            return
+        payload = dict(result) if isinstance(result, dict) else {}
+        self.path_label.setText(
+            "产品目录树重建完成："
+            f"分类 {payload.get('category_count', 0)}，"
+            f"模块 {payload.get('module_count', 0)}，"
+            f"对象 {payload.get('object_count', 0)}，"
+            f"树节点 {payload.get('node_count', 0)}"
+        )
+        self.refresh_mib_tree()
 
     def _show_detail(self, current: QTreeWidgetItem | None, previous: QTreeWidgetItem | None = None) -> None:
         _ = previous
@@ -1679,6 +1869,21 @@ class MibBrowserPage(QWidget):
         if text:
             QApplication.clipboard().setText(text)
 
+    def back_to_column_oid(self) -> None:
+        oid = self.oid_input.text().strip()
+        if not oid:
+            return
+        resolved = self._resolve_result_oid(oid)
+        base_oid = str(resolved.get("oid") or "").strip()
+        if base_oid and base_oid != oid and oid.startswith(base_oid + "."):
+            self.oid_input.setText(base_oid)
+            index = self.operation_combo.findText("Bulk Walk")
+            if index >= 0:
+                self.operation_combo.setCurrentIndex(index)
+            self.operation_label.setText(f"已回到列 OID：{base_oid}。可使用 Walk / Bulk Walk 遍历整列。")
+            return
+        QMessageBox.information(self, "MIB 浏览器", "当前 OID 未识别出可回退的实例后缀。")
+
     def fill_query_tool(self, run_now: bool) -> None:
         data = self._selected_data()
         if not data or not self._selected_method:
@@ -1758,13 +1963,19 @@ class MibBrowserPage(QWidget):
             access=str(data.get("access") or ""),
             old_value=old_value,
         )
+        if self.set_worker is not None:
+            self.set_worker.cancel()
+        self._set_task_id += 1
+        task_id = self._set_task_id
         self.set_worker = SnmpSetWorker(SnmpQueryService(self.center.site_repo), request, self)
-        self.set_worker.progress.connect(self.operation_label.setText)
-        self.set_worker.finished_with_result.connect(self._set_finished)
+        self.set_worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._set_task_id else None)
+        self.set_worker.finished_with_result.connect(lambda result, task_id=task_id: self._set_finished(result, task_id))
         self.set_worker.finished.connect(self.set_worker.deleteLater)
         self.set_worker.start()
 
-    def _set_finished(self, result: object) -> None:
+    def _set_finished(self, result: object, task_id: int | None = None) -> None:
+        if task_id is not None and task_id != self._set_task_id:
+            return
         self.set_worker = None
         if isinstance(result, Exception):
             self.operation_label.setText(f"Set 执行失败：{result}")
@@ -1831,8 +2042,15 @@ class MibBrowserPage(QWidget):
         if not oid:
             return
         method = operation_to_method(self.operation_combo.currentText())
+        data = self._selected_data() or self._resolve_result_oid(oid)
+        base_oid = str(data.get("oid") or "").strip()
+        if method == "Get" and int(data.get("is_scalar") or 0) and oid == base_oid and not oid.endswith(".0"):
+            oid = f"{oid}.0"
+            self.oid_input.setText(oid)
+        if method == "Get" and (int(data.get("is_table") or 0) or int(data.get("is_table_entry") or 0) or int(data.get("is_column") or 0)) and oid == base_oid:
+            QMessageBox.information(self, "MIB 浏览器", "当前对象是表或表字段根 OID，Get 需要具体实例。请改用 Walk / Get Bulk / Bulk Walk。")
+            return
         if method == "Set":
-            data = self._selected_data() or self._resolve_result_oid(oid)
             allowed, reason = can_set_mib_object(data, oid)
             if not allowed and str(data.get("name") or "") != oid:
                 QMessageBox.information(self, "SNMP Set", reason)
@@ -1849,10 +2067,17 @@ class MibBrowserPage(QWidget):
             device_id=target.device_id,
             device_name=target.device_name,
         )
+        if self.worker is not None:
+            self.worker.cancel()
+        self._query_task_id += 1
+        task_id = self._query_task_id
         self.worker = SnmpQueryWorker(SnmpQueryService(self.center.site_repo), request, self)
-        self.worker.progress.connect(lambda text: self.operation_label.setText(text))
-        self.worker.finished_with_result.connect(self._browser_query_finished)
+        self.worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._query_task_id else None)
+        self.worker.finished_with_result.connect(lambda result, task_id=task_id: self._browser_query_finished(result, task_id))
         self.worker.finished.connect(self.worker.deleteLater)
+        self.go_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.operation_label.setText(f"正在执行 {self.operation_combo.currentText()}...")
         self.worker.start()
 
     def show_advanced_parameters(self) -> None:
@@ -1888,12 +2113,39 @@ class MibBrowserPage(QWidget):
             self.center.site_repo.set_snmp_set_enabled(dialog.set_enabled_checkbox.isChecked())
 
     def cancel_query(self) -> None:
+        cancelled = False
         if self.worker is not None:
             self.worker.cancel()
-            self.operation_label.setText("正在取消查询...")
+            self._query_task_id += 1
+            cancelled = True
+        if self.tree_worker is not None:
+            self.tree_worker.cancel()
+            self._tree_task_id += 1
+            self.tree.clear()
+            self.tree.addTopLevelItem(QTreeWidgetItem(["已取消", "", ""]))
+            cancelled = True
+        if self.product_tree_rebuild_worker is not None:
+            self.product_tree_rebuild_worker.cancel()
+            self._product_tree_rebuild_task_id += 1
+            self.rebuild_product_tree_button.setEnabled(True)
+            cancelled = True
+        if self.set_worker is not None:
+            self.set_worker.cancel()
+            self._set_task_id += 1
+            cancelled = True
+        if cancelled:
+            self.go_button.setEnabled(self.device_combo.currentData() is not None)
+            self.cancel_button.setEnabled(False)
+        self.operation_label.setText("已取消" if cancelled else "没有正在执行的任务")
+        if cancelled:
+            self.path_label.setText("已取消当前后台任务")
 
-    def _browser_query_finished(self, result: object) -> None:
+    def _browser_query_finished(self, result: object, task_id: int | None = None) -> None:
+        if task_id is not None and task_id != self._query_task_id:
+            return
         self.worker = None
+        self.go_button.setEnabled(self.device_combo.currentData() is not None)
+        self.cancel_button.setEnabled(False)
         if isinstance(result, Exception):
             self.operation_label.setText(f"查询失败：{result}")
             return
@@ -1902,6 +2154,15 @@ class MibBrowserPage(QWidget):
             return
         self.last_result = result
         self.operation_label.setText(f"查询完成：{status_label(result.status)}，返回 {len(result.rows)} 条，耗时 {result.elapsed_ms} ms。{result.error_message}")
+        message = f"查询完成：{status_label(result.status)}，返回 {len(result.rows)} 条，耗时 {result.elapsed_ms} ms。{result.error_message}"
+        if not result.rows and not result.error_message:
+            message += "返回 0 条：可能 OID 不是可查询子树、对象仅用于 Trap、表为空、SNMP view 限制或当前设备不支持。"
+        if result.rows and result.request.method in {"Walk", "BulkWalk", "TableWalk", "Table Walk", "GetSubtree"}:
+            resolved = self._resolve_result_oid(result.request.oid)
+            base_oid = str(resolved.get("oid") or "")
+            if base_oid and base_oid != result.request.oid and result.request.oid.startswith(base_oid + "."):
+                message += " 当前 OID 看起来是表字段实例；若要遍历整列，请点击“回到列 OID”。"
+        self.operation_label.setText(message)
         rows = []
         for row in result.rows:
             resolved = self._resolve_result_oid(row.oid)
@@ -2482,6 +2743,9 @@ def mib_node_type(row: dict[str, object]) -> str:
 
 def source_filter_key(label: str) -> str:
     return {
+        "标准 MIB 库": "standard",
+        "H3C V5 MIB 库": "h3c_v5",
+        "H3C V7/V9 MIB 库": "h3c_v7v9",
         "当前设备启用字典": "current_device",
         "标准 MIB": "standard",
         "H3C 通用": "h3c_common",
@@ -2495,11 +2759,36 @@ def source_filter_key(label: str) -> str:
 
 
 def method_to_operation(method: str) -> str:
-    return {"GetNext": "Get Next", "BulkWalk": "Get Bulk"}.get(method, method)
+    return {
+        "GetNext": "Get Next",
+        "GetBulk": "Get Bulk",
+        "GetSubtree": "Get Subtree",
+        "BulkWalk": "Bulk Walk",
+        "TableWalk": "Table Walk",
+        "Table Walk": "Table Walk",
+    }.get(method, method)
 
 
 def operation_to_method(operation: str) -> str:
-    return {"Get Next": "GetNext", "Get Bulk": "BulkWalk", "Get Subtree": "Walk", "Bulk Walk": "BulkWalk"}.get(operation, operation)
+    return {"Get Next": "GetNext", "Get Bulk": "GetBulk", "Get Subtree": "GetSubtree", "Bulk Walk": "BulkWalk", "Table Walk": "TableWalk"}.get(operation, operation)
+
+
+def normalize_h3c_module_display_name(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.match(r"^\s*\d{1,3}\s*[-_－–—]\s*(HH3C-.+?MIB)\s*$", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def normalize_tree_oid(value: object) -> str:
+    text = str(value or "").strip().strip(".")
+    text = text.replace(" ", "")
+    if not text or not re.fullmatch(r"\d+(?:\.\d+)*", text):
+        return ""
+    if text.split(".", 1)[0] == "0":
+        return ""
+    return text
 
 
 def can_set_mib_object(item: dict[str, object], oid: str) -> tuple[bool, str]:
@@ -2524,8 +2813,21 @@ def oid_label(oid: str) -> str:
         "1.3": "org",
         "1.3.6": "dod",
         "1.3.6.1": "internet",
+        "1.3.6.1.1": "directory",
         "1.3.6.1.2": "mgmt",
         "1.3.6.1.2.1": "mib-2",
+        "1.3.6.1.2.1.1": "system",
+        "1.3.6.1.2.1.2": "interfaces",
+        "1.3.6.1.2.1.3": "at",
+        "1.3.6.1.2.1.4": "ip",
+        "1.3.6.1.2.1.5": "icmp",
+        "1.3.6.1.2.1.6": "tcp",
+        "1.3.6.1.2.1.7": "udp",
+        "1.3.6.1.2.1.8": "egp",
+        "1.3.6.1.2.1.10": "transmission",
+        "1.3.6.1.2.1.11": "snmp",
+        "1.3.6.1.2.1.25": "host",
+        "1.3.6.1.3": "experimental",
         "1.3.6.1.4": "private",
         "1.3.6.1.4.1": "enterprises",
         "1.3.6.1.4.1.25506": "h3c",

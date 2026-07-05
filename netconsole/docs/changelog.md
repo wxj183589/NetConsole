@@ -1,4 +1,10 @@
 v1.3.6
+- SNMP 中心：新增 H3C Comware MIB 基线包、产品 MIB 参考表、产品参考版本匹配、产品目录树和 MIB 字典集管理能力，支持 V5 与 V7/V9 多版本 MIB Module 并存。
+- SNMP 中心：优化 MIB 导入依赖解析，按导入批次建立 module_name 到文件路径索引，补齐 .mib/.smi/.sm2/.txt 扫描、标准 MIB 搜索路径、缺失依赖汇总和重新编译流程。
+- SNMP 中心：优化 MIB 浏览器，支持通用树与 H3C 产品目录树，清理产品参考表中的模块排序前缀，保留真实 HH3C MIB Module 名称，并改进 OID 树排序与节点属性展示。
+- SNMP 中心：修复 MIB 浏览器查询操作分派，Get、GetNext、GetBulk、GetSubtree、Walk、BulkWalk、TableWalk、Set 按当前 Operation 独立执行；GetBulk/Walk 可正确返回多条 H3C AP ID 记录。
+- SNMP 中心：增强 SNMP 查询体验，保留顶部 Go 作为统一执行入口，支持取消、最大返回提示、空子树原因提示、完整实例 OID 回退到列 OID 和 Trap/Notification 主动查询提示。
+- SNMP 中心：修复进入 SNMP 中心与 MIB 浏览器时的后台加载、SQLite 锁库和 UI 卡顿问题，避免旧异步任务覆盖当前页面状态。
 - 设备管理：调整顶部操作栏按钮顺序与入口展示，移除顶部“设备详情 / 刷新 / 字段”按钮，优化表格选择列宽度。
 - AC管理：轨旁 AP 规划新增备注字段，支持新增、编辑、导入、导出和持久化；AP 上线情况概览移除导出概览、保存历史快照和查看历史入口。
 - AC管理：FIT-AP 子页默认隐藏固化状态、新上线状态、新上线来源和新上线采集时间，并同步调整普通导出字段。

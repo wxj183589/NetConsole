@@ -153,6 +153,60 @@ TRAP_FIELDS.update(
 )
 
 
+def _extend_fields(target: dict[str, tuple[str, ...]], extra: dict[str, tuple[str, ...]]) -> None:
+    for field, synonyms in extra.items():
+        target[field] = (*target.get(field, ()), *synonyms)
+
+
+_extend_fields(
+    OBJECT_FIELDS,
+    {
+        "category_name": ("分册名", "分类名", "功能分类", "类别"),
+        "module_name": ("模块名", "MIB模块", "MIB模块名"),
+        "mib_file_name": ("MIB文件名", "MIB文件", "文件名"),
+        "root_node_name": ("根节点", "根节点名称"),
+        "parent_node_name": ("父节点名称", "父节点", "表节点名称"),
+        "object_name": ("全局节点名称及OID", "子节点名称及OID", "节点名", "节点名称", "对象名", "对象名称"),
+        "numeric_oid": ("OID", "节点OID", "数字OID"),
+        "access_from_reference": ("最大访问权限", "访问权限"),
+        "data_type_from_reference": ("数据类型", "类型"),
+        "value_range": ("有效范围", "取值范围", "值域"),
+        "chinese_description": ("含义", "中文含义", "中文描述", "描述"),
+        "function_description": ("功能描述", "功能介绍"),
+        "implementation_spec": ("实现规格", "实现说明"),
+        "operation_support": ("操作支持情况", "支持情况", "支持操作"),
+        "table_parent_name": ("所属表", "父表", "表名"),
+        "table_index_info": ("表节点信息", "索引", "索引信息"),
+    },
+)
+_extend_fields(
+    TRAP_FIELDS,
+    {
+        "category_name": ("分册名", "分类名", "功能分类", "类别"),
+        "module_name": ("模块名", "MIB模块", "MIB模块名"),
+        "mib_file_name": ("MIB文件名", "MIB文件", "文件名"),
+        "trap_name": ("告警节点名称", "告警名称", "Trap名称", "通知名称"),
+        "trap_oid": ("告警OID", "Trap OID", "通知OID", "OID"),
+        "trap_title": ("告警标题", "标题"),
+        "trap_type": ("告警类型", "Trap类型", "类型"),
+        "trap_level": ("告警级别", "级别"),
+        "clear_trap_oid": ("清除告警OID", "恢复Trap OID", "清除Trap OID"),
+        "clear_trap_name": ("清除告警名称", "恢复Trap名称", "清除Trap名称"),
+        "default_status": ("缺省状态", "默认状态"),
+        "trigger_reason": ("触发原因", "产生原因", "原因"),
+        "system_impact": ("系统影响", "影响"),
+        "status_control": ("状态控制",),
+        "varbind_oids": ("绑定变量OID", "变量OID"),
+        "varbind_names": ("绑定变量节点名称", "绑定变量名称", "变量名称"),
+        "varbind_descriptions": ("绑定变量含义", "绑定变量说明", "变量说明"),
+        "varbind_index_nodes": ("绑定变量索引节点", "索引节点"),
+        "varbind_types": ("绑定变量类型", "变量类型"),
+        "varbind_value_ranges": ("绑定变量取值范围", "变量取值范围"),
+        "suggestion": ("处理建议", "建议"),
+    },
+)
+
+
 class MibProductReferenceService:
     def __init__(self, paths: PathResolver, repository: GlobalMibRepository | None = None) -> None:
         self.paths = paths
@@ -185,6 +239,18 @@ class MibProductReferenceService:
                     object_rows.extend(parsed_objects)
                     trap_rows.extend(parsed_traps)
                 duplicate_id = int(duplicate["id"])
+                if not object_rows and not trap_rows:
+                    return ProductReferenceImportReport(
+                        source_path=str(source_path),
+                        stored_path=str(duplicate.get("source_file") or ""),
+                        file_hash=file_hash,
+                        status="failed",
+                        reference_id=duplicate_id,
+                        reference_name=str(duplicate.get("reference_name") or ""),
+                        sheet_names=sheet_names,
+                        error_message="产品 MIB 参考表未解析到对象或告警，请检查 Excel 表头并重新导入。",
+                        duplicate_reference_id=duplicate_id,
+                    )
                 self.repository.replace_product_reference_content(
                     duplicate_id,
                     sheet_names=list(workbook.sheetnames),
@@ -221,6 +287,16 @@ class MibProductReferenceService:
                 object_rows.extend(parsed_objects)
                 trap_rows.extend(parsed_traps)
             name = reference_name or meta.reference_name or _reference_name_from_file(source_path)
+            if not object_rows and not trap_rows:
+                return ProductReferenceImportReport(
+                    source_path=str(source_path),
+                    stored_path=str(stored_path),
+                    file_hash=file_hash,
+                    status="failed",
+                    reference_name=name,
+                    sheet_names=list(workbook.sheetnames),
+                    error_message="产品 MIB 参考表未解析到对象或告警，请检查 Excel 表头并重新导入。",
+                )
             reference_id = self.repository.insert_product_reference(
                 vendor=vendor or meta.vendor,
                 product_line=product_line or meta.product_line,

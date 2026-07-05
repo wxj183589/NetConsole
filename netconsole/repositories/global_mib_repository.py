@@ -13,6 +13,42 @@ from netconsole.models.mib_models import DictionarySetRecord, MibObjectRecord
 GLOBAL_MIB_SCHEMA_VERSION = "2026.07.05.snmp_center"
 
 
+def _oid_sort_key(value: object) -> tuple[int, tuple[int, ...], str]:
+    text = str(value or "").strip().strip(".")
+    parts = text.split(".") if text else []
+    if not parts or any(not part.isdigit() for part in parts):
+        return (1, (), text)
+    return (0, tuple(int(part) for part in parts), text)
+
+
+def _is_numeric_oid(value: object) -> bool:
+    return _oid_sort_key(value)[0] == 0
+
+
+def _product_tree_sort_key(row: dict[str, object]) -> tuple[object, ...]:
+    node_type = str(row.get("node_type") or "")
+    if node_type == "category":
+        return (
+            int(row.get("sort_order") or 0),
+            str(row.get("display_name") or row.get("node_name") or ""),
+            int(row.get("id") or 0),
+        )
+    sort_oid = row.get("sort_oid") or row.get("numeric_oid")
+    if sort_oid:
+        return (
+            0,
+            _oid_sort_key(sort_oid),
+            str(row.get("display_name") or row.get("node_name") or ""),
+            int(row.get("id") or 0),
+        )
+    return (
+        1,
+        int(row.get("sort_order") or 0),
+        str(row.get("display_name") or row.get("node_name") or ""),
+        int(row.get("id") or 0),
+    )
+
+
 GLOBAL_MIB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_metadata (
     key TEXT PRIMARY KEY,
@@ -291,6 +327,7 @@ CREATE TABLE IF NOT EXISTS mib_product_reference_objects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     reference_id INTEGER NOT NULL,
     tree_node_id INTEGER,
+    sheet_name TEXT,
     category_name TEXT,
     module_name TEXT,
     mib_file_name TEXT,
@@ -547,6 +584,7 @@ class GlobalMibRepository:
         }.items():
             self._ensure_column(conn, "mib_product_reference_tree_nodes", column, definition)
         for column, definition in {
+            "sheet_name": "TEXT",
             "access_from_reference": "TEXT",
             "data_type_from_reference": "TEXT",
             "value_range": "TEXT",
@@ -1046,7 +1084,7 @@ class GlobalMibRepository:
             return [dict(row) for row in rows]
 
     def list_objects(self, search: str = "", module_name: str = "", limit: int = 1000, source_filter: str = "", dictionary_ids: list[int] | None = None, module_id: int | None = None, module_ids: list[int] | None = None) -> list[dict[str, object]]:
-        clauses: list[str] = []
+        clauses: list[str] = ["o.oid <> ''", "o.oid GLOB '[1-9]*'", "o.oid NOT LIKE '%.%.'", "o.oid NOT LIKE '% %'"]
         params: list[object] = []
         if search:
             like = f"%{search}%"
@@ -1106,11 +1144,18 @@ class GlobalMibRepository:
                 """,
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            return sorted((dict(row) for row in rows), key=lambda row: (_oid_sort_key(row.get("oid")), str(row.get("name") or "")))
 
     def list_oid_children(self, parent_oid: str, *, source_filter: str = "", dictionary_ids: list[int] | None = None, module_ids: list[int] | None = None, limit: int = 500) -> list[dict[str, object]]:
-        clauses = ["o.parent_oid = ?"]
-        params: list[object] = [parent_oid]
+        child_like = f"{parent_oid}.%"
+        clauses = [
+            "(o.parent_oid = ? OR (o.oid LIKE ? AND substr(o.oid, length(?) + 2) NOT LIKE '%.%'))",
+            "o.oid <> ''",
+            "o.oid GLOB '[1-9]*'",
+            "o.oid NOT LIKE '%.%.'",
+            "o.oid NOT LIKE '% %'",
+        ]
+        params: list[object] = [parent_oid, child_like, parent_oid]
         if source_filter == "h3c_v5":
             clauses.append("p.vendor = 'H3C' AND p.version_line = 'V5'")
         elif source_filter == "h3c_v7v9":
@@ -1144,12 +1189,12 @@ class GlobalMibRepository:
                 LEFT JOIN mib_modules m ON m.id = o.module_id
                 LEFT JOIN mib_source_packages p ON p.id = m.source_package_id
                 WHERE {' AND '.join(clauses)}
-                ORDER BY CAST(substr(o.oid, length(o.parent_oid) + 2) AS INTEGER), o.name
+                ORDER BY o.oid, o.name
                 LIMIT ?
                 """,
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            return sorted((dict(row) for row in rows), key=lambda row: (_oid_sort_key(row.get("oid")), str(row.get("name") or "")))
 
     def get_object_translation(self, *, module_name: str, object_name: str, numeric_oid: str, source_text: str) -> dict[str, object] | None:
         with self.connect() as conn:
@@ -1418,6 +1463,19 @@ class GlobalMibRepository:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_product_reference_objects(self, reference_id: int) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM mib_product_reference_objects
+                WHERE reference_id = ?
+                ORDER BY category_name, module_name, mib_file_name, root_node_name, parent_node_name, numeric_oid, object_name, id
+                """,
+                (int(reference_id),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def list_product_trap_overrides(self, reference_id: int) -> list[dict[str, object]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -1651,7 +1709,78 @@ class GlobalMibRepository:
                 """,
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            items = [dict(row) for row in rows]
+            for item in items:
+                item["sort_oid"] = self._product_tree_node_sort_oid(conn, int(item.get("id") or 0), str(item.get("numeric_oid") or ""))
+            return sorted(items, key=_product_tree_sort_key)
+
+    def _product_tree_node_sort_oid(self, conn: sqlite3.Connection, node_id: int, numeric_oid: str = "") -> str:
+        if _is_numeric_oid(numeric_oid):
+            return numeric_oid.strip().strip(".")
+        rows = conn.execute(
+            """
+            WITH RECURSIVE descendants(id, numeric_oid) AS (
+                SELECT id, numeric_oid
+                FROM mib_product_reference_tree_nodes
+                WHERE parent_id = ?
+                UNION ALL
+                SELECT child.id, child.numeric_oid
+                FROM mib_product_reference_tree_nodes child
+                JOIN descendants parent ON child.parent_id = parent.id
+            )
+            SELECT numeric_oid
+            FROM descendants
+            WHERE numeric_oid IS NOT NULL AND numeric_oid <> ''
+            """,
+            (int(node_id),),
+        ).fetchall()
+        oids = [str(row["numeric_oid"]).strip().strip(".") for row in rows if _is_numeric_oid(row["numeric_oid"])]
+        return min(oids, key=_oid_sort_key) if oids else ""
+
+    def rebuild_product_reference_tree(self, reference_id: int) -> dict[str, int]:
+        now = _now()
+        reference_id = int(reference_id)
+        with self.connect() as conn:
+            reference = conn.execute("SELECT reference_name FROM mib_product_references WHERE id = ?", (reference_id,)).fetchone()
+            if reference is None:
+                raise ValueError(f"Product reference not found: {reference_id}")
+            object_rows = [dict(row) for row in conn.execute("SELECT * FROM mib_product_reference_objects WHERE reference_id = ? ORDER BY id", (reference_id,)).fetchall()]
+            if not object_rows:
+                override_rows = conn.execute(
+                    """
+                    SELECT category_name, module_name, mib_file_name, root_node_name, parent_node_name,
+                           object_name, numeric_oid, access_from_reference, data_type_from_reference,
+                           value_range, chinese_description, function_description, implementation_spec,
+                           operation_support
+                    FROM mib_product_object_overrides
+                    WHERE reference_id = ?
+                    ORDER BY category_name, module_name, mib_file_name, root_node_name, parent_node_name, numeric_oid, object_name, id
+                    """,
+                    (reference_id,),
+                ).fetchall()
+                object_rows = [dict(row) for row in override_rows]
+            trap_rows = [dict(row) for row in conn.execute("SELECT * FROM mib_product_trap_overrides WHERE reference_id = ? ORDER BY category_name, module_name, mib_file_name, trap_oid, trap_name, id", (reference_id,)).fetchall()]
+            if not object_rows and not trap_rows:
+                raise ValueError("该产品参考表没有解析对象，请重新导入 Excel")
+
+            self._insert_product_reference_tree_nodes(conn, reference_id, str(reference["reference_name"] or f"reference:{reference_id}"), object_rows, trap_rows, now)
+            node_count = int(conn.execute("SELECT COUNT(*) FROM mib_product_reference_tree_nodes WHERE reference_id = ?", (reference_id,)).fetchone()[0] or 0)
+            category_count = int(conn.execute("SELECT COUNT(*) FROM mib_product_reference_tree_nodes WHERE reference_id = ? AND node_type = 'category'", (reference_id,)).fetchone()[0] or 0)
+            module_count = int(conn.execute("SELECT COUNT(*) FROM mib_product_reference_tree_nodes WHERE reference_id = ? AND node_type = 'module'", (reference_id,)).fetchone()[0] or 0)
+            object_count = int(conn.execute("SELECT COUNT(*) FROM mib_product_reference_objects WHERE reference_id = ?", (reference_id,)).fetchone()[0] or 0)
+            conn.execute(
+                "UPDATE mib_product_references SET object_count = ?, trap_count = ?, updated_at = ? WHERE id = ?",
+                (object_count, len(trap_rows), now, reference_id),
+            )
+            conn.commit()
+            return {
+                "reference_id": reference_id,
+                "node_count": node_count,
+                "category_count": category_count,
+                "module_count": module_count,
+                "object_count": object_count,
+                "trap_count": len(trap_rows),
+            }
 
     def list_product_reference_module_names(self, reference_id: int, *, category_name: str = "") -> list[str]:
         params: list[object] = [int(reference_id)]
@@ -1778,6 +1907,7 @@ class GlobalMibRepository:
             key = (parent_id, node_type, display)
             if key in node_cache:
                 return node_cache[key]
+            is_leaf = node_type in {"object", "trap"}
             cursor = conn.execute(
                 """
                 INSERT INTO mib_product_reference_tree_nodes
@@ -1796,8 +1926,8 @@ class GlobalMibRepository:
                     row.get("mib_file_name", ""),
                     row.get("root_node_name", ""),
                     row.get("parent_node_name", ""),
-                    row.get("object_name", ""),
-                    row.get("numeric_oid", ""),
+                    (row.get("object_name", "") or row.get("trap_name", "")) if is_leaf else "",
+                    (row.get("numeric_oid", "") or row.get("trap_oid", "")) if is_leaf else "",
                     row.get("chinese_description", "") or row.get("function_description", "") or row.get("implementation_spec", ""),
                     sort_order,
                     enabled_default,
@@ -1864,12 +1994,13 @@ class GlobalMibRepository:
         conn.execute(
             """
             INSERT INTO mib_product_reference_objects
-            (reference_id, tree_node_id, category_name, module_name, mib_file_name, root_node_name, parent_node_name, object_name, numeric_oid, access_from_reference, data_type_from_reference, value_range, meaning, function_description, implementation_spec, operation_support, mib_object_id, match_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (reference_id, tree_node_id, sheet_name, category_name, module_name, mib_file_name, root_node_name, parent_node_name, object_name, numeric_oid, access_from_reference, data_type_from_reference, value_range, meaning, function_description, implementation_spec, operation_support, mib_object_id, match_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 reference_id,
                 tree_node_id,
+                row.get("sheet_name", ""),
                 row.get("category_name", ""),
                 row.get("module_name", ""),
                 row.get("mib_file_name", ""),

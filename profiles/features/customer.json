@@ -55,8 +55,8 @@
       "enabled": false
     },
     "rail.car_network_diagnostic": {
-      "visible": false,
-      "enabled": false
+      "visible": true,
+      "enabled": true
     },
     "rail.trackside_ap_business": {
       "visible": true,

@@ -142,10 +142,12 @@ class MibBrowserTreeLoadWorker(CancellableThread):
         module_id: int | None = None,
         parent_oid: str = "",
         limit: int = 500,
+        task_id: int = 0,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.db_path = db_path
+        self.task_id = int(task_id)
         self.mode = mode
         self.keyword = keyword
         self.source_filter = source_filter
@@ -156,6 +158,9 @@ class MibBrowserTreeLoadWorker(CancellableThread):
 
     def run(self) -> None:
         try:
+            if self.is_cancelled():
+                self.finished_with_result.emit({"task_id": self.task_id, "mode": self.mode, "cancelled": True, "rows": []})
+                return
             repository = GlobalMibRepository(self.db_path)
             if self.mode == "module":
                 rows = repository.list_objects(module_id=int(self.module_id or 0), limit=self.limit)
@@ -175,9 +180,9 @@ class MibBrowserTreeLoadWorker(CancellableThread):
                     dictionary_ids=self.dictionary_ids,
                     module_id=int(self.module_id or 0) or None,
                 )
-            self.finished_with_result.emit({"mode": self.mode, "module_id": self.module_id, "parent_oid": self.parent_oid, "rows": rows})
+            self.finished_with_result.emit({"task_id": self.task_id, "mode": self.mode, "module_id": self.module_id, "parent_oid": self.parent_oid, "rows": [] if self.is_cancelled() else rows, "cancelled": self.is_cancelled()})
         except Exception as exc:
-            self.finished_with_result.emit(exc)
+            self.finished_with_result.emit({"task_id": self.task_id, "mode": self.mode, "error": str(exc), "rows": []})
 
 
 class ProductReferenceCompareWorker(CancellableThread):
@@ -193,6 +198,23 @@ class ProductReferenceCompareWorker(CancellableThread):
         try:
             self.progress.emit("正在对比产品 MIB 参考表...")
             result = self.service.compare(self.left_reference_id, self.right_reference_id, persist=True)
+        except Exception as exc:
+            result = exc
+        self.finished_with_result.emit(result)
+
+
+class ProductReferenceTreeRebuildWorker(CancellableThread):
+    finished_with_result = Signal(object)
+
+    def __init__(self, db_path, reference_id: int, parent=None) -> None:
+        super().__init__(parent)
+        self.db_path = db_path
+        self.reference_id = int(reference_id)
+
+    def run(self) -> None:
+        try:
+            self.progress.emit("正在重建产品 MIB 参考目录树...")
+            result = GlobalMibRepository(self.db_path).rebuild_product_reference_tree(self.reference_id)
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)
