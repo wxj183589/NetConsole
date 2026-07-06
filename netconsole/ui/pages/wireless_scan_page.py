@@ -40,6 +40,7 @@ from netconsole.services.network_tools.wireless_scan_service import (
     wireless_scanner_external_path,
 )
 from netconsole.ui.dialogs.wireless_scan_detail_dialog import WirelessScanDetailDialog
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
@@ -190,6 +191,7 @@ class WirelessScanPage(QWidget):
         self.only_trackside_check.setText(self.i18n.t("wireless_scan.only_trackside"))
         self.export_button.setText(self.i18n.t("wireless_scan.export"))
         self.external_button.setText(self.i18n.t("wireless_scan.open_external"))
+        self._apply_button_icons()
         self.search_edit.setPlaceholderText(self.i18n.t("wireless_scan.search_placeholder"))
         current_scan_source = self.scan_source_combo.currentData() or "auto"
         self.scan_source_combo.clear()
@@ -223,6 +225,15 @@ class WirelessScanPage(QWidget):
         self.tabs.setTabText(1, self.i18n.t("wireless_scan.scan_history"))
         self.tabs.setTabText(2, self.i18n.t("wireless_scan.raw_output"))
         self._refresh_external_button()
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.start_button, "PLAY"),
+            (self.stop_button, "CANCEL"),
+            (self.export_button, "SHARE"),
+            (self.external_button, "FOLDER"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def load_adapters(self) -> None:
         if self.adapter_worker and self.adapter_worker.isRunning():

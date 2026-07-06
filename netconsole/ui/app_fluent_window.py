@@ -593,34 +593,10 @@ class AppFluentWindow(SplitFluentWindow):
         return []
 
     def _snmp_actions(self) -> list[NCCommandAction]:
-        return [
-            self._action(None, "初始化资源", lambda: self._click_raw("snmp_center", "init_button"), primary=True),
-            self._action(FIF.DOWNLOAD, "导入 MIB"),
-            self._action(FIF.SEARCH, "搜索 OID"),
-            self._action(FIF.SEARCH, "GET"),
-            self._action(FIF.CHEVRON_RIGHT, "GET NEXT"),
-            self._action(FIF.SEND, "WALK"),
-            self._action(None, "GET BULK"),
-            self._action(None, "清空"),
-            self._action(FIF.SHARE, "导出"),
-            self._action(FIF.SYNC, "刷新", lambda: self._call_raw("snmp_center", "refresh_all")),
-            self._action(None, "重建 H3C MIB 库", lambda: self._click_raw("snmp_center", "rebuild_button"), overflow=True),
-            self._action(None, "清空并重建 SNMP 资源库", lambda: self._click_raw("snmp_center", "reset_button"), overflow=True),
-            self._action(None, "Trap 查看", overflow=True),
-            self._action(None, "Set 测试", overflow=True),
-            self._action(FIF.FOLDER, "打开 MIB 目录", overflow=True),
-        ]
+        return []
 
     def _network_actions(self) -> list[NCCommandAction]:
-        return [
-            self._action(FIF.COMMAND_PROMPT, "Ping"),
-            self._action(FIF.SPEED_HIGH, "高频 Ping"),
-            self._action(FIF.PLAY, "iperf 服务端"),
-            self._action(FIF.SEND, "iperf 客户端"),
-            self._action(FIF.CANCEL, "停止"),
-            self._action(FIF.SHARE, "导出结果"),
-            self._action(FIF.FOLDER, "打开日志目录"),
-        ]
+        return []
 
     def _log_actions(self) -> list[NCCommandAction]:
         return [

@@ -46,6 +46,7 @@ from netconsole.services.windows_network_manager import (
     build_open_network_connections_command,
     parse_prefix_or_netmask,
 )
+from netconsole.ui.components.button_icons import apply_button_icon
 
 
 ADAPTER_HEADERS = ["名称", "描述", "MAC", "状态", "速率", "IPv4", "网关", "标签"]
@@ -388,7 +389,26 @@ class NetworkAdapterRoutePage(QWidget):
         self.tabs.setTabText(0, self.i18n.t("network_manager.adapter_config"))
         if self.tabs.count() > 1:
             self.tabs.setTabText(1, self.i18n.t("network_manager.route_config"))
+        self._apply_button_icons()
         self._sync_permission_state()
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.refresh_button, "SYNC"),
+            (self.open_connections_button, "FOLDER"),
+            (self.admin_button, "SETTING"),
+            (self.save_profile_button, "SAVE"),
+            (self.apply_profile_button, "ACCEPT"),
+            (self.refresh_vlan_button, "SYNC"),
+            (self.reset_button, "RETURN"),
+            (self.apply_ip_button, "EDIT"),
+            (self.add_route_button, "ADD"),
+            (self.delete_route_button, "DELETE"),
+            (self.save_route_profile_button, "SAVE"),
+            (self.apply_route_button, "ACCEPT"),
+            (self.remove_route_button, "DELETE"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def _build_ui(self) -> None:
         top = QHBoxLayout()

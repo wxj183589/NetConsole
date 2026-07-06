@@ -56,6 +56,7 @@ from netconsole.services.network_tools.toolbox.route_tools import (
     sort_route_rows,
 )
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import configure_readable_table_columns, configure_readonly_table
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
@@ -350,6 +351,9 @@ class ToolResultPanel(QGroupBox):
         self.export_csv_button = QPushButton("导出 CSV")
         self.export_xlsx_button = QPushButton("导出 XLSX")
         self.clear_button = QPushButton("清空")
+        apply_button_icon(self.export_csv_button, "SHARE")
+        apply_button_icon(self.export_xlsx_button, "SHARE")
+        apply_button_icon(self.clear_button, "DELETE")
 
         for button in (self.export_csv_button, self.export_xlsx_button, self.clear_button):
             button.setFixedWidth(92)
@@ -599,20 +603,22 @@ class NetworkToolboxPage(QWidget):
         grid.addWidget(QLabel(label), row, 0)
         grid.addWidget(widget, row, 1)
 
-    def _action_button(self, text: str, slot) -> QPushButton:
+    def _action_button(self, text: str, slot, icon_name: str | None = None) -> QPushButton:
         button = QPushButton(text)
         button.setMinimumSize(104, 32)
         button.setMaximumWidth(150)
         button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        apply_button_icon(button, icon_name)
         button.clicked.connect(slot)
         return button
 
-    def _network_action_button(self, text: str, slot) -> QPushButton:
+    def _network_action_button(self, text: str, slot, icon_name: str | None = None) -> QPushButton:
         button = QPushButton(text)
         button.setObjectName("networkPingActionButton")
         button.setMinimumSize(100, 34)
         button.setMaximumWidth(140)
         button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        apply_button_icon(button, icon_name)
         button.clicked.connect(slot)
         return button
 
@@ -641,7 +647,7 @@ class NetworkToolboxPage(QWidget):
         self.ipv4_panel = panel
         self.ipv4_edit = QLineEdit("192.168.1.1/24")
         self._add_row(grid, 0, "网络地址", self.ipv4_edit)
-        actions.addWidget(self._action_button("计算", self.calculate_ipv4))
+        actions.addWidget(self._action_button("计算", self.calculate_ipv4, "SEARCH"))
         return page
 
     def _ipv6_tab(self) -> QWidget:
@@ -649,7 +655,7 @@ class NetworkToolboxPage(QWidget):
         self.ipv6_panel = panel
         self.ipv6_edit = QLineEdit("2408::1/64")
         self._add_row(grid, 0, "IPv6 地址/前缀", self.ipv6_edit)
-        actions.addWidget(self._action_button("计算", self.calculate_ipv6))
+        actions.addWidget(self._action_button("计算", self.calculate_ipv6, "SEARCH"))
         return page
 
     def _vlsm_tab(self) -> QWidget:
@@ -662,7 +668,7 @@ class NetworkToolboxPage(QWidget):
         self.vlsm_requests_edit.setMaximumHeight(112)
         self._add_row(grid, 0, "主网络", self.vlsm_parent_edit)
         self._add_row(grid, 1, "子网需求", self.vlsm_requests_edit)
-        actions.addWidget(self._action_button("规划 VLSM", self.calculate_vlsm))
+        actions.addWidget(self._action_button("规划 VLSM", self.calculate_vlsm, "EDIT"))
         return page
 
     def _subnet_split_tab(self) -> QWidget:
@@ -674,7 +680,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 0, "主网络", self.subnet_parent_edit)
         self._add_row(grid, 1, "目标前缀", self.subnet_prefix_spin)
         self._add_row(grid, 2, "每页数量", self.subnet_page_size_spin)
-        actions.addWidget(self._action_button("划分", self.calculate_subnets))
+        actions.addWidget(self._action_button("划分", self.calculate_subnets, "EDIT"))
         return page
 
     def _route_summary_tab(self) -> QWidget:
@@ -685,7 +691,7 @@ class NetworkToolboxPage(QWidget):
         self.summary_input.setPlainText("\n".join(["192.168.0.0/24", "192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"]))
         self.summary_input.setMaximumHeight(112)
         self._add_row(grid, 0, "每行一个网段", self.summary_input)
-        actions.addWidget(self._action_button("汇总", self.calculate_route_summary))
+        actions.addWidget(self._action_button("汇总", self.calculate_route_summary, "ACCEPT"))
         return page
 
     def _wildcard_tab(self) -> QWidget:
@@ -696,7 +702,7 @@ class NetworkToolboxPage(QWidget):
         self.wildcard_input.setPlainText("\n".join(["/24", "255.255.0.0", "192.168.0.0 255.255.0.0"]))
         self.wildcard_input.setMaximumHeight(112)
         self._add_row(grid, 0, "输入", self.wildcard_input)
-        actions.addWidget(self._action_button("计算反掩码", self.calculate_wildcard))
+        actions.addWidget(self._action_button("计算反掩码", self.calculate_wildcard, "SEARCH"))
         return page
 
     def _single_ping_tab(self) -> QWidget:
@@ -718,7 +724,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 2, "包大小", self.single_ping_size)
         grid.addLayout(quick_row, 2, 2)
         self._add_row(grid, 3, "超时(ms)", self.single_ping_timeout)
-        actions.addWidget(self._action_button("开始 Ping", self.run_single_ping))
+        actions.addWidget(self._action_button("开始 Ping", self.run_single_ping, "PLAY"))
         return page
 
     def _continuous_ping_tab(self) -> QWidget:
@@ -732,7 +738,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 1, "间隔(秒)", self.continuous_ping_interval)
         self._add_row(grid, 2, "包大小", self.continuous_ping_size)
         self._add_row(grid, 3, "超时(ms)", self.continuous_ping_timeout)
-        actions.addWidget(self._action_button("采样一次", self.run_continuous_sample))
+        actions.addWidget(self._action_button("采样一次", self.run_continuous_sample, "PLAY"))
         return page
 
     def _batch_ping_tab(self) -> QWidget:
@@ -749,7 +755,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 1, "超时(ms)", self.batch_ping_timeout)
         self._add_row(grid, 2, "并发数", self.batch_ping_concurrency)
         self._add_row(grid, 3, "模式", self.batch_ping_mode)
-        actions.addWidget(self._action_button("批量 Ping", self.run_batch_ping))
+        actions.addWidget(self._action_button("批量 Ping", self.run_batch_ping, "PLAY"))
         return page
 
     def _network_ping_tab(self) -> QWidget:
@@ -794,6 +800,7 @@ class NetworkToolboxPage(QWidget):
         refresh.setMinimumSize(112, 34)
         refresh.setMaximumWidth(128)
         refresh.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        apply_button_icon(refresh, "SYNC")
         refresh.clicked.connect(self.refresh_network_adapters)
         self.network_adapter_combo.currentIndexChanged.connect(self._network_adapter_changed)
 
@@ -829,11 +836,11 @@ class NetworkToolboxPage(QWidget):
         actions.setSpacing(8)
         actions_layout.addLayout(actions)
         for button in (
-            self._network_action_button("扫描网段", self.run_network_ping),
-            self._network_action_button("停止", self.stop_network_ping),
-            self._network_action_button("导出 CSV", lambda: panel.export_current("csv")),
-            self._network_action_button("导出 XLSX", lambda: panel.export_current("xlsx")),
-            self._network_action_button("清空", self.clear_network_ping_results),
+            self._network_action_button("扫描网段", self.run_network_ping, "PLAY"),
+            self._network_action_button("停止", self.stop_network_ping, "CANCEL"),
+            self._network_action_button("导出 CSV", lambda: panel.export_current("csv"), "SHARE"),
+            self._network_action_button("导出 XLSX", lambda: panel.export_current("xlsx"), "SHARE"),
+            self._network_action_button("清空", self.clear_network_ping_results, "DELETE"),
         ):
             actions.addWidget(button)
         actions.addStretch(1)
@@ -903,7 +910,7 @@ class NetworkToolboxPage(QWidget):
         grid.addLayout(quick_row, 1, 2)
         self._add_row(grid, 2, "测试次数", self.tcp_count)
         self._add_row(grid, 3, "超时(秒)", self.tcp_timeout)
-        actions.addWidget(self._action_button("TCP Ping", self.run_tcp_ping))
+        actions.addWidget(self._action_button("TCP Ping", self.run_tcp_ping, "PLAY"))
         return page
 
     def _routes_page(self) -> QWidget:
@@ -931,12 +938,12 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 4, "\u63a5\u53e3\u7d22\u5f15", self.route_interface_index)
         self._add_row(grid, 5, "\u8dc3\u70b9\u6570", self.route_metric)
         grid.addWidget(self.route_persistent, 6, 1)
-        refresh = self._action_button("\u5237\u65b0\u8def\u7531", self.refresh_routes)
-        preview_add = self._action_button("\u6dfb\u52a0\u9884\u89c8", self.preview_add_route)
-        preview_delete = self._action_button("\u5220\u9664\u9884\u89c8", self.preview_delete_route)
-        preview_selected = self._action_button("\u9009\u4e2d\u5220\u9664\u9884\u89c8", self.preview_selected_route_delete)
-        execute_add = self._action_button("\u6267\u884c\u6dfb\u52a0", self.execute_add_route)
-        execute_delete = self._action_button("\u6267\u884c\u5220\u9664", self.execute_delete_route)
+        refresh = self._action_button("\u5237\u65b0\u8def\u7531", self.refresh_routes, "SYNC")
+        preview_add = self._action_button("\u6dfb\u52a0\u9884\u89c8", self.preview_add_route, "ADD")
+        preview_delete = self._action_button("\u5220\u9664\u9884\u89c8", self.preview_delete_route, "DELETE")
+        preview_selected = self._action_button("\u9009\u4e2d\u5220\u9664\u9884\u89c8", self.preview_selected_route_delete, "DELETE")
+        execute_add = self._action_button("\u6267\u884c\u6dfb\u52a0", self.execute_add_route, "ACCEPT")
+        execute_delete = self._action_button("\u6267\u884c\u5220\u9664", self.execute_delete_route, "DELETE")
         for button in (execute_add, execute_delete):
             button.setEnabled(is_admin())
         for button in (refresh, preview_add, preview_delete, preview_selected, execute_add, execute_delete):

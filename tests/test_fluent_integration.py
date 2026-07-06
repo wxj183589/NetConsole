@@ -277,6 +277,65 @@ def test_rail_transit_uses_only_tab_local_actions():
     window.close()
 
 
+def test_network_tools_uses_only_tab_local_actions():
+    from PySide6.QtWidgets import QPushButton
+
+    from netconsole.app import build_window
+    from netconsole.ui.components.nc_command_bar import NCCommandBar
+
+    app()
+    window = build_window()
+    page = window.pages["network_tools"]
+    raw_page = window.raw_pages["network_tools"]
+
+    assert page.findChild(NCCommandBar) is None
+
+    buttons = [
+        raw_page.iperf_page.server_start_button,
+        raw_page.iperf_page.server_stop_button,
+        raw_page.iperf_page.client_start_button,
+        raw_page.iperf_page.client_stop_button,
+        raw_page.wireless_scan_page.start_button,
+        raw_page.wireless_scan_page.stop_button,
+        raw_page.toolbox_page.single_ping_panel.export_csv_button,
+        raw_page.toolbox_page.single_ping_panel.clear_button,
+    ]
+    for button in buttons:
+        assert isinstance(button, QPushButton)
+        assert button.text().strip()
+        assert button.toolTip().strip()
+    window.close()
+
+
+def test_snmp_center_uses_only_tab_local_actions():
+    from PySide6.QtWidgets import QPushButton
+
+    from netconsole.app import build_window
+    from netconsole.ui.components.nc_command_bar import NCCommandBar
+
+    app()
+    window = build_window()
+    page = window.pages["snmp_center"]
+    raw_page = window.raw_pages["snmp_center"]
+
+    assert page.findChild(NCCommandBar) is None
+
+    buttons = [
+        raw_page.overview_page.init_button,
+        raw_page.overview_page.rebuild_button,
+        raw_page.overview_page.reset_button,
+        raw_page.browser_page.go_button,
+    ]
+    assert raw_page.browser_page.go_button.text() == "执行查询"
+    for button in buttons:
+        assert isinstance(button, QPushButton)
+        assert button.text().strip()
+        assert button.toolTip().strip()
+    query_button_texts = {button.text() for button in raw_page.query_page.findChildren(QPushButton)}
+    assert {"执行查询", "取消", "导出结果", "刷新设备", "从 MIB 选择"} <= query_button_texts
+    window.close()
+
+
 def test_visible_fluent_window_close_requires_confirmation(monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 

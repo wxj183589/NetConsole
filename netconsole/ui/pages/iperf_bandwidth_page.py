@@ -35,6 +35,7 @@ from netconsole.services.network_tools.iperf_runner import (
     normalize_bandwidth_text,
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
@@ -246,6 +247,7 @@ class IperfBandwidthPage(QWidget):
         tooltip = self.i18n.t("iperf.target_bandwidth_tooltip")
         self.client_bandwidth_edit.setToolTip(tooltip)
         self.client_bandwidth_unit_combo.setToolTip(self.i18n.t("iperf.bandwidth_unit"))
+        self._apply_button_icons()
         for widget in (
             self.server_port_spin,
             self.server_interval_spin,
@@ -259,6 +261,19 @@ class IperfBandwidthPage(QWidget):
         ):
             widget.setToolTip(self.i18n.t("iperf.no_wheel_hint"))
         self.interval_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), "Mbps", self.i18n.t("iperf.retransmits"), self.i18n.t("iperf.transfer"), self.i18n.t("online_mr.raw")])
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.server_start_button, "PLAY"),
+            (self.server_stop_button, "CANCEL"),
+            (self.server_clear_button, "DELETE"),
+            (self.open_logs_button, "FOLDER"),
+            (self.client_start_button, "PLAY"),
+            (self.client_stop_button, "CANCEL"),
+            (self.client_clear_button, "DELETE"),
+            (self.client_open_logs_button, "FOLDER"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def refresh_tool_status(self) -> None:
         tool = find_iperf_tool(self.paths)

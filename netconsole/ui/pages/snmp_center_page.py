@@ -61,6 +61,7 @@ from netconsole.services.snmp_client import SnmpClient
 from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services.snmp_trap_service import SnmpTrapService
 from netconsole.services.topology_service import TopologyService
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
 from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
 
@@ -69,6 +70,12 @@ SNMP_SERVICE_STATE: dict[str, dict[str, object]] = {}
 TEMPORARY_TARGET_KEY = "__temporary_snmp_target__"
 TREE_MODE_GENERAL = "general"
 TREE_MODE_H3C_PRODUCT = "h3c_product"
+
+
+def snmp_action_button(text: str, icon_name: str | None = None) -> QPushButton:
+    button = QPushButton(text)
+    apply_button_icon(button, icon_name)
+    return button
 RESULT_HEADERS = ["操作", "名称/OID", "值", "类型", "IP:端口", "状态", "耗时(ms)", "原始OID", "索引", "解码索引", "模块", "时间", "错误信息"]
 RESULT_COLUMN_WIDTHS = {
     "操作": 80,
@@ -380,9 +387,9 @@ class SnmpOverviewPage(QWidget):
         self.progress_bar.setRange(0, 100)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.init_button = QPushButton("初始化 / 检查 SNMP 资源")
-        self.rebuild_button = QPushButton("重建内置 H3C MIB 库")
-        self.reset_button = QPushButton("清空并重建 SNMP 资源库")
+        self.init_button = snmp_action_button("初始化 / 检查 SNMP 资源", "SYNC")
+        self.rebuild_button = snmp_action_button("重建内置 H3C MIB 库", "SYNC")
+        self.reset_button = snmp_action_button("清空并重建 SNMP 资源库", "DELETE")
         self.init_button.clicked.connect(lambda: self.start_worker("initialize"))
         self.rebuild_button.clicked.connect(lambda: self.start_worker("rebuild_h3c"))
         self.reset_button.clicked.connect(self.confirm_reset)
@@ -529,10 +536,10 @@ class MibResourcePage(QWidget):
         self.missing_summary = QTextEdit()
         self.missing_summary.setReadOnly(True)
         self.only_missing = QCheckBox("只显示缺依赖模块")
-        import_file = QPushButton("导入 MIB / 产品参考表")
-        import_dir = QPushButton("目录批量导入")
-        recompile_missing = QPushButton("重新编译缺依赖模块")
-        reindex = QPushButton("刷新列表")
+        import_file = snmp_action_button("导入 MIB / 产品参考表", "DOWNLOAD")
+        import_dir = snmp_action_button("目录批量导入", "FOLDER")
+        recompile_missing = snmp_action_button("重新编译缺依赖模块", "SYNC")
+        reindex = snmp_action_button("刷新列表", "SYNC")
         import_file.clicked.connect(self.import_file)
         import_dir.clicked.connect(self.import_dir)
         recompile_missing.clicked.connect(self.recompile_missing)
@@ -705,11 +712,11 @@ class ProductReferenceComparePage(QWidget):
         self.result_table.horizontalHeader().setStretchLastSection(False)
         self.result_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.result_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.compare_button = QPushButton("开始对比")
-        self.export_button = QPushButton("导出结果")
-        self.prev_button = QPushButton("上一页")
-        self.next_button = QPushButton("下一页")
-        self.refresh_button = QPushButton("刷新参考表")
+        self.compare_button = snmp_action_button("开始对比", "PLAY")
+        self.export_button = snmp_action_button("导出结果", "SHARE")
+        self.prev_button = snmp_action_button("上一页", "LEFT_ARROW")
+        self.next_button = snmp_action_button("下一页", "RIGHT_ARROW")
+        self.refresh_button = snmp_action_button("刷新参考表", "SYNC")
         self.export_button.setEnabled(False)
         self.prev_button.setEnabled(False)
         self.next_button.setEnabled(False)
@@ -871,8 +878,8 @@ class MibDictionaryPage(QWidget):
         super().__init__()
         self.center = center
         self.table = make_table(["ID", "名称", "厂商", "设备类型", "内置", "默认启用", "说明"])
-        create_button = QPushButton("新建字典集")
-        refresh_button = QPushButton("刷新")
+        create_button = snmp_action_button("新建字典集", "ADD")
+        refresh_button = snmp_action_button("刷新", "SYNC")
         create_button.clicked.connect(self.create_dictionary)
         refresh_button.clicked.connect(self.refresh)
         buttons = QHBoxLayout()
@@ -914,9 +921,9 @@ class DeviceDictionaryRecommendPage(QWidget):
         self.profile_text.setReadOnly(True)
         self.table = make_table(["字典集ID", "字典集", "匹配度", "依据", "状态"])
         self.reference_table = make_table(["参考表ID", "产品 MIB 参考", "匹配度", "依据", "状态"])
-        detect_button = QPushButton("识别设备并推荐")
-        apply_button = QPushButton("一键启用推荐字典")
-        refresh_button = QPushButton("刷新设备")
+        detect_button = snmp_action_button("识别设备并推荐", "SEARCH")
+        apply_button = snmp_action_button("一键启用推荐字典", "ACCEPT")
+        refresh_button = snmp_action_button("刷新设备", "SYNC")
         detect_button.clicked.connect(self.detect)
         apply_button.clicked.connect(self.apply_recommendations)
         refresh_button.clicked.connect(self.refresh)
@@ -1060,7 +1067,7 @@ class MibBrowserPage(QWidget):
         self.tree_mode_combo.addItem("通用", TREE_MODE_GENERAL)
         self.tree_mode_combo.addItem("H3C 产品目录", TREE_MODE_H3C_PRODUCT)
         self.tree_mode_combo.setCurrentIndex(self.tree_mode_combo.findData(TREE_MODE_H3C_PRODUCT))
-        self.rebuild_product_tree_button = QPushButton("重建产品目录树")
+        self.rebuild_product_tree_button = snmp_action_button("重建产品目录树", "SYNC")
         self.rebuild_product_tree_button.setVisible(False)
         self.module_filter = QComboBox()
         self.module_filter.setVisible(False)
@@ -1084,21 +1091,21 @@ class MibBrowserPage(QWidget):
         self.path_label.setWordWrap(True)
         self.view_hint = QLabel()
         self.view_hint.setWordWrap(True)
-        self.generate_view_button = QPushButton("生成推荐 MIB 视图")
-        self.use_h3c_v7v9_button = QPushButton("使用 H3C V7/V9 无线 AC 默认视图")
-        self.use_global_h3c_button = QPushButton("使用全局 H3C MIB 浏览")
+        self.generate_view_button = snmp_action_button("生成推荐 MIB 视图", "SETTING")
+        self.use_h3c_v7v9_button = snmp_action_button("使用 H3C V7/V9 无线 AC 默认视图", "ACCEPT")
+        self.use_global_h3c_button = snmp_action_button("使用全局 H3C MIB 浏览", "GLOBE")
         self.generate_view_button.clicked.connect(self.generate_recommended_view)
         self.use_h3c_v7v9_button.clicked.connect(self.use_h3c_v7v9_view)
         self.use_global_h3c_button.clicked.connect(self.use_global_h3c_view)
-        copy_oid_button = QPushButton("复制 OID")
-        copy_query_oid_button = QPushButton("复制实际查询 OID")
-        fill_query_button = QPushButton("填入顶部查询栏")
-        run_query_button = QPushButton("立即查询")
-        back_to_column_button = QPushButton("回到列 OID")
+        copy_oid_button = snmp_action_button("复制 OID", "COPY")
+        copy_query_oid_button = snmp_action_button("复制实际查询 OID", "COPY")
+        fill_query_button = snmp_action_button("填入顶部查询栏", "EDIT")
+        run_query_button = snmp_action_button("立即查询", "PLAY")
+        back_to_column_button = snmp_action_button("回到列 OID", "RETURN")
         run_query_button.setVisible(False)
         self.run_query_button = run_query_button
-        set_current_button = QPushButton("Set 当前 OID")
-        translate_button = QPushButton("翻译描述")
+        set_current_button = snmp_action_button("Set 当前 OID", "EDIT")
+        translate_button = snmp_action_button("翻译描述", "LANGUAGE")
         self.set_current_button = set_current_button
         self.back_to_column_button = back_to_column_button
         copy_oid_button.clicked.connect(lambda: self.copy_selected_oid(False))
@@ -1115,15 +1122,15 @@ class MibBrowserPage(QWidget):
         self.result_table.setModel(self.result_model)
         configure_table_view(self.result_table, RESULT_COLUMN_WIDTHS)
         self.result_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        refresh_button = QPushButton("搜索 / 刷新")
-        save_template_button = QPushButton("保存为 OID 模板")
-        go_button = QPushButton("Go")
+        refresh_button = snmp_action_button("搜索 / 刷新", "SEARCH")
+        save_template_button = snmp_action_button("保存为 OID 模板", "SAVE")
+        go_button = snmp_action_button("执行查询", "PLAY")
         self.go_button = go_button
-        cancel_button = QPushButton("取消")
+        cancel_button = snmp_action_button("取消", "CANCEL")
         self.cancel_button = cancel_button
-        export_button = QPushButton("导出结果")
-        advanced_button = QPushButton("高级参数")
-        temporary_button = QPushButton("临时 IP")
+        export_button = snmp_action_button("导出结果", "SHARE")
+        advanced_button = snmp_action_button("高级参数", "SETTING")
+        temporary_button = snmp_action_button("临时 IP", "EDIT")
         refresh_button.clicked.connect(self.refresh)
         save_template_button.clicked.connect(self.save_selected_template)
         go_button.clicked.connect(self.run_browser_query)
@@ -2304,11 +2311,11 @@ class SnmpQueryPage(QWidget):
         self.table = QTableView()
         self.table.setModel(self.model)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        run_button = QPushButton("执行查询")
-        cancel_button = QPushButton("取消")
-        export_button = QPushButton("导出结果")
-        refresh_button = QPushButton("刷新设备")
-        choose_mib_button = QPushButton("从 MIB 选择")
+        run_button = snmp_action_button("执行查询", "PLAY")
+        cancel_button = snmp_action_button("取消", "CANCEL")
+        export_button = snmp_action_button("导出结果", "SHARE")
+        refresh_button = snmp_action_button("刷新设备", "SYNC")
+        choose_mib_button = snmp_action_button("从 MIB 选择", "SEARCH")
         run_button.clicked.connect(self.run_query)
         cancel_button.clicked.connect(self.cancel_query)
         export_button.clicked.connect(self.export_result)
@@ -2487,8 +2494,8 @@ class OidTemplatePage(QWidget):
         super().__init__()
         self.center = center
         self.table = make_table(["范围", "名称", "模块", "对象", "OID", "方式"])
-        refresh_button = QPushButton("刷新")
-        add_button = QPushButton("手动新增全局模板")
+        refresh_button = snmp_action_button("刷新", "SYNC")
+        add_button = snmp_action_button("手动新增全局模板", "ADD")
         refresh_button.clicked.connect(self.refresh)
         add_button.clicked.connect(self.add_template)
         buttons = QHBoxLayout()
@@ -2523,7 +2530,7 @@ class SnmpMonitorPage(QWidget):
         self.center = center
         self.table = make_table(["任务", "设备", "模板", "间隔", "启用", "状态"])
         self.note = QLabel("周期监控任务已预留数据结构。第一阶段建议先通过 SNMP 查询和 OID 模板验证对象，再创建周期采集。")
-        refresh_button = QPushButton("刷新")
+        refresh_button = snmp_action_button("刷新", "SYNC")
         refresh_button.clicked.connect(self.refresh)
         layout = QVBoxLayout(self)
         layout.addWidget(self.note)
@@ -2540,7 +2547,7 @@ class SnmpTrapPage(QWidget):
         self.center = center
         self.table = make_table(["时间", "来源IP", "来源设备", "Trap OID", "名称", "级别", "内容"])
         self.note = QLabel("Trap Receiver 默认建议端口 1162；Windows 下监听 162 可能需要管理员权限。")
-        refresh_button = QPushButton("刷新 Trap")
+        refresh_button = snmp_action_button("刷新 Trap", "SYNC")
         refresh_button.clicked.connect(self.refresh)
         layout = QVBoxLayout(self)
         layout.addWidget(self.note)
@@ -2558,8 +2565,8 @@ class TopologyPage(QWidget):
         self.worker: TopologyDiscoveryWorker | None = None
         self.node_table = make_table(["节点", "类型", "地址", "UUID"])
         self.edge_table = make_table(["本端", "对端", "类型", "本端接口", "对端接口", "来源", "可信度"])
-        discover_button = QPushButton("发现拓扑")
-        refresh_button = QPushButton("刷新")
+        discover_button = snmp_action_button("发现拓扑", "SEARCH")
+        refresh_button = snmp_action_button("刷新", "SYNC")
         discover_button.clicked.connect(self.discover)
         refresh_button.clicked.connect(self.refresh)
         buttons = QHBoxLayout()
