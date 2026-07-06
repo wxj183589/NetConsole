@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import subprocess
+import traceback
 from uuid import uuid4
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -46,6 +47,7 @@ from netconsole.services.file_transfer_service import (
     TransferCancelled,
     TransferVerificationFailed,
     auto_rename_path,
+    join_remote_path,
     parent_remote_path,
     safe_device_name,
 )
@@ -53,7 +55,9 @@ from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.path_preference_service import PathPreferenceService
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
+from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
 
@@ -136,6 +140,7 @@ class SftpConnectWorker(QThread):
             root = service.connect(self.device, self.status_changed.emit)
             self.connected.emit(service, root)
         except Exception as exc:
+            app_logger.log_error("FILE_MANAGER_CONNECT_WORKER_FAILED", f"device={self.device.name or self.device.primary_address}, error={sanitize_sensitive_text(str(exc), self.device)}\n{traceback.format_exc()}")
             service.disconnect()
             self.failed.emit(str(exc))
 
@@ -292,12 +297,18 @@ class FileManagementPage(QWidget):
         self.remote_clear_selection_button = QPushButton()
         self.remote_mesh_logs_button = QPushButton()
         self.download_button = QPushButton()
+        self.remote_new_folder_button = QPushButton()
+        self.remote_delete_button = QPushButton()
         self.remote_table = QTableWidget(0, len(REMOTE_COLUMNS))
         set_table_column_fields(self.remote_table, [field for field, _key in REMOTE_COLUMNS])
         configure_readonly_table(self.remote_table)
         install_checkbox_only_delegate(self.remote_table, REMOTE_CHECK_COLUMN)
 
         self.queue_title = QLabel()
+        self.open_download_dir_button = QPushButton()
+        self.clear_completed_button = QPushButton()
+        self.clear_failed_button = QPushButton()
+        self.cancel_selected_task_button = QPushButton()
         self.queue_table = QTableWidget(0, len(QUEUE_COLUMNS))
         set_table_column_fields(self.queue_table, [field for field, _key in QUEUE_COLUMNS])
         configure_readonly_table(self.queue_table)
@@ -332,7 +343,17 @@ class FileManagementPage(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(top)
         layout.addWidget(self.file_splitter, 1)
-        layout.addWidget(self.queue_title)
+        queue_header = QHBoxLayout()
+        queue_header.addWidget(self.queue_title)
+        queue_header.addStretch(1)
+        for widget in (
+            self.open_download_dir_button,
+            self.clear_completed_button,
+            self.clear_failed_button,
+            self.cancel_selected_task_button,
+        ):
+            queue_header.addWidget(widget)
+        layout.addLayout(queue_header)
         layout.addWidget(self.queue_table)
         self.setLayout(layout)
 
@@ -352,9 +373,17 @@ class FileManagementPage(QWidget):
         self.remote_clear_selection_button.clicked.connect(self.clear_remote_selection)
         self.remote_mesh_logs_button.clicked.connect(self.select_mesh_logs)
         self.download_button.clicked.connect(self.download_selected)
+        self.remote_new_folder_button.clicked.connect(self.new_remote_folder)
+        self.remote_delete_button.clicked.connect(self.delete_selected_remote_files)
+        self.open_download_dir_button.clicked.connect(self.open_download_dir)
+        self.clear_completed_button.clicked.connect(self.clear_completed_tasks)
+        self.clear_failed_button.clicked.connect(self.clear_failed_tasks)
+        self.cancel_selected_task_button.clicked.connect(self.cancel_selected_queue_task)
         self.local_table.cellDoubleClicked.connect(self.local_double_clicked)
         self.remote_table.cellDoubleClicked.connect(self.remote_double_clicked)
         self.remote_table.itemChanged.connect(self.remote_item_changed)
+        self.remote_table.itemSelectionChanged.connect(self._sync_file_operation_buttons)
+        self.queue_table.itemSelectionChanged.connect(self._sync_file_operation_buttons)
         self.remote_table.horizontalHeader().sectionClicked.connect(self.remote_header_clicked)
         self.local_table.horizontalHeader().sectionResized.connect(lambda _section, _old, _new: self.save_table_column_widths(self.local_table, "file_manager/local_table/column_widths"))
         self.remote_table.horizontalHeader().sectionResized.connect(lambda _section, _old, _new: self.save_table_column_widths(self.remote_table, "file_manager/remote_table/column_widths"))
@@ -369,6 +398,49 @@ class FileManagementPage(QWidget):
         apply_feature_to_widget(self.feature_gate, "file.mesh_log_download", self.remote_mesh_logs_button)
         apply_feature_to_widget(self.feature_gate, "file.mesh_log_download", self.download_button)
         apply_feature_to_widget(self.feature_gate, "file.external_winscp", self.external_winscp_button)
+
+    def _apply_button_icons(self) -> None:
+        icon_map = (
+            (self.connect_button, "CONNECT"),
+            (self.disconnect_button, "CANCEL"),
+            (self.external_winscp_button, "FOLDER"),
+            (self.local_up_button, "UP"),
+            (self.remote_up_button, "UP"),
+            (self.local_refresh_button, "SYNC"),
+            (self.remote_refresh_button, "SYNC"),
+            (self.new_folder_button, "FOLDER_ADD"),
+            (self.remote_new_folder_button, "FOLDER_ADD"),
+            (self.open_local_button, "FOLDER"),
+            (self.remote_select_all_button, "ACCEPT"),
+            (self.remote_clear_selection_button, "CANCEL"),
+            (self.remote_mesh_logs_button, "DOCUMENT"),
+            (self.download_button, "DOWNLOAD"),
+            (self.remote_delete_button, "DELETE"),
+            (self.open_download_dir_button, "FOLDER"),
+            (self.clear_completed_button, "DELETE"),
+            (self.clear_failed_button, "DELETE"),
+            (self.cancel_selected_task_button, "CANCEL"),
+        )
+        for button, icon_name in icon_map:
+            apply_button_icon(button, icon_name)
+
+    def _show_success(self, title: str, message: str) -> None:
+        if InfoBar is not None and InfoBarPosition is not None:
+            InfoBar.success(title=title, content=message, duration=2500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
+            return
+        QMessageBox.information(self, title, message)
+
+    def _show_warning(self, title: str, message: str) -> None:
+        if InfoBar is not None and InfoBarPosition is not None:
+            InfoBar.warning(title=title, content=message, duration=3500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
+            return
+        QMessageBox.warning(self, title, message)
+
+    def _show_error(self, title: str, message: str) -> None:
+        if InfoBar is not None and InfoBarPosition is not None:
+            InfoBar.error(title=title, content=message, duration=4500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
+            return
+        QMessageBox.warning(self, title, message)
 
     def _local_panel(self) -> QWidget:
         panel = QWidget()
@@ -396,6 +468,8 @@ class FileManagementPage(QWidget):
         controls.addWidget(self.remote_clear_selection_button)
         controls.addWidget(self.remote_mesh_logs_button)
         controls.addWidget(self.download_button)
+        controls.addWidget(self.remote_new_folder_button)
+        controls.addWidget(self.remote_delete_button)
         controls.addStretch(1)
         layout = QVBoxLayout(panel)
         layout.addWidget(self.remote_title)
@@ -420,9 +494,15 @@ class FileManagementPage(QWidget):
         self.remote_select_all_button.setText(self.i18n.t("file_management.select_all"))
         self.remote_clear_selection_button.setText(self.i18n.t("file_management.clear_selection"))
         self.remote_mesh_logs_button.setText(self.i18n.t("file_management.mesh_logs"))
-        self.new_folder_button.setText(self.i18n.t("file_management.new_folder"))
+        self.new_folder_button.setText(self.i18n.t("file_management.new_local_folder"))
         self.open_local_button.setText(self.i18n.t("file_management.open_local_folder"))
+        self.remote_new_folder_button.setText(self.i18n.t("file_management.new_remote_folder"))
+        self.remote_delete_button.setText(self.i18n.t("file_management.delete_remote_file"))
         self.queue_title.setText(self.i18n.t("file_management.transfer_queue"))
+        self.open_download_dir_button.setText(self.i18n.t("file_management.open_download_dir"))
+        self.clear_completed_button.setText(self.i18n.t("file_management.clear_completed"))
+        self.clear_failed_button.setText(self.i18n.t("file_management.clear_failed"))
+        self.cancel_selected_task_button.setText(self.i18n.t("file_management.cancel_selected_task"))
         self.protocol_label.setText(f"{self.i18n.t('file_management.protocol')}: SFTP")
         self.local_table.setHorizontalHeaderLabels([self.i18n.t(key) for _field, key in LOCAL_COLUMNS])
         self.remote_table.setHorizontalHeaderLabels([self.i18n.t(key) for _field, key in REMOTE_COLUMNS])
@@ -437,6 +517,7 @@ class FileManagementPage(QWidget):
         self.refresh_groups()
         self.refresh_local()
         self.refresh_queue()
+        self._apply_button_icons()
         self.update_download_button()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
@@ -516,8 +597,6 @@ class FileManagementPage(QWidget):
     def on_device_changed(self) -> None:
         self.disconnect_sftp()
         device = self.current_device()
-        self.connect_button.setEnabled(device is not None)
-        self.external_winscp_button.setEnabled(device is not None)
         self.update_device_labels()
         self.remote_files = []
         self.checked_remote_paths.clear()
@@ -525,6 +604,7 @@ class FileManagementPage(QWidget):
         self.local_path = self.default_local_dir(device)
         self.local_path.mkdir(parents=True, exist_ok=True)
         self.refresh_local()
+        self._sync_file_operation_buttons()
 
     def update_device_labels(self) -> None:
         device = self.current_device()
@@ -540,10 +620,68 @@ class FileManagementPage(QWidget):
     def update_connection_status(self, status_key: str) -> None:
         self.connection_status_key = status_key
         self.connection_status_label.setText(f"{self.i18n.t('file_management.connection_status')}: {self.i18n.t(status_key)}")
+        self._sync_file_operation_buttons()
+
+    def is_remote_connected(self) -> bool:
+        return self.sftp_service is not None and self.sftp_service.is_connected()
+
+    def _sync_file_operation_buttons(self) -> None:
+        device = self.current_device()
+        connecting = self.connect_worker is not None and self.connect_worker.isRunning()
+        listing = self.list_worker is not None and self.list_worker.isRunning()
+        connected = self.is_remote_connected()
+        has_checked_remote_files = bool(self.checked_remote_files_in_view_order())
+        has_remote_selection = bool(self.selected_remote_items_for_operation())
+        has_queue_selection = self.selected_queue_task() is not None
+        has_completed = any(task.status_key in self._completed_queue_statuses() for task in self.tasks)
+        has_failed = any(task.status_key in self._failed_queue_statuses() for task in self.tasks)
+
+        self.connect_button.setEnabled(device is not None and not connecting and not connected)
+        self.disconnect_button.setEnabled(connecting or connected)
+        self.external_winscp_button.setEnabled(device is not None)
+        for button in (
+            self.remote_up_button,
+            self.remote_select_all_button,
+            self.remote_clear_selection_button,
+            self.remote_mesh_logs_button,
+            self.remote_new_folder_button,
+        ):
+            button.setEnabled(connected)
+        self.remote_refresh_button.setEnabled(connected and not listing)
+        self.download_button.setEnabled(connected and has_checked_remote_files)
+        self.remote_delete_button.setEnabled(connected and has_remote_selection)
+        self.clear_completed_button.setEnabled(has_completed)
+        self.clear_failed_button.setEnabled(has_failed)
+        self.cancel_selected_task_button.setEnabled(has_queue_selection)
 
     def default_local_dir(self, device: Device | None) -> Path:
         name = safe_device_name(device.name or device.system_name or "device") if device is not None else "device"
         return self.paths.device_file_download_dir(self.site_name, name)
+
+    def selected_remote_items_for_operation(self) -> list[RemoteDeviceFile]:
+        checked = self.checked_remote_files_in_view_order()
+        if checked:
+            return checked
+        current = self.selected_remote_file()
+        return [current] if current is not None else []
+
+    def selected_queue_task(self) -> TransferTask | None:
+        row = self.queue_table.currentRow()
+        if row < 0:
+            return None
+        item = self.queue_table.item(row, 0)
+        if item is None:
+            return None
+        task_id = item.data(Qt.UserRole)
+        return next((task for task in self.tasks if task.id == task_id), None)
+
+    @staticmethod
+    def _completed_queue_statuses() -> set[str]:
+        return {"file_management.status.completed", "file_management.mesh_auto_import_done", "file_management.mesh_auto_import_duplicate"}
+
+    @staticmethod
+    def _failed_queue_statuses() -> set[str]:
+        return {"file_management.status.failed", "file_management.status.verification_failed", "file_management.mesh_auto_import_failed"}
 
     def download_directory_for_remote_file(self, remote_file: RemoteDeviceFile, device: Device) -> Path:
         if is_mesh_log_file(remote_file.name) and self.is_vehicle_mr_device(device):
@@ -573,31 +711,34 @@ class FileManagementPage(QWidget):
     def connect_sftp(self) -> None:
         device = self.current_device()
         if device is None:
-            QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_device"))
+            self._show_warning(self.i18n.t("file_management.title"), self.i18n.t("file_management.no_device"))
             return
         self.disconnect_sftp()
         self.update_connection_status("file_management.status.connecting")
-        self.connect_button.setEnabled(False)
+        self._sync_file_operation_buttons()
         self.connect_worker = SftpConnectWorker(self.site_name, device, self.paths, self)
         self.connect_worker.status_changed.connect(self.update_connection_status)
         self.connect_worker.connected.connect(self.on_connected)
         self.connect_worker.failed.connect(self.on_connect_failed)
         self.connect_worker.finished.connect(self.connect_worker.deleteLater)
         self.connect_worker.finished.connect(lambda: setattr(self, "connect_worker", None))
+        self.connect_worker.finished.connect(self._sync_file_operation_buttons)
         self.connect_worker.start()
 
     def on_connected(self, service: FileTransferService, root_path: str) -> None:
         self.sftp_service = service
         self.connected_device = self.current_device()
-        self.connect_button.setEnabled(True)
         self.update_connection_status("file_management.status.connected")
         self.remote_path_label.setText(f"{self.i18n.t('file_management.current_path')}: {root_path}")
         self.refresh_remote()
+        self._show_success(self.i18n.t("file_management.connect"), self.i18n.t("file_management.connect_success", device=self.connected_device.name if self.connected_device else ""))
+        self._sync_file_operation_buttons()
 
     def on_connect_failed(self, error: str) -> None:
-        self.connect_button.setEnabled(True)
         self.update_connection_status("file_management.status.connection_failed")
-        QMessageBox.warning(self, self.i18n.t("file_management.title"), error)
+        app_logger.log_error("FILE_MANAGER_CONNECT_FAILED", f"error={error}")
+        self._show_error(self.i18n.t("file_management.connect_failed_title"), error)
+        self._sync_file_operation_buttons()
 
     def disconnect_sftp(self) -> None:
         self.fail_waiting_tasks_on_disconnect()
@@ -610,9 +751,18 @@ class FileManagementPage(QWidget):
         self.remote_files = []
         self.checked_remote_paths.clear()
         self.populate_remote_table()
-        self.connect_button.setEnabled(True)
         self.update_connection_status("file_management.status.disconnected")
         self.remote_path_label.setText(f"{self.i18n.t('file_management.current_path')}: -")
+        self._sync_file_operation_buttons()
+
+    def refresh_connection_status(self) -> None:
+        if self.is_remote_connected():
+            self.refresh_remote()
+            self._show_success(self.i18n.t("file_management.title"), self.i18n.t("file_management.refresh_done"))
+            return
+        self.refresh_devices(trigger_device_change=False)
+        self.update_device_labels()
+        self.update_connection_status("file_management.status.disconnected")
 
     def fail_waiting_tasks_on_disconnect(self) -> None:
         changed = False
@@ -634,6 +784,7 @@ class FileManagementPage(QWidget):
         self.list_worker.failed.connect(self.on_remote_failed)
         self.list_worker.finished.connect(self.list_worker.deleteLater)
         self.list_worker.finished.connect(lambda: setattr(self, "list_worker", None))
+        self.list_worker.finished.connect(self._sync_file_operation_buttons)
         self.list_worker.start()
 
     def on_remote_listed(self, remote_path: str, files: list[RemoteDeviceFile]) -> None:
@@ -643,10 +794,12 @@ class FileManagementPage(QWidget):
         self.checked_remote_paths.intersection_update(existing)
         self.remote_files = files
         self.populate_remote_table()
+        self._sync_file_operation_buttons()
 
     def on_remote_failed(self, error: str) -> None:
         self.remote_refresh_button.setEnabled(True)
-        QMessageBox.warning(self, self.i18n.t("file_management.title"), error)
+        self._show_error(self.i18n.t("file_management.title"), error)
+        self._sync_file_operation_buttons()
 
     def remote_up(self) -> None:
         if self.sftp_service is None:
@@ -664,6 +817,7 @@ class FileManagementPage(QWidget):
         self.list_worker.failed.connect(self.on_remote_failed)
         self.list_worker.finished.connect(self.list_worker.deleteLater)
         self.list_worker.finished.connect(lambda: setattr(self, "list_worker", None))
+        self.list_worker.finished.connect(self._sync_file_operation_buttons)
         self.list_worker.start()
 
     def populate_remote_table(self) -> None:
@@ -712,9 +866,52 @@ class FileManagementPage(QWidget):
         self.feature_gate.assert_enabled("file.mesh_log_download")
         files = self.checked_remote_files_in_view_order()
         if not files:
-            QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_file_selected"))
+            self._show_warning(self.i18n.t("file_management.title"), self.i18n.t("file_management.no_file_selected"))
             return
         self.enqueue_downloads(files)
+
+    def new_remote_folder(self) -> None:
+        if not self.is_remote_connected() or self.sftp_service is None:
+            self._show_warning(self.i18n.t("file_management.title"), self.i18n.t("file_management.not_connected"))
+            return
+        name, accepted = QInputDialog.getText(self, self.i18n.t("file_management.new_remote_folder"), self.i18n.t("file_management.folder_name"))
+        if not accepted or not name.strip():
+            return
+        try:
+            current_path = self.sftp_service.current_path or self.sftp_service.root_path
+            self.sftp_service.mkdir(join_remote_path(current_path, safe_device_name(name), self.sftp_service.root_path))
+            self.refresh_remote()
+            self._show_success(self.i18n.t("file_management.title"), self.i18n.t("file_management.remote_folder_created"))
+        except Exception as exc:
+            message = sanitize_sensitive_text(str(exc), self.connected_device)
+            app_logger.log_error("FILE_MANAGER_REMOTE_MKDIR_FAILED", f"error={message}\n{traceback.format_exc()}")
+            self._show_error(self.i18n.t("file_management.title"), self.i18n.t("file_management.remote_operation_failed", error=message))
+
+    def delete_selected_remote_files(self) -> None:
+        if not self.is_remote_connected() or self.sftp_service is None:
+            self._show_warning(self.i18n.t("file_management.title"), self.i18n.t("file_management.not_connected"))
+            return
+        items = self.selected_remote_items_for_operation()
+        if not items:
+            self._show_warning(self.i18n.t("file_management.title"), self.i18n.t("file_management.select_remote_file"))
+            return
+        answer = QMessageBox.question(
+            self,
+            self.i18n.t("file_management.delete_remote_file"),
+            self.i18n.t("file_management.remote_delete_confirm", count=len(items)),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            for remote_file in items:
+                self.sftp_service.delete(remote_file)
+                self.checked_remote_paths.discard(remote_file.remote_path)
+            self.refresh_remote()
+            self._show_success(self.i18n.t("file_management.title"), self.i18n.t("file_management.remote_deleted", count=len(items)))
+        except Exception as exc:
+            message = sanitize_sensitive_text(str(exc), self.connected_device)
+            app_logger.log_error("FILE_MANAGER_REMOTE_DELETE_FAILED", f"error={message}\n{traceback.format_exc()}")
+            self._show_error(self.i18n.t("file_management.title"), self.i18n.t("file_management.remote_delete_failed", error=message))
 
     def enqueue_downloads(self, remote_files: list[RemoteDeviceFile]) -> None:
         device = self.connected_device or self.current_device()
@@ -868,6 +1065,7 @@ class FileManagementPage(QWidget):
                 self.queue_table.setItem(row, column, item)
         self.apply_table_style_without_saving(self.queue_table)
         self.apply_queue_column_layout()
+        self._sync_file_operation_buttons()
 
     def queue_action_widget(self, task: TransferTask) -> QWidget:
         widget = QWidget()
@@ -879,6 +1077,9 @@ class FileManagementPage(QWidget):
         cancel_button.setEnabled(task.status_key in {"file_management.status.queued", "file_management.status.downloading"})
         retry_button.setEnabled(task.status_key in {"file_management.status.cancelled", "file_management.status.failed", "file_management.status.verification_failed"})
         open_button.setEnabled(task.local_path.exists())
+        apply_button_icon(cancel_button, "CANCEL")
+        apply_button_icon(retry_button, "SYNC")
+        apply_button_icon(open_button, "FOLDER")
         cancel_button.clicked.connect(lambda _=False, value=task: self.cancel_task(value))
         retry_button.clicked.connect(lambda _=False, value=task: self.retry_task(value))
         open_button.clicked.connect(lambda _=False, value=task: open_folder(value.local_path.parent))
@@ -914,6 +1115,29 @@ class FileManagementPage(QWidget):
         )
         self.refresh_queue()
         self.start_next_download()
+
+    def open_download_dir(self) -> None:
+        self.local_path.mkdir(parents=True, exist_ok=True)
+        open_folder(self.local_path)
+
+    def clear_completed_tasks(self) -> None:
+        completed_statuses = self._completed_queue_statuses()
+        self.tasks = [task for task in self.tasks if task.status_key not in completed_statuses]
+        self.refresh_queue()
+        self._show_success(self.i18n.t("file_management.transfer_queue"), self.i18n.t("file_management.completed_tasks_cleared"))
+
+    def clear_failed_tasks(self) -> None:
+        failed_statuses = self._failed_queue_statuses()
+        self.tasks = [task for task in self.tasks if task.status_key not in failed_statuses]
+        self.refresh_queue()
+        self._show_success(self.i18n.t("file_management.transfer_queue"), self.i18n.t("file_management.failed_tasks_cleared"))
+
+    def cancel_selected_queue_task(self) -> None:
+        task = self.selected_queue_task()
+        if task is None:
+            self._show_warning(self.i18n.t("file_management.transfer_queue"), self.i18n.t("file_management.no_queue_task_selected"))
+            return
+        self.cancel_task(task)
 
     def allocate_task_id(self) -> int:
         existing = {task.id for task in self.tasks}
@@ -1007,13 +1231,13 @@ class FileManagementPage(QWidget):
 
     def update_download_button(self) -> None:
         count = len(self.checked_remote_files_in_view_order())
-        self.download_button.setEnabled(count > 0)
         if count:
             self.download_button.setText(self.i18n.t("file_management.download_files_count", count=count))
             self.download_button.setToolTip(self.i18n.t("file_management.selected_files", count=count))
         else:
             self.download_button.setText(self.i18n.t("file_management.download_files"))
             self.download_button.setToolTip(self.i18n.t("file_management.no_file_selected"))
+        self._sync_file_operation_buttons()
 
     def maybe_show_finished_batch_summaries(self) -> None:
         for batch_id in list(self.batches):

@@ -11,6 +11,7 @@ class FeatureItem:
     item_type: str
     default_visible: bool = True
     default_enabled: bool = True
+    default_client_package: bool = True
     internal_only: bool = False
     description_key: str | None = None
 
@@ -46,7 +47,6 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("file.mesh_auto_import", "file_management.mesh_auto_import", "module.file_management", "button"),
     FeatureItem("file.external_winscp", "file_management.external_winscp", "module.file_management", "button"),
     FeatureItem("network_tools.toolbox", "network_tools.toolbox", "module.network_tools", "tab"),
-    FeatureItem("online_mr.collect_config_once", "online_mr.collect_config_once", "rail.online_mr_collection", "button"),
     FeatureItem("online_mr.advanced_ping", "online_mr.high_freq_ping", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.iperf_test", "online_mr.enable_traffic_test", "rail.online_mr_collection", "action"),
     FeatureItem("mesh.generate_report", "mesh_analysis.generate_report", "rail.raw_mesh_log_analysis", "button"),

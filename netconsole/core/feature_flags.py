@@ -21,6 +21,7 @@ class FeatureDisabledError(RuntimeError):
 
 
 PROTECTED_INTERNAL_FEATURE_IDS = {"module.feature_switch", "system.feature_flags"}
+FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
 
 
 def project_root() -> Path:
@@ -101,51 +102,41 @@ class FeatureGate:
         self.profile = self.base_profile
         self.features: dict[str, dict[str, bool]] = {}
         self._session_override_profile: str | None = None
+        self._session_customer_preview_features: dict[str, dict[str, bool]] | None = None
         self._session_override_reason = ""
         self._session_override_operator = ""
         self.reload()
 
     def reload(self) -> None:
         self.profile = self._effective_profile()
-        self.features = {
-            item.feature_id: {
-                "visible": bool(item.default_visible),
-                "enabled": bool(item.default_enabled),
-            }
-            for item in list_features()
-        }
-        if self._session_override_profile == "full":
+        self.features = {item.feature_id: default_feature_state(item) for item in list_features()}
+        if self._session_customer_preview_features is not None:
+            self._merge_data({"profile": "customer", "features": self._session_customer_preview_features})
+        elif self._session_override_profile == "full":
             self._merge_data(self._session_full_profile_data())
         elif self.resolution.embedded_flags:
             self._merge_data(self.resolution.embedded_flags)
-        if not self.is_session_override_active() and (self.resolution.source == "external_runtime" or self.edition in {"dev", "internal"}):
+        if (
+            not self.is_session_override_active()
+            and not self.is_customer_preview_active()
+            and (self.resolution.source == "external_runtime" or self.edition in {"dev", "internal"})
+        ):
             self._merge_file(runtime_dir(self.root) / "feature_flags.json")
-        if not self.is_session_override_active() and self.allow_local_override:
+        if not self.is_session_override_active() and not self.is_customer_preview_active() and self.allow_local_override:
             self._merge_file(runtime_dir(self.root) / "feature_flags.local.json")
-        if not self._internal_only_allowed():
-            self._force_internal_only_off()
         self._log_loaded()
 
     def is_visible(self, feature_id: str) -> bool:
         item = FEATURE_BY_ID.get(feature_id)
         if item is None:
             return False
-        if item.internal_only and not self._internal_only_allowed():
-            return False
-        if self._is_protected_internal_feature(feature_id):
-            return True
-        return bool(self.features.get(feature_id, {}).get("visible", item.default_visible))
+        return self._effective_state(feature_id)["visible"]
 
     def is_enabled(self, feature_id: str) -> bool:
         item = FEATURE_BY_ID.get(feature_id)
         if item is None:
             return False
-        if item.internal_only and not self._internal_only_allowed():
-            return False
-        if self._is_protected_internal_feature(feature_id):
-            return True
-        state = self.features.get(feature_id, {})
-        return bool(state.get("visible", item.default_visible)) and bool(state.get("enabled", item.default_enabled))
+        return self._effective_state(feature_id)["enabled"]
 
     def assert_enabled(self, feature_id: str) -> None:
         if not self.is_enabled(feature_id):
@@ -156,18 +147,16 @@ class FeatureGate:
 
     def state_for(self, feature_id: str) -> dict[str, bool]:
         item = FEATURE_BY_ID[feature_id]
-        if item.internal_only and not self._internal_only_allowed():
-            return {"visible": False, "enabled": False}
-        if self._is_protected_internal_feature(feature_id):
-            return {"visible": True, "enabled": True}
-        state = self.features.get(feature_id, {})
-        return {
-            "visible": bool(state.get("visible", item.default_visible)),
-            "enabled": bool(state.get("enabled", item.default_enabled)),
-        }
+        return dict(self._effective_state(item.feature_id))
+
+    def is_in_client_package(self, feature_id: str) -> bool:
+        if feature_id not in FEATURE_BY_ID:
+            return False
+        return self._effective_state(feature_id)["client_package"]
 
     def enable_session_full_mode(self, reason: str, operator: str) -> None:
         self._session_override_profile = "full"
+        self._session_customer_preview_features = None
         self._session_override_reason = reason
         self._session_override_operator = operator
         self.reload()
@@ -191,10 +180,33 @@ class FeatureGate:
             f"base_edition={self.edition} base_profile={self.base_profile} reason={reason}",
         )
 
+    def enable_session_customer_preview(self, features: dict[str, dict[str, bool]], *, reason: str = "preview") -> None:
+        self._session_customer_preview_features = normalize_feature_states(features)
+        self._session_override_profile = None
+        self._session_override_reason = reason
+        self._session_override_operator = ""
+        self.reload()
+        app_logger.log_info("FEATURE_GATE_CUSTOMER_PREVIEW_ENABLED", f"reason={reason} feature_count={len(self.features)}")
+        _feature_switch_log(f"preview client mode: on")
+
+    def disable_session_customer_preview(self, reason: str = "manual") -> None:
+        if self._session_customer_preview_features is None:
+            return
+        self._session_customer_preview_features = None
+        self._session_override_reason = ""
+        self.reload()
+        app_logger.log_info("FEATURE_GATE_CUSTOMER_PREVIEW_DISABLED", f"reason={reason}")
+        _feature_switch_log(f"preview client mode: off")
+
     def is_session_override_active(self) -> bool:
         return self._session_override_profile is not None
 
+    def is_customer_preview_active(self) -> bool:
+        return self._session_customer_preview_features is not None
+
     def current_profile_source(self) -> str:
+        if self.is_customer_preview_active():
+            return f"{self.resolution.source}+customer_preview"
         return f"{self.resolution.source}+session_override" if self.is_session_override_active() else self.resolution.source
 
     def is_admin_unlock_configured(self) -> bool:
@@ -220,22 +232,23 @@ class FeatureGate:
 
     def _merge_data(self, data: dict[str, Any]) -> None:
         self.profile = str(data.get("profile") or self.profile)
+        normalized_count = 0
         for feature_id, raw_state in dict(data.get("features") or {}).items():
             if feature_id not in FEATURE_BY_ID or not isinstance(raw_state, dict):
                 continue
-            state = self.features.setdefault(feature_id, {})
-            visible = _bool_override(raw_state.get("visible")) if "visible" in raw_state else None
-            enabled = _bool_override(raw_state.get("enabled")) if "enabled" in raw_state else None
-            if visible is not None:
-                state["visible"] = visible
-            if enabled is not None:
-                state["enabled"] = enabled
-        self._force_internal_only_off() if self.profile == "customer" and not self._internal_only_allowed() else None
+            missing = [key for key in FEATURE_STATE_KEYS if key not in raw_state or _bool_override(raw_state.get(key)) is None]
+            if missing:
+                normalized_count += len(missing)
+            self.features[feature_id] = normalize_feature_state(FEATURE_BY_ID[feature_id], raw_state)
+        if normalized_count:
+            _feature_switch_log(f"normalized missing booleans: {normalized_count}")
 
     def _force_internal_only_off(self) -> None:
         for item in list_features():
             if item.internal_only:
-                self.features[item.feature_id] = {"visible": False, "enabled": False}
+                state = dict(self.features.get(item.feature_id) or default_feature_state(item))
+                state.update({"visible": False, "enabled": False, "client_package": False, "internal_only": True})
+                self.features[item.feature_id] = state
 
     def _session_full_profile_data(self) -> dict[str, Any]:
         data = _read_embedded_runtime_json(self.root, "feature_flags.full.json")
@@ -245,6 +258,8 @@ class FeatureGate:
         return _read_json(source) if source.exists() else default_profile("full")
 
     def _effective_profile(self) -> str:
+        if self._session_customer_preview_features is not None:
+            return "customer"
         return self._session_override_profile or self.base_profile
 
     def _internal_only_allowed(self) -> bool:
@@ -252,6 +267,37 @@ class FeatureGate:
 
     def _is_protected_internal_feature(self, feature_id: str) -> bool:
         return feature_id in PROTECTED_INTERNAL_FEATURE_IDS and self._internal_only_allowed()
+
+    def _is_customer_mode(self) -> bool:
+        return self.profile == "customer"
+
+    def _effective_state(self, feature_id: str, seen: set[str] | None = None) -> dict[str, bool]:
+        item = FEATURE_BY_ID[feature_id]
+        state = normalize_feature_state(item, self.features.get(feature_id))
+        if self._is_protected_internal_feature(feature_id) and not self._is_customer_mode():
+            state.update({"visible": True, "enabled": True, "client_package": False, "internal_only": True})
+        if item.parent_id:
+            seen = set(seen or ())
+            if item.parent_id in seen:
+                app_logger.log_error("FEATURE_GATE_PARENT_CYCLE", f"feature={feature_id} parent={item.parent_id}")
+            elif item.parent_id in FEATURE_BY_ID:
+                seen.add(feature_id)
+                parent_state = self._effective_state(item.parent_id, seen)
+                state["visible"] = state["visible"] and parent_state["visible"]
+                state["enabled"] = state["enabled"] and parent_state["enabled"] and state["visible"]
+                state["internal_only"] = state["internal_only"] or parent_state["internal_only"]
+                state["client_package"] = (
+                    state["client_package"]
+                    and parent_state["client_package"]
+                    and not state["internal_only"]
+                    and not parent_state["internal_only"]
+                )
+        if self._is_customer_mode() and (state["internal_only"] or not state["client_package"]):
+            state["visible"] = False
+            state["enabled"] = False
+        if not state["visible"]:
+            state["enabled"] = False
+        return state
 
     def _log_loaded(self) -> None:
         app_logger.log_info(
@@ -262,52 +308,125 @@ class FeatureGate:
                 f"embedded_available={self.resolution.embedded_available} external_runtime_exists={self.resolution.external_runtime_exists}"
             ),
         )
+        _feature_switch_log(f"loaded features: {len(self.features)}")
+        _feature_switch_log(f"effective state calculated: {len(self.features)}")
+
+
+def default_feature_state(item: FeatureItem) -> dict[str, bool]:
+    internal_only = bool(item.internal_only)
+    return normalize_feature_state(
+        item,
+        {
+            "visible": bool(item.default_visible),
+            "enabled": bool(item.default_enabled),
+            "client_package": bool(item.default_client_package) and not internal_only,
+            "internal_only": internal_only,
+        },
+    )
+
+
+def normalize_feature_state(item: FeatureItem, raw_state: dict[str, Any] | None = None) -> dict[str, bool]:
+    explicit_client_package = False
+    if raw_state is not None:
+        explicit_client_package = _bool_override(raw_state.get("client_package")) is True
+    state = {
+        "visible": bool(item.default_visible),
+        "enabled": bool(item.default_enabled),
+        "client_package": bool(item.default_client_package) and not bool(item.internal_only),
+        "internal_only": bool(item.internal_only),
+    }
+    for key in FEATURE_STATE_KEYS:
+        if raw_state is None or key not in raw_state:
+            continue
+        value = _bool_override(raw_state.get(key))
+        if value is not None:
+            state[key] = value
+    if item.internal_only:
+        state["internal_only"] = True
+    if state["client_package"] and not item.internal_only:
+        state["internal_only"] = False
+    if state["internal_only"]:
+        if state["client_package"]:
+            _feature_switch_log(f"[WARN] invalid state fixed: feature={item.feature_id} reason=internal_only_and_client_package")
+        state["client_package"] = False
+    if state["enabled"]:
+        state["visible"] = True
+    if not state["visible"]:
+        state["enabled"] = False
+    if state["client_package"]:
+        if explicit_client_package:
+            state["visible"] = True
+            state["enabled"] = True
+        elif not (state["visible"] and state["enabled"]):
+            state["client_package"] = False
+    return {key: bool(state[key]) for key in FEATURE_STATE_KEYS}
+
+
+def normalize_feature_states(features: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, bool]]:
+    raw_features = features or {}
+    normalized: dict[str, dict[str, bool]] = {}
+    normalized_missing = 0
+    for item in list_features():
+        raw_state = raw_features.get(item.feature_id)
+        if isinstance(raw_state, dict):
+            normalized_missing += sum(1 for key in FEATURE_STATE_KEYS if key not in raw_state or _bool_override(raw_state.get(key)) is None)
+            normalized[item.feature_id] = normalize_feature_state(item, raw_state)
+        else:
+            normalized_missing += len(FEATURE_STATE_KEYS)
+            normalized[item.feature_id] = default_feature_state(item)
+    if normalized_missing:
+        _feature_switch_log(f"normalized missing booleans: {normalized_missing}")
+    return normalized
+
+
+def validate_feature_states(features: dict[str, dict[str, bool]]) -> str:
+    for item in list_features():
+        raw_state = features.get(item.feature_id) or {}
+        raw_internal_only = _bool_override(raw_state.get("internal_only"))
+        raw_client_package = _bool_override(raw_state.get("client_package"))
+        raw_visible = _bool_override(raw_state.get("visible"))
+        raw_enabled = _bool_override(raw_state.get("enabled"))
+        if raw_internal_only is True and raw_client_package is True:
+            return f"{item.feature_id}: 内部专用功能不能进入客户版打包"
+        if raw_enabled is True and raw_visible is False:
+            return f"{item.feature_id}: 启用功能必须同时显示"
+        if raw_client_package is True and (raw_internal_only is True or raw_visible is False or raw_enabled is False):
+            return f"{item.feature_id}: 客户版打包功能必须显示、启用且不能为内部专用"
+        state = normalize_feature_state(item, raw_state)
+        if state["internal_only"] and state["client_package"]:
+            return f"{item.feature_id}: 内部专用功能不能进入客户版打包"
+        if state["enabled"] and not state["visible"]:
+            return f"{item.feature_id}: 启用功能必须同时显示"
+        if state["client_package"] and (state["internal_only"] or not state["visible"] or not state["enabled"]):
+            return f"{item.feature_id}: 客户版打包功能必须显示、启用且不能为内部专用"
+    return ""
 
 
 def default_profile(profile: str) -> dict[str, Any]:
     features = {}
     for item in list_features():
-        visible = bool(item.default_visible)
-        enabled = bool(item.default_enabled)
-        if profile == "customer" and item.internal_only:
-            visible = False
-            enabled = False
-        features[item.feature_id] = {"visible": visible, "enabled": enabled}
+        features[item.feature_id] = default_feature_state(item)
     return {"schema_version": 1, "profile": profile, "features": features}
 
 
 def load_profile(path: Path, profile: str) -> dict[str, dict[str, bool]]:
-    payload = default_profile(profile)
     data = _read_json(path)
-    for feature_id, raw_state in dict(data.get("features") or {}).items():
-        if feature_id not in FEATURE_BY_ID or not isinstance(raw_state, dict):
-            continue
-        state = payload["features"][feature_id]
-        visible = _bool_override(raw_state.get("visible")) if "visible" in raw_state else None
-        enabled = _bool_override(raw_state.get("enabled")) if "enabled" in raw_state else None
-        if visible is not None:
-            state["visible"] = visible
-        if enabled is not None:
-            state["enabled"] = enabled
-    if profile == "customer":
-        for item in list_features():
-            if item.internal_only:
-                payload["features"][item.feature_id] = {"visible": False, "enabled": False}
-    return payload["features"]
+    features = normalize_feature_states(data.get("features") if isinstance(data.get("features"), dict) else None)
+    _feature_switch_log(f"loaded features: {len(features)}")
+    return features
 
 
 def save_profile(path: Path, profile: str, features: dict[str, dict[str, bool]]) -> None:
-    payload = default_profile(profile)
-    for item in list_features():
-        state = dict(features.get(item.feature_id) or {})
-        if profile == "customer" and item.internal_only:
-            state = {"visible": False, "enabled": False}
-        payload["features"][item.feature_id] = {
-            "visible": bool(state.get("visible", item.default_visible)),
-            "enabled": bool(state.get("enabled", item.default_enabled)),
-        }
+    normalized = normalize_feature_states(features)
+    error = validate_feature_states(normalized)
+    if error:
+        _feature_switch_log(f"validation error: {error}")
+        raise ValueError(error)
+    _feature_switch_log("validation passed")
+    payload = {"schema_version": 1, "profile": profile, "features": normalized}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _feature_switch_log(f"saved customer config: {path}")
 
 
 def install_runtime_feature_files(root: Path, *, edition: str, profile: str, admin_unlock_password: str | None = None) -> None:
@@ -454,6 +573,10 @@ def _bool_override(value: object) -> bool | None:
             return False
         return None
     return None
+
+
+def _feature_switch_log(message: str) -> None:
+    print(f"[FeatureSwitch] {message}")
 
 
 def _now_iso() -> str:

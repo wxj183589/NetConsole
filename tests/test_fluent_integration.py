@@ -200,6 +200,45 @@ def test_ac_page_loads_local_data_on_first_enter():
     window.close()
 
 
+def test_file_management_command_bar_only_has_connection_actions():
+    from PySide6.QtWidgets import QPushButton
+
+    from netconsole.app import build_window
+    from netconsole.ui.components.nc_command_bar import NCCommandBar
+
+    app()
+    window = build_window()
+    command_bar = window.pages["file_management"].findChild(NCCommandBar)
+
+    assert command_bar is not None
+    buttons = [button.text() for button in command_bar.findChildren(QPushButton) if button.text()]
+    assert buttons == ["连接", "断开", "刷新连接状态", "打开 WinSCP"]
+    for removed_text in ("上传", "下载", "新建目录", "删除", "Mesh 快选", "更多", "全选", "取消选择"):
+        assert removed_text not in buttons
+    window.close()
+
+
+def test_file_management_fluent_connect_action_clicks_raw_connect_button():
+    from PySide6.QtWidgets import QPushButton
+
+    from netconsole.app import build_window
+    from netconsole.ui.components.nc_command_bar import NCCommandBar
+
+    app()
+    window = build_window()
+    file_page = window.raw_pages["file_management"]
+    command_bar = window.pages["file_management"].findChild(NCCommandBar)
+    calls: list[str] = []
+
+    file_page.connect_button.clicked.disconnect()
+    file_page.connect_button.clicked.connect(lambda: calls.append("connect"))
+    connect_button = next(button for button in command_bar.findChildren(QPushButton) if button.text() == "连接")
+    connect_button.click()
+
+    assert calls == ["connect"]
+    window.close()
+
+
 def test_rail_transit_uses_only_tab_local_actions():
     from PySide6.QtWidgets import QPushButton
 
@@ -351,6 +390,30 @@ def test_fluent_command_bar_is_text_first_and_hides_device_legacy_bar():
         "批量删除",
     ]
     assert window.raw_pages["devices"].action_scroll.isHidden()
+    window.close()
+
+
+def test_config_collection_command_bar_uses_single_main_action_set():
+    from PySide6.QtWidgets import QPushButton
+
+    from netconsole.app import build_window
+    from netconsole.ui.components.nc_command_bar import NCCommandBar
+
+    app()
+    window = build_window()
+    command_bar = window.pages["config_collection"].findChild(NCCommandBar)
+
+    assert command_bar is not None
+    buttons = [button.text() for button in command_bar.findChildren(QPushButton) if button.text()]
+    assert buttons == ["保存配置", "下载配置", "配置对比", "打开目录", "刷新"]
+    assert "诊断下载" not in buttons
+    assert all(not button.icon().isNull() for button in command_bar.findChildren(QPushButton) if button.text() in buttons)
+
+    left_buttons = [button.text() for button in window.raw_pages["config_collection"].left_panel.findChildren(QPushButton) if button.text()]
+    for text in ("保存配置", "下载配置", "配置对比", "刷新", "诊断下载"):
+        assert text not in left_buttons
+    for text in ("打开目录", "下载快照", "导出当前批次", "导出差异", "删除快照"):
+        assert text in left_buttons
     window.close()
 
 

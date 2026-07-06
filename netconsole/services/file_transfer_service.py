@@ -370,6 +370,22 @@ class FileTransferService:
                 sleep(min(1.0, DOWNLOAD_STABLE_WAIT_SECONDS))
         raise TransferVerificationFailed(f"Download verification failed after retries: {last_error}") from last_error
 
+    def mkdir(self, remote_path: str) -> str:
+        sftp = self._require_sftp()
+        target = normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path)
+        sftp.mkdir(target)
+        app_logger.log_info("SFTP_DIRECTORY_CREATED", f"path={target}")
+        return target
+
+    def delete(self, remote_file: RemoteDeviceFile) -> None:
+        sftp = self._require_sftp()
+        target = normalize_remote_path(remote_file.remote_path, current_path=self._current_path, root_path=self._root_path)
+        if remote_file.is_dir:
+            sftp.rmdir(target)
+        else:
+            sftp.remove(target)
+        app_logger.log_info("SFTP_REMOTE_DELETED", f"path={target} is_dir={remote_file.is_dir}")
+
     def _require_sftp(self):
         if self._sftp is None:
             raise RuntimeError("SFTP is not connected.")

@@ -95,8 +95,11 @@ def test_remote_table_checkboxes_only_select_files(tmp_path):
     assert directory_item.flags() & Qt.ItemIsUserCheckable == Qt.NoItemFlags
     assert is_checked_value(page.remote_table.item(1, 0).checkState())
     assert is_checked_value(page.remote_table.item(2, 0).checkState())
-    assert page.download_button.isEnabled()
+    assert not page.download_button.isEnabled()
     assert page.download_button.text() == "Download Files (2)"
+    page.sftp_service = FakeConnectedSftpService()
+    page._sync_file_operation_buttons()
+    assert page.download_button.isEnabled()
 
     page.clear_remote_selection()
 
@@ -105,6 +108,83 @@ def test_remote_table_checkboxes_only_select_files(tmp_path):
     assert not is_checked_value(page.remote_table.item(2, 0).checkState())
     assert not page.download_button.isEnabled()
     assert page.download_button.text() == "Download Files"
+
+
+def test_file_management_panel_actions_are_contextual_and_textual(tmp_path):
+    app()
+    page = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", PathResolver(tmp_path))
+
+    assert not hasattr(page, "upload_button")
+    assert [
+        page.local_up_button.text(),
+        page.local_refresh_button.text(),
+        page.new_folder_button.text(),
+        page.open_local_button.text(),
+    ] == ["Up", "Refresh File List", "New Local Folder", "Open Local Folder"]
+    assert [
+        page.remote_up_button.text(),
+        page.remote_refresh_button.text(),
+        page.remote_select_all_button.text(),
+        page.remote_clear_selection_button.text(),
+        page.remote_mesh_logs_button.text(),
+        page.download_button.text(),
+        page.remote_new_folder_button.text(),
+        page.remote_delete_button.text(),
+    ] == [
+        "Up",
+        "Refresh File List",
+        "Select All",
+        "Clear Selection",
+        "MESH Logs",
+        "Download Files",
+        "New Device Directory",
+        "Delete Device Files",
+    ]
+    assert [
+        page.open_download_dir_button.text(),
+        page.clear_completed_button.text(),
+        page.clear_failed_button.text(),
+        page.cancel_selected_task_button.text(),
+    ] == ["Open Download Directory", "Clear Completed", "Clear Failed", "Cancel Selected Task"]
+    for button in (
+        page.local_up_button,
+        page.local_refresh_button,
+        page.new_folder_button,
+        page.open_local_button,
+        page.remote_up_button,
+        page.remote_refresh_button,
+        page.remote_select_all_button,
+        page.remote_clear_selection_button,
+        page.remote_mesh_logs_button,
+        page.download_button,
+        page.remote_new_folder_button,
+        page.remote_delete_button,
+        page.open_download_dir_button,
+        page.clear_completed_button,
+        page.clear_failed_button,
+        page.cancel_selected_task_button,
+    ):
+        assert button.text()
+        assert button.toolTip() == button.text() or button.toolTip()
+
+
+def test_file_management_remote_buttons_require_connection(tmp_path):
+    app()
+    page = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.remote_files = [RemoteDeviceFile("a.bin", "flash:/a.bin", 10, "", "bin")]
+    page.populate_remote_table()
+    page.select_all_remote_files()
+
+    assert not page.download_button.isEnabled()
+    assert not page.remote_delete_button.isEnabled()
+    assert not page.remote_new_folder_button.isEnabled()
+
+    page.sftp_service = FakeConnectedSftpService()
+    page._sync_file_operation_buttons()
+
+    assert page.download_button.isEnabled()
+    assert page.remote_delete_button.isEnabled()
+    assert page.remote_new_folder_button.isEnabled()
 
 
 def test_multi_file_download_uses_visible_table_order_and_skips_duplicates(tmp_path, monkeypatch):
@@ -687,6 +767,35 @@ def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
     assert "SSH session not active" not in message
 
 
+def test_file_transfer_service_creates_and_deletes_remote_entries(tmp_path):
+    calls: list[tuple[str, str]] = []
+
+    class FakeSftp:
+        def mkdir(self, path):
+            calls.append(("mkdir", path))
+
+        def remove(self, path):
+            calls.append(("remove", path))
+
+        def rmdir(self, path):
+            calls.append(("rmdir", path))
+
+    service = FileTransferService("demo", PathResolver(tmp_path))
+    service._sftp = FakeSftp()
+    service._root_path = "flash:/"
+    service._current_path = "flash:/diagfile"
+
+    assert service.mkdir("logs") == "flash:/diagfile/logs"
+    service.delete(RemoteDeviceFile("a.log", "a.log", 1, "", "log"))
+    service.delete(RemoteDeviceFile("old", "old", None, "", "dir", is_dir=True))
+
+    assert calls == [
+        ("mkdir", "flash:/diagfile/logs"),
+        ("remove", "flash:/diagfile/a.log"),
+        ("rmdir", "flash:/diagfile/old"),
+    ]
+
+
 def test_sftp_connect_worker_emits_auto_enable_statuses(tmp_path, monkeypatch):
     import netconsole.ui.pages.file_management_page as page_module
 
@@ -820,6 +929,14 @@ class FakeRepository:
     def get(self, device_id):
         assert int(device_id) == 1
         return self.device
+
+
+class FakeConnectedSftpService:
+    root_path = "flash:/"
+    current_path = "flash:/"
+
+    def is_connected(self):
+        return True
 
 
 def page_task(task_id, device, remote_file, local_path, status_key):

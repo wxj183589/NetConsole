@@ -299,8 +299,8 @@ class AppFluentWindow(SplitFluentWindow):
             ("ac", "AC 管理", "AC、FIT-AP、轨旁 AP 和光衰资源采集", FIF.WIFI, self._create_ac_page, self._ac_actions()),
             ("rail_transit", "轨道交通", "车载 MR 在线收集、Mesh 日志分析和车地无线诊断", FIF.BUS, self._create_rail_transit_page, self._rail_actions()),
             ("wifi_survey", "无线勘测", "轨旁 AP 隐藏信号扫描和 Wi-Fi 勘测", FIF.WIFI, self._create_wifi_survey_page, self._refresh_actions()),
-            ("config_collection", "配置采集中心", "保存配置、下载配置、诊断下载和差异比较", FIF.SYNC, self._create_config_collection_page, self._config_actions()),
-            ("file_management", "文件管理", "本地/设备双窗格文件上传下载和 Mesh 快选", FIF.FOLDER, self._create_file_management_page, self._file_actions()),
+            ("config_collection", "配置采集中心", "保存配置、下载配置和差异比较", FIF.SYNC, self._create_config_collection_page, self._config_actions()),
+            ("file_management", "文件管理", "本地/设备双窗格文件下载和 Mesh 快选", FIF.FOLDER, self._create_file_management_page, self._file_actions()),
             ("snmp_center", "SNMP 中心", "MIB 浏览、OID 查询、SNMP 采集和监控", FIF.SEARCH, self._create_snmp_center_page, self._snmp_actions()),
             ("network_tools", "网络工具", "Ping、fping、iperf、本机网卡和路由工具", FIF.COMMAND_PROMPT, self._create_network_tools_page, self._network_actions()),
             ("logs", "日志中心", "运行日志、筛选、导出和打开日志目录", FIF.DOCUMENT, self._create_log_page, self._log_actions()),
@@ -566,26 +566,17 @@ class AppFluentWindow(SplitFluentWindow):
         return [
             self._action(FIF.SAVE, "保存配置", lambda: self._click_raw("config_collection", "save_button")),
             self._action(FIF.DOWNLOAD, "下载配置", lambda: self._click_raw("config_collection", "fetch_button")),
-            self._action(FIF.DOCUMENT, "诊断下载", lambda: self._click_raw("config_collection", "download_button")),
+            self._action(FIF.DOCUMENT, "配置对比", lambda: self._click_raw("config_collection", "compare_button")),
             self._action(FIF.FOLDER, "打开目录", lambda: self._click_raw("config_collection", "open_dir_button")),
             self._action(FIF.SYNC, "刷新", lambda: self._call_raw("config_collection", "refresh")),
         ]
 
     def _file_actions(self) -> list[NCCommandAction]:
         return [
-            self._action(FIF.CONNECT, "连接", lambda: self._call_raw("file_management", "refresh_devices")),
+            self._action(FIF.CONNECT, "连接", lambda: self._click_raw("file_management", "connect_button")),
             self._action(FIF.CANCEL, "断开", lambda: self._call_raw("file_management", "disconnect_sftp")),
-            self._action(FIF.SYNC, "刷新", lambda: self._call_raw("file_management", "refresh_devices")),
-            self._action(FIF.UP, "上传"),
-            self._action(FIF.DOWNLOAD, "下载"),
-            self._action(FIF.FOLDER_ADD, "新建目录"),
-            self._action(FIF.DELETE, "删除"),
-            self._action(None, "Mesh 快选", lambda: self._click_raw("file_management", "remote_mesh_logs_button")),
-            self._action(FIF.FOLDER, "打开本地目录", lambda: self._click_raw("file_management", "open_local_button")),
-            self._action(None, "全选", lambda: self._click_raw("file_management", "remote_select_all_button"), overflow=True),
-            self._action(None, "取消选择", lambda: self._click_raw("file_management", "remote_clear_selection_button"), overflow=True),
-            self._action(None, "返回上一级", lambda: self._click_raw("file_management", "remote_up_button"), overflow=True),
-            self._action(None, "打开 WinSCP", lambda: self._click_raw("file_management", "external_winscp_button"), overflow=True),
+            self._action(FIF.SYNC, "刷新连接状态", lambda: self._call_raw("file_management", "refresh_connection_status")),
+            self._action(FIF.FOLDER, "打开 WinSCP", lambda: self._click_raw("file_management", "external_winscp_button")),
         ]
 
     def _ac_actions(self) -> list[NCCommandAction]:

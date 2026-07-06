@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
@@ -32,13 +34,16 @@ from netconsole.services.config_lifecycle_service import BatchConfigItemResult, 
 from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.widgets.config_diff_viewer import ConfigDiffViewer
+from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_all_table_rows_checked
 
 
 DEVICE_COLUMNS = ("select", "name", "device_type", "station")
-SNAPSHOT_COLUMNS = ("type", "timestamp", "size")
+SNAPSHOT_COLUMNS = ("select", "type", "timestamp", "size")
 CHECK_COLUMN = 0
+SNAPSHOT_CHECK_COLUMN = 0
 
 
 class ConfigCollectionCenterPage(QWidget):
@@ -55,9 +60,11 @@ class ConfigCollectionCenterPage(QWidget):
         self.devices: list[Device] = []
         self.snapshots: list[ConfigSnapshot] = []
         self.checked_device_ids: set[int] = set()
+        self.checked_snapshot_ids: set[int] = set()
         self.current_batch_results: list[BatchConfigItemResult] = []
         self.current_raw_diff = ""
         self._updating_checks = False
+        self._updating_snapshot_checks = False
 
         self.title_label = QLabel()
         self.search_input = QLineEdit()
@@ -91,11 +98,6 @@ class ConfigCollectionCenterPage(QWidget):
             editor.setReadOnly(True)
             editor.setLineWrapMode(QTextEdit.NoWrap)
 
-        operations = QHBoxLayout()
-        for button in (self.save_button, self.fetch_button, self.compare_button, self.refresh_button):
-            operations.addWidget(button)
-        operations.addStretch(1)
-
         file_actions = QHBoxLayout()
         for button in (self.open_dir_button, self.download_button, self.export_batch_button, self.export_diff_button, self.delete_button):
             file_actions.addWidget(button)
@@ -110,7 +112,6 @@ class ConfigCollectionCenterPage(QWidget):
         group_row.addStretch(1)
         left_layout.addLayout(group_row)
         left_layout.addWidget(self.device_table, 3)
-        left_layout.addLayout(operations)
         left_layout.addWidget(self.status_label)
         left_layout.addWidget(self.snapshots_label)
         left_layout.addWidget(self.snapshot_table, 2)
@@ -138,6 +139,8 @@ class ConfigCollectionCenterPage(QWidget):
         self.search_input.textChanged.connect(self.refresh)
         self.group_filter.currentIndexChanged.connect(self._group_filter_changed)
         self.snapshot_table.itemSelectionChanged.connect(self.show_selected_snapshot)
+        self.snapshot_table.itemChanged.connect(self._snapshot_item_changed)
+        self.snapshot_table.horizontalHeader().sectionClicked.connect(self._snapshot_header_clicked)
         self.save_button.clicked.connect(lambda: self._start_single_action("save"))
         self.fetch_button.clicked.connect(self.download_configs)
         self.compare_button.clicked.connect(self.compare_configs)
@@ -171,6 +174,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.export_diff_button.setText(self.t("config_center.btn.export_diff"))
         self.delete_button.setText(self.t("config_center.btn.delete_snapshot"))
         self.delete_button.setObjectName("dangerButton")
+        self._apply_button_icons()
         self.device_table.setHorizontalHeaderLabels(
             [
                 "",
@@ -182,11 +186,13 @@ class ConfigCollectionCenterPage(QWidget):
         self._sync_header_check_state()
         self.snapshot_table.setHorizontalHeaderLabels(
             [
+                "",
                 self.t("config_center.col.type"),
                 self.t("config_center.col.time"),
                 self.t("config_center.col.size"),
             ]
         )
+        self._sync_snapshot_header_check_state()
         self.tabs.setTabText(0, self.t("config_center.tab.running"))
         self.tabs.setTabText(1, self.t("config_center.tab.saved"))
         self.tabs.setTabText(2, self.t("config_center.tab.diff"))
@@ -262,14 +268,20 @@ class ConfigCollectionCenterPage(QWidget):
     def refresh_snapshots(self) -> None:
         device = self.selected_device()
         self.snapshots = [] if device is None else self.service.list_device_snapshots(device)
+        visible_snapshot_ids = {int(snapshot.id) for snapshot in self.snapshots if snapshot.id is not None}
+        self.checked_snapshot_ids.intersection_update(visible_snapshot_ids)
+        self._updating_snapshot_checks = True
         self.snapshot_table.setRowCount(len(self.snapshots))
         for row, snapshot in enumerate(self.snapshots):
+            self._set_snapshot_checkbox(row, snapshot)
             values = (self._snapshot_type_label(snapshot.type), snapshot.timestamp, self._snapshot_size(snapshot))
-            for column, value in enumerate(values):
+            for column, value in enumerate(values, start=1):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, int(snapshot.id) if snapshot.id is not None else None)
                 self.snapshot_table.setItem(row, column, item)
+        self._updating_snapshot_checks = False
         apply_table_style(self.snapshot_table)
+        self._sync_snapshot_header_check_state()
         self._sync_buttons()
 
     def selected_device(self) -> Device | None:
@@ -292,6 +304,10 @@ class ConfigCollectionCenterPage(QWidget):
         if row < 0 or row >= len(self.snapshots):
             return None
         return self.snapshots[row]
+
+    def selected_snapshots(self) -> list[ConfigSnapshot]:
+        selected_ids = set(self.checked_snapshot_ids)
+        return [snapshot for snapshot in self.snapshots if snapshot.id in selected_ids]
 
     def download_configs(self) -> None:
         checked = self.checked_devices()
@@ -419,17 +435,45 @@ class ConfigCollectionCenterPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def download_selected_snapshot(self) -> None:
-        snapshot = self.selected_snapshot()
-        if snapshot is None:
+        snapshots = self.selected_snapshots()
+        if not snapshots:
+            self._show_info("config_center.msg.select_snapshot")
             return
+        if len(snapshots) > 1:
+            directory = QFileDialog.getExistingDirectory(self, self.download_button.text(), str(Path.cwd()))
+            if not directory:
+                return
+            target_dir = Path(directory)
+            for snapshot in snapshots:
+                suffix = ".diff" if snapshot.type == "diff" else ".txt"
+                self.service.copy_snapshot(snapshot, target_dir / self._snapshot_download_filename(snapshot, suffix))
+            self.status_label.setText(self.t("config_center.status.snapshot_downloaded"))
+            self._show_success(self.t("config_center.status.snapshot_downloaded"))
+            return
+        snapshot = snapshots[0]
         suffix = ".diff" if snapshot.type == "diff" else ".txt"
         target, _ = QFileDialog.getSaveFileName(self, self.download_button.text(), self._snapshot_download_filename(snapshot, suffix))
         if target:
             self.service.copy_snapshot(snapshot, Path(target))
             self.status_label.setText(self.t("config_center.status.snapshot_downloaded"))
+            self._show_success(self.t("config_center.status.snapshot_downloaded"))
 
     def export_current_batch(self) -> None:
+        snapshots = self.selected_snapshots()
+        if snapshots:
+            timestamps = {snapshot.timestamp for snapshot in snapshots}
+            if len(timestamps) != 1:
+                self._show_info("config_center.msg.batch_unresolved")
+                return
+            default_name = f"{safe_device_name(self.t('config_center.batch_export.prefix'))}_{safe_device_name(self.site_name)}_{next(iter(timestamps))}.zip"
+            target, _ = QFileDialog.getSaveFileName(self, self.export_batch_button.text(), default_name, "ZIP (*.zip)")
+            if not target:
+                return
+            self._export_snapshots_zip(snapshots, Path(target))
+            self._show_success(self.t("config_center.status.snapshot_exported"))
+            return
         if not self.current_batch_results:
+            self._show_info("config_center.msg.select_snapshot")
             return
         default_name = f"{safe_device_name(self.t('config_center.batch_export.prefix'))}_{safe_device_name(self.site_name)}_{snapshot_timestamp()}.zip"
         target, _ = QFileDialog.getSaveFileName(self, self.export_batch_button.text(), default_name, "ZIP (*.zip)")
@@ -441,20 +485,41 @@ class ConfigCollectionCenterPage(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(target).parent)))
 
     def export_current_diff(self) -> None:
+        snapshots = self.selected_snapshots()
+        if snapshots:
+            if len(snapshots) != 2:
+                self._show_info("config_center.msg.select_two_snapshots")
+                return
+            diff = self.service.compare_snapshots(snapshots[0], snapshots[1])
+            self.current_raw_diff = diff.raw_diff
+            self.diff_viewer.set_diff(
+                self._snapshot_type_label(snapshots[0].type),
+                self._snapshot_type_label(snapshots[1].type),
+                self.service.snapshot_text(snapshots[0]),
+                self.service.snapshot_text(snapshots[1]),
+                diff.raw_diff,
+            )
+            self.tabs.setCurrentWidget(self.diff_viewer)
         if not self.current_raw_diff:
+            self._show_info("config_center.msg.select_two_snapshots")
             return
         target, _ = QFileDialog.getSaveFileName(self, self.export_diff_button.text(), f"diff_{snapshot_timestamp()}.diff", "Diff (*.diff);;Text (*.txt)")
         if target:
             Path(target).write_text(self.current_raw_diff, encoding="utf-8")
+            self._show_success(self.t("config_center.status.diff_exported"))
 
     def delete_selected_snapshot(self) -> None:
-        snapshot = self.selected_snapshot()
-        if snapshot is None:
+        snapshots = self.selected_snapshots()
+        if not snapshots:
+            self._show_info("config_center.msg.select_snapshot")
             return
-        answer = QMessageBox.question(self, self.t("config_center.btn.delete_snapshot"), self.t("config_center.msg.confirm_delete_snapshot"))
+        answer = QMessageBox.question(self, self.t("config_center.btn.delete_snapshot"), self.t("config_center.msg.confirm_delete_snapshot", count=len(snapshots)))
         if answer == QMessageBox.Yes:
-            self.service.delete_snapshot(snapshot)
+            for snapshot in snapshots:
+                self.service.delete_snapshot(snapshot)
+            self.checked_snapshot_ids.clear()
             self.refresh_snapshots()
+            self._show_success(self.t("config_center.status.snapshot_deleted", count=len(snapshots)))
 
     def _show_result_snapshots(self, snapshots: list[ConfigSnapshot], diff: ConfigDiffResult | None) -> None:
         for snapshot in snapshots:
@@ -482,8 +547,11 @@ class ConfigCollectionCenterPage(QWidget):
         configure_readonly_table(self.device_table)
         configure_readonly_table(self.snapshot_table)
         install_checkbox_only_delegate(self.device_table, CHECK_COLUMN)
+        install_checkbox_only_delegate(self.snapshot_table, SNAPSHOT_CHECK_COLUMN)
         self.device_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.snapshot_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.device_table.setColumnWidth(CHECK_COLUMN, 72)
+        self.snapshot_table.setColumnWidth(SNAPSHOT_CHECK_COLUMN, 72)
 
     def _set_checkbox(self, row: int, device: Device) -> None:
         item = create_checkable_table_item(
@@ -491,6 +559,13 @@ class ConfigCollectionCenterPage(QWidget):
             user_data=int(device.id) if device.id is not None else None,
         )
         self.device_table.setItem(row, CHECK_COLUMN, item)
+
+    def _set_snapshot_checkbox(self, row: int, snapshot: ConfigSnapshot) -> None:
+        item = create_checkable_table_item(
+            snapshot.id in self.checked_snapshot_ids,
+            user_data=int(snapshot.id) if snapshot.id is not None else None,
+        )
+        self.snapshot_table.setItem(row, SNAPSHOT_CHECK_COLUMN, item)
 
     def _device_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating_checks or item.column() != CHECK_COLUMN:
@@ -505,12 +580,32 @@ class ConfigCollectionCenterPage(QWidget):
         self._sync_header_check_state()
         self._sync_buttons()
 
+    def _snapshot_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_snapshot_checks or item.column() != SNAPSHOT_CHECK_COLUMN:
+            return
+        snapshot_id = item.data(Qt.UserRole)
+        if snapshot_id is None:
+            return
+        if is_checked_value(item.checkState()):
+            self.checked_snapshot_ids.add(int(snapshot_id))
+        else:
+            self.checked_snapshot_ids.discard(int(snapshot_id))
+        self._sync_snapshot_header_check_state()
+        self._sync_buttons()
+
     def _header_clicked(self, section: int) -> None:
         if section != CHECK_COLUMN:
             return
         selectable_count = len([device for device in self.devices if device.id is not None])
         visible_checked = len([device for device in self.devices if device.id in self.checked_device_ids])
         self._set_all_checked(visible_checked != selectable_count)
+
+    def _snapshot_header_clicked(self, section: int) -> None:
+        if section != SNAPSHOT_CHECK_COLUMN:
+            return
+        selectable_count = len([snapshot for snapshot in self.snapshots if snapshot.id is not None])
+        visible_checked = len([snapshot for snapshot in self.snapshots if snapshot.id in self.checked_snapshot_ids])
+        self._set_all_snapshots_checked(visible_checked != selectable_count)
 
     def _set_all_checked(self, checked: bool) -> None:
         self._updating_checks = True
@@ -528,6 +623,19 @@ class ConfigCollectionCenterPage(QWidget):
         self._sync_header_check_state()
         self._sync_buttons()
 
+    def _set_all_snapshots_checked(self, checked: bool) -> None:
+        self._updating_snapshot_checks = True
+        visible_ids = {int(snapshot.id) for snapshot in self.snapshots if snapshot.id is not None}
+        if not checked:
+            self.checked_snapshot_ids.difference_update(visible_ids)
+        set_all_table_rows_checked(self.snapshot_table, checked, SNAPSHOT_CHECK_COLUMN)
+        for snapshot in self.snapshots:
+            if checked and snapshot.id is not None:
+                self.checked_snapshot_ids.add(int(snapshot.id))
+        self._updating_snapshot_checks = False
+        self._sync_snapshot_header_check_state()
+        self._sync_buttons()
+
     def _sync_header_check_state(self) -> None:
         item = self.device_table.horizontalHeaderItem(CHECK_COLUMN) or QTableWidgetItem()
         item.setText(self.t("config_center.btn.select_all"))
@@ -543,6 +651,21 @@ class ConfigCollectionCenterPage(QWidget):
             item.setCheckState(Qt.PartiallyChecked)
         self.device_table.setHorizontalHeaderItem(CHECK_COLUMN, item)
 
+    def _sync_snapshot_header_check_state(self) -> None:
+        item = self.snapshot_table.horizontalHeaderItem(SNAPSHOT_CHECK_COLUMN) or QTableWidgetItem()
+        item.setText(self.t("config_center.btn.select_all"))
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        visible_ids = {int(snapshot.id) for snapshot in self.snapshots if snapshot.id is not None}
+        total = len(visible_ids)
+        checked = len(visible_ids & self.checked_snapshot_ids)
+        if checked == 0 or total == 0:
+            item.setCheckState(Qt.Unchecked)
+        elif checked == total:
+            item.setCheckState(Qt.Checked)
+        else:
+            item.setCheckState(Qt.PartiallyChecked)
+        self.snapshot_table.setHorizontalHeaderItem(SNAPSHOT_CHECK_COLUMN, item)
+
     def _set_busy(self, busy: bool) -> None:
         for button in (self.save_button, self.fetch_button, self.compare_button, self.refresh_button, self.open_dir_button):
             button.setEnabled(not busy)
@@ -553,7 +676,8 @@ class ConfigCollectionCenterPage(QWidget):
     def _sync_buttons(self) -> None:
         has_device = self.primary_device() is not None
         checked_count = len(self.checked_device_ids)
-        has_snapshot = self.selected_snapshot() is not None
+        selected_snapshot_count = len(self.selected_snapshots())
+        has_snapshot = selected_snapshot_count > 0
         if self.worker is None:
             self.save_button.setEnabled(has_device and checked_count <= 1)
             self.fetch_button.setEnabled(has_device)
@@ -561,9 +685,10 @@ class ConfigCollectionCenterPage(QWidget):
             self.refresh_button.setEnabled(True)
             self.open_dir_button.setEnabled(has_device and checked_count <= 1)
         self.download_button.setEnabled(has_snapshot and self.worker is None)
-        self.export_batch_button.setEnabled(bool(self.current_batch_results) and any(item.success for item in self.current_batch_results) and self.worker is None)
-        self.export_diff_button.setEnabled(bool(self.current_raw_diff) and self.worker is None)
+        self.export_batch_button.setEnabled((has_snapshot or (bool(self.current_batch_results) and any(item.success for item in self.current_batch_results))) and self.worker is None)
+        self.export_diff_button.setEnabled(((selected_snapshot_count == 2) or bool(self.current_raw_diff)) and self.worker is None)
         self.delete_button.setEnabled(has_snapshot and self.worker is None)
+        self.snapshots_label.setText(f"{self.t('config_center.snapshots')}（{self.t('config_center.status.selected_snapshots', count=selected_snapshot_count)}）")
 
     def _sync_sidebar_button_text(self) -> None:
         self.toggle_sidebar_button.setText(self.t("config_center.btn.expand_sidebar") if self._left_collapsed else self.t("config_center.btn.collapse_sidebar"))
@@ -612,3 +737,39 @@ class ConfigCollectionCenterPage(QWidget):
 
     def _title(self) -> str:
         return self.t("config_center.title")
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.save_button, "SAVE"),
+            (self.fetch_button, "DOWNLOAD"),
+            (self.compare_button, "DOCUMENT"),
+            (self.open_dir_button, "FOLDER"),
+            (self.refresh_button, "SYNC"),
+            (self.download_button, "DOWNLOAD"),
+            (self.export_batch_button, "SHARE"),
+            (self.export_diff_button, "DOCUMENT"),
+            (self.delete_button, "DELETE"),
+            (self.toggle_sidebar_button, "MENU"),
+        ):
+            apply_button_icon(button, icon_name)
+            button.setToolTip(button.text())
+
+    def _show_success(self, message: str) -> None:
+        self.status_label.setText(message)
+        if InfoBar is not None:
+            InfoBar.success(title=self._title(), content=message, duration=2500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
+
+    def _export_snapshots_zip(self, snapshots: list[ConfigSnapshot], target_zip_path: Path) -> None:
+        target_zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(target_zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for snapshot in snapshots:
+                suffix = "diff" if snapshot.type == "diff" else "txt"
+                archive_name = f"{snapshot.timestamp}/{snapshot.type}_{snapshot.id or 'snapshot'}.{suffix}"
+                if snapshot.type in {"running", "saved"}:
+                    archive.writestr(archive_name, self.service.snapshot_text(snapshot))
+                else:
+                    source = self.paths.site_dir(self.site_name) / snapshot.file_path
+                    if source.exists():
+                        archive.write(source, archive_name)
+                    else:
+                        app_logger.log_warning("CONFIG_SNAPSHOT_EXPORT_MISSING", f"snapshot_id={snapshot.id} path={source}")
