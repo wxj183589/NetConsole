@@ -2099,6 +2099,7 @@ def test_online_mr_active_rssi_interactive_points_fill_nearby_metrics(tmp_path: 
 
 def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_path: Path) -> None:
     from matplotlib.dates import date2num
+    from matplotlib.dates import num2date
 
     page, _repository, _groups = _online_page_with_devices(tmp_path)
     paths, config = _config(tmp_path)
@@ -2120,6 +2121,10 @@ def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_
     page._render_analysis_charts(session.session_dir)
 
     hover = page.analysis_chart_hover_controllers["rssi"]
+    axis = page.analysis_chart_canvases["rssi"].figure.axes[0]
+    left, right = axis.get_xlim()
+    assert num2date(left).year == 2026
+    assert num2date(right).year == 2026
     middle = date2num(datetime.fromisoformat("2026-07-03 19:00:07.000"))
     assert hover.nearest_index(middle) == 1
     text = hover.tooltip_text(1)
