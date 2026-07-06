@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from netconsole.core.shutdown_manager import shutdown_manager
-from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_line
+from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_error_lines, parse_iperf_line
 
 
 FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS = 86400
@@ -72,6 +72,15 @@ class IperfClientConfig:
     def as_dict(self) -> dict[str, object]:
         config = self.normalized()
         return dict(config.__dict__)
+
+
+@dataclass(frozen=True)
+class IperfPreflightResult:
+    ok: bool
+    error_code: str = ""
+    message: str = ""
+    command: list[str] | None = None
+    output: str = ""
 
 
 @dataclass(frozen=True)
@@ -179,6 +188,79 @@ def build_iperf_client_args(iperf_path: Path, config: IperfClientConfig) -> list
     if cfg.protocol == "UDP" and cfg.packet_length:
         args.extend(["-l", str(cfg.packet_length)])
     return args
+
+
+def build_iperf_client_preflight_args(iperf_path: Path, config: IperfClientConfig) -> list[str]:
+    cfg = config.normalized()
+    preflight = IperfClientConfig(
+        server_ip=cfg.server_ip,
+        port=cfg.port,
+        protocol=cfg.protocol,
+        duration_seconds=1,
+        interval_seconds=1,
+        parallel=cfg.parallel,
+        direction=cfg.direction,
+        target_bandwidth=cfg.target_bandwidth,
+        follow_collection=False,
+        tcp_block_size=cfg.tcp_block_size,
+        packet_length=cfg.packet_length,
+        tcp_report_threshold_mbps=cfg.tcp_report_threshold_mbps,
+        tcp_pacing_enabled=cfg.tcp_pacing_enabled,
+        tcp_pacing_mbps=cfg.tcp_pacing_mbps,
+        udp_bitrate_mbps=cfg.udp_bitrate_mbps,
+        udp_report_threshold_mbps=cfg.udp_report_threshold_mbps,
+    )
+    return build_iperf_client_args(iperf_path, preflight)
+
+
+def run_iperf_client_preflight(iperf_path: Path, config: IperfClientConfig, timeout_seconds: float = 8.0) -> IperfPreflightResult:
+    cfg = config.normalized()
+    if not cfg.server_ip:
+        return IperfPreflightResult(False, "server_required", "server address is required")
+    if not Path(iperf_path).exists():
+        return IperfPreflightResult(False, "tool_missing", f"iperf3 not found: {iperf_path}")
+    command = build_iperf_client_preflight_args(iperf_path, cfg)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=Path(iperf_path).parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(2.0, float(timeout_seconds)),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = str(exc.output or "")
+        return IperfPreflightResult(False, "timed_out", "iperf preflight timed out", command, output)
+    except Exception as exc:
+        return IperfPreflightResult(False, "runner_exception", str(exc), command, "")
+    output = completed.stdout or ""
+    if completed.returncode == 0:
+        return IperfPreflightResult(True, "", "iperf preflight succeeded", command, output)
+    error = _classify_iperf_preflight_error(output)
+    return IperfPreflightResult(False, error.get("error_code", "iperf_error"), str(error.get("error_message") or output.strip() or f"iperf exited with code {completed.returncode}"), command, output)
+
+
+def _classify_iperf_preflight_error(output: str) -> dict[str, object]:
+    events = parse_iperf_error_lines(str(output or "").splitlines(), datetime.now())
+    if events:
+        return events[0]
+    text = str(output or "").strip()
+    lowered = text.casefold()
+    if "no route to host" in lowered:
+        return {"error_code": "no_route_to_host", "error_message": text}
+    if "network is unreachable" in lowered:
+        return {"error_code": "network_unreachable", "error_message": text}
+    if "connection refused" in lowered:
+        return {"error_code": "connection_refused", "error_message": text}
+    if "timed out" in lowered:
+        return {"error_code": "timed_out", "error_message": text}
+    return {"error_code": "iperf_error", "error_message": text}
 
 
 class IperfResultStore:

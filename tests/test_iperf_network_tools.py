@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from netconsole.services.network_tools.iperf_runner import (
     IperfResultStore,
     build_iperf_client_args,
     normalize_bandwidth_text,
+    run_iperf_client_preflight,
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.online_mr.traffic_presets import get_traffic_preset, list_traffic_presets
@@ -401,6 +403,26 @@ def test_iperf_error_parser_accepts_compact_error_format() -> None:
     assert event["event_type"] == "error"
     assert event["error_code"] == "server_busy"
     assert event["collector_time"] == "2026-07-05 19:23:10.001"
+
+
+def test_iperf_preflight_reports_connection_refused(tmp_path: Path, monkeypatch) -> None:
+    tool = tmp_path / "iperf3.exe"
+    tool.write_text("fake", encoding="utf-8")
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="iperf3: error - unable to connect to server - Connection refused\n",
+        )
+
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.subprocess.run", fake_run)
+
+    result = run_iperf_client_preflight(tool, IperfClientConfig("127.0.0.1", port=5010))
+
+    assert result.ok is False
+    assert result.error_code == "unable_to_connect"
+    assert "Connection refused" in result.message
 
 
 def test_iperf_interval_center_time_aligns_to_started_at() -> None:

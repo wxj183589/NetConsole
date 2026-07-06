@@ -377,15 +377,36 @@ class OnlineMrCollector:
         if self.connection is None:
             raise OnlineMrConnectionError("connection is not ready")
         self._set_status(STATE_INITIALIZING)
+        self._run_init_commands(self.connection, record_meta=True)
+
+    def _run_init_commands(self, connection: OnlineMrConnection, *, record_meta: bool = False) -> None:
+        session = self._session()
+        started_at = datetime.now()
+        status = "success"
+        errors: list[str] = []
+        session.append_collector_output_raw(f"===== INIT START {started_at:%Y-%m-%d %H:%M:%S.%f} =====")
         for command in INIT_COMMANDS:
             try:
-                raw = self.connection.send_command(command, self.config.command_timeout)
+                connection.send_command(command, self.config.command_timeout)
             except Exception as exc:
+                status = "failed"
+                errors.append(f"{command}: {exc}")
+                session.append_collector_output_raw(f"{command} -> FAILED: {exc}")
                 self._record_command_failure("init", command, exc)
-                if self.connection is None:
-                    raise
                 continue
-            self._session().append_raw("init", command, raw)
+            session.append_collector_output_raw(f"{command} -> OK")
+        ended_at = datetime.now()
+        error_message = "; ".join(errors) if errors else None
+        session.append_collector_output_raw(f"===== INIT END status={status} =====")
+        session.log("INFO" if status == "success" else "WARNING", f"init_status={status}" + (f" error={error_message}" if error_message else ""))
+        if record_meta:
+            session.update_init_status(
+                status=status,
+                started_at=started_at,
+                ended_at=ended_at,
+                commands=INIT_COMMANDS,
+                error_message=error_message,
+            )
 
     def run_due_tasks(self, now: float | None = None) -> list[str]:
         if self.session is None:
@@ -649,12 +670,7 @@ class OnlineMrCollector:
         session = self._session()
         connection = self.connection_factory(self.config)
         self._stream_connections.append(connection)
-        for command in INIT_COMMANDS:
-            try:
-                raw = connection.send_command(command, self.config.command_timeout)
-                session.append_raw("init", command, raw)
-            except Exception as exc:
-                self._record_command_failure("init", command, exc)
+        self._run_init_commands(connection, record_meta=False)
         commands = self._repeat_commands(task_type)
         self._enqueue_collector_output_raw(
             f"[collector=repeat] START task={task_type}\n" + "\n".join(commands) + "\n"

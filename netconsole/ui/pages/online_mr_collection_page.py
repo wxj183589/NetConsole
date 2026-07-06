@@ -74,6 +74,7 @@ from netconsole.services.network_tools.iperf_runner import (
     FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
     IperfClientConfig,
     build_iperf_client_args,
+    run_iperf_client_preflight,
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.netmiko_connection import connection_targets
@@ -544,6 +545,8 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_follow_check.setVisible(False)
         self.iperf_duration_spin = self._no_wheel_spin(1, FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS, FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
         self.iperf_duration_spin.setVisible(False)
+        self.iperf_check_server_button = QPushButton()
+        self.iperf_retry_button = QPushButton()
         self.iperf_tool_label = QLabel()
         self.iperf_tool_label.setWordWrap(True)
         self._no_wheel_filter = NoWheelValueChangeFilter(self)
@@ -975,6 +978,8 @@ class OnlineMrCollectionPage(QWidget):
         self.enable_iperf_check.setText(self.i18n.t("online_mr.enable_traffic_test"))
         self.iperf_follow_check.setText(self.i18n.t("iperf.follow_collection"))
         self.iperf_duration_mode_label.setText("运行方式：跟随采集启停")
+        self.iperf_check_server_button.setText("检测打流服务端")
+        self.iperf_retry_button.setText("重试打流")
         self.iperf_bandwidth_hint_label.setText(self.i18n.t("iperf.tcp_auto_bandwidth_hint"))
         self.iperf_tcp_threshold_edit.setToolTip(self.i18n.t("iperf.tcp_report_threshold_tooltip"))
         self.iperf_udp_bitrate_edit.setToolTip(self.i18n.t("iperf.udp_bitrate_tooltip"))
@@ -1335,6 +1340,8 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_preset_combo.currentIndexChanged.connect(lambda _index: self._iperf_preset_changed())
         self.iperf_protocol_combo.currentIndexChanged.connect(lambda _index: self._update_iperf_controls_visibility())
         self.iperf_tcp_pacing_check.toggled.connect(lambda checked: self.iperf_tcp_pacing_edit.setEnabled(bool(checked)))
+        self.iperf_check_server_button.clicked.connect(self.check_iperf_server)
+        self.iperf_retry_button.clicked.connect(self.retry_iperf_for_running_sessions)
 
     def _build_analysis_chart_placeholders(self) -> None:
         if self.analysis_charts.count() > 0:
@@ -1551,6 +1558,8 @@ class OnlineMrCollectionPage(QWidget):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if not self._preflight_iperf_before_start():
+            return
         started = 0
         skipped: list[str] = []
         for device in selected:
@@ -1586,6 +1595,111 @@ class OnlineMrCollectionPage(QWidget):
         if started:
             self._set_status("CONNECTING")
         self._update_action_state()
+
+    def check_iperf_server(self) -> None:
+        ok, message = self._run_current_iperf_preflight()
+        if ok:
+            QMessageBox.information(self, self.i18n.t("online_mr.traffic_test"), message)
+        else:
+            QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
+
+    def retry_iperf_for_running_sessions(self) -> None:
+        if not self.enable_iperf_check.isChecked():
+            return
+        sessions = set(self.workers)
+        if not sessions:
+            QMessageBox.information(self, self.i18n.t("online_mr.traffic_test"), "当前没有正在采集的会话。")
+            return
+        ok, message = self._run_current_iperf_preflight()
+        self._append_runtime_log(f"IPERF preflight: {message}")
+        if not ok:
+            QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
+            return
+        self._stop_iperf_workers_for_sessions(sessions, status="STOPPED_BY_RETRY")
+        self._retry_iperf_for_sessions(sessions)
+
+    def _preflight_iperf_before_start(self) -> bool:
+        if not self.enable_iperf_check.isChecked():
+            return True
+        ok, message = self._run_current_iperf_preflight()
+        self._append_runtime_log(f"IPERF preflight: {message}")
+        if ok:
+            return True
+        QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
+        return False
+
+    def _run_current_iperf_preflight(self) -> tuple[bool, str]:
+        try:
+            client_config = self._current_iperf_client_config(duration_seconds=1, follow_collection=False)
+        except ValueError as exc:
+            return False, str(exc)
+        tool = find_iperf_tool(self.paths)
+        if tool is None:
+            return False, self.i18n.t("iperf.tool_missing")
+        result = run_iperf_client_preflight(tool, client_config)
+        if result.ok:
+            return True, f"打流服务端可用：{client_config.server_ip}:{client_config.port}"
+        return False, self._format_iperf_preflight_failure(client_config, result.error_code, result.message)
+
+    def _current_iperf_client_config(self, *, duration_seconds: int, follow_collection: bool) -> IperfClientConfig:
+        traffic = IperfTrafficConfig(
+            enabled=True,
+            server_ip=self.iperf_server_edit.text().strip(),
+            port=self.iperf_port_spin.value(),
+            protocol=self.iperf_protocol_combo.currentText(),
+            direction=self.iperf_direction_combo.currentData() or "upload",
+            parallel=self.iperf_parallel_spin.value(),
+            interval_seconds=self.iperf_interval_spin.value(),
+            target_bandwidth=None,
+            tcp_report_threshold_mbps=self._current_iperf_tcp_threshold_mbps(),
+            tcp_pacing_enabled=self.iperf_tcp_pacing_check.isChecked(),
+            tcp_pacing_mbps=self._current_iperf_tcp_pacing_mbps(),
+            udp_bitrate_mbps=self._current_iperf_udp_bitrate_mbps(),
+            udp_report_threshold_mbps=self._current_iperf_udp_threshold_mbps(),
+            packet_length=self._current_iperf_packet_length(),
+            follow_collection=follow_collection,
+            duration_seconds=duration_seconds,
+        ).normalized()
+        if not traffic.server_ip:
+            raise ValueError("打流服务端地址不能为空。")
+        return self._iperf_client_config_from_traffic(traffic, duration_seconds=duration_seconds, follow_collection=follow_collection)
+
+    @staticmethod
+    def _iperf_client_config_from_traffic(config: IperfTrafficConfig, *, duration_seconds: int, follow_collection: bool) -> IperfClientConfig:
+        normalized = config.normalized()
+        return IperfClientConfig(
+            server_ip=normalized.server_ip,
+            port=normalized.port,
+            protocol=normalized.protocol,
+            duration_seconds=duration_seconds,
+            interval_seconds=normalized.interval_seconds,
+            parallel=normalized.parallel,
+            direction=normalized.direction,
+            target_bandwidth=normalized.target_bandwidth,
+            follow_collection=follow_collection,
+            tcp_block_size=normalized.tcp_block_size,
+            packet_length=normalized.packet_length,
+            tcp_report_threshold_mbps=normalized.tcp_report_threshold_mbps,
+            tcp_pacing_enabled=normalized.tcp_pacing_enabled,
+            tcp_pacing_mbps=normalized.tcp_pacing_mbps,
+            udp_bitrate_mbps=normalized.udp_bitrate_mbps,
+            udp_report_threshold_mbps=normalized.udp_report_threshold_mbps,
+        ).normalized()
+
+    @staticmethod
+    def _format_iperf_preflight_failure(config: IperfClientConfig, error_code: str, message: str) -> str:
+        endpoint = f"{config.server_ip}:{config.port}"
+        text = str(message or "").strip()
+        local_hosts = {"127.0.0.1", "localhost", "::1"}
+        if config.server_ip.casefold() in local_hosts and (error_code in {"unable_to_connect", "connection_refused"} or "connection refused" in text.casefold()):
+            return f"当前为 127.0.0.1 本机模拟打流，但本机 {config.port} 端口没有 iperf3 服务端监听。请先在网络工具中启动 iperf 服务端，或修改服务端地址/端口。"
+        if error_code == "server_busy":
+            return f"打流服务端忙：{endpoint} 正在运行其他 iperf 测试，请稍后重试。"
+        if error_code in {"unable_to_connect", "connection_refused"}:
+            return f"打流服务端不可用：{endpoint} 连接失败。请先启动 iperf3 服务端或修改服务端地址/端口。{text}"
+        if error_code == "timed_out":
+            return f"打流服务端不可用：{endpoint} 预检查超时。请检查链路、防火墙和端口。"
+        return f"打流服务端不可用：{endpoint}。{text}"
 
     def stop_selected(self) -> None:
         stopped_any = False
@@ -2588,31 +2702,18 @@ class OnlineMrCollectionPage(QWidget):
         if tool is None:
             self.log_text.append(self.i18n.t("iperf.tool_missing"))
             return
-        client_config = IperfClientConfig(
-            server_ip=config.server_ip,
-            port=config.port,
-            protocol=config.protocol,
+        client_config = self._iperf_client_config_from_traffic(
+            config,
             duration_seconds=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
-            interval_seconds=config.interval_seconds,
-            parallel=config.parallel,
-            direction=config.direction,
-            target_bandwidth=config.target_bandwidth,
             follow_collection=True,
-            tcp_block_size=config.tcp_block_size,
-            packet_length=config.packet_length,
-            tcp_report_threshold_mbps=config.tcp_report_threshold_mbps,
-            tcp_pacing_enabled=config.tcp_pacing_enabled,
-            tcp_pacing_mbps=config.tcp_pacing_mbps,
-            udp_bitrate_mbps=config.udp_bitrate_mbps,
-            udp_report_threshold_mbps=config.udp_report_threshold_mbps,
-        ).normalized()
+        )
         command = build_iperf_client_args(tool, client_config)
         session_dir = Path(meta.session_dir)
         log_file = session_dir / "raw" / "iperf_client_raw.log"
         batch_key = self._iperf_batch_key(client_config)
         iperf_context = self._iperf_context_for_meta(meta, client_config, batch_key)
         existing = self.iperf_batch_workers.get(batch_key)
-        if existing is not None and existing.isRunning():
+        if existing is not None and self._is_iperf_worker_reusable(existing):
             existing.add_mirror_log_file(log_file, context=iperf_context)
             self.iperf_workers[meta.session_id] = existing
             self.iperf_batch_sessions.setdefault(batch_key, set()).add(meta.session_id)
@@ -2620,6 +2721,9 @@ class OnlineMrCollectionPage(QWidget):
                 self.iperf_workers_by_device_id[int(meta.device_id)] = existing
             self._append_runtime_log(f"IPERF: reuse batch worker for session {meta.session_id}")
             return
+        if existing is not None:
+            self._append_runtime_log("IPERF: discard failed batch worker and create new one")
+            self._stop_iperf_worker(existing, status="STOPPED_BY_RETRY")
         self.iperf_batch_workers.pop(batch_key, None)
         self.iperf_batch_sessions.pop(batch_key, None)
         worker = IperfProcessWorker(
@@ -2645,6 +2749,50 @@ class OnlineMrCollectionPage(QWidget):
         if meta.device_id is not None:
             self.iperf_workers_by_device_id[int(meta.device_id)] = worker
         worker.start()
+
+    def _is_iperf_worker_reusable(self, worker: IperfProcessWorker) -> bool:
+        is_running = getattr(worker, "isRunning", None)
+        if not callable(is_running) or not is_running():
+            return False
+        runner = getattr(worker, "runner", None)
+        if runner is None:
+            return True
+        if getattr(runner, "stop_requested", False):
+            return False
+        if getattr(runner, "last_error_code", ""):
+            return False
+        last_status = str(getattr(runner, "last_status", "") or "").upper()
+        if last_status and last_status not in {"CREATED", "RUNNING"}:
+            return False
+        process = getattr(runner, "process", None)
+        if process is not None and callable(getattr(process, "poll", None)) and process.poll() is not None:
+            return False
+        return True
+
+    def _retry_iperf_for_sessions(self, session_ids: set[str]) -> None:
+        for session_id in sorted(session_ids):
+            worker = self.workers.get(session_id)
+            if worker is None or worker.collector.session is None:
+                continue
+            self._start_iperf_worker(worker.collector.session.meta, worker)
+
+    def _schedule_iperf_retry_for_sessions(self, session_ids: set[str]) -> None:
+        active_sessions = {session_id for session_id in session_ids if session_id in self.workers}
+        if not active_sessions or not self.enable_iperf_check.isChecked():
+            return
+
+        def retry() -> None:
+            if not self._can_update_ui():
+                return
+            still_active = {session_id for session_id in active_sessions if session_id in self.workers}
+            if not still_active:
+                return
+            ok, message = self._run_current_iperf_preflight()
+            self._append_runtime_log(f"IPERF reconnect preflight: {message}")
+            if ok:
+                self._retry_iperf_for_sessions(still_active)
+
+        QTimer.singleShot(1000, retry)
 
     def _iperf_completed(self, session_id: str, device_id: int | None) -> None:
         self.iperf_workers.pop(session_id, None)
@@ -2730,8 +2878,10 @@ class OnlineMrCollectionPage(QWidget):
                 self.iperf_workers_by_device_id.pop(int(device_id), None)
 
     def _iperf_batch_failed(self, batch_key: tuple[object, ...], message: str) -> None:
+        sessions = set(self.iperf_batch_sessions.get(batch_key, set()))
         self._append_runtime_log(f"IPERF: {message}")
         self._iperf_batch_completed(batch_key)
+        self._schedule_iperf_retry_for_sessions(sessions)
 
     def _append_iperf_interval(self, device_id: int | None, row: dict[str, object]) -> None:
         if device_id is not None:
@@ -3502,6 +3652,7 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setEnabled(can_start and not stopping)
         self.stop_selected_button.setEnabled(running_selected and not stopping)
         self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers) and not stopping)
+        self.iperf_retry_button.setEnabled(self.enable_iperf_check.isChecked() and bool(self.workers) and not stopping)
         self.open_button.setEnabled(True)
         self._running_count = self._site_running_count()
         self.running_count_label.setText(str(self._running_count))
@@ -3511,6 +3662,8 @@ class OnlineMrCollectionPage(QWidget):
     def _apply_feature_gate(self) -> None:
         apply_feature_to_widget(self.feature_gate, "online_mr.advanced_ping", self.enable_fping_check)
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.enable_iperf_check)
+        apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.iperf_check_server_button)
+        apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.iperf_retry_button)
 
     def _reconcile_collection_state(self) -> None:
         if not self._can_update_ui():
@@ -4521,6 +4674,10 @@ class OnlineMrCollectionPage(QWidget):
         grid.addWidget(self.iperf_bandwidth_hint_label, 14, 1, 1, 2)
         grid.addWidget(self._label("online_mr.tool_status"), 15, 0)
         grid.addWidget(self.iperf_tool_label, 15, 1, 1, 2)
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.iperf_check_server_button)
+        button_layout.addWidget(self.iperf_retry_button)
+        grid.addLayout(button_layout, 16, 1, 1, 2)
         return box
 
     def _fill_iperf_direction_combo(self) -> None:

@@ -42,8 +42,14 @@ CONFIG_COLLECT_COMMANDS: tuple[str, ...] = (
 INIT_COMMANDS: tuple[str, ...] = (
     "screen-length disable",
     "terminal logging level 7",
+    "terminal monitor",
+    "system-view",
+    "user-interface vty 0 31",
+    "idle-timeout 1440 0",
+    "return",
     "system-view",
     "probe",
+    "return",
 )
 
 TERMINAL_MONITOR_INIT_COMMANDS: tuple[str, ...] = (
@@ -403,6 +409,7 @@ class OnlineMrSessionMeta:
     config_file_path: str = ""
     config_error: str | None = None
     raw_log_path: str = ""
+    init: dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -430,6 +437,7 @@ class OnlineMrSessionMeta:
             "config_file_path": self.config_file_path,
             "config_error": self.config_error,
             "raw_log_path": self.raw_log_path,
+            "init": self.init,
         }
 
 

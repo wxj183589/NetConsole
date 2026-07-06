@@ -27,7 +27,6 @@ DEVICE_TERMINAL_MONITOR_RAW_FILE = "terminal_monitor_raw.log"
 COLLECTOR_OUTPUT_RAW_FILE = "collector_output_raw.log"
 
 RAW_FILES = {
-    "init": "init_raw.log",
     TASK_CONFIG_COLLECT: "config_collect_raw.log",
     TASK_TERMINAL_MONITOR: DEVICE_TERMINAL_MONITOR_RAW_FILE,
     TASK_MESH_LINK: "mesh_link_raw.log",
@@ -339,6 +338,25 @@ class OnlineMrSession:
         if file_path is not None:
             self.meta.config_file_path = str(file_path)
         self.meta.config_error = error
+        self.write_meta()
+
+    def update_init_status(
+        self,
+        *,
+        status: str,
+        started_at: datetime,
+        ended_at: datetime,
+        commands: list[str] | tuple[str, ...],
+        error_message: str | None = None,
+    ) -> None:
+        self.meta.init = {
+            "status": status,
+            "started_at": started_at.isoformat(sep=" ", timespec="milliseconds"),
+            "ended_at": ended_at.isoformat(sep=" ", timespec="milliseconds"),
+            "duration_ms": max(0, int((ended_at - started_at).total_seconds() * 1000)),
+            "commands": list(commands),
+            "error_message": error_message,
+        }
         self.write_meta()
 
     def write_meta(self) -> None:

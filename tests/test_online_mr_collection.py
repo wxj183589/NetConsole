@@ -233,6 +233,33 @@ def test_init_command_order_is_exact(tmp_path: Path) -> None:
     assert connection.commands[: len(INIT_COMMANDS)] == list(INIT_COMMANDS)
 
 
+def test_init_status_written_without_init_raw_log(tmp_path: Path) -> None:
+    collector, _connection = _collector(tmp_path)
+    collector.start()
+
+    session_dir = collector.session.session_dir
+    meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert not (session_dir / "raw" / "init_raw.log").exists()
+    assert meta["init"]["status"] == "success"
+    assert meta["init"]["commands"] == list(INIT_COMMANDS)
+    assert meta["init"]["started_at"]
+    assert meta["init"]["ended_at"]
+    raw = (session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE).read_text(encoding="utf-8")
+    assert "===== INIT START" in raw
+    assert "screen-length disable -> OK" in raw
+
+
+def test_init_failure_records_meta_without_raw_echo(tmp_path: Path) -> None:
+    collector, _connection = _collector(tmp_path, FakeConnection(fail_on={"terminal monitor"}))
+    collector.start()
+
+    session_dir = collector.session.session_dir
+    meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert not (session_dir / "raw" / "init_raw.log").exists()
+    assert meta["init"]["status"] == "failed"
+    assert "terminal monitor" in meta["init"]["error_message"]
+
+
 def test_scheduler_intervals_with_fake_clock(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     config.intervals = OnlineMrIntervals(mesh_link=2, channel_busy=2, ap_radio_statistics=5, switch_history=300)
@@ -1256,6 +1283,7 @@ def test_session_raw_directory_precreates_required_files(tmp_path: Path) -> None
         "fping_v5_raw.log",
         "fping_v5_samples.jsonl",
     }.issubset(raw_names)
+    assert "init_raw.log" not in raw_names
     assert "iperf_client_raw.log" not in raw_names
 
 
@@ -2880,6 +2908,84 @@ def test_online_mr_reuses_one_iperf_worker_for_same_batch_config(tmp_path: Path,
     assert worker.mirrors[0][0] == session_b / "raw" / "iperf_client_raw.log"
     assert worker.mirrors[0][1]["session_id"] == "s-b"
     assert worker.mirrors[0][1]["device_id"] == 2
+
+
+def test_online_mr_discards_failed_iperf_batch_worker(tmp_path: Path, monkeypatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    tool = tmp_path / "tools" / "iperf" / "iperf3.exe"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("fake", encoding="utf-8")
+    session_dir = tmp_path / "session-a"
+    (session_dir / "raw").mkdir(parents=True)
+
+    class FakeSignal:
+        def __init__(self) -> None:
+            self.callbacks = []
+
+        def connect(self, callback) -> None:
+            self.callbacks.append(callback)
+
+    class FailedWorker:
+        runner = SimpleNamespace(last_status="FAILED:1", last_error_code="unable_to_connect", stop_requested=False, process=None)
+        stopped = False
+
+        def isRunning(self) -> bool:
+            return True
+
+        def stop(self, status: str = "STOPPED_BY_USER") -> None:
+            self.stopped = True
+
+    class FakeIperfWorker:
+        instances = []
+
+        def __init__(self, _tool, _command, log_file, **_kwargs) -> None:
+            self.log_file = Path(log_file)
+            self.line_received = FakeSignal()
+            self.interval_received = FakeSignal()
+            self.error_received = FakeSignal()
+            self.completed = FakeSignal()
+            self.failed = FakeSignal()
+            self.started = False
+            FakeIperfWorker.instances.append(self)
+
+        def isRunning(self) -> bool:
+            return self.started
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self, status: str = "STOPPED_BY_USER") -> None:
+            self.started = False
+
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.IperfProcessWorker", FakeIperfWorker)
+    iperf = IperfTrafficConfig(enabled=True, server_ip="192.0.2.254", port=5201, protocol="TCP", direction="upload", parallel=1, follow_collection=True)
+    client_config = page._iperf_client_config_from_traffic(
+        iperf.normalized(),
+        duration_seconds=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+        follow_collection=True,
+    )
+    batch_key = page._iperf_batch_key(client_config)
+    failed_worker = FailedWorker()
+    page.iperf_batch_workers[batch_key] = failed_worker
+    page.iperf_batch_sessions[batch_key] = {"old-session"}
+    config = OnlineMrConnectionConfig(
+        site="demo",
+        mr_id="mr",
+        mr_name="MR",
+        safe_mr_name="MR",
+        device_id=1,
+        device_name="MR",
+        host="192.0.2.1",
+        iperf=iperf,
+    )
+    ssh_worker = SimpleNamespace(collector=SimpleNamespace(config=config))
+    meta = SimpleNamespace(session_id="s-a", session_dir=session_dir, device_id=1)
+
+    page._start_iperf_worker(meta, ssh_worker)
+
+    assert failed_worker.stopped is True
+    assert len(FakeIperfWorker.instances) == 1
+    assert page.iperf_workers["s-a"] is FakeIperfWorker.instances[0]
 
 
 def test_online_mr_stop_all_does_not_block_on_slow_connection(tmp_path: Path) -> None:
