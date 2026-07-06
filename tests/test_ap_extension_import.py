@@ -7,10 +7,12 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import (
     AP_NAME_MAC_LIST,
     PIS_LAYOUT_TABLE,
+    SIGNAL_AB_NETWORK_TABLE,
     ApExtensionImportService,
     normalize_ap_mac,
     parse_mileage,
     standard_export_row,
+    standard_template_headers,
 )
 
 
@@ -75,9 +77,60 @@ def test_standard_export_row_formats_mileage_with_line_prefix():
     }
 
     values = standard_export_row(row)
+    headers = list(standard_template_headers())
 
-    assert values[11] == "ZDK0+035"
-    assert values[12] == 35
+    assert values[headers.index("里程原文")] == "ZDK0+035"
+    assert values[headers.index("里程米")] == 35
+
+
+def test_preview_signal_ab_network_sheet_recognizes_section_and_yard(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "A网"
+    sheet.append(["3.中医药大学", "", "", "", "3.中医药大学", "", ""])
+    sheet.append(["", "", "", "", "", "ap0201_a", "5866-bab3-1111"])
+    sheet.append(["4.联庄", "", "", "", "4.联庄", "", ""])
+    sheet.append(["", "", "", "", "", "ap0303_a", "5866-bab3-0a40"])
+    sheet.append(["88.勾庄车辆段(库内）", "ap8841_a", "4ce9-e4ef-7b80", "", "", "", ""])
+    sheet.append(["90.七堡停车场（库内）", "ap8020_a", "4ce9-e4f1-29a0", "", "", "", ""])
+    path = tmp_path / "杭4AP布点表 - 副本A.xlsx"
+    workbook.save(path)
+
+    preview = ApExtensionImportService().preview_file(path, "smart_design")
+    rows = {row["ap_name"]: row for row in preview.standard_rows}
+
+    assert preview.template_type == SIGNAL_AB_NETWORK_TABLE
+    assert rows["ap0303_a"]["line_name"] == "杭州地铁4号线"
+    assert rows["ap0303_a"]["system_type"] == "信号"
+    assert rows["ap0303_a"]["network_domain"] == "A网"
+    assert rows["ap0303_a"]["belong_type"] == "section"
+    assert rows["ap0303_a"]["station_name"] == ""
+    assert rows["ap0303_a"]["section_name"] == "联庄-中医药大学"
+    assert rows["ap0303_a"]["section_start_station"] == "中医药大学"
+    assert rows["ap0303_a"]["section_end_station"] == "联庄"
+    assert rows["ap8841_a"]["belong_type"] == "yard"
+    assert rows["ap8841_a"]["station_name"] == "勾庄车辆段"
+    assert rows["ap8841_a"]["yard_name"] == "勾庄车辆段"
+    assert rows["ap8841_a"]["area_name"] == "库内"
+    assert rows["ap8020_a"]["station_name"] == "七堡停车场"
+
+
+def test_preview_signal_b_network_sheet_keeps_network_domain(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "B网"
+    sheet.append(["3.中医药大学", "", "", "", "3.中医药大学", "", ""])
+    sheet.append(["4.联庄", "", "", "", "4.联庄", "", ""])
+    sheet.append(["", "", "", "", "", "ap0303_b", "5866-bab2-77c0"])
+    path = tmp_path / "杭4AP布点表 - 副本b.xlsx"
+    workbook.save(path)
+
+    preview = ApExtensionImportService().preview_file(path, "smart_design")
+
+    assert preview.template_type == SIGNAL_AB_NETWORK_TABLE
+    assert preview.standard_rows[0]["network_domain"] == "B网"
+    assert preview.standard_rows[0]["ap_name"] == "ap0303_b"
+    assert preview.standard_rows[0]["section_name"] == "联庄-中医药大学"
 
 
 def test_preview_ap_name_mac_list_uses_segment_title(tmp_path):
@@ -130,20 +183,33 @@ def test_repository_imports_unbound_points_and_matches_resources_by_mac(tmp_path
             },
             {
                 "station_name": "金家渡",
+                "belong_type": "station",
                 "ap_name": "AP-01",
                 "ap_mac_display": "4c:e9:e4:ef:5c:20",
                 "power_station": "金家渡变电所",
+            },
+            {
+                "belong_type": "section",
+                "section_name": "联庄-中医药大学",
+                "section_start_station": "中医药大学",
+                "section_end_station": "联庄",
+                "ap_name": "AP-02",
+                "ap_mac_display": "5866-bab3-0a40",
             },
         ],
         source_file="design.xlsx",
         template_type=PIS_LAYOUT_TABLE,
     )
 
-    assert stats["success_rows"] == 2
+    assert stats["success_rows"] == 3
     rows = repository.list_ap_extension_points()
-    assert {row["match_status"] for row in rows} == {"unbound_no_mac", "matched_by_mac"}
+    assert {row["match_status"] for row in rows} == {"unbound_no_mac", "matched_by_mac", "extension_not_online"}
+    section_row = next(row for row in rows if row["ap_name"] == "AP-02")
+    assert section_row["belong_type"] == "section"
+    assert section_row["section_name"] == "联庄-中医药大学"
     resource = repository.list_fit_ap_resources_with_metadata("ac-1")[0]
     assert resource["extension_station_name"] == "金家渡"
+    assert resource["extension_belong_type"] == "station"
     assert resource["extension_power_station"] == "金家渡变电所"
     assert resource["site"] in (None, "")
 

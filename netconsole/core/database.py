@@ -382,6 +382,12 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
     ap_uuid TEXT NOT NULL UNIQUE,
     ap_name TEXT,
     site_name TEXT,
+    belong_type TEXT,
+    belong_section TEXT,
+    section_start_station TEXT,
+    section_end_station TEXT,
+    yard_name TEXT,
+    area_name TEXT,
     mileage TEXT,
     location_note TEXT,
     direction TEXT,
@@ -416,8 +422,13 @@ CREATE TABLE IF NOT EXISTS ap_extension_points (
     line_name TEXT,
     system_type TEXT,
     network_domain TEXT,
+    belong_type TEXT,
     station_name TEXT,
     section_name TEXT,
+    section_start_station TEXT,
+    section_end_station TEXT,
+    yard_name TEXT,
+    area_name TEXT,
     line_side TEXT,
     direction TEXT,
     mileage_text TEXT,
@@ -1019,6 +1030,27 @@ class Database:
         for column, column_type in fit_ap_resource_columns.items():
             if self._table_exists(conn, "ac_fit_ap_resources") and not self._column_exists(conn, "ac_fit_ap_resources", column):
                 conn.execute(f"ALTER {'TABLE'} ac_fit_ap_resources ADD COLUMN {column} {column_type}")
+        fit_ap_metadata_columns = {
+            "belong_type": "TEXT",
+            "belong_section": "TEXT",
+            "section_start_station": "TEXT",
+            "section_end_station": "TEXT",
+            "yard_name": "TEXT",
+            "area_name": "TEXT",
+        }
+        for column, column_type in fit_ap_metadata_columns.items():
+            if self._table_exists(conn, "ac_fit_ap_metadata") and not self._column_exists(conn, "ac_fit_ap_metadata", column):
+                conn.execute(f"ALTER {'TABLE'} ac_fit_ap_metadata ADD COLUMN {column} {column_type}")
+        ap_extension_point_columns = {
+            "belong_type": "TEXT",
+            "section_start_station": "TEXT",
+            "section_end_station": "TEXT",
+            "yard_name": "TEXT",
+            "area_name": "TEXT",
+        }
+        for column, column_type in ap_extension_point_columns.items():
+            if self._table_exists(conn, "ap_extension_points") and not self._column_exists(conn, "ap_extension_points", column):
+                conn.execute(f"ALTER {'TABLE'} ap_extension_points ADD COLUMN {column} {column_type}")
         fit_ap_optical_columns = {
             "lldp_source": "TEXT",
             "lldp_confidence": "INTEGER",

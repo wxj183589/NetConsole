@@ -1141,8 +1141,20 @@ def test_ac_repository_metadata_crud_batch_edit_and_delete(tmp_path):
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
     repository.replace_fit_ap_optical("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
 
-    repository.upsert_fit_ap_metadata({"ap_name": "ap-a", "site_name": "S1"})
-    assert repository.get_fit_ap_metadata("ap-a")["site_name"] == "S1"
+    repository.upsert_fit_ap_metadata(
+        {
+            "ap_name": "ap-a",
+            "site_name": "S1",
+            "belong_type": "section",
+            "belong_section": "联庄-中医药大学",
+            "section_start_station": "中医药大学",
+            "section_end_station": "联庄",
+        }
+    )
+    metadata = repository.get_fit_ap_metadata("ap-a")
+    assert metadata["site_name"] == "S1"
+    assert metadata["belong_type"] == "section"
+    assert metadata["belong_section"] == "联庄-中医药大学"
     assert repository.update_fit_ap_site(["ap-a", "ap-b"], "S2") == 2
     assert repository.get_fit_ap_metadata("ap-b")["site_name"] == "S2"
     assert repository.delete_fit_aps("ac-1", ["ap-a"]) == 1
@@ -1880,6 +1892,8 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "rid2_bandwidth",
         "rid2_tx_power",
         "site",
+        "section_name",
+        "belong_type",
         "mileage",
         "location_note",
         "direction",
@@ -6123,7 +6137,7 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(AP_EXTENSION_TEMPLATE_FIELDS)
-    sheet.append(["renamed-ap", "30F5:277A:1B00", "Station X", "K12+450", "Platform", "上下行"])
+    sheet.append(["renamed-ap", "30F5:277A:1B00", "站点", "Station X", "", "", "", "", "", "K12+450", "Platform", "上下行"])
     workbook.save(import_path)
 
     result = service.import_metadata_file(import_path)
@@ -6149,6 +6163,8 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     assert "RID3信道" not in text
     headers = text.splitlines()[0].split(",")
     assert headers.index("RID2功率") < headers.index("归属站点") < headers.index("更新时间")
+    assert "归属区间" in headers
+    assert "归属类型" in headers
 
 
 def test_fit_ap_resource_table_row_formats_mileage_with_extension_line_side():
@@ -6271,13 +6287,13 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
     assert sheet.max_row == 2
     assert sheet["A2"].value == "AP-1"
     assert sheet["B2"].value == "0011-2233-4455"
-    assert sheet["C2"].value == "Entity Station"
-    assert sheet["D2"].value == "K12+450"
-    assert sheet["E2"].value == "platform"
-    assert sheet["F2"].value == "uplink"
+    assert sheet["D2"].value == "Entity Station"
+    assert sheet["J2"].value == "K12+450"
+    assert sheet["K2"].value == "platform"
+    assert sheet["L2"].value == "uplink"
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
-    assert sheet.auto_filter.ref == "A1:F2"
+    assert sheet.auto_filter.ref == "A1:L2"
 
 
 def test_export_ap_extension_template_xlsx_allows_empty_template(tmp_path):
@@ -6335,7 +6351,7 @@ def test_ac_management_page_exports_ap_extension_template(tmp_path, monkeypatch)
     sheet = load_workbook(export_path).active
     assert [cell.value for cell in sheet[1]] == AP_EXTENSION_TEMPLATE_FIELDS
     assert sheet.max_row == 2
-    assert sheet["C2"].value == "Entity Station"
+    assert sheet["D2"].value == "Entity Station"
     assert messages[-1] == "已导出 AP扩展信息模板，共 1 条。"
 
 

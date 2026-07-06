@@ -136,6 +136,8 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("RID2频宽", "rid2_bandwidth"),
     ("RID2功率", "rid2_tx_power"),
     ("ac.site", "site"),
+    ("归属区间", "section_name"),
+    ("归属类型", "belong_type"),
     ("ac.mileage", "mileage"),
     ("ac.location_note", "location_note"),
     ("ac.direction", "direction"),
@@ -159,6 +161,8 @@ FIT_AP_RESOURCE_COLUMN_MIN_WIDTHS = {
     "rid2_bandwidth": 80,
     "rid2_tx_power": 80,
     "site": 130,
+    "section_name": 160,
+    "belong_type": 90,
     "mileage": 90,
     "location_note": 180,
     "direction": 70,
@@ -169,14 +173,21 @@ FIT_AP_RESOURCE_COLUMN_MAX_WIDTHS = {
     "select": 54,
     "ap_name": 320,
     "ap_mac": 170,
+    "section_name": 260,
     "location_note": 360,
     "updated_at": 240,
 }
 
 AP_EXTENSION_COLUMNS = (
     ("ID", "id"),
-    ("车站", "station_name"),
+    ("归属类型", "belong_type"),
+    ("归属站点", "station_name"),
     ("归属区间", "section_name"),
+    ("区间起点站", "section_start_station"),
+    ("区间终点站", "section_end_station"),
+    ("场段", "yard_name"),
+    ("区域", "area_name"),
+    ("网络", "network_domain"),
     ("线别", "line_side"),
     ("方向", "direction"),
     ("里程", "mileage_text"),
@@ -568,6 +579,16 @@ def _display_mileage_for_row(row: dict[str, object | None], field: str) -> str:
         line_side=str(row.get("extension_line_side") or row.get("line_side") or ""),
         mileage_type=str(row.get("mileage_type") or row.get("line_type") or ""),
     )
+
+
+def _display_belong_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return {
+        "station": "站点",
+        "section": "区间",
+        "yard": "场段/库内",
+        "unknown": "未知",
+    }.get(text, str(value or "").strip())
 
 
 def _mileage_value_for_row(row: dict[str, object | None], field: str) -> object:
@@ -1180,7 +1201,7 @@ class AcManagementPage(QWidget):
         self.extension_delete_button.setText("批量删除")
         self.extension_clear_button.setText("清空当前局点扩展信息")
         self.extension_refresh_button.setText("刷新")
-        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、车站、归属区间、备注")
+        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、归属站点、归属区间、区间起止、场段、区域、备注")
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.refresh_optical_button.setText(self.i18n.t("ac.refresh_optical"))
@@ -1961,8 +1982,14 @@ class AcManagementPage(QWidget):
         dialog.setWindowTitle("FIT-AP扩展信息")
         form = QFormLayout()
         fields = (
-            ("station_name", "车站"),
+            ("belong_type", "归属类型"),
+            ("station_name", "归属站点"),
             ("section_name", "归属区间"),
+            ("section_start_station", "区间起点站"),
+            ("section_end_station", "区间终点站"),
+            ("yard_name", "场段"),
+            ("area_name", "区域"),
+            ("network_domain", "网络"),
             ("line_side", "线别"),
             ("direction", "方向"),
             ("mileage_text", "里程"),
@@ -2025,7 +2052,7 @@ class AcManagementPage(QWidget):
     def _extension_summary_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
         summary: dict[str, dict[str, object | None]] = {}
         for row in rows:
-            station = str(row.get("station_name") or "未填写").strip()
+            station = str(row.get("station_name") or row.get("section_name") or row.get("yard_name") or "未填写").strip()
             item = summary.setdefault(station, {"station_name": station, "total": 0, "bound": 0, "unbound": 0, "left": 0, "right": 0, "curve": 0, "risk": 0})
             item["total"] = int(item["total"] or 0) + 1
             item["bound" if row.get("ap_mac_norm") else "unbound"] = int(item["bound" if row.get("ap_mac_norm") else "unbound"] or 0) + 1
@@ -2751,6 +2778,8 @@ class AcManagementPage(QWidget):
                             value = display_optical_status(str(value or ""), self.i18n.language) if value else value
                         elif field in {"mileage", "mileage_text"}:
                             value = _display_mileage_for_row(row, field)
+                        elif field == "belong_type":
+                            value = _display_belong_type(value)
                         item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
                         if field in {"mileage", "mileage_text"}:
                             meters = row.get("_mileage_meters") if field == "mileage" else _mileage_meters_for_row(row, field)

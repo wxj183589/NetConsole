@@ -22,13 +22,23 @@ UNKNOWN_TEMPLATE = "unknown"
 
 LOW_CONFIDENCE_THRESHOLD = 60
 
+AP_NAME_RE = re.compile(r"^ap\d+_[A-Za-z]$", re.IGNORECASE)
+H3C_MAC_RE = re.compile(r"^[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}$")
+TITLE_RE = re.compile(r"^\s*(\d+)\s*[.、\-]?\s*(.+?)\s*$")
+YARD_KEYWORDS = ("车辆段", "停车场", "库内", "基地", "出入段", "出段", "入段", "出场线", "入场线")
+
 
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "line_name": ("线路名称", "线路", "line_name"),
     "system_type": ("系统类型", "系统", "system_type"),
     "network_domain": ("网络域", "网络", "A网", "B网", "红网", "蓝网", "network_domain"),
+    "belong_type": ("归属类型", "归属类别", "belong_type"),
     "station_name": ("车站", "站点", "归属站点", "站名", "station_name"),
     "section_name": ("归属区间", "轨旁AP归属区间", "区间", "section_name"),
+    "section_start_station": ("区间起点站", "起点站", "section_start_station"),
+    "section_end_station": ("区间终点站", "终点站", "section_end_station"),
+    "yard_name": ("场段", "车辆段", "停车场", "yard_name"),
+    "area_name": ("区域", "area_name"),
     "left_mileage": ("左线里程", "左线", "left_mileage"),
     "right_mileage": ("右线里程", "右线", "right_mileage"),
     "start_mileage": ("起点里程", "起始里程", "start_mileage"),
@@ -58,8 +68,13 @@ STANDARD_TEMPLATE_HEADERS = (
     "线路名称",
     "系统类型",
     "网络域",
+    "归属类型",
     "车站",
     "归属区间",
+    "区间起点站",
+    "区间终点站",
+    "场段",
+    "区域",
     "线别",
     "方向",
     "AP编号",
@@ -92,8 +107,13 @@ STANDARD_HEADER_TO_FIELD = {
     "线路名称": "line_name",
     "系统类型": "system_type",
     "网络域": "network_domain",
+    "归属类型": "belong_type",
     "车站": "station_name",
     "归属区间": "section_name",
+    "区间起点站": "section_start_station",
+    "区间终点站": "section_end_station",
+    "场段": "yard_name",
+    "区域": "area_name",
     "线别": "line_side",
     "方向": "direction",
     "AP编号": "ap_point_code",
@@ -249,7 +269,12 @@ class ApExtensionImportService:
         template_type, confidence = _detect_template_type(sheet["name"], rows, mapping, header_labels, import_mode)  # type: ignore[arg-type]
         data_start = header_row + 1 if header_row >= 0 else 0
         titles = _segment_titles(rows)
-        standard_rows, issues = _convert_rows(file_name, str(sheet["name"]), rows, data_start, mapping, titles)
+        if import_mode != "standard_template" and _is_signal_ab_network_sheet(sheet["name"], rows):  # type: ignore[arg-type]
+            template_type = SIGNAL_AB_NETWORK_TABLE
+            confidence = max(confidence, 88)
+            standard_rows, issues = _convert_signal_ab_network_rows(file_name, str(sheet["name"]), rows)
+        else:
+            standard_rows, issues = _convert_rows(file_name, str(sheet["name"]), rows, data_start, mapping, titles)
         duplicates = _duplicate_records(standard_rows)
         for duplicate in duplicates:
             issues.append({"type": "duplicate_mac", **duplicate})
@@ -429,13 +454,24 @@ def _convert_row(
     curve_start = parse_mileage(source.get("curve_start_text"))
     curve_end = parse_mileage(source.get("curve_end_text"))
     station = source.get("station_name") or _nearest_segment_title(row_index, segment_titles)
+    section = source.get("section_name")
+    yard_name = source.get("yard_name")
+    area_name = source.get("area_name")
+    belong_type = _normalize_belong_type(source.get("belong_type"))
+    if not belong_type:
+        belong_type = _infer_belong_type(station, section, yard_name, area_name)
     row = {
         "id": _int_or_none(source.get("id") or source.get("extension_id")),
         "line_name": source.get("line_name"),
         "system_type": source.get("system_type"),
         "network_domain": source.get("network_domain"),
+        "belong_type": belong_type,
         "station_name": station,
-        "section_name": source.get("section_name"),
+        "section_name": section,
+        "section_start_station": source.get("section_start_station"),
+        "section_end_station": source.get("section_end_station"),
+        "yard_name": yard_name,
+        "area_name": area_name,
         "line_side": line_side,
         "direction": source.get("direction") or direction,
         "mileage_text": mileage.raw,
@@ -469,6 +505,224 @@ def _convert_row(
     row["curve_impact_level"] = _curve_impact_level(row.get("curve_radius_m"))
     row["interval_risk_level"], row["interval_risk_reason"] = _interval_risk(row.get("distance_to_prev_m"), row.get("curve_radius_m"))
     return row
+
+
+def _is_signal_ab_network_sheet(sheet_name: object, rows: list[list[str]]) -> bool:
+    name = str(sheet_name or "").strip()
+    if name not in {"A网", "B网"} and not re.fullmatch(r"[AB]网", name, re.IGNORECASE):
+        return False
+    ap_count = 0
+    mac_count = 0
+    title_count = 0
+    for row in rows:
+        for value in row:
+            text = _cell_text(value)
+            if AP_NAME_RE.fullmatch(text):
+                ap_count += 1
+            if H3C_MAC_RE.fullmatch(text):
+                mac_count += 1
+            if _parse_signal_title(text) is not None:
+                title_count += 1
+    return ap_count >= 1 and mac_count >= 1 and title_count >= 1
+
+
+def _convert_signal_ab_network_rows(
+    file_name: str,
+    sheet_name: str,
+    rows: list[list[str]],
+) -> tuple[list[dict[str, object | None]], list[dict[str, object | None]]]:
+    title_index = _signal_title_index(rows)
+    line_name = _infer_line_name(file_name)
+    result: list[dict[str, object | None]] = []
+    issues: list[dict[str, object | None]] = []
+    for row_number, values in enumerate(rows, start=1):
+        for column_index, value in enumerate(values):
+            ap_name = _cell_text(value)
+            if not AP_NAME_RE.fullmatch(ap_name):
+                continue
+            mac_text = _signal_row_mac(values, column_index)
+            mac = normalize_ap_mac(mac_text)
+            if mac_text and not mac.valid:
+                issues.append({"type": "invalid_mac", "severity": "error", "source_row": row_number, "message": "MAC格式无效"})
+            title = _nearest_signal_title(rows, title_index, row_number, column_index)
+            belonging = _signal_belonging(title, title_index)
+            remark = "信号A/B网布点表识别"
+            if belonging["belong_type"] == "unknown":
+                remark = "未识别到相邻站点，请人工确认"
+                issues.append({"type": "unknown_belonging", "severity": "warning", "source_row": row_number, "message": remark})
+            result.append(
+                {
+                    "line_name": line_name,
+                    "system_type": "信号",
+                    "network_domain": sheet_name,
+                    "belong_type": belonging["belong_type"],
+                    "station_name": belonging["station_name"],
+                    "section_name": belonging["section_name"],
+                    "section_start_station": belonging["section_start_station"],
+                    "section_end_station": belonging["section_end_station"],
+                    "yard_name": belonging["yard_name"],
+                    "area_name": belonging["area_name"],
+                    "ap_name": ap_name,
+                    "ap_mac_norm": mac.normalized,
+                    "ap_mac_display": mac.display or mac.raw,
+                    "location_desc": belonging["location_desc"],
+                    "remark": remark,
+                    "source_file": file_name,
+                    "source_sheet": sheet_name,
+                    "source_row": row_number,
+                    "raw_payload_json": json.dumps({"row": values, "source_column": column_index + 1}, ensure_ascii=False),
+                }
+            )
+    return result, issues
+
+
+def _signal_title_index(rows: list[list[str]]) -> dict[int, list[dict[str, object]]]:
+    titles: dict[int, list[dict[str, object]]] = {}
+    for row_number, values in enumerate(rows, start=1):
+        for column_index, value in enumerate(values):
+            parsed = _parse_signal_title(value)
+            if parsed is None:
+                continue
+            titles.setdefault(column_index, []).append({"row": row_number, "column": column_index, **parsed})
+    for items in titles.values():
+        items.sort(key=lambda item: int(item["row"]))
+    return titles
+
+
+def _nearest_signal_title(
+    rows: list[list[str]],
+    title_index: dict[int, list[dict[str, object]]],
+    row_number: int,
+    ap_column_index: int,
+) -> dict[str, object] | None:
+    candidates: list[tuple[int, int, dict[str, object]]] = []
+    for title_column in range(max(0, ap_column_index - 2), ap_column_index + 1):
+        for title in title_index.get(title_column, []):
+            title_row = int(title["row"])
+            if title_row <= row_number:
+                candidates.append((row_number - title_row, abs(ap_column_index - title_column), title))
+    if candidates:
+        return min(candidates, key=lambda item: (item[0], item[1]))[2]
+    for title_column in range(max(0, ap_column_index - 2), ap_column_index + 1):
+        for title in title_index.get(title_column, []):
+            title_row = int(title["row"])
+            if title_row > row_number:
+                candidates.append((title_row - row_number, abs(ap_column_index - title_column), title))
+    return min(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
+
+
+def _signal_belonging(
+    title: dict[str, object] | None,
+    title_index: dict[int, list[dict[str, object]]],
+) -> dict[str, str]:
+    empty = {
+        "belong_type": "unknown",
+        "station_name": "",
+        "section_name": "",
+        "section_start_station": "",
+        "section_end_station": "",
+        "yard_name": "",
+        "area_name": "",
+        "location_desc": "",
+    }
+    if title is None:
+        return empty
+    name = str(title.get("name") or "").strip()
+    kind = str(title.get("kind") or "")
+    if kind == "yard":
+        yard_name, area_name = _split_yard_area(name)
+        return {
+            **empty,
+            "belong_type": "yard",
+            "station_name": yard_name,
+            "yard_name": yard_name,
+            "area_name": area_name,
+            "location_desc": area_name,
+        }
+    number = int(title.get("number") or 0)
+    previous = _previous_normal_signal_title(title, title_index)
+    if previous is None:
+        return {**empty, "location_desc": name}
+    previous_name = str(previous.get("name") or "").strip()
+    section_name = f"{name}-{previous_name}" if name and previous_name else ""
+    return {
+        **empty,
+        "belong_type": "section" if section_name else "unknown",
+        "section_name": section_name,
+        "section_start_station": previous_name,
+        "section_end_station": name,
+        "location_desc": f"{number}号站区间" if section_name else name,
+    }
+
+
+def _previous_normal_signal_title(
+    title: dict[str, object],
+    title_index: dict[int, list[dict[str, object]]],
+) -> dict[str, object] | None:
+    number = int(title.get("number") or 0)
+    title_column = int(title.get("column") or 0)
+    candidates = [
+        item
+        for item in title_index.get(title_column, [])
+        if str(item.get("kind") or "") == "station" and int(item.get("number") or 0) == number - 1
+    ]
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def _parse_signal_title(value: object) -> dict[str, object] | None:
+    text = _cell_text(value)
+    if not text:
+        return None
+    match = TITLE_RE.fullmatch(text)
+    if not match:
+        return None
+    name = _clean_signal_title_name(match.group(2))
+    if not name or AP_NAME_RE.fullmatch(name) or H3C_MAC_RE.fullmatch(name):
+        return None
+    kind = "yard" if any(keyword in name for keyword in YARD_KEYWORDS) else "station"
+    return {"number": int(match.group(1)), "name": name, "kind": kind}
+
+
+def _signal_row_mac(values: list[str], ap_column_index: int) -> str:
+    for index in (ap_column_index + 1, ap_column_index - 1):
+        if 0 <= index < len(values):
+            text = _cell_text(values[index])
+            if H3C_MAC_RE.fullmatch(text):
+                return text
+    for index in range(ap_column_index + 1, min(len(values), ap_column_index + 4)):
+        text = _cell_text(values[index])
+        if H3C_MAC_RE.fullmatch(text):
+            return text
+    return ""
+
+
+def _clean_signal_title_name(value: object) -> str:
+    text = _cell_text(value).replace("（", "(").replace("）", ")")
+    return re.sub(r"\s+", "", text)
+
+
+def _split_yard_area(value: object) -> tuple[str, str]:
+    text = _clean_signal_title_name(value)
+    area_match = re.search(r"\(([^)]+)\)", text)
+    area = area_match.group(1).strip() if area_match else ("库内" if "库内" in text else "")
+    name = re.sub(r"\([^)]*\)", "", text).strip()
+    return name, area
+
+
+def _infer_line_name(file_name: object) -> str:
+    text = str(file_name or "")
+    match = re.search(r"杭州地铁\s*(\d+)\s*号线", text)
+    if match:
+        return f"杭州地铁{match.group(1)}号线"
+    match = re.search(r"杭\s*(\d+)", text)
+    if match:
+        return f"杭州地铁{match.group(1)}号线"
+    match = re.search(r"(\d+)\s*号线", text)
+    if match:
+        return f"{match.group(1)}号线"
+    return ""
 
 
 def _segment_titles(rows: list[list[str]]) -> list[dict[str, object | None]]:
@@ -523,6 +777,31 @@ def _default_direction(line_side: object) -> str:
     return ""
 
 
+def _normalize_belong_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    if text in {"station", "站点"}:
+        return "station"
+    if text in {"section", "interval", "区间"}:
+        return "section"
+    if text in {"yard", "场段", "场段/库内", "车辆段", "停车场", "库内"}:
+        return "yard"
+    if text in {"unknown", "未知"}:
+        return "unknown"
+    return text if text in {"station", "section", "yard", "unknown"} else ""
+
+
+def _infer_belong_type(station: object, section: object, yard_name: object, area_name: object) -> str:
+    if str(yard_name or "").strip() or any(keyword in str(station or "") for keyword in YARD_KEYWORDS) or str(area_name or "").strip():
+        return "yard"
+    if str(section or "").strip() and not str(station or "").strip():
+        return "section"
+    if str(station or "").strip():
+        return "station"
+    return "unknown"
+
+
 def _curve_impact_level(radius: object) -> str:
     value = _float_or_none(radius)
     if value is None:
@@ -549,7 +828,20 @@ def _interval_risk(distance: object, radius: object) -> tuple[str, str]:
 
 
 def _has_business_value(row: dict[str, object | None]) -> bool:
-    return any(row.get(field_name) for field_name in ("station_name", "section_name", "mileage_text", "ap_point_code", "ap_name", "ap_mac_display"))
+    return any(
+        row.get(field_name)
+        for field_name in (
+            "station_name",
+            "section_name",
+            "belong_type",
+            "yard_name",
+            "area_name",
+            "mileage_text",
+            "ap_point_code",
+            "ap_name",
+            "ap_mac_display",
+        )
+    )
 
 
 def _contains_any(rows: list[list[str]], tokens: tuple[str, ...]) -> bool:

@@ -28,7 +28,21 @@ def normalize_ap_direction(value: str) -> str:
     return text
 
 
-AP_METADATA_IMPORT_FIELDS = ["AP名称", "AP_MAC", "归属站点", "里程", "点位说明", "上下行"]
+AP_METADATA_LEGACY_IMPORT_FIELDS = ["AP名称", "AP_MAC", "归属站点", "里程", "点位说明", "上下行"]
+AP_METADATA_IMPORT_FIELDS = [
+    "AP名称",
+    "AP_MAC",
+    "归属类型",
+    "归属站点",
+    "归属区间",
+    "区间起点站",
+    "区间终点站",
+    "场段",
+    "区域",
+    "里程",
+    "点位说明",
+    "上下行",
+]
 AP_EXPORT_FIELDS = [
     "AP名称",
     "APID",
@@ -46,6 +60,8 @@ AP_EXPORT_FIELDS = [
     "RID2频宽",
     "RID2功率",
     "归属站点",
+    "归属区间",
+    "归属类型",
     "里程",
     "点位说明",
     "上下行",
@@ -55,12 +71,18 @@ AP_EXPORT_FIELDS = [
 AP_EXTENSION_TEMPLATE_FIELDS = [
     "AP名称",
     "AP_MAC",
+    "归属类型",
     "归属站点",
+    "归属区间",
+    "区间起点站",
+    "区间终点站",
+    "场段",
+    "区域",
     "里程",
     "点位说明",
     "上下行",
 ]
-AP_EXTENSION_TEMPLATE_EDITABLE_FIELDS = {"归属站点", "里程", "点位说明", "上下行"}
+AP_EXTENSION_TEMPLATE_EDITABLE_FIELDS = {"归属类型", "归属站点", "归属区间", "区间起点站", "区间终点站", "场段", "区域", "里程", "点位说明", "上下行"}
 
 
 @dataclass(frozen=True)
@@ -122,11 +144,12 @@ class FitApImportExportService:
         return self.import_metadata_csv(path)
 
     def import_metadata_rows(self, headers: list[str], rows: list[list[object]]) -> ApMetadataImportResult:
-        if headers != AP_METADATA_IMPORT_FIELDS:
+        if headers not in (AP_METADATA_IMPORT_FIELDS, AP_METADATA_LEGACY_IMPORT_FIELDS):
             raise ValueError("Unsupported AP metadata template header")
         updated = 0
         skipped = 0
         errors: list[str] = []
+        entity_rows = self.repository.list_ap_entities()
         for line_number, values in enumerate(rows, start=2):
             payload = {field: (_text(values[index]) if index < len(values) else "") for index, field in enumerate(headers)}
             ap_mac = normalize_ap_mac(payload["AP_MAC"])
@@ -149,6 +172,23 @@ class FitApImportExportService:
                 skipped += 1
                 errors.append(f"Row {line_number}: AP_MAC {payload['AP_MAC']} not matched")
                 continue
+            entity = _lookup_ap_entity_by_mac(entity_rows, ap_mac)
+            metadata_payload = {
+                "ap_uuid": (entity or {}).get("ap_uuid"),
+                "ap_name": payload.get("AP名称") or (entity or {}).get("ap_name"),
+                "site_name": payload["归属站点"],
+                "belong_type": _normalize_belong_type(payload.get("归属类型")) or _infer_belong_type(payload.get("归属站点"), payload.get("归属区间"), payload.get("场段"), payload.get("区域")),
+                "belong_section": payload.get("归属区间"),
+                "section_start_station": payload.get("区间起点站"),
+                "section_end_station": payload.get("区间终点站"),
+                "yard_name": payload.get("场段"),
+                "area_name": payload.get("区域"),
+                "mileage": mileage_storage_text(payload["里程"]),
+                "location_note": payload["点位说明"],
+                "direction": direction,
+            }
+            if metadata_payload.get("ap_uuid") or metadata_payload.get("ap_name"):
+                self.repository.upsert_fit_ap_metadata(metadata_payload)
             updated += 1
         return ApMetadataImportResult(updated, skipped, errors)
 
@@ -175,6 +215,8 @@ class FitApImportExportService:
                         row.get("rid2_bandwidth") or "",
                         row.get("rid2_tx_power") or "",
                         row.get("site") or "",
+                        row.get("section_name") or row.get("belong_section") or row.get("extension_section_name") or "",
+                        _belong_type_label(row.get("belong_type") or row.get("extension_belong_type")),
                         _format_ap_mileage(row.get("mileage"), row.get("direction"), row.get("extension_line_side") or row.get("line_side")),
                         row.get("location_note") or "",
                         row.get("direction") or "",
@@ -244,10 +286,18 @@ def _ap_extension_template_row(row: dict[str, object | None], entity: dict[str, 
     station = normalize_station_value(entity) or normalize_station_value(row)
     direction = _text(row.get("direction") or (entity or {}).get("direction"))
     line_side = _text(row.get("extension_line_side") or row.get("line_side"))
+    section = _text(row.get("section_name") or row.get("belong_section") or row.get("extension_section_name"))
+    belong_type = _text(row.get("belong_type") or row.get("extension_belong_type"))
     return [
         _text(row.get("ap_name") or (entity or {}).get("ap_name")),
         normalize_ap_mac(row.get("ap_mac") or (entity or {}).get("ap_mac")),
+        _belong_type_label(belong_type),
         station,
+        section,
+        _text(row.get("section_start_station") or row.get("extension_section_start_station")),
+        _text(row.get("section_end_station") or row.get("extension_section_end_station")),
+        _text(row.get("yard_name") or row.get("extension_yard_name")),
+        _text(row.get("area_name") or row.get("extension_area_name")),
         _format_ap_mileage(_first_non_empty(row.get("mileage"), row.get("milestone"), (entity or {}).get("milestone")), direction, line_side),
         _text(row.get("location_note") or (entity or {}).get("location_note")),
         direction,
@@ -287,6 +337,48 @@ def _first_non_empty(*values: object) -> object:
         if value not in (None, ""):
             return value
     return ""
+
+
+def _lookup_ap_entity_by_mac(rows: list[dict[str, object | None]], ap_mac: str) -> dict[str, object | None] | None:
+    normalized = normalize_ap_mac(ap_mac)
+    if not normalized:
+        return None
+    return next((row for row in rows if normalize_ap_mac(row.get("ap_mac")) == normalized), None)
+
+
+def _normalize_belong_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    if text in {"station", "站点"}:
+        return "station"
+    if text in {"section", "interval", "区间"}:
+        return "section"
+    if text in {"yard", "场段", "场段/库内", "车辆段", "停车场", "库内"}:
+        return "yard"
+    if text in {"unknown", "未知"}:
+        return "unknown"
+    return ""
+
+
+def _infer_belong_type(station: object, section: object, yard_name: object, area_name: object) -> str:
+    if _text(yard_name) or _text(area_name):
+        return "yard"
+    if _text(section) and not _text(station):
+        return "section"
+    if _text(station):
+        return "station"
+    return "unknown"
+
+
+def _belong_type_label(value: object) -> str:
+    normalized = _normalize_belong_type(value)
+    return {
+        "station": "站点",
+        "section": "区间",
+        "yard": "场段/库内",
+        "unknown": "未知",
+    }.get(normalized, _text(value))
 
 
 def normalize_ap_mac(value: object) -> str:

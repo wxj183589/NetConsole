@@ -114,6 +114,12 @@ FIT_AP_METADATA_FIELDS = (
     "ap_uuid",
     "ap_name",
     "site_name",
+    "belong_type",
+    "belong_section",
+    "section_start_station",
+    "section_end_station",
+    "yard_name",
+    "area_name",
     "mileage",
     "location_note",
     "direction",
@@ -142,8 +148,13 @@ AP_EXTENSION_POINT_FIELDS = (
     "line_name",
     "system_type",
     "network_domain",
+    "belong_type",
     "station_name",
     "section_name",
+    "section_start_station",
+    "section_end_station",
+    "yard_name",
+    "area_name",
     "line_side",
     "direction",
     "mileage_text",
@@ -637,6 +648,12 @@ class AcRepository:
                 """
                 SELECT r.*,
                        COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
+                       COALESCE(m_uuid.belong_type, m_name.belong_type) AS metadata_belong_type,
+                       COALESCE(m_uuid.belong_section, m_name.belong_section) AS metadata_belong_section,
+                       COALESCE(m_uuid.section_start_station, m_name.section_start_station) AS metadata_section_start_station,
+                       COALESCE(m_uuid.section_end_station, m_name.section_end_station) AS metadata_section_end_station,
+                       COALESCE(m_uuid.yard_name, m_name.yard_name) AS metadata_yard_name,
+                       COALESCE(m_uuid.area_name, m_name.area_name) AS metadata_area_name,
                        COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
                        COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
                        COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
@@ -800,8 +817,13 @@ class AcRepository:
                 "ap_mac_norm LIKE ?",
                 "ap_name LIKE ?",
                 "ap_point_code LIKE ?",
+                "belong_type LIKE ?",
                 "station_name LIKE ?",
                 "section_name LIKE ?",
+                "section_start_station LIKE ?",
+                "section_end_station LIKE ?",
+                "yard_name LIKE ?",
+                "area_name LIKE ?",
                 "line_side LIKE ?",
                 "direction LIKE ?",
                 "mileage_text LIKE ?",
@@ -1389,7 +1411,12 @@ class AcRepository:
         return next((row for row in rows if row.get("ap_uuid") == ap_uuid), None)
 
     def upsert_fit_ap_metadata(self, data: dict[str, object | None]) -> dict[str, object | None]:
-        payload = self._payload(FIT_AP_METADATA_FIELDS, data)
+        normalized_data = dict(data)
+        if not normalized_data.get("site_name"):
+            normalized_data["site_name"] = normalized_data.get("belong_station") or normalized_data.get("station_name")
+        if not normalized_data.get("belong_section"):
+            normalized_data["belong_section"] = normalized_data.get("section_name")
+        payload = self._payload(FIT_AP_METADATA_FIELDS, normalized_data)
         if not payload.get("ap_uuid") and payload.get("ap_name"):
             resource = self.get_fit_ap_resource_by_name_any_ac(str(payload["ap_name"]))
             if resource:
@@ -1441,7 +1468,18 @@ class AcRepository:
         return self.update_fit_ap_metadata_fields(ap_uuids, {"site_name": site_name})
 
     def update_fit_ap_metadata_fields(self, ap_uuids: list[str], fields: dict[str, object | None]) -> int:
-        allowed = {"site_name", "mileage", "location_note", "direction"}
+        allowed = {
+            "site_name",
+            "belong_type",
+            "belong_section",
+            "section_start_station",
+            "section_end_station",
+            "yard_name",
+            "area_name",
+            "mileage",
+            "location_note",
+            "direction",
+        }
         values = {key: value for key, value in fields.items() if key in allowed}
         count = 0
         now = self._now()
@@ -2148,6 +2186,12 @@ class AcRepository:
                 """
                 SELECT r.*,
                        COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
+                       COALESCE(m_uuid.belong_type, m_name.belong_type) AS metadata_belong_type,
+                       COALESCE(m_uuid.belong_section, m_name.belong_section) AS metadata_belong_section,
+                       COALESCE(m_uuid.section_start_station, m_name.section_start_station) AS metadata_section_start_station,
+                       COALESCE(m_uuid.section_end_station, m_name.section_end_station) AS metadata_section_end_station,
+                       COALESCE(m_uuid.yard_name, m_name.yard_name) AS metadata_yard_name,
+                       COALESCE(m_uuid.area_name, m_name.area_name) AS metadata_area_name,
                        COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
                        COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
                        COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
@@ -2191,8 +2235,13 @@ class AcRepository:
                 match_status = "matched_by_name" if extension else ""
             if extension:
                 for field in (
+                    "belong_type",
                     "station_name",
                     "section_name",
+                    "section_start_station",
+                    "section_end_station",
+                    "yard_name",
+                    "area_name",
                     "line_side",
                     "direction",
                     "mileage_text",
@@ -2210,6 +2259,12 @@ class AcRepository:
                     "remark",
                 ):
                     item[f"extension_{field}"] = extension.get(field)
+                item["belong_type"] = item.get("belong_type") or extension.get("belong_type")
+                item["section_name"] = item.get("section_name") or extension.get("section_name")
+                item["section_start_station"] = item.get("section_start_station") or extension.get("section_start_station")
+                item["section_end_station"] = item.get("section_end_station") or extension.get("section_end_station")
+                item["yard_name"] = item.get("yard_name") or extension.get("yard_name")
+                item["area_name"] = item.get("area_name") or extension.get("area_name")
                 item["extension_id"] = extension.get("id")
                 item["extension_match_status"] = match_status
             else:
@@ -2220,6 +2275,12 @@ class AcRepository:
     @staticmethod
     def _resource_with_metadata(item: dict[str, object | None]) -> dict[str, object | None]:
         item["site"] = item.get("site_name") or item.get("site")
+        item["belong_type"] = item.get("metadata_belong_type") or item.get("belong_type")
+        item["section_name"] = item.get("metadata_belong_section") or item.get("section_name")
+        item["section_start_station"] = item.get("metadata_section_start_station") or item.get("section_start_station")
+        item["section_end_station"] = item.get("metadata_section_end_station") or item.get("section_end_station")
+        item["yard_name"] = item.get("metadata_yard_name") or item.get("yard_name")
+        item["area_name"] = item.get("metadata_area_name") or item.get("area_name")
         item["mileage"] = item.get("metadata_mileage") or item.get("mileage")
         item["location_note"] = item.get("metadata_location_note") or item.get("location_note")
         item["direction"] = item.get("metadata_direction") or item.get("direction")
