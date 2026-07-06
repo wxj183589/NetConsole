@@ -20,7 +20,12 @@ from netconsole.services.online_mr_terminal_log_parser import ActiveLinkSwitchLo
 RAW_BLOCK_RE = re.compile(r"(?m)^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) >>> (?P<command>.+)$")
 STREAM_START_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[collector=(?P<collector>[^\]]+)\] START commands:\s*$")
 RX_LINE_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?) \[collector=[^\]]+\] RX ?(?P<text>.*)$")
-PARSER_VERSION = "online_mr_diagnosis_v5"
+RX_COMMAND_RE = re.compile(
+    r"(display\s+clock|display\s+wlan\s+mesh-link(?:\s+switch-history)?|display\s+ar5drv\s+\d+\s+(?:channelbusy|statistics)|dis\s+counters\s+rate\s+(?:inbound|outbound)\s+interface)\b",
+    re.IGNORECASE,
+)
+DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
+PARSER_VERSION = "main_link_samples_v2"
 
 
 def strip_stream_rx_prefix(line: str) -> str:
@@ -114,50 +119,77 @@ class OnlineMrRawBlockSplitter:
         blocks: list[RawBlock] = []
         current_lines: list[str] = []
         current_stamp: datetime | None = None
+        current_sample_stamp: datetime | None = None
         current_offset = 0
-        current_command = "repeat stream"
+        current_commands: list[str] = []
+        current_primary_command = ""
         position = 0
-        for line in text.splitlines():
-            line_start = text.find(line, position)
-            if line_start < 0:
-                line_start = position
-            position = line_start + len(line) + 1
+
+        def append_current(offset_end: int) -> None:
+            nonlocal current_lines, current_stamp, current_sample_stamp, current_offset, current_commands, current_primary_command
+            if not current_lines or current_stamp is None:
+                return
+            command_text = "\n".join(current_commands) if current_commands else "repeat stream"
+            blocks.append(
+                RawBlock(
+                    collected_at=current_sample_stamp or current_stamp,
+                    command=command_text,
+                    text="\n".join(current_lines).strip(),
+                    offset_start=current_offset,
+                    offset_end=max(current_offset, offset_end),
+                )
+            )
+            current_lines = []
+            current_stamp = None
+            current_sample_stamp = None
+            current_offset = 0
+            current_commands = []
+            current_primary_command = ""
+
+        for raw_line in text.splitlines(keepends=True):
+            line = raw_line.rstrip("\r\n")
+            line_start = position
+            line_end = position + len(raw_line)
+            position = line_end
             match = RX_LINE_RE.match(line)
             if not match:
                 continue
             clean = match.group("text")
-            normalized = clean.strip().lower()
-            is_cycle_start = normalized == "display clock" or normalized.endswith("]display clock")
-            if is_cycle_start and current_lines and current_stamp is not None:
-                blocks.append(
-                    RawBlock(
-                        collected_at=current_stamp,
-                        command=current_command,
-                        text="\n".join(current_lines).strip(),
-                        offset_start=current_offset,
-                        offset_end=max(current_offset, line_start),
-                    )
-                )
-                current_lines = []
-            if current_stamp is None or is_cycle_start:
+            command = self._rx_command(clean)
+            is_clock = command == "display clock"
+            is_primary = self._is_primary_rx_command(command)
+            starts_new_block = bool(current_lines and (is_clock or (is_primary and current_primary_command == command)))
+            if starts_new_block:
+                append_current(line_start)
+            if current_stamp is None:
                 stamp = match.group("stamp").replace("T", " ")
                 current_stamp = datetime.fromisoformat(stamp)
                 current_offset = line_start
-                current_command = "repeat stream"
-            if normalized.startswith("display ") or "]display " in normalized:
-                current_command = clean.strip()
+            if command:
+                if command not in current_commands:
+                    current_commands.append(command)
+                if is_primary and not current_primary_command:
+                    current_primary_command = command
+                    current_sample_stamp = datetime.fromisoformat(match.group("stamp").replace("T", " "))
             current_lines.append(clean)
-        if current_lines and current_stamp is not None:
-            blocks.append(
-                RawBlock(
-                    collected_at=current_stamp,
-                    command=current_command,
-                    text="\n".join(current_lines).strip(),
-                    offset_start=current_offset,
-                    offset_end=len(text),
-                )
-            )
+        append_current(len(text))
         return blocks
+
+    @staticmethod
+    def _rx_command(text: str) -> str:
+        matches = list(RX_COMMAND_RE.finditer(text.strip()))
+        if not matches:
+            return ""
+        return re.sub(r"\s+", " ", matches[-1].group(1).strip().lower())
+
+    @staticmethod
+    def _is_primary_rx_command(command: str) -> bool:
+        return (
+            command == "display wlan mesh-link"
+            or command == "display wlan mesh-link switch-history"
+            or command.startswith("display ar5drv ")
+            or command == "dis counters rate inbound interface"
+        )
 
 
 class OnlineMrDiagnosisParser:
@@ -224,8 +256,10 @@ class OnlineMrDiagnosisParser:
         required_tables = ("live_samples", "live_mesh_links", "live_channel_busy", "live_events", "live_active_link_switch_logs", "active_segments")
         with sqlite3.connect(self.db_path) as conn:
             existing = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if any(table not in existing for table in required_tables):
-            return None
+            if any(table not in existing for table in required_tables):
+                return None
+            if self._parsed_health_issue(conn):
+                return None
         summary = OnlineMrParseSummary()
         for key, value in counts.items():
             if hasattr(summary, key):
@@ -264,12 +298,68 @@ class OnlineMrDiagnosisParser:
                 )
         return json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
+    def _parsed_health_issue(self, conn: sqlite3.Connection) -> str:
+        raw_path = self.raw_dir / "mesh_link_raw.log"
+        raw_blocks = self.splitter.split(raw_path)
+        raw_block_count = len(raw_blocks)
+        raw_text = read_text_with_retry(raw_path, retries=2, interval=0.05) if raw_path.exists() else ""
+        mesh_sample_count = int(conn.execute("SELECT COUNT(*) FROM live_samples WHERE session_id = ? AND task_type = 'mesh_link'", (self.meta.session_id,)).fetchone()[0])
+        mesh_link_count = int(conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0])
+        active_link_count = int(conn.execute("SELECT COUNT(*) FROM live_mesh_links WHERE UPPER(link_state) LIKE 'ACTIVE%'").fetchone()[0])
+        distinct_time_count = int(
+            conn.execute("SELECT COUNT(DISTINCT collected_at) FROM live_samples WHERE session_id = ? AND task_type = 'mesh_link'", (self.meta.session_id,)).fetchone()[0]
+        )
+        if raw_block_count > 1 and mesh_sample_count <= 1:
+            return "raw has multiple mesh-link blocks but parsed mesh_link samples <= 1"
+        if ("Active(" in raw_text or "ACTIVE" in raw_text.upper()) and mesh_link_count == 0:
+            return "raw has active mesh-link rows but parsed live_mesh_links is empty"
+        if raw_block_count > 1 and active_link_count > 1 and distinct_time_count <= 1:
+            return "mesh-link collected_at values collapsed to one timestamp"
+        bad_segment = conn.execute(
+            """
+            SELECT active_peer_mac
+            FROM active_segments
+            WHERE active_peer_mac LIKE '%,%,%,%,%'
+            LIMIT 1
+            """
+        ).fetchone()
+        if bad_segment:
+            return "active_segments active_peer_mac looks concatenated"
+        return ""
+
+    def _main_link_metadata(self) -> dict[str, object]:
+        with sqlite3.connect(self.db_path) as conn:
+            main_link = conn.execute(
+                """
+                SELECT COUNT(*), MIN(collected_at), MAX(collected_at)
+                FROM live_samples
+                WHERE session_id = ? AND task_type = 'mesh_link'
+                """,
+                (self.meta.session_id,),
+            ).fetchone()
+            active_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM live_samples s
+                JOIN live_mesh_links l ON l.sample_id = s.id
+                WHERE s.session_id = ? AND s.task_type = 'mesh_link' AND UPPER(l.link_state) LIKE 'ACTIVE%'
+                """,
+                (self.meta.session_id,),
+            ).fetchone()
+        return {
+            "main_link_sample_count": int(main_link[0] or 0),
+            "active_link_count": int(active_count[0] or 0),
+            "analysis_start": main_link[1] or "",
+            "analysis_end": main_link[2] or "",
+        }
+
     def _write_parse_metadata(self, summary: OnlineMrParseSummary, status: str, error_summary: str) -> None:
         row_counts = {
             key: value
             for key, value in summary.__dict__.items()
             if isinstance(value, (int, float)) and key != "cache_used"
         }
+        row_counts.update(self._main_link_metadata())
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM online_parse_metadata WHERE session_id = ?", (self.meta.session_id,))
             conn.execute(
@@ -306,13 +396,31 @@ class OnlineMrDiagnosisParser:
             self._issue("mesh_link_raw.log", "mesh-link", "no parseable raw blocks found", "")
         for block in blocks:
             records, status, error = parse_mesh_link_text(block.text, block.collected_at)
-            sample_id = session.append_sample("mesh_link", block.collected_at, block.command, "raw/mesh_link_raw.log", block.offset_start, block.offset_end, status, error)
+            sample_id = session.append_sample(
+                "mesh_link",
+                block.collected_at,
+                block.command,
+                "raw/mesh_link_raw.log",
+                block.offset_start,
+                block.offset_end,
+                status,
+                error,
+                device_clock=self._extract_device_clock(block.text),
+            )
             if records:
                 session.append_mesh_links(sample_id, records)
                 count += 1
             elif error:
                 self._issue("mesh_link_raw.log", "mesh-link", error, block.text[:500])
         return count
+
+    @staticmethod
+    def _extract_device_clock(text: str) -> str | None:
+        for line in text.splitlines():
+            match = DEVICE_CLOCK_RE.search(strip_stream_rx_prefix(line).strip())
+            if match:
+                return match.group(0)
+        return None
 
     def _parse_channel_busy(self, session: OnlineMrSession) -> int:
         seen: set[tuple[object, ...]] = set()
@@ -929,8 +1037,11 @@ class OnlineMrDiagnosisParser:
                 "live_mesh_links",
                 "live_channel_busy",
                 "live_radio_statistics_raw_index",
+                "live_switch_history_latest",
                 "live_interface_rates",
+                "live_terminal_events",
                 "live_events",
+                "event_stream",
                 "live_active_link_switch_logs",
                 "ping_samples",
                 "ping_summary",
@@ -943,8 +1054,6 @@ class OnlineMrDiagnosisParser:
             ):
                 if table in existing_tables:
                     conn.execute(f"DELETE FROM {table}")
-            if "event_stream" in existing_tables:
-                conn.execute("DELETE FROM event_stream")
 
     def _issue(self, raw_file: str, issue_type: str, message: str, raw_text: str, severity: str = "WARNING") -> None:
         with sqlite3.connect(self.db_path) as conn:

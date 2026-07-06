@@ -3527,6 +3527,131 @@ def test_online_mr_diagnosis_parser_accepts_stream_rx_raw(tmp_path: Path) -> Non
         assert conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0] >= 2
 
 
+def _prompted_mesh_stream_block(clock_stamp: str, mesh_stamp: str, rssi: int, active_peer: str = "30f5-277a-169f") -> str:
+    return (
+        f"{clock_stamp} [collector=repeat] RX <NBL12-LC07-MR-CT>display clock\n"
+        f"{clock_stamp} [collector=repeat] RX 20:50:18 BeiJing Mon 07/06/2026\n"
+        f"{clock_stamp} [collector=repeat] RX Time Zone : BeiJing add 08:00:00\n"
+        f"{mesh_stamp} [collector=repeat] RX <NBL12-LC07-MR-CT>display wlan mesh-link\n"
+        f"{mesh_stamp} [collector=repeat] RX  Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"
+        f"{mesh_stamp} [collector=repeat] RX  30f5-277a-1680         {active_peer} {rssi}   74ad-cb9d-318f WLAN-MeshLink881  Active(ax)       00h 21m 36s\n"
+        f"{mesh_stamp} [collector=repeat] RX  bc5a-3457-a740         bc5a-3457-a74f 22   74ad-cb9d-318f WLAN-MeshLink434  Standby(ax)      00h 00m 01s\n"
+        f"{mesh_stamp} [collector=repeat] RX  bc5a-3457-9f60         bc5a-3457-9f6f 21   74ad-cb9d-318f WLAN-MeshLink429  Standby(ax)      00h 00m 09s\n"
+    )
+
+
+def test_online_mr_diagnosis_parser_splits_prompted_mesh_stream_into_samples(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2026-07-06 20:59:58 [collector=repeat] START commands:\n"
+        "display clock\n"
+        "display wlan mesh-link\n"
+        "repeat 2 delay 1\n"
+        + _prompted_mesh_stream_block("2026-07-06 20:59:59.100", "2026-07-06 20:59:59.200", 31)
+        + _prompted_mesh_stream_block("2026-07-06 21:00:00.100", "2026-07-06 21:00:00.200", 32)
+        + _prompted_mesh_stream_block("2026-07-06 21:00:01.100", "2026-07-06 21:00:01.200", 33),
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.mesh_samples == 3
+    with sqlite3.connect(session.db_path) as conn:
+        sample_rows = conn.execute(
+            """
+            SELECT collected_at, device_clock, command_group
+            FROM live_samples
+            WHERE task_type = 'mesh_link'
+            ORDER BY collected_at
+            """
+        ).fetchall()
+        active_count = conn.execute("SELECT COUNT(*) FROM live_mesh_links WHERE UPPER(link_state) LIKE 'ACTIVE%'").fetchone()[0]
+        total_count = conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0]
+        segment = conn.execute("SELECT active_peer_mac, start_time, end_time, sample_count, event_type, avg_mr_rssi FROM active_segments").fetchone()
+        metadata = conn.execute("SELECT parser_version, row_counts FROM online_parse_metadata WHERE session_id = ?", (session.meta.session_id,)).fetchone()
+    assert [row[0] for row in sample_rows] == [
+        "2026-07-06 20:59:59.200",
+        "2026-07-06 21:00:00.200",
+        "2026-07-06 21:00:01.200",
+    ]
+    assert all(row[1] == "20:50:18 BeiJing Mon 07/06/2026" for row in sample_rows)
+    assert all(row[2] == "display clock\ndisplay wlan mesh-link" for row in sample_rows)
+    assert active_count == 3
+    assert total_count == 9
+    assert segment[0] == "30f5277a169f"
+    assert segment[1] == "2026-07-06 20:59:59.200"
+    assert segment[2] == "2026-07-06 21:00:01.200"
+    assert segment[3] == 3
+    assert segment[4] == "ACTIVE"
+    assert segment[5] == pytest.approx(32.0)
+    row_counts = json.loads(metadata[1])
+    assert metadata[0] == PARSER_VERSION == "main_link_samples_v2"
+    assert row_counts["main_link_sample_count"] == 3
+    assert row_counts["active_link_count"] == 3
+    assert row_counts["analysis_start"] == "2026-07-06 20:59:59.200"
+    assert row_counts["analysis_end"] == "2026-07-06 21:00:01.200"
+
+
+def test_online_mr_cached_summary_rejects_collapsed_mesh_sample_parse(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        _prompted_mesh_stream_block("2026-07-06 20:59:59.100", "2026-07-06 20:59:59.200", 31)
+        + _prompted_mesh_stream_block("2026-07-06 21:00:00.100", "2026-07-06 21:00:00.200", 32),
+        encoding="utf-8",
+    )
+    parser = OnlineMrDiagnosisParser(session.session_dir)
+    parser._ensure_tables()
+    with sqlite3.connect(session.db_path) as conn:
+        conn.execute(
+            "INSERT INTO live_samples (session_id, task_type, collected_at, command_group, raw_file, raw_offset_start, raw_offset_end, parse_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session.meta.session_id, TASK_MESH_LINK, "2026-07-06 20:59:59.200", "display clock\ndisplay wlan mesh-link", "raw/mesh_link_raw.log", 0, 9999, "OK"),
+        )
+        sample_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO live_mesh_links (sample_id, link_state, peer_mac_raw, peer_mac_normalized, local_rssi_db) VALUES (?, ?, ?, ?, ?)", (sample_id, "ACTIVE", "30f5-277a-169f", "30f5277a169f", 31))
+        conn.execute(
+            "INSERT INTO active_segments (session_id, radio, active_peer_mac, start_time, end_time, sample_count, event_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session.meta.session_id, 1, "30f5277a169f,30f5277a169f,30f5277a169f,30f5277a169f,30f5277a169f", "2026-07-06 20:59:59.200", "2026-07-06 20:59:59.200", 1, "MULTI_ACTIVE"),
+        )
+        conn.execute(
+            "INSERT INTO online_parse_metadata (session_id, parsed_at, parser_version, raw_fingerprint, row_counts, status, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                session.meta.session_id,
+                "2026-07-06 21:03:00.000",
+                PARSER_VERSION,
+                parser.raw_fingerprint(),
+                json.dumps({"mesh_samples": 1, "main_link_sample_count": 1}, ensure_ascii=False),
+                "OK",
+                "",
+            ),
+        )
+
+    assert OnlineMrDiagnosisParser(session.session_dir).cached_summary_if_valid() is None
+    assert OnlineMrDiagnosisParser(session.session_dir).cache_status() == "stale"
+
+
+def test_online_mr_mesh_detail_table_defaults_to_active_links(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        _prompted_mesh_stream_block("2026-07-06 20:59:59.100", "2026-07-06 20:59:59.200", 31)
+        + _prompted_mesh_stream_block("2026-07-06 21:00:00.100", "2026-07-06 21:00:00.200", 32),
+        encoding="utf-8",
+    )
+
+    loaded = page._load_mesh_link_details(session.session_dir)
+
+    assert loaded == 2
+    assert page.mesh_table.rowCount() == 2
+    assert [page.mesh_table.item(row, 1).text() for row in range(2)] == [
+        "2026-07-06 20:59:59.200",
+        "2026-07-06 21:00:00.200",
+    ]
+    assert [page.mesh_table.item(row, 3).text() for row in range(2)] == ["ACTIVE", "ACTIVE"]
+
+
 def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)

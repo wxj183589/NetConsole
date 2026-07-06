@@ -2200,6 +2200,8 @@ class OnlineMrCollectionPage(QWidget):
         for block in OnlineMrRawBlockSplitter().split(raw_path):
             records, _status, _error = parse_mesh_link_text(block.text, block.collected_at)
             for record in records:
+                if not str(record.link_state or "").upper().startswith("ACTIVE"):
+                    continue
                 metrics = record.metrics
                 peer_mac = record.peer_mac_raw or record.peer_mac_h3c()
                 peer_name = str(metrics.get("peer_name") or "")
@@ -2225,9 +2227,8 @@ class OnlineMrCollectionPage(QWidget):
                     metrics.get("online_time") or "",
                 ]
                 self.mesh_table.insertRow(row)
-                active = str(record.link_state or "").upper() == "ACTIVE"
                 for column, value in enumerate(values):
-                    self._set_table_item(self.mesh_table, row, column, value, active=active)
+                    self._set_table_item(self.mesh_table, row, column, value, active=True)
                 count += 1
                 if count >= 5000:
                     break
