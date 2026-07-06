@@ -31,6 +31,9 @@ class OnlineMrCollectorWorker(QThread):
     def cancel(self) -> None:
         self.collector.request_stop()
 
+    def force_stop(self, reason: str = "force_stop") -> None:
+        self.collector.force_stop(reason)
+
     def run(self) -> None:
         try:
             meta = self.collector.collect_config_only() if self.config_only else self.collector.start()

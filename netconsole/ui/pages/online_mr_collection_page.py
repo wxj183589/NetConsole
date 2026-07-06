@@ -56,6 +56,7 @@ from netconsole.models.device import Device
 from netconsole.models.online_mr_models import (
     STATE_COLLECTING,
     STATE_CONNECTING,
+    STATE_FORCED_STOPPED,
     STATE_INITIALIZING,
     STATE_RECONNECTING,
     STATE_STOPPING,
@@ -132,6 +133,10 @@ ONLINE_MR_WORK_PANEL_MIN_WIDTH = 1040
 ONLINE_MR_LEFT_PANEL_MIN_WIDTH = 620
 ONLINE_MR_RIGHT_PANEL_MIN_WIDTH = 420
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
+PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
+FORCE_STOP_DELAY_SECONDS = 5
+BATCH_STOP_TIMEOUT_SECONDS = 30
+DEFAULT_REALTIME_SPLITTER_SIZES = [380, 150, 160, 320]
 
 STATUS_I18N_KEYS = {
     "CREATED": "online_mr.status_created",
@@ -141,6 +146,7 @@ STATUS_I18N_KEYS = {
     "RECONNECTING": "online_mr.status_reconnecting",
     "STOPPING": "online_mr.status_stopping",
     "STOPPED": "online_mr.status_stopped",
+    "FORCED_STOPPED": "online_mr.status_stopped",
     "FAILED": "online_mr.status_failed",
     "ABORTED": "online_mr.status_aborted",
 }
@@ -439,6 +445,9 @@ class OnlineMrCollectionPage(QWidget):
         self.output_render_enabled = True
         self._stopping_task_count = 0
         self._stop_animation_step = 0
+        self._stop_requested_monotonic: float | None = None
+        self._force_stop_in_progress = False
+        self.parameter_panel_collapsed = False
         self._bind_runtime_site(site_name)
 
         self.site_label = QLabel()
@@ -457,6 +466,8 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button = QPushButton()
         self.stop_selected_button = QPushButton()
         self.stop_all_button = QPushButton()
+        self.force_stop_button = QPushButton("强制停止")
+        self.params_toggle_button = QPushButton("收起参数")
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
         self.action_bar: QWidget | None = None
@@ -890,6 +901,25 @@ class OnlineMrCollectionPage(QWidget):
             splitter.setOrientation(Qt.Horizontal)
             splitter.setSizes([760, 460])
 
+    def _toggle_parameter_panel(self) -> None:
+        self._apply_parameter_panel_collapsed(not self.parameter_panel_collapsed, persist=True)
+
+    def _apply_parameter_panel_collapsed(self, collapsed: bool, *, persist: bool = True) -> None:
+        self.parameter_panel_collapsed = bool(collapsed)
+        if hasattr(self, "right_control_scroll") and self.right_control_scroll is not None:
+            self.right_control_scroll.setVisible(not self.parameter_panel_collapsed)
+        self.params_toggle_button.setText("展开参数" if self.parameter_panel_collapsed else "收起参数")
+        self.params_toggle_button.setToolTip(self.params_toggle_button.text())
+        if self.main_splitter is not None:
+            if self.parameter_panel_collapsed:
+                self.main_splitter.setSizes([1, 0])
+            elif self.main_splitter.orientation() == Qt.Horizontal:
+                self.main_splitter.setSizes([760, 460])
+            else:
+                self.main_splitter.setSizes([420, 520])
+        if persist:
+            self.settings.set_value(PARAM_PANEL_COLLAPSED_KEY, self.parameter_panel_collapsed)
+
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         if not self._can_update_ui():
             return
@@ -962,6 +992,8 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setText(self.i18n.t("online_mr.start"))
         self.stop_selected_button.setText(self.i18n.t("online_mr.stop_selected"))
         self.stop_all_button.setText(self.i18n.t("online_mr.stop_all"))
+        self.force_stop_button.setText("强制停止")
+        self.params_toggle_button.setText("展开参数" if self.parameter_panel_collapsed else "收起参数")
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
@@ -1095,6 +1127,8 @@ class OnlineMrCollectionPage(QWidget):
             (self.start_button, "PLAY"),
             (self.stop_selected_button, "PAUSE"),
             (self.stop_all_button, "CANCEL"),
+            (self.force_stop_button, "CANCEL"),
+            (self.params_toggle_button, "MENU"),
             (self.open_button, "FOLDER"),
             (self.refresh_devices_button, "SYNC"),
             (self.parse_session_button, "PLAY"),
@@ -1147,11 +1181,13 @@ class OnlineMrCollectionPage(QWidget):
         action_layout = FlowLayout(action_bar, horizontal_spacing=8, vertical_spacing=8)
         action_layout.setContentsMargins(0, 0, 0, 0)
         self.action_layout = action_layout
-        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.open_button, self.refresh_devices_button):
+        self.force_stop_button.setVisible(False)
+        self.force_stop_button.setEnabled(False)
+        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.force_stop_button, self.params_toggle_button, self.open_button, self.refresh_devices_button):
             action_layout.addWidget(button)
         if not self.analysis_only:
+            root.insertWidget(0, action_bar)
             content_layout.addWidget(controls)
-            content_layout.addWidget(action_bar)
             content_layout.addWidget(self.filter_hint_label)
 
         self.device_table.setMinimumHeight(260)
@@ -1228,10 +1264,9 @@ class OnlineMrCollectionPage(QWidget):
         main_splitter.setStretchFactor(0, 2)
         main_splitter.setStretchFactor(1, 1)
         main_splitter.setSizes([760, 460])
-        main_splitter.setMinimumHeight(520)
+        main_splitter.setMinimumHeight(360)
         main_layout.addWidget(main_splitter, 1)
-        main_layout.addWidget(self.collect_status_box)
-        main_work_panel.setMinimumHeight(650)
+        main_work_panel.setMinimumHeight(380)
         main_work_panel.setMinimumWidth(ONLINE_MR_WORK_PANEL_MIN_WIDTH)
 
         vertical_splitter = QSplitter(Qt.Vertical)
@@ -1239,6 +1274,7 @@ class OnlineMrCollectionPage(QWidget):
         self.summary_table.setMinimumHeight(120)
         if not self.analysis_only:
             vertical_splitter.addWidget(main_work_panel)
+            vertical_splitter.addWidget(self.collect_status_box)
             vertical_splitter.addWidget(self.summary_table)
         view_row = QWidget()
         self.view_row = view_row
@@ -1285,9 +1321,9 @@ class OnlineMrCollectionPage(QWidget):
             self.tabs.addTab(self.output_panel, "")
             self.tabs.addTab(self.log_text, "")
             self.tabs.addTab(self.iperf_table, "")
-        self.tabs.setMinimumHeight(180)
+        self.tabs.setMinimumHeight(220)
         detail = QWidget()
-        detail.setMinimumHeight(120)
+        detail.setMinimumHeight(180)
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(4)
@@ -1299,16 +1335,20 @@ class OnlineMrCollectionPage(QWidget):
             vertical_splitter.setStretchFactor(0, 1)
             vertical_splitter.setSizes([720])
         else:
-            vertical_splitter.setStretchFactor(0, 45)
-            vertical_splitter.setStretchFactor(1, 17)
-            vertical_splitter.setStretchFactor(2, 20)
-            vertical_splitter.setSizes([520, 200, 230])
+            vertical_splitter.setStretchFactor(0, 20)
+            vertical_splitter.setStretchFactor(1, 8)
+            vertical_splitter.setStretchFactor(2, 10)
+            vertical_splitter.setStretchFactor(3, 30)
+            vertical_splitter.setSizes(DEFAULT_REALTIME_SPLITTER_SIZES)
             self._restore_vertical_splitter_sizes()
             vertical_splitter.splitterMoved.connect(self._save_vertical_splitter_sizes)
         content_layout.addWidget(vertical_splitter, 1)
         self.retranslate()
         self._apply_feature_gate()
         self._load_all_table_widths()
+        if not self.analysis_only:
+            self.parameter_panel_collapsed = bool(self.settings.get_value(PARAM_PANEL_COLLAPSED_KEY, False))
+            self._apply_parameter_panel_collapsed(self.parameter_panel_collapsed, persist=False)
 
     def _connect_signals(self) -> None:
         self.device_table.itemChanged.connect(self._device_item_changed)
@@ -1320,6 +1360,8 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.clicked.connect(self.start_collection)
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
+        self.force_stop_button.clicked.connect(self.force_stop_collection)
+        self.params_toggle_button.clicked.connect(self._toggle_parameter_panel)
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
@@ -1371,11 +1413,18 @@ class OnlineMrCollectionPage(QWidget):
         layout.addWidget(self.output_splitter, 1)
         self._ensure_placeholder_output()
 
+    @staticmethod
+    def _configure_output_editor(editor: QTextEdit) -> None:
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QTextEdit.NoWrap)
+        editor.setMinimumHeight(180)
+        editor.setStyleSheet("QTextEdit { font-family: Consolas, 'Courier New', monospace; }")
+
     def _ensure_placeholder_output(self) -> None:
         if self.output_widgets_by_device_id:
             return
         placeholder = QTextEdit()
-        placeholder.setReadOnly(True)
+        self._configure_output_editor(placeholder)
         placeholder.setPlainText(self.i18n.t("online_mr.waiting_realtime_output"))
         self.raw_text = placeholder
         self.output_splitter.addWidget(placeholder)
@@ -1397,8 +1446,7 @@ class OnlineMrCollectionPage(QWidget):
         title.setMinimumHeight(24)
         title.setTextInteractionFlags(Qt.TextSelectableByMouse)
         editor = QTextEdit()
-        editor.setReadOnly(True)
-        editor.setLineWrapMode(QTextEdit.NoWrap)
+        self._configure_output_editor(editor)
         panel_layout.addWidget(title)
         panel_layout.addWidget(editor, 1)
         self.output_titles_by_device_id[device_id] = title
@@ -1455,7 +1503,7 @@ class OnlineMrCollectionPage(QWidget):
         self.output_panel.setMaximumHeight(54 if collapsed else 16777215)
         if not self.analysis_only and hasattr(self, "vertical_splitter"):
             if collapsed:
-                self.vertical_splitter.setSizes([560, 260, 56])
+                self.vertical_splitter.setSizes([420, 170, 240, 56])
             else:
                 self._restore_vertical_splitter_sizes()
 
@@ -1471,13 +1519,15 @@ class OnlineMrCollectionPage(QWidget):
     def _restore_vertical_splitter_sizes(self) -> None:
         if self.analysis_only or not hasattr(self, "vertical_splitter"):
             return
-        sizes = self.settings.get_value(SPLITTER_SIZES_KEY, [520, 200, 230])
-        if not isinstance(sizes, list) or len(sizes) != 3:
-            sizes = [520, 200, 230]
+        sizes = self.settings.get_value(SPLITTER_SIZES_KEY, DEFAULT_REALTIME_SPLITTER_SIZES)
+        if isinstance(sizes, list) and len(sizes) == 3:
+            sizes = [sizes[0], 150, sizes[1], sizes[2]]
+        if not isinstance(sizes, list) or len(sizes) != 4:
+            sizes = DEFAULT_REALTIME_SPLITTER_SIZES
         try:
             self.vertical_splitter.setSizes([max(40, int(size)) for size in sizes])
         except (TypeError, ValueError):
-            self.vertical_splitter.setSizes([520, 200, 230])
+            self.vertical_splitter.setSizes(DEFAULT_REALTIME_SPLITTER_SIZES)
 
     def _save_vertical_splitter_sizes(self, _pos: int | None = None, _index: int | None = None) -> None:
         if self.analysis_only or not hasattr(self, "vertical_splitter"):
@@ -1489,8 +1539,12 @@ class OnlineMrCollectionPage(QWidget):
     def _start_stop_animation(self, task_count: int) -> None:
         self._stopping_task_count = max(1, int(task_count))
         self._stop_animation_step = 0
+        self._stop_requested_monotonic = time.monotonic()
+        self._force_stop_in_progress = False
         if not self._can_update_ui():
             return
+        self.force_stop_button.setVisible(False)
+        self.force_stop_button.setEnabled(False)
         self.stop_animation_timer.start()
         self._tick_stop_animation()
         app_logger.log_info(
@@ -1500,6 +1554,11 @@ class OnlineMrCollectionPage(QWidget):
 
     def _stop_stop_animation(self) -> None:
         self._stopping_task_count = 0
+        self._stop_requested_monotonic = None
+        self._force_stop_in_progress = False
+        if self._can_update_ui():
+            self.force_stop_button.setVisible(False)
+            self.force_stop_button.setEnabled(False)
         self.stop_animation_timer.stop()
 
     def _tick_stop_animation(self) -> None:
@@ -1508,6 +1567,15 @@ class OnlineMrCollectionPage(QWidget):
             return
         if self._stopping_task_count <= 0:
             self.stop_animation_timer.stop()
+            return
+        elapsed = 0.0
+        if self._stop_requested_monotonic is not None:
+            elapsed = time.monotonic() - self._stop_requested_monotonic
+        if elapsed >= FORCE_STOP_DELAY_SECONDS:
+            self.force_stop_button.setVisible(True)
+            self.force_stop_button.setEnabled(True)
+        if elapsed >= BATCH_STOP_TIMEOUT_SECONDS and not self._force_stop_in_progress:
+            self.force_stop_collection(reason="timeout")
             return
         dots = "." * ((self._stop_animation_step % 3) + 1)
         self._stop_animation_step += 1
@@ -1733,6 +1801,56 @@ class OnlineMrCollectionPage(QWidget):
         self._request_stop_all_collectors()
         self._update_action_state()
 
+    def force_stop_collection(self, reason: str = "force_stop") -> None:
+        if self._force_stop_in_progress:
+            return
+        self._force_stop_in_progress = True
+        workers = list({id(worker): worker for worker in list(self.workers_by_device_id.values()) + list(self.workers.values())}.values())
+        fping_workers = list({id(worker): worker for worker in list(self.fping_workers_by_device_id.values()) + list(self.fping_workers.values())}.values())
+        iperf_workers = list({id(worker): worker for worker in list(self.iperf_batch_workers.values()) + list(self.iperf_workers_by_device_id.values()) + list(self.iperf_workers.values())}.values())
+        device_ids = set(self.workers_by_device_id)
+        device_ids.update(self.session_to_device_id.values())
+        session_ids = set(self.workers)
+
+        app_logger.log_info(
+            "ONLINE_MR_FORCE_STOP_REQUESTED",
+            f"reason={reason} devices={sorted(device_ids)} sessions={sorted(session_ids)} workers={len(workers)} fping={len(fping_workers)} iperf={len(iperf_workers)}",
+        )
+        for worker in iperf_workers:
+            self._force_stop_probe_worker(worker, status="STOPPED_BY_FORCE_STOP")
+        for worker in fping_workers:
+            self._force_stop_probe_worker(worker)
+        for worker in workers:
+            self._force_stop_collector_worker(worker, reason=reason)
+
+        for session_id in list(session_ids):
+            device_id = self.session_to_device_id.get(session_id)
+            self._finalize_collection_state(device_id=device_id, session_id=session_id, final_status=STATE_FORCED_STOPPED, reason=reason)
+        for device_id in list(device_ids):
+            if device_id in self.workers_by_device_id:
+                self._finalize_collection_state(device_id=device_id, session_id=self._session_id_for_device(device_id), final_status=STATE_FORCED_STOPPED, reason=reason)
+            self._update_device_status(device_id, "已强制停止")
+            self._update_summary_status_by_device(device_id, STATE_FORCED_STOPPED)
+        self.workers.clear()
+        self.workers_by_device_id.clear()
+        self.session_to_device_id.clear()
+        self.fping_workers.clear()
+        self.fping_workers_by_device_id.clear()
+        self.iperf_workers.clear()
+        self.iperf_workers_by_device_id.clear()
+        self.iperf_batch_workers.clear()
+        self.iperf_batch_sessions.clear()
+        self.manager.stop_all()
+        for session_id in session_ids:
+            self.manager.unregister(session_id)
+        for device_id in device_ids:
+            self.manager.unregister_device(device_id)
+        self._stop_stop_animation()
+        self._set_status("STOPPED")
+        self.status_label.setText(f"已强制停止 {len(device_ids) or len(workers)} 个采集任务")
+        self._append_runtime_log(f"STOP: force stop completed reason={reason}")
+        self._update_action_state()
+
     def _request_stop_all_collectors(self) -> None:
         workers: list[OnlineMrCollectorWorker] = []
         seen_workers: set[int] = set()
@@ -1771,6 +1889,49 @@ class OnlineMrCollectionPage(QWidget):
             self._set_status("STOPPING")
             self._start_stop_animation(max(len(workers), len(device_ids), 1))
         self._reconcile_collection_state()
+
+    def _force_stop_collector_worker(self, worker: object, *, reason: str) -> None:
+        try:
+            force_stop = getattr(worker, "force_stop", None)
+            if callable(force_stop):
+                force_stop(reason)
+            else:
+                cancel = getattr(worker, "cancel", None)
+                if callable(cancel):
+                    cancel()
+        except Exception as exc:
+            app_logger.log_warning("ONLINE_MR_FORCE_STOP_WORKER_FAILED", f"reason={reason} error={exc}")
+        self._terminate_qthread_if_running(worker)
+
+    def _force_stop_probe_worker(self, worker: object, *, status: str | None = None) -> None:
+        try:
+            stop = getattr(worker, "stop", None)
+            if callable(stop):
+                if status is None:
+                    stop()
+                else:
+                    try:
+                        stop(status=status)
+                    except TypeError:
+                        stop()
+        except Exception as exc:
+            app_logger.log_warning("ONLINE_MR_FORCE_STOP_PROBE_FAILED", f"status={status or ''} error={exc}")
+        self._terminate_qthread_if_running(worker)
+
+    @staticmethod
+    def _terminate_qthread_if_running(worker: object) -> None:
+        try:
+            is_running = getattr(worker, "isRunning", None)
+            if callable(is_running) and not is_running():
+                return
+            terminate = getattr(worker, "terminate", None)
+            if callable(terminate):
+                terminate()
+            wait = getattr(worker, "wait", None)
+            if callable(wait):
+                wait(100)
+        except Exception:
+            pass
 
     def _stop_iperf_workers_for_sessions(self, session_ids: set[str], *, status: str) -> None:
         for batch_key, batch_sessions in list(self.iperf_batch_sessions.items()):
@@ -2573,8 +2734,9 @@ class OnlineMrCollectionPage(QWidget):
             self._ensure_event_pipeline(meta.session_id, Path(meta.session_dir))
             if meta.device_id is not None:
                 self.last_session_dir_by_device_id[int(meta.device_id)] = Path(meta.session_dir)
-        self._start_fping_worker(meta, worker)
-        self._start_iperf_worker(meta, worker)
+        if not getattr(worker.collector, "cancelled", False) and meta.status != STATE_STOPPING:
+            self._start_fping_worker(meta, worker)
+            self._start_iperf_worker(meta, worker)
         self._set_status(meta.status)
         if meta.device_id is not None:
             self._update_device_status(int(meta.device_id), self._status_text(meta.status))
@@ -3652,6 +3814,13 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setEnabled(can_start and not stopping)
         self.stop_selected_button.setEnabled(running_selected and not stopping)
         self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers) and not stopping)
+        if not stopping:
+            self.force_stop_button.setVisible(False)
+            self.force_stop_button.setEnabled(False)
+        elif self._stop_requested_monotonic is not None:
+            force_ready = time.monotonic() - self._stop_requested_monotonic >= FORCE_STOP_DELAY_SECONDS
+            self.force_stop_button.setVisible(force_ready)
+            self.force_stop_button.setEnabled(force_ready)
         self.iperf_retry_button.setEnabled(self.enable_iperf_check.isChecked() and bool(self.workers) and not stopping)
         self.open_button.setEnabled(True)
         self._running_count = self._site_running_count()

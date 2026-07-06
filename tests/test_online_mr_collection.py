@@ -30,6 +30,7 @@ from netconsole.models.online_mr_models import (
     STATE_RECONNECTING,
     STATE_STOPPING,
     STATE_STOPPED,
+    TASK_CONFIG_COLLECT,
     TASK_CHANNEL_BUSY,
     TASK_AP_RADIO_STATISTICS,
     TASK_INTERFACE_RATE,
@@ -83,7 +84,7 @@ from netconsole.ui.pages.online_mr_collection_page import (
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, make_table_item
 from netconsole.services.mesh_storage_service import MeshStorageService
-from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector
+from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector, STREAM_PREPARE_COMMANDS
 from netconsole.services.online_mr_session_store import COLLECTOR_OUTPUT_RAW_FILE, DEVICE_TERMINAL_MONITOR_RAW_FILE, OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION, OnlineMrDiagnosisParser
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
@@ -245,8 +246,8 @@ def test_init_status_written_without_init_raw_log(tmp_path: Path) -> None:
     assert meta["init"]["started_at"]
     assert meta["init"]["ended_at"]
     raw = (session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE).read_text(encoding="utf-8")
-    assert "===== INIT START" in raw
-    assert "screen-length disable -> OK" in raw
+    assert "===== INIT START" not in raw
+    assert "screen-length disable -> OK" not in raw
 
 
 def test_init_failure_records_meta_without_raw_echo(tmp_path: Path) -> None:
@@ -258,6 +259,33 @@ def test_init_failure_records_meta_without_raw_echo(tmp_path: Path) -> None:
     assert not (session_dir / "raw" / "init_raw.log").exists()
     assert meta["init"]["status"] == "failed"
     assert "terminal monitor" in meta["init"]["error_message"]
+
+
+def test_stop_during_init_does_not_reenter_collecting_or_write_init_success(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+
+    class StopDuringInitConnection(FakeConnection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.collector: OnlineMrCollector | None = None
+
+        def send_command(self, command: str, timeout: int) -> str:
+            result = super().send_command(command, timeout)
+            if command == INIT_COMMANDS[0] and self.collector is not None:
+                self.collector.request_stop()
+            return result
+
+    connection = StopDuringInitConnection()
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=lambda _: connection)
+    connection.collector = collector
+
+    meta = collector.start()
+
+    log_text = (collector.session.session_dir / "logs" / "collector.log").read_text(encoding="utf-8")
+    assert meta.status == STATE_STOPPING
+    assert collector.status == STATE_STOPPING
+    assert "state=COLLECTING" not in log_text
+    assert "init_status=success" not in log_text
 
 
 def test_scheduler_intervals_with_fake_clock(tmp_path: Path) -> None:
@@ -449,14 +477,34 @@ def test_raw_log_files_split_collector_output_from_terminal_monitor(tmp_path: Pa
     collector.run_once(TASK_MESH_LINK)
 
     collector_raw = collector.session.session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE
+    mesh_raw = collector.session.session_dir / "raw" / "mesh_link_raw.log"
     terminal_raw = collector.session.session_dir / "raw" / DEVICE_TERMINAL_MONITOR_RAW_FILE
     collector_text = collector_raw.read_text(encoding="utf-8")
+    mesh_text = mesh_raw.read_text(encoding="utf-8")
     terminal_text = terminal_raw.read_text(encoding="utf-8")
-    assert "display wlan mesh-link" in collector_text
-    assert LINE_A in collector_text
+    assert "display wlan mesh-link" not in collector_text
+    assert LINE_A not in collector_text
+    assert "display wlan mesh-link" in mesh_text
+    assert LINE_A in mesh_text
     assert "[collector=repeat]" not in terminal_text
     assert "display current-configuration" not in terminal_text
     assert "display wlan mesh-link" not in terminal_text
+
+
+def test_append_raw_does_not_mirror_to_collector_output_by_default(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+
+    session.append_raw(TASK_CONFIG_COLLECT, "\n".join(CONFIG_COLLECT_COMMANDS), "display current-configuration\nversion 7.1.064\nlocal-user admin")
+
+    collector_text = (session.session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE).read_text(encoding="utf-8")
+    config_text = (session.session_dir / "raw" / "config_collect_raw.log").read_text(encoding="utf-8")
+    assert "display current-configuration" in config_text
+    assert "version 7.1.064" in config_text
+    assert "local-user admin" in config_text
+    assert "display current-configuration" not in collector_text
+    assert "version 7.1.064" not in collector_text
+    assert "local-user admin" not in collector_text
 
 
 def test_raw_append_methods_write_separate_files(tmp_path: Path) -> None:
@@ -593,6 +641,59 @@ def test_terminal_monitor_stream_uses_dedicated_init_commands() -> None:
     assert connection.connection.writes == [f"{command}\n" for command in TERMINAL_MONITOR_INIT_COMMANDS]
     assert "SHELL_LOGIN" in "".join(seen)
     assert "display wlan mesh-link" not in "".join(connection.connection.writes)
+
+
+def test_repeat_stream_uses_minimal_prepare_and_does_not_write_init_status(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+
+    class FakeRepeatConnection(FakeConnection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repeat_commands: tuple[str, ...] = ()
+
+        def run_repeat_stream(self, commands, raw_path, stop_event, timeout: int, line_callback=None) -> None:
+            self.repeat_commands = tuple(commands)
+            stamp = datetime.now()
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(f"{stamp.isoformat(sep=' ', timespec='milliseconds')} [collector=repeat] START commands:\n" + "\n".join(commands) + f"\n{LINE_A}\n", encoding="utf-8")
+            if line_callback is not None:
+                line_callback(stamp, LINE_A)
+            stop_event.set()
+
+    main_connection = FakeConnection()
+    repeat_connection = FakeRepeatConnection()
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=Factory([main_connection, repeat_connection]))
+
+    collector.start()
+    collector._start_repeat_thread(TASK_MESH_LINK)
+    for thread in list(collector._stream_threads):
+        thread.join(timeout=1)
+
+    log_text = (collector.session.session_dir / "logs" / "collector.log").read_text(encoding="utf-8")
+    raw_text = (collector.session.session_dir / "raw" / "mesh_link_raw.log").read_text(encoding="utf-8")
+    assert log_text.count("init_status=success") == 1
+    assert repeat_connection.commands == list(STREAM_PREPARE_COMMANDS)
+    assert "terminal logging level 7" not in repeat_connection.commands
+    assert "system-view" not in repeat_connection.commands
+    assert "probe" not in repeat_connection.commands
+    assert repeat_connection.repeat_commands == repeat_command_group(TASK_MESH_LINK, interval=config.intervals.mesh_link)
+    assert LINE_A in raw_text
+
+
+def test_stop_state_prevents_new_repeat_connection_and_start_log(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    main_connection = FakeConnection()
+    unused_repeat_connection = FakeConnection()
+    factory = Factory([main_connection, unused_repeat_connection])
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=factory)
+
+    collector.start()
+    collector.request_stop()
+    collector._start_repeat_thread(TASK_MESH_LINK)
+
+    collector_text = (collector.session.session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE).read_text(encoding="utf-8")
+    assert factory.created == [main_connection]
+    assert "[collector=repeat] START" not in collector_text
 
 
 def test_sqlite_writes_live_samples_and_active_peer(tmp_path: Path) -> None:
@@ -1344,7 +1445,9 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.connection_box.minimumHeight() >= 64
     assert page.connection_box.layout().count() >= 4
     assert page.action_bar.minimumHeight() >= 44
-    assert page.action_layout.count() == 5
+    assert page.action_layout.count() == 7
+    assert page.action_layout.indexOf(page.force_stop_button) >= 0
+    assert page.action_layout.indexOf(page.params_toggle_button) >= 0
     assert page.page_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert page.page_scroll.widget().minimumWidth() >= ONLINE_MR_PAGE_MIN_WIDTH
     assert not hasattr(page, "collect_config_button")

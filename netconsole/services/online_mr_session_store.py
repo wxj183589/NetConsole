@@ -372,7 +372,15 @@ class OnlineMrSession:
         with self._connect() as conn:
             conn.execute("INSERT INTO collector_logs (log_time, level, message) VALUES (?, ?, ?)", (now, level, message))
 
-    def append_raw(self, task_type: str, command: str, raw_text: str, collected_at: datetime | None = None) -> tuple[str, int, int]:
+    def append_raw(
+        self,
+        task_type: str,
+        command: str,
+        raw_text: str,
+        collected_at: datetime | None = None,
+        *,
+        mirror_to_collector_output: bool = False,
+    ) -> tuple[str, int, int]:
         raw_name = RAW_FILES[task_type]
         path = self.session_dir / "raw" / raw_name
         offset_start = path.stat().st_size if path.exists() else 0
@@ -381,7 +389,8 @@ class OnlineMrSession:
         with path.open("a", encoding="utf-8") as file:
             file.write(payload)
             file.flush()
-        self.append_collector_output_raw(payload)
+        if mirror_to_collector_output:
+            self.append_collector_output_raw(payload)
         return f"raw/{raw_name}", offset_start, offset_start + len(payload.encode("utf-8"))
 
     def append_collector_output_raw(self, text: str, collected_at: datetime | None = None) -> Path:
