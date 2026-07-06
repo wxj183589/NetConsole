@@ -30,6 +30,7 @@ from netconsole.core import app_logger
 from netconsole.core.background_tasks import background_task_manager
 from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate, default_feature_gate
+from netconsole.core.feature_registry import PAGE_FEATURE_BY_PAGE_ID
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -304,8 +305,12 @@ class AppFluentWindow(SplitFluentWindow):
             ("network_tools", "网络工具", "Ping、fping、iperf、本机网卡和路由工具", FIF.COMMAND_PROMPT, self._create_network_tools_page, self._network_actions()),
             ("logs", "日志中心", "运行日志、筛选、导出和打开日志目录", FIF.DOCUMENT, self._create_log_page, self._log_actions()),
             ("system_settings", "系统设置", "外观、局点、采集、文件和工具路径", FIF.SETTING, self._settings_page, self._settings_actions()),
+            ("feature_flags", "功能开关配置", "模块显示、客户配置和内部功能开关", FIF.SETTING, self._create_feature_flags_page, []),
         ]
         for page_id, title, description, icon, factory, actions in specs:
+            feature_id = PAGE_FEATURE_BY_PAGE_ID.get(page_id)
+            if feature_id is not None and not self.feature_gate.is_enabled(feature_id):
+                continue
             raw_page = factory()
             page = self._command_page(title, description, raw_page, actions)
             self.raw_pages[page_id] = raw_page
@@ -341,6 +346,7 @@ class AppFluentWindow(SplitFluentWindow):
         for name in ("tabs", "table", "device_table", "navigation", "stack"):
             if hasattr(content, name):
                 setattr(page, name, getattr(content, name))
+        self._apply_theme_to_widget_tree(page)
         return page
 
     def _site_bar(self) -> QWidget:
@@ -653,6 +659,12 @@ class AppFluentWindow(SplitFluentWindow):
         )
         return self.settings_page
 
+    def _create_feature_flags_page(self) -> QWidget:
+        from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
+
+        self.feature_flags_page = FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
+        return self.feature_flags_page
+
     def _create_device_page(self) -> QWidget:
         self.device_page = DeviceManagementPage(self.repository, self.i18n, self.site.name)
         self.device_page.groups_changed.connect(self.refresh_group_filters)
@@ -778,6 +790,20 @@ class AppFluentWindow(SplitFluentWindow):
 
     def mark_preload_failures(self, failures: dict[str, str]) -> None:
         self.preload_failures = dict(failures)
+
+    def refresh_feature_flags(self) -> None:
+        self.feature_gate.reload()
+        for page_id, page in list(self.raw_pages.items()):
+            try:
+                apply_gate = getattr(page, "_apply_feature_gate", None)
+                if callable(apply_gate):
+                    apply_gate()
+                reload_from_gate = getattr(page, "reload_from_gate", None)
+                if callable(reload_from_gate):
+                    reload_from_gate()
+                app_logger.log_info("FEATURE_GATE_UI_REFRESH", f"page_id={page_id} page_class={page.__class__.__name__}")
+            except Exception:
+                app_logger.log_error("FEATURE_GATE_PAGE_REFRESH_FAILED", f"{page_id}\n{traceback.format_exc()}")
 
     def get_or_create_page(self, page_id: str) -> QWidget:
         if page_id not in self.pages:

@@ -25,10 +25,11 @@ CUSTOMER_COLUMN = 6
 
 
 class FeatureFlagsPage(QWidget):
-    def __init__(self, i18n: I18n, feature_gate: FeatureGate) -> None:
+    def __init__(self, i18n: I18n, feature_gate: FeatureGate, on_profile_saved=None) -> None:
         super().__init__()
         self.i18n = i18n
         self.feature_gate = feature_gate
+        self.on_profile_saved = on_profile_saved
         self.session_label = QLabel("当前为临时完整模式，本次启动有效。")
         self.session_label.setObjectName("featureGateSessionOverrideLabel")
         self.table = QTableWidget(0, 9)
@@ -96,7 +97,14 @@ class FeatureFlagsPage(QWidget):
 
     def save_customer_profile(self) -> None:
         features = self._customer_features()
+        error = self._validate_customer_features(features)
+        if error:
+            QMessageBox.warning(self, self.i18n.t("feature_flags.title"), error)
+            return
         save_profile(project_root() / "profiles" / "features" / "customer.json", "customer", features)
+        self.feature_gate.reload()
+        if callable(self.on_profile_saved):
+            self.on_profile_saved()
         QMessageBox.information(self, self.i18n.t("feature_flags.title"), self.i18n.t("feature_flags.profile_saved"))
 
     def preview_customer_profile(self) -> None:
@@ -141,6 +149,24 @@ class FeatureFlagsPage(QWidget):
                 enabled = False
             features[item.feature_id] = {"visible": visible, "enabled": enabled}
         return features
+
+    @staticmethod
+    def _validate_customer_features(features: dict[str, dict[str, bool]]) -> str:
+        module_states = {
+            item.feature_id: features.get(item.feature_id, {})
+            for item in list_features()
+            if item.item_type == "module" and not item.internal_only
+        }
+        if not any(bool(state.get("visible")) and bool(state.get("enabled")) for state in module_states.values()):
+            return "至少需要保留一个可显示、可启用的主模块。"
+        system_settings = features.get("module.system_settings", {})
+        feature_switch = features.get("module.feature_switch", {})
+        if not (
+            (bool(system_settings.get("visible")) and bool(system_settings.get("enabled")))
+            or (bool(feature_switch.get("visible")) and bool(feature_switch.get("enabled")))
+        ):
+            return "不能同时隐藏功能开关配置和系统设置。"
+        return ""
 
     def _saved_customer_features(self) -> dict[str, dict[str, bool]]:
         return load_profile(project_root() / "profiles" / "features" / "customer.json", "customer")

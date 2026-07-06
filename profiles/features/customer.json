@@ -15,8 +15,8 @@
       "enabled": true
     },
     "module.wifi_survey": {
-      "visible": false,
-      "enabled": false
+      "visible": true,
+      "enabled": true
     },
     "module.config_collection": {
       "visible": true,
@@ -27,8 +27,8 @@
       "enabled": true
     },
     "module.snmp_center": {
-      "visible": false,
-      "enabled": false
+      "visible": true,
+      "enabled": true
     },
     "module.network_tools": {
       "visible": true,
@@ -39,6 +39,10 @@
       "enabled": true
     },
     "module.system_settings": {
+      "visible": true,
+      "enabled": true
+    },
+    "module.feature_switch": {
       "visible": false,
       "enabled": false
     },

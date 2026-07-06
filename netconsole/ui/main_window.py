@@ -99,6 +99,7 @@ class MainWindow(AppFramelessMainWindow):
         self.wifi_survey_page: QWidget | None = None
         self.ac_page: QWidget | None = None
         self.log_page: QWidget | None = None
+        self.settings_page: QWidget | None = None
         self.pages["devices"] = self.device_page
         self.stack.addWidget(self.device_page)
 
@@ -321,10 +322,23 @@ class MainWindow(AppFramelessMainWindow):
 
             page = AppLogPage(self.i18n, auto_refresh=False)
             self.log_page = page
+        elif page_id == "system_settings":
+            from netconsole.ui.pages.settings_page import SettingsPage
+
+            page = SettingsPage(
+                self.settings,
+                self.site,
+                self.paths,
+                apply_theme_callback=self.set_theme,
+                apply_language_callback=self.switch_language,
+                create_site_callback=self.create_site,
+                switch_site_callback=self.switch_site_dialog,
+            )
+            self.settings_page = page
         elif page_id == "feature_flags":
             from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
 
-            page = FeatureFlagsPage(self.i18n, self.feature_gate)
+            page = FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
         else:
             return self.device_page
         self.pages[page_id] = page
@@ -378,10 +392,22 @@ class MainWindow(AppFramelessMainWindow):
             from netconsole.ui.pages.app_log_page import AppLogPage
 
             return AppLogPage(self.i18n, auto_refresh=False)
+        if page_id == "system_settings":
+            from netconsole.ui.pages.settings_page import SettingsPage
+
+            return SettingsPage(
+                self.settings,
+                self.site,
+                self.paths,
+                apply_theme_callback=self.set_theme,
+                apply_language_callback=self.switch_language,
+                create_site_callback=self.create_site,
+                switch_site_callback=self.switch_site_dialog,
+            )
         if page_id == "feature_flags":
             from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
 
-            return FeatureFlagsPage(self.i18n, self.feature_gate)
+            return FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
         return DeviceManagementPage(self.repository, self.i18n, self.site.name)
 
     def detach_current_page(self) -> None:
@@ -432,6 +458,8 @@ class MainWindow(AppFramelessMainWindow):
                 page.start_snmp_service_async()
             elif page_id == "network_tools" and hasattr(page, "refresh_all"):
                 page.refresh_all()
+            elif page_id == "system_settings" and hasattr(page, "reload_settings"):
+                page.reload_settings()
         except Exception as exc:
             app_logger.log_warning("DETACHED_PAGE_ACTIVATE_FAILED", f"page={page_id}, error={exc}")
 
@@ -652,6 +680,8 @@ class MainWindow(AppFramelessMainWindow):
             self.wifi_survey_page.set_site(site.name)
         if self.ac_page is not None:
             self.ac_page.set_repository(self.repository, site.name)
+        if self.settings_page is not None and hasattr(self.settings_page, "update_site"):
+            self.settings_page.update_site(site)
         self._sync_detached_pages_to_current_site()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
         self.set_title_bar_context(site_name=self.site.name, status="就绪")

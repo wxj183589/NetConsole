@@ -20,6 +20,9 @@ class FeatureDisabledError(RuntimeError):
     pass
 
 
+PROTECTED_INTERNAL_FEATURE_IDS = {"module.feature_switch", "system.feature_flags"}
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -129,6 +132,8 @@ class FeatureGate:
             return False
         if item.internal_only and not self._internal_only_allowed():
             return False
+        if self._is_protected_internal_feature(feature_id):
+            return True
         return bool(self.features.get(feature_id, {}).get("visible", item.default_visible))
 
     def is_enabled(self, feature_id: str) -> bool:
@@ -137,6 +142,8 @@ class FeatureGate:
             return False
         if item.internal_only and not self._internal_only_allowed():
             return False
+        if self._is_protected_internal_feature(feature_id):
+            return True
         state = self.features.get(feature_id, {})
         return bool(state.get("visible", item.default_visible)) and bool(state.get("enabled", item.default_enabled))
 
@@ -149,6 +156,10 @@ class FeatureGate:
 
     def state_for(self, feature_id: str) -> dict[str, bool]:
         item = FEATURE_BY_ID[feature_id]
+        if item.internal_only and not self._internal_only_allowed():
+            return {"visible": False, "enabled": False}
+        if self._is_protected_internal_feature(feature_id):
+            return {"visible": True, "enabled": True}
         state = self.features.get(feature_id, {})
         return {
             "visible": bool(state.get("visible", item.default_visible)),
@@ -213,10 +224,12 @@ class FeatureGate:
             if feature_id not in FEATURE_BY_ID or not isinstance(raw_state, dict):
                 continue
             state = self.features.setdefault(feature_id, {})
-            if "visible" in raw_state:
-                state["visible"] = bool(raw_state["visible"])
-            if "enabled" in raw_state:
-                state["enabled"] = bool(raw_state["enabled"])
+            visible = _bool_override(raw_state.get("visible")) if "visible" in raw_state else None
+            enabled = _bool_override(raw_state.get("enabled")) if "enabled" in raw_state else None
+            if visible is not None:
+                state["visible"] = visible
+            if enabled is not None:
+                state["enabled"] = enabled
         self._force_internal_only_off() if self.profile == "customer" and not self._internal_only_allowed() else None
 
     def _force_internal_only_off(self) -> None:
@@ -236,6 +249,9 @@ class FeatureGate:
 
     def _internal_only_allowed(self) -> bool:
         return self.edition in {"dev", "internal"} or self.is_session_override_active()
+
+    def _is_protected_internal_feature(self, feature_id: str) -> bool:
+        return feature_id in PROTECTED_INTERNAL_FEATURE_IDS and self._internal_only_allowed()
 
     def _log_loaded(self) -> None:
         app_logger.log_info(
@@ -267,10 +283,12 @@ def load_profile(path: Path, profile: str) -> dict[str, dict[str, bool]]:
         if feature_id not in FEATURE_BY_ID or not isinstance(raw_state, dict):
             continue
         state = payload["features"][feature_id]
-        if "visible" in raw_state:
-            state["visible"] = bool(raw_state["visible"])
-        if "enabled" in raw_state:
-            state["enabled"] = bool(raw_state["enabled"])
+        visible = _bool_override(raw_state.get("visible")) if "visible" in raw_state else None
+        enabled = _bool_override(raw_state.get("enabled")) if "enabled" in raw_state else None
+        if visible is not None:
+            state["visible"] = visible
+        if enabled is not None:
+            state["enabled"] = enabled
     if profile == "customer":
         for item in list_features():
             if item.internal_only:
@@ -417,6 +435,25 @@ def verify_admin_unlock_password(build_info: dict[str, Any], password: str) -> b
         return False
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations).hex()
     return hmac.compare_digest(digest, expected)
+
+
+def _bool_override(value: object) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if normalized in {"1", "true", "yes", "y", "on", "enabled", "enable", "显示", "启用"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "disabled", "disable", "隐藏", "停用"}:
+            return False
+        return None
+    return None
 
 
 def _now_iso() -> str:

@@ -23,7 +23,8 @@ class Navigation(QWidget):
         ("module.snmp_center", "nav.snmp_center", "snmp_center", "SNMP", "SEARCH"),
         ("module.network_tools", "nav.network_tools", "network_tools", "Net", "COMMAND_PROMPT"),
         ("module.logs", "nav.logs", "logs", "Log", "DOCUMENT"),
-        ("system.feature_flags", "system.feature_flags", "feature_flags", "Flag", "SETTING"),
+        ("module.system_settings", "nav.system_settings", "system_settings", "Sys", "SETTING"),
+        ("module.feature_switch", "system.feature_flags", "feature_flags", "Flag", "SETTING"),
     )
 
     def __init__(self, i18n: I18n, feature_gate: FeatureGate | None = None) -> None:

@@ -26,6 +26,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.network_tools", "nav.network_tools", None, "module"),
     FeatureItem("module.logs", "nav.logs", None, "module"),
     FeatureItem("module.system_settings", "nav.system_settings", None, "module"),
+    FeatureItem("module.feature_switch", "system.feature_flags", None, "module", internal_only=True),
     FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
     FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),
     FeatureItem("rail.train_online", "rail_transit.train_online", "module.rail_transit", "tab"),
@@ -49,7 +50,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.advanced_ping", "online_mr.high_freq_ping", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.iperf_test", "online_mr.enable_traffic_test", "rail.online_mr_collection", "action"),
     FeatureItem("mesh.generate_report", "mesh_analysis.generate_report", "rail.raw_mesh_log_analysis", "button"),
-    FeatureItem("system.feature_flags", "system.feature_flags", "module.system_settings", "page", internal_only=True),
+    FeatureItem("system.feature_flags", "system.feature_flags", "module.feature_switch", "page", internal_only=True),
 )
 
 FEATURE_BY_ID = {item.feature_id: item for item in FEATURES}
@@ -64,7 +65,8 @@ PAGE_FEATURE_BY_PAGE_ID = {
     "snmp_center": "module.snmp_center",
     "network_tools": "module.network_tools",
     "logs": "module.logs",
-    "feature_flags": "system.feature_flags",
+    "system_settings": "module.system_settings",
+    "feature_flags": "module.feature_switch",
 }
 
 

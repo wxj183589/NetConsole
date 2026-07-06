@@ -66,6 +66,7 @@ def test_build_window_starts_app_fluent_window():
         "网络工具",
         "日志中心",
         "系统设置",
+        "功能开关配置",
     ]
     assert window.stackedWidget.count() == len(labels)
     assert not any(label in {"ac", "rail_transit", "config_collection", "file_management", "network_tools", "logs"} for label in labels)
@@ -271,7 +272,7 @@ def test_fluent_preload_does_not_create_english_placeholder_pages():
     labels = [window.navigation.item(index).text() for index in range(window.navigation.count())]
     assert "ac" not in labels
     assert "rail_transit" not in labels
-    assert window.stackedWidget.count() == 10
+    assert window.stackedWidget.count() == 11
     window.close()
 
 
