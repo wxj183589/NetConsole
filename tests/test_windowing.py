@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QSystemTrayIcon, QTextEdit, QWidget
 
@@ -22,7 +22,16 @@ from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, Co
 from netconsole.ui.table_utils import make_text_selectable
 from netconsole.ui.widgets.loading_overlay import LoadingOverlay
 from netconsole.ui.widgets.startup_splash import StartupSplash
-from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
+from netconsole.ui.windowing import (
+    DeviceDialogRegistry,
+    apply_startup_main_window_geometry,
+    calculate_default_main_window_geometry,
+    fit_default_window_size,
+    format_geometry,
+    main_window_geometry_issue,
+    normalize_restored_main_window_geometry,
+    should_save_main_window_geometry,
+)
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, clean_device_text, clean_h3c_device_text, decode_text_auto, fix_mojibake_text, read_text_auto
 
 
@@ -91,6 +100,67 @@ def test_window_size_does_not_exceed_ninety_percent_on_small_screen():
 
     assert size.width == int(1366 * 0.9)
     assert size.height == int(768 * 0.9)
+
+
+def test_fluent_main_window_default_geometry_matches_common_desktop_sizes():
+    full_hd = calculate_default_main_window_geometry(QRect(0, 0, 1920, 1040))
+    large_desktop = calculate_default_main_window_geometry(QRect(0, 0, 2560, 1400))
+    small_desktop = calculate_default_main_window_geometry(QRect(0, 0, 1366, 728))
+
+    assert full_hd.size().width() == 1440
+    assert full_hd.size().height() == 780
+    assert full_hd.x() == 240
+    assert full_hd.y() == 130
+    assert large_desktop.size().width() == 1920
+    assert large_desktop.size().height() == 1050
+    assert large_desktop.x() == 320
+    assert large_desktop.y() == 175
+    assert small_desktop.size().width() == 1280
+    assert small_desktop.size().height() == 760
+
+
+def test_restored_main_window_geometry_falls_back_when_too_small_or_offscreen():
+    available = QRect(0, 0, 1920, 1040)
+    too_small = normalize_restored_main_window_geometry(QRect(100, 100, 900, 600), available)
+    offscreen = normalize_restored_main_window_geometry(QRect(3000, 3000, 1600, 900), available)
+    valid = normalize_restored_main_window_geometry(QRect(100, 100, 1600, 900), available)
+
+    assert too_small.status == "invalid-small"
+    assert too_small.rect.size().width() == 1440
+    assert offscreen.status == "invalid-offscreen"
+    assert valid.status == "restored"
+    assert valid.rect.topLeft().x() == 100
+
+
+def test_fluent_main_window_rejects_area_small_saved_geometry_on_large_screen():
+    available = QRect(0, 0, 2560, 1392)
+    too_small_for_screen = normalize_restored_main_window_geometry(QRect(320, 156, 1280, 760), available)
+
+    assert too_small_for_screen.status == "invalid-area-small"
+    assert format_geometry(too_small_for_screen.rect) == "1920x1044+320+174"
+
+
+def test_startup_main_window_geometry_is_applied_to_real_widget():
+    QApplication.instance() or QApplication([])
+    available = QRect(0, 0, 2560, 1392)
+    widget = QWidget()
+
+    decision = apply_startup_main_window_geometry(widget, QRect(0, 0, 640, 480), available)
+
+    assert decision.status == "invalid-small"
+    assert widget.minimumWidth() == 1280
+    assert widget.minimumHeight() == 760
+    assert format_geometry(widget.geometry()) == "1920x1044+320+174"
+    assert main_window_geometry_issue(widget.geometry(), available) is None
+
+
+def test_main_window_geometry_save_policy_rejects_abnormal_small_rect():
+    available = QRect(0, 0, 2560, 1392)
+    default_rect = calculate_default_main_window_geometry(available)
+
+    assert should_save_main_window_geometry(QRect(0, 0, 640, 480), available) == (False, "too-small")
+    assert should_save_main_window_geometry(QRect(320, 156, 1280, 760), available) == (False, "area-too-small")
+    assert should_save_main_window_geometry(default_rect, available) == (True, "ok")
 
 
 def test_device_dialog_registry_prevents_duplicate_keys_and_removes_on_close():
@@ -355,6 +425,8 @@ def test_startup_splash_updates_message_and_progress():
 
     assert splash.message_label.text() == "Opening main window..."
     assert splash.progress.value() == 80
+    assert splash.size().width() == 520
+    assert splash.size().height() == 300
     splash.close()
 
 

@@ -24,6 +24,7 @@ from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLA
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.services.trackside_ap_business import parse_vlan_set
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
+from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 
 
@@ -47,6 +48,17 @@ TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "remark": 220,
 }
 MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
+
+
+def _set_button_icon(button: QPushButton, icon: object | None) -> None:
+    if icon is None:
+        return
+    icon_factory = getattr(icon, "icon", None)
+    resolved_icon = icon_factory() if callable(icon_factory) else icon
+    try:
+        button.setIcon(resolved_icon)
+    except TypeError:
+        pass
 
 
 class TracksideApPlanPage(QWidget):
@@ -105,7 +117,21 @@ class TracksideApPlanPage(QWidget):
         self.export_button.setText(self.i18n.t("ac.trackside_plan.export"))
         self.template_button.setText(self.i18n.t("ac.trackside_plan.template"))
         self.refresh_button.setText(self.i18n.t("details.refresh"))
+        self._apply_button_icons()
         self.table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_PLAN_COLUMNS])
+
+    def _apply_button_icons(self) -> None:
+        button_icons = (
+            (self.add_button, FIF.ADD),
+            (self.delete_button, FIF.DELETE),
+            (self.save_button, FIF.SAVE),
+            (self.import_button, FIF.DOWNLOAD),
+            (self.export_button, FIF.SHARE),
+            (self.template_button, FIF.CLOUD_DOWNLOAD),
+            (self.refresh_button, FIF.SYNC),
+        )
+        for button, icon in button_icons:
+            _set_button_icon(button, icon)
 
     def refresh(self) -> None:
         if not self._confirm_discard_or_save_changes():

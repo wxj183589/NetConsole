@@ -38,6 +38,24 @@ NetConsole 的每日/每周自动复盘只服务于项目开发过程，不用�
 - 优先使用项目内虚拟环境 `.venv`；没有可用虚拟环境时，再使用系统环境。
 - 仓库提交信息、推送说明和面向用户的变更说明默认使用中文。
 
+## 开发入口和文档边界
+
+- 非简单改动前，先读取 `README.md`、`docs/README.md`、`docs/DEVELOPMENT_CONVENTIONS.md` 和 `docs/CODEX_WORKFLOW.md`。
+- 涉及打包发布时，同时读取 `docs/BUILD_AND_RELEASE.md` 和 `docs/THIRD_PARTY_DEPENDENCIES.md`。
+- 涉及数据目录、站点隔离或运行时路径时，同时读取 `docs/DATA_LAYOUT.md`，并以 `PathResolver` 和当前代码为准。
+- 文档整理任务原则上只修改 `README.md` 和 `docs/`，不要顺手改业务代码。
+- 当历史编号文档与当前专题文档或代码冲突时，先标注“当前实现与待统一事项”，不要在文档任务里附带业务迁移。
+
+## 中文和编码规则
+
+- 源码、Markdown、JSON、TOML、YAML、CSV 和日志导出默认按 UTF-8 处理。
+- Python 读写文本必须显式指定 `encoding`；JSON 写入中文时使用 `ensure_ascii=False`。
+- Windows / PowerShell 下涉及中文、路径、日志、H3C 回显、MIB、CSV 或 XLSX 时，先初始化 UTF-8 终端编码。
+- 不用 PowerShell / Codex 终端中的乱码显示直接判断文件损坏；必要时检查原始字节和实际读取编码。
+- 读取 H3C 设备回显、历史日志、MIB 文件和外部 CSV 时，优先尝试 `utf-8-sig` / `utf-8`，失败后尝试 `gb18030` / `gbk`。
+- 优先复用 `netconsole/utils/text_encoding.py` 中的统一读取和清洗函数，不在各模块散写编码兜底循环。
+- 不删除中文描述、MIB 中文字段或 UI 中文文案来规避解码问题。
+
 ## 新功能和优化规则
 
 ### 用户可见功能必须接入功能开关
@@ -102,6 +120,48 @@ NetConsole 是本地 Windows 桌面工具。默认优先本地数据、本地文
 - 不引入云同步、在线账号、远程文档服务作为默认依赖。
 - 项目数据默认保存在项目或发布包可控目录下。
 - 导出、导入、分析、诊断优先围绕本地文件和现场设备连接。
+
+### 数据路径和局点隔离
+
+业务数据路径应通过 `PathResolver` 或既有路径服务获取。
+
+要求：
+
+- 不在正式代码、测试或文档规则中写死用户本机路径。
+- 局点数据必须隔离，设备、报表、采集记录和缓存不能跨局点混用。
+- 原始采集日志、解析结果、报表输出和备份文件应分区保存，不混放在同一目录。
+- 文档任务不得直接修改目录逻辑；目录结构变更应先更新实现、迁移策略和测试。
+
+### UI 表格规则
+
+新增或修改表格类页面时，遵守 `docs/ui_table_guidelines.md`。
+
+要求：
+
+- 批量选择列必须使用 `CheckBoxOnlyDelegate`，不使用 `setCellWidget(QCheckBox)`。
+- 全选、反选、清空选择必须同步表格 `CheckStateRole` 和内部选择状态。
+- 表格列宽按内容初始化，允许用户拖动；不默认使用 `QHeaderView.Stretch` 强行压缩所有列。
+- 超宽表格使用横向滚动条；路径、错误、备注、命令输出等长文本应有省略和 tooltip。
+
+### 构建和发布边界
+
+打包发布以 `docs/BUILD_AND_RELEASE.md` 和 `project/` 下构建脚本为准。
+
+要求：
+
+- 发布输出必须进入 `release/` 下的版本目录，不污染项目根目录。
+- 发布包只允许白名单内容进入：`NetConsole.exe`、`_internal`、`data`、`runtime`、`tools`。
+- `docs/`、`tests/`、`project/` 和源码形式的 `netconsole/` 不得进入用户发布包。
+- 内部版和客户版通过既有 `--build-editions` 与 feature profile 机制处理，不临时复制两套代码。
+- 打包前检查 `fping`、`iperf3` 等外部工具源文件；运行时工具路径不得写死用户本机路径。
+- 非交互构建跳过 smoke test 时必须说明原因。
+
+### 第三方依赖边界
+
+- QFluentWidgets 只使用 `PySide6-Fluent-Widgets==1.11.2` 对应的 `qfluentwidgets`。
+- 不混装 `PyQt-Fluent-Widgets`、`PyQt6-Fluent-Widgets` 或 `PySide2-Fluent-Widgets`。
+- 不使用 QFluentWidgets Pro 组件；商业用途需要另行确认授权。
+- Mica / Acrylic / 毛玻璃效果必须可降级；特效初始化失败不能阻断主程序启动。
 
 ## 验证规则
 

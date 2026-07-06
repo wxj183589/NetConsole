@@ -48,6 +48,7 @@ from netconsole.services.fping_legacy_parser import (
 )
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.services.network_tools.iperf_runner import FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
 from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
@@ -62,6 +63,10 @@ from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeP
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.ui.pages.online_mr_collection_page import (
+    ONLINE_MR_LEFT_PANEL_MIN_WIDTH,
+    ONLINE_MR_PAGE_MIN_WIDTH,
+    ONLINE_MR_RIGHT_PANEL_MIN_WIDTH,
+    ONLINE_MR_WORK_PANEL_MIN_WIDTH,
     OnlineMrCollectionPage,
     SUMMARY_COL_ACTIVE_PEER,
     SUMMARY_COL_DEVICE_ID,
@@ -166,6 +171,23 @@ def _online_page_with_devices(tmp_path: Path) -> tuple[OnlineMrCollectionPage, D
     device_repo = DeviceRepository(database)
     group_repo = DeviceGroupRepository(database, "demo")
     return OnlineMrCollectionPage(device_repo, I18n("en_US"), "demo", paths), device_repo, group_repo
+
+
+def test_online_mr_fping_parameter_layout_has_stable_widths(tmp_path: Path) -> None:
+    page, _device_repo, _group_repo = _online_page_with_devices(tmp_path)
+
+    assert page.right_control_scroll.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
+    assert page.control_panel.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
+    assert page.ping_box.minimumWidth() >= 360
+    assert page.ping_box.minimumHeight() >= 430
+    assert page.ping_box.maximumHeight() > 10000
+    for spin in (page.fping_packet_size, page.fping_interval_ms, page.fping_loss_threshold_ms, page.fping_latency_warn_ms):
+        assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+        assert spin.minimumWidth() >= 110
+    assert page.fping_loss_warn_edit.minimumWidth() >= 110
+    assert page.fping_preset_combo.minimumWidth() >= 220
+    assert not page.start_button.icon().isNull()
+    assert not page.refresh_devices_button.icon().isNull()
 
 
 def _create_onboard_device(repository: DeviceRepository, group_id: int, name: str, device_type: str = "FAT-AP") -> Device:
@@ -1291,55 +1313,73 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert not page.iperf_tcp_threshold_edit.isHidden()
     assert page.iperf_udp_bitrate_edit.isHidden()
     assert page.iperf_bandwidth_hint_label.text()
-    assert page.connection_box.maximumHeight() <= 76
-    assert page.connection_box.layout().count() >= 10
-    assert page.page_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert page.connection_box.minimumHeight() >= 64
+    assert page.connection_box.layout().count() >= 4
+    assert page.action_bar.minimumHeight() >= 44
+    assert page.action_layout.count() == 5
+    assert page.page_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert page.page_scroll.widget().minimumWidth() >= ONLINE_MR_PAGE_MIN_WIDTH
+    assert not hasattr(page, "collect_config_button")
+    assert not hasattr(page, "collect_config_once")
     assert page.available_device_count_label.parentWidget() is None
+    assert page.site_label.isHidden()
     assert page.available_metric_label.text()
     top_layout = page.connection_box.layout()
-    assert top_layout.itemAt(top_layout.count() - 1).widget() is page.status_label
-    assert top_layout.indexOf(page.refresh_devices_button) < top_layout.indexOf(page.status_label)
-    assert page.start_button.minimumWidth() >= 86
-    assert page.start_button.minimumHeight() >= 28
+    status_item = top_layout.itemAt(top_layout.count() - 1).widget()
+    assert page.status_label.parentWidget() is status_item
+    assert page.action_layout.indexOf(page.refresh_devices_button) >= 0
+    assert page.start_button.minimumWidth() >= 104
+    assert page.start_button.minimumHeight() >= 34
     assert page.status_label.minimumWidth() >= 72
-    assert page.status_label.maximumWidth() <= 96
+    assert page.status_label.maximumWidth() <= 140
     assert page.fping_status_label_1.parentWidget() is None
     assert page.fping_status_label_2.parentWidget() is None
     page._refresh_collection_animation()
     assert page.collect_status_label_1.text().find("Ping 1") >= 0
     assert page.collect_status_label_1.text().find("Ping 2") >= 0
     assert page.collect_param_box.minimumHeight() >= 220
-    assert page.collect_param_box.maximumHeight() <= 280
+    assert page.collect_param_box.maximumHeight() > 10000
     assert page.advanced_box.minimumWidth() >= 260
     assert page.advanced_box.maximumWidth() <= 320
     assert page.advanced_box.minimumHeight() >= 190
-    assert page.advanced_box.maximumHeight() <= 240
+    assert page.advanced_box.maximumHeight() > 10000
     assert page.period_box.layout().columnStretch(1) == 1
     assert page.collect_status_box.title() == "实时采集状态"
     assert page.collect_status_box.minimumHeight() >= 140
-    assert page.collect_status_box.maximumHeight() <= 190
+    assert page.collect_status_box.maximumHeight() > 10000
     assert page.collect_card_1.parentWidget() is page.collect_status_box
     assert page.collect_card_2.parentWidget() is page.collect_status_box
     assert not page.collect_progress_1.isVisible()
     assert page.device_table.minimumHeight() >= 260
-    assert page.device_table.maximumHeight() <= 330
+    assert page.device_table.maximumHeight() > 10000
     assert page.device_table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
     assert page.device_table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel
     assert isinstance(page.device_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
-    assert page.main_work_panel.layout().columnStretch(0) == 6
-    assert page.main_work_panel.layout().columnStretch(1) == 4
+    assert page.main_splitter.count() == 2
+    assert page.main_splitter.childrenCollapsible() is False
+    assert page.main_splitter.widget(0) is page.device_panel
+    assert page.main_splitter.widget(1) is page.right_control_scroll
+    assert page.main_work_panel.minimumWidth() >= ONLINE_MR_WORK_PANEL_MIN_WIDTH
+    assert page.device_panel.minimumWidth() >= ONLINE_MR_LEFT_PANEL_MIN_WIDTH
     assert page.device_panel.minimumHeight() >= 280
-    assert page.right_control_scroll.minimumWidth() >= 560
-    assert page.right_control_scroll.maximumWidth() <= 700
-    assert page.ping_box.minimumHeight() >= 220
-    assert page.ping_box.maximumHeight() <= 380
+    assert page.right_control_scroll.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
+    assert page.right_control_scroll.maximumWidth() > 10000
+    assert page.right_control_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert page.ping_box.minimumHeight() >= 430
+    assert page.ping_box.maximumHeight() > 10000
     assert page.fping_preset_combo.currentData() == "pis_high_ping_acceptance"
     assert page.fping_loss_warn_edit.text() == "0.7"
-    assert page.fping_loss_warn_edit.minimumWidth() >= 100
+    assert page.fping_loss_warn_edit.minimumWidth() >= 110
     assert page.fping_device_combo_1.minimumWidth() >= 220
     assert page.fping_device_combo_1.maximumWidth() <= 360
     assert page.fping_target_label_1.minimumWidth() >= 160
     assert page.fping_target_label_1.maximumWidth() <= 320
+    page.page_scroll.resize(1180, 760)
+    page._update_realtime_responsive_layout()
+    assert page.main_splitter.orientation() == Qt.Vertical
+    page.page_scroll.resize(1500, 900)
+    page._update_realtime_responsive_layout()
+    assert page.main_splitter.orientation() == Qt.Horizontal
     numeric_spins = (
         page.mesh_interval,
         page.channel_interval,
@@ -1356,20 +1396,21 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
         page.iperf_port_spin,
         page.iperf_parallel_spin,
         page.iperf_interval_spin,
-        page.iperf_duration_spin,
         page.iperf_packet_length_spin,
     )
     for spin in numeric_spins:
         assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
         assert spin.minimumWidth() >= 100
-        assert spin.maximumWidth() <= 120
+        assert spin.maximumWidth() <= 140
     assert page.fping_packet_size.maximum() == 65535
     assert page.fping_interval_ms.minimum() == 1
     assert page.fping_loss_threshold_ms.maximum() == 60000
     assert page.fping_latency_warn_ms.value() == 100
     assert page.max_reconnect.maximum() == 999
     assert page.duration_minutes.maximum() == 1440
-    assert page.iperf_duration_spin.minimum() == 1
+    assert page.iperf_duration_spin.value() == FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
+    assert page.iperf_duration_spin.isHidden()
+    assert "跟随采集启停" in page.iperf_duration_mode_label.text()
     assert page.summary_table.minimumHeight() >= 120
     assert page.summary_table.maximumHeight() > 1000
     assert page.tabs.minimumHeight() >= 180
@@ -1478,7 +1519,7 @@ def test_online_mr_iperf_cbtc_dcs_presets_fill_fields_without_clearing_server(tm
     assert page.iperf_packet_length_spin.value() == 64
     assert page.iperf_parallel_spin.value() == 1
     assert page.iperf_interval_spin.value() == 1
-    assert page.iperf_duration_spin.value() == 600
+    assert page.iperf_duration_spin.value() == FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
 
     tcp_index = page.iperf_preset_combo.findData("cbtc_dcs_tcp_observation")
     assert tcp_index >= 0
@@ -2495,7 +2536,6 @@ def test_online_mr_iperf_controls_ignore_mouse_wheel(tmp_path: Path) -> None:
         page.iperf_port_spin: page.iperf_port_spin.value(),
         page.iperf_parallel_spin: page.iperf_parallel_spin.value(),
         page.iperf_interval_spin: page.iperf_interval_spin.value(),
-        page.iperf_duration_spin: page.iperf_duration_spin.value(),
     }
     combo_indexes = {
         page.iperf_protocol_combo: page.iperf_protocol_combo.currentIndex(),
@@ -2886,7 +2926,6 @@ def test_online_mr_prepare_shutdown_stops_timers_and_workers(tmp_path: Path) -> 
     probe = _ShutdownWorker()
     iperf = _ShutdownWorker()
     page.workers["session-1"] = worker
-    page.config_workers["config-1"] = worker
     page.workers_by_device_id[1] = worker
     page.fping_workers_by_device_id[1] = probe
     page.fping_workers["session-1"] = probe

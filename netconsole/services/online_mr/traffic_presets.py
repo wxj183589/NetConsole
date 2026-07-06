@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from netconsole.services.network_tools.iperf_runner import FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
+
+
+ONLINE_MR_IPERF_DURATION_MODE = "follow_collection"
+
 
 @dataclass(frozen=True)
 class TrafficPreset:
@@ -18,6 +23,7 @@ class TrafficPreset:
     reverse: bool
     duration_sec: int
     interval_sec: int
+    duration_mode: str = ONLINE_MR_IPERF_DURATION_MODE
 
 
 DEFAULT_TRAFFIC_PRESET_KEY = "pis_tcp_downlink_single"
@@ -35,7 +41,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=None,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -50,7 +56,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=None,
         parallel=4,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -65,7 +71,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=1400,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -80,7 +86,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=64,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -95,7 +101,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=64,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -110,7 +116,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=256,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -125,7 +131,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=1256,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
     TrafficPreset(
@@ -140,7 +146,7 @@ _TRAFFIC_PRESETS: tuple[TrafficPreset, ...] = (
         packet_length=None,
         parallel=1,
         reverse=True,
-        duration_sec=600,
+        duration_sec=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
         interval_sec=1,
     ),
 )

@@ -57,8 +57,10 @@ from netconsole.services.vehicle_mr_online import (
     train_sort_key,
 )
 from netconsole.ui.pages.online_mr_collection_page import connection_fields_from_device
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
 
@@ -135,6 +137,7 @@ class VehicleMrOnlinePage(QWidget):
 
         self._build_ui()
         self._connect_signals()
+        self._apply_button_icons()
         self.store.cleanup_history(30)
         self.refresh_all()
 
@@ -177,6 +180,17 @@ class VehicleMrOnlinePage(QWidget):
 
     def retranslate(self) -> None:
         self.title_label.setText("列车在线情况")
+        self._apply_button_icons()
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.start_button, "PLAY"),
+            (self.stop_button, "CANCEL"),
+            (self.refresh_button, "SYNC"),
+            (self.refresh_ap_button, "SYNC"),
+            (self.mapping_button, "SETTING"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def start_collection(self) -> None:
         ac = self.ac_combo.currentData()
@@ -355,7 +369,16 @@ class VehicleMrOnlinePage(QWidget):
 
     def _fill_train_table(self, trains: list[VehicleMrTrainState]) -> None:
         selected = self.selected_train_id
+        self.train_table.clearSpans()
         self.train_table.setRowCount(0)
+        if not trains:
+            self.train_table.insertRow(0)
+            self.train_table.setSpan(0, 0, 1, self.train_table.columnCount())
+            item = QTableWidgetItem("当前局点暂无列车在线数据，请点击刷新或开始采集。")
+            item.setTextAlignment(Qt.AlignCenter)
+            self.train_table.setItem(0, 0, item)
+            self._apply_train_table_widths()
+            return
         for train in trains:
             row = self.train_table.rowCount()
             self.train_table.insertRow(row)
@@ -611,6 +634,7 @@ class VehicleMrHistoryQueryDialog(QDialog):
         self.table = QTableWidget(0, 8)
         configure_readonly_table(self.table)
         self.table.setHorizontalHeaderLabels(["时间", "端别", "状态", "车站", "轨旁AP", "RSSI", "事件类型", "判断说明"])
+        self.scroll_area = None
         self._build_ui()
         self.query_button.clicked.connect(self.query)
         self.reset_button.clicked.connect(self.reset)
@@ -618,8 +642,13 @@ class VehicleMrHistoryQueryDialog(QDialog):
         self.query()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         filters = QGridLayout()
+        filters.setHorizontalSpacing(12)
+        filters.setVerticalSpacing(10)
         filters.addWidget(QLabel(f"列车：{self.train.display_name} / {self.train.train_id}"), 0, 0, 1, 2)
         filters.addWidget(QLabel("开始时间"), 1, 0)
         filters.addWidget(self.start_edit, 1, 1)
@@ -633,15 +662,28 @@ class VehicleMrHistoryQueryDialog(QDialog):
         filters.addWidget(self.station_edit, 3, 1)
         filters.addWidget(QLabel("轨旁AP"), 3, 2)
         filters.addWidget(self.ap_edit, 3, 3)
+        for widget in (self.start_edit, self.end_edit, self.end_combo, self.status_combo, self.station_edit, self.ap_edit):
+            widget.setMinimumWidth(180)
         actions = QHBoxLayout()
+        actions.setSpacing(8)
         actions.addWidget(self.query_button)
         actions.addWidget(self.reset_button)
         actions.addWidget(self.export_button)
         actions.addStretch(1)
+        for button in (self.query_button, self.reset_button, self.export_button):
+            button.setMinimumWidth(82)
         layout.addLayout(filters)
         layout.addLayout(actions)
         layout.addWidget(self.hint_label)
+        self.table.setMinimumHeight(300)
         layout.addWidget(self.table)
+        self.scroll_area = install_scrollable_dialog_content(
+            self,
+            content,
+            minimum_width=820,
+            minimum_height=520,
+            content_minimum_width=900,
+        )
         self._apply_widths()
 
     def query(self) -> None:
@@ -723,13 +765,8 @@ class VehicleMrMappingDialog(QDialog):
         self.import_button = QPushButton("导入")
         self.export_button = QPushButton("导出模板")
         self.refresh_button = QPushButton("刷新")
-        layout = QVBoxLayout(self)
-        actions = QHBoxLayout()
-        for button in (self.add_button, self.delete_button, self.save_button, self.import_button, self.export_button, self.refresh_button):
-            actions.addWidget(button)
-        actions.addStretch(1)
-        layout.addLayout(actions)
-        layout.addWidget(self.table)
+        self.scroll_area = None
+        self._build_ui()
         self.add_button.clicked.connect(self.add_row)
         self.delete_button.clicked.connect(self.delete_rows)
         self.save_button.clicked.connect(self.save)
@@ -737,6 +774,28 @@ class VehicleMrMappingDialog(QDialog):
         self.export_button.clicked.connect(self.export_template)
         self.refresh_button.clicked.connect(self.load)
         self.load()
+
+    def _build_ui(self) -> None:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        for button in (self.add_button, self.delete_button, self.save_button, self.import_button, self.export_button, self.refresh_button):
+            button.setMinimumWidth(86)
+            actions.addWidget(button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        self.table.setMinimumHeight(320)
+        layout.addWidget(self.table)
+        self.scroll_area = install_scrollable_dialog_content(
+            self,
+            content,
+            minimum_width=820,
+            minimum_height=500,
+            content_minimum_width=900,
+        )
 
     def load(self) -> None:
         self.table.setRowCount(0)

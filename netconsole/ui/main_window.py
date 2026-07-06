@@ -422,8 +422,12 @@ class MainWindow(AppFramelessMainWindow):
                 page.refresh()
             elif page_id == "file_management" and hasattr(page, "refresh_devices"):
                 page.refresh_devices()
-            elif page_id == "rail_transit" and hasattr(page, "refresh_current_async_or_lazy"):
-                page.refresh_current_async_or_lazy(force_if_empty=True)
+            elif page_id == "rail_transit":
+                enter = getattr(page, "on_enter", None)
+                if callable(enter):
+                    enter(force_if_empty=True)
+                elif hasattr(page, "refresh_current_async_or_lazy"):
+                    page.refresh_current_async_or_lazy(force_if_empty=True)
             elif page_id == "snmp_center" and hasattr(page, "start_snmp_service_async"):
                 page.start_snmp_service_async()
             elif page_id == "network_tools" and hasattr(page, "refresh_all"):
@@ -525,7 +529,11 @@ class MainWindow(AppFramelessMainWindow):
             elif page_id == "file_management" and self.file_management_page is not None:
                 self.file_management_page.refresh_devices()
             elif page_id == "rail_transit" and self.rail_transit_page is not None:
-                self.rail_transit_page.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
+                enter = getattr(self.rail_transit_page, "on_enter", None)
+                if callable(enter):
+                    enter(force_if_empty=force_if_empty)
+                else:
+                    self.rail_transit_page.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
             elif page_id == "snmp_center" and self.snmp_center_page is not None:
                 self.snmp_center_page.start_snmp_service_async()
             elif page_id == "network_tools" and self.network_tools_page is not None:

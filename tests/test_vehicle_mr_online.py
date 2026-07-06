@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QAbstractItemView, QApplication
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -42,7 +42,12 @@ from netconsole.services.vehicle_mr_online import (
     resolve_ap_station,
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
-from netconsole.ui.pages.vehicle_mr_online_page import export_vehicle_mr_history_rows, export_vehicle_mr_mapping_template
+from netconsole.ui.pages.vehicle_mr_online_page import (
+    VehicleMrHistoryQueryDialog,
+    VehicleMrMappingDialog,
+    export_vehicle_mr_history_rows,
+    export_vehicle_mr_mapping_template,
+)
 
 
 SAMPLE = """<NBDT12HX-WX3540X-AC1>display clock
@@ -555,14 +560,17 @@ def test_rail_transit_first_tab_is_vehicle_mr_online(tmp_path: Path) -> None:
     database.initialize()
     page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
     assert page.vehicle_mr_online_page is None
-    page._ensure_feature_page("rail.train_online")
+    page.on_enter()
 
     assert page.tabs.tabText(0) == "列车在线情况"
+    assert page.tabs.currentIndex() == 0
+    assert page.vehicle_mr_online_page is not None
     assert page.vehicle_mr_online_page.title_label.text() == "列车在线情况"
     assert page.vehicle_mr_online_page.interval_spin.value() == 10
     assert page.vehicle_mr_online_page.interval_spin.minimum() == 3
     assert page.vehicle_mr_online_page.interval_spin.maximum() == 300
     assert page.vehicle_mr_online_page.interval_unit_label.text() == "秒"
+    assert "当前局点暂无列车在线数据" in page.vehicle_mr_online_page.train_table.item(0, 0).text()
 
 
 def test_vehicle_mr_page_status_items_have_readable_roles_and_interval_validation(tmp_path: Path) -> None:
@@ -621,6 +629,51 @@ def test_vehicle_mr_event_table_keeps_user_widths_and_centers_cells(tmp_path: Pa
     assert page.event_table.columnWidth(0) == 222
     assert page.event_table.item(0, 0).textAlignment() == Qt.AlignCenter
     assert page.event_table.item(0, 2).textAlignment() == Qt.AlignCenter
+
+
+def test_vehicle_mr_history_dialog_scrolls_in_small_windows(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    store = VehicleMrOnlineStore(PathResolver(tmp_path), "demo")
+    dialog = VehicleMrHistoryQueryDialog(store, VehicleMrTrainState("列车06", "06", True))
+
+    try:
+        assert dialog.minimumWidth() >= 820
+        assert dialog.minimumHeight() >= 520
+        assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert dialog.scroll_area.widget().minimumWidth() >= 900
+        assert dialog.table.minimumHeight() >= 300
+        assert dialog.table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert dialog.table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
+    finally:
+        dialog.close()
+
+
+def test_vehicle_mr_mapping_dialog_scrolls_buttons_and_table(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
+    store = VehicleMrOnlineStore(PathResolver(tmp_path), "demo")
+    dialog = VehicleMrMappingDialog(store)
+
+    try:
+        assert dialog.minimumWidth() >= 820
+        assert dialog.minimumHeight() >= 500
+        assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert dialog.scroll_area.widget().minimumWidth() >= 900
+        assert dialog.table.minimumHeight() >= 320
+        assert dialog.table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert dialog.table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
+        for button in (
+            dialog.add_button,
+            dialog.delete_button,
+            dialog.save_button,
+            dialog.import_button,
+            dialog.export_button,
+            dialog.refresh_button,
+        ):
+            assert button.minimumWidth() >= 86
+    finally:
+        dialog.close()
 
 
 def test_vehicle_mr_store_query_events_filters_by_time_end_status_station_and_ap(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -52,6 +53,7 @@ class IperfBandwidthPage(QWidget):
         self.tool_label = QLabel()
         self.tool_label.setWordWrap(True)
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
         self.server_status_label = QLabel()
         self.server_status_dot = QLabel()
 
@@ -66,6 +68,7 @@ class IperfBandwidthPage(QWidget):
         self.server_output = QTextEdit()
         self.server_output.setReadOnly(True)
         self.server_output.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.server_output.setMinimumHeight(120)
 
         self.client_host_edit = QLineEdit()
         self.client_port_spin = self._spin(1, 65535, 5201)
@@ -89,14 +92,17 @@ class IperfBandwidthPage(QWidget):
         self.client_output = QTextEdit()
         self.client_output.setReadOnly(True)
         self.client_output.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.client_output.setMinimumHeight(96)
         self.current_mbps_label = QLabel("0")
         self.avg_mbps_label = QLabel("0")
         self.max_mbps_label = QLabel("0")
         self.retransmits_label = QLabel("0")
         self.interval_table = QTableWidget(0, 5)
         configure_readonly_table(self.interval_table)
+        self.interval_table.setMinimumHeight(110)
 
         self._build_ui()
+        self._apply_layout_constraints()
         self._connect_signals()
         self.retranslate()
         self._set_server_state("STOPPED")
@@ -113,15 +119,19 @@ class IperfBandwidthPage(QWidget):
         self.splitter.addWidget(self._client_panel())
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([620, 620])
         root.addWidget(self.splitter, 1)
 
     def _server_panel(self) -> QGroupBox:
         panel = QGroupBox()
+        panel.setMinimumWidth(520)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
         box = QGroupBox()
         form = QFormLayout(box)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
         form.addRow(self.i18n.t("iperf.bind_address"), self.server_bind_edit)
         form.addRow(self.i18n.t("iperf.port"), self.server_port_spin)
         form.addRow(self.i18n.t("iperf.interval"), self.server_interval_spin)
@@ -139,11 +149,14 @@ class IperfBandwidthPage(QWidget):
 
     def _client_panel(self) -> QGroupBox:
         panel = QGroupBox()
+        panel.setMinimumWidth(520)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
         box = QGroupBox()
         form = QFormLayout(box)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
         self.client_direction_combo.addItem(self.i18n.t("iperf.upload"), "upload")
         self.client_direction_combo.addItem(self.i18n.t("iperf.download"), "download")
         self.client_direction_combo.addItem(self.i18n.t("iperf.bidirectional"), "bidirectional")
@@ -155,6 +168,8 @@ class IperfBandwidthPage(QWidget):
         form.addRow(self.i18n.t("iperf.interval"), self.client_interval_spin)
         form.addRow(self.i18n.t("iperf.parallel"), self.client_parallel_spin)
         bandwidth_row = QHBoxLayout()
+        bandwidth_row.setContentsMargins(0, 0, 0, 0)
+        bandwidth_row.setSpacing(8)
         bandwidth_row.addWidget(self.client_bandwidth_edit)
         bandwidth_row.addWidget(self.client_bandwidth_unit_combo)
         form.addRow(self.i18n.t("iperf.target_bandwidth"), bandwidth_row)
@@ -179,6 +194,31 @@ class IperfBandwidthPage(QWidget):
         layout.addWidget(self.interval_table)
         layout.addWidget(self.client_output, 1)
         return panel
+
+    def _apply_layout_constraints(self) -> None:
+        for widget in (
+            self.server_bind_edit,
+            self.client_host_edit,
+            self.client_bandwidth_edit,
+            self.client_protocol_combo,
+            self.client_direction_combo,
+        ):
+            widget.setMinimumWidth(260)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        for spin in (
+            self.server_port_spin,
+            self.server_interval_spin,
+            self.client_port_spin,
+            self.client_duration_spin,
+            self.client_interval_spin,
+            self.client_parallel_spin,
+        ):
+            spin.setMinimumWidth(110)
+            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            if hasattr(spin, "setButtonSymbols"):
+                spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.client_bandwidth_unit_combo.setMinimumWidth(64)
+        self.client_bandwidth_unit_combo.setMaximumWidth(76)
 
     def _connect_signals(self) -> None:
         self.server_start_button.clicked.connect(self.start_server)

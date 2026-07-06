@@ -89,6 +89,7 @@ from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHis
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
 from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_table_style, set_table_column_fields
+from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
 from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
@@ -262,6 +263,34 @@ AC_FEATURE_ORDER = (
     "ac.fit_ap_optical",
     "ac.fit_ap_extensions",
 )
+
+
+def _set_button_icon(button: QPushButton, icon: object | None) -> None:
+    if icon is None:
+        return
+    icon_factory = getattr(icon, "icon", None)
+    resolved_icon = icon_factory() if callable(icon_factory) else icon
+    try:
+        button.setIcon(resolved_icon)
+    except TypeError:
+        pass
+AC_TAB_ACTION_LABELS = {
+    "ac.trackside_ap_plan": ("新增行", "删除选中", "保存", "导入", "导出", "下载模板", "更新"),
+    "ac.ap_online_overview": ("获取 AP 列表", "刷新", "导出", "清空结果"),
+    "ac.fit_ap_resources": ("获取 AP 列表", "获取 AP 地址", "获取 AP 射频", "更新", "批量删除", "导出 AP 信息", "清空选择", "反选"),
+    "ac.fit_ap_optical": ("更新光衰", "并发数", "导出表格", "清除筛选"),
+    "ac.fit_ap_extensions": (
+        "标准模板导入",
+        "原始设计/布点表智能识别导入",
+        "下载标准模板",
+        "导出",
+        "新增",
+        "编辑",
+        "批量删除",
+        "清空当前局点扩展信息",
+        "刷新",
+    ),
+}
 
 
 class OfflineApLedgerLoadThread(QThread):
@@ -700,6 +729,8 @@ class AcManagementPage(QWidget):
         self.tab_by_feature_id: dict[str, QWidget] = {}
         self._ui_ready = False
         self._refreshing_current = False
+        self._loaded_once = False
+        self._last_loaded_site_name = ""
         self.offline_load_thread: OfflineApLedgerLoadThread | None = None
         self.offline_cache_path = PathResolver().offline_ap_cache_path
         self._overview_uses_trackside_plan = False
@@ -714,11 +745,19 @@ class AcManagementPage(QWidget):
         self.trackside_page_size = DEFAULT_PAGE_SIZE
         self._updating_online_summary = False
 
-        self.device_combo = QComboBox()
-        self.open_web_button = QPushButton()
-        self.update_ac_info_button = QPushButton()
-        self.persist_auto_ap_button = QPushButton()
-        self.enable_ap_remote_login_button = QPushButton()
+        self.device_combo = QComboBox(self)
+        self.open_web_button = QPushButton(self)
+        self.update_ac_info_button = QPushButton(self)
+        self.persist_auto_ap_button = QPushButton(self)
+        self.enable_ap_remote_login_button = QPushButton(self)
+        for moved_button in (
+            self.open_web_button,
+            self.update_ac_info_button,
+            self.persist_auto_ap_button,
+            self.enable_ap_remote_login_button,
+        ):
+            moved_button.hide()
+            moved_button.setVisible(False)
         self.refresh_button = QPushButton()
         self.cancel_update_button = QPushButton()
         self.cancel_update_button.setVisible(False)
@@ -836,13 +875,12 @@ class AcManagementPage(QWidget):
         self.trackside_table.customContextMenuRequested.connect(self.show_trackside_context_menu)
 
         top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
+        self.device_combo.setMinimumWidth(360)
         top.addWidget(self.device_combo, 1)
-        top.addWidget(self.open_web_button)
-        top.addWidget(self.update_ac_info_button)
-        top.addWidget(self.persist_auto_ap_button)
-        top.addWidget(self.enable_ap_remote_login_button)
-        top.addWidget(self.cancel_update_button)
         top.addWidget(self.status_label)
+        top.addWidget(self.cancel_update_button)
 
         summary = QGridLayout()
         for index, (key, field) in enumerate(SUMMARY_FIELDS):
@@ -999,6 +1037,7 @@ class AcManagementPage(QWidget):
         self.trackside_pagination.pageSizeChanged.connect(self.set_trackside_page_size)
         self.trackside_plan_page.plan_saved.connect(self._handle_trackside_plan_saved)
         self.retranslate()
+        self._parent_hidden_legacy_buttons()
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
         self._ui_ready = True
         if eager_load:
@@ -1065,6 +1104,12 @@ class AcManagementPage(QWidget):
                 return feature_id
         return None
 
+    def current_tab_action_labels(self) -> list[str]:
+        feature_id = self._current_feature_id()
+        if feature_id is None:
+            return []
+        return list(AC_TAB_ACTION_LABELS.get(feature_id, ()))
+
     def _tab_index_for_feature(self, feature_id: str | None) -> int:
         if not feature_id:
             return -1
@@ -1088,11 +1133,32 @@ class AcManagementPage(QWidget):
         self.site_name = site_name
         self._device_list_loaded = False
         self._loaded_feature_ids.clear()
+        self._loaded_once = False
+        self._last_loaded_site_name = ""
         self.trackside_plan_page.repository = self.repository
         self.trackside_plan_page.site_name = site_name
         self.trackside_plan_page.refresh()
         self.refresh_ap_extensions()
         self.refresh_devices()
+
+    def on_enter(self) -> None:
+        if not self._loaded_once or self._last_loaded_site_name != self.site_name:
+            self.load_initial_data()
+            return
+        self.refresh_current_async_or_lazy()
+
+    def load_initial_data(self) -> None:
+        if not self._ui_ready:
+            return
+        self._loaded_once = True
+        self._last_loaded_site_name = self.site_name
+        self.refresh_devices(load_current_only=False)
+        self.trackside_plan_page.refresh()
+        if not self.ac_devices:
+            self.status_label.setText("当前局点未配置 AC 设备")
+            app_logger.log_info("AC_INITIAL_LOAD_EMPTY", f"site={self.site_name}")
+        else:
+            app_logger.log_info("AC_INITIAL_LOAD_DONE", f"site={self.site_name} ac_count={len(self.ac_devices)}")
 
     def retranslate(self) -> None:
         self.open_web_button.setText(self.i18n.t("ac.open_web"))
@@ -1131,6 +1197,65 @@ class AcManagementPage(QWidget):
         self.trackside_pagination.retranslate()
         self.clear_optical_filters_button.setText(self.i18n.t("ac.clear_filters"))
         self.optical_ap_filter.setPlaceholderText(self.i18n.t("ac.ap_name"))
+        self._apply_button_icons()
+        self._refresh_translated_runtime_state()
+        self._hide_global_proxy_buttons()
+
+    def _apply_button_icons(self) -> None:
+        button_icons = (
+            (self.refresh_button, FIF.SYNC),
+            (self.cancel_update_button, FIF.CANCEL),
+            (self.batch_delete_button, FIF.DELETE),
+            (self.export_button, FIF.SHARE),
+            (self.clear_selection_button, FIF.CLEAR_SELECTION),
+            (self.invert_selection_button, FIF.CHECKBOX),
+            (self.extension_import_standard_button, FIF.DOWNLOAD),
+            (self.extension_import_smart_button, FIF.DOWNLOAD),
+            (self.extension_template_button, FIF.CLOUD_DOWNLOAD),
+            (self.extension_export_button, FIF.SHARE),
+            (self.extension_add_button, FIF.ADD),
+            (self.extension_edit_button, FIF.EDIT),
+            (self.extension_delete_button, FIF.DELETE),
+            (self.extension_clear_button, FIF.BROOM),
+            (self.extension_refresh_button, FIF.SYNC),
+            (self.refresh_optical_button, FIF.UPDATE),
+            (self.optical_export_button, FIF.SHARE),
+            (self.clear_optical_filters_button, FIF.FILTER),
+            (self.import_button, FIF.DOWNLOAD),
+            (self.export_extension_template_button, FIF.CLOUD_DOWNLOAD),
+            (self.export_overview_button, FIF.SHARE),
+            (self.save_overview_history_button, FIF.SAVE),
+            (self.view_overview_history_button, FIF.HISTORY),
+            (self.trackside_export_button, FIF.SHARE),
+        )
+        for button, icon in button_icons:
+            _set_button_icon(button, icon)
+
+    def _hide_global_proxy_buttons(self) -> None:
+        for button in (
+            self.open_web_button,
+            self.update_ac_info_button,
+            self.persist_auto_ap_button,
+            self.enable_ap_remote_login_button,
+        ):
+            button.setParent(self)
+            button.hide()
+            button.setVisible(False)
+
+    def _parent_hidden_legacy_buttons(self) -> None:
+        for button in (
+            self.import_button,
+            self.export_extension_template_button,
+            self.export_overview_button,
+            self.save_overview_history_button,
+            self.view_overview_history_button,
+            self.trackside_export_button,
+        ):
+            button.setParent(self)
+            button.hide()
+            button.setVisible(False)
+
+    def _refresh_translated_runtime_state(self) -> None:
         current_concurrency = self.optical_concurrency_combo.currentData()
         self.optical_concurrency_combo.clear()
         for value in (50, 100, 200, 500, 1000):
@@ -1197,6 +1322,23 @@ class AcManagementPage(QWidget):
         else:
             self.refresh_data()
 
+    def clear_results(self) -> None:
+        self._set_summary(None)
+        self.resource_rows = []
+        self.selected_ap_keys.clear()
+        self._set_resource_filter_items([])
+        self.apply_resource_pagination()
+        self.optical_rows = []
+        self._set_site_filter_items([])
+        self.apply_optical_filters()
+        self.offline_ap_stats = {}
+        self.offline_ap_ledger_rows = []
+        self._offline_ap_context_loaded = False
+        self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
+        self.status_label.setText("结果已清空")
+
     def refresh_current_async_or_lazy(self, force_if_empty: bool = False) -> None:
         if not self._ui_ready or self._refreshing_current:
             return
@@ -1219,6 +1361,10 @@ class AcManagementPage(QWidget):
     def _on_current_tab_changed(self, index: int) -> None:
         if index < 0:
             return
+        feature_id = self._current_feature_id() or ""
+        tab_text = self.tabs.tabText(index)
+        actions = ", ".join(self.current_tab_action_labels())
+        app_logger.log_info("AC_TAB_ACTIONS", f"tab={tab_text} feature={feature_id} actions={actions}")
         self.refresh_current_async_or_lazy()
 
     def refresh_current_tab_data(self, feature_id: str | None = None) -> None:
@@ -1409,6 +1555,7 @@ class AcManagementPage(QWidget):
         self.update_ac_info_button.setEnabled(not running)
         self.persist_auto_ap_button.setEnabled(not running)
         self.enable_ap_remote_login_button.setEnabled(not running)
+        self._hide_global_proxy_buttons()
         self.refresh_button.setEnabled(not running)
         self.refresh_optical_button.setEnabled(not running)
         self.batch_delete_button.setEnabled(False if running else selected_count > 0)
@@ -1436,6 +1583,25 @@ class AcManagementPage(QWidget):
             self.optical_thread.cancel()
         self.cancel_update_button.setEnabled(False)
         self.status_label.setText(self.i18n.t("ac.update_cancelled"))
+
+    def shutdown(self) -> None:
+        self.cancel_current_update()
+        for thread_name in ("offline_load_thread", "trackside_export_thread"):
+            thread = getattr(self, thread_name, None)
+            if thread is None:
+                continue
+            try:
+                if hasattr(thread, "requestInterruption"):
+                    thread.requestInterruption()
+                if hasattr(thread, "quit"):
+                    thread.quit()
+                if hasattr(thread, "wait") and thread.isRunning():
+                    thread.wait(500)
+            except Exception as exc:
+                app_logger.log_warning("AC_THREAD_SHUTDOWN_FAILED", f"{thread_name}: {exc}")
+        for window in list(self.detail_windows):
+            window.close()
+        self.detail_windows.clear()
 
     def refresh_ac_resources(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_resources")

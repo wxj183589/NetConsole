@@ -112,6 +112,10 @@ def format_iperf_log_header(context: dict[str, object], started_at: datetime) ->
         ("direction", context.get("direction")),
         ("bandwidth", context.get("bandwidth")),
         ("tcp_block_size", context.get("tcp_block_size")),
+        ("duration_mode", context.get("duration_mode")),
+        ("duration_seconds", context.get("duration_seconds")),
+        ("protection_duration_seconds", context.get("protection_duration_seconds")),
+        ("stop_policy", context.get("stop_policy")),
         ("started_at", started_at.isoformat(sep=" ", timespec="milliseconds")),
         ("command", context.get("command")),
     ]

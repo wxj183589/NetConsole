@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QTableView, QWidget
 
 from netconsole.ui.shell.fluent_bridge import apply_fluent_theme
 
@@ -27,8 +27,8 @@ THEME_TOKENS = {
         "scrollbar_bg": "#f3f4f6",
         "scrollbar_handle": "#cbd5df",
         "scrollbar_handle_hover": "#94a3b8",
-        "log_background": "#ffffff",
-        "log_text": "#111827",
+        "log_background": "#111827",
+        "log_text": "#e5e7eb",
     },
     "dark": {
         "background": "#111827",
@@ -584,7 +584,9 @@ QToolTip {
 
 
 def stylesheet_for_theme(mode: str) -> str:
-    return DARK_APP_STYLESHEET if mode == "dark" else LIGHT_APP_STYLESHEET
+    theme_mode = "dark" if mode == "dark" else "light"
+    base = DARK_APP_STYLESHEET if theme_mode == "dark" else LIGHT_APP_STYLESHEET
+    return f"{base}\n{_fluent_shell_stylesheet(theme_mode)}"
 
 
 def apply_theme(mode: str) -> None:
@@ -598,13 +600,50 @@ def apply_theme(mode: str) -> None:
         return
     app.setProperty("netconsoleTheme", theme_mode)
     app.setStyleSheet(stylesheet)
-    for widget in app.topLevelWidgets():
-        _refresh_widget_tree(widget)
 
 
 def apply_dark_theme(widget: QWidget | None = None) -> None:
     _ = widget
     apply_theme("dark")
+
+
+def apply_table_theme(table: QTableView, theme: str | None = None) -> None:
+    mode = theme or current_theme_mode()
+    tokens = theme_tokens_for(mode)
+    table.setAlternatingRowColors(True)
+    table.setProperty("netconsoleTheme", "dark" if mode == "dark" else "light")
+    table.setStyleSheet(
+        f"""
+        QTableWidget, QTableView {{
+            background-color: {tokens["surface"]};
+            alternate-background-color: {tokens["surface_alt"]};
+            color: {tokens["text_primary"]};
+            border: 1px solid {tokens["border"]};
+            gridline-color: {tokens["border"]};
+            selection-background-color: {tokens["selected"]};
+            selection-color: {tokens["selected_text"]};
+        }}
+        QTableWidget::item, QTableView::item {{
+            padding: 4px;
+        }}
+        QTableWidget::item:hover, QTableView::item:hover {{
+            background-color: {tokens["hover"]};
+        }}
+        QTableWidget::item:selected, QTableView::item:selected {{
+            background-color: {tokens["selected"]};
+            color: {tokens["selected_text"]};
+        }}
+        QHeaderView::section {{
+            background-color: {tokens["panel"]};
+            color: {tokens["text_primary"]};
+            font-weight: 600;
+            padding: 6px;
+            border: 0;
+            border-right: 1px solid {tokens["border"]};
+            border-bottom: 1px solid {tokens["border"]};
+        }}
+        """
+    )
 
 
 def _refresh_widget_tree(widget: QWidget) -> None:
@@ -631,3 +670,148 @@ def theme_tokens_for(mode: str) -> dict[str, str]:
 
 def current_theme_tokens() -> dict[str, str]:
     return theme_tokens_for(current_theme_mode())
+
+
+def _fluent_shell_stylesheet(mode: str) -> str:
+    tokens = theme_tokens_for(mode)
+    status_bg = "#dcfce7" if mode != "dark" else "#14532d"
+    status_border = "#bbf7d0" if mode != "dark" else "#166534"
+    status_text = "#166534" if mode != "dark" else "#dcfce7"
+    return f"""
+#fluentPage {{
+    background-color: {tokens["background"]};
+    color: {tokens["text_primary"]};
+}}
+#fluentSiteBar {{
+    background-color: {tokens["surface"]};
+    border: 1px solid {tokens["border"]};
+    border-radius: 8px;
+}}
+#appTopBar {{
+    background-color: {tokens["surface"]};
+    border: 1px solid {tokens["border"]};
+    border-radius: 8px;
+}}
+#fluentSiteBar QLabel {{
+    color: {tokens["text_primary"]};
+}}
+#appTopBar QLabel {{
+    color: {tokens["text_primary"]};
+}}
+#appTopBarTitle {{
+    color: {tokens["text_primary"]};
+    font-size: 13px;
+    font-weight: 700;
+}}
+#fluentTitleCard {{
+    background-color: transparent;
+}}
+#fluentTitleMain {{
+    color: {tokens["text_primary"]};
+    font-size: 13px;
+    font-weight: 700;
+}}
+#fluentTitleSub {{
+    color: {tokens["text_secondary"]};
+    font-size: 12px;
+}}
+#fluentSiteLabel {{
+    color: {tokens["primary"]};
+    background-color: {tokens["primary_soft"]};
+    border: 1px solid {tokens["selected"]};
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-weight: 600;
+}}
+#appTopBarSiteBadge {{
+    color: {tokens["primary"]};
+    background-color: {tokens["primary_soft"]};
+    border: 1px solid {tokens["selected"]};
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-weight: 600;
+}}
+#fluentStatusLabel {{
+    color: {status_text};
+    background-color: {status_bg};
+    border: 1px solid {status_border};
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-weight: 600;
+}}
+#appTopBarStatusBadge {{
+    color: {status_text};
+    background-color: {status_bg};
+    border: 1px solid {status_border};
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-weight: 600;
+}}
+#fluentPageHeader {{
+    background-color: transparent;
+}}
+#fluentPageTitle {{
+    color: {tokens["text_primary"]};
+    font-size: 20px;
+    font-weight: 700;
+}}
+#fluentPageDescription {{
+    color: {tokens["text_secondary"]};
+    font-size: 13px;
+}}
+#fluentCommandBar {{
+    background-color: transparent;
+    color: {tokens["text_primary"]};
+}}
+#ncCard, #fluentCard, #fluentFilterBar {{
+    background-color: {tokens["surface"]};
+    border: 1px solid {tokens["border"]};
+    border-radius: 10px;
+    color: {tokens["text_primary"]};
+}}
+#networkPingCardTitle {{
+    color: {tokens["text_primary"]};
+    font-weight: 600;
+}}
+#settingsPage {{
+    background-color: {tokens["background"]};
+    color: {tokens["text_primary"]};
+}}
+#settingRow {{
+    background-color: {tokens["surface_alt"]};
+    border: 1px solid {tokens["border"]};
+    border-radius: 8px;
+}}
+#settingRowTitle {{
+    color: {tokens["text_primary"]};
+    font-size: 13px;
+    font-weight: 700;
+}}
+#settingRowDescription {{
+    color: {tokens["text_secondary"]};
+    font-size: 12px;
+}}
+#ncLogPanel, #ncDarkLogPanel, #ncTerminalPanel {{
+    background-color: {tokens["log_background"]};
+    color: {tokens["log_text"]};
+    border: 1px solid {tokens["border_strong"]};
+    border-radius: 8px;
+}}
+#ncLogPanel QLabel, #ncDarkLogPanel QLabel, #ncTerminalPanel QLabel {{
+    color: {tokens["log_text"]};
+}}
+QGroupBox {{
+    background-color: {tokens["surface"]};
+    color: {tokens["text_primary"]};
+    border: 1px solid {tokens["border"]};
+    border-radius: 8px;
+    margin-top: 14px;
+    padding: 12px 8px 8px 8px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: {tokens["text_primary"]};
+}}
+"""

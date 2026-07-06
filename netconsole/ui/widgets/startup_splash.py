@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QLabel, QProgressBar, QVBoxLayout, QWidget
 
+from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core import version as version_info
 from netconsole.ui.widgets.loading_overlay import LoadingSpinner
@@ -15,7 +16,7 @@ class StartupSplash(QWidget):
         self.i18n = i18n
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("startupSplash")
-        self.setFixedSize(420, 240)
+        self.setFixedSize(520, 300)
         self.setStyleSheet(
             """
             QWidget#startupSplash {
@@ -28,14 +29,18 @@ class StartupSplash(QWidget):
                 background: transparent;
             }
             QProgressBar {
-                height: 6px;
+                min-height: 10px;
+                max-height: 10px;
                 border: 1px solid #334155;
-                border-radius: 3px;
+                border-radius: 5px;
                 background: #111827;
+                color: #e5e7eb;
+                font-size: 10px;
+                text-align: center;
             }
             QProgressBar::chunk {
                 background: #60a5fa;
-                border-radius: 3px;
+                border-radius: 5px;
             }
             """
         )
@@ -51,23 +56,31 @@ class StartupSplash(QWidget):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setMinimumWidth(380)
+        self.progress.setMaximumWidth(440)
         self.version_label = QLabel(self.i18n.t("app.version_label", version=version_info.APP_VERSION_DISPLAY))
         self.version_label.setAlignment(Qt.AlignCenter)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 28, 36, 24)
-        layout.setSpacing(14)
+        layout.setContentsMargins(44, 30, 44, 26)
+        layout.setSpacing(16)
         layout.addWidget(self.title_label)
         layout.addWidget(self.spinner, 0, Qt.AlignCenter)
         layout.addWidget(self.message_label)
-        layout.addWidget(self.progress)
+        layout.addWidget(self.progress, 0, Qt.AlignCenter)
         layout.addWidget(self.version_label)
 
     def show_centered(self) -> None:
         screen = QApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
-            self.move(available.center() - self.rect().center())
+            x = available.x() + max(0, (available.width() - self.width()) // 2)
+            y = available.y() + max(0, (available.height() - self.height()) // 2)
+            self.move(x, y)
+            message = f"[UI] Splash: {self.width()}x{self.height()}+{x}+{y} available={available.width()}x{available.height()}"
+            print(message)
+            app_logger.log_info("UI_STARTUP", message)
         self.spinner.start()
         self.show()
 

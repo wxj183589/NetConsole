@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 from time import sleep
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -33,7 +34,7 @@ def build_window(started_at: float | None = None) -> MainWindow:
     started_at = started_at or perf_counter()
     context = create_demo_context()
     app_logger.log_info("SITE_LOADED", f"site={context.site.name} {_elapsed_detail(started_at)}")
-    i18n = I18n()
+    i18n = I18n(SettingsStore(context.paths).language)
     return create_app_window(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
 
 
@@ -115,14 +116,15 @@ def run() -> int:
     app.setApplicationName(version_info.APP_NAME)
     app.setApplicationVersion(version_info.APP_VERSION_DISPLAY)
     app.setWindowIcon(QIcon(str(icon_path("love.ico"))))
-    i18n = I18n()
+    paths = PathResolver()
+    settings = SettingsStore(paths)
+    i18n = I18n(settings.language)
     splash = StartupSplash(i18n)
     splash.show_centered()
     splash.show_message(i18n.t("app.starting"))
     splash.set_progress(15)
     app_logger.log_info("APP_START", _elapsed_detail(started_at))
-    paths = PathResolver()
-    startup_mode = SettingsStore(paths).startup_mode
+    startup_mode = settings.startup_mode
     app_logger.log_info("STARTUP", f"mode={startup_mode}")
     while True:
         try:
@@ -146,7 +148,13 @@ def run() -> int:
     app_logger.log_info("MAIN_WINDOW_CREATED", _elapsed_detail(started_at))
     splash.show_message(i18n.t("startup.opening_main_window"))
     splash.set_progress(100 if startup_mode == "preload_all" else 80)
+    log_geometry = getattr(window, "log_startup_geometry_checkpoint", None)
+    if callable(log_geometry):
+        log_geometry("before show")
     window.show()
+    schedule_geometry_checks = getattr(window, "schedule_startup_geometry_checks", None)
+    if callable(schedule_geometry_checks):
+        QTimer.singleShot(0, schedule_geometry_checks)
     if ADMIN_NETWORK_MANAGER_ARG in sys.argv:
         open_admin_network_manager(window)
     app_logger.log_info("MAIN_WINDOW_SHOWN", _elapsed_detail(started_at))

@@ -34,6 +34,7 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
+from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
@@ -201,20 +202,23 @@ class MeshAutoImportWorker(QThread):
     completed = Signal(int, int, int)
     failed = Signal(str)
 
-    def __init__(self, site_name: str, paths: PathResolver, device: Device, local_path: Path, parent=None) -> None:
+    def __init__(self, site_name: str, paths: PathResolver, profile: MeshMrProfile, local_path: Path, parent=None) -> None:
         super().__init__(parent)
         self.site_name = site_name
         self.paths = paths
-        self.device = device
+        self.profile = profile
         self.local_path = Path(local_path)
+        self.result: tuple[int, int, int] | None = None
+        self.error_message = ""
 
     def run(self) -> None:
         try:
-            profile = MeshStorageService(self.site_name, self.paths).ensure_mr_profile_for_device(self.device)
-            result = MeshImportService(self.site_name, self.paths).import_files(profile, [self.local_path])
+            result = MeshImportService(self.site_name, self.paths).import_files(self.profile, [self.local_path])
+            self.result = (result.imported_count, result.duplicate_count, result.parsed_record_count)
             self.completed.emit(result.imported_count, result.duplicate_count, result.parsed_record_count)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.error_message = str(exc)
+            self.failed.emit(self.error_message)
 
 
 class FileManagementPage(QWidget):
@@ -317,14 +321,17 @@ class FileManagementPage(QWidget):
             top.addWidget(widget)
         top.addStretch(1)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self._local_panel())
-        splitter.addWidget(self._remote_panel())
-        splitter.setSizes([600, 600])
+        self.file_splitter = QSplitter(Qt.Horizontal)
+        self.file_splitter.addWidget(self._local_panel())
+        self.file_splitter.addWidget(self._remote_panel())
+        self.file_splitter.setChildrenCollapsible(False)
+        self.file_splitter.setStretchFactor(0, 1)
+        self.file_splitter.setStretchFactor(1, 1)
+        self.file_splitter.setSizes([640, 640])
 
         layout = QVBoxLayout()
         layout.addLayout(top)
-        layout.addWidget(splitter, 1)
+        layout.addWidget(self.file_splitter, 1)
         layout.addWidget(self.queue_title)
         layout.addWidget(self.queue_table)
         self.setLayout(layout)
@@ -365,6 +372,7 @@ class FileManagementPage(QWidget):
 
     def _local_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setMinimumWidth(420)
         controls = QHBoxLayout()
         controls.addWidget(self.local_up_button)
         controls.addWidget(self.local_refresh_button)
@@ -380,6 +388,7 @@ class FileManagementPage(QWidget):
 
     def _remote_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setMinimumWidth(420)
         controls = QHBoxLayout()
         controls.addWidget(self.remote_up_button)
         controls.addWidget(self.remote_refresh_button)
@@ -781,23 +790,39 @@ class FileManagementPage(QWidget):
             return
         if not (is_mesh_log_file(task.remote_file.name) and self.is_vehicle_mr_device(task.device) and task.local_path.exists()):
             return
+        try:
+            profile = MeshStorageService(self.site_name, self.paths).ensure_mr_profile_for_device(task.device)
+        except Exception as exc:
+            self._mesh_auto_import_failed(task, str(exc))
+            return
         task.status_key = "file_management.mesh_auto_import_started"
         self.refresh_queue()
-        worker = MeshAutoImportWorker(self.site_name, self.paths, task.device, task.local_path, self)
+        worker = MeshAutoImportWorker(self.site_name, self.paths, profile, task.local_path, self)
         self.mesh_import_workers[task.id] = worker
         worker.completed.connect(lambda imported, duplicates, parsed, t=task: self._mesh_auto_import_completed(t, imported, duplicates, parsed))
         worker.failed.connect(lambda message, t=task: self._mesh_auto_import_failed(t, message))
+        worker.finished.connect(lambda t=task, w=worker: self._mesh_auto_import_finished(t, w))
         worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(lambda task_id=task.id: self.mesh_import_workers.pop(task_id, None))
         worker.start()
+
+    def _mesh_auto_import_finished(self, task: TransferTask, worker: MeshAutoImportWorker) -> None:
+        if task.status_key != "file_management.mesh_auto_import_started":
+            return
+        if worker.result is not None:
+            imported, duplicates, parsed = worker.result
+            self._mesh_auto_import_completed(task, imported, duplicates, parsed)
+            return
+        self._mesh_auto_import_failed(task, worker.error_message or "unknown error")
 
     def _mesh_auto_import_completed(self, task: TransferTask, imported: int, duplicates: int, parsed: int) -> None:
         task.status_key = "file_management.mesh_auto_import_duplicate" if duplicates and not imported else "file_management.mesh_auto_import_done"
+        self.mesh_import_workers.pop(task.id, None)
         app_logger.log_info("MESH_AUTO_IMPORT_DONE", f"path={task.local_path}, imported={imported}, duplicates={duplicates}, parsed={parsed}")
         self.refresh_queue()
 
     def _mesh_auto_import_failed(self, task: TransferTask, message: str) -> None:
         task.status_key = "file_management.mesh_auto_import_failed"
+        self.mesh_import_workers.pop(task.id, None)
         app_logger.log_warning("MESH_AUTO_IMPORT_FAILED", f"path={task.local_path}, error={message}")
         self.refresh_queue()
 

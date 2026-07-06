@@ -48,6 +48,7 @@ from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.ui.mesh_log_workers import MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
 from netconsole.ui.table.table_autosize_engine import apply_table_autosize
 from netconsole.ui.table_utils import configure_readonly_table
@@ -104,6 +105,11 @@ REPORT_STAGE_LABELS.update(
         "done": "完成",
     }
 )
+
+
+def _rail_mesh_diag(message: str) -> None:
+    print(message)
+    app_logger.log_info("RAIL_MESH_UI", message)
 
 
 class MeshLinkDetailExportWorker(QThread):
@@ -268,6 +274,7 @@ class MeshLogAnalysisPage(QWidget):
         self.has_loaded = False
         self.is_loading = False
         self.load_generation = 0
+        self.page_state = "idle"
         self.column_states: dict[str, MeshTableColumnState] = {}
         self._build_layout()
         self._connect_signals()
@@ -313,6 +320,7 @@ class MeshLogAnalysisPage(QWidget):
         self.generate_report_button.setText("生成 MR 原始 MESH 分析报告")
         self.export_link_button.setText("导出链路明细")
         self.open_full_active_chart_button.setText(self.i18n.t("mesh_analysis.open_full_active_chart"))
+        self._apply_button_icons()
         self.radio_filter.setPlaceholderText("Radio")
         self.state_filter.setItemText(0, self.i18n.t("mesh_analysis.state_default"))
         self.state_filter.setItemText(1, self.i18n.t("mesh_analysis.state_active"))
@@ -429,6 +437,20 @@ class MeshLogAnalysisPage(QWidget):
         self.issue_empty_title.setText(self.i18n.t("mesh_analysis.no_parse_issues"))
         self.issue_empty_description.setText(self.i18n.t("mesh_analysis.no_parse_issues_description"))
         self._restore_column_widths()
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.import_button, "DOWNLOAD"),
+            (self.import_folder_button, "FOLDER"),
+            (self.show_all_sources_button, "DOCUMENT"),
+            (self.cancel_button, "CANCEL"),
+            (self.refresh_button, "SYNC"),
+            (self.open_folder_button, "FOLDER"),
+            (self.generate_report_button, "DOCUMENT"),
+            (self.export_link_button, "SHARE"),
+            (self.open_full_active_chart_button, "DOCUMENT"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def _build_layout(self) -> None:
         toolbar = QHBoxLayout()
@@ -657,6 +679,19 @@ class MeshLogAnalysisPage(QWidget):
             self.progress_label.setText("正在取消报告生成...")
             self.report_worker.cancel()
 
+    def on_enter(self) -> None:
+        self._log_page_state()
+
+    def _set_page_state(self, state: str, message: str | None = None) -> None:
+        self.page_state = state
+        if message is not None:
+            self.progress_label.setText(message)
+        self._log_page_state()
+
+    def _log_page_state(self) -> None:
+        _rail_mesh_diag(f"[Rail][MeshLog] state: {self.page_state}")
+        _rail_mesh_diag(f"[Rail][MeshLog] loading hidden: {'no' if self.page_state == 'loading' else 'yes'}")
+
     def first_show_refresh(self, force: bool = False) -> None:
         if self.is_loading:
             return
@@ -667,7 +702,7 @@ class MeshLogAnalysisPage(QWidget):
         generation = self.load_generation
         start = perf_counter()
         self.progress_bar.setRange(0, 0)
-        self.progress_label.setText("正在加载 MR 原始MESH日志分析，请稍候……")
+        self._set_page_state("loading", "正在加载 MR 原始MESH日志分析，请稍候……")
         self.refresh_button.setEnabled(False)
         app_logger.log_info("MESH_PAGE_FIRST_SHOW", f"generation={generation}")
         app_logger.log_info("UI_PAGE_PROFILE", "page=rail.raw_mesh_log_analysis phase=first_show.begin elapsed_ms=0 rows=0")
@@ -679,8 +714,12 @@ class MeshLogAnalysisPage(QWidget):
         try:
             self.refresh_all()
             self.has_loaded = True
+            if self.profiles:
+                self._set_page_state("ready", f"已加载 {len(self.profiles)} 台 MR 原始 MESH 日志对象")
+            else:
+                self._set_page_state("empty", "当前局点暂无 MR 原始 MESH 日志，请先导入日志或配置车载 MR 设备。")
         except Exception as exc:
-            self.progress_label.setText(str(exc))
+            self._set_page_state("error", str(exc))
             app_logger.log_error("MESH_PAGE_FIRST_SHOW_FAILED", str(exc))
         finally:
             self.is_loading = False

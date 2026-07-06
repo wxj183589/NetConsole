@@ -56,6 +56,7 @@ from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
 from netconsole.ui.app_events import app_events
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
@@ -224,6 +225,7 @@ class TracksideApServicePage(QWidget):
         self.update_button.setToolTip(self.i18n.t("trackside_ap.update_tooltip"))
         self.cancel_update_button.setText(self.i18n.t("trackside_ap.cancel_update"))
         self.trackside_export_button.setText(self.i18n.t("trackside.export"))
+        self._apply_button_icons()
         self.trackside_search_input.setPlaceholderText(self.i18n.t("trackside.search"))
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         self._apply_trackside_header_tooltips()
@@ -238,6 +240,14 @@ class TracksideApServicePage(QWidget):
         self.cancel_update_button.setEnabled(self.collect_thread is not None)
         apply_table_style(self.trackside_table)
         self._configure_trackside_table()
+
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.update_button, "SYNC"),
+            (self.cancel_update_button, "CANCEL"),
+            (self.trackside_export_button, "SHARE"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def refresh_all(self) -> None:
         self.refresh_async(force=True)

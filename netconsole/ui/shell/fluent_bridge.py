@@ -13,17 +13,20 @@ class FluentRuntime:
 try:
     from qfluentwidgets import (  # type: ignore
         Action,
+        ComboBox,
         FluentIcon,
         NavigationInterface,
         NavigationItemPosition,
         CommandBar,
         PushButton,
         PrimaryPushButton,
+        SpinBox,
         SplitFluentWindow,
         InfoBar,
         InfoBarPosition,
         SettingCard,
         SettingCardGroup,
+        SwitchButton,
         Theme,
         TransparentToolButton,
         qconfig,
@@ -35,6 +38,7 @@ try:
     FLUENT_RUNTIME = FluentRuntime(True)
 except Exception as exc:  # pragma: no cover - fallback path depends on runtime packaging
     Action = None
+    ComboBox = None
     CommandBar = None
     FIF = None
     FluentIcon = None
@@ -46,7 +50,9 @@ except Exception as exc:  # pragma: no cover - fallback path depends on runtime 
     PushButton = None
     SettingCard = None
     SettingCardGroup = None
+    SpinBox = None
     SplitFluentWindow = None
+    SwitchButton = None
     Theme = None
     TransparentToolButton = None
     qconfig = None
@@ -65,9 +71,9 @@ def fluent_icon(name: str) -> Any:
     return getattr(FIF, name, getattr(FIF, "APPLICATION", None))
 
 
-def apply_fluent_theme(theme: str) -> None:
+def apply_fluent_theme(theme: str, color: str = "#0078D4") -> None:
     if not FLUENT_RUNTIME.available or Theme is None or setTheme is None or setThemeColor is None:
         return
     fluent_theme = Theme.DARK if theme == "dark" else Theme.LIGHT
     setTheme(fluent_theme)
-    setThemeColor("#2f6fed")
+    setThemeColor(color)

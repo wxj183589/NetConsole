@@ -16,6 +16,9 @@ from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_line
 
 
+FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS = 86400
+
+
 @dataclass(frozen=True)
 class IperfClientConfig:
     server_ip: str
@@ -43,16 +46,20 @@ class IperfClientConfig:
         tcp_block_size = normalize_block_size_text(self.tcp_block_size)
         if protocol == "TCP" and not tcp_block_size and _bandwidth_mbps(bandwidth) is not None and _bandwidth_mbps(bandwidth) <= 2:
             tcp_block_size = "16K"
+        follow_collection = bool(self.follow_collection)
+        duration_seconds = max(1, int(self.duration_seconds or 10))
+        if follow_collection:
+            duration_seconds = max(duration_seconds, FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
         return IperfClientConfig(
             server_ip=str(self.server_ip or "").strip(),
             port=max(1, min(65535, int(self.port or 5201))),
             protocol=protocol if protocol in {"TCP", "UDP"} else "TCP",
-            duration_seconds=max(1, int(self.duration_seconds or 10)),
+            duration_seconds=duration_seconds,
             interval_seconds=max(1, int(self.interval_seconds or 1)),
             parallel=max(1, int(self.parallel or 1)),
             direction=str(self.direction or "upload").lower(),
             target_bandwidth=bandwidth,
-            follow_collection=bool(self.follow_collection),
+            follow_collection=follow_collection,
             tcp_block_size=tcp_block_size,
             packet_length=max(1, int(self.packet_length)) if self.packet_length else None,
             tcp_report_threshold_mbps=_optional_float(self.tcp_report_threshold_mbps),
@@ -337,6 +344,12 @@ class IperfProcessRunner:
             self.context.setdefault("direction", cfg.direction)
             self.context.setdefault("bandwidth", cfg.target_bandwidth or "")
             self.context.setdefault("tcp_block_size", cfg.tcp_block_size or "")
+            if cfg.follow_collection:
+                self.context.setdefault("duration_mode", "follow_collection")
+                self.context.setdefault("protection_duration_seconds", cfg.duration_seconds)
+                self.context.setdefault("stop_policy", "stop_with_collection")
+            else:
+                self.context.setdefault("duration_seconds", cfg.duration_seconds)
         batch_key = self.context.get("batch_key") or self.context.get("batch_id")
         if batch_key and not self.context.get("batch_key_hash"):
             self.context["batch_key_hash"] = hashlib.sha1(str(batch_key).encode("utf-8")).hexdigest()[:8]
@@ -346,6 +359,7 @@ class IperfProcessRunner:
                 self.mirror_contexts[mirror] = dict(self.context)
         self.process: subprocess.Popen | None = None
         self.stop_requested = False
+        self.stop_status = "STOPPED"
         self.last_status = "CREATED"
         self.last_error_code = ""
         self._log_lock = threading.RLock()
@@ -423,7 +437,7 @@ class IperfProcessRunner:
                 self._emit_line(stamped_line, row, error)
             return_code = self.process.wait()
             if self.stop_requested:
-                status = "STOPPED"
+                status = self.stop_status
             elif return_code != 0:
                 status = f"FAILED:{return_code}"
         except Exception:
@@ -433,6 +447,8 @@ class IperfProcessRunner:
             )
             raise
         finally:
+            if self.stop_requested:
+                self._write_line(format_iperf_log_line(datetime.now(), "stopped by collection stop", self.context))
             if return_code is not None and return_code != 0:
                 self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
             self._write_footers(status, return_code)
@@ -442,13 +458,19 @@ class IperfProcessRunner:
             if self.store:
                 self.store.finish_run(self.run_id, status)
 
-    def stop(self) -> None:
+    def stop(self, status: str = "STOPPED_BY_USER") -> None:
         self.stop_requested = True
+        self.stop_status = str(status or "STOPPED_BY_USER")
         if self.process is None:
             return
         if self.process.poll() is not None:
             return
         self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
 
     def _start_header_lines(self, timestamp: datetime, context: dict[str, object]) -> list[str]:
         return format_iperf_log_header(context, timestamp)

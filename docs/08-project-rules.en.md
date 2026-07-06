@@ -38,6 +38,24 @@ Do not review or persist:
 - Prefer the project virtual environment `.venv`; use the system environment only when the project environment is unavailable.
 - Use Chinese by default for repository commit messages, push descriptions, and user-facing change notes.
 
+## Development Entry Points and Documentation Boundaries
+
+- Before non-trivial changes, read `README.md`, `docs/README.md`, `docs/DEVELOPMENT_CONVENTIONS.md`, and `docs/CODEX_WORKFLOW.md`.
+- For packaging and release work, also read `docs/BUILD_AND_RELEASE.md` and `docs/THIRD_PARTY_DEPENDENCIES.md`.
+- For data layout, site isolation, or runtime paths, also read `docs/DATA_LAYOUT.md`, and treat `PathResolver` and current code as authoritative.
+- Documentation cleanup should normally modify only `README.md` and `docs/`; do not include opportunistic business-code changes.
+- When historical numbered docs conflict with current topic docs or code, document the "current implementation and items to unify" first instead of adding business migration in a docs-only task.
+
+## Chinese Text and Encoding Rules
+
+- Source files, Markdown, JSON, TOML, YAML, CSV, and exported logs use UTF-8 by default.
+- Python text reads and writes must specify `encoding`; JSON containing Chinese text should be written with `ensure_ascii=False`.
+- On Windows / PowerShell, initialize UTF-8 terminal encoding before commands involving Chinese text, paths, logs, H3C output, MIB files, CSV, or XLSX.
+- Do not treat mojibake in PowerShell / Codex terminal output as proof that a file is corrupted; inspect raw bytes and the actual read encoding when needed.
+- For H3C device output, historical logs, MIB files, and external CSV input, try `utf-8-sig` / `utf-8` first, then `gb18030` / `gbk`.
+- Prefer the shared helpers in `netconsole/utils/text_encoding.py` for reading and cleanup instead of scattering fallback encoding loops across modules.
+- Do not delete Chinese descriptions, MIB Chinese fields, or Chinese UI copy to avoid decoding issues.
+
 ## Feature and Optimization Rules
 
 ### User-Facing Features Must Use Feature Flags
@@ -102,6 +120,48 @@ Requirements:
 - Do not introduce cloud sync, online accounts, or remote document services as default dependencies.
 - Keep project data under project-controlled or release-package-controlled directories by default.
 - Import, export, analysis, and diagnostics should focus on local files and field device connections.
+
+### Data Paths and Site Isolation
+
+Business data paths should be obtained through `PathResolver` or existing path services.
+
+Requirements:
+
+- Do not hard-code the user's local machine paths in production code, tests, or documentation rules.
+- Site data must remain isolated; devices, reports, collection records, and caches must not be mixed across sites.
+- Raw collection logs, parsed results, report outputs, and backup files should live in separate areas instead of one mixed directory.
+- Documentation tasks must not directly change directory logic; directory structure changes should update implementation, migration strategy, and tests first.
+
+### UI Table Rules
+
+When adding or modifying table-style pages, follow `docs/ui_table_guidelines.md`.
+
+Requirements:
+
+- Batch-selection columns must use `CheckBoxOnlyDelegate`; do not use `setCellWidget(QCheckBox)`.
+- Select-all, invert-selection, and clear-selection actions must synchronize table `CheckStateRole` and internal selection state.
+- Initialize column widths by content and allow user resizing; do not default to `QHeaderView.Stretch` to compress every column.
+- Use horizontal scrolling for wide tables; long paths, errors, remarks, and command-output fields should use elision and tooltips.
+
+### Build and Release Boundaries
+
+Packaging and release work should follow `docs/BUILD_AND_RELEASE.md` and the build scripts under `project/`.
+
+Requirements:
+
+- Release output must go under the versioned `release/` directory and must not pollute the project root.
+- Release packages use the whitelist: `NetConsole.exe`, `_internal`, `data`, `runtime`, and `tools`.
+- `docs/`, `tests/`, `project/`, and source-form `netconsole/` must not be shipped in user release packages.
+- Internal and customer editions are handled through the existing `--build-editions` and feature profile flow, not by copying separate code trees.
+- Check external tool source files such as `fping` and `iperf3` before packaging; runtime tool paths must not hard-code user-local paths.
+- Explain any non-interactive build that skips smoke tests.
+
+### Third-Party Dependency Boundaries
+
+- QFluentWidgets must use the `qfluentwidgets` package from `PySide6-Fluent-Widgets==1.11.2`.
+- Do not mix `PyQt-Fluent-Widgets`, `PyQt6-Fluent-Widgets`, or `PySide2-Fluent-Widgets`.
+- Do not use QFluentWidgets Pro components; commercial use requires separate license confirmation.
+- Mica / Acrylic / blur effects must degrade gracefully; effect initialization failure must not block application startup.
 
 ## Validation Rules
 

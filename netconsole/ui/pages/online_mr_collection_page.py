@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDoubleValidator, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLayoutItem,
     QLineEdit,
     QMessageBox,
     QProgressBar,
@@ -68,7 +70,11 @@ from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.network_tools.iperf_runner import IperfClientConfig, build_iperf_client_args
+from netconsole.services.network_tools.iperf_runner import (
+    FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+    IperfClientConfig,
+    build_iperf_client_args,
+)
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager
@@ -100,6 +106,7 @@ from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 from netconsole.ui.online_mr_parse_worker import OnlineMrParseWorker
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.scrollable_matplotlib_view import AnalysisChartHoverController, ScrollableMatplotlibView
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
@@ -118,6 +125,11 @@ TABLE_WIDTH_KEYS = {
     "diagnosis": "online_mr/table_widths/diagnosis",
     "history_sessions": "online_mr/table_widths/history_sessions",
 }
+
+ONLINE_MR_PAGE_MIN_WIDTH = 1080
+ONLINE_MR_WORK_PANEL_MIN_WIDTH = 1040
+ONLINE_MR_LEFT_PANEL_MIN_WIDTH = 620
+ONLINE_MR_RIGHT_PANEL_MIN_WIDTH = 420
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
 
 STATUS_I18N_KEYS = {
@@ -149,6 +161,11 @@ SUMMARY_COL_IPERF_MBPS = 12
 SUMMARY_COL_IPERF_RETRANS = 13
 SUMMARY_COL_SESSION = 14
 SUMMARY_COL_DEVICE_ID = 15
+
+
+def _rail_mrcollect_diag(message: str) -> None:
+    print(message)
+    app_logger.log_info("RAIL_MR_COLLECT_UI", message)
 
 
 @dataclass
@@ -213,6 +230,72 @@ class OnlineMrUiThrottle:
         if snapshot is not None:
             self.flush_count += 1
         return snapshot
+
+
+class FlowLayout(QLayout):
+    def __init__(self, parent: QWidget | None = None, horizontal_spacing: int = 8, vertical_spacing: int = 8) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._h_spacing = horizontal_spacing
+        self._v_spacing = vertical_spacing
+
+    def addItem(self, item: QLayoutItem) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self) -> Qt.Orientations:
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x = effective.x()
+        y = effective.y()
+        line_height = 0
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._h_spacing
+            if next_x - self._h_spacing > effective.right() and line_height > 0:
+                x = effective.x()
+                y += line_height + self._v_spacing
+                next_x = x + hint.width() + self._h_spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + margins.bottom()
 
 
 class NoWheelValueChangeFilter(QObject):
@@ -306,7 +389,6 @@ class OnlineMrCollectionPage(QWidget):
         self.device_groups: dict[int, str] = {}
         self.selected_device_ids: set[int] = set()
         self.workers: dict[str, OnlineMrCollectorWorker] = {}
-        self.config_workers: dict[str, OnlineMrCollectorWorker] = {}
         self.fping_workers: dict[str, FpingV5ProbeWorker] = {}
         self.iperf_workers: dict[str, IperfProcessWorker] = {}
         self.iperf_batch_workers: dict[tuple[object, ...], IperfProcessWorker] = {}
@@ -374,9 +456,12 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button = QPushButton()
         self.stop_selected_button = QPushButton()
         self.stop_all_button = QPushButton()
-        self.collect_config_button = QPushButton()
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
+        self.action_bar: QWidget | None = None
+        self.action_layout: FlowLayout | None = None
+        self.main_splitter: QSplitter | None = None
+        self.left_work_panel: QWidget | None = None
         self.parse_session_button = QPushButton()
         self.force_parse_button = QPushButton()
         self.export_analysis_report_button = QPushButton()
@@ -452,9 +537,13 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_tcp_pacing_edit.setEnabled(False)
         self.iperf_bandwidth_hint_label = QLabel()
         self.iperf_bandwidth_hint_label.setWordWrap(True)
+        self.iperf_duration_mode_label = QLabel()
+        self.iperf_duration_mode_label.setWordWrap(True)
         self.iperf_follow_check = QCheckBox()
         self.iperf_follow_check.setChecked(True)
-        self.iperf_duration_spin = self._no_wheel_spin(1, 86400, 600)
+        self.iperf_follow_check.setVisible(False)
+        self.iperf_duration_spin = self._no_wheel_spin(1, FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS, FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
+        self.iperf_duration_spin.setVisible(False)
         self.iperf_tool_label = QLabel()
         self.iperf_tool_label.setWordWrap(True)
         self._no_wheel_filter = NoWheelValueChangeFilter(self)
@@ -584,17 +673,11 @@ class OnlineMrCollectionPage(QWidget):
         )
 
     def _request_workers_stop_for_shutdown(self) -> None:
-        seen_iperf_workers: set[int] = set()
-        for worker in list(self.iperf_workers_by_device_id.values()) + list(self.iperf_workers.values()) + list(self.iperf_batch_workers.values()):
-            marker = id(worker)
-            if marker in seen_iperf_workers:
-                continue
-            seen_iperf_workers.add(marker)
-            worker.stop()
+        self._stop_all_iperf_workers(status="STOPPED_BY_COLLECTION_END")
         for worker in list(self.fping_workers_by_device_id.values()) + list(self.fping_workers.values()):
             worker.stop()
         seen: set[int] = set()
-        for worker in list(self.config_workers.values()) + list(self.workers_by_device_id.values()) + list(self.workers.values()):
+        for worker in list(self.workers_by_device_id.values()) + list(self.workers.values()):
             marker = id(worker)
             if marker in seen:
                 continue
@@ -770,6 +853,40 @@ class OnlineMrCollectionPage(QWidget):
         else:
             self._schedule_device_refresh(refresh_tools=False)
 
+    def on_enter(self) -> None:
+        if not self._first_show_refreshed and not self.analysis_only:
+            self.first_show_refresh()
+        self._update_realtime_responsive_layout()
+        fields = (
+            self.fping_packet_size,
+            self.fping_interval_ms,
+            self.fping_loss_threshold_ms,
+            self.fping_loss_warn_edit,
+            self.fping_latency_warn_ms,
+        )
+        visible = self.ping_box is not None and not self.ping_box.isHidden() and all(not field.isHidden() for field in fields)
+        _rail_mrcollect_diag("[Rail][MRCollect] high ping layout: grid")
+        _rail_mrcollect_diag(f"[Rail][MRCollect] high ping fields visible: {'yes' if visible else 'no'}")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_realtime_responsive_layout()
+
+    def _update_realtime_responsive_layout(self) -> None:
+        splitter = getattr(self, "main_splitter", None)
+        if self.analysis_only or splitter is None:
+            return
+        if hasattr(self, "page_scroll"):
+            viewport_width = max(self.page_scroll.viewport().width(), self.page_scroll.width(), self.width())
+        else:
+            viewport_width = self.width()
+        if viewport_width < 1250 and splitter.orientation() != Qt.Vertical:
+            splitter.setOrientation(Qt.Vertical)
+            splitter.setSizes([420, 520])
+        elif viewport_width >= 1250 and splitter.orientation() != Qt.Horizontal:
+            splitter.setOrientation(Qt.Horizontal)
+            splitter.setSizes([760, 460])
+
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         if not self._can_update_ui():
             return
@@ -842,7 +959,6 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setText(self.i18n.t("online_mr.start"))
         self.stop_selected_button.setText(self.i18n.t("online_mr.stop_selected"))
         self.stop_all_button.setText(self.i18n.t("online_mr.stop_all"))
-        self.collect_config_button.setText(self.i18n.t("online_mr.collect_config_once"))
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
@@ -850,6 +966,7 @@ class OnlineMrCollectionPage(QWidget):
         self.force_parse_button.setVisible(self.analysis_only)
         self.export_analysis_report_button.setText(self.i18n.t("online_mr.export_analysis_report"))
         self.export_analysis_report_button.setVisible(self.analysis_only)
+        self._apply_button_icons()
         self.device_search_input.setPlaceholderText(self.i18n.t("online_mr.device_search_placeholder"))
         self.session_search_input.setPlaceholderText(self.i18n.t("online_mr.search_device"))
         self.auto_reconnect_check.setText(self.i18n.t("online_mr.auto_reconnect"))
@@ -857,6 +974,7 @@ class OnlineMrCollectionPage(QWidget):
         self.enable_fping_check.setText(self.i18n.t("online_mr.high_freq_ping"))
         self.enable_iperf_check.setText(self.i18n.t("online_mr.enable_traffic_test"))
         self.iperf_follow_check.setText(self.i18n.t("iperf.follow_collection"))
+        self.iperf_duration_mode_label.setText("运行方式：跟随采集启停")
         self.iperf_bandwidth_hint_label.setText(self.i18n.t("iperf.tcp_auto_bandwidth_hint"))
         self.iperf_tcp_threshold_edit.setToolTip(self.i18n.t("iperf.tcp_report_threshold_tooltip"))
         self.iperf_udp_bitrate_edit.setToolTip(self.i18n.t("iperf.udp_bitrate_tooltip"))
@@ -872,7 +990,6 @@ class OnlineMrCollectionPage(QWidget):
             self.iperf_direction_combo,
             self.iperf_parallel_spin,
             self.iperf_interval_spin,
-            self.iperf_duration_spin,
             self.iperf_packet_length_spin,
         ):
             widget.setToolTip(self.i18n.t("iperf.no_wheel_hint"))
@@ -968,52 +1085,73 @@ class OnlineMrCollectionPage(QWidget):
         self.output_toggle.setText(self.i18n.t("online_mr.hide_output"))
         self._retranslate_output_titles()
 
+    def _apply_button_icons(self) -> None:
+        for button, icon_name in (
+            (self.start_button, "PLAY"),
+            (self.stop_selected_button, "PAUSE"),
+            (self.stop_all_button, "CANCEL"),
+            (self.open_button, "FOLDER"),
+            (self.refresh_devices_button, "SYNC"),
+            (self.parse_session_button, "PLAY"),
+            (self.force_parse_button, "SYNC"),
+            (self.export_analysis_report_button, "SHARE"),
+        ):
+            apply_button_icon(button, icon_name)
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         self.page_scroll = scroll
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         content = QWidget()
+        content.setObjectName("onlineMrRealtimeContent")
+        content.setMinimumWidth(ONLINE_MR_PAGE_MIN_WIDTH)
         content_layout = QVBoxLayout(content)
-        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(16, 12, 16, 16)
+        content_layout.setSpacing(12)
         scroll.setWidget(content)
         root.addWidget(scroll)
 
         controls = QGroupBox()
         self.connection_box = controls
-        top_layout = QHBoxLayout(controls)
-        top_layout.setContentsMargins(10, 8, 10, 8)
-        top_layout.setSpacing(12)
+        top_layout = FlowLayout(controls, horizontal_spacing=20, vertical_spacing=8)
+        top_layout.setContentsMargins(16, 10, 16, 10)
         self._cap_controls()
-        controls.setMinimumHeight(58)
-        controls.setMaximumHeight(76)
-        controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        top_layout.addWidget(self.site_label)
-        top_layout.addSpacing(18)
+        controls.setMinimumHeight(92)
+        controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         top_layout.addWidget(self.available_metric_label)
-        top_layout.addSpacing(18)
         top_layout.addWidget(self.selected_metric_label)
-        top_layout.addSpacing(18)
         top_layout.addWidget(self.running_metric_label)
-        top_layout.addSpacing(24)
-        top_layout.addWidget(self.start_button)
-        top_layout.addWidget(self.stop_selected_button)
-        top_layout.addWidget(self.stop_all_button)
-        top_layout.addWidget(self.collect_config_button)
-        top_layout.addWidget(self.open_button)
-        top_layout.addWidget(self.refresh_devices_button)
-        top_layout.addStretch(1)
-        top_layout.addWidget(self._label("online_mr.status"))
-        top_layout.addWidget(self.status_label)
+        status_item = QWidget()
+        status_layout = QHBoxLayout(status_item)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(8)
+        status_layout.addWidget(self._label("online_mr.status"))
+        status_layout.addWidget(self.status_label)
+        top_layout.addWidget(status_item)
+
+        self.site_label.hide()
+        action_bar = QWidget()
+        self.action_bar = action_bar
+        action_bar.setMinimumHeight(44)
+        action_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        action_layout = FlowLayout(action_bar, horizontal_spacing=8, vertical_spacing=8)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        self.action_layout = action_layout
+        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.open_button, self.refresh_devices_button):
+            action_layout.addWidget(button)
         if not self.analysis_only:
             content_layout.addWidget(controls)
+            content_layout.addWidget(action_bar)
             content_layout.addWidget(self.filter_hint_label)
 
         self.device_table.setMinimumHeight(260)
-        self.device_table.setMaximumHeight(330)
+        self.device_table.setMaximumHeight(16777215)
+        self.device_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._configure_online_table(self.device_table)
         install_checkbox_only_delegate(self.device_table, 0)
 
@@ -1025,21 +1163,22 @@ class OnlineMrCollectionPage(QWidget):
 
         main_work_panel = QWidget()
         self.main_work_panel = main_work_panel
-        main_grid = QGridLayout(main_work_panel)
-        main_grid.setContentsMargins(0, 0, 0, 0)
-        main_grid.setHorizontalSpacing(10)
-        main_grid.setVerticalSpacing(8)
+        main_layout = QVBoxLayout(main_work_panel)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(10)
         device_panel = QWidget()
         self.device_panel = device_panel
-        device_panel.setMinimumHeight(280)
-        device_panel.setMaximumHeight(350)
+        device_panel.setMinimumWidth(ONLINE_MR_LEFT_PANEL_MIN_WIDTH)
+        device_panel.setMinimumHeight(360)
+        device_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         device_layout = QVBoxLayout(device_panel)
         device_layout.setContentsMargins(0, 0, 0, 0)
         device_layout.setSpacing(6)
         device_layout.addWidget(self.device_search_input)
         device_layout.addWidget(self.device_table)
         self.collect_status_box.setMinimumHeight(140)
-        self.collect_status_box.setMaximumHeight(190)
+        self.collect_status_box.setMaximumHeight(16777215)
+        self.collect_status_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         collect_layout = QHBoxLayout(self.collect_status_box)
         collect_layout.setContentsMargins(8, 8, 8, 8)
         collect_layout.setSpacing(8)
@@ -1058,8 +1197,8 @@ class OnlineMrCollectionPage(QWidget):
             collect_layout.addWidget(card)
         control_panel = QWidget()
         self.control_panel = control_panel
-        control_panel.setMinimumWidth(560)
-        control_panel.setMaximumWidth(680)
+        control_panel.setMinimumWidth(ONLINE_MR_RIGHT_PANEL_MIN_WIDTH)
+        control_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         control_layout = QVBoxLayout(control_panel)
         control_layout.setContentsMargins(0, 0, 0, 0)
         control_layout.setSpacing(10)
@@ -1070,20 +1209,25 @@ class OnlineMrCollectionPage(QWidget):
         right_scroll = QScrollArea()
         self.right_control_scroll = right_scroll
         right_scroll.setWidgetResizable(True)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        right_scroll.setMinimumWidth(560)
-        right_scroll.setMaximumWidth(700)
+        right_scroll.setMinimumWidth(ONLINE_MR_RIGHT_PANEL_MIN_WIDTH)
+        right_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_scroll.setWidget(control_panel)
         self._install_no_wheel_filter_for_controls(control_panel)
-        main_grid.addWidget(device_panel, 0, 0)
-        main_grid.addWidget(self.collect_status_box, 1, 0)
-        main_grid.addWidget(right_scroll, 0, 1, 2, 1)
-        main_grid.setColumnStretch(0, 6)
-        main_grid.setColumnStretch(1, 4)
-        main_grid.setRowStretch(0, 4)
-        main_grid.setRowStretch(1, 2)
-        main_work_panel.setMinimumHeight(430)
+        main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter = main_splitter
+        main_splitter.setChildrenCollapsible(False)
+        main_splitter.addWidget(device_panel)
+        main_splitter.addWidget(right_scroll)
+        main_splitter.setStretchFactor(0, 2)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setSizes([760, 460])
+        main_splitter.setMinimumHeight(520)
+        main_layout.addWidget(main_splitter, 1)
+        main_layout.addWidget(self.collect_status_box)
+        main_work_panel.setMinimumHeight(650)
+        main_work_panel.setMinimumWidth(ONLINE_MR_WORK_PANEL_MIN_WIDTH)
 
         vertical_splitter = QSplitter(Qt.Vertical)
         self.vertical_splitter = vertical_splitter
@@ -1171,7 +1315,6 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.clicked.connect(self.start_collection)
         self.stop_selected_button.clicked.connect(self.stop_selected)
         self.stop_all_button.clicked.connect(self.stop_all)
-        self.collect_config_button.clicked.connect(self.collect_config_once)
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
@@ -1444,48 +1587,15 @@ class OnlineMrCollectionPage(QWidget):
             self._set_status("CONNECTING")
         self._update_action_state()
 
-    def collect_config_once(self) -> None:
-        self.feature_gate.assert_enabled("online_mr.collect_config_once")
-        selected = self._selected_devices()
-        if len(selected) != 1:
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.select_mr_device"))
-            return
-        device = selected[0]
-        if device.id is not None and device.id in self.workers_by_device_id:
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.collect_config_with_session"))
-            return
-        try:
-            config = self._build_config_for_device(device)
-        except ValueError as exc:
-            QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), str(exc))
-            return
-        if config is None:
-            self._update_device_status(device.id, self.i18n.t("online_mr.connection_incomplete"))
-            return
-        worker_key = f"config:{device.id}:{time.time_ns()}"
-        worker = OnlineMrCollectorWorker(
-            config,
-            self.store,
-            realtime_cache=self.realtime_cache,
-            config_only=True,
-            parent=self,
-        )
-        self.config_workers[worker_key] = worker
-        self._update_device_status(device.id, self.i18n.t("online_mr.collecting_config"))
-        worker.started_session.connect(lambda meta, w=worker: self._config_worker_started(meta, w))
-        worker.completed.connect(lambda session_id, key=worker_key: self._config_worker_completed(session_id, key))
-        worker.failed.connect(lambda message, key=worker_key, device_id=device.id: self._config_worker_failed(message, key, device_id))
-        worker.start()
-        self._update_action_state()
-
     def stop_selected(self) -> None:
         stopped_any = False
+        selected_session_ids: set[str] = set()
         for device in self._selected_devices():
             if device.id is None:
                 continue
-            iperf_worker = self.iperf_workers_by_device_id.get(device.id)
-            if iperf_worker:
-                iperf_worker.stop()
+            session_id = self._session_id_for_device(device.id)
+            if session_id:
+                selected_session_ids.add(session_id)
             fping_worker = self.fping_workers_by_device_id.get(device.id)
             if fping_worker:
                 self._set_ping_status(device.id, "stopping")
@@ -1497,6 +1607,8 @@ class OnlineMrCollectionPage(QWidget):
                 self._update_device_status(device.id, self.i18n.t("online_mr.status_stopping"))
                 self._update_summary_status_by_device(device.id, "STOPPING")
                 stopped_any = True
+        if selected_session_ids:
+            self._stop_iperf_workers_for_sessions(selected_session_ids, status="STOPPED_BY_USER")
         if stopped_any:
             self._set_status("STOPPING")
             self._start_stop_animation(1)
@@ -1522,13 +1634,7 @@ class OnlineMrCollectionPage(QWidget):
         session_ids: set[str] = set(self.workers)
         session_ids.update(self.session_to_device_id)
 
-        seen_iperf_workers: set[int] = set()
-        for worker in list(self.iperf_workers_by_device_id.values()) + list(self.iperf_batch_workers.values()):
-            marker = id(worker)
-            if marker in seen_iperf_workers:
-                continue
-            seen_iperf_workers.add(marker)
-            worker.stop()
+        self._stop_all_iperf_workers(status="STOPPED_BY_USER")
         for worker in list(self.fping_workers_by_device_id.values()):
             worker.stop()
         for device_id in list(self.fping_workers_by_device_id.keys()):
@@ -1551,6 +1657,39 @@ class OnlineMrCollectionPage(QWidget):
             self._set_status("STOPPING")
             self._start_stop_animation(max(len(workers), len(device_ids), 1))
         self._reconcile_collection_state()
+
+    def _stop_iperf_workers_for_sessions(self, session_ids: set[str], *, status: str) -> None:
+        for batch_key, batch_sessions in list(self.iperf_batch_sessions.items()):
+            target_sessions = batch_sessions & session_ids
+            if not target_sessions:
+                continue
+            if batch_sessions - session_ids:
+                continue
+            worker = self.iperf_batch_workers.get(batch_key)
+            if worker is not None:
+                self._stop_iperf_worker(worker, status=status)
+        for session_id in session_ids:
+            if any(session_id in sessions for sessions in self.iperf_batch_sessions.values()):
+                continue
+            worker = self.iperf_workers.get(session_id)
+            if worker is not None:
+                self._stop_iperf_worker(worker, status=status)
+
+    def _stop_all_iperf_workers(self, *, status: str) -> None:
+        seen_iperf_workers: set[int] = set()
+        for worker in list(self.iperf_batch_workers.values()) + list(self.iperf_workers_by_device_id.values()) + list(self.iperf_workers.values()):
+            marker = id(worker)
+            if marker in seen_iperf_workers:
+                continue
+            seen_iperf_workers.add(marker)
+            self._stop_iperf_worker(worker, status=status)
+
+    @staticmethod
+    def _stop_iperf_worker(worker: IperfProcessWorker, *, status: str) -> None:
+        try:
+            worker.stop(status=status)
+        except TypeError:
+            worker.stop()
 
     def open_selected_session_dir(self) -> None:
         selected = self._selected_devices()
@@ -2328,38 +2467,6 @@ class OnlineMrCollectionPage(QWidget):
         self._fill_view_devices(prefer_device_id=int(meta.device_id) if meta.device_id is not None else None)
         self._fill_history()
 
-    def _config_worker_started(self, meta, worker: OnlineMrCollectorWorker) -> None:
-        if self._shutdown_requested:
-            worker.cancel()
-            return
-        if meta.session_dir:
-            self.session_dirs[meta.session_id] = Path(meta.session_dir)
-            if meta.device_id is not None:
-                self.last_session_dir_by_device_id[int(meta.device_id)] = Path(meta.session_dir)
-                self._update_device_status(int(meta.device_id), self.i18n.t("online_mr.config_collect_success" if meta.config_collect_status == "success" else "online_mr.config_collect_failed"))
-        self.log_text.append(
-            f"{self.i18n.t('online_mr.config_only_session')}: {meta.session_id} "
-            f"{self.i18n.t('online_mr.config_file_path')}: {meta.config_file_path or '-'}"
-        )
-        self._fill_history()
-
-    def _config_worker_completed(self, session_id: str, worker_key: str) -> None:
-        self.config_workers.pop(worker_key, None)
-        if not self._can_update_ui():
-            return
-        self.session_history_changed.emit()
-        self._fill_history()
-        self._update_action_state()
-
-    def _config_worker_failed(self, message: str, worker_key: str, device_id: int | None) -> None:
-        self.config_workers.pop(worker_key, None)
-        if not self._can_update_ui():
-            return
-        if device_id is not None:
-            self._update_device_status(device_id, self.i18n.t("online_mr.config_collect_failed"))
-        self.log_text.append(f"{self.i18n.t('online_mr.config_collect_failed')}: {message}")
-        self._update_action_state()
-
     def _worker_completed(self, session_id: str) -> None:
         app_logger.log_info("ONLINE_MR_WORKER_FINISHED", f"session_id={session_id}")
         self._finalize_collection_state(device_id=None, session_id=session_id, final_status="STOPPED", reason="completed")
@@ -2394,7 +2501,9 @@ class OnlineMrCollectionPage(QWidget):
                 sessions.discard(session_id)
                 if not sessions:
                     self.iperf_batch_sessions.pop(batch_key, None)
-                    self.iperf_batch_workers.pop(batch_key, None)
+                    worker = self.iperf_batch_workers.pop(batch_key, None)
+                    if worker is not None:
+                        self._stop_iperf_worker(worker, status="STOPPED_BY_COLLECTION_END")
             self.event_buses.pop(session_id, None)
             self.realtime_buffers.pop(session_id, None)
             self.diagnosis_engines.pop(session_id, None)
@@ -2479,19 +2588,16 @@ class OnlineMrCollectionPage(QWidget):
         if tool is None:
             self.log_text.append(self.i18n.t("iperf.tool_missing"))
             return
-        duration = config.duration_seconds
-        if config.follow_collection:
-            duration = int(ssh_worker.collector.config.duration_minutes or 0) * 60 or 86400
         client_config = IperfClientConfig(
             server_ip=config.server_ip,
             port=config.port,
             protocol=config.protocol,
-            duration_seconds=duration,
+            duration_seconds=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
             interval_seconds=config.interval_seconds,
             parallel=config.parallel,
             direction=config.direction,
             target_bandwidth=config.target_bandwidth,
-            follow_collection=config.follow_collection,
+            follow_collection=True,
             tcp_block_size=config.tcp_block_size,
             packet_length=config.packet_length,
             tcp_report_threshold_mbps=config.tcp_report_threshold_mbps,
@@ -2555,10 +2661,9 @@ class OnlineMrCollectionPage(QWidget):
             cfg.direction,
             cfg.parallel,
             cfg.target_bandwidth or "",
-            cfg.duration_seconds,
             cfg.tcp_block_size or "",
             cfg.packet_length or "",
-            cfg.follow_collection,
+            cfg.udp_bitrate_mbps or "",
         )
 
     @staticmethod
@@ -2586,6 +2691,9 @@ class OnlineMrCollectionPage(QWidget):
             "udp_report_threshold_mbps": cfg.udp_report_threshold_mbps or "",
             "tcp_block_size": cfg.tcp_block_size or "",
             "packet_length": cfg.packet_length or "",
+            "duration_mode": "follow_collection",
+            "protection_duration_seconds": cfg.duration_seconds,
+            "stop_policy": "stop_with_collection",
         }
 
     def _device_name_for_id(self, device_id: int | None) -> str:
@@ -3261,8 +3369,8 @@ class OnlineMrCollectionPage(QWidget):
                 udp_bitrate_mbps=self._current_iperf_udp_bitrate_mbps(),
                 udp_report_threshold_mbps=self._current_iperf_udp_threshold_mbps(),
                 packet_length=self._current_iperf_packet_length(),
-                follow_collection=self.iperf_follow_check.isChecked(),
-                duration_seconds=self.iperf_duration_spin.value(),
+                follow_collection=True,
+                duration_seconds=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
             ),
             auto_reconnect=self.auto_reconnect_check.isChecked(),
             reconnect_interval=self.reconnect_interval.value(),
@@ -3394,9 +3502,6 @@ class OnlineMrCollectionPage(QWidget):
         self.start_button.setEnabled(can_start and not stopping)
         self.stop_selected_button.setEnabled(running_selected and not stopping)
         self.stop_all_button.setEnabled(bool(self.workers_by_device_id or self.workers) and not stopping)
-        self.collect_config_button.setEnabled(len(selected) == 1 and not running_selected)
-        if not self.feature_gate.is_enabled("online_mr.collect_config_once"):
-            self.collect_config_button.setEnabled(False)
         self.open_button.setEnabled(True)
         self._running_count = self._site_running_count()
         self.running_count_label.setText(str(self._running_count))
@@ -3404,7 +3509,6 @@ class OnlineMrCollectionPage(QWidget):
         self._refresh_collection_animation()
 
     def _apply_feature_gate(self) -> None:
-        apply_feature_to_widget(self.feature_gate, "online_mr.collect_config_once", self.collect_config_button)
         apply_feature_to_widget(self.feature_gate, "online_mr.advanced_ping", self.enable_fping_check)
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.enable_iperf_check)
 
@@ -4162,13 +4266,19 @@ class OnlineMrCollectionPage(QWidget):
         ):
             widget.setMaximumWidth(width)
             widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.collect_config_button, self.open_button, self.refresh_devices_button):
-            button.setMinimumWidth(86)
-            button.setMaximumWidth(130)
-            button.setMinimumHeight(28)
+        for button in (
+            self.start_button,
+            self.stop_selected_button,
+            self.stop_all_button,
+            self.open_button,
+            self.refresh_devices_button,
+        ):
+            button.setMinimumWidth(104)
+            button.setMaximumWidth(180)
+            button.setMinimumHeight(34)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setMinimumWidth(72)
-        self.status_label.setMaximumWidth(96)
+        self.status_label.setMaximumWidth(140)
         self.status_label.setMinimumHeight(28)
         for label in (self.site_label, self.available_metric_label, self.selected_metric_label, self.running_metric_label):
             label.setMinimumWidth(0)
@@ -4191,24 +4301,23 @@ class OnlineMrCollectionPage(QWidget):
 
     def _configure_numeric_spin(self, spin: QAbstractSpinBox) -> None:
         spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        spin.setMinimumWidth(100)
-        spin.setMaximumWidth(120)
+        spin.setMinimumWidth(110)
+        spin.setMaximumWidth(140)
         spin.setMinimumHeight(28)
         spin.setKeyboardTracking(False)
         spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _configure_numeric_line_edit(self, edit: QLineEdit) -> None:
-        edit.setMinimumWidth(100)
-        edit.setMaximumWidth(120)
+        edit.setMinimumWidth(110)
+        edit.setMaximumWidth(140)
         edit.setMinimumHeight(28)
         edit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _period_box(self) -> QGroupBox:
         box = QGroupBox()
         self.collect_param_box = box
-        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         box.setMinimumHeight(220)
-        box.setMaximumHeight(280)
         outer = QGridLayout(box)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setHorizontalSpacing(18)
@@ -4245,7 +4354,6 @@ class OnlineMrCollectionPage(QWidget):
             self.advanced_box.setMinimumWidth(260)
             self.advanced_box.setMaximumWidth(320)
             self.advanced_box.setMinimumHeight(190)
-            self.advanced_box.setMaximumHeight(240)
             outer.addWidget(self.advanced_box, 0, 1, alignment=Qt.AlignTop)
         outer.addLayout(grid, 0, 0, alignment=Qt.AlignTop)
         outer.setColumnStretch(0, 0)
@@ -4266,9 +4374,9 @@ class OnlineMrCollectionPage(QWidget):
 
     def _ping_box(self) -> QGroupBox:
         box = QGroupBox()
-        box.setMinimumHeight(300)
-        box.setMaximumHeight(380)
-        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        box.setMinimumWidth(360)
+        box.setMinimumHeight(430)
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
@@ -4306,7 +4414,8 @@ class OnlineMrCollectionPage(QWidget):
         ):
             label = self._label(key)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            label.setMinimumWidth(90)
+            label.setMinimumWidth(110)
+            label.setMaximumWidth(130)
             if isinstance(widget, QAbstractSpinBox):
                 self._configure_numeric_spin(widget)
             elif isinstance(widget, QLineEdit):
@@ -4314,14 +4423,17 @@ class OnlineMrCollectionPage(QWidget):
             grid.addWidget(label, row, 0)
             grid.addWidget(widget, row, 1)
             unit_label = self._text_label(unit)
-            unit_label.setMinimumWidth(40)
+            unit_label.setMinimumWidth(50)
+            unit_label.setMaximumWidth(60)
             grid.addWidget(unit_label, row, 2)
-        grid.setColumnMinimumWidth(0, 90)
-        grid.setColumnMinimumWidth(1, 100)
-        grid.setColumnMinimumWidth(2, 40)
+            grid.setRowMinimumHeight(row, 32)
+        grid.setColumnMinimumWidth(0, 110)
+        grid.setColumnMinimumWidth(1, 110)
+        grid.setColumnMinimumWidth(2, 50)
         grid.setColumnStretch(3, 1)
         layout.addLayout(grid)
         layout.addWidget(self.fping_tool_label)
+        layout.addStretch(1)
         for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
             combo.setMinimumWidth(220)
             combo.setMaximumWidth(360)
@@ -4352,22 +4464,22 @@ class OnlineMrCollectionPage(QWidget):
 
     def _iperf_box(self) -> QGroupBox:
         box = QGroupBox()
-        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         grid = QGridLayout(box)
         grid.addWidget(self.enable_iperf_check, 0, 0, 1, 3)
-        grid.addWidget(self._label("iperf.preset"), 1, 0)
-        grid.addWidget(self.iperf_preset_combo, 1, 1, 1, 2)
-        grid.addWidget(self._label("iperf.server_address"), 2, 0)
-        grid.addWidget(self.iperf_server_edit, 2, 1, 1, 2)
+        grid.addWidget(self.iperf_duration_mode_label, 1, 0, 1, 3)
+        grid.addWidget(self._label("iperf.preset"), 2, 0)
+        grid.addWidget(self.iperf_preset_combo, 2, 1, 1, 2)
+        grid.addWidget(self._label("iperf.server_address"), 3, 0)
+        grid.addWidget(self.iperf_server_edit, 3, 1, 1, 2)
         rows = (
             ("iperf.port", self.iperf_port_spin, None),
             ("iperf.protocol", self.iperf_protocol_combo, None),
             ("iperf.direction", self.iperf_direction_combo, None),
             ("iperf.parallel", self.iperf_parallel_spin, None),
             ("iperf.interval", self.iperf_interval_spin, "online_mr.seconds"),
-            ("iperf.duration", self.iperf_duration_spin, "online_mr.seconds"),
         )
-        for row, (key, widget, unit) in enumerate(rows, start=3):
+        for row, (key, widget, unit) in enumerate(rows, start=4):
             grid.addWidget(self._label(key), row, 0)
             grid.addWidget(widget, row, 1)
             if unit:
@@ -4407,9 +4519,8 @@ class OnlineMrCollectionPage(QWidget):
         grid.addLayout(tcp_pacing_layout, 13, 1, 1, 2)
 
         grid.addWidget(self.iperf_bandwidth_hint_label, 14, 1, 1, 2)
-        grid.addWidget(self.iperf_follow_check, 15, 0, 1, 3)
-        grid.addWidget(self._label("online_mr.tool_status"), 16, 0)
-        grid.addWidget(self.iperf_tool_label, 16, 1, 1, 2)
+        grid.addWidget(self._label("online_mr.tool_status"), 15, 0)
+        grid.addWidget(self.iperf_tool_label, 15, 1, 1, 2)
         return box
 
     def _fill_iperf_direction_combo(self) -> None:
@@ -4505,7 +4616,7 @@ class OnlineMrCollectionPage(QWidget):
                 self.iperf_direction_combo.setCurrentIndex(direction_index)
             self.iperf_parallel_spin.setValue(preset.parallel)
             self.iperf_interval_spin.setValue(preset.interval_sec)
-            self.iperf_duration_spin.setValue(preset.duration_sec)
+            self.iperf_duration_spin.setValue(FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
             self.iperf_tcp_threshold_edit.setText(f"{preset.report_threshold_mbps:g}" if preset.protocol.upper() == "TCP" else "")
             self.iperf_udp_bitrate_edit.setText(f"{preset.udp_bitrate_mbps:g}" if preset.udp_bitrate_mbps is not None else "")
             self.iperf_udp_threshold_edit.setText(f"{preset.report_threshold_mbps:g}" if preset.protocol.upper() == "UDP" else "")
@@ -4572,11 +4683,10 @@ class OnlineMrCollectionPage(QWidget):
 
     def _advanced_box(self) -> QGroupBox:
         box = QGroupBox()
-        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         box.setMinimumWidth(260)
         box.setMaximumWidth(320)
         box.setMinimumHeight(190)
-        box.setMaximumHeight(240)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)

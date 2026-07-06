@@ -19,7 +19,13 @@ from netconsole.services.network_tools.iperf_parser import (
     split_iperf_log_prefix,
     summarize_iperf_zero_samples,
 )
-from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfResultStore, build_iperf_client_args, normalize_bandwidth_text
+from netconsole.services.network_tools.iperf_runner import (
+    FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+    IperfClientConfig,
+    IperfResultStore,
+    build_iperf_client_args,
+    normalize_bandwidth_text,
+)
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.online_mr.traffic_presets import get_traffic_preset, list_traffic_presets
 from netconsole.services.online_mr.workers.iperf3_worker import build_iperf3_json_args
@@ -182,6 +188,8 @@ def test_cbtc_dcs_traffic_presets_are_registered() -> None:
         "cbtc_dcs_udp_1m_1256b",
         "cbtc_dcs_tcp_observation",
     ]
+    assert all(preset.duration_mode == "follow_collection" for preset in list_traffic_presets())
+    assert all(preset.duration_sec == FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS for preset in list_traffic_presets())
 
 
 def test_cbtc_dcs_udp_templates_generate_bitrate_packet_length_and_reverse(tmp_path: Path) -> None:
@@ -274,9 +282,9 @@ def test_online_mr_legacy_tcp_bandwidth_maps_to_threshold_not_pacing(tmp_path: P
 
 
 def test_follow_collection_manual_duration_uses_long_duration(tmp_path: Path) -> None:
-    config = IperfClientConfig("10.0.0.1", duration_seconds=86400, follow_collection=True)
+    config = IperfClientConfig("10.0.0.1", duration_seconds=600, follow_collection=True)
     args = build_iperf_client_args(tmp_path / "iperf3.exe", config)
-    assert args[args.index("-t") + 1] == "86400"
+    assert args[args.index("-t") + 1] == str(FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
 
 
 def test_low_rate_tcp_client_uses_smaller_block_size(tmp_path: Path) -> None:
@@ -351,6 +359,19 @@ def test_format_iperf_log_header_keeps_repeated_metadata_out_of_interval_lines()
     assert "run_id" not in line
     assert "session_id" not in line
     assert "batch_key" not in line
+
+
+def test_format_iperf_log_header_records_follow_collection_policy() -> None:
+    context = {
+        "mode": "client",
+        "duration_mode": "follow_collection",
+        "protection_duration_seconds": FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+        "stop_policy": "stop_with_collection",
+    }
+    header = format_iperf_log_header(context, datetime(2026, 7, 6, 9, 1, 2))
+    assert "# duration_mode=follow_collection" in header
+    assert f"# protection_duration_seconds={FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS}" in header
+    assert "# stop_policy=stop_with_collection" in header
 
 
 def test_iperf_parser_accepts_compact_log_format() -> None:

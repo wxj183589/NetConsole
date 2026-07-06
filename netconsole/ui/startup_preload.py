@@ -84,6 +84,7 @@ class StartupPreloadManager:
     def _load_current_site(self) -> None:
         self.context = create_demo_context()
         self.settings = SettingsStore(self.context.paths)
+        self.i18n.set_language(self.settings.language)
         app_logger.log_info("SITE_LOADED", f"site={self.context.site.name} elapsed_ms={self._elapsed_ms()}")
 
     def _create_main_window(self) -> None:

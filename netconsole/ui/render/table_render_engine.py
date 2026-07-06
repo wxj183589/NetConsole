@@ -20,7 +20,7 @@ from netconsole.ui.table.table_auto_layout_engine import (
     ROW_HEIGHT,
     apply_auto_layout,
 )
-from netconsole.ui.theme.qt_theme_engine import DARK_APP_STYLESHEET, LIGHT_APP_STYLESHEET, apply_dark_theme
+from netconsole.ui.theme.qt_theme_engine import DARK_APP_STYLESHEET, LIGHT_APP_STYLESHEET, apply_dark_theme, apply_table_theme
 
 
 STATUS_COLOR_MAP = {
@@ -101,6 +101,7 @@ def apply_table_policy(table: QTableWidget) -> None:
     header.setSectionResizeMode(QHeaderView.Interactive)
     header.setStretchLastSection(False)
     header.setSectionsMovable(False)
+    apply_table_theme(table)
     if not table.property("netconsole_manual_column_widths"):
         apply_auto_layout(table)
 

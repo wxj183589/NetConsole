@@ -55,8 +55,8 @@ class IperfProcessWorker(QThread):
     def add_mirror_log_file(self, log_file: Path, context: dict[str, object] | None = None) -> None:
         self.runner.add_mirror_log_file(log_file, context=context)
 
-    def stop(self) -> None:
-        self.runner.stop()
+    def stop(self, status: str = "STOPPED_BY_USER") -> None:
+        self.runner.stop(status=status)
 
     def run(self) -> None:
         try:

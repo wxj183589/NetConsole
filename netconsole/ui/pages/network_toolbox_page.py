@@ -618,25 +618,13 @@ class NetworkToolboxPage(QWidget):
 
     def _network_card(self, title: str) -> tuple[QWidget, QVBoxLayout]:
         card = QWidget()
-        card.setObjectName("networkPingCard")
+        card.setObjectName("ncCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 12)
         layout.setSpacing(8)
         title_label = QLabel(title)
         title_label.setObjectName("networkPingCardTitle")
         layout.addWidget(title_label)
-        card.setStyleSheet(
-            """
-            QWidget#networkPingCard {
-                border: 1px solid #334155;
-                border-radius: 6px;
-                background: rgba(15, 23, 42, 0.45);
-            }
-            QLabel#networkPingCardTitle {
-                font-weight: 600;
-            }
-            """
-        )
         return card, layout
 
     def _apply_network_form_control(self, widget: QWidget, *, spin: bool = False) -> None:

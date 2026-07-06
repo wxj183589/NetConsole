@@ -165,6 +165,26 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
     assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2").exists()
 
 
+def test_mesh_page_first_show_empty_state_exits_loading(tmp_path):
+    qt_app = _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    page = MeshLogAnalysisPage(DeviceRepository(database), I18n("zh_CN"), "demo", PathResolver(tmp_path))
+
+    page.first_show_refresh(force=True)
+    deadline = time.time() + 1.0
+    while page.is_loading and time.time() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.01)
+
+    assert page.is_loading is False
+    assert page.page_state == "empty"
+    assert "暂无 MR 原始 MESH 日志" in page.progress_label.text()
+
+
 def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, monkeypatch):
     _app()
     from netconsole.core.i18n import I18n

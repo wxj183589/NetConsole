@@ -1140,6 +1140,37 @@ def test_rail_transit_contains_car_network_tab_and_train_from_devices(tmp_path: 
     assert not hasattr(page.car_network_page, "generate_button")
 
 
+def test_car_network_fixed_topology_uses_scrollable_canvas(tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QScrollArea, QSplitter
+
+    QApplication.instance() or QApplication([])
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    page = car_page.CarNetworkDiagnosticPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+
+    page_scroll = page.findChild(QScrollArea, "carNetworkPageScroll")
+    topology_scroll = page.findChild(QScrollArea, "carNetworkTopologyScroll")
+
+    assert page_scroll is not None
+    assert page_scroll.widgetResizable() is True
+    assert page_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert topology_scroll is not None
+    assert topology_scroll.widgetResizable() is True
+    assert topology_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert topology_scroll.widget() is page.topology_wrapper
+    assert page.topology_wrapper.minimumWidth() >= 1050
+    assert page.topology_canvas.minimumHeight() >= 620
+    assert isinstance(page.results_container, QSplitter)
+    assert page.results_container.count() == 2
+    assert page.log_output.minimumHeight() >= 100
+    assert page.json_output.minimumHeight() >= 100
+    assert page.left_panel.minimumWidth() >= (34 if page.left_collapsed else 180)
+    assert page.left_panel.maximumWidth() <= (36 if page.left_collapsed else 320)
+    assert page.node_buttons["TC1-MR"].minimumWidth() >= 128
+    assert page.node_buttons["TC2-MR"].minimumHeight() >= 58
+
+
 def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Path) -> None:
     QApplication.instance() or QApplication([])
     paths = PathResolver(tmp_path)
