@@ -4,12 +4,12 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFileDialog, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtGui import QDesktopServices, QWheelEvent
+from PySide6.QtWidgets import QFileDialog, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget
 
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
-from netconsole.core.settings import SettingsStore
+from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
 from netconsole.core.sites import Site
 from netconsole.ui.shell.fluent_bridge import ComboBox, InfoBar, InfoBarPosition, SpinBox, SwitchButton
 
@@ -31,6 +31,31 @@ THEME_COLOR_LABELS = {
     "青色 #0891B2": "#0891B2",
     "绿色 #16A34A": "#16A34A",
 }
+
+EXTERNAL_TERMINAL_LABELS = {
+    "PuTTY": "putty",
+    "SecureCRT": "securecrt",
+    "Xshell": "xshell",
+}
+
+
+class NoWheelSettingsComboBox(ComboBox if ComboBox is not None else QComboBox):
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
+        view = self.view() if hasattr(self, "view") else None
+        if view is not None and view.isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
+
+
+class NoWheelSettingsSpinBox(SpinBox if SpinBox is not None else QSpinBox):
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
+        event.ignore()
+
+
+class NoWheelSettingsDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
+        event.ignore()
 
 
 class SettingsPage(QWidget):
@@ -75,7 +100,7 @@ class SettingsPage(QWidget):
         self.fping_path_edit = QLineEdit(str(self.settings.get_value("online_mr.fping_path", "")))
         self.mib_dir_edit = QLineEdit(str(self.settings.get_value("mib_dir", "")))
         self.external_terminal_type_combo = self._combo()
-        self.external_terminal_type_combo.addItems(["Windows Terminal", "PuTTY", "SecureCRT", "Xshell", "自定义"])
+        self.external_terminal_type_combo.addItems(list(EXTERNAL_TERMINAL_LABELS))
         self.external_terminal_path_edit = QLineEdit()
         self.crt_session_dir_edit = QLineEdit(str(self.settings.get_value("external_terminal/securecrt_sessions_root", "")))
         self.ssh_port_spin = self._spin(1, 65535, self.settings.int_value("external_terminal/default_ssh_port", 22, 1, 65535))
@@ -121,8 +146,6 @@ class SettingsPage(QWidget):
                 self.settings.set_value("external_terminal/xshell_path", terminal_path)
             elif terminal_type == "securecrt":
                 self.settings.set_value("external_terminal/securecrt_path", terminal_path)
-            else:
-                self.settings.set_value("external_terminal/custom_path", terminal_path)
             self.settings.set_value("external_terminal/securecrt_sessions_root", self.crt_session_dir_edit.text().strip())
             self.settings.set_int_value("external_terminal/default_ssh_port", self.ssh_port_spin.value(), 1, 65535)
             self.settings.set_int_value("external_terminal/default_telnet_port", self.telnet_port_spin.value(), 1, 65535)
@@ -153,6 +176,8 @@ class SettingsPage(QWidget):
         self._set_checked(self.raw_echo_log_switch, True)
         for edit in (self.download_dir_edit, self.backup_dir_edit, self.report_dir_edit, self.iperf3_path_edit, self.fping_path_edit, self.mib_dir_edit):
             edit.clear()
+        self.external_terminal_type_combo.setCurrentText("SecureCRT")
+        self.external_terminal_path_edit.clear()
         self._mark_dirty()
 
     def open_config_dir(self) -> None:
@@ -197,7 +222,7 @@ class SettingsPage(QWidget):
             ("Fping_v3.exe", "高频 Ping 工具路径", self._path_row(self.fping_path_edit, directory=False)),
             ("MIB 目录", "SNMP MIB 资源目录", self._path_row(self.mib_dir_edit, directory=True)),
             ("外部终端类型", "设备外部登录工具", self.external_terminal_type_combo),
-            ("外部终端程序路径", "PuTTY / SecureCRT / Xshell / 自定义程序", self._path_row(self.external_terminal_path_edit, directory=False)),
+            ("外部终端程序路径", "PuTTY / SecureCRT / Xshell 程序路径", self._path_row(self.external_terminal_path_edit, directory=False)),
             ("CRT 会话目录", "生成 SecureCRT 会话文件的根目录", self._path_row(self.crt_session_dir_edit, directory=True)),
             ("默认 SSH 端口", "新设备外部终端默认 SSH 端口", self.ssh_port_spin),
             ("默认 Telnet 端口", "新设备外部终端默认 Telnet 端口", self.telnet_port_spin),
@@ -360,13 +385,13 @@ class SettingsPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _combo(self):
-        return ComboBox() if ComboBox is not None else QComboBox()
+        return NoWheelSettingsComboBox()
 
     def _switch(self):
         return SwitchButton() if SwitchButton is not None else QCheckBox()
 
     def _spin(self, minimum: int, maximum: int, value: int):
-        spin = SpinBox() if SpinBox is not None else QSpinBox()
+        spin = NoWheelSettingsSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
         if hasattr(spin, "setButtonSymbols"):
@@ -375,33 +400,23 @@ class SettingsPage(QWidget):
         return spin
 
     def _external_terminal_type(self) -> str:
-        mapping = {
-            "Windows Terminal": "windows_terminal",
-            "PuTTY": "putty",
-            "SecureCRT": "securecrt",
-            "Xshell": "xshell",
-            "自定义": "custom",
-        }
-        return mapping.get(self.external_terminal_type_combo.currentText(), "securecrt")
+        return normalize_external_terminal_type(EXTERNAL_TERMINAL_LABELS.get(self.external_terminal_type_combo.currentText(), "securecrt"))
 
     def _external_terminal_label(self) -> str:
         mapping = {
-            "windows_terminal": "Windows Terminal",
             "putty": "PuTTY",
             "securecrt": "SecureCRT",
             "xshell": "Xshell",
-            "custom": "自定义",
         }
-        return mapping.get(str(self.settings.get_value("external_terminal/type", "securecrt") or "securecrt"), "SecureCRT")
+        terminal_type = normalize_external_terminal_type(self.settings.get_value("external_terminal/type", "securecrt"))
+        return mapping.get(terminal_type, "SecureCRT")
 
     def _external_terminal_path(self) -> str:
-        terminal_type = str(self.settings.get_value("external_terminal/type", "securecrt") or "securecrt")
+        terminal_type = normalize_external_terminal_type(self.settings.get_value("external_terminal/type", "securecrt"))
         key = {
             "putty": "external_terminal/putty_path",
             "securecrt": "external_terminal/securecrt_path",
             "xshell": "external_terminal/xshell_path",
-            "windows_terminal": "external_terminal/custom_path",
-            "custom": "external_terminal/custom_path",
         }.get(terminal_type, "external_terminal/securecrt_path")
         return str(self.settings.get_value(key, "") or "")
 

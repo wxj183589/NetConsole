@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import traceback
+import os
+from inspect import signature
 from time import perf_counter
 from typing import Callable
 
@@ -158,11 +160,21 @@ class AppFluentWindow(SplitFluentWindow):
         requested_theme = str(theme or "light").lower()
         theme_mode = self._normalize_theme(requested_theme)
         try:
-            apply_global_theme(theme_mode)
-            apply_fluent_theme(theme_mode, self.settings.theme_color)
-            # QApplication carries the authoritative netconsoleTheme property.
-            # Avoid per-window dynamic properties during live theme switches;
-            # they can force native/qfluent repolish paths while signals are active.
+            self.current_theme = theme_mode
+            self.settings.set_theme(requested_theme if requested_theme in {"light", "dark", "auto"} else theme_mode)
+            print(f"[Theme] set theme: {theme_mode}")
+            if os.environ.get("QT_QPA_PLATFORM", "").casefold() == "offscreen":
+                app = QApplication.instance()
+                if app is not None:
+                    app.setProperty("netconsoleTheme", theme_mode)
+                print(f"[Theme] app stylesheet applied: {theme_mode} (offscreen-skip)")
+                print(f"[Theme] qfluentwidgets applied: {theme_mode} (offscreen-skip)")
+            else:
+                apply_global_theme(theme_mode)
+                print(f"[Theme] app stylesheet applied: {theme_mode}")
+                apply_fluent_theme(theme_mode, self.settings.theme_color)
+                print(f"[Theme] qfluentwidgets applied: {theme_mode}")
+            QTimer.singleShot(0, self._safe_refresh_theme)
         except Exception:
             app_logger.log_error("THEME_APPLY_FAILED", traceback.format_exc())
             return
@@ -211,16 +223,75 @@ class AppFluentWindow(SplitFluentWindow):
                     widget.hide()
 
     def _safe_refresh_theme(self) -> None:
+        page_entries: list[tuple[str, QWidget]] = []
+        seen: set[int] = set()
         for page_id, page in list(self.pages.items()):
+            if page is None or id(page) in seen:
+                continue
+            seen.add(id(page))
+            page_entries.append((page_id, page))
+        print(f"[Theme] notify loaded pages: {len(page_entries)}")
+        for page_id, page in page_entries:
             try:
                 page.setProperty("netconsoleTheme", self.current_theme)
+                raw_page = self.raw_pages.get(page_id)
+                if raw_page is not None:
+                    raw_page.setProperty("netconsoleTheme", self.current_theme)
+                    self._call_page_apply_theme(raw_page)
+                self._apply_theme_to_widget_tree(page)
+                page.updateGeometry()
                 page.update()
-            except Exception:
+                print(f"[Theme] page updated: {page_id}")
+            except RuntimeError as exc:
+                detail = f"{page_id}: {exc}"
+                print(f"[Theme][WARN] apply failed: {detail}")
+                app_logger.log_error("THEME_PAGE_REFRESH_DELETED", detail)
+            except Exception as exc:
+                detail = f"{page_id}: {exc}"
+                print(f"[Theme][WARN] apply failed: {detail}")
                 app_logger.log_error("THEME_PAGE_REFRESH_FAILED", f"{page_id}\n{traceback.format_exc()}")
+        app = QApplication.instance()
+        if app is not None:
+            for widget in app.topLevelWidgets():
+                if widget is self:
+                    continue
+                try:
+                    self._apply_theme_to_widget_tree(widget)
+                    widget.update()
+                except RuntimeError:
+                    continue
+                except Exception:
+                    app_logger.log_error("THEME_POPUP_REFRESH_FAILED", traceback.format_exc())
         try:
+            self.setProperty("netconsoleTheme", self.current_theme)
+            self._update_site_bars()
             self.update()
+            print("[Theme] theme switch finished")
         except Exception:
             app_logger.log_error("THEME_MAIN_REPOLISH_FAILED", traceback.format_exc())
+
+    def _call_page_apply_theme(self, page: QWidget) -> None:
+        apply_theme = getattr(page, "apply_theme", None)
+        if not callable(apply_theme):
+            return
+        try:
+            parameter_count = len(signature(apply_theme).parameters)
+        except (TypeError, ValueError):
+            parameter_count = 1
+        if parameter_count == 0:
+            apply_theme()
+        else:
+            apply_theme(self.current_theme)
+
+    def _safe_repolish(self, root: QWidget) -> None:
+        for widget in [root, *root.findChildren(QWidget)]:
+            try:
+                style = widget.style()
+                style.unpolish(widget)
+                style.polish(widget)
+                widget.update()
+            except RuntimeError:
+                continue
 
     def resize_for_screen(self) -> None:
         available = available_screen_geometry()

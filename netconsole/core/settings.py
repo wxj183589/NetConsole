@@ -54,6 +54,22 @@ VALID_THEMES = {"light", "dark", "auto"}
 VALID_LANGUAGES = {"zh_CN", "en_US"}
 VALID_CLOSE_BEHAVIORS = {"ask", "minimize_to_tray", "exit"}
 VALID_STARTUP_MODES = {"preload_all", "fast_start"}
+VALID_EXTERNAL_TERMINAL_TYPES = {"putty", "securecrt", "xshell"}
+
+
+def normalize_external_terminal_type(value: object) -> str:
+    normalized = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    mapping = {
+        "putty": "putty",
+        "securecrt": "securecrt",
+        "secure_crt": "securecrt",
+        "xshell": "xshell",
+        "windows_terminal": "securecrt",
+        "windowsterminal": "securecrt",
+        "custom": "securecrt",
+        "自定义": "securecrt",
+    }
+    return mapping.get(normalized, "securecrt")
 
 
 @dataclass
@@ -63,10 +79,19 @@ class SettingsStore:
 
     def __post_init__(self) -> None:
         self.values = {**DEFAULT_SETTINGS, **self._read()}
+        changed = False
         if self.theme not in VALID_THEMES:
             self.values["theme"] = DEFAULT_SETTINGS["theme"]
+            changed = True
         if self.language not in VALID_LANGUAGES:
             self.values["language"] = DEFAULT_SETTINGS["language"]
+            changed = True
+        terminal_type = normalize_external_terminal_type(self.values.get("external_terminal/type"))
+        if self.values.get("external_terminal/type") != terminal_type:
+            self.values["external_terminal/type"] = terminal_type
+            changed = True
+        if changed and self.path.exists():
+            self.save()
 
     @property
     def path(self) -> Path:
@@ -185,6 +210,8 @@ class SettingsStore:
         return self.values.get(key, default)
 
     def set_value(self, key: str, value: object) -> None:
+        if key == "external_terminal/type":
+            value = normalize_external_terminal_type(value)
         self.values[key] = value
         self.save()
 

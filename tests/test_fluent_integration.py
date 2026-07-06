@@ -1,5 +1,8 @@
+import json
+import os
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from netconsole.core.settings import SettingsStore
@@ -395,22 +398,49 @@ def test_fluent_window_applies_netconsole_theme_to_tables():
     window.close()
 
 
-def test_fluent_window_set_theme_synchronizes_fluent_and_global_stylesheet():
+def test_fluent_window_set_theme_synchronizes_fluent_and_global_stylesheet(monkeypatch):
+    if os.environ.get("QT_QPA_PLATFORM", "").casefold() == "offscreen":
+        pytest.skip("Qt offscreen destroys QFluentWidgets windows unstably after live theme switching")
+
+    from PySide6.QtWidgets import QTableWidget
+
     from netconsole.app import build_window
+    from netconsole.ui.theme import qt_theme_engine
+
+    fluent_calls = []
+    monkeypatch.setattr("netconsole.ui.app_fluent_window.apply_fluent_theme", lambda theme, color="#0078D4": fluent_calls.append((theme, color)))
+    monkeypatch.setattr(qt_theme_engine, "apply_fluent_theme", lambda theme, color="#0078D4": fluent_calls.append((theme, color)))
+
+    def fake_apply_global_theme(theme: str) -> None:
+        theme_mode = "dark" if theme == "dark" else "light"
+        QApplication.instance().setProperty("netconsoleTheme", theme_mode)
+
+    monkeypatch.setattr("netconsole.ui.app_fluent_window.apply_global_theme", fake_apply_global_theme)
 
     app()
     window = build_window()
+    table = window.findChild(QTableWidget)
+    assert table is not None
 
     window.set_theme("dark")
+    QApplication.processEvents()
+    QApplication.processEvents()
     assert window.current_theme == "dark"
     assert QApplication.instance().property("netconsoleTheme") == "dark"
-    assert "#fluentPage" in QApplication.instance().styleSheet()
-    assert "background-color: #111827" in QApplication.instance().styleSheet()
+    if QApplication.platformName().casefold() != "offscreen":
+        assert ("dark", window.settings.theme_color) in fluent_calls
+    assert table.property("netconsoleTheme") == "dark"
+    assert "background-color: #1f2937" in table.styleSheet()
 
     window.set_theme("light")
+    QApplication.processEvents()
+    QApplication.processEvents()
     assert window.current_theme == "light"
     assert QApplication.instance().property("netconsoleTheme") == "light"
-    assert "background-color: #ffffff" in QApplication.instance().styleSheet()
+    if QApplication.platformName().casefold() != "offscreen":
+        assert ("light", window.settings.theme_color) in fluent_calls
+    assert table.property("netconsoleTheme") == "light"
+    assert "background-color: #ffffff" in table.styleSheet()
     window.close()
 
 
@@ -478,13 +508,23 @@ def test_config_collection_command_bar_uses_single_main_action_set():
 
 def test_settings_page_saves_real_controls(tmp_path):
     from netconsole.core.sites import Site
-    from netconsole.ui.pages.settings_page import SettingsPage
+    from netconsole.ui.pages.settings_page import NoWheelSettingsComboBox, NoWheelSettingsSpinBox, SettingsPage
 
     app()
     paths = PathResolver(tmp_path)
+    paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.settings_path.write_text(json.dumps({"external_terminal/type": "windows_terminal"}, ensure_ascii=False), encoding="utf-8")
     settings = SettingsStore(paths)
     site = Site("demo", paths.site_dir("demo"), paths.site_db_path("demo"))
     page = SettingsPage(settings, site, paths)
+
+    assert settings.get_value("external_terminal/type") == "securecrt"
+    assert [page.external_terminal_type_combo.itemText(index) for index in range(page.external_terminal_type_combo.count())] == ["PuTTY", "SecureCRT", "Xshell"]
+    assert page.external_terminal_type_combo.currentText() == "SecureCRT"
+    assert isinstance(page.external_terminal_type_combo, NoWheelSettingsComboBox)
+    assert isinstance(page.theme_combo, NoWheelSettingsComboBox)
+    assert isinstance(page.ssh_port_spin, NoWheelSettingsSpinBox)
+    assert isinstance(page.telnet_port_spin, NoWheelSettingsSpinBox)
 
     page.theme_combo.setCurrentText("深色")
     page.language_combo.setCurrentText("English")
