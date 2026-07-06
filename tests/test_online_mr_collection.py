@@ -84,7 +84,14 @@ from netconsole.ui.pages.online_mr_collection_page import (
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, make_table_item
 from netconsole.services.mesh_storage_service import MeshStorageService
-from netconsole.services.online_mr_collector import OnlineMrCollectionManager, OnlineMrCollector, STREAM_PREPARE_COMMANDS
+from netconsole.services.online_mr_collector import (
+    NORMAL_DISPLAY_PREPARE_COMMANDS,
+    PROBE_STREAM_PREPARE_COMMANDS,
+    STREAM_PREPARE_COMMANDS,
+    OnlineMrCollectionManager,
+    OnlineMrCollector,
+    stream_prepare_commands,
+)
 from netconsole.services.online_mr_session_store import COLLECTOR_OUTPUT_RAW_FILE, DEVICE_TERMINAL_MONITOR_RAW_FILE, OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION, OnlineMrDiagnosisParser
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
@@ -672,12 +679,125 @@ def test_repeat_stream_uses_minimal_prepare_and_does_not_write_init_status(tmp_p
     log_text = (collector.session.session_dir / "logs" / "collector.log").read_text(encoding="utf-8")
     raw_text = (collector.session.session_dir / "raw" / "mesh_link_raw.log").read_text(encoding="utf-8")
     assert log_text.count("init_status=success") == 1
-    assert repeat_connection.commands == list(STREAM_PREPARE_COMMANDS)
+    assert repeat_connection.commands == list(NORMAL_DISPLAY_PREPARE_COMMANDS)
+    assert stream_prepare_commands(TASK_MESH_LINK) == STREAM_PREPARE_COMMANDS
     assert "terminal logging level 7" not in repeat_connection.commands
     assert "system-view" not in repeat_connection.commands
     assert "probe" not in repeat_connection.commands
     assert repeat_connection.repeat_commands == repeat_command_group(TASK_MESH_LINK, interval=config.intervals.mesh_link)
     assert LINE_A in raw_text
+
+
+@pytest.mark.parametrize(
+    ("task_type", "expected_command", "raw_name"),
+    [
+        (TASK_CHANNEL_BUSY, "display ar5drv 1 channelbusy", "channel_busy_raw.log"),
+        (TASK_AP_RADIO_STATISTICS, "display ar5drv 1 statistics", "ap_radio_statistics_raw.log"),
+    ],
+)
+def test_ar5drv_repeat_stream_enters_probe_without_rewriting_init_status(
+    tmp_path: Path,
+    task_type: str,
+    expected_command: str,
+    raw_name: str,
+) -> None:
+    paths, config = _config(tmp_path)
+
+    class FakeRepeatConnection(FakeConnection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repeat_commands: tuple[str, ...] = ()
+
+        def run_repeat_stream(self, commands, raw_path, stop_event, timeout: int, line_callback=None) -> None:
+            self.repeat_commands = tuple(commands)
+            stamp = datetime.now()
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(
+                f"{stamp.isoformat(sep=' ', timespec='milliseconds')} [collector=repeat] START commands:\n"
+                + "\n".join(commands)
+                + f"\n{expected_command}\nOK\n",
+                encoding="utf-8",
+            )
+            if line_callback is not None:
+                line_callback(stamp, expected_command)
+            stop_event.set()
+
+    main_connection = FakeConnection()
+    repeat_connection = FakeRepeatConnection()
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=Factory([main_connection, repeat_connection]))
+
+    collector.start()
+    collector._start_repeat_thread(task_type)
+    for thread in list(collector._stream_threads):
+        thread.join(timeout=1)
+
+    log_text = (collector.session.session_dir / "logs" / "collector.log").read_text(encoding="utf-8")
+    raw_text = (collector.session.session_dir / "raw" / raw_name).read_text(encoding="utf-8")
+    assert log_text.count("init_status=success") == 1
+    assert f"collector={task_type} prepare_status=success" in log_text
+    assert repeat_connection.commands == list(PROBE_STREAM_PREPARE_COMMANDS)
+    assert "terminal monitor" not in repeat_connection.commands
+    assert "terminal logging level 7" not in repeat_connection.commands
+    assert expected_command in repeat_connection.repeat_commands
+    assert expected_command in raw_text
+
+
+def test_ar5drv_repeat_stream_stops_when_probe_prepare_fails(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+
+    class FakeRepeatConnection(FakeConnection):
+        def __init__(self) -> None:
+            super().__init__(outputs={"probe": "probe\n          ^\n% Unrecognized command found at '^' position."})
+            self.repeat_started = False
+
+        def run_repeat_stream(self, commands, raw_path, stop_event, timeout: int, line_callback=None) -> None:
+            self.repeat_started = True
+            raise AssertionError("repeat stream must not start after probe prepare failure")
+
+    main_connection = FakeConnection()
+    repeat_connection = FakeRepeatConnection()
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=Factory([main_connection, repeat_connection]))
+
+    collector.start()
+    collector._start_repeat_thread(TASK_CHANNEL_BUSY)
+    for thread in list(collector._stream_threads):
+        thread.join(timeout=1)
+
+    log_text = (collector.session.session_dir / "logs" / "collector.log").read_text(encoding="utf-8")
+    assert repeat_connection.commands == list(PROBE_STREAM_PREPARE_COMMANDS)
+    assert repeat_connection.repeat_started is False
+    assert "collector=channel_busy prepare_status=failed reason=probe_failed" in log_text
+    assert log_text.count("init_status=success") == 1
+    raw_text = (collector.session.session_dir / "raw" / "channel_busy_raw.log").read_text(encoding="utf-8")
+    assert "display ar5drv" not in raw_text
+    assert "repeat 2 delay" not in raw_text
+
+
+def test_streaming_switch_history_uses_normal_display_connection_after_main_init(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    main_connection = FakeConnection()
+    switch_connection = FakeConnection(
+        {
+            "display clock": "2026-07-06 20:27:42",
+            "display wlan mesh-link switch-history": "display wlan mesh-link switch-history\nTotal 0",
+        }
+    )
+    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=Factory([main_connection, switch_connection]))
+
+    collector.start()
+    collector._streaming_mode = True
+    assert collector._replace_main_connection_for_stream_task(TASK_SWITCH_HISTORY) is True
+    collector.run_once(TASK_SWITCH_HISTORY)
+
+    latest_text = (collector.session.session_dir / "raw" / "switch_history_latest.log").read_text(encoding="utf-8")
+    assert main_connection.closed is True
+    assert switch_connection.commands[: len(NORMAL_DISPLAY_PREPARE_COMMANDS)] == list(NORMAL_DISPLAY_PREPARE_COMMANDS)
+    assert "terminal monitor" not in switch_connection.commands
+    assert "terminal logging level 7" not in switch_connection.commands
+    assert "system-view" not in switch_connection.commands
+    assert "probe" not in switch_connection.commands
+    assert "display wlan mesh-link switch-history" in latest_text
+    assert "SHELL/" not in latest_text
 
 
 def test_stop_state_prevents_new_repeat_connection_and_start_log(tmp_path: Path) -> None:

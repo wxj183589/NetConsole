@@ -66,7 +66,21 @@ class OnlineMrConnectionError(RuntimeError):
     pass
 
 
-STREAM_PREPARE_COMMANDS: tuple[str, ...] = ("screen-length disable", "return")
+NORMAL_DISPLAY_PREPARE_COMMANDS: tuple[str, ...] = ("screen-length disable",)
+PROBE_STREAM_PREPARE_COMMANDS: tuple[str, ...] = ("screen-length disable", "system-view", "probe")
+STREAM_PREPARE_COMMANDS: tuple[str, ...] = NORMAL_DISPLAY_PREPARE_COMMANDS
+PREPARE_FAILURE_MARKERS: tuple[str, ...] = (
+    "% unrecognized command",
+    "% incomplete command",
+    "permission denied",
+    "error:",
+)
+
+
+def stream_prepare_commands(task_type: str) -> tuple[str, ...]:
+    if task_type in {TASK_CHANNEL_BUSY, TASK_AP_RADIO_STATISTICS}:
+        return PROBE_STREAM_PREPARE_COMMANDS
+    return NORMAL_DISPLAY_PREPARE_COMMANDS
 
 
 class NetmikoShellConnection(OnlineMrConnection):
@@ -312,6 +326,7 @@ class OnlineMrCollector:
         self._collector_output_writer_thread: Thread | None = None
         self._device_terminal_queue: Queue[str | None] = Queue(maxsize=20000)
         self._device_terminal_writer_thread: Thread | None = None
+        self._streaming_mode = False
 
     def start(self) -> OnlineMrSessionMeta:
         self.session = self.store.create_session(
@@ -435,7 +450,7 @@ class OnlineMrCollector:
     def run_once(self, task_type: str) -> int:
         session = self._session()
         if self.connection is None:
-            self._reconnect()
+            self._ensure_task_connection(task_type)
         collected_at = datetime.now()
         raw_parts: list[str] = []
         commands = self._task_commands(task_type)
@@ -454,7 +469,7 @@ class OnlineMrCollector:
             self._record_command_failure(task_type, command_text, exc)
             self._update_meta()
             if self.config.auto_reconnect:
-                self._reconnect()
+                self._reconnect_task_connection(task_type)
             return -1
 
     def run_forever(
@@ -675,6 +690,7 @@ class OnlineMrCollector:
     def _run_streaming_collectors(self, snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None) -> None:
         if self.cancelled or self._stream_stop.is_set():
             return
+        self._streaming_mode = True
         stream_tasks = [
             TASK_MESH_LINK,
             TASK_CHANNEL_BUSY,
@@ -684,6 +700,8 @@ class OnlineMrCollector:
         enabled = self.config.tasks.enabled_tasks()
         self._start_collector_output_writer()
         self._start_device_terminal_writer()
+        if TASK_SWITCH_HISTORY in enabled and not self._replace_main_connection_for_stream_task(TASK_SWITCH_HISTORY):
+            enabled.discard(TASK_SWITCH_HISTORY)
         self._start_terminal_monitor_thread()
         for task_type in stream_tasks:
             if self.cancelled or self._stream_stop.is_set():
@@ -699,6 +717,19 @@ class OnlineMrCollector:
             if snapshot_callback:
                 snapshot_callback(self.snapshot())
             self.sleeper(0.2)
+
+    def _ensure_task_connection(self, task_type: str) -> None:
+        if self._streaming_mode and task_type == TASK_SWITCH_HISTORY:
+            if not self._replace_main_connection_for_stream_task(task_type):
+                raise OnlineMrConnectionError(f"{task_type} prepare failed")
+            return
+        self._reconnect()
+
+    def _reconnect_task_connection(self, task_type: str) -> None:
+        if self._streaming_mode and task_type == TASK_SWITCH_HISTORY:
+            self._replace_main_connection_for_stream_task(task_type)
+            return
+        self._reconnect()
 
     def _start_repeat_thread(self, task_type: str) -> None:
         if self.cancelled or self._stream_stop.is_set():
@@ -750,19 +781,68 @@ class OnlineMrCollector:
         self._stream_threads.append(thread)
         thread.start()
 
+    def _replace_main_connection_for_stream_task(self, task_type: str) -> bool:
+        self._close_main_connection()
+        if self.cancelled or self._stream_stop.is_set():
+            return False
+        try:
+            self.connection = self.connection_factory(self.config)
+            if self.cancelled or self._stream_stop.is_set():
+                self._close_main_connection()
+                return False
+            if not self._prepare_stream_connection(self.connection, task_type):
+                self._close_main_connection()
+                return False
+            return True
+        except Exception as exc:
+            self._record_command_failure(task_type, "\n".join(stream_prepare_commands(task_type)), exc)
+            self._close_main_connection()
+            return False
+
     def _prepare_stream_connection(self, connection: OnlineMrConnection, task_type: str) -> bool:
-        for command in STREAM_PREPARE_COMMANDS:
+        commands = stream_prepare_commands(task_type)
+        for command in commands:
             if self.cancelled or self._stream_stop.is_set():
                 return False
             try:
-                connection.send_command(command, self.config.command_timeout)
+                output = connection.send_command(command, self.config.command_timeout)
             except Exception as exc:
                 if self.cancelled or self._stream_stop.is_set():
                     return False
                 if self.session:
-                    self.session.log("WARNING", f"stream_prepare failed task={task_type} command={command} error={exc}")
+                    self.session.log("WARNING", f"collector={task_type} prepare_status=failed reason={self._prepare_failure_reason(command)} command={command} error={exc}")
+                self._inc(task_type, False)
+                self._update_meta()
                 return False
+            reason = self._prepare_failure_from_output(command, output)
+            if reason:
+                if self.session:
+                    self.session.log(
+                        "WARNING",
+                        f"collector={task_type} prepare_status=failed reason={reason} command={command} output={self._compact_prepare_output(output)}",
+                    )
+                self._inc(task_type, False)
+                self._update_meta()
+                return False
+        if self.session:
+            self.session.log("INFO", f"collector={task_type} prepare_status=success commands={' | '.join(commands)}")
         return True
+
+    def _prepare_failure_from_output(self, command: str, output: str) -> str | None:
+        normalized = output.lower()
+        if any(marker in normalized for marker in PREPARE_FAILURE_MARKERS):
+            return self._prepare_failure_reason(command)
+        return None
+
+    def _prepare_failure_reason(self, command: str) -> str:
+        if command == "probe":
+            return "probe_failed"
+        if command == "system-view":
+            return "system_view_failed"
+        return "prepare_failed"
+
+    def _compact_prepare_output(self, output: str) -> str:
+        return " ".join(output.split())[:300]
 
     def _publish_stream_line(self, task_type: str, timestamp: datetime, line: str) -> None:
         if self.session is None:
