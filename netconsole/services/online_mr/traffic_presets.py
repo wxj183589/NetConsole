@@ -6,6 +6,7 @@ from netconsole.services.network_tools.iperf_runner import FOLLOW_COLLECTION_PRO
 
 
 ONLINE_MR_IPERF_DURATION_MODE = "follow_collection"
+DEFAULT_TRAFFIC_PRESET_PORT = 5201
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class TrafficPreset:
     reverse: bool
     duration_sec: int
     interval_sec: int
+    port: int = DEFAULT_TRAFFIC_PRESET_PORT
     duration_mode: str = ONLINE_MR_IPERF_DURATION_MODE
 
 

@@ -29,7 +29,7 @@ from netconsole.services.network_tools.iperf_runner import (
     run_iperf_client_preflight,
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
-from netconsole.services.online_mr.traffic_presets import get_traffic_preset, list_traffic_presets
+from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_PORT, get_traffic_preset, list_traffic_presets
 from netconsole.services.online_mr.workers.iperf3_worker import build_iperf3_json_args
 from netconsole.ui.pages.iperf_bandwidth_page import IperfBandwidthPage
 
@@ -134,6 +134,12 @@ def test_pis_tcp_downlink_max_template_omits_bandwidth_arg(tmp_path: Path) -> No
     assert "-R" in args
     assert args[args.index("-P") + 1] == "1"
     assert "-b" not in args
+
+
+def test_online_mr_traffic_presets_default_to_iperf_standard_port() -> None:
+    assert DEFAULT_TRAFFIC_PRESET_PORT == 5201
+    assert list_traffic_presets()
+    assert {preset.port for preset in list_traffic_presets()} == {5201}
 
 
 def test_pis_tcp_parallel_template_omits_bandwidth_arg(tmp_path: Path) -> None:

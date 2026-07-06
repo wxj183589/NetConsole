@@ -1436,6 +1436,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.fping_latency_warn_ms.value() == 100
     assert page.max_reconnect.maximum() == 999
     assert page.duration_minutes.maximum() == 1440
+    assert page.iperf_port_spin.value() == 5201
     assert page.iperf_duration_spin.value() == FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
     assert page.iperf_duration_spin.isHidden()
     assert "跟随采集启停" in page.iperf_duration_mode_label.text()
@@ -1547,6 +1548,7 @@ def test_online_mr_iperf_cbtc_dcs_presets_fill_fields_without_clearing_server(tm
     assert page.iperf_packet_length_spin.value() == 64
     assert page.iperf_parallel_spin.value() == 1
     assert page.iperf_interval_spin.value() == 1
+    assert page.iperf_port_spin.value() == 5201
     assert page.iperf_duration_spin.value() == FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
 
     tcp_index = page.iperf_preset_combo.findData("cbtc_dcs_tcp_observation")
@@ -1555,6 +1557,7 @@ def test_online_mr_iperf_cbtc_dcs_presets_fill_fields_without_clearing_server(tm
 
     assert page.iperf_server_edit.text() == "10.122.100.10"
     assert page.iperf_protocol_combo.currentText() == "TCP"
+    assert page.iperf_port_spin.value() == 5201
     assert page.iperf_tcp_threshold_edit.text() == "1"
     assert not page.iperf_tcp_pacing_check.isChecked()
     assert page.iperf_tcp_pacing_edit.text() == ""

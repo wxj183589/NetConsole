@@ -96,7 +96,7 @@ from netconsole.services.online_mr.core.realtime_cache import OnlineMrRealtimeCa
 from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.db.event_writer import EventWriter
 from netconsole.services.online_mr.ping_presets import DEFAULT_PING_PRESET_KEY, get_ping_preset, list_ping_presets
-from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_KEY, get_traffic_preset, list_traffic_presets
+from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_KEY, DEFAULT_TRAFFIC_PRESET_PORT, get_traffic_preset, list_traffic_presets
 from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngine
 from netconsole.services.online_mr.event_bus import OnlineMrEventBus
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
@@ -519,7 +519,7 @@ class OnlineMrCollectionPage(QWidget):
         self.enable_iperf_check = QCheckBox()
         self.iperf_preset_combo = NoWheelComboBox()
         self.iperf_server_edit = QLineEdit()
-        self.iperf_port_spin = self._no_wheel_spin(1, 65535, 5010)
+        self.iperf_port_spin = self._no_wheel_spin(1, 65535, DEFAULT_TRAFFIC_PRESET_PORT)
         self.iperf_protocol_combo = NoWheelComboBox()
         self.iperf_protocol_combo.addItems(["TCP", "UDP"])
         self.iperf_direction_combo = NoWheelComboBox()
@@ -4773,6 +4773,7 @@ class OnlineMrCollectionPage(QWidget):
                 self.iperf_direction_combo.setCurrentIndex(direction_index)
             self.iperf_parallel_spin.setValue(preset.parallel)
             self.iperf_interval_spin.setValue(preset.interval_sec)
+            self.iperf_port_spin.setValue(preset.port)
             self.iperf_duration_spin.setValue(FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
             self.iperf_tcp_threshold_edit.setText(f"{preset.report_threshold_mbps:g}" if preset.protocol.upper() == "TCP" else "")
             self.iperf_udp_bitrate_edit.setText(f"{preset.udp_bitrate_mbps:g}" if preset.udp_bitrate_mbps is not None else "")
