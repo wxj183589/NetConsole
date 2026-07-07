@@ -501,7 +501,8 @@ def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
 
     first_db = Path(sources[0]["parsed_db_path"])
     second_db = Path(sources[1]["parsed_db_path"])
-    with sqlite3.connect(first_db) as conn:
+    conn = sqlite3.connect(first_db)
+    try:
         conn.execute(
             """
             INSERT INTO switch_events (
@@ -511,13 +512,20 @@ def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
                 ('ACTIVE_SWITCH', '2025-12-03 10:00:00.000', 1, NULL, '2025-12-03 10:00:00.000', NULL, NULL, NULL, '{}', 1, 2)
             """,
         )
-    with sqlite3.connect(second_db) as conn:
+        conn.commit()
+    finally:
+        conn.close()
+    conn = sqlite3.connect(second_db)
+    try:
         conn.execute(
             """
             INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line_start, raw_line_end)
             VALUES (1, 'second.log', 9, 'ERROR', 'x', 'x', 'second', 9, 9)
             """,
         )
+        conn.commit()
+    finally:
+        conn.close()
 
     event_total, events = repo.query_events(100, 0, first_id)
     issue_total, issues = repo.query_issues(100, 0, second_id)
@@ -700,10 +708,10 @@ def test_mesh_repository_builds_downsampled_link_aggregates(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [source])
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     rows = repo.query_link_aggregates(bucket_seconds=10)
-    assert len(rows) == 1
-    assert rows[0]["bucket_seconds"] == 10
-    assert rows[0]["sample_count"] == 2
-    assert rows[0]["avg_local_rssi"] == 37
+    assert rows == []
+    detail_path = Path(repo.list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(detail_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'mesh_link_aggregates'").fetchone()[0] == 0
 
 
 def _app():
@@ -937,7 +945,7 @@ def test_anchor_dialog_signal_chart_uses_raw_positive_rssi(tmp_path):
 
 
 def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
-    repo = MeshMrRepository(tmp_path / "mesh.sqlite")
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
     _insert_mesh_samples(repo.path, first_count=10000, second_count=10000)
     segment = repo.query_run_context_segment(5000)
     sample_times = {row["sample_time"] for row in segment["rows"]}
@@ -949,7 +957,7 @@ def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
 def test_full_active_chart_query_loads_beyond_link_detail_page_size(tmp_path):
     from netconsole.ui.mesh_chart_payload import build_chart_payload
 
-    repo = MeshMrRepository(tmp_path / "mesh.sqlite")
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
     _insert_mesh_samples(repo.path, first_count=1005, second_count=0)
 
     segment = repo.query_active_link_chart_segments()
@@ -1492,6 +1500,44 @@ def test_active_channel_load_payload_does_not_include_next_or_peer_side_metrics(
         assert key not in payload["active_series"]
 
 
+def test_chart_payload_uses_compact_v2_scalar_metrics_without_json_payload():
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    rows = [
+        {
+            "id": 1,
+            "sample_time": "2025-12-03 10:00:01.000",
+            "link_state": "ACTIVE",
+            "peer_mac_normalized": "30f5277a5a2f",
+            "peer_ap_name": "AP-01",
+            "peer_site": "Station-01",
+            "peer_radio": "radio1",
+            "local_rssi_db": 36,
+            "peer_rssi_db": 43,
+            "local_tx_busy": 3,
+            "local_rx_busy": 5,
+        },
+        {
+            "id": 2,
+            "sample_time": "2025-12-03 10:00:02.000",
+            "link_state": "ACTIVE",
+            "peer_mac_normalized": "30f5277a5a2f",
+            "peer_ap_name": "AP-01",
+            "peer_site": "Station-01",
+            "peer_radio": "radio1",
+            "local_rssi_db": 37,
+            "peer_rssi_db": 44,
+            "local_tx_busy": 4,
+            "local_rx_busy": 6,
+        },
+    ]
+    payload = build_chart_payload({"anchor": rows[0], "rows": rows}, {"anchor": rows[0], "rows": rows, "events": []})
+    assert payload["peer_series"]["local_rssi"].tolist() == [36, 37]
+    assert payload["active_series"]["active_local_rssi"].tolist() == [36, 37]
+    assert payload["active_series"]["active_local_tx_busy"].tolist() == [3, 4]
+    assert payload["active_series"]["active_local_rx_busy"].tolist() == [5, 6]
+
+
 def test_current_active_payload_excludes_next_active_fields():
     from netconsole.ui.mesh_chart_payload import build_chart_payload
 
@@ -1888,14 +1934,15 @@ def test_mesh_repository_lists_pages_in_record_sequence_order(tmp_path):
     assert links[0]["sample_time"] == "2025-12-03 10:00:03.000"
     assert links[0]["source_file_order"] == 1
     _, events = repo.query_events(10, 0)
-    assert [event["event_time"] for event in events if event["event_type"] == EVENT_ACTIVE_SWITCH] == ["2025-12-03 10:00:03.000"]
+    assert [event["event_time"] for event in events if event["event_type"] == EVENT_ACTIVE_SWITCH] == []
     sources = repo.list_source_files()
     assert [source["first_sample_time"] for source in sources] == ["2025-12-03 10:00:01.000", "2025-12-03 10:00:03.000"]
-    with sqlite3.connect(repo.path) as conn:
+    first_detail = Path(sources[0]["parsed_db_path"])
+    with sqlite3.connect(first_detail) as conn:
         conn.execute(
             """
-            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_file, raw_line_start, raw_line_end)
-            VALUES (NULL, 'z.log', 9, 'ERROR', 'x', 'x', 'x', 'z.log', 9, 9), (NULL, 'a.log', 2, 'ERROR', 'x', 'x', 'x', 'a.log', 2, 2)
+            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line_start, raw_line_end)
+            VALUES (1, 'z.log', 9, 'ERROR', 'x', 'x', 'x', 9, 9), (1, 'a.log', 2, 'ERROR', 'x', 'x', 'x', 2, 2)
             """
         )
     _, issues = repo.query_issues(10, 0)
@@ -2045,7 +2092,8 @@ def test_old_derived_events_upgrade_to_raw_positive_rssi(tmp_path):
     source.write_text("\n".join(["[1] 2025/12/03 10:00:01.000", first, "[1] 2025/12/03 10:00:02.000", second]), encoding="utf-8")
     MeshImportService("demo", paths).import_files(profile, [source])
     db_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
-    with sqlite3.connect(db_path) as conn:
+    detail_path = Path(MeshMrRepository(db_path).list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(detail_path) as conn:
         conn.execute("DELETE FROM schema_meta WHERE key = 'derived_analysis_version'")
         conn.execute(
             "UPDATE switch_events SET details_json = ? WHERE event_type = ?",
@@ -2149,8 +2197,8 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
                         "0d 00h 00m 01s",
                         1,
                         "s1",
-                        '{"local_rssi_db": 36, "peer_rssi_db": 43}',
-                        "{}",
+                        36,
+                        43,
                         f"fp-{link_id}",
                     )
                 )
@@ -2161,7 +2209,7 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
                 INSERT INTO mesh_links (
                     id, sample_id, source_file_id, source_file_order, record_seq, source_line_number, radio, sample_time,
                     link_state_raw, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
-                    duration_text, duration_seconds, session_id, metrics_json, deltas_json, record_fingerprint
+                    duration_text, duration_seconds, session_id, local_rssi_db, peer_rssi_db, record_fingerprint
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             links,

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
 from typing import Callable
@@ -12,6 +13,8 @@ from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STAN
 
 MR_RAW_MESH_LOG = "MR_RAW_MESH_LOG"
 VEHICLE_MR_REALTIME_OFFLINE = "VEHICLE_MR_REALTIME_OFFLINE"
+MAX_RAW_EVIDENCE_ROWS = 10000
+MAX_RAW_EVIDENCE_ROWS_PER_EVENT = 12
 
 
 @dataclass(frozen=True)
@@ -485,11 +488,12 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
     segments = []
     current: dict[str, object] | None = None
     current_samples: list[dict[str, object]] = []
+    row_index = _build_peer_time_index(rows)
     for sample in samples:
         peer = str(sample.get("active_peer_key") or "")
         if not peer:
             if current:
-                _finish_segment(current, current_samples, rows, rules)
+                _finish_segment(current, current_samples, row_index, rules)
                 segments.append(current)
             current, current_samples = None, []
             continue
@@ -498,7 +502,7 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
             current_samples.append(sample)
             continue
         if current:
-            _finish_segment(current, current_samples, rows, rules)
+            _finish_segment(current, current_samples, row_index, rules)
             segments.append(current)
         current = {
             "sequence": len(segments) + 1,
@@ -510,7 +514,7 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
         }
         current_samples = [sample]
     if current:
-        _finish_segment(current, current_samples, rows, rules)
+        _finish_segment(current, current_samples, row_index, rules)
         segments.append(current)
     return segments
 
@@ -520,13 +524,14 @@ def analyze_switch_events(segments: list[dict[str, object]], samples: list[dict[
     by_radio: dict[object, list[dict[str, object]]] = {}
     for segment in segments:
         by_radio.setdefault(segment.get("radio"), []).append(segment)
+    sample_index = _build_radio_time_index(samples)
     for radio, radio_segments in by_radio.items():
         ordered = sorted(radio_segments, key=lambda row: str(row.get("start_time") or ""))
         for index, (previous, current) in enumerate(zip(ordered, ordered[1:])):
             if previous.get("active_peer_key") == current.get("active_peer_key"):
                 continue
-            before = _samples_between(samples, radio, previous.get("end_time"), rules.switch_late_window_seconds, before=True)
-            after = _samples_between(samples, radio, current.get("start_time"), rules.switch_target_window_seconds, before=False)
+            before = _samples_between_indexed(sample_index, samples, radio, previous.get("end_time"), rules.switch_late_window_seconds, before=True)
+            after = _samples_between_indexed(sample_index, samples, radio, current.get("start_time"), rules.switch_target_window_seconds, before=False)
             switch_type = "NORMAL_SWITCH"
             severity = "GOOD"
             diagnosis = "主链路切换未发现明显异常。"
@@ -761,10 +766,17 @@ def analyze_link_rebuilds(rows: list[dict[str, object]]) -> list[dict[str, objec
 def collect_raw_evidence(rows: list[dict[str, object]], switches: list[dict[str, object]], anomalies: list[dict[str, object]], rebuilds: list[dict[str, object]]) -> list[dict[str, object]]:
     evidence = []
     seen: set[tuple[object, object, object]] = set()
+    time_index = _build_radio_time_index(rows)
+    line_index: dict[tuple[object, object], list[dict[str, object]]] = {}
+    for row in rows:
+        line_index.setdefault((row.get("radio"), row.get("source_line_number")), []).append(row)
 
-    def add(related_sheet: str, related_sequence: object, related_event_type: object, evidence_id: str, predicate) -> None:
-        candidates = [row for row in rows if predicate(row)]
-        for row in candidates[:40]:
+    def add(related_sheet: str, related_sequence: object, related_event_type: object, evidence_id: str, candidates: list[dict[str, object]]) -> None:
+        if len(evidence) >= MAX_RAW_EVIDENCE_ROWS:
+            return
+        for row in candidates[:MAX_RAW_EVIDENCE_ROWS_PER_EVENT]:
+            if len(evidence) >= MAX_RAW_EVIDENCE_ROWS:
+                return
             key = (row.get("source_file_id"), row.get("source_line_number"), related_sequence)
             if key in seen:
                 continue
@@ -796,14 +808,12 @@ def collect_raw_evidence(rows: list[dict[str, object]], switches: list[dict[str,
     for event in switches:
         radio = event.get("radio")
         switch_time = event.get("switch_time")
-        add("切换事件分析", event.get("sequence"), event.get("switch_type"), str(event.get("evidence_id") or ""), lambda row, r=radio, t=switch_time: row.get("radio") == r and abs(_seconds_between(row.get("sample_time"), t) or 999999) <= 5)
+        add("切换事件分析", event.get("sequence"), event.get("switch_type"), str(event.get("evidence_id") or ""), _rows_around(time_index, radio, switch_time, 5))
     for event in anomalies:
         radio = event.get("radio")
-        start = str(event.get("event_time_start") or "")
-        end = str(event.get("event_time_end") or "")
-        add("异常事件分析", event.get("event_sequence"), event.get("event_type"), str(event.get("evidence_id") or ""), lambda row, r=radio, s=start, e=end: row.get("radio") == r and s <= str(row.get("sample_time") or "") <= e)
+        add("异常事件分析", event.get("event_sequence"), event.get("event_type"), str(event.get("evidence_id") or ""), _rows_between_time(time_index, radio, event.get("event_time_start"), event.get("event_time_end")))
     for event in rebuilds:
-        add("链路重建计数异常", event.get("sequence"), event.get("rebuild_type"), str(event.get("evidence_id") or ""), lambda row, e=event: row.get("radio") == e.get("radio") and row.get("source_line_number") == e.get("source_line_number"))
+        add("链路重建计数异常", event.get("sequence"), event.get("rebuild_type"), str(event.get("evidence_id") or ""), line_index.get((event.get("radio"), event.get("source_line_number")), []))
     return evidence
 
 
@@ -892,10 +902,10 @@ def build_overview(
     return overview
 
 
-def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]], rows: list[dict[str, object]], rules: MeshQualityRules) -> None:
+def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]], row_index: dict[tuple[object, str], tuple[list[datetime], list[dict[str, object]]]], rules: MeshQualityRules) -> None:
     peer = str(segment.get("active_peer_key") or "")
     radio = segment.get("radio")
-    row_matches = [row for row in rows if row.get("radio") == radio and row.get("peer_mac") == peer and str(segment.get("start_time")) <= str(row.get("sample_time") or "") <= str(segment.get("end_time"))]
+    row_matches = _peer_rows_between(row_index, radio, peer, segment.get("start_time"), segment.get("end_time"))
     mr = [_num(row.get("active_mr_rssi")) for row in samples]
     peer_rssi = [_num(row.get("active_peer_rssi")) for row in samples]
     tx = [_num(row.get("active_tx_busy")) for row in samples]
@@ -988,6 +998,128 @@ def _samples_between(samples: list[dict[str, object]], radio: object, anchor: ob
         if not before and -seconds <= delta <= 0:
             result.append(sample)
     return result
+
+
+def _build_radio_time_index(samples: list[dict[str, object]]) -> dict[object, tuple[list[datetime], list[dict[str, object]]]]:
+    grouped: dict[object, list[dict[str, object]]] = {}
+    for sample in samples:
+        grouped.setdefault(sample.get("radio"), []).append(sample)
+    result: dict[object, tuple[list[datetime], list[dict[str, object]]]] = {}
+    for radio, rows in grouped.items():
+        ordered = sorted(rows, key=lambda row: _dt(row.get("sample_time")))
+        result[radio] = ([_dt(row.get("sample_time")) for row in ordered], ordered)
+    return result
+
+
+def _build_peer_time_index(rows: list[dict[str, object]]) -> dict[tuple[object, str], tuple[list[datetime], list[dict[str, object]]]]:
+    grouped: dict[tuple[object, str], list[dict[str, object]]] = {}
+    for row in rows:
+        peer = _peer(row)
+        if peer:
+            grouped.setdefault((row.get("radio"), peer), []).append(row)
+    result: dict[tuple[object, str], tuple[list[datetime], list[dict[str, object]]]] = {}
+    for key, peer_rows in grouped.items():
+        ordered = sorted(peer_rows, key=lambda row: _dt(row.get("sample_time")))
+        result[key] = ([_dt(row.get("sample_time")) for row in ordered], ordered)
+    return result
+
+
+def _samples_between_indexed(
+    sample_index: dict[object, tuple[list[datetime], list[dict[str, object]]]],
+    samples: list[dict[str, object]],
+    radio: object,
+    anchor: object,
+    seconds: int,
+    *,
+    before: bool,
+) -> list[dict[str, object]]:
+    anchor_dt = _dt_or_none(anchor)
+    indexed = sample_index.get(radio)
+    if anchor_dt is None or indexed is None:
+        return _samples_between(samples, radio, anchor, seconds, before=before)
+    times, rows = indexed
+    if before:
+        start, end = anchor_dt - timedelta(seconds=seconds), anchor_dt
+    else:
+        start, end = anchor_dt, anchor_dt + timedelta(seconds=seconds)
+    left = bisect_left(times, start)
+    right = bisect_right(times, end)
+    return rows[left:right]
+
+
+def _rows_around(
+    time_index: dict[object, tuple[list[datetime], list[dict[str, object]]]],
+    radio: object,
+    anchor: object,
+    seconds: int,
+) -> list[dict[str, object]]:
+    anchor_dt = _dt_or_none(anchor)
+    if anchor_dt is None:
+        return []
+    return _rows_between_dt(time_index, radio, anchor_dt - timedelta(seconds=seconds), anchor_dt + timedelta(seconds=seconds))
+
+
+def _rows_between_time(
+    time_index: dict[object, tuple[list[datetime], list[dict[str, object]]]],
+    radio: object,
+    start_time: object,
+    end_time: object,
+) -> list[dict[str, object]]:
+    start = _dt_or_none(start_time)
+    end = _dt_or_none(end_time)
+    if start is None or end is None:
+        return []
+    return _rows_between_dt(time_index, radio, start, end)
+
+
+def _rows_between_dt(
+    time_index: dict[object, tuple[list[datetime], list[dict[str, object]]]],
+    radio: object,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, object]]:
+    indexed = time_index.get(radio)
+    if indexed is None:
+        return []
+    times, rows = indexed
+    left = bisect_left(times, start)
+    right = bisect_right(times, end)
+    return rows[left:right]
+
+
+def _peer_rows_between(
+    row_index: dict[tuple[object, str], tuple[list[datetime], list[dict[str, object]]]],
+    radio: object,
+    peer: str,
+    start_time: object,
+    end_time: object,
+) -> list[dict[str, object]]:
+    indexed = row_index.get((radio, peer))
+    start = _dt_or_none(start_time)
+    end = _dt_or_none(end_time)
+    if indexed is None or start is None or end is None:
+        return []
+    times, rows = indexed
+    left = bisect_left(times, start)
+    right = bisect_right(times, end)
+    return rows[left:right]
+
+
+def _dt(value: object) -> datetime:
+    parsed = _dt_or_none(value)
+    return parsed or datetime.min
+
+
+def _dt_or_none(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _duration(samples: list[dict[str, object]]) -> float:

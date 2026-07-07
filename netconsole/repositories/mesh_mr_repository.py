@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -845,7 +846,6 @@ class MeshMrRepository:
             return DeleteParsedDataResult(False, "", message="source_file_id 为空，拒绝删除解析数据")
         value = int(source_file_id)
         if self._is_index_database():
-            counts = self.count_parsed_data_by_source_file(value)
             now = dt_text(datetime.now()) or ""
             with self._connect() as conn:
                 row = conn.execute("SELECT parsed_db_path, deleted_at FROM source_files WHERE id = ?", (value,)).fetchone()
@@ -853,7 +853,22 @@ class MeshMrRepository:
                     return DeleteParsedDataResult(False, str(value), message="源文件记录不存在，无法删除解析数据")
                 status = "all_deleted" if str(row["deleted_at"] or "") else "parsed_deleted"
                 parsed_db_path = Path(str(row["parsed_db_path"] or "").strip().strip("'\""))
+                counts = {"links": 0, "events": 0, "issues": 0, "caches": 0}
+                if parsed_db_path.exists():
+                    detail_conn: sqlite3.Connection | None = None
+                    try:
+                        detail_conn = sqlite3.connect(parsed_db_path)
+                        counts = {
+                            "links": int(detail_conn.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0]),
+                            "events": int(detail_conn.execute("SELECT COUNT(*) FROM switch_events").fetchone()[0]),
+                            "issues": int(detail_conn.execute("SELECT COUNT(*) FROM parse_issues").fetchone()[0]),
+                            "caches": 0,
+                        }
+                    finally:
+                        if detail_conn is not None:
+                            detail_conn.close()
                 try:
+                    gc.collect()
                     if parsed_db_path.exists():
                         parsed_db_path.unlink()
                     for suffix in ("-wal", "-shm"):
@@ -1334,7 +1349,7 @@ class MeshMrRepository:
         events_where = where
         with self._connect() as conn:
             rows = [
-                dict(row)
+                _with_synthetic_payload(row)
                 for row in conn.execute(
                     f"""
                     SELECT {_ACTIVE_POINT_CHART_COLUMNS}

@@ -104,6 +104,7 @@ class MeshPeerDetailDialog(QDialog):
         self.locked_selected_point: MeshSelectedPoint | None = None
         self.focus_peer_mac = ""
         self.focus_peer_ap_name = ""
+        self._is_closing = False
 
         self.summary_labels: dict[str, QLabel] = {}
         self.status_label = QLabel(self.i18n.t("mesh_analysis.loading_chart"))
@@ -247,6 +248,8 @@ class MeshPeerDetailDialog(QDialog):
         self.worker.start()
 
     def _on_loaded(self, payload: object) -> None:
+        if self._is_closing:
+            return
         kind = str(payload.get("kind") or "") if isinstance(payload, dict) else ""
         was_partial = bool((self.chart_payload or {}).get("metadata", {}).get("partial")) if isinstance(self.chart_payload, dict) else False
         preserve_center = kind == "full" and self.user_moved_window
@@ -289,6 +292,8 @@ class MeshPeerDetailDialog(QDialog):
             self.worker = None
 
     def _on_failed(self, error: str) -> None:
+        if self._is_closing:
+            return
         self.status_label.setText(error)
         if self.worker is not None:
             self.worker.deleteLater()
@@ -348,6 +353,8 @@ class MeshPeerDetailDialog(QDialog):
         ]
 
     def _mark_all_dirty_and_render_current(self, *_args) -> None:
+        if self._is_closing:
+            return
         self.current_session_id = str(self.session_filter.currentData() or "") if self.session_filter_container.isVisible() else self.current_session_id
         for controller in self.hover_controllers.values():
             controller.clear_cache()
@@ -355,7 +362,7 @@ class MeshPeerDetailDialog(QDialog):
         self._render_current_tab()
 
     def _render_current_tab(self, *_args) -> None:
-        if self.chart_payload is None or not self.tab_keys:
+        if self._is_closing or self.chart_payload is None or not self.tab_keys:
             return
         key = self.tab_keys[self.tabs.currentIndex()]
         self._sync_active_controllers(key)
@@ -435,6 +442,8 @@ class MeshPeerDetailDialog(QDialog):
             if values is not None and line is not None:
                 self._draw_short_gap_bridges(artists, field, values, base_indices, line.get_color())
         self._draw_overlays(key, artists, base_indices)
+        if key not in self.hover_controllers or key not in self.canvases or self._is_closing:
+            return
         self.hover_controllers[key].set_context(payload, key, [field for field, _label, _style in self._series_specs(key)], self.current_session_id)
         artists["last_count"] = rendered_count
         if self.visible_sample_count == 0 and rendered_count:
@@ -790,11 +799,20 @@ class MeshPeerDetailDialog(QDialog):
 
     def _clear_overlay_artists(self, artists: dict[str, object]) -> None:
         for item in artists.get("collections", []):
-            item.remove()
+            try:
+                item.remove()
+            except ValueError:
+                pass
         for item in artists.get("spans", []):
-            item.remove()
+            try:
+                item.remove()
+            except ValueError:
+                pass
         for item in artists.get("texts", []):
-            item.remove()
+            try:
+                item.remove()
+            except ValueError:
+                pass
         artists["collections"] = []
         artists["spans"] = []
         artists["texts"] = []
@@ -1066,6 +1084,7 @@ class MeshPeerDetailDialog(QDialog):
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._is_closing = True
         self._save_window_geometry()
         if self.worker is not None and self.worker.isRunning():
             self.worker.quit()

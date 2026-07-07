@@ -257,6 +257,7 @@ class MeshLogAnalysisPage(QWidget):
         self.keyword_filter = QLineEdit()
         self.detail_text = QTextEdit()
         self.detail_text.setReadOnly(True)
+        self.detail_text.setVisible(False)
 
         self.source_pagination = PaginationWidget(self.i18n)
         self.link_pagination = PaginationWidget(self.i18n)
@@ -485,7 +486,6 @@ class MeshLogAnalysisPage(QWidget):
         links_layout.addLayout(filters)
         links_layout.addWidget(self.link_table, 1)
         links_layout.addWidget(self.link_pagination)
-        links_layout.addWidget(self.detail_text)
         active_build_page = QWidget()
         active_build_layout = QVBoxLayout(active_build_page)
         active_build_layout.addWidget(self.active_build_order_table)
@@ -540,7 +540,6 @@ class MeshLogAnalysisPage(QWidget):
         self.keyword_filter.textChanged.connect(self._schedule_link_refresh)
         self.filter_timer.timeout.connect(self.refresh_link_table)
         self.mr_selection_timer.timeout.connect(self.select_current_mr)
-        self.link_table.itemSelectionChanged.connect(self.show_link_detail)
         self.link_table.cellDoubleClicked.connect(self._open_peer_from_link_cell)
         self.source_table.cellDoubleClicked.connect(self._open_source_file_links)
         self.source_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -885,25 +884,8 @@ class MeshLogAnalysisPage(QWidget):
         self.dirty_tabs.discard("link")
 
     def show_link_detail(self) -> None:
-        row = self.link_table.currentRow()
-        item = self.link_table.item(row, 0) if row >= 0 else None
-        data = item.data(Qt.UserRole) if item else None
-        if not isinstance(data, dict):
-            self.detail_text.clear()
-            return
-        metrics = _json_dict(data.get("metrics_json"))
-        deltas = _json_dict(data.get("deltas_json"))
-        lines = [
-            f"Session: {data.get('session_id') or '-'}",
-            f"CPU: {metrics.get('local_cpu_percent')}/{metrics.get('peer_cpu_percent')}",
-            f"Mem: {metrics.get('local_mem_percent')}/{metrics.get('peer_mem_percent')}",
-            f"TxDesFreeCnt: {metrics.get('local_tx_des_free_cnt')}/{metrics.get('peer_tx_des_free_cnt')}",
-            f"Tx/Rx: {metrics.get('local_tx')}/{metrics.get('peer_tx')}  {metrics.get('local_rx')}/{metrics.get('peer_rx')}",
-            f"Retry/Err: {metrics.get('local_retry')}/{metrics.get('peer_retry')}  {metrics.get('local_err')}/{metrics.get('peer_err')}",
-            f"Delta: {deltas}",
-            f"Raw定位: {data.get('raw_file') or data.get('archived_filename') or '-'}:{data.get('raw_line_start') or data.get('source_line_number') or '-'}",
-        ]
-        self.detail_text.setPlainText("\n".join(lines))
+        self.detail_text.clear()
+        self.detail_text.hide()
 
     def open_mr_folder(self) -> None:
         profile = self._require_profile()
@@ -1467,6 +1449,10 @@ class MeshLogAnalysisPage(QWidget):
         finally:
             self._restoring_column_widths = False
 
+    @staticmethod
+    def _canonical_peer_mac(value: object) -> str:
+        return "".join(character for character in str(value or "").lower() if character in "0123456789abcdef")
+
     def _open_peer_from_link_cell(self, row: int, column: int) -> None:
         if column not in {3, 4} or self.current_profile is None:
             return
@@ -1474,23 +1460,30 @@ class MeshLogAnalysisPage(QWidget):
         data = item.data(Qt.UserRole) if item else None
         if not isinstance(data, dict):
             return
-        peer = data.get("peer_mac_normalized")
-        if not peer:
+        peer = self._canonical_peer_mac(data.get("peer_mac_normalized") or data.get("peer_mac_raw"))
+        if len(peer) != 12:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行没有有效 AP MAC，无法打开单个 AP 分析。")
             return
         link_id = int(data.get("id") or 0) or None
-        self._open_peer_dialog(str(peer), int(data.get("radio") or 0), str(data.get("session_id") or ""), link_id, self.current_source_file_id)
+        self._open_peer_dialog(peer, int(data.get("radio") or 0), str(data.get("session_id") or ""), link_id, self.current_source_file_id)
 
     def _open_peer_from_event_cell(self, row: int, column: int) -> None:
         if column not in {3, 4} or self.current_profile is None:
             return
         text = self.event_table.item(row, column).text() if self.event_table.item(row, column) else ""
-        peer = text.replace("-", "").replace(":", "").lower()
+        peer = self._canonical_peer_mac(text)
         if len(peer) == 12:
             radio = int(self.event_table.item(row, 1).text()) if self.event_table.item(row, 1) and self.event_table.item(row, 1).text().isdigit() else None
             self._open_peer_dialog(peer, radio, "", None, self.current_source_file_id)
+        else:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前事件没有有效 AP MAC，无法打开单个 AP 分析。")
 
     def _open_peer_dialog(self, peer_mac: str, radio: int | None, session_id: str, anchor_link_id: int | None = None, source_file_id: int | None = None) -> None:
         if self.current_profile is None:
+            return
+        peer_mac = self._canonical_peer_mac(peer_mac)
+        if len(peer_mac) != 12:
+            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行没有有效 AP MAC，无法打开单个 AP 分析。")
             return
         dialog = MeshPeerDetailDialog(
             self.i18n,

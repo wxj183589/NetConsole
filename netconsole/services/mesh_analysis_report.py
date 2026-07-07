@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
 from typing import Callable
 
-from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, format_mac_h3c
+from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_quality_analysis import (
     MR_RAW_MESH_LOG,
     MeshQualityRules,
@@ -20,6 +21,8 @@ from netconsole.services.mesh_quality_analysis import (
 
 ProgressCallback = Callable[[int, str], None]
 CancelCallback = Callable[[], bool]
+_REPORT_METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
+_REPORT_METRIC_SELECT = ", ".join(f"ml.{column}" for column in _REPORT_METRIC_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,7 @@ class MeshReportCancelled(RuntimeError):
 class MeshAnalysisReportService:
     def __init__(self, db_path: Path, mr_name: str = "") -> None:
         self.db_path = Path(db_path)
+        self._active_db_path = self.db_path
         self.mr_name = mr_name or self.db_path.parent.name
 
     def build_report(
@@ -115,6 +119,7 @@ class MeshAnalysisReportService:
         should_cancel: CancelCallback | None = None,
     ) -> MeshAnalysisReportModel:
         options = options or MeshReportOptions()
+        options = self._resolve_report_options(options)
         progress = progress or (lambda _value, _message: None)
         should_cancel = should_cancel or (lambda: False)
         self._raise_if_cancelled(should_cancel)
@@ -254,7 +259,7 @@ class MeshAnalysisReportService:
                     ml.peer_radio_id, ml.peer_radio, ml.peer_radio_label, ml.peer_radio_mac,
                     ml.peer_match_rule, ml.peer_resolve_source, ml.establish_time,
                     ml.duration_text, ml.duration_seconds, ml.link_count, ml.session_id,
-                    ml.metrics_json, ml.deltas_json, ml.local_noise_dbm, ml.peer_noise_dbm,
+                    {_REPORT_METRIC_SELECT}, ml.local_noise_dbm, ml.peer_noise_dbm,
                     ml.local_signal_dbm, ml.peer_signal_dbm,
                     sf.archived_filename, sf.original_filename
                 FROM mesh_links ml
@@ -264,7 +269,7 @@ class MeshAnalysisReportService:
                 """,
                 values,
             ).fetchall()
-        return [_normalize_link_row(dict(row)) for row in rows]
+        return [_normalize_link_row(_report_row_payload(dict(row))) for row in rows]
 
     def _load_events(self, options: MeshReportOptions) -> list[dict[str, object]]:
         clauses: list[str] = []
@@ -297,7 +302,7 @@ class MeshAnalysisReportService:
             rows = conn.execute(
                 f"""
                 SELECT *,
-                       ('raw定位:' || COALESCE(raw_file, source_file, '') || ':' || COALESCE(raw_line_start, line_number)) AS raw_line
+                       ('raw定位:' || COALESCE(source_file, '') || ':' || COALESCE(raw_line_start, line_number)) AS raw_line
                 FROM parse_issues
                 {where}
                 ORDER BY source_file ASC, line_number ASC, id ASC
@@ -318,9 +323,31 @@ class MeshAnalysisReportService:
         return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self._active_db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _resolve_report_options(self, options: MeshReportOptions) -> MeshReportOptions:
+        self._active_db_path = self.db_path
+        if self.db_path.name != "mesh.sqlite" or not self.db_path.exists():
+            return options
+        try:
+            repo = MeshMrRepository(self.db_path)
+            sources = repo.list_source_files()
+        except Exception:
+            return options
+        selected = None
+        if options.source_file_id is not None:
+            selected = next((row for row in sources if int(row.get("id") or 0) == int(options.source_file_id)), None)
+        elif len(sources) == 1:
+            selected = sources[0]
+        if selected is None:
+            return options
+        parsed_db_path = Path(str(selected.get("parsed_db_path") or ""))
+        if parsed_db_path.exists():
+            self._active_db_path = parsed_db_path
+            return replace(options, source_file_id=None)
+        return options
 
     @staticmethod
     def _raise_if_cancelled(should_cancel: CancelCallback) -> None:
@@ -564,6 +591,13 @@ def _metric_statistics(rows: list[dict[str, object]], fields: tuple[str, ...], m
             item[f"{field_name}_max"] = max(values) if values else ""
         result.append(item)
     return sorted(result, key=lambda item: (str(item.get("radio") or ""), str(item.get("peer_mac") or "")))
+
+
+def _report_row_payload(row: dict[str, object]) -> dict[str, object]:
+    metrics = {column: row.get(column) for column in _REPORT_METRIC_COLUMNS if row.get(column) is not None}
+    row.setdefault("metrics_json", json.dumps(metrics, ensure_ascii=False))
+    row.setdefault("deltas_json", "{}")
+    return row
 
 
 def _normalize_link_row(row: dict[str, object]) -> dict[str, object]:

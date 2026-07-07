@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
@@ -16,6 +17,18 @@ class ActiveRun:
     start_sample_index: int
     end_sample_index: int
     active_sample_indices: tuple[int, ...]
+
+
+_METRIC_KEYS = (
+    "local_rssi_db",
+    "peer_rssi_db",
+    "local_noise_raw",
+    "peer_noise_raw",
+    "local_tx_busy",
+    "peer_tx_busy",
+    "local_rx_busy",
+    "peer_rx_busy",
+)
 
 
 def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, object]) -> dict[str, object]:
@@ -56,7 +69,7 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
             bounds = session_bounds.setdefault(session_id, [str(row.get("sample_time")), str(row.get("sample_time"))])
             bounds[0] = min(bounds[0], str(row.get("sample_time")))
             bounds[1] = max(bounds[1], str(row.get("sample_time")))
-        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        metrics = _metrics(row)
         peer_series["local_rssi"][index] = _float(metrics.get("local_rssi_db"))
         peer_series["peer_rssi"][index] = _float(metrics.get("peer_rssi_db"))
         peer_series["local_noise"][index] = _float(metrics.get("local_noise_raw"))
@@ -288,7 +301,7 @@ def assign_active_series(
                 active_peer_ap_names[sample_index] = str(active_row.get("peer_ap_name") or "")
                 active_peer_sites[sample_index] = str(active_row.get("peer_site") or "")
                 active_peer_radios[sample_index] = str(active_row.get("peer_radio") or active_row.get("peer_radio_label") or "")
-                metrics = active_row.get("metrics") if isinstance(active_row.get("metrics"), dict) else {}
+                metrics = _metrics(active_row)
                 active_series["active_local_rssi"][sample_index] = _float(metrics.get("local_rssi_db"))
                 active_peer_rssi[sample_index] = _float(metrics.get("peer_rssi_db"))
                 active_series["active_local_tx_busy"][sample_index] = _float(metrics.get("local_tx_busy"))
@@ -308,7 +321,7 @@ def assign_standby_links(
 
 
 def _standby_summary(row: dict[str, object]) -> dict[str, object]:
-    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    metrics = _metrics(row)
     return {
         "peer_mac": row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "",
         "ap_name": row.get("peer_ap_name") or "",
@@ -323,6 +336,21 @@ def _standby_summary(row: dict[str, object]) -> dict[str, object]:
 def _sort_rssi(value: object) -> float:
     parsed = _float(value)
     return parsed if np.isfinite(parsed) else float("-inf")
+
+
+def _metrics(row: dict[str, object]) -> dict[str, object]:
+    metrics = row.get("metrics")
+    if isinstance(metrics, dict):
+        return metrics
+    metrics_json = row.get("metrics_json")
+    if isinstance(metrics_json, str) and metrics_json.strip():
+        try:
+            parsed = json.loads(metrics_json)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {key: row.get(key) for key in _METRIC_KEYS if row.get(key) is not None}
 
 
 def detect_rapid_flaps(active_runs: list[ActiveRun], master_times: list[str], estimated_interval_seconds: object) -> list[dict[str, object]]:
