@@ -156,18 +156,20 @@ SUMMARY_COL_DEVICE_NAME = 0
 SUMMARY_COL_HOST = 1
 SUMMARY_COL_STATUS = 2
 SUMMARY_COL_ACTIVE_PEER = 3
-SUMMARY_COL_MR_RSSI = 4
-SUMMARY_COL_PEER_SITE = 5
-SUMMARY_COL_PING_LOSS = 6
-SUMMARY_COL_PING_LATENCY = 7
-SUMMARY_COL_COLLECTED = 8
-SUMMARY_COL_FAILED = 9
-SUMMARY_COL_RECONNECTS = 10
-SUMMARY_COL_LAST_COLLECTION = 11
-SUMMARY_COL_IPERF_MBPS = 12
-SUMMARY_COL_IPERF_RETRANS = 13
-SUMMARY_COL_SESSION = 14
-SUMMARY_COL_DEVICE_ID = 15
+SUMMARY_COL_PEER_MAC = 4
+SUMMARY_COL_MR_RSSI = 5
+SUMMARY_COL_PEER_SITE = 6
+SUMMARY_COL_PEER_SECTION = 7
+SUMMARY_COL_PING_LOSS = 8
+SUMMARY_COL_PING_LATENCY = 9
+SUMMARY_COL_COLLECTED = 10
+SUMMARY_COL_FAILED = 11
+SUMMARY_COL_RECONNECTS = 12
+SUMMARY_COL_LAST_COLLECTION = 13
+SUMMARY_COL_IPERF_MBPS = 14
+SUMMARY_COL_IPERF_RETRANS = 15
+SUMMARY_COL_SESSION = 16
+SUMMARY_COL_DEVICE_ID = 17
 
 
 def _rail_mrcollect_diag(message: str) -> None:
@@ -476,6 +478,9 @@ class OnlineMrCollectionPage(QWidget):
         self.left_work_panel: QWidget | None = None
         self.parse_session_button = QPushButton()
         self.force_parse_button = QPushButton()
+        self.parse_cancel_button = QPushButton("取消解析")
+        self.parse_progress_bar = QProgressBar()
+        self.parse_progress_label = QLabel()
         self.export_analysis_report_button = QPushButton()
         self.session_search_input = QLineEdit()
         self.session_select_combo = QComboBox()
@@ -562,14 +567,14 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_tool_label.setWordWrap(True)
         self._no_wheel_filter = NoWheelValueChangeFilter(self)
 
-        self.summary_table = QTableWidget(0, 16)
-        self.mesh_table = QTableWidget(0, 11)
-        self.channel_table = QTableWidget(0, 7)
+        self.summary_table = QTableWidget(0, 18)
+        self.mesh_table = QTableWidget(0, 13)
+        self.channel_table = QTableWidget(0, 12)
         self.events_table = QTableWidget(0, 6)
         self.statistics_text = QTextEdit()
-        self.switch_history_table = QTableWidget(0, 13)
+        self.switch_history_table = QTableWidget(0, 14)
         self.switch_history_text = QTextEdit()
-        self.active_link_switch_table = QTableWidget(0, 16)
+        self.active_link_switch_table = QTableWidget(0, 18)
         self.interface_rate_table = QTableWidget(0, 9)
         self.iperf_table = QTableWidget(0, 5)
         self.diagnosis_table = QTableWidget(0, 14)
@@ -999,6 +1004,7 @@ class OnlineMrCollectionPage(QWidget):
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
         self.force_parse_button.setText(self.i18n.t("online_mr.force_reparse"))
         self.force_parse_button.setVisible(self.analysis_only)
+        self.parse_cancel_button.setText("取消解析")
         self.export_analysis_report_button.setText(self.i18n.t("online_mr.export_analysis_report"))
         self.export_analysis_report_button.setVisible(self.analysis_only)
         self._apply_button_icons()
@@ -1054,8 +1060,10 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.host"),
                 self.i18n.t("online_mr.status"),
                 self.i18n.t("online_mr.peer_name"),
+                self.i18n.t("online_mr.peer_mac"),
                 "MR RSSI",
                 self.i18n.t("online_mr.peer_site"),
+                self.i18n.t("online_mr.peer_section"),
                 self.i18n.t("online_mr.ping_loss_rate"),
                 self.i18n.t("online_mr.ping_latency"),
                 self.i18n.t("online_mr.collected"),
@@ -1068,11 +1076,47 @@ class OnlineMrCollectionPage(QWidget):
                 "ID",
             ]
         )
-        self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.link_state"), self.i18n.t("online_mr.peer_name"), self.i18n.t("online_mr.peer_mac"), "MR侧RSSI", "BSSID", self.i18n.t("online_mr.mesh_interface"), self.i18n.t("online_mr.peer_site"), self.i18n.t("online_mr.online_time")])
-        self.channel_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.ctl_busy"), self.i18n.t("online_mr.tx_busy"), self.i18n.t("online_mr.rx_busy"), self.i18n.t("online_mr.raw")])
+        self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.link_state"), self.i18n.t("online_mr.peer_name"), self.i18n.t("online_mr.peer_mac"), "MR侧RSSI", "BSSID", self.i18n.t("online_mr.mesh_interface"), self.i18n.t("online_mr.peer_site"), self.i18n.t("online_mr.peer_section"), self.i18n.t("online_mr.belong_type"), self.i18n.t("online_mr.online_time")])
+        self.channel_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("online_mr.row_number"),
+                "采集时间",
+                "记录时间",
+                self.i18n.t("online_mr.radio_id"),
+                "控制信道",
+                "频宽",
+                "记录间隔",
+                self.i18n.t("online_mr.ctl_busy"),
+                self.i18n.t("online_mr.tx_busy"),
+                self.i18n.t("online_mr.rx_busy"),
+                "记录序号",
+                self.i18n.t("online_mr.raw"),
+            ]
+        )
         self.events_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.type"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer"), self.i18n.t("online_mr.to_peer"), self.i18n.t("online_mr.details")])
-        self.switch_history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.switch_time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer_name"), self.i18n.t("online_mr.to_peer_name"), self.i18n.t("online_mr.from_peer_mac"), self.i18n.t("online_mr.to_peer_mac"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_peer_site"), self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.in_out_rssi"), self.i18n.t("online_mr.active_duration"), self.i18n.t("online_mr.raw")])
-        self.active_link_switch_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.device_name"), self.i18n.t("online_mr.from_ap_name"), self.i18n.t("online_mr.from_radio_mac"), self.i18n.t("online_mr.from_rssi"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_ap_name"), self.i18n.t("online_mr.to_radio_mac"), self.i18n.t("online_mr.to_rssi"), self.i18n.t("online_mr.to_peer_site"), self.i18n.t("online_mr.peer_quantity"), self.i18n.t("online_mr.link_quantity"), self.i18n.t("online_mr.switch_reason_code"), self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.raw_log")])
+        self.switch_history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.switch_time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer_name"), self.i18n.t("online_mr.to_peer_name"), self.i18n.t("online_mr.from_peer_mac"), self.i18n.t("online_mr.to_peer_mac"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_peer_site"), "归属区间", self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.in_out_rssi"), self.i18n.t("online_mr.active_duration"), self.i18n.t("online_mr.raw")])
+        self.active_link_switch_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("online_mr.row_number"),
+                self.i18n.t("online_mr.time"),
+                self.i18n.t("online_mr.device_name"),
+                self.i18n.t("online_mr.from_ap_name"),
+                self.i18n.t("online_mr.from_radio_mac"),
+                self.i18n.t("online_mr.from_rssi"),
+                self.i18n.t("online_mr.from_peer_site"),
+                "原归属区间",
+                self.i18n.t("online_mr.to_ap_name"),
+                self.i18n.t("online_mr.to_radio_mac"),
+                self.i18n.t("online_mr.to_rssi"),
+                self.i18n.t("online_mr.to_peer_site"),
+                "新归属区间",
+                self.i18n.t("online_mr.peer_quantity"),
+                self.i18n.t("online_mr.link_quantity"),
+                self.i18n.t("online_mr.switch_reason_code"),
+                self.i18n.t("online_mr.switch_reason"),
+                self.i18n.t("online_mr.raw_log"),
+            ]
+        )
         self.interface_rate_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.direction"), self.i18n.t("online_mr.interface"), self.i18n.t("online_mr.usage_percent"), self.i18n.t("online_mr.total_pps"), self.i18n.t("online_mr.broadcast_pps"), self.i18n.t("online_mr.multicast_pps"), self.i18n.t("online_mr.raw")])
         self.iperf_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), "Mbps", self.i18n.t("iperf.retransmits"), self.i18n.t("iperf.transfer"), self.i18n.t("online_mr.raw")])
         self.diagnosis_table.setHorizontalHeaderLabels(
@@ -1298,6 +1342,19 @@ class OnlineMrCollectionPage(QWidget):
         view_layout.addWidget(self.parse_session_button)
         self.force_parse_button.setMinimumWidth(110)
         view_layout.addWidget(self.force_parse_button)
+        self.parse_cancel_button.setMinimumWidth(90)
+        self.parse_cancel_button.setVisible(False)
+        view_layout.addWidget(self.parse_cancel_button)
+        self.parse_progress_bar.setRange(0, 100)
+        self.parse_progress_bar.setValue(0)
+        self.parse_progress_bar.setTextVisible(True)
+        self.parse_progress_bar.setMinimumWidth(180)
+        self.parse_progress_bar.setMaximumWidth(260)
+        self.parse_progress_bar.setVisible(False)
+        view_layout.addWidget(self.parse_progress_bar)
+        self.parse_progress_label.setMinimumWidth(220)
+        self.parse_progress_label.setVisible(False)
+        view_layout.addWidget(self.parse_progress_label)
         self.export_analysis_report_button.setMinimumWidth(130)
         self.export_analysis_report_button.setVisible(self.analysis_only)
         view_layout.addWidget(self.export_analysis_report_button)
@@ -1366,6 +1423,7 @@ class OnlineMrCollectionPage(QWidget):
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
         self.force_parse_button.clicked.connect(lambda: self.parse_selected_session(force_reparse=True))
+        self.parse_cancel_button.clicked.connect(self._cancel_parse_worker)
         self.export_analysis_report_button.clicked.connect(self.export_analysis_report)
         self.session_select_combo.currentIndexChanged.connect(lambda _index: self._refresh_parse_button_state())
         self.output_toggle.toggled.connect(self._output_render_toggled)
@@ -2050,13 +2108,38 @@ class OnlineMrCollectionPage(QWidget):
         if not force_reparse and self._load_cached_parse_if_valid(session_dir):
             return
         self._log_page_profile("parse.start", time.perf_counter(), rows=1)
-        self.parse_session_button.setEnabled(False)
-        self.force_parse_button.setEnabled(False)
+        self._set_parse_running(True, "准备解析", 0)
         self.log_text.append(f"Start parsing collection data: {session_dir}")
         self.parse_worker = OnlineMrParseWorker(session_dir, parent=self, force_reparse=True)
+        self.parse_worker.progress.connect(self._parse_progress)
         self.parse_worker.completed.connect(lambda summary, d=session_dir: self._parse_completed(d, summary))
         self.parse_worker.failed.connect(self._parse_failed)
         self.parse_worker.start()
+
+    def _set_parse_running(self, running: bool, message: str = "", percent: int = 0) -> None:
+        self.parse_session_button.setEnabled(not running)
+        self.force_parse_button.setEnabled(not running)
+        self.parse_cancel_button.setVisible(running)
+        self.parse_progress_bar.setVisible(running)
+        self.parse_progress_label.setVisible(running or bool(message))
+        self.parse_progress_bar.setValue(max(0, min(100, int(percent))))
+        self.parse_progress_label.setText(message)
+
+    def _parse_progress(self, stage: str, current: int, total: int, message: str) -> None:
+        percent = int(max(0, min(100, current * 100 / max(1, total))))
+        text = f"正在解析：{stage}  {percent}%"
+        if message and message != stage:
+            text = f"{text}  {message}"
+        self._set_parse_running(True, text, percent)
+        if current == 0 or percent == 100 or percent % 10 == 0:
+            self.log_text.append(text)
+
+    def _cancel_parse_worker(self) -> None:
+        if self.parse_worker is None:
+            return
+        self.parse_cancel_button.setEnabled(False)
+        self.parse_progress_label.setText("正在取消解析...")
+        self.parse_worker.cancel()
 
     def _load_cached_parse_if_valid(self, session_dir: Path) -> bool:
         from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
@@ -2125,8 +2208,8 @@ class OnlineMrCollectionPage(QWidget):
             self.parse_worker = None
             return
         profile_start = time.perf_counter()
-        self.parse_session_button.setEnabled(True)
-        self.force_parse_button.setEnabled(True)
+        self._set_parse_running(False, "解析完成", 100)
+        self.parse_cancel_button.setEnabled(True)
         self.log_text.append(
             f"Parse completed: active_segments={summary.active_segments}, "
             f"mesh_samples={getattr(summary, 'mesh_samples', 0)}, "
@@ -2159,8 +2242,8 @@ class OnlineMrCollectionPage(QWidget):
         if not self._can_update_ui():
             self.parse_worker = None
             return
-        self.parse_session_button.setEnabled(True)
-        self.force_parse_button.setEnabled(True)
+        self._set_parse_running(False, f"解析失败：{message}", 0)
+        self.parse_cancel_button.setEnabled(True)
         self.parse_worker = None
         QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), message)
 
@@ -2205,25 +2288,30 @@ class OnlineMrCollectionPage(QWidget):
                 metrics = record.metrics
                 peer_mac = record.peer_mac_raw or record.peer_mac_h3c()
                 peer_name = str(metrics.get("peer_name") or "")
-                station = ""
-                if peer_name:
-                    station = str((self._resolve_peer_cached(peer_name) or {}).get("peer_site") or "")
-                if not station and peer_mac:
-                    station = str((self._resolve_peer_cached(peer_mac) or {}).get("peer_site") or "")
-                if not station and metrics.get("bssid"):
-                    station = str((self._resolve_peer_cached(str(metrics.get("bssid"))) or {}).get("peer_site") or "")
+                peer_info = self._resolve_peer_cached(peer_name) if peer_name else None
+                if not peer_info and peer_mac:
+                    peer_info = self._resolve_peer_cached(peer_mac)
+                if not peer_info and metrics.get("bssid"):
+                    peer_info = self._resolve_peer_cached(str(metrics.get("bssid")))
+                peer_info = peer_info or {}
+                station = str(peer_info.get("peer_site") or "")
+                section = str(peer_info.get("peer_section") or "")
+                belong_type = _display_belong_type(peer_info.get("belong_type") or "unknown")
+                resolved_peer_name = peer_name or str(peer_info.get("peer_ap_name") or "") or peer_mac
                 row = self.mesh_table.rowCount()
                 values = [
                     row + 1,
                     block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
                     record.radio,
                     record.link_state,
-                    peer_name,
+                    resolved_peer_name,
                     peer_mac,
                     metrics.get("local_rssi_db"),
                     metrics.get("bssid") or "",
                     metrics.get("interface") or "",
                     station,
+                    section,
+                    belong_type,
                     metrics.get("online_time") or "",
                 ]
                 self.mesh_table.insertRow(row)
@@ -2243,6 +2331,51 @@ class OnlineMrCollectionPage(QWidget):
 
         self.switch_history_table.setRowCount(0)
         self.switch_history_text.clear()
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if db_path.exists():
+            import sqlite3
+
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                    if "switch_history_events" in tables:
+                        rows = conn.execute(
+                            """
+                            SELECT event_time_local, radio, old_peer_name, new_peer_name, old_peer_mac, new_peer_mac,
+                                   old_belong_station, new_belong_station, old_belong_section, new_belong_section,
+                                   switch_reason_text, old_rssi, new_rssi, active_duration
+                            FROM switch_history_events
+                            ORDER BY event_time_local ASC, id ASC
+                            LIMIT 5000
+                            """
+                        ).fetchall()
+                    else:
+                        rows = []
+            except sqlite3.Error:
+                rows = []
+            if rows:
+                for item in rows:
+                    self._append_switch_history_table_row(
+                        {
+                            "switch_time": item[0],
+                            "radio": item[1],
+                            "from_peer_name": item[2],
+                            "to_peer_name": item[3],
+                            "from_peer_mac": item[4],
+                            "to_peer_mac": item[5],
+                            "from_peer_site": item[6],
+                            "to_peer_site": item[7],
+                            "from_peer_section": item[8],
+                            "to_peer_section": item[9],
+                            "reason": item[10],
+                            "out_rssi": item[11],
+                            "in_rssi": item[12],
+                            "active_time": item[13],
+                        }
+                    )
+                self.switch_history_text.setPlainText("\n".join(f"{row[0]}  {row[4]} -> {row[5]}  {row[10]}" for row in rows[:200]))
+                self._auto_fit_online_table(self.switch_history_table, "switch_history")
+                return len(rows)
         switch_path = session_dir / "raw" / "switch_history_latest.log"
         if switch_path.exists():
             collected_at = datetime.fromtimestamp(switch_path.stat().st_mtime)
@@ -2316,6 +2449,11 @@ class OnlineMrCollectionPage(QWidget):
             to_station = str((self._resolve_peer_cached(to_mac) or {}).get("peer_site") or "")
         if not to_station and parsed.get("to_peer_name"):
             to_station = str((self._resolve_peer_cached(str(parsed.get("to_peer_name"))) or {}).get("peer_site") or "")
+        to_section = str(parsed.get("to_peer_section") or parsed.get("belong_section") or "")
+        if not to_section and to_mac:
+            to_section = str((self._resolve_peer_cached(to_mac) or {}).get("peer_section") or "")
+        if not to_section and parsed.get("to_peer_name"):
+            to_section = str((self._resolve_peer_cached(str(parsed.get("to_peer_name"))) or {}).get("peer_section") or "")
         row = self.switch_history_table.rowCount()
         values = [
             row + 1,
@@ -2327,6 +2465,7 @@ class OnlineMrCollectionPage(QWidget):
             to_mac,
             from_station,
             to_station,
+            to_section,
             parsed.get("reason") or parsed.get("role"),
             _format_in_out_rssi(parsed.get("in_rssi"), parsed.get("out_rssi")),
             parsed.get("active_time"),
@@ -2336,7 +2475,7 @@ class OnlineMrCollectionPage(QWidget):
         reason = str(parsed.get("reason") or parsed.get("role") or "")
         warning = "fault" in reason.lower()
         for column, value in enumerate(values):
-            self._set_table_item(self.switch_history_table, row, column, value, emphasize=column in {4, 6, 8}, warning=warning)
+            self._set_table_item(self.switch_history_table, row, column, value, emphasize=column in {4, 6, 8, 9}, warning=warning)
 
     def _load_active_link_switch_logs(self, session_dir: Path) -> int:
         import sqlite3
@@ -2350,13 +2489,12 @@ class OnlineMrCollectionPage(QWidget):
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
                     """
-                    SELECT source, log_time, device_name,
-                           from_peer_name, from_peer_mac, from_peer_rssi, from_station, from_serial_number, from_resolve_rule,
-                           to_peer_name, to_peer_mac, to_peer_rssi, to_station, to_serial_number, to_resolve_rule,
-                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_line
-                    FROM live_active_link_switch_logs
-                    WHERE source = 'terminal_monitor'
-                    ORDER BY log_time ASC, id ASC
+                    SELECT 'terminal_monitor', collector_time, device_name,
+                           old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section, '', CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                           new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section, '', CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_file
+                    FROM switch_realtime_events
+                    ORDER BY collector_time ASC, id ASC
                     LIMIT 5000
                     """
                 ).fetchall()
@@ -2370,8 +2508,8 @@ class OnlineMrCollectionPage(QWidget):
         for row_data in rows:
             row = self.active_link_switch_table.rowCount()
             self.active_link_switch_table.insertRow(row)
-            from_empty = str(row_data[8] or "") == "empty_link"
-            to_empty = str(row_data[14] or "") == "empty_link"
+            from_empty = str(row_data[9] or "") == "empty_link"
+            to_empty = str(row_data[16] or "") == "empty_link"
             values = [
                 row + 1,
                 row_data[1],
@@ -2380,21 +2518,23 @@ class OnlineMrCollectionPage(QWidget):
                 "-" if from_empty else row_data[4],
                 "-" if from_empty else row_data[5],
                 row_data[6] or "-",
-                self.i18n.t("online_mr.empty_link") if to_empty else row_data[9],
-                "-" if to_empty else row_data[10],
+                row_data[7] or "-",
+                self.i18n.t("online_mr.empty_link") if to_empty else row_data[10],
                 "-" if to_empty else row_data[11],
-                row_data[12] or "-",
-                row_data[15],
-                row_data[16],
+                "-" if to_empty else row_data[12],
+                row_data[13] or "-",
+                row_data[14] or "-",
                 row_data[17],
                 row_data[18],
                 row_data[19],
+                row_data[20],
+                row_data[21],
             ]
-            reason_code = row_data[17]
+            reason_code = row_data[19]
             warning = reason_code == 4 or to_empty
             active = from_empty and not to_empty
             for column, value in enumerate(values):
-                self._set_table_item(self.active_link_switch_table, row, column, value, active=active and column in {7, 8, 9, 10, 14}, emphasize=column in {7, 8, 9, 10}, warning=warning and column in {0, 7, 9, 14, 15})
+                self._set_table_item(self.active_link_switch_table, row, column, value, active=active and column in {8, 9, 10, 11, 16}, emphasize=column in {8, 9, 10, 11}, warning=warning and column in {0, 8, 10, 16, 17})
         self._auto_fit_online_table(self.active_link_switch_table, "active_link_switch_logs")
         return len(rows)
 
@@ -2408,11 +2548,13 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT s.collected_at, cb.radio, cb.tx_busy, cb.rx_busy, cb.raw_text
-                FROM live_channel_busy cb
-                JOIN live_samples s ON s.id = cb.sample_id
-                ORDER BY s.collected_at ASC
-                LIMIT 5000
+                SELECT block_collector_time, record_time_local, radio, ctl_channel, bandwidth,
+                       record_interval, ctl_busy, tx_busy, rx_busy, COALESCE(row_index, 1),
+                       'display ar5drv ' || COALESCE(radio, 1) || ' channelbusy | CtlBusy=' ||
+                       COALESCE(ctl_busy, '-') || ' TxBusy=' || COALESCE(tx_busy, '-') || ' RxBusy=' || COALESCE(rx_busy, '-')
+                FROM channel_busy_records
+                ORDER BY block_collector_time ASC, COALESCE(row_index, 1) ASC
+                LIMIT 10000
                 """
             ).fetchall()
         self.channel_table.setUpdatesEnabled(False)
@@ -2420,9 +2562,20 @@ class OnlineMrCollectionPage(QWidget):
             for row_data in rows:
                 row = self.channel_table.rowCount()
                 self.channel_table.insertRow(row)
-                parsed = parse_channel_busy_text(str(row_data[4] or ""))
-                ctl_busy = parsed[0].get("ctl_busy") if parsed else None
-                values = [row + 1, row_data[0], row_data[1], ctl_busy, row_data[2], row_data[3], row_data[4]]
+                values = [
+                    row + 1,
+                    row_data[0],
+                    row_data[1],
+                    row_data[2],
+                    row_data[3],
+                    row_data[4],
+                    row_data[5],
+                    row_data[6],
+                    row_data[7],
+                    row_data[8],
+                    row_data[9],
+                    row_data[10],
+                ]
                 for column, value in enumerate(values):
                     self._set_table_item(self.channel_table, row, column, value)
         finally:
@@ -2440,9 +2593,10 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT collected_at, direction, interface_name, usage_percent, total_pps, broadcast_pps, multicast_pps, raw_line
-                FROM live_interface_rates
-                ORDER BY collected_at ASC
+                SELECT collector_time, direction, interface_name, usage_percent, total_pps, broadcast_pps, multicast_pps,
+                       'dis counters rate ' || COALESCE(direction, '') || ' interface | ' || COALESCE(interface_name, '') || ' total_pps=' || COALESCE(total_pps, '-')
+                FROM interface_rate_samples
+                ORDER BY collector_time ASC
                 LIMIT 5000
                 """
             ).fetchall()
@@ -2490,30 +2644,21 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT event_time, details_json
-                FROM live_events
-                WHERE event_type = 'AP_RADIO_STATS'
-                ORDER BY event_time ASC
+                SELECT collector_time, metric_name, metric_value, metric_unit
+                FROM radio_statistics_samples
+                ORDER BY collector_time ASC, id ASC
                 LIMIT 2000
                 """
             ).fetchall()
         lines: list[str] = []
-        for event_time, details_json in rows:
-            try:
-                details = json.loads(details_json or "{}")
-            except json.JSONDecodeError:
-                details = {}
-            counters = details.get("counters") if isinstance(details, dict) else {}
-            if not isinstance(counters, dict):
-                counters = {}
-            lines.append(
-                f"{event_time}  "
-                f"TxFrameAllCnt={self._summary_text(counters.get('TxFrameAllCnt'))}  "
-                f"RxFrameAllCnt={self._summary_text(counters.get('RxFrameAllCnt'))}  "
-                f"TxRetryFrmCnt={self._summary_text(counters.get('TxRetryFrmCnt'))}  "
-                f"TxErrFrmCnt={self._summary_text(counters.get('TxErrFrmCnt'))}  "
-                f"TxDiscardFrmCnt={self._summary_text(counters.get('TxDiscardFrmCnt'))}"
-            )
+        grouped: dict[str, list[str]] = {}
+        for collector_time, metric_name, metric_value, metric_unit in rows:
+            value_text = self._summary_text(metric_value)
+            if metric_unit:
+                value_text = f"{value_text}{metric_unit}"
+            grouped.setdefault(str(collector_time or "-"), []).append(f"{metric_name}={value_text}")
+        for collector_time, metrics in grouped.items():
+            lines.append(f"{collector_time}  " + "  ".join(metrics))
         if not lines:
             raw_path = session_dir / "raw" / "ap_radio_statistics_raw.log"
             if raw_path.exists():
@@ -2645,12 +2790,19 @@ class OnlineMrCollectionPage(QWidget):
             apply_cjk_font(axis)
         except Exception:
             pass
+        self._apply_analysis_chart_y_ticks(axis)
         self._connect_analysis_chart_axis_sync(key, axis)
         chart_hover_points = hover_points or _analysis_chart_generic_hover_points(key, title, series, tooltip_rows or [])
         if chart_hover_points:
             tooltip_builder = _online_mr_active_rssi_tooltip_text if key == "rssi" and hover_points else _online_mr_generic_chart_tooltip_text
             self.analysis_chart_hover_controllers[key] = AnalysisChartHoverController(canvas, axis, chart_hover_points, tooltip_builder)
         canvas.draw_idle()
+
+    @staticmethod
+    def _apply_analysis_chart_y_ticks(axis) -> None:
+        axis.yaxis.set_ticks_position("both")
+        axis.tick_params(axis="y", which="both", labelleft=True, labelright=True)
+        axis.spines["right"].set_visible(True)
 
     def _connect_analysis_chart_axis_sync(self, key: str, axis) -> None:
         axis.callbacks.connect("xlim_changed", lambda changed_axis, source_key=key: self._sync_analysis_chart_xlimits(source_key, changed_axis.get_xlim()))
@@ -3342,6 +3494,7 @@ class OnlineMrCollectionPage(QWidget):
                 peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
             peer_name = snapshot_peer_name or str(peer_info.get("peer_ap_name") or "")
             peer_site = snapshot_peer_site or str(peer_info.get("peer_site") or "")
+            peer_section = str(peer_info.get("peer_section") or "")
             bus.publish(
                 OnlineMrEvent(
                     timestamp=timestamp,
@@ -3356,6 +3509,10 @@ class OnlineMrCollectionPage(QWidget):
                         "peer_name": peer_name,
                         "peer_site": peer_site,
                         "peer_station": peer_site,
+                        "peer_section": peer_section,
+                        "belong_section": peer_section,
+                        "belong_type": peer_info.get("belong_type") or "unknown",
+                        "belonging_source": peer_info.get("belonging_source") or peer_info.get("match_rule") or "",
                         "peer_radio": peer_info.get("peer_radio_label") or "",
                         "link_state": "ACTIVE",
                         "local_rssi": snapshot.local_rssi,
@@ -3438,8 +3595,10 @@ class OnlineMrCollectionPage(QWidget):
         values = {
             SUMMARY_COL_STATUS: self._status_text(state.status),
             SUMMARY_COL_ACTIVE_PEER: state.peer_name or state.peer_mac or "",
+            SUMMARY_COL_PEER_MAC: state.peer_mac or "",
             SUMMARY_COL_MR_RSSI: state.mr_rssi,
             SUMMARY_COL_PEER_SITE: state.peer_station or state.peer_site or "",
+            SUMMARY_COL_PEER_SECTION: state.peer_section or "",
             SUMMARY_COL_PING_LOSS: None if state.loss is None else f"{state.loss:.2f}%",
             SUMMARY_COL_PING_LATENCY: None if state.rtt is None else f"{state.rtt:.2f} ms",
             SUMMARY_COL_COLLECTED: state.sample_count,
@@ -3474,6 +3633,8 @@ class OnlineMrCollectionPage(QWidget):
             "",
             "",
             "",
+            "",
+            "",
             state.sample_count,
             state.fail_count,
             state.reconnect_count,
@@ -3503,6 +3664,9 @@ class OnlineMrCollectionPage(QWidget):
                     payload = {
                         "peer_ap_name": resolved.ap_name or "",
                         "peer_site": resolved.site or "",
+                        "peer_section": resolved.section or "",
+                        "belong_type": resolved.belong_type or "unknown",
+                        "belonging_source": resolved.belonging_source or "",
                         "peer_radio_label": resolved.radio or "",
                         "peer_radio_mac": resolved.radio_mac or "",
                         "peer_serial_number": resolved.serial_number or "",
@@ -3522,7 +3686,9 @@ class OnlineMrCollectionPage(QWidget):
             return
         self._peer_name_cache_loaded = True
         try:
-            rows = AcRepository(self.repository.database).list_all_fit_ap_resources_with_metadata()
+            repository = AcRepository(self.repository.database)
+            rows = repository.list_all_fit_ap_resources_with_metadata()
+            rows.extend(self._extension_peer_identity_rows(repository, rows))
         except Exception:
             rows = []
         for row in rows:
@@ -3533,13 +3699,34 @@ class OnlineMrCollectionPage(QWidget):
             self.peer_name_cache[key] = {
                 "peer_ap_name": name,
                 "peer_site": normalize_station_value(row),
+                "peer_section": row.get("section_name") or row.get("belong_section") or "",
+                "belong_type": row.get("belong_type") or "unknown",
+                "belonging_source": row.get("_identity_source") or row.get("extension_match_status") or "ap_name",
                 "peer_radio_label": "",
                 "peer_radio_mac": "",
-                "peer_mac": row.get("ap_mac") or "",
+                "peer_mac": row.get("ap_mac") or row.get("ap_mac_display") or row.get("ap_mac_norm") or "",
                 "peer_serial_number": row.get("serial_number") or row.get("serial") or row.get("sn") or row.get("device_sn") or "",
                 "serial_number": row.get("serial_number") or row.get("serial") or row.get("sn") or row.get("device_sn") or "",
                 "match_rule": "ap_name",
             }
+
+    @staticmethod
+    def _extension_peer_identity_rows(repository: AcRepository, fit_rows: list[dict[str, object | None]]) -> list[dict[str, object]]:
+        try:
+            extensions = repository.list_ap_extension_points()
+        except Exception:
+            return []
+        known_names = {str(row.get("ap_name") or "").strip().casefold() for row in fit_rows if str(row.get("ap_name") or "").strip()}
+        rows: list[dict[str, object]] = []
+        for extension in extensions:
+            name = str(extension.get("ap_name") or "").strip()
+            if not name or name.casefold() in known_names:
+                continue
+            row = dict(extension)
+            row["ap_mac"] = extension.get("ap_mac_display") or extension.get("ap_mac_norm") or ""
+            row["_identity_source"] = "ap_metadata"
+            rows.append(row)
+        return rows
 
     @staticmethod
     def _latest_module_event(events: list[OnlineMrEvent], module: str) -> OnlineMrEvent | None:
@@ -4423,13 +4610,16 @@ class OnlineMrCollectionPage(QWidget):
             peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
         peer_display = peer_name or str(peer_info.get("peer_ap_name") or peer_info.get("ap_name") or "") or snapshot.active_peer
         peer_site = peer_station or str(peer_info.get("peer_site") or peer_info.get("site") or "")
+        peer_section = str(peer_info.get("peer_section") or peer_info.get("belong_section") or "")
         values = [
             config.device_name if config else getattr(snapshot, "device_name", ""),
             host_text,
             snapshot.status,
             peer_display,
+            snapshot.active_peer,
             snapshot.local_rssi,
             peer_site,
+            peer_section,
             "",
             "",
             snapshot.collected_count,
@@ -4508,7 +4698,9 @@ class OnlineMrCollectionPage(QWidget):
         if not peer_info and peer_name:
             peer_info = self._resolve_peer_identity_cached(snapshot.active_peer) or {}
         peer_site = str(getattr(snapshot, "peer_station", "") or getattr(snapshot, "peer_site", "") or peer_info.get("peer_site") or "")
-        values = [row + 1, snapshot.last_collection_time, 1, "ACTIVE", peer_name or peer_info.get("peer_ap_name") or "", snapshot.active_peer, snapshot.local_rssi, "", "", peer_site, ""]
+        peer_section = str(peer_info.get("peer_section") or "")
+        belong_type = _display_belong_type(peer_info.get("belong_type") or "unknown")
+        values = [row + 1, snapshot.last_collection_time, 1, "ACTIVE", peer_name or peer_info.get("peer_ap_name") or snapshot.active_peer or "", snapshot.active_peer, snapshot.local_rssi, "", "", peer_site, peer_section, belong_type, ""]
         for column, value in enumerate(values):
             self._set_table_item(self.mesh_table, row, column, value, active=True)
         self._trim_table(self.mesh_table)
@@ -5110,12 +5302,12 @@ class OnlineMrCollectionPage(QWidget):
     @staticmethod
     def _analysis_table_width_bounds(name: str) -> tuple[dict[int, int], dict[int, int]]:
         min_bounds: dict[str, dict[int, int]] = {
-            "mesh_link": {0: 60, 1: 190, 2: 80, 3: 100, 4: 150, 5: 150, 6: 90, 7: 150, 8: 160, 9: 140, 10: 120},
-            "channel_busy": {0: 60, 1: 190, 2: 80, 3: 150, 4: 120, 5: 120, 6: 700},
-            "switch_history": {0: 60, 1: 190, 2: 80, 3: 150, 4: 150, 5: 150, 6: 150, 7: 140, 8: 140, 9: 220, 10: 100, 11: 130, 12: 700},
-            "active_link_switch_logs": {0: 60, 1: 190, 2: 160, 3: 150, 4: 150, 5: 80, 6: 140, 7: 150, 8: 150, 9: 80, 10: 140, 11: 90, 12: 90, 13: 100, 14: 260, 15: 700},
+            "mesh_link": {0: 60, 1: 190, 2: 80, 3: 100, 4: 150, 5: 150, 6: 90, 7: 150, 8: 160, 9: 140, 10: 160, 11: 100, 12: 120},
+            "channel_busy": {0: 60, 1: 190, 2: 190, 3: 80, 4: 100, 5: 80, 6: 90, 7: 150, 8: 120, 9: 120, 10: 90, 11: 420},
+            "switch_history": {0: 60, 1: 190, 2: 80, 3: 150, 4: 150, 5: 150, 6: 150, 7: 140, 8: 140, 9: 180, 10: 220, 11: 100, 12: 130, 13: 700},
+            "active_link_switch_logs": {0: 60, 1: 190, 2: 160, 3: 150, 4: 150, 5: 80, 6: 140, 7: 160, 8: 150, 9: 150, 10: 80, 11: 140, 12: 160, 13: 90, 14: 90, 15: 100, 16: 260, 17: 520},
             "interface_rate": {0: 60, 1: 190, 2: 100, 3: 120, 4: 100, 5: 100, 6: 100, 7: 100, 8: 700},
-            "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 80, 5: 130, 6: 80, 7: 90, 8: 90, 9: 90, 10: 90, 11: 190, 12: 100, 13: 80, 14: 170, 15: 80},
+            "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 150, 5: 80, 6: 130, 7: 160, 8: 80, 9: 90, 10: 90, 11: 90, 12: 90, 13: 190, 14: 100, 15: 80, 16: 170, 17: 80},
             "statistics": {0: 180, 1: 120, 2: 90, 3: 180, 4: 180, 5: 320},
             "iperf": {0: 180, 1: 100, 2: 90, 3: 120, 4: 700},
             "diagnosis": {0: 190, 1: 190, 2: 170, 3: 90, 4: 90, 5: 90, 6: 110, 7: 110, 8: 110, 9: 130, 10: 130, 11: 100, 12: 100, 13: 100},
@@ -5138,12 +5330,12 @@ class OnlineMrCollectionPage(QWidget):
             "history_sessions": self.history_table,
         }
         defaults = {
-            "session_summary": [180, 130, 90, 190, 80, 130, 80, 90, 90, 90, 90, 190, 100, 80, 170, 80],
-            "mesh_link": [70, 190, 90, 110, 160, 170, 90, 160, 150, 130, 140],
-            "channel_busy": [60, 190, 80, 150, 120, 120, 700],
+            "session_summary": [180, 130, 90, 190, 150, 80, 130, 160, 80, 90, 90, 90, 90, 190, 100, 80, 170, 80],
+            "mesh_link": [70, 190, 90, 110, 160, 170, 90, 160, 150, 130, 160, 100, 140],
+            "channel_busy": [60, 190, 190, 80, 100, 80, 90, 150, 120, 120, 90, 420],
             "statistics": [180, 120, 90, 180, 180, 320],
-            "switch_history": [70, 190, 90, 150, 150, 150, 150, 130, 130, 150, 120, 140, 500],
-            "active_link_switch_logs": [60, 190, 160, 150, 150, 80, 140, 150, 150, 80, 140, 90, 90, 100, 260, 700],
+            "switch_history": [70, 190, 90, 150, 150, 150, 150, 130, 130, 180, 150, 120, 140, 500],
+            "active_link_switch_logs": [60, 190, 160, 150, 150, 80, 140, 160, 150, 150, 80, 140, 160, 90, 90, 100, 260, 520],
             "interface_rate": [60, 190, 100, 120, 100, 100, 100, 100, 700],
             "iperf": [180, 100, 90, 120, 520],
             "diagnosis": [190, 190, 170, 90, 90, 90, 110, 110, 110, 130, 130, 100, 100, 100],
@@ -5312,6 +5504,8 @@ def _online_mr_active_rssi_tooltip_text(point: object) -> str:
             f"射频ID: {_display_value(getattr(point, 'radio_id', None))}",
             f"主链路AP: {_display_value(getattr(point, 'peer_name', None))} / {_display_value(getattr(point, 'station', None))}",
             f"对端MAC: {_display_value(getattr(point, 'peer_mac', None))}",
+            f"归属区间: {_display_value(getattr(point, 'section', None))}",
+            f"归属类型: {_display_belong_type(getattr(point, 'belong_type', None))}",
             f"BSSID: {_display_value(getattr(point, 'bssid', None))}",
             f"Mesh接口: {_display_value(getattr(point, 'mesh_interface', None))}",
             f"MR侧RSSI: {_display_value(getattr(point, 'rssi', None))}",
@@ -5427,9 +5621,19 @@ def _format_duration_value(value: object) -> str:
     return f"{hours}h {minutes:02d}m {secs:02d}s"
 
 
+def _display_belong_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return {
+        "station": "站点",
+        "section": "区间",
+        "yard": "场段/库内",
+        "unknown": "未知",
+    }.get(text, str(value or "").strip() or "-")
+
+
 def _is_valid_peer_resolution(value: dict[str, object]) -> bool:
     if not value:
         return False
     if str(value.get("match_rule") or "").strip().lower() == "unresolved":
         return False
-    return any(str(value.get(key) or "").strip() for key in ("peer_ap_name", "peer_site", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
+    return any(str(value.get(key) or "").strip() for key in ("peer_ap_name", "peer_site", "peer_section", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))

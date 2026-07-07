@@ -5,27 +5,33 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
+from netconsole.core.paths import PathResolver
+from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
+from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.fping_legacy_parser import parse_fping_lines
 from netconsole.services.network_tools.iperf_parser import parse_iperf_error_lines, parse_iperf_lines, read_iperf_text, summarize_iperf_zero_samples
 from netconsole.services.network_tools.iperf_runner import IperfResultStore
 from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
-from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
-from netconsole.services.online_mr_session_store import OnlineMrSession
+from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_interface_rate_text, parse_mesh_link_text, parse_switch_history_text
 from netconsole.services.online_mr_terminal_log_parser import ActiveLinkSwitchLog, parse_active_link_switch_logs
 
 
 RAW_BLOCK_RE = re.compile(r"(?m)^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) >>> (?P<command>.+)$")
 STREAM_START_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[collector=(?P<collector>[^\]]+)\] START commands:\s*$")
 RX_LINE_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?) \[collector=[^\]]+\] RX ?(?P<text>.*)$")
+FPING_V5_RAW_JSON_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(?P<payload>\{.*\})\s*$")
 RX_COMMAND_RE = re.compile(
     r"(display\s+clock|display\s+wlan\s+mesh-link(?:\s+switch-history)?|display\s+ar5drv\s+\d+\s+(?:channelbusy|statistics)|dis\s+counters\s+rate\s+(?:inbound|outbound)\s+interface)\b",
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "main_link_samples_v2"
+PARSER_VERSION = "online_mr_sampling_model_v3"
+ProgressCallback = Callable[[str, int, int, str], None]
+CancelCallback = Callable[[], bool]
 
 
 def strip_stream_rx_prefix(line: str) -> str:
@@ -83,13 +89,6 @@ def _float_or_none(*values: object) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
-
-
-def _int_or_none(value: object) -> int | None:
-    try:
-        return None if value is None else int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 class OnlineMrRawBlockSplitter:
@@ -199,37 +198,80 @@ class OnlineMrDiagnosisParser:
         self.db_path = self.session_dir / "parsed" / "online_diagnosis.sqlite"
         self.meta = self._load_meta()
         self.splitter = OnlineMrRawBlockSplitter()
+        self._peer_resolver: MeshPeerMappingService | None = None
+        self._progress: ProgressCallback | None = None
+        self._should_cancel: CancelCallback | None = None
 
-    def parse(self, *, force: bool = True) -> OnlineMrParseSummary:
+    def parse(
+        self,
+        *,
+        force: bool = True,
+        progress: ProgressCallback | None = None,
+        should_cancel: CancelCallback | None = None,
+    ) -> OnlineMrParseSummary:
+        self._progress = progress
+        self._should_cancel = should_cancel
+        self._emit_progress("扫描 session 文件", 0, 12, "准备解析")
+        if force and self.db_path.exists():
+            self._discard_existing_database()
         self._ensure_tables()
         if not force:
             cached = self.cached_summary_if_valid()
             if cached is not None:
+                self._emit_progress("完成", 12, 12, "使用已解析缓存")
                 return cached
+            if self.db_path.exists():
+                self._discard_existing_database()
+            self._ensure_tables()
+        self._check_cancel()
+        self._emit_progress("写入 sqlite", 1, 12, "重建轻量解析数据库")
         self._reset_parsed_tables()
         summary = OnlineMrParseSummary()
-        session = OnlineMrSession(self.session_dir, self.meta)
-        summary.mesh_samples = self._parse_mesh(session)
-        summary.channel_samples = self._parse_channel_busy(session)
-        summary.radio_stats_samples = self._parse_radio_statistics(session)
+        self._emit_progress("解析 mesh_link_raw.log", 2, 12, "解析主链路采样")
+        summary.mesh_samples = self._parse_mesh()
+        self._check_cancel()
+        self._emit_progress("解析 channel_busy_raw.log", 3, 12, "解析信道繁忙度")
+        summary.channel_samples = self._parse_channel_busy()
+        self._check_cancel()
+        self._emit_progress("解析 ap_radio_statistics_raw.log", 4, 12, "解析 AP 射频统计")
+        summary.radio_stats_samples = self._parse_radio_statistics()
+        self._check_cancel()
+        self._emit_progress("解析 terminal_monitor_raw.log", 5, 12, "解析主链路切换日志")
         summary.active_link_switch_logs = self._parse_terminal_monitor_switch_logs()
-        summary.interface_samples = self._parse_interface_rate(session)
+        self._check_cancel()
+        self._emit_progress("解析 interface_rate_raw.log", 6, 12, "解析接口速率")
+        summary.interface_samples = self._parse_interface_rate()
+        self._check_cancel()
+        self._emit_progress("生成主链路切换日志", 7, 12, "解析 switch-history")
         summary.switch_history_samples = self._parse_switch_history()
-        summary.ping_samples = self._parse_fping(session)
+        self._check_cancel()
+        self._emit_progress("解析 fping", 8, 12, "解析 Ping 采样")
+        summary.ping_samples = self._parse_fping()
+        self._check_cancel()
+        self._emit_progress("解析 iperf", 9, 12, "解析打流采样")
         summary.iperf_samples = self._parse_iperf()
         summary.iperf_zero_sample_count = getattr(self, "_last_iperf_zero_sample_count", 0)
         summary.iperf_isolated_gap_count = getattr(self, "_last_iperf_isolated_gap_count", 0)
         summary.iperf_stall_count = getattr(self, "_last_iperf_stall_count", 0)
         summary.iperf_error_count = getattr(self, "_last_iperf_error_count", 0)
-        replay = self._replay_events()
+        self._check_cancel()
+        self._emit_progress("生成主链路采样点", 10, 12, "融合统一时间轴")
         summary.active_segments = OnlineMrTimelineFusionService(self.db_path, self.meta.session_id).rebuild()
-        if summary.active_segments == 0 and replay.events > 0:
-            summary.active_segments = self._insert_event_replay_segment(replay)
         if summary.active_segments == 0 and self._has_any_valid_data(summary):
             summary.active_segments = self._insert_normal_data_segment(summary)
+        self._emit_progress("生成诊断结果", 11, 12, "写入解析元信息")
         summary.issues = self._issue_count()
         self._write_parse_metadata(summary, "OK", "")
+        self._emit_progress("完成", 12, 12, "解析完成")
         return summary
+
+    def _emit_progress(self, stage: str, current: int, total: int, message: str = "") -> None:
+        if self._progress is not None:
+            self._progress(stage, current, total, message or stage)
+
+    def _check_cancel(self) -> None:
+        if self._should_cancel is not None and self._should_cancel():
+            raise RuntimeError("解析已取消")
 
     def cached_summary_if_valid(self) -> OnlineMrParseSummary | None:
         if not self.db_path.exists():
@@ -253,7 +295,17 @@ class OnlineMrDiagnosisParser:
             counts = json.loads(row[0] or "{}")
         except json.JSONDecodeError:
             return None
-        required_tables = ("live_samples", "live_mesh_links", "live_channel_busy", "live_events", "live_active_link_switch_logs", "active_segments")
+        required_tables = (
+            "main_link_samples",
+            "channel_busy_records",
+            "radio_statistics_samples",
+            "switch_history_events",
+            "switch_realtime_events",
+            "interface_rate_samples",
+            "fping_samples",
+            "fping_1s_summary",
+            "active_segments",
+        )
         with sqlite3.connect(self.db_path) as conn:
             existing = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
             if any(table not in existing for table in required_tables):
@@ -303,16 +355,16 @@ class OnlineMrDiagnosisParser:
         raw_blocks = self.splitter.split(raw_path)
         raw_block_count = len(raw_blocks)
         raw_text = read_text_with_retry(raw_path, retries=2, interval=0.05) if raw_path.exists() else ""
-        mesh_sample_count = int(conn.execute("SELECT COUNT(*) FROM live_samples WHERE session_id = ? AND task_type = 'mesh_link'", (self.meta.session_id,)).fetchone()[0])
-        mesh_link_count = int(conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0])
-        active_link_count = int(conn.execute("SELECT COUNT(*) FROM live_mesh_links WHERE UPPER(link_state) LIKE 'ACTIVE%'").fetchone()[0])
+        mesh_sample_count = int(conn.execute("SELECT COUNT(*) FROM main_link_samples WHERE session_id = ?", (self.meta.session_id,)).fetchone()[0])
+        mesh_link_count = int(conn.execute("SELECT COUNT(*) FROM main_link_samples").fetchone()[0])
+        active_link_count = int(conn.execute("SELECT COUNT(*) FROM main_link_samples WHERE UPPER(link_state) LIKE 'ACTIVE%'").fetchone()[0])
         distinct_time_count = int(
-            conn.execute("SELECT COUNT(DISTINCT collected_at) FROM live_samples WHERE session_id = ? AND task_type = 'mesh_link'", (self.meta.session_id,)).fetchone()[0]
+            conn.execute("SELECT COUNT(DISTINCT collector_time) FROM main_link_samples WHERE session_id = ?", (self.meta.session_id,)).fetchone()[0]
         )
         if raw_block_count > 1 and mesh_sample_count <= 1:
             return "raw has multiple mesh-link blocks but parsed mesh_link samples <= 1"
         if ("Active(" in raw_text or "ACTIVE" in raw_text.upper()) and mesh_link_count == 0:
-            return "raw has active mesh-link rows but parsed live_mesh_links is empty"
+            return "raw has active mesh-link rows but parsed main_link_samples is empty"
         if raw_block_count > 1 and active_link_count > 1 and distinct_time_count <= 1:
             return "mesh-link collected_at values collapsed to one timestamp"
         bad_segment = conn.execute(
@@ -331,18 +383,17 @@ class OnlineMrDiagnosisParser:
         with sqlite3.connect(self.db_path) as conn:
             main_link = conn.execute(
                 """
-                SELECT COUNT(*), MIN(collected_at), MAX(collected_at)
-                FROM live_samples
-                WHERE session_id = ? AND task_type = 'mesh_link'
+                SELECT COUNT(*), MIN(collector_time), MAX(collector_time)
+                FROM main_link_samples
+                WHERE session_id = ?
                 """,
                 (self.meta.session_id,),
             ).fetchone()
             active_count = conn.execute(
                 """
                 SELECT COUNT(*)
-                FROM live_samples s
-                JOIN live_mesh_links l ON l.sample_id = s.id
-                WHERE s.session_id = ? AND s.task_type = 'mesh_link' AND UPPER(l.link_state) LIKE 'ACTIVE%'
+                FROM main_link_samples
+                WHERE session_id = ? AND UPPER(link_state) LIKE 'ACTIVE%'
                 """,
                 (self.meta.session_id,),
             ).fetchone()
@@ -389,30 +440,47 @@ class OnlineMrDiagnosisParser:
         data["session_dir"] = self.session_dir
         return OnlineMrSessionMeta(**data)
 
-    def _parse_mesh(self, session: OnlineMrSession) -> int:
+    def _parse_mesh(self) -> int:
         count = 0
         blocks = self.splitter.split(self.raw_dir / "mesh_link_raw.log")
         if not blocks and (self.raw_dir / "mesh_link_raw.log").exists():
             self._issue("mesh_link_raw.log", "mesh-link", "no parseable raw blocks found", "")
         for block in blocks:
             records, status, error = parse_mesh_link_text(block.text, block.collected_at)
-            sample_id = session.append_sample(
-                "mesh_link",
-                block.collected_at,
-                block.command,
-                "raw/mesh_link_raw.log",
-                block.offset_start,
-                block.offset_end,
-                status,
-                error,
-                device_clock=self._extract_device_clock(block.text),
-            )
+            self._enrich_mesh_records(records)
+            device_clock = self._extract_device_clock(block.text)
             if records:
-                session.append_mesh_links(sample_id, records)
+                self._write_main_link_samples(block, records, device_clock=device_clock)
                 count += 1
             elif error:
                 self._issue("mesh_link_raw.log", "mesh-link", error, block.text[:500])
         return count
+
+    def _enrich_mesh_records(self, records) -> None:
+        if not records:
+            return
+        resolver = self._get_peer_resolver()
+        for record in records:
+            metrics = record.metrics
+            peer_name = str(metrics.get("peer_name") or "").strip()
+            peer_mac = record.peer_mac_raw or record.peer_mac_normalized or ""
+            resolved = resolver.resolve(peer_mac, peer_name=peer_name) if resolver is not None else None
+            resolved = resolved or {}
+            resolved_name = peer_name or str(resolved.get("peer_ap_name") or "").strip() or peer_mac
+            metrics["resolved_peer_name"] = resolved_name
+            metrics["belong_station"] = resolved.get("peer_site") or metrics.get("peer_station") or metrics.get("peer_site") or ""
+            metrics["belong_section"] = resolved.get("peer_section") or metrics.get("belong_section") or ""
+            metrics["belong_type"] = resolved.get("belong_type") or metrics.get("belong_type") or "unknown"
+            metrics["belonging_source"] = resolved.get("belonging_source") or resolved.get("match_rule") or metrics.get("belonging_source") or ""
+
+    def _get_peer_resolver(self) -> MeshPeerMappingService | None:
+        if self._peer_resolver is not None:
+            return self._peer_resolver
+        site = str(getattr(self.meta, "site", "") or "")
+        if not site:
+            return None
+        self._peer_resolver = MeshPeerMappingService(site, PathResolver())
+        return self._peer_resolver
 
     @staticmethod
     def _extract_device_clock(text: str) -> str | None:
@@ -422,67 +490,239 @@ class OnlineMrDiagnosisParser:
                 return match.group(0)
         return None
 
-    def _parse_channel_busy(self, session: OnlineMrSession) -> int:
+    @staticmethod
+    def _parse_device_clock_value(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        match = re.search(r"(?P<hms>\d{2}:\d{2}:\d{2})\s+\S+\s+\w+\s+(?P<date>\d{1,2}/\d{1,2}/\d{4})", text)
+        if match:
+            for fmt in ("%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+                try:
+                    return datetime.strptime(f"{match.group('date')} {match.group('hms')}", fmt)
+                except ValueError:
+                    continue
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_iso_datetime(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("T", " "))
+        except ValueError:
+            return None
+
+    def _record_time_local(self, block_collector_time: datetime, block_device_clock: str | None, record_time_device: object) -> str:
+        record_dt = self._parse_iso_datetime(record_time_device)
+        block_device_dt = self._parse_device_clock_value(block_device_clock)
+        if record_dt is not None and block_device_dt is not None:
+            return (block_collector_time + (record_dt - block_device_dt)).isoformat(sep=" ", timespec="seconds")
+        if record_dt is not None:
+            return record_dt.isoformat(sep=" ", timespec="seconds")
+        return block_collector_time.isoformat(sep=" ", timespec="milliseconds")
+
+    def _write_main_link_samples(
+        self,
+        block: RawBlock,
+        records: list[object],
+        *,
+        device_clock: str | None,
+    ) -> None:
+        if not records:
+            return
+        rows: list[tuple[object, ...]] = []
+        for record in records:
+            metrics = record.metrics
+            rows.append(
+                (
+                    self.meta.session_id,
+                    block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                    device_clock,
+                    "collector_prefix",
+                    record.radio,
+                    record.link_state,
+                    str(metrics.get("peer_name") or ""),
+                    record.peer_mac_raw,
+                    record.peer_mac_normalized,
+                    str(metrics.get("resolved_peer_name") or metrics.get("peer_name") or record.peer_mac_raw or ""),
+                    metrics.get("local_rssi_db"),
+                    metrics.get("bssid") or "",
+                    metrics.get("interface") or "",
+                    metrics.get("belong_station") or "",
+                    metrics.get("belong_section") or "",
+                    metrics.get("belong_type") or "unknown",
+                    metrics.get("belonging_source") or "",
+                    record.duration_seconds,
+                    "raw/mesh_link_raw.log",
+                    block.offset_start,
+                    block.offset_end,
+                )
+            )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO main_link_samples (
+                    session_id, collector_time, device_clock, time_source, radio, link_state,
+                    peer_name, peer_mac, peer_mac_normalized, resolved_peer_name, mr_rssi,
+                    bssid, mesh_interface, belong_station, belong_section, belong_type,
+                    belonging_source, online_time, raw_file, raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def _write_channel_busy_records(self, block: RawBlock, rows: list[dict[str, object]], *, device_clock: str | None) -> None:
+        if not rows:
+            return
+        values: list[tuple[object, ...]] = []
+        for row in rows:
+            record_time_device = row.get("sample_time")
+            values.append(
+                (
+                    self.meta.session_id,
+                    block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                    device_clock,
+                    self._record_time_local(block.collected_at, device_clock, record_time_device),
+                    record_time_device,
+                    "inferred" if record_time_device else "collector_prefix",
+                    row.get("radio"),
+                    row.get("ctl_channel"),
+                    row.get("bandwidth"),
+                    row.get("record_interval"),
+                    row.get("row_index") or row.get("idx") or 1,
+                    row.get("ctl_busy"),
+                    row.get("tx_busy"),
+                    row.get("rx_busy"),
+                    "raw/channel_busy_raw.log",
+                    block.offset_start,
+                    block.offset_end,
+                )
+            )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO channel_busy_records (
+                    session_id, block_collector_time, block_device_clock, record_time_local,
+                    record_time_device, time_source, radio, ctl_channel, bandwidth,
+                    record_interval, row_index, ctl_busy, tx_busy, rx_busy,
+                    raw_file, raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+
+    def _write_radio_statistics_samples(self, block: RawBlock, counters: dict[str, object], *, device_clock: str | None) -> None:
+        if not counters:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO radio_statistics_samples (
+                    session_id, collector_time, device_clock, time_source, radio,
+                    metric_name, metric_value, metric_unit, raw_file, raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        self.meta.session_id,
+                        block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                        device_clock,
+                        "collector_prefix",
+                        1,
+                        key,
+                        value,
+                        "",
+                        "raw/ap_radio_statistics_raw.log",
+                        block.offset_start,
+                        block.offset_end,
+                    )
+                    for key, value in counters.items()
+                    if isinstance(value, (int, float))
+                ],
+            )
+
+    def _write_interface_rate_samples(self, block: RawBlock, rows: list[dict[str, object]], *, device_clock: str | None) -> None:
+        if not rows:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO interface_rate_samples (
+                    session_id, collector_time, device_clock, time_source, interface_name,
+                    direction, total_pps, broadcast_pps, multicast_pps, usage_percent,
+                    raw_file, raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        self.meta.session_id,
+                        block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                        device_clock,
+                        "collector_prefix",
+                        row.get("interface_name"),
+                        row.get("direction"),
+                        row.get("total_pps"),
+                        row.get("broadcast_pps"),
+                        row.get("multicast_pps"),
+                        row.get("usage_percent"),
+                        "raw/interface_rate_raw.log",
+                        block.offset_start,
+                        block.offset_end,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def _parse_channel_busy(self) -> int:
         seen: set[tuple[object, ...]] = set()
         count = 0
         for block in self.splitter.split(self.raw_dir / "channel_busy_raw.log"):
-            rows = parse_channel_busy_text(block.text)
+            rows = parse_channel_busy_text(block.text, collected_at=block.collected_at)
+            device_clock = self._extract_device_clock(block.text)
             unique = []
             for row in rows:
-                key = (row.get("radio"), block.collected_at.isoformat(), row.get("tx_busy"), row.get("rx_busy"), row.get("raw_text"))
+                key = (
+                    row.get("radio"),
+                    row.get("sample_time") or block.collected_at.isoformat(),
+                    row.get("row_index"),
+                    row.get("ctl_busy"),
+                    row.get("tx_busy"),
+                    row.get("rx_busy"),
+                )
                 if key in seen:
                     continue
                 seen.add(key)
                 unique.append(row)
-            sample_id = session.append_sample("channel_busy", block.collected_at, block.command, "raw/channel_busy_raw.log", block.offset_start, block.offset_end, "OK")
             if unique:
-                session.append_channel_busy(sample_id, unique)
+                self._write_channel_busy_records(block, unique, device_clock=device_clock)
                 count += len(unique)
         return count
 
-    def _parse_radio_statistics(self, session: OnlineMrSession) -> int:
+    def _parse_radio_statistics(self) -> int:
         count = 0
         for block in self.splitter.split(self.raw_dir / "ap_radio_statistics_raw.log"):
             parsed = parse_ap_radio_statistics_text(block.text)
             counters = parsed.get("counters") if isinstance(parsed, dict) else {}
             status = "OK" if counters else "PARTIAL"
-            sample_id = session.append_sample(
-                "ap_radio_statistics",
-                block.collected_at,
-                block.command,
-                "raw/ap_radio_statistics_raw.log",
-                block.offset_start,
-                block.offset_end,
-                status,
-                "" if counters else "no AP radio counters parsed",
-            )
-            session.append_raw_index("live_radio_statistics_raw_index", sample_id, block.text)
+            device_clock = self._extract_device_clock(block.text)
             if not counters:
                 continue
+            self._write_radio_statistics_samples(block, counters, device_clock=device_clock)
             count += 1
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    """
-                    INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
-                        "AP_RADIO_STATS",
-                        1,
-                        None,
-                        None,
-                        json.dumps(parsed, ensure_ascii=False, default=str),
-                    ),
-                )
         return count
 
-    def _parse_interface_rate(self, session: OnlineMrSession) -> int:
+    def _parse_interface_rate(self) -> int:
         count = 0
         for block in self.splitter.split(self.raw_dir / "interface_rate_raw.log"):
-            sample_id = session.append_sample("interface_rate", block.collected_at, block.command, "raw/interface_rate_raw.log", block.offset_start, block.offset_end, "PARTIAL")
-            session.append_interface_rates(sample_id, block.collected_at, block.text)
-            count += 1
+            device_clock = self._extract_device_clock(block.text)
+            rows = parse_interface_rate_text(block.text)
+            self._write_interface_rate_samples(block, rows, device_clock=device_clock)
+            count += len(rows)
         return count
 
     def _parse_switch_history(self) -> int:
@@ -495,25 +735,78 @@ class OnlineMrDiagnosisParser:
         if not rows:
             self._issue("switch_history_latest.log", "switch-history", "no switch-history rows parsed", text[:500])
             return 0
+        resolver = ApRadioMappingService(str(self.meta.site or ""), self._path_resolver())
+        enriched_rows = [self._enrich_switch_history_row(row, resolver) for row in rows]
+        self._write_switch_history_events(enriched_rows, collected_at, path)
+        return len(enriched_rows)
+
+    def _write_switch_history_events(self, rows: list[dict[str, object]], snapshot_collector_time: datetime, path: Path) -> None:
+        if not rows:
+            return
+        rel_path = f"raw/{path.name}" if path.parent == self.raw_dir else str(path)
+        values: list[tuple[object, ...]] = []
+        for row in rows:
+            values.append(
+                (
+                    self.meta.session_id,
+                    snapshot_collector_time.isoformat(sep=" ", timespec="milliseconds"),
+                    None,
+                    row.get("switch_time"),
+                    row.get("switch_time"),
+                    "device_clock",
+                    int(row.get("radio") or 1),
+                    row.get("from_peer_name") or "-",
+                    row.get("from_peer_mac") or "-",
+                    row.get("out_rssi"),
+                    row.get("from_peer_site") or "-",
+                    row.get("from_peer_section") or "-",
+                    row.get("to_peer_name") or "-",
+                    row.get("to_peer_mac") or "-",
+                    row.get("in_rssi"),
+                    row.get("to_peer_site") or "-",
+                    row.get("to_peer_section") or "-",
+                    row.get("peer_quantity"),
+                    row.get("link_quantity"),
+                    row.get("switch_reason_code"),
+                    row.get("reason") or row.get("role") or "-",
+                    row.get("active_time") or "-",
+                    rel_path,
+                    0,
+                    0,
+                )
+            )
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
                 """
-                INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO switch_history_events (
+                    session_id, snapshot_collector_time, snapshot_device_clock, event_time_device,
+                    event_time_local, time_source, radio, old_peer_name, old_peer_mac, old_rssi,
+                    old_belong_station, old_belong_section, new_peer_name, new_peer_mac, new_rssi,
+                    new_belong_station, new_belong_section, peer_quantity, link_quantity,
+                    switch_reason_code, switch_reason_text, active_duration, raw_file,
+                    raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        str(row.get("switch_time") or collected_at.isoformat(sep=" ", timespec="milliseconds")),
-                        "SWITCH_HISTORY",
-                        int(row.get("radio") or 1),
-                        row.get("from_peer_mac") or None,
-                        row.get("to_peer_mac") or None,
-                        json.dumps(row, ensure_ascii=False, default=str),
-                    )
-                    for row in rows
-                ],
+                values,
             )
-        return len(rows)
+
+    def _enrich_switch_history_row(self, row: dict[str, object], resolver: ApRadioMappingService) -> dict[str, object]:
+        enriched = dict(row)
+        from_info = self._resolve_switch_endpoint(str(row.get("from_peer_name") or ""), str(row.get("from_peer_mac") or ""), False, resolver)
+        to_info = self._resolve_switch_endpoint(str(row.get("to_peer_name") or ""), str(row.get("to_peer_mac") or ""), False, resolver)
+        if not enriched.get("from_peer_name") and from_info.get("ap_name"):
+            enriched["from_peer_name"] = from_info["ap_name"]
+        if not enriched.get("to_peer_name") and to_info.get("ap_name"):
+            enriched["to_peer_name"] = to_info["ap_name"]
+        enriched["from_peer_site"] = enriched.get("from_peer_site") or from_info["station"]
+        enriched["to_peer_site"] = enriched.get("to_peer_site") or to_info["station"]
+        enriched["from_peer_section"] = enriched.get("from_peer_section") or from_info["section"]
+        enriched["to_peer_section"] = enriched.get("to_peer_section") or to_info["section"]
+        enriched["from_belong_type"] = enriched.get("from_belong_type") or from_info["belong_type"]
+        enriched["to_belong_type"] = enriched.get("to_belong_type") or to_info["belong_type"]
+        enriched["from_resolve_rule"] = enriched.get("from_resolve_rule") or from_info["resolve_rule"]
+        enriched["to_resolve_rule"] = enriched.get("to_resolve_rule") or to_info["resolve_rule"]
+        return enriched
 
     def _parse_terminal_monitor_switch_logs(self) -> int:
         path = self.raw_dir / "terminal_monitor_raw.log"
@@ -540,10 +833,10 @@ class OnlineMrDiagnosisParser:
             log_time=row.log_time,
             device_name=row.device_name,
             raw_line=row.raw_line,
-            from_peer_name=row.from_peer_name,
+            from_peer_name=from_info["ap_name"] or row.from_peer_name or row.from_peer_mac,
             from_peer_mac=row.from_peer_mac,
             from_peer_rssi=row.from_peer_rssi,
-            to_peer_name=row.to_peer_name,
+            to_peer_name=to_info["ap_name"] or row.to_peer_name or row.to_peer_mac,
             to_peer_mac=row.to_peer_mac,
             to_peer_rssi=row.to_peer_rssi,
             peer_quantity=row.peer_quantity,
@@ -552,6 +845,10 @@ class OnlineMrDiagnosisParser:
             switch_reason_text=row.switch_reason_text,
             from_station=from_info["station"],
             to_station=to_info["station"],
+            from_section=from_info["section"],
+            to_section=to_info["section"],
+            from_belong_type=from_info["belong_type"],
+            to_belong_type=to_info["belong_type"],
             from_serial_number=from_info["serial_number"],
             to_serial_number=to_info["serial_number"],
             from_resolve_rule=from_info["resolve_rule"],
@@ -563,80 +860,77 @@ class OnlineMrDiagnosisParser:
 
     def _resolve_switch_endpoint(self, peer_name: str, radio_mac: str, is_empty_link: bool, resolver: ApRadioMappingService) -> dict[str, str]:
         if is_empty_link:
-            return {"station": "-", "serial_number": "-", "resolve_rule": "empty_link"}
-        for candidate in (peer_name, radio_mac):
+            return {"ap_name": "", "station": "-", "section": "-", "belong_type": "empty", "serial_number": "-", "resolve_rule": "empty_link"}
+        for candidate in (radio_mac, peer_name):
             text = str(candidate or "").strip()
             if not text or text == "0000-0000-0000":
                 continue
             try:
-                resolved = resolver.resolve_peer_mac(text)
+                resolved = resolver.resolve_peer_mac(text, peer_name=peer_name or None)
             except Exception:
                 continue
             if str(resolved.source or "").lower() == "unresolved":
                 continue
-            if any((resolved.ap_name, resolved.site, resolved.serial_number, resolved.radio_mac)):
+            if any((resolved.ap_name, resolved.site, resolved.section, resolved.serial_number, resolved.radio_mac)):
                 return {
+                    "ap_name": str(resolved.ap_name or ""),
                     "station": str(resolved.site or "-"),
+                    "section": str(resolved.section or "-"),
+                    "belong_type": str(resolved.belong_type or "unknown"),
                     "serial_number": str(resolved.serial_number or "-"),
                     "resolve_rule": str(resolved.source or ""),
                 }
-        return {"station": "-", "serial_number": "-", "resolve_rule": "unresolved"}
+        return {"ap_name": "", "station": "-", "section": "-", "belong_type": "unknown", "serial_number": "-", "resolve_rule": "unresolved"}
+
+    @staticmethod
+    def _radio_statistics_summary(parsed: dict[str, object]) -> str:
+        counters = parsed.get("counters") if isinstance(parsed, dict) else {}
+        if not isinstance(counters, dict) or not counters:
+            return "display ar5drv statistics | no counters parsed"
+        keys = ("TxFrameAllCnt", "RxFrameAllCnt", "TxRetryFrmCnt", "TxErrFrmCnt", "TxDiscardFrmCnt")
+        parts = [f"{key}={counters.get(key)}" for key in keys if counters.get(key) is not None]
+        return "display ar5drv statistics | " + " ".join(parts)
 
     def _write_active_link_switch_logs(self, rows: list[ActiveLinkSwitchLog], source: str) -> None:
+        _ = source
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM live_active_link_switch_logs WHERE session_id = ? AND source = ?", (self.meta.session_id, source))
+            conn.execute("DELETE FROM switch_realtime_events WHERE session_id = ?", (self.meta.session_id,))
             if not rows:
                 return
             conn.executemany(
                 """
-                INSERT INTO live_active_link_switch_logs (
-                    session_id, source, device_name, log_time,
-                    from_peer_name, from_peer_mac, from_peer_rssi, from_station, from_serial_number, from_resolve_rule,
-                    to_peer_name, to_peer_mac, to_peer_rssi, to_station, to_serial_number, to_resolve_rule,
-                    peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_line, created_at
+                INSERT INTO switch_realtime_events (
+                    session_id, collector_time, device_event_time, time_source, device_name,
+                    old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
+                    new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
+                    peer_quantity, link_quantity, switch_reason_code, switch_reason_text,
+                    raw_file, raw_line_start, raw_line_end
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         self.meta.session_id,
-                        row.source,
-                        row.device_name,
                         row.log_time.isoformat(sep=" ", timespec="milliseconds"),
-                        row.from_peer_name,
-                        row.from_peer_mac,
-                        row.from_peer_rssi,
+                        row.log_time.isoformat(sep=" ", timespec="milliseconds"),
+                        "device_event_time",
+                        row.device_name,
+                        "空链路" if row.from_is_empty_link else row.from_peer_name,
+                        None if row.from_is_empty_link else row.from_peer_mac,
+                        None if row.from_is_empty_link else row.from_peer_rssi,
                         row.from_station,
-                        row.from_serial_number,
-                        row.from_resolve_rule,
-                        row.to_peer_name,
-                        row.to_peer_mac,
-                        row.to_peer_rssi,
+                        row.from_section,
+                        "空链路" if row.to_is_empty_link else row.to_peer_name,
+                        None if row.to_is_empty_link else row.to_peer_mac,
+                        None if row.to_is_empty_link else row.to_peer_rssi,
                         row.to_station,
-                        row.to_serial_number,
-                        row.to_resolve_rule,
+                        row.to_section,
                         row.peer_quantity,
                         row.link_quantity,
                         row.switch_reason_code,
                         row.switch_reason_text,
-                        row.raw_line,
-                        datetime.now().isoformat(sep=" ", timespec="milliseconds"),
-                    )
-                    for row in rows
-                ],
-            )
-            conn.executemany(
-                """
-                INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        row.log_time.isoformat(sep=" ", timespec="milliseconds"),
-                        "ACTIVE_LINK_SWITCH_LOG",
-                        1,
-                        None if row.from_is_empty_link else row.from_peer_mac,
-                        None if row.to_is_empty_link else row.to_peer_mac,
-                        json.dumps(row.__dict__, ensure_ascii=False, default=str),
+                        "raw/terminal_monitor_raw.log",
+                        0,
+                        0,
                     )
                     for row in rows
                 ],
@@ -666,15 +960,20 @@ class OnlineMrDiagnosisParser:
                 candidates.append(path)
         return sorted(candidates, key=lambda item: item.name.casefold())[0] if candidates else preferred
 
-    def _parse_fping(self, session: OnlineMrSession) -> int:
+    def _parse_fping(self) -> int:
         v5_path = self.raw_dir / "fping_v5_samples.jsonl"
         if v5_path.exists():
-            count = self._parse_fping_v5_jsonl(session, v5_path)
-            if count > 0 or not (self.raw_dir / "Fping.txt").exists():
+            count = self._parse_fping_v5_jsonl(v5_path)
+            if count > 0:
+                return count
+        raw_v5_path = self.raw_dir / "fping_v5_raw.log"
+        if raw_v5_path.exists():
+            count = self._parse_fping_v5_raw_log(raw_v5_path)
+            if count > 0:
                 return count
         legacy_path = self.raw_dir / "Fping.txt"
         if not legacy_path.exists():
-            self._issue("fping_v5_samples.jsonl", "fping", "fping v5 jsonl was not found", "")
+            self._issue("fping", "fping", "fping v5 samples/raw log and legacy Fping.txt were not found", "")
             return 0
         try:
             text = read_text_with_retry(legacy_path, retries=10, interval=0.3)
@@ -683,65 +982,164 @@ class OnlineMrDiagnosisParser:
             return 0
         rows = parse_fping_lines(text.splitlines(), self.meta.started_at, default_target=str(self.meta.fping.get("target") or ""))
         if rows:
-            fping = self.meta.fping
-            session.append_ping_samples(rows, int(fping.get("packet_size") or 64), int(fping.get("interval_ms") or 10), int(fping.get("loss_threshold_ms") or 100))
+            for row in rows:
+                row["raw_line"] = self._fping_sample_summary({"target": row.get("target_ip"), "seq": row.get("seq"), "ok": row.get("success"), "rtt_ms": row.get("latency_ms")})
+            self._write_fping_sampling_tables(rows)
         return len(rows)
 
-    def _parse_fping_v5_jsonl(self, session: OnlineMrSession, path: Path) -> int:
+    def _parse_fping_v5_jsonl(self, path: Path) -> int:
+        return self._parse_fping_v5_lines(path, path.read_text(encoding="utf-8", errors="replace").splitlines())
+
+    def _parse_fping_v5_raw_log(self, path: Path) -> int:
+        try:
+            lines = read_text_with_retry(path, retries=10, interval=0.3).splitlines()
+        except PermissionError as exc:
+            self._issue("fping_v5_raw.log", "fping", f"fping_v5_raw.log is locked; ping parsing was skipped: {exc}", "", severity="ERROR")
+            return 0
+        return self._parse_fping_v5_lines(path, lines)
+
+    def _parse_fping_v5_lines(self, path: Path, lines: list[str]) -> int:
         rows: list[dict[str, object]] = []
-        by_target: dict[str, list[dict[str, object]]] = {}
-        latencies_by_target: dict[str, list[float]] = {}
-        latest_by_target: dict[str, float] = {}
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        fping = self.meta.fping
+        timeout_ms = int(fping.get("loss_threshold_ms") or fping.get("timeout_ms") or 100)
+        for line in lines:
+            raw_line = line.strip()
+            if not raw_line:
+                continue
+            stamp = ""
+            payload_text = raw_line
+            match = FPING_V5_RAW_JSON_RE.match(raw_line)
+            if match:
+                stamp = match.group("stamp")
+                payload_text = match.group("payload")
             try:
-                sample = json.loads(line)
+                sample = json.loads(payload_text)
             except json.JSONDecodeError:
                 continue
             if not isinstance(sample, dict):
                 continue
-            raw_type = sample.get("raw_type")
-            if raw_type is not None and raw_type not in {"resp", "timeout"}:
+            normalized = self._normalize_fping_v5_sample(sample, payload_text, stamp, timeout_ms)
+            if normalized is None:
                 continue
-            if raw_type is None and not any(key in sample for key in ("ok", "rtt_ms", "target", "seq", "error", "timeout_ms")):
-                continue
-            target_ip = str(sample.get("target") or self.meta.fping.get("target") or "")
+            target_ip = str(normalized.get("target") or fping.get("target") or "")
             row = {
-                "collected_at": sample.get("ts") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds"),
-                "seq": sample.get("seq"),
+                "collected_at": normalized.get("ts") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds"),
+                "seq": normalized.get("seq"),
                 "target_ip": target_ip,
-                "success": bool(sample.get("ok")),
-                "latency_ms": sample.get("rtt_ms"),
+                "success": bool(normalized.get("ok")),
+                "latency_ms": normalized.get("rtt_ms"),
                 "ttl": None,
-                "bytes": sample.get("size"),
-                "raw_line": json.dumps(sample.get("raw") or sample, ensure_ascii=False),
+                "bytes": normalized.get("size"),
+                "raw_line": self._fping_sample_summary(normalized),
             }
             rows.append(row)
-            by_target.setdefault(target_ip, []).append(row)
-            if sample.get("ok") and sample.get("rtt_ms") is not None:
-                rtt = float(sample["rtt_ms"])
-                latencies_by_target.setdefault(target_ip, []).append(rtt)
-                latest_by_target[target_ip] = rtt
         if rows:
-            fping = self.meta.fping
-            session.append_ping_samples(rows, int(fping.get("packet_size") or 64), int(fping.get("interval_ms") or 10), int(fping.get("loss_threshold_ms") or 100))
-            for target_ip, target_rows in by_target.items():
-                sent = len(target_rows)
-                success = sum(1 for row in target_rows if row.get("success"))
-                latencies = latencies_by_target.get(target_ip, [])
-                session.append_ping_summary(
-                    {
-                        "target_ip": target_ip or self.meta.fping.get("target"),
-                        "sent": sent,
-                        "received": success,
-                        "lost": sent - success,
-                        "loss_percent": ((sent - success) / sent * 100.0) if sent else 0.0,
-                        "min_latency_ms": min(latencies) if latencies else None,
-                        "max_latency_ms": max(latencies) if latencies else None,
-                        "latest_latency_ms": latest_by_target.get(target_ip),
-                        "avg_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
-                    }
-                )
+            self._write_fping_sampling_tables(rows)
         return len(rows)
+
+    @staticmethod
+    def _fping_sample_summary(sample: dict[str, object]) -> str:
+        target = str(sample.get("target") or "")
+        seq = sample.get("seq")
+        if sample.get("ok"):
+            return f"fping {target} seq={seq} rtt={sample.get('rtt_ms')}ms"
+        return f"fping {target} seq={seq} timeout"
+
+    def _write_fping_sampling_tables(self, rows: list[dict[str, object]]) -> None:
+        sample_values: list[tuple[object, ...]] = []
+        buckets: dict[tuple[str, str], dict[str, object]] = {}
+        for row in rows:
+            collector_time = str(row.get("collected_at") or "")
+            target_ip = str(row.get("target_ip") or "")
+            success = 1 if row.get("success") else 0
+            latency = row.get("latency_ms")
+            loss_percent = 0.0 if success else 100.0
+            sample_values.append(
+                (
+                    self.meta.session_id,
+                    collector_time,
+                    "local_tool",
+                    target_ip,
+                    "",
+                    row.get("seq"),
+                    success,
+                    latency,
+                    loss_percent,
+                    "OK" if success else "TIMEOUT",
+                )
+            )
+            timestamp = self._parse_iso_datetime(collector_time) or self.meta.started_at
+            bucket_time = timestamp.replace(microsecond=0).isoformat(sep=" ", timespec="seconds")
+            bucket = buckets.setdefault((bucket_time, target_ip), {"sent": 0, "received": 0, "latencies": []})
+            bucket["sent"] = int(bucket["sent"]) + 1
+            bucket["received"] = int(bucket["received"]) + success
+            if success and latency is not None:
+                bucket["latencies"].append(float(latency))  # type: ignore[union-attr]
+        summary_values: list[tuple[object, ...]] = []
+        for (bucket_time, target_ip), item in sorted(buckets.items()):
+            sent = int(item["sent"])
+            received = int(item["received"])
+            latencies = list(item["latencies"])  # type: ignore[arg-type]
+            summary_values.append(
+                (
+                    self.meta.session_id,
+                    bucket_time,
+                    target_ip,
+                    sent,
+                    received,
+                    ((sent - received) / sent * 100.0) if sent else 0.0,
+                    (sum(latencies) / len(latencies)) if latencies else None,
+                    max(latencies) if latencies else None,
+                )
+            )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO fping_samples (
+                    session_id, collector_time, time_source, target_ip, target_name, seq,
+                    success, latency_ms, loss_percent, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                sample_values,
+            )
+            conn.executemany(
+                """
+                INSERT INTO fping_1s_summary (
+                    session_id, bucket_time, target_ip, sent, received, loss_percent,
+                    avg_latency_ms, max_latency_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                summary_values,
+            )
+
+    def _normalize_fping_v5_sample(self, sample: dict[str, object], payload_text: str, stamp: str, timeout_ms: int) -> dict[str, object] | None:
+        raw_type = sample.get("raw_type")
+        if raw_type is not None and raw_type not in {"resp", "timeout"}:
+            return None
+        if raw_type is None and not any(key in sample for key in ("ok", "rtt_ms", "target", "seq", "error", "timeout_ms", "resp", "timeout")):
+            return None
+        if "resp" in sample or "timeout" in sample:
+            parsed = parse_fping_v5_json_line(payload_text, stamp or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds"), timeout_ms)
+            if parsed is None or parsed.raw_type not in {"resp", "timeout"}:
+                return None
+            return {
+                "ts": parsed.ts,
+                "target": parsed.target,
+                "seq": parsed.seq,
+                "ok": parsed.ok,
+                "rtt_ms": parsed.rtt_ms,
+                "size": parsed.size,
+                "raw": parsed.raw,
+            }
+        return {
+            "ts": sample.get("ts") or stamp,
+            "target": sample.get("target"),
+            "seq": sample.get("seq"),
+            "ok": sample.get("ok"),
+            "rtt_ms": sample.get("rtt_ms"),
+            "size": sample.get("size"),
+            "raw": sample.get("raw") or sample,
+        }
 
     def _parse_iperf(self) -> int:
         candidates = (
@@ -781,25 +1179,39 @@ class OnlineMrDiagnosisParser:
         command = ["iperf3", "parsed"]
         store.start_run(run_id, mode="client", command=command, log_file=path, started_at=self.meta.started_at, session_id=self.meta.session_id, device_id=self.meta.device_id)
         for row in rows:
+            row["raw_line"] = self._iperf_interval_summary(row)
             store.append_interval(run_id, row, self.meta.session_id)
         store.finish_run(run_id, "PARSED")
         return len(rows)
+
+    @staticmethod
+    def _iperf_interval_summary(row: dict[str, object]) -> str:
+        return (
+            f"iperf interval {row.get('interval_start_sec')}-{row.get('interval_end_sec')}s "
+            f"bitrate={row.get('bitrate_mbps')}Mbps retrans={row.get('retransmits')} "
+            f"loss={row.get('loss_percent')}"
+        )
 
     def _write_iperf_error_events(self, errors: list[dict[str, object]], path: Path) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
                 """
-                INSERT INTO live_events (event_time, event_type, radio, from_peer_mac, to_peer_mac, details_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO analysis_events (
+                    session_id, collector_time, event_type, severity, summary_text,
+                    details_json, raw_file, raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
+                        self.meta.session_id,
                         str(error.get("collector_time") or self.meta.started_at.isoformat(sep=" ", timespec="milliseconds")),
                         "IPERF_ERROR",
-                        None,
-                        None,
-                        None,
+                        "ERROR",
+                        str(error.get("error_message") or "iperf error"),
                         json.dumps({"raw_file": path.name, **error}, ensure_ascii=False, default=str),
+                        path.name,
+                        None,
+                        None,
                     )
                     for error in errors
                 ],
@@ -810,95 +1222,102 @@ class OnlineMrDiagnosisParser:
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS live_samples (
+                CREATE TABLE IF NOT EXISTS main_link_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    task_type TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
+                    session_id TEXT,
+                    collector_time TEXT,
                     device_clock TEXT,
-                    command_group TEXT NOT NULL,
-                    raw_file TEXT NOT NULL,
-                    raw_offset_start INTEGER NOT NULL,
-                    raw_offset_end INTEGER NOT NULL,
-                    parse_status TEXT NOT NULL,
-                    error_message TEXT DEFAULT ''
-                );
-                CREATE TABLE IF NOT EXISTS live_mesh_links (
-                    sample_id INTEGER NOT NULL,
+                    time_source TEXT,
                     radio INTEGER,
                     link_state TEXT,
-                    peer_mac_raw TEXT,
+                    peer_name TEXT,
+                    peer_mac TEXT,
                     peer_mac_normalized TEXT,
-                    establish_time TEXT,
-                    duration_seconds INTEGER,
-                    link_count INTEGER,
-                    local_rssi_db INTEGER,
-                    peer_rssi_db INTEGER,
-                    local_noise_dbm INTEGER,
-                    peer_noise_dbm INTEGER,
-                    local_signal_dbm INTEGER,
-                    peer_signal_dbm INTEGER,
-                    local_tx_busy INTEGER,
-                    peer_tx_busy INTEGER,
-                    local_rx_busy INTEGER,
-                    peer_rx_busy INTEGER,
-                    local_rate_raw INTEGER,
-                    peer_rate_raw INTEGER,
-                    local_retry INTEGER,
-                    peer_retry INTEGER,
-                    local_err INTEGER,
-                    peer_err INTEGER
+                    resolved_peer_name TEXT,
+                    mr_rssi INTEGER,
+                    bssid TEXT,
+                    mesh_interface TEXT,
+                    belong_station TEXT,
+                    belong_section TEXT,
+                    belong_type TEXT,
+                    belonging_source TEXT,
+                    online_time TEXT,
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS live_channel_busy (
-                    sample_id INTEGER NOT NULL,
+                CREATE TABLE IF NOT EXISTS channel_busy_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    block_collector_time TEXT,
+                    block_device_clock TEXT,
+                    record_time_local TEXT,
+                    record_time_device TEXT,
+                    time_source TEXT,
                     radio INTEGER,
+                    ctl_channel INTEGER,
+                    bandwidth INTEGER,
+                    record_interval INTEGER,
+                    row_index INTEGER,
+                    ctl_busy INTEGER,
                     tx_busy INTEGER,
                     rx_busy INTEGER,
-                    raw_text TEXT
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS live_radio_statistics_raw_index (
-                    sample_id INTEGER NOT NULL,
-                    raw_text TEXT
-                );
-                CREATE TABLE IF NOT EXISTS live_interface_rates (
-                    sample_id INTEGER NOT NULL,
-                    collected_at TEXT,
-                    device_clock TEXT,
-                    direction TEXT,
-                    interface_name TEXT,
-                    usage_percent REAL,
-                    total_pps INTEGER,
-                    broadcast_pps INTEGER,
-                    multicast_pps INTEGER,
-                    raw_line TEXT,
-                    raw_text TEXT
-                );
-                CREATE TABLE IF NOT EXISTS ping_samples (
+                CREATE TABLE IF NOT EXISTS radio_statistics_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
-                    target_ip TEXT,
-                    seq INTEGER,
-                    success INTEGER NOT NULL,
-                    latency_ms REAL,
-                    ttl INTEGER,
-                    packet_size INTEGER,
-                    interval_ms INTEGER,
-                    loss_threshold_ms INTEGER,
-                    raw_line TEXT NOT NULL
+                    session_id TEXT,
+                    collector_time TEXT,
+                    device_clock TEXT,
+                    time_source TEXT,
+                    radio INTEGER,
+                    metric_name TEXT,
+                    metric_value REAL,
+                    metric_unit TEXT,
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS ping_summary (
-                    session_id TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS interface_rate_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    collector_time TEXT,
+                    device_clock TEXT,
+                    time_source TEXT,
+                    interface_name TEXT,
+                    direction TEXT,
+                    total_pps REAL,
+                    broadcast_pps REAL,
+                    multicast_pps REAL,
+                    usage_percent REAL,
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS fping_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    collector_time TEXT,
+                    time_source TEXT,
+                    target_ip TEXT,
+                    target_name TEXT,
+                    seq INTEGER,
+                    success INTEGER,
+                    latency_ms REAL,
+                    loss_percent REAL,
+                    status TEXT
+                );
+                CREATE TABLE IF NOT EXISTS fping_1s_summary (
+                    session_id TEXT,
+                    bucket_time TEXT,
                     target_ip TEXT,
                     sent INTEGER,
                     received INTEGER,
-                    lost INTEGER,
                     loss_percent REAL,
-                    min_latency_ms REAL,
-                    max_latency_ms REAL,
-                    latest_latency_ms REAL,
                     avg_latency_ms REAL,
-                    created_at TEXT NOT NULL
+                    max_latency_ms REAL
                 );
                 CREATE TABLE IF NOT EXISTS iperf_runs (
                     run_id TEXT PRIMARY KEY,
@@ -947,6 +1366,18 @@ class OnlineMrDiagnosisParser:
                     message TEXT,
                     raw_text TEXT
                 );
+                CREATE TABLE IF NOT EXISTS analysis_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    collector_time TEXT,
+                    event_type TEXT,
+                    severity TEXT,
+                    summary_text TEXT,
+                    details_json TEXT DEFAULT '{}',
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
+                );
                 CREATE TABLE IF NOT EXISTS online_parse_metadata (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -957,38 +1388,59 @@ class OnlineMrDiagnosisParser:
                     status TEXT NOT NULL,
                     error_summary TEXT DEFAULT ''
                 );
-                CREATE TABLE IF NOT EXISTS live_events (
-                    event_time TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    radio INTEGER,
-                    from_peer_mac TEXT,
-                    to_peer_mac TEXT,
-                    details_json TEXT DEFAULT '{}'
-                );
-                CREATE TABLE IF NOT EXISTS live_active_link_switch_logs (
+                CREATE TABLE IF NOT EXISTS switch_history_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
-                    source TEXT,
-                    device_name TEXT,
-                    log_time TEXT,
-                    from_peer_name TEXT,
-                    from_peer_mac TEXT,
-                    from_peer_rssi INTEGER,
-                    from_station TEXT,
-                    from_serial_number TEXT,
-                    from_resolve_rule TEXT,
-                    to_peer_name TEXT,
-                    to_peer_mac TEXT,
-                    to_peer_rssi INTEGER,
-                    to_station TEXT,
-                    to_serial_number TEXT,
-                    to_resolve_rule TEXT,
+                    snapshot_collector_time TEXT,
+                    snapshot_device_clock TEXT,
+                    event_time_device TEXT,
+                    event_time_local TEXT,
+                    time_source TEXT,
+                    radio INTEGER,
+                    old_peer_name TEXT,
+                    old_peer_mac TEXT,
+                    old_rssi INTEGER,
+                    old_belong_station TEXT,
+                    old_belong_section TEXT,
+                    new_peer_name TEXT,
+                    new_peer_mac TEXT,
+                    new_rssi INTEGER,
+                    new_belong_station TEXT,
+                    new_belong_section TEXT,
                     peer_quantity INTEGER,
                     link_quantity INTEGER,
                     switch_reason_code INTEGER,
                     switch_reason_text TEXT,
-                    raw_line TEXT,
-                    created_at TEXT
+                    active_duration TEXT,
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER,
+                    UNIQUE(session_id, event_time_device, old_peer_mac, new_peer_mac, switch_reason_code)
+                );
+                CREATE TABLE IF NOT EXISTS switch_realtime_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    collector_time TEXT,
+                    device_event_time TEXT,
+                    time_source TEXT,
+                    device_name TEXT,
+                    old_peer_name TEXT,
+                    old_peer_mac TEXT,
+                    old_rssi INTEGER,
+                    old_belong_station TEXT,
+                    old_belong_section TEXT,
+                    new_peer_name TEXT,
+                    new_peer_mac TEXT,
+                    new_rssi INTEGER,
+                    new_belong_station TEXT,
+                    new_belong_section TEXT,
+                    peer_quantity INTEGER,
+                    link_quantity INTEGER,
+                    switch_reason_code INTEGER,
+                    switch_reason_text TEXT,
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS active_segments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1023,6 +1475,15 @@ class OnlineMrDiagnosisParser:
                     avg_rx_busy REAL,
                     max_rx_busy REAL
                 );
+                CREATE INDEX IF NOT EXISTS idx_main_link_samples_time ON main_link_samples(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_main_link_samples_active ON main_link_samples(link_state, collector_time);
+                CREATE INDEX IF NOT EXISTS idx_channel_busy_records_time ON channel_busy_records(record_time_local);
+                CREATE INDEX IF NOT EXISTS idx_interface_rate_samples_time ON interface_rate_samples(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_fping_samples_time ON fping_samples(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_fping_1s_summary_time ON fping_1s_summary(bucket_time);
+                CREATE INDEX IF NOT EXISTS idx_analysis_events_time ON analysis_events(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_switch_history_events_time ON switch_history_events(event_time_local);
+                CREATE INDEX IF NOT EXISTS idx_switch_realtime_events_time ON switch_realtime_events(collector_time);
                 """
             )
 
@@ -1033,20 +1494,17 @@ class OnlineMrDiagnosisParser:
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
             for table in (
-                "live_samples",
-                "live_mesh_links",
-                "live_channel_busy",
-                "live_radio_statistics_raw_index",
-                "live_switch_history_latest",
-                "live_interface_rates",
-                "live_terminal_events",
-                "live_events",
-                "event_stream",
-                "live_active_link_switch_logs",
-                "ping_samples",
-                "ping_summary",
+                "main_link_samples",
+                "channel_busy_records",
+                "radio_statistics_samples",
+                "interface_rate_samples",
+                "switch_history_events",
+                "switch_realtime_events",
+                "fping_samples",
+                "fping_1s_summary",
                 "iperf_runs",
                 "iperf_intervals",
+                "analysis_events",
                 "active_segments",
                 "active_segment_metrics",
                 "online_parse_issues",
@@ -1054,6 +1512,31 @@ class OnlineMrDiagnosisParser:
             ):
                 if table in existing_tables:
                     conn.execute(f"DELETE FROM {table}")
+
+    def _discard_existing_database(self) -> None:
+        for _ in range(3):
+            try:
+                self.db_path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError:
+                time.sleep(0.2)
+        self._drop_all_tables()
+
+    def _drop_all_tables(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.db_path, timeout=5) as conn:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            tables = [
+                str(row[0])
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+            ]
+            for table in tables:
+                escaped = table.replace('"', '""')
+                conn.execute(f'DROP TABLE IF EXISTS "{escaped}"')
+            conn.commit()
+            conn.execute("VACUUM")
 
     def _issue(self, raw_file: str, issue_type: str, message: str, raw_text: str, severity: str = "WARNING") -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -1081,82 +1564,6 @@ class OnlineMrDiagnosisParser:
                 summary.iperf_error_count,
             )
         )
-
-    def _replay_events(self):
-        from netconsole.services.online_mr.offline.replay_engine import replay_session
-
-        return replay_session(self.session_dir, session_id=self.meta.session_id, device_id=getattr(self.meta, "device_id", None))
-
-    def _insert_event_replay_segment(self, replay) -> int:
-        start = replay.first_event_time or getattr(self.meta, "started_at", datetime.now())
-        end = replay.last_event_time or start
-        fping = replay.fping if isinstance(replay.fping, dict) else {}
-        iperf = replay.iperf if isinstance(replay.iperf, dict) else {}
-        sent, success, lost, loss_percent = self._event_replay_ping_metrics(fping)
-        avg_latency = _float_or_none(fping.get("avg_rtt_ms"), fping.get("rtt_ms"))
-        max_latency = _float_or_none(fping.get("max_rtt_ms"), fping.get("rtt_ms"))
-        mbps = _float_or_none(iperf.get("throughput_mbps"), iperf.get("bitrate_mbps"))
-        retransmits = _int_or_none(iperf.get("retransmits"))
-        details = {
-            "source": "event_replay",
-            "events": replay.events,
-            "diagnosis_score": replay.diagnosis_score,
-            "issues": replay.issues,
-            "fping": fping,
-            "iperf": iperf,
-        }
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO active_segments (
-                    session_id, radio, active_peer_mac, start_time, end_time, sample_count,
-                    avg_mr_rssi, min_mr_rssi, max_mr_rssi, event_type, details_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    self.meta.session_id,
-                    None,
-                    "",
-                    start.isoformat(sep=" ", timespec="milliseconds"),
-                    end.isoformat(sep=" ", timespec="milliseconds"),
-                    replay.events,
-                    None,
-                    None,
-                    None,
-                    "EVENT_REPLAY",
-                    json.dumps(details, ensure_ascii=False, default=str),
-                ),
-            )
-            segment_id = int(cursor.lastrowid)
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO active_segment_metrics (
-                    segment_id, ping_sent, ping_success, ping_lost, ping_loss_percent, avg_latency_ms,
-                    max_latency_ms, iperf_sample_count, avg_mbps, min_mbps, max_mbps, p95_mbps,
-                    total_retransmits, avg_tx_busy, max_tx_busy, avg_rx_busy, max_rx_busy
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    segment_id,
-                    sent,
-                    success,
-                    lost,
-                    loss_percent,
-                    avg_latency,
-                    max_latency,
-                    1 if mbps is not None else 0,
-                    mbps,
-                    mbps,
-                    mbps,
-                    mbps,
-                    retransmits,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            )
-        return 1
 
     def _insert_normal_data_segment(self, summary: OnlineMrParseSummary) -> int:
         start = getattr(self.meta, "started_at", datetime.now())
@@ -1262,10 +1669,10 @@ class OnlineMrDiagnosisParser:
         with sqlite3.connect(self.db_path) as conn:
             mesh = conn.execute(
                 """
-                SELECT peer_mac_normalized, peer_mac_raw, AVG(local_rssi_db), MIN(local_rssi_db), MAX(local_rssi_db)
-                FROM live_mesh_links
+                SELECT peer_mac_normalized, peer_mac, AVG(mr_rssi), MIN(mr_rssi), MAX(mr_rssi)
+                FROM main_link_samples
                 WHERE UPPER(link_state) = 'ACTIVE'
-                GROUP BY peer_mac_normalized, peer_mac_raw
+                GROUP BY peer_mac_normalized, peer_mac
                 ORDER BY COUNT(*) DESC
                 LIMIT 1
                 """
@@ -1277,9 +1684,8 @@ class OnlineMrDiagnosisParser:
                 metrics["max_mr_rssi"] = mesh[4]
             ping_summary = conn.execute(
                 """
-                SELECT sent, received, lost, loss_percent, avg_latency_ms, max_latency_ms
-                FROM ping_summary
-                ORDER BY created_at DESC
+                SELECT SUM(sent), SUM(received), SUM(sent - received), AVG(loss_percent), AVG(avg_latency_ms), MAX(max_latency_ms)
+                FROM fping_1s_summary
                 LIMIT 1
                 """
             ).fetchone()
@@ -1294,7 +1700,7 @@ class OnlineMrDiagnosisParser:
                 ping = conn.execute(
                     """
                     SELECT COUNT(*), SUM(success), AVG(latency_ms), MAX(latency_ms)
-                    FROM ping_samples
+                    FROM fping_samples
                     """
                 ).fetchone()
                 sent = int(ping[0] or 0)
@@ -1307,7 +1713,7 @@ class OnlineMrDiagnosisParser:
                 metrics["avg_latency_ms"] = ping[2]
                 metrics["max_latency_ms"] = ping[3]
             busy = conn.execute(
-                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM live_channel_busy"
+                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1"
             ).fetchone()
             if busy:
                 metrics["avg_tx_busy"] = busy[0]
@@ -1327,7 +1733,7 @@ class OnlineMrDiagnosisParser:
             interface = conn.execute(
                 """
                 SELECT direction, AVG(total_pps), MAX(total_pps)
-                FROM live_interface_rates
+                FROM interface_rate_samples
                 WHERE direction IS NOT NULL
                 GROUP BY direction
                 """
@@ -1338,32 +1744,15 @@ class OnlineMrDiagnosisParser:
             }
             radio_stats = conn.execute(
                 """
-                SELECT details_json
-                FROM live_events
-                WHERE event_type = 'AP_RADIO_STATS'
-                ORDER BY event_time DESC
-                LIMIT 1
+                SELECT metric_name, metric_value
+                FROM radio_statistics_samples
+                ORDER BY collector_time DESC
+                LIMIT 50
                 """
-            ).fetchone()
-            if radio_stats and radio_stats[0]:
-                try:
-                    metrics["ap_radio_statistics"] = json.loads(radio_stats[0])
-                except json.JSONDecodeError:
-                    metrics["ap_radio_statistics"] = {}
+            ).fetchall()
+            if radio_stats:
+                metrics["ap_radio_statistics"] = {str(row[0]): row[1] for row in radio_stats}
         return metrics
-
-    @staticmethod
-    def _event_replay_ping_metrics(fping: dict[str, object]) -> tuple[int, int, int, float | None]:
-        ok = fping.get("ok")
-        if ok is True:
-            return 1, 1, 0, 0.0
-        if ok is False:
-            return 1, 0, 1, 100.0
-        loss = _float_or_none(fping.get("loss_rate_percent"), fping.get("loss_percent"))
-        if loss is not None:
-            return 1, 1 if loss <= 0 else 0, 0 if loss <= 0 else 1, loss
-        return 0, 0, 0, None
-
 
 class OnlineMrTimelineFusionService:
     def __init__(self, db_path: Path, session_id: str) -> None:
@@ -1419,31 +1808,30 @@ class OnlineMrTimelineFusionService:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT s.collected_at, l.radio, l.link_state, l.peer_mac_raw, l.peer_mac_normalized, l.local_rssi_db
-                FROM live_samples s
-                JOIN live_mesh_links l ON l.sample_id = s.id
-                WHERE s.session_id = ?
-                ORDER BY s.collected_at ASC, l.radio ASC
+                SELECT collector_time, radio, link_state, peer_mac, peer_mac_normalized, mr_rssi
+                FROM main_link_samples
+                WHERE session_id = ?
+                ORDER BY collector_time ASC, radio ASC
                 """,
                 (self.session_id,),
             ).fetchall()
         grouped: dict[tuple[str, int], list[sqlite3.Row]] = {}
         for row in rows:
-            grouped.setdefault((row["collected_at"], int(row["radio"] or 1)), []).append(row)
+            grouped.setdefault((row["collector_time"], int(row["radio"] or 1)), []).append(row)
         samples: list[dict[str, object]] = []
         for (collected_at, radio), group in sorted(grouped.items()):
             active = [row for row in group if str(row["link_state"]).upper() == "ACTIVE"]
             if len(active) == 1:
                 event_type = "ACTIVE"
-                peer = active[0]["peer_mac_normalized"] or active[0]["peer_mac_raw"]
-                mr_rssi = active[0]["local_rssi_db"]
+                peer = active[0]["peer_mac_normalized"] or active[0]["peer_mac"]
+                mr_rssi = active[0]["mr_rssi"]
             elif not active:
                 event_type = "NO_ACTIVE"
                 peer = ""
                 mr_rssi = None
             else:
                 event_type = "MULTI_ACTIVE"
-                peer = ",".join(str(row["peer_mac_normalized"] or row["peer_mac_raw"]) for row in active)
+                peer = ",".join(str(row["peer_mac_normalized"] or row["peer_mac"]) for row in active)
                 mr_rssi = None
             samples.append({"collected_at": collected_at, "radio": radio, "event_type": event_type, "active_peer_mac": peer, "mr_rssi": mr_rssi, "sample_count": 0})
         return samples
@@ -1452,7 +1840,7 @@ class OnlineMrTimelineFusionService:
         ping = conn.execute(
             """
             SELECT COUNT(*) sent, SUM(success) success, AVG(latency_ms) avg_latency, MAX(latency_ms) max_latency
-            FROM ping_samples WHERE collected_at >= ? AND collected_at < ?
+            FROM fping_samples WHERE collector_time >= ? AND collector_time < ?
             """,
             (start_time, end_time),
         ).fetchone()
@@ -1466,9 +1854,9 @@ class OnlineMrTimelineFusionService:
         busy = conn.execute(
             """
             SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy)
-            FROM live_channel_busy cb
-            JOIN live_samples s ON s.id = cb.sample_id
-            WHERE s.collected_at >= ? AND s.collected_at < ?
+            FROM channel_busy_records
+            WHERE record_time_local >= ? AND record_time_local < ?
+              AND COALESCE(row_index, 1) = 1
             """,
             (start_time, end_time),
         ).fetchone()
@@ -1481,19 +1869,20 @@ class OnlineMrTimelineFusionService:
         if sent == 0:
             ping_summary = conn.execute(
                 """
-                SELECT sent, received, lost, loss_percent, avg_latency_ms, max_latency_ms
-                FROM ping_summary
-                ORDER BY created_at DESC
+                SELECT SUM(sent), SUM(received), AVG(loss_percent), AVG(avg_latency_ms), MAX(max_latency_ms)
+                FROM fping_1s_summary
+                WHERE bucket_time >= ? AND bucket_time < ?
                 LIMIT 1
-                """
+                """,
+                (start_time, end_time),
             ).fetchone()
-            if ping_summary:
+            if ping_summary and ping_summary[0] is not None:
                 sent = int(ping_summary[0] or 0)
                 success = int(ping_summary[1] or 0)
-                lost = int(ping_summary[2] or max(sent - success, 0))
-                loss_percent = ping_summary[3]
-                avg_latency = ping_summary[4]
-                max_latency = ping_summary[5]
+                lost = max(sent - success, 0)
+                loss_percent = ping_summary[2]
+                avg_latency = ping_summary[3]
+                max_latency = ping_summary[4]
         if not iperf or int(iperf[0] or 0) == 0:
             iperf = conn.execute(
                 """
@@ -1503,7 +1892,7 @@ class OnlineMrTimelineFusionService:
             ).fetchone()
         if not busy or all(value is None for value in busy):
             busy = conn.execute(
-                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM live_channel_busy"
+                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1"
             ).fetchone()
         conn.execute(
             """

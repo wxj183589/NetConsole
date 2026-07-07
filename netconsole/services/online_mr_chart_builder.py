@@ -6,9 +6,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from netconsole.services.online_mr_parser import parse_channel_busy_text
-
-
 @dataclass(frozen=True)
 class ChartSeries:
     name: str
@@ -42,6 +39,9 @@ class InteractiveChartPoint:
     bssid: str = ""
     mesh_interface: str = ""
     station: str = ""
+    section: str = ""
+    belong_type: str = ""
+    belonging_source: str = ""
     rssi: float | None = None
     link_state: str = ""
     online_time: object = None
@@ -71,11 +71,10 @@ class OnlineMrChartBuilder:
     def build_active_rssi_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT s.collected_at, l.radio, l.peer_mac_raw, l.local_rssi_db, l.link_state
-            FROM live_samples s
-            JOIN live_mesh_links l ON l.sample_id = s.id
-            WHERE UPPER(l.link_state) LIKE 'ACTIVE%' AND l.local_rssi_db IS NOT NULL
-            ORDER BY s.collected_at ASC
+            SELECT collector_time, radio, peer_mac, mr_rssi, link_state
+            FROM main_link_samples
+            WHERE UPPER(link_state) LIKE 'ACTIVE%' AND mr_rssi IS NOT NULL
+            ORDER BY collector_time ASC
             LIMIT 5000
             """
         )
@@ -91,25 +90,25 @@ class OnlineMrChartBuilder:
         _ = device_filter
         meta = self._read_session_meta()
         params: list[object] = []
-        where = ["UPPER(l.link_state) LIKE 'ACTIVE%'", "l.local_rssi_db IS NOT NULL"]
+        where = ["UPPER(link_state) LIKE 'ACTIVE%'", "mr_rssi IS NOT NULL"]
         if session_id:
-            where.append("s.session_id = ?")
+            where.append("session_id = ?")
             params.append(session_id)
         if time_range:
             if time_range[0] is not None:
-                where.append("s.collected_at >= ?")
+                where.append("collector_time >= ?")
                 params.append(str(time_range[0]))
             if time_range[1] is not None:
-                where.append("s.collected_at <= ?")
+                where.append("collector_time <= ?")
                 params.append(str(time_range[1]))
         rows = self._query(
             f"""
-            SELECT s.collected_at, s.session_id, l.radio, l.link_state, l.peer_mac_raw, l.peer_mac_normalized,
-                   l.establish_time, l.duration_seconds, l.link_count, l.local_rssi_db, l.peer_rssi_db
-            FROM live_samples s
-            JOIN live_mesh_links l ON l.sample_id = s.id
+            SELECT collector_time, session_id, radio, link_state, peer_mac, peer_mac_normalized,
+                   NULL AS establish_time, online_time, NULL AS link_count, mr_rssi, NULL AS peer_rssi_db,
+                   peer_name, resolved_peer_name, belong_station, belong_section, belong_type, belonging_source
+            FROM main_link_samples
             WHERE {" AND ".join(where)}
-            ORDER BY s.collected_at ASC
+            ORDER BY collector_time ASC
             LIMIT 20000
             """,
             tuple(params),
@@ -125,7 +124,7 @@ class OnlineMrChartBuilder:
                 continue
             radio = row[2]
             busy = _nearest_by_time(channel_busy, timestamp, max_seconds=10, predicate=lambda item: str(item.get("radio") or "") == str(radio or ""))
-            ping = _nearest_by_time(pings, timestamp, max_seconds=10)
+            ping = _nearest_by_time(pings, timestamp, max_seconds=1.5)
             pps = _nearest_by_time(interface, timestamp, max_seconds=10)
             points.append(
                 InteractiveChartPoint(
@@ -136,11 +135,14 @@ class OnlineMrChartBuilder:
                     metric_label="MR侧RSSI",
                     metric_value=rssi,
                     radio_id=radio,
-                    peer_name=str(row[4] or ""),
+                    peer_name=str(row[12] or row[11] or row[4] or ""),
                     peer_mac=str(row[4] or row[5] or ""),
                     bssid="",
                     mesh_interface="",
-                    station="",
+                    station=str(row[13] or ""),
+                    section=str(row[14] or ""),
+                    belong_type=str(row[15] or ""),
+                    belonging_source=str(row[16] or ""),
                     rssi=rssi,
                     link_state=str(row[3] or ""),
                     online_time=row[7],
@@ -160,10 +162,10 @@ class OnlineMrChartBuilder:
     def build_channel_busy_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT s.collected_at, cb.radio, cb.tx_busy, cb.rx_busy, cb.raw_text
-            FROM live_channel_busy cb
-            JOIN live_samples s ON s.id = cb.sample_id
-            ORDER BY s.collected_at ASC
+            SELECT COALESCE(record_time_local, block_collector_time), radio, ctl_busy, tx_busy, rx_busy
+            FROM channel_busy_records
+            WHERE COALESCE(row_index, 1) = 1
+            ORDER BY COALESCE(record_time_local, block_collector_time) ASC
             LIMIT 5000
             """
         )
@@ -171,9 +173,7 @@ class OnlineMrChartBuilder:
         tx_values: list[tuple[object, object]] = []
         rx_values: list[tuple[object, object]] = []
         tooltips: list[dict[str, object]] = []
-        for collected_at, radio, tx_busy, rx_busy, raw_text in rows:
-            parsed = parse_channel_busy_text(str(raw_text or ""))
-            ctl_busy = parsed[0].get("ctl_busy") if parsed else None
+        for collected_at, radio, ctl_busy, tx_busy, rx_busy in rows:
             if ctl_busy is not None:
                 ctl_values.append((collected_at, ctl_busy))
             if tx_busy is not None:
@@ -192,46 +192,89 @@ class OnlineMrChartBuilder:
     def build_ping_latency_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT collected_at, target_ip, latency_ms
-            FROM ping_samples
-            WHERE success = 1 AND latency_ms IS NOT NULL
-            ORDER BY collected_at ASC
+            SELECT bucket_time, target_ip, avg_latency_ms
+            FROM fping_1s_summary
+            WHERE avg_latency_ms IS NOT NULL
+            ORDER BY target_ip ASC, bucket_time ASC
             LIMIT 5000
             """
         )
+        if not rows:
+            rows = self._query(
+                """
+                SELECT collector_time, target_ip, latency_ms
+                FROM fping_samples
+                WHERE success = 1 AND latency_ms IS NOT NULL
+                ORDER BY target_ip ASC, collector_time ASC
+                LIMIT 5000
+                """
+            )
+        grouped: dict[str, list[tuple[object, object]]] = {}
+        tooltips: list[dict[str, object]] = []
+        for collected_at, target_ip, latency_ms in rows:
+            target = str(target_ip or "Ping")
+            grouped.setdefault(target, []).append((collected_at, latency_ms))
+            tooltips.append({"time": collected_at, "target": target_ip, "latency_ms": latency_ms})
         return ChartData(
             title="Ping 延迟",
             y_label="ms",
-            series=[ChartSeries("RTT", [(row[0], row[2]) for row in rows])],
-            tooltip_rows=[{"time": row[0], "target": row[1], "latency_ms": row[2]} for row in rows],
+            series=[ChartSeries(target, points) for target, points in grouped.items()],
+            tooltip_rows=tooltips,
             empty_message="未解析到Ping数据",
         )
 
     def build_ping_loss_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT collected_at, target_ip, success
-            FROM ping_samples
-            ORDER BY collected_at ASC
+            SELECT bucket_time, target_ip, loss_percent
+            FROM fping_1s_summary
+            ORDER BY target_ip ASC, bucket_time ASC
             LIMIT 5000
             """
         )
-        points = [(row[0], 0 if int(row[2] or 0) else 100) for row in rows]
+        grouped: dict[str, list[tuple[object, object]]] = {}
+        tooltips: list[dict[str, object]] = []
+        if rows:
+            for collected_at, target_ip, loss_percent in rows:
+                target = str(target_ip or "Ping")
+                grouped.setdefault(target, []).append((collected_at, loss_percent))
+                tooltips.append({"time": collected_at, "target": target_ip, "loss_percent": loss_percent})
+        else:
+            sample_rows = self._query(
+                """
+                SELECT collector_time, target_ip, success
+                FROM fping_samples
+                ORDER BY target_ip ASC, collector_time ASC
+                LIMIT 5000
+                """
+            )
+            windows: dict[str, list[int]] = {}
+            window_size = 20
+            for collected_at, target_ip, success in sample_rows:
+                target = str(target_ip or "Ping")
+                ok = 1 if int(success or 0) else 0
+                window = windows.setdefault(target, [])
+                window.append(ok)
+                if len(window) > window_size:
+                    del window[0]
+                loss_percent = round((1 - (sum(window) / len(window))) * 100.0, 2) if window else 0.0
+                grouped.setdefault(target, []).append((collected_at, loss_percent))
+                tooltips.append({"time": collected_at, "target": target_ip, "success": bool(ok), "loss_percent": loss_percent})
         return ChartData(
             title="Ping 丢包率",
             y_label="%",
-            series=[ChartSeries("丢包率", points)],
-            tooltip_rows=[{"time": row[0], "target": row[1], "loss_percent": 0 if int(row[2] or 0) else 100} for row in rows],
+            series=[ChartSeries(target, points) for target, points in grouped.items()],
+            tooltip_rows=tooltips,
             empty_message="未解析到Ping数据",
         )
 
     def build_interface_rate_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT collected_at, direction, total_pps, broadcast_pps, multicast_pps, interface_name, sample_id
-            FROM live_interface_rates
+            SELECT collector_time, direction, total_pps, broadcast_pps, multicast_pps, interface_name, id
+            FROM interface_rate_samples
             WHERE direction IS NOT NULL AND total_pps IS NOT NULL
-            ORDER BY collected_at ASC, sample_id ASC
+            ORDER BY collector_time ASC, id ASC
             LIMIT 10000
             """
         )
@@ -248,32 +291,35 @@ class OnlineMrChartBuilder:
                 "broadcast_pps": broadcast_pps,
                 "multicast_pps": multicast_pps,
             }
-        totals: dict[tuple[str, object], float] = {}
-        tooltips: dict[tuple[str, object], dict[str, object]] = {}
+        series_points: dict[str, list[tuple[object, object]]] = {}
+        tooltip_rows: list[dict[str, object]] = []
         for item in grouped.values():
-            key = (str(item["direction"]), item["time"])
-            totals[key] = totals.get(key, 0.0) + float(item["total_pps"] or 0)
-            tooltip = tooltips.setdefault(
-                key,
-                {"time": item["time"], "direction": item["direction"], "interfaces": [], "total_pps": 0.0, "broadcast_pps": 0.0, "multicast_pps": 0.0},
+            direction = str(item["direction"])
+            direction_label = "入方向" if direction == "inbound" else "出方向"
+            interface = str(item["interface"] or "未识别接口")
+            label = f"{interface} {direction_label}PPS"
+            series_points.setdefault(label, []).append((item["time"], float(item["total_pps"] or 0)))
+            tooltip_rows.append(
+                {
+                    "time": item["time"],
+                    "direction": direction,
+                    "interface": interface,
+                    "total_pps": float(item["total_pps"] or 0),
+                    "broadcast_pps": float(item["broadcast_pps"] or 0),
+                    "multicast_pps": float(item["multicast_pps"] or 0),
+                }
             )
-            if item["interface"]:
-                tooltip["interfaces"].append(item["interface"])
-            tooltip["total_pps"] = float(tooltip["total_pps"] or 0) + float(item["total_pps"] or 0)
-            tooltip["broadcast_pps"] = float(tooltip["broadcast_pps"] or 0) + float(item["broadcast_pps"] or 0)
-            tooltip["multicast_pps"] = float(tooltip["multicast_pps"] or 0) + float(item["multicast_pps"] or 0)
 
         def point_sort_key(point: tuple[object, object]) -> tuple[datetime, str]:
             parsed = _parse_time(point[0])
             return (parsed or datetime.max, str(point[0] or ""))
 
-        inbound = sorted([(time_value, value) for (direction, time_value), value in totals.items() if direction == "inbound"], key=point_sort_key)
-        outbound = sorted([(time_value, value) for (direction, time_value), value in totals.items() if direction == "outbound"], key=point_sort_key)
-        tooltip_rows = [tooltips[key] for key in sorted(tooltips, key=lambda item: (_parse_time(item[1]) or datetime.max, item[0], str(item[1] or "")))]
+        series = [ChartSeries(name, sorted(points, key=point_sort_key)) for name, points in series_points.items()]
+        tooltip_rows = sorted(tooltip_rows, key=lambda item: (_parse_time(item["time"]) or datetime.max, str(item.get("interface") or ""), str(item.get("direction") or "")))
         return ChartData(
             title="接口 PPS",
             y_label="pps",
-            series=[ChartSeries("入方向总PPS", inbound), ChartSeries("出方向总PPS", outbound)],
+            series=series,
             tooltip_rows=tooltip_rows,
             empty_message="未解析到接口PPS",
         )
@@ -333,22 +379,22 @@ class OnlineMrChartBuilder:
     def build_switch_rssi_series(self) -> ChartData:
         switch_rows = self._query(
             """
-            SELECT log_time, source, device_name, from_peer_name, from_peer_mac, from_peer_rssi, from_resolve_rule,
-                   to_peer_name, to_peer_mac, to_peer_rssi, to_resolve_rule, switch_reason_code, switch_reason_text,
+            SELECT collector_time, 'terminal_monitor', device_name,
+                   old_peer_name, old_peer_mac, old_rssi, CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                   new_peer_name, new_peer_mac, new_rssi, CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                   switch_reason_code, switch_reason_text,
                    peer_quantity, link_quantity
-            FROM live_active_link_switch_logs
-            WHERE source = 'terminal_monitor'
-            ORDER BY log_time ASC, id ASC
+            FROM switch_realtime_events
+            ORDER BY collector_time ASC, id ASC
             LIMIT 5000
             """
         )
         active_rows = self._query(
             """
-            SELECT s.collected_at, l.peer_mac_raw, l.local_rssi_db
-            FROM live_samples s
-            JOIN live_mesh_links l ON l.sample_id = s.id
-            WHERE UPPER(l.link_state) LIKE 'ACTIVE%' AND l.local_rssi_db IS NOT NULL
-            ORDER BY s.collected_at ASC
+            SELECT collector_time, peer_mac, mr_rssi
+            FROM main_link_samples
+            WHERE UPPER(link_state) LIKE 'ACTIVE%' AND mr_rssi IS NOT NULL
+            ORDER BY collector_time ASC
             LIMIT 10000
             """
         )
@@ -409,8 +455,7 @@ class OnlineMrChartBuilder:
         rows = self._query(
             """
             SELECT COALESCE(switch_reason_code, 0), COALESCE(switch_reason_text, '未知原因'), COUNT(*)
-            FROM live_active_link_switch_logs
-            WHERE source = 'terminal_monitor'
+            FROM switch_realtime_events
             GROUP BY COALESCE(switch_reason_code, 0), COALESCE(switch_reason_text, '未知原因')
             ORDER BY 1
             """
@@ -445,33 +490,46 @@ class OnlineMrChartBuilder:
     def _nearest_channel_busy_index(self) -> list[dict[str, object]]:
         rows = self._query(
             """
-            SELECT s.collected_at, cb.radio, cb.tx_busy, cb.rx_busy, cb.raw_text
-            FROM live_channel_busy cb
-            JOIN live_samples s ON s.id = cb.sample_id
-            ORDER BY s.collected_at ASC
+            SELECT COALESCE(record_time_local, block_collector_time), radio, ctl_busy, tx_busy, rx_busy
+            FROM channel_busy_records
+            WHERE COALESCE(row_index, 1) = 1
+            ORDER BY COALESCE(record_time_local, block_collector_time) ASC
             LIMIT 10000
             """
         )
         result: list[dict[str, object]] = []
-        for collected_at, radio, tx_busy, rx_busy, raw_text in rows:
+        for collected_at, radio, ctl_busy, tx_busy, rx_busy in rows:
             timestamp = _parse_time(collected_at)
             if timestamp is None:
                 continue
-            parsed = parse_channel_busy_text(str(raw_text or ""))
-            ctl_busy = parsed[0].get("ctl_busy") if parsed else None
             result.append({"timestamp": timestamp, "radio": radio, "ctl_busy": ctl_busy, "tx_busy": tx_busy, "rx_busy": rx_busy})
         return result
 
     def _nearest_ping_index(self) -> list[dict[str, object]]:
         rows = self._query(
             """
-            SELECT collected_at, success, latency_ms
-            FROM ping_samples
-            ORDER BY collected_at ASC
+            SELECT bucket_time, loss_percent, avg_latency_ms, max_latency_ms
+            FROM fping_1s_summary
+            ORDER BY bucket_time ASC
             LIMIT 10000
             """
         )
         result: list[dict[str, object]] = []
+        if rows:
+            for collected_at, loss_percent, avg_latency, max_latency in rows:
+                timestamp = _parse_time(collected_at)
+                if timestamp is None:
+                    continue
+                result.append({"timestamp": timestamp, "loss_percent": loss_percent, "avg_latency": avg_latency, "max_latency": max_latency})
+            return result
+        rows = self._query(
+            """
+            SELECT collector_time, success, latency_ms
+            FROM fping_samples
+            ORDER BY collector_time ASC
+            LIMIT 10000
+            """
+        )
         for collected_at, success, latency_ms in rows:
             timestamp = _parse_time(collected_at)
             if timestamp is None:
@@ -489,10 +547,10 @@ class OnlineMrChartBuilder:
     def _nearest_interface_index(self) -> list[dict[str, object]]:
         rows = self._query(
             """
-            SELECT collected_at, direction, total_pps
-            FROM live_interface_rates
+            SELECT collector_time, direction, total_pps
+            FROM interface_rate_samples
             WHERE direction IS NOT NULL AND total_pps IS NOT NULL
-            ORDER BY collected_at ASC
+            ORDER BY collector_time ASC
             LIMIT 10000
             """
         )
@@ -530,7 +588,7 @@ def _normalize_rssi(value: object) -> float | None:
     return abs(number)
 
 
-def _nearest_by_time(rows: list[dict[str, object]], timestamp: datetime, *, max_seconds: int, predicate=None) -> dict[str, object] | None:
+def _nearest_by_time(rows: list[dict[str, object]], timestamp: datetime, *, max_seconds: float, predicate=None) -> dict[str, object] | None:
     candidates = rows if predicate is None else [row for row in rows if predicate(row)]
     if not candidates:
         return None
