@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Callable
 
@@ -29,9 +29,11 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_sampling_model_v3"
+PARSER_VERSION = "online_mr_sampling_model_v6_mesh_online_time"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
+
+_XGE_PREFIXES = ("xge", "xgigabitethernet", "ten-gigabitethernet", "tengigabitethernet")
 
 
 def strip_stream_rx_prefix(line: str) -> str:
@@ -89,6 +91,25 @@ def _float_or_none(*values: object) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _interface_key(value: object) -> str:
+    return re.sub(r"[\s_-]+", "", str(value or "").strip()).casefold()
+
+
+def _is_excluded_xge_interface(value: object) -> bool:
+    key = _interface_key(value)
+    return any(key.startswith(prefix.replace("-", "")) for prefix in _XGE_PREFIXES)
+
+
+def _normalize_ge_interface(value: object) -> str:
+    text = str(value or "").strip()
+    key = _interface_key(text)
+    if key.startswith("gigabitethernet"):
+        return "GE" + text[len("GigabitEthernet") :]
+    if key.startswith("ge"):
+        return text.upper().replace("G E", "GE")
+    return text
 
 
 class OnlineMrRawBlockSplitter:
@@ -517,14 +538,25 @@ class OnlineMrDiagnosisParser:
         except ValueError:
             return None
 
-    def _record_time_local(self, block_collector_time: datetime, block_device_clock: str | None, record_time_device: object) -> str:
-        record_dt = self._parse_iso_datetime(record_time_device)
+    def _device_record_time(self, fallback_time: datetime, block_device_clock: str | None, record_time_device: object) -> str:
         block_device_dt = self._parse_device_clock_value(block_device_clock)
+        hms_match = re.search(r"\b(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})\b", str(record_time_device or ""))
+        if hms_match and block_device_dt is not None:
+            record_time = dt_time(int(hms_match.group("h")), int(hms_match.group("m")), int(hms_match.group("s")))
+            record_dt = datetime.combine(block_device_dt.date(), record_time)
+            if record_dt - block_device_dt > timedelta(hours=12):
+                record_dt -= timedelta(days=1)
+            elif block_device_dt - record_dt > timedelta(hours=12):
+                record_dt += timedelta(days=1)
+            return record_dt.isoformat(sep=" ", timespec="seconds")
+        record_dt = self._parse_iso_datetime(record_time_device)
         if record_dt is not None and block_device_dt is not None:
-            return (block_collector_time + (record_dt - block_device_dt)).isoformat(sep=" ", timespec="seconds")
+            return datetime.combine(block_device_dt.date(), record_dt.time()).isoformat(sep=" ", timespec="seconds")
         if record_dt is not None:
             return record_dt.isoformat(sep=" ", timespec="seconds")
-        return block_collector_time.isoformat(sep=" ", timespec="milliseconds")
+        if block_device_dt is not None:
+            return block_device_dt.isoformat(sep=" ", timespec="seconds")
+        return fallback_time.isoformat(sep=" ", timespec="milliseconds")
 
     def _write_main_link_samples(
         self,
@@ -538,12 +570,14 @@ class OnlineMrDiagnosisParser:
         rows: list[tuple[object, ...]] = []
         for record in records:
             metrics = record.metrics
+            device_time = self._device_record_time(block.collected_at, device_clock, device_clock)
             rows.append(
                 (
                     self.meta.session_id,
                     block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                    device_time,
                     device_clock,
-                    "collector_prefix",
+                    "device_clock" if device_clock else "collector_prefix",
                     record.radio,
                     record.link_state,
                     str(metrics.get("peer_name") or ""),
@@ -557,7 +591,7 @@ class OnlineMrDiagnosisParser:
                     metrics.get("belong_section") or "",
                     metrics.get("belong_type") or "unknown",
                     metrics.get("belonging_source") or "",
-                    record.duration_seconds,
+                    metrics.get("online_time") or record.duration_text or record.duration_seconds,
                     "raw/mesh_link_raw.log",
                     block.offset_start,
                     block.offset_end,
@@ -567,11 +601,11 @@ class OnlineMrDiagnosisParser:
             conn.executemany(
                 """
                 INSERT INTO main_link_samples (
-                    session_id, collector_time, device_clock, time_source, radio, link_state,
+                    session_id, collector_time, device_time, device_clock, time_source, radio, link_state,
                     peer_name, peer_mac, peer_mac_normalized, resolved_peer_name, mr_rssi,
                     bssid, mesh_interface, belong_station, belong_section, belong_type,
                     belonging_source, online_time, raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -585,11 +619,9 @@ class OnlineMrDiagnosisParser:
             values.append(
                 (
                     self.meta.session_id,
-                    block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                    self._device_record_time(block.collected_at, device_clock, record_time_device),
                     device_clock,
-                    self._record_time_local(block.collected_at, device_clock, record_time_device),
-                    record_time_device,
-                    "inferred" if record_time_device else "collector_prefix",
+                    "device_record_time" if record_time_device or device_clock else "collector_prefix",
                     row.get("radio"),
                     row.get("ctl_channel"),
                     row.get("bandwidth"),
@@ -607,11 +639,10 @@ class OnlineMrDiagnosisParser:
             conn.executemany(
                 """
                 INSERT INTO channel_busy_records (
-                    session_id, block_collector_time, block_device_clock, record_time_local,
-                    record_time_device, time_source, radio, ctl_channel, bandwidth,
+                    session_id, device_time, device_clock, time_source, radio, ctl_channel, bandwidth,
                     record_interval, row_index, ctl_busy, tx_busy, rx_busy,
                     raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -646,43 +677,57 @@ class OnlineMrDiagnosisParser:
                 ],
             )
 
-    def _write_interface_rate_samples(self, block: RawBlock, rows: list[dict[str, object]], *, device_clock: str | None) -> None:
+    def _write_interface_rate_samples(self, block: RawBlock, rows: list[dict[str, object]], *, device_clock: str | None) -> int:
         if not rows:
-            return
+            return 0
+        device_time = self._device_record_time(block.collected_at, device_clock, None)
+        values: list[tuple[object, ...]] = []
+        for row in rows:
+            interface_name = str(row.get("interface_name") or "").strip()
+            if _is_excluded_xge_interface(interface_name):
+                continue
+            values.append(
+                (
+                    self.meta.session_id,
+                    device_time,
+                    device_clock,
+                    "device_clock" if device_clock else "collector_prefix",
+                    interface_name,
+                    _normalize_ge_interface(interface_name),
+                    row.get("direction"),
+                    row.get("total_pps"),
+                    row.get("broadcast_pps"),
+                    row.get("multicast_pps"),
+                    row.get("usage_percent"),
+                    "raw/interface_rate_raw.log",
+                    block.offset_start,
+                    block.offset_end,
+                )
+            )
+        if not values:
+            return 0
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
                 """
                 INSERT INTO interface_rate_samples (
-                    session_id, collector_time, device_clock, time_source, interface_name,
+                    session_id, device_time, device_clock, time_source, interface_name, interface_normalized,
                     direction, total_pps, broadcast_pps, multicast_pps, usage_percent,
                     raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        self.meta.session_id,
-                        block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
-                        device_clock,
-                        "collector_prefix",
-                        row.get("interface_name"),
-                        row.get("direction"),
-                        row.get("total_pps"),
-                        row.get("broadcast_pps"),
-                        row.get("multicast_pps"),
-                        row.get("usage_percent"),
-                        "raw/interface_rate_raw.log",
-                        block.offset_start,
-                        block.offset_end,
-                    )
-                    for row in rows
-                ],
+                values,
             )
+        return len(values)
 
     def _parse_channel_busy(self) -> int:
         seen: set[tuple[object, ...]] = set()
         count = 0
         for block in self.splitter.split(self.raw_dir / "channel_busy_raw.log"):
-            rows = parse_channel_busy_text(block.text, collected_at=block.collected_at)
+            rows = [
+                row
+                for row in parse_channel_busy_text(block.text, collected_at=block.collected_at)
+                if int(row.get("row_index") or row.get("idx") or 1) == 1
+            ]
             device_clock = self._extract_device_clock(block.text)
             unique = []
             for row in rows:
@@ -721,8 +766,7 @@ class OnlineMrDiagnosisParser:
         for block in self.splitter.split(self.raw_dir / "interface_rate_raw.log"):
             device_clock = self._extract_device_clock(block.text)
             rows = parse_interface_rate_text(block.text)
-            self._write_interface_rate_samples(block, rows, device_clock=device_clock)
-            count += len(rows)
+            count += self._write_interface_rate_samples(block, rows, device_clock=device_clock)
         return count
 
     def _parse_switch_history(self) -> int:
@@ -900,17 +944,16 @@ class OnlineMrDiagnosisParser:
             conn.executemany(
                 """
                 INSERT INTO switch_realtime_events (
-                    session_id, collector_time, device_event_time, time_source, device_name,
+                    session_id, device_time, time_source, device_name,
                     old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
                     new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
                     peer_quantity, link_quantity, switch_reason_code, switch_reason_text,
                     raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         self.meta.session_id,
-                        row.log_time.isoformat(sep=" ", timespec="milliseconds"),
                         row.log_time.isoformat(sep=" ", timespec="milliseconds"),
                         "device_event_time",
                         row.device_name,
@@ -1079,17 +1122,27 @@ class OnlineMrDiagnosisParser:
         for (bucket_time, target_ip), item in sorted(buckets.items()):
             sent = int(item["sent"])
             received = int(item["received"])
+            lost = sent - received
             latencies = list(item["latencies"])  # type: ignore[arg-type]
+            avg_latency = (sum(latencies) / len(latencies)) if latencies else None
+            min_latency = min(latencies) if latencies else None
+            max_latency = max(latencies) if latencies else None
+            jitter = (max_latency - min_latency) if min_latency is not None and max_latency is not None else None
             summary_values.append(
                 (
                     self.meta.session_id,
                     bucket_time,
                     target_ip,
+                    "",
                     sent,
                     received,
-                    ((sent - received) / sent * 100.0) if sent else 0.0,
-                    (sum(latencies) / len(latencies)) if latencies else None,
-                    max(latencies) if latencies else None,
+                    lost,
+                    (lost / sent * 100.0) if sent else 0.0,
+                    avg_latency,
+                    min_latency,
+                    max_latency,
+                    jitter,
+                    "OK" if lost == 0 else "LOSS",
                 )
             )
         with sqlite3.connect(self.db_path) as conn:
@@ -1105,9 +1158,9 @@ class OnlineMrDiagnosisParser:
             conn.executemany(
                 """
                 INSERT INTO fping_1s_summary (
-                    session_id, bucket_time, target_ip, sent, received, loss_percent,
-                    avg_latency_ms, max_latency_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    session_id, bucket_time, target_ip, target_name, sent, received, lost, loss_percent,
+                    avg_latency_ms, min_latency_ms, max_latency_ms, jitter_ms, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 summary_values,
             )
@@ -1226,6 +1279,7 @@ class OnlineMrDiagnosisParser:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
                     collector_time TEXT,
+                    device_time TEXT,
                     device_clock TEXT,
                     time_source TEXT,
                     radio INTEGER,
@@ -1249,10 +1303,8 @@ class OnlineMrDiagnosisParser:
                 CREATE TABLE IF NOT EXISTS channel_busy_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
-                    block_collector_time TEXT,
-                    block_device_clock TEXT,
-                    record_time_local TEXT,
-                    record_time_device TEXT,
+                    device_time TEXT,
+                    device_clock TEXT,
                     time_source TEXT,
                     radio INTEGER,
                     ctl_channel INTEGER,
@@ -1283,10 +1335,11 @@ class OnlineMrDiagnosisParser:
                 CREATE TABLE IF NOT EXISTS interface_rate_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
-                    collector_time TEXT,
+                    device_time TEXT,
                     device_clock TEXT,
                     time_source TEXT,
                     interface_name TEXT,
+                    interface_normalized TEXT,
                     direction TEXT,
                     total_pps REAL,
                     broadcast_pps REAL,
@@ -1310,14 +1363,20 @@ class OnlineMrDiagnosisParser:
                     status TEXT
                 );
                 CREATE TABLE IF NOT EXISTS fping_1s_summary (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
                     bucket_time TEXT,
                     target_ip TEXT,
+                    target_name TEXT,
                     sent INTEGER,
                     received INTEGER,
+                    lost INTEGER,
                     loss_percent REAL,
                     avg_latency_ms REAL,
-                    max_latency_ms REAL
+                    min_latency_ms REAL,
+                    max_latency_ms REAL,
+                    jitter_ms REAL,
+                    status TEXT
                 );
                 CREATE TABLE IF NOT EXISTS iperf_runs (
                     run_id TEXT PRIMARY KEY,
@@ -1420,8 +1479,7 @@ class OnlineMrDiagnosisParser:
                 CREATE TABLE IF NOT EXISTS switch_realtime_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
-                    collector_time TEXT,
-                    device_event_time TEXT,
+                    device_time TEXT,
                     time_source TEXT,
                     device_name TEXT,
                     old_peer_name TEXT,
@@ -1477,13 +1535,13 @@ class OnlineMrDiagnosisParser:
                 );
                 CREATE INDEX IF NOT EXISTS idx_main_link_samples_time ON main_link_samples(collector_time);
                 CREATE INDEX IF NOT EXISTS idx_main_link_samples_active ON main_link_samples(link_state, collector_time);
-                CREATE INDEX IF NOT EXISTS idx_channel_busy_records_time ON channel_busy_records(record_time_local);
-                CREATE INDEX IF NOT EXISTS idx_interface_rate_samples_time ON interface_rate_samples(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_channel_busy_records_time ON channel_busy_records(device_time);
+                CREATE INDEX IF NOT EXISTS idx_interface_rate_samples_time ON interface_rate_samples(device_time);
                 CREATE INDEX IF NOT EXISTS idx_fping_samples_time ON fping_samples(collector_time);
                 CREATE INDEX IF NOT EXISTS idx_fping_1s_summary_time ON fping_1s_summary(bucket_time);
                 CREATE INDEX IF NOT EXISTS idx_analysis_events_time ON analysis_events(collector_time);
                 CREATE INDEX IF NOT EXISTS idx_switch_history_events_time ON switch_history_events(event_time_local);
-                CREATE INDEX IF NOT EXISTS idx_switch_realtime_events_time ON switch_realtime_events(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_switch_realtime_events_time ON switch_realtime_events(device_time);
                 """
             )
 
@@ -1855,7 +1913,7 @@ class OnlineMrTimelineFusionService:
             """
             SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy)
             FROM channel_busy_records
-            WHERE record_time_local >= ? AND record_time_local < ?
+            WHERE device_time >= ? AND device_time < ?
               AND COALESCE(row_index, 1) = 1
             """,
             (start_time, end_time),

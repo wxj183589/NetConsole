@@ -29,6 +29,9 @@ WIRELESS_SCAN_DISPLAY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("wireless_scan.ap_name", "display_ap_name"),
     ("wireless_scan.radio_id", "display_radio_id"),
     ("wireless_scan.station", "display_station"),
+    ("wireless_scan.section", "display_section"),
+    ("wireless_scan.belong_type", "display_belong_type"),
+    ("wireless_scan.belonging_source", "display_belonging_source"),
     ("wireless_scan.location_mileage", "display_location_mileage"),
     ("wireless_scan.rssi", "display_rssi"),
     ("wireless_scan.signal_quality", "display_signal_quality"),
@@ -140,6 +143,9 @@ def result_to_row(result: WirelessScanResult) -> dict[str, object]:
         "matched_trackside_ap": 1 if match.matched else 0,
         "matched_ap_name": match.ap_name,
         "matched_station": match.station,
+        "matched_section": match.section,
+        "matched_belong_type": match.belong_type,
+        "matched_belonging_source": match.belonging_source or match.match_rule,
         "matched_location": location,
         "matched_direction": match.direction,
         "matched_radio_id": match.radio_id,
@@ -182,6 +188,9 @@ def result_to_row(result: WirelessScanResult) -> dict[str, object]:
         "display_ap_name": match.ap_name if match.ap_name and match.ap_name != "-" else "-",
         "display_radio_id": match.radio_id or "-",
         "display_station": match.station or "-",
+        "display_section": match.section or "-",
+        "display_belong_type": _belong_type_display(match.belong_type),
+        "display_belonging_source": match.belonging_source or match.match_rule or "-",
         "display_location_mileage": location or "-",
         "display_rssi": network.rssi_dbm if network.rssi_dbm is not None else "-",
         "display_signal_quality": network.quality if network.quality is not None else "-",
@@ -202,6 +211,16 @@ def _export_value(value: object) -> object:
     if isinstance(value, bool):
         return "Yes" if value else "No"
     return value
+
+
+def _belong_type_display(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return {
+        "station": "站点",
+        "section": "区间",
+        "yard": "场段/库内",
+        "unknown": "未知",
+    }.get(text, str(value or "").strip() or "-")
 
 
 def _security_display(auth: str) -> str:

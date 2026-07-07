@@ -102,6 +102,8 @@ class ScrollableMatplotlibView(QWidget):
 
 
 class AnalysisChartHoverController:
+    _active_controller: "AnalysisChartHoverController | None" = None
+
     def __init__(self, canvas, axis, points: list[object], tooltip_builder: Callable[[object], str]) -> None:
         self.canvas = canvas
         self.axis = axis
@@ -109,7 +111,6 @@ class AnalysisChartHoverController:
         self.tooltip_builder = tooltip_builder
         self.timestamps = [_point_timestamp_number(point) for point in points]
         self.popup = MeshChartHoverPopup()
-        self.fixed_index: int | None = None
         self.current_index = -1
         self.latest_event = None
         self.timer = QTimer()
@@ -126,11 +127,14 @@ class AnalysisChartHoverController:
         self.motion_cid = canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
         self.click_cid = canvas.mpl_connect("button_press_event", self.on_click)
         self.leave_cid = canvas.mpl_connect("axes_leave_event", self.on_axes_leave)
+        self.figure_leave_cid = canvas.mpl_connect("figure_leave_event", self.on_axes_leave)
 
     def disconnect(self) -> None:
-        for cid in (self.motion_cid, self.click_cid, self.leave_cid):
+        for cid in (self.motion_cid, self.click_cid, self.leave_cid, self.figure_leave_cid):
             self.canvas.mpl_disconnect(cid)
         self.timer.stop()
+        if AnalysisChartHoverController._active_controller is self:
+            AnalysisChartHoverController._active_controller = None
         self.popup.hide()
         self.popup.deleteLater()
 
@@ -161,32 +165,24 @@ class AnalysisChartHoverController:
 
     def on_mouse_move(self, event) -> None:
         if event.inaxes is not self.axis or event.xdata is None:
-            if self.fixed_index is None:
-                self.hide()
+            self.hide()
             return
         self.latest_event = event
         self.timer.start()
 
     def on_click(self, event) -> None:
-        if event.inaxes is not self.axis or event.xdata is None or getattr(event, "button", None) != 1:
-            return
-        toolbar = getattr(self.canvas, "toolbar", None)
-        if toolbar is not None and getattr(toolbar, "mode", ""):
-            return
-        index = self.nearest_index(float(event.xdata), float(event.x or 0), max_pixel_distance=32)
-        if index < 0:
-            return
-        self.fixed_index = index
-        self._show_index(index, event)
+        if getattr(event, "button", None) == 1:
+            self.hide()
 
     def on_axes_leave(self, _event) -> None:
-        if self.fixed_index is None:
-            self.hide()
+        self.hide()
 
     def hide(self) -> None:
         self.timer.stop()
         self.latest_event = None
         self.current_index = -1
+        if AnalysisChartHoverController._active_controller is self:
+            AnalysisChartHoverController._active_controller = None
         self.vline.set_visible(False)
         self.marker.set_visible(False)
         self.popup.hide()
@@ -195,18 +191,19 @@ class AnalysisChartHoverController:
     def _process_latest_event(self) -> None:
         event = self.latest_event
         if event is None or event.xdata is None:
-            if self.fixed_index is None:
-                self.hide()
+            self.hide()
             return
         index = self.nearest_index(float(event.xdata), float(event.x or 0))
         if index < 0:
-            if self.fixed_index is None:
-                self.hide()
+            self.hide()
             return
-        if self.fixed_index is None:
-            self._show_index(index, event)
+        self._show_index(index, event)
 
     def _show_index(self, index: int, event) -> None:
+        active = AnalysisChartHoverController._active_controller
+        if active is not None and active is not self:
+            active.hide()
+        AnalysisChartHoverController._active_controller = self
         point = self.points[index]
         x_value = self.timestamps[index]
         y_value = _point_value(point)

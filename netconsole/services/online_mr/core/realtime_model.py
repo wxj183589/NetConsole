@@ -22,6 +22,9 @@ class RealtimeMRState:
     peer_mac: str | None = None
     peer_station: str | None = None
     peer_site: str | None = None
+    peer_section: str | None = None
+    belong_type: str | None = None
+    belonging_source: str | None = None
     peer_serial_number: str | None = None
     mr_rssi: int | None = None
     link_state: str | None = None
@@ -108,6 +111,10 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
         peer_site = _text(payload.get("peer_station") or payload.get("peer_site") or payload.get("site"))
         state.peer_station = peer_site or state.peer_station
         state.peer_site = peer_site or state.peer_site
+        peer_section = _text(payload.get("peer_section") or payload.get("belong_section"))
+        state.peer_section = peer_section or state.peer_section
+        state.belong_type = _text(payload.get("belong_type")) or state.belong_type
+        state.belonging_source = _text(payload.get("belonging_source")) or state.belonging_source
         mr_rssi = _int_or_none(payload.get("mr_rssi"), payload.get("local_rssi"), payload.get("local_rssi_db"), payload.get("rssi"))
         state.mr_rssi = mr_rssi if mr_rssi is not None else state.mr_rssi
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
@@ -126,6 +133,9 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
             resolved_site = _text(resolved.get("peer_site") or resolved.get("site"))
             state.peer_station = resolved_site or state.peer_station
             state.peer_site = resolved_site or state.peer_site
+            state.peer_section = _text(resolved.get("peer_section") or resolved.get("belong_section")) or state.peer_section
+            state.belong_type = _text(resolved.get("belong_type")) or state.belong_type
+            state.belonging_source = _text(resolved.get("belonging_source")) or state.belonging_source
             state.peer_serial_number = _text(resolved.get("peer_serial_number") or resolved.get("serial_number")) or state.peer_serial_number
     elif event.module == "busy":
         state.ctl_busy = _float_or_none(payload.get("ctl_busy")) if payload.get("ctl_busy") is not None else state.ctl_busy
@@ -156,7 +166,7 @@ def _is_resolved_peer(value: dict[str, object]) -> bool:
         return False
     if _text(value.get("match_rule")).lower() == "unresolved":
         return False
-    return any(_text(value.get(key)) for key in ("peer_ap_name", "peer_site", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
+    return any(_text(value.get(key)) for key in ("peer_ap_name", "peer_site", "peer_section", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
 
 
 def _int_or_none(*values: object) -> int | None:

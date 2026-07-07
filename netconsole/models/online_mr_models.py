@@ -33,6 +33,7 @@ TASK_INTERFACE_RATE = "interface_rate"
 TASK_TERMINAL_MONITOR = "terminal_monitor"
 TASK_FPING = "fping"
 TASK_CONFIG_COLLECT = "config_collect"
+TASK_WIRELESS_STATUS = "wireless_status"
 
 CONFIG_COLLECT_COMMANDS: tuple[str, ...] = (
     "screen-length disable",
@@ -76,6 +77,13 @@ def repeat_command_group(task_type: str, *, interval: int | None = None, radio_i
         return ("display clock", f"display ar5drv {radio_id} channelbusy", f"repeat 2 delay {delay}")
     if task_type == TASK_AP_RADIO_STATISTICS:
         return ("display clock", f"display ar5drv {radio_id} statistics", f"repeat 2 delay {delay}")
+    if task_type == TASK_WIRELESS_STATUS:
+        return (
+            "display clock",
+            f"display ar5drv {radio_id} client all rssi",
+            f"display ar5drv {radio_id} client all status",
+            f"repeat 3 delay {delay}",
+        )
     if task_type == TASK_SWITCH_HISTORY:
         return ("display clock", "display wlan mesh-link switch-history", f"repeat 2 delay {delay}")
     if task_type == TASK_INTERFACE_RATE:
@@ -96,6 +104,7 @@ class OnlineMrIntervals:
     switch_history: int = 300
     interface_rate: int = 2
     fping_interval_ms: int = 10
+    wireless_status: int = 3
 
     def normalized(self) -> "OnlineMrIntervals":
         return OnlineMrIntervals(
@@ -105,6 +114,7 @@ class OnlineMrIntervals:
             switch_history=max(10, int(self.switch_history)),
             interface_rate=max(1, int(self.interface_rate)),
             fping_interval_ms=max(10, int(self.fping_interval_ms)),
+            wireless_status=max(1, int(self.wireless_status)),
         )
 
     def as_dict(self) -> dict[str, int]:
@@ -115,6 +125,7 @@ class OnlineMrIntervals:
             TASK_AP_RADIO_STATISTICS: normalized.ap_radio_statistics,
             TASK_SWITCH_HISTORY: normalized.switch_history,
             TASK_INTERFACE_RATE: normalized.interface_rate,
+            TASK_WIRELESS_STATUS: normalized.wireless_status,
             "fping_interval_ms": normalized.fping_interval_ms,
         }
 
@@ -126,6 +137,7 @@ class OnlineMrTaskToggles:
     ap_radio_statistics: bool = True
     switch_history: bool = True
     interface_rate: bool = True
+    wireless_status: bool = False
 
     def enabled_tasks(self) -> set[str]:
         tasks: set[str] = set()
@@ -139,6 +151,8 @@ class OnlineMrTaskToggles:
             tasks.add(TASK_SWITCH_HISTORY)
         if self.interface_rate:
             tasks.add(TASK_INTERFACE_RATE)
+        if self.wireless_status:
+            tasks.add(TASK_WIRELESS_STATUS)
         return tasks
 
 
@@ -146,11 +160,13 @@ class OnlineMrTaskToggles:
 class OnlineMrRadioConfig:
     channel_busy_radio: int = 1
     ap_radio_statistics_radio: int = 1
+    wireless_status_radio: int = 1
 
     def normalized(self) -> "OnlineMrRadioConfig":
         return OnlineMrRadioConfig(
             channel_busy_radio=min(3, max(1, int(self.channel_busy_radio))),
             ap_radio_statistics_radio=min(3, max(1, int(self.ap_radio_statistics_radio))),
+            wireless_status_radio=min(3, max(1, int(self.wireless_status_radio))),
         )
 
     def as_dict(self) -> dict[str, int]:
@@ -158,6 +174,7 @@ class OnlineMrRadioConfig:
         return {
             "channel_busy_radio": normalized.channel_busy_radio,
             "ap_radio_statistics_radio": normalized.ap_radio_statistics_radio,
+            "wireless_status_radio": normalized.wireless_status_radio,
         }
 
 
@@ -371,6 +388,8 @@ class OnlineMrStats:
     switch_history_failed: int = 0
     interface_rate_success: int = 0
     interface_rate_failed: int = 0
+    wireless_status_success: int = 0
+    wireless_status_failed: int = 0
     fping_samples: int = 0
     fping_lost: int = 0
     iperf_samples: int = 0

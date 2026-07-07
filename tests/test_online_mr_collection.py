@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QLineEdit, QTableWidget, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -36,6 +36,7 @@ from netconsole.models.online_mr_models import (
     TASK_INTERFACE_RATE,
     TASK_MESH_LINK,
     TASK_SWITCH_HISTORY,
+    TASK_WIRELESS_STATUS,
     OnlineMrConnectionConfig,
     OnlineMrIntervals,
     OnlineMrSnapshot,
@@ -413,24 +414,21 @@ def _prepare_parsed_channel_busy_session(tmp_path: Path, count: int = 3):
             conn.execute(
                 """
                 INSERT INTO channel_busy_records (
-                    session_id, block_collector_time, block_device_clock, record_time_local,
-                    record_time_device, time_source, radio, ctl_channel, bandwidth,
+                    session_id, device_time, device_clock, time_source, radio, ctl_channel, bandwidth,
                     record_interval, row_index, ctl_busy, tx_busy, rx_busy,
                     raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.meta.session_id,
                     f"2026-07-03 19:00:0{index}.000",
                     None,
-                    f"2026-07-03 19:00:0{index}.000",
-                    f"19:00:0{index}",
                     "device_record",
                     1,
                     None,
                     None,
                     None,
-                    index + 1,
+                    1,
                     7 + index,
                     4 + index,
                     3 + index,
@@ -494,14 +492,15 @@ def _insert_main_link_sample(
     conn.execute(
         """
         INSERT INTO main_link_samples (
-            session_id, collector_time, device_clock, time_source, radio, link_state,
+            session_id, collector_time, device_time, device_clock, time_source, radio, link_state,
             peer_name, peer_mac, peer_mac_normalized, resolved_peer_name, mr_rssi,
             bssid, mesh_interface, belong_station, belong_section, belong_type,
             belonging_source, online_time, raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
+            collected_at,
             collected_at,
             None,
             "collector",
@@ -540,11 +539,11 @@ def _insert_channel_busy_record(
     conn.execute(
         """
         INSERT INTO channel_busy_records (
-            session_id, block_collector_time, record_time_local, time_source, radio,
+            session_id, device_time, time_source, radio,
             row_index, ctl_busy, tx_busy, rx_busy, raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, collected_at, collected_at, "collector", radio, 1, ctl_busy, tx_busy, rx_busy, "raw/channel_busy_raw.log", 0, 1),
+        (session_id, collected_at, "device_record_time", radio, 1, ctl_busy, tx_busy, rx_busy, "raw/channel_busy_raw.log", 0, 1),
     )
 
 
@@ -570,11 +569,25 @@ def _insert_fping_sample(
     conn.execute(
         """
         INSERT INTO fping_1s_summary (
-            session_id, bucket_time, target_ip, sent, received, loss_percent,
-            avg_latency_ms, max_latency_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            session_id, bucket_time, target_ip, target_name, sent, received, lost, loss_percent,
+            avg_latency_ms, min_latency_ms, max_latency_ms, jitter_ms, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, collected_at[:19], target_ip, 1, success, 0 if success else 100, latency_ms if success else None, latency_ms if success else None),
+        (
+            session_id,
+            collected_at[:19],
+            target_ip,
+            "",
+            1,
+            success,
+            1 - success,
+            0 if success else 100,
+            latency_ms if success else None,
+            latency_ms if success else None,
+            latency_ms if success else None,
+            0 if success else None,
+            "OK" if success else "LOSS",
+        ),
     )
 
 
@@ -591,12 +604,12 @@ def _insert_interface_rate_sample(
     conn.execute(
         """
         INSERT INTO interface_rate_samples (
-            session_id, collector_time, device_clock, time_source, interface_name,
+            session_id, device_time, device_clock, time_source, interface_name, interface_normalized,
             direction, total_pps, broadcast_pps, multicast_pps, usage_percent,
             raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, collected_at, None, "collector", interface_name, direction, total_pps, 0, 0, None, "raw/interface_rate_raw.log", 0, 1),
+        (session_id, collected_at, None, "device_clock", interface_name, interface_name, direction, total_pps, 0, 0, None, "raw/interface_rate_raw.log", 0, 1),
     )
 
 
@@ -625,18 +638,17 @@ def _insert_switch_realtime_event(
     conn.execute(
         """
         INSERT INTO switch_realtime_events (
-            session_id, collector_time, device_event_time, time_source, device_name,
+            session_id, device_time, time_source, device_name,
             old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
             new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
             peer_quantity, link_quantity, switch_reason_code, switch_reason_text,
             raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
             collected_at,
-            collected_at,
-            "terminal_monitor",
+            "device_event_time",
             device_name,
             old_peer_name,
             old_peer_mac,
@@ -664,7 +676,7 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS main_link_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, collector_time TEXT, device_clock TEXT, time_source TEXT,
+            session_id TEXT, collector_time TEXT, device_time TEXT, device_clock TEXT, time_source TEXT,
             radio INTEGER, link_state TEXT, peer_name TEXT, peer_mac TEXT,
             peer_mac_normalized TEXT, resolved_peer_name TEXT, mr_rssi INTEGER,
             bssid TEXT, mesh_interface TEXT, belong_station TEXT, belong_section TEXT,
@@ -673,8 +685,7 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE TABLE IF NOT EXISTS channel_busy_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, block_collector_time TEXT, block_device_clock TEXT,
-            record_time_local TEXT, record_time_device TEXT, time_source TEXT,
+            session_id TEXT, device_time TEXT, device_clock TEXT, time_source TEXT,
             radio INTEGER, ctl_channel INTEGER, bandwidth INTEGER, record_interval INTEGER,
             row_index INTEGER, ctl_busy INTEGER, tx_busy INTEGER, rx_busy INTEGER,
             raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
@@ -686,19 +697,22 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
             loss_percent REAL, status TEXT
         );
         CREATE TABLE IF NOT EXISTS fping_1s_summary (
-            session_id TEXT, bucket_time TEXT, target_ip TEXT, sent INTEGER,
-            received INTEGER, loss_percent REAL, avg_latency_ms REAL, max_latency_ms REAL
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT, bucket_time TEXT, target_ip TEXT, target_name TEXT,
+            sent INTEGER, received INTEGER, lost INTEGER, loss_percent REAL,
+            avg_latency_ms REAL, min_latency_ms REAL, max_latency_ms REAL,
+            jitter_ms REAL, status TEXT
         );
         CREATE TABLE IF NOT EXISTS interface_rate_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, collector_time TEXT, device_clock TEXT, time_source TEXT,
-            interface_name TEXT, direction TEXT, total_pps REAL, broadcast_pps REAL,
-            multicast_pps REAL, usage_percent REAL, raw_file TEXT,
+            session_id TEXT, device_time TEXT, device_clock TEXT, time_source TEXT,
+            interface_name TEXT, interface_normalized TEXT, direction TEXT, total_pps REAL,
+            broadcast_pps REAL, multicast_pps REAL, usage_percent REAL, raw_file TEXT,
             raw_line_start INTEGER, raw_line_end INTEGER
         );
         CREATE TABLE IF NOT EXISTS switch_realtime_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, collector_time TEXT, device_event_time TEXT, time_source TEXT,
+            session_id TEXT, device_time TEXT, time_source TEXT,
             device_name TEXT, old_peer_name TEXT, old_peer_mac TEXT, old_rssi INTEGER,
             old_belong_station TEXT, old_belong_section TEXT, new_peer_name TEXT,
             new_peer_mac TEXT, new_rssi INTEGER, new_belong_station TEXT,
@@ -937,6 +951,7 @@ def test_repeat_stream_uses_minimal_prepare_and_does_not_write_init_status(tmp_p
     [
         (TASK_CHANNEL_BUSY, "display ar5drv 1 channelbusy", "channel_busy_raw.log"),
         (TASK_AP_RADIO_STATISTICS, "display ar5drv 1 statistics", "ap_radio_statistics_raw.log"),
+        (TASK_WIRELESS_STATUS, "display ar5drv 1 client all rssi", "wireless_status_raw.log"),
     ],
 )
 def test_ar5drv_repeat_stream_enters_probe_without_rewriting_init_status(
@@ -983,6 +998,14 @@ def test_ar5drv_repeat_stream_enters_probe_without_rewriting_init_status(
     assert "terminal monitor" not in repeat_connection.commands
     assert "terminal logging level 7" not in repeat_connection.commands
     assert expected_command in repeat_connection.repeat_commands
+    if task_type == TASK_WIRELESS_STATUS:
+        assert repeat_connection.repeat_commands == (
+            "display clock",
+            "display ar5drv 1 client all rssi",
+            "display ar5drv 1 client all status",
+            "repeat 3 delay 3",
+        )
+        assert "display ar5drv 1 client all status" in raw_text
     assert expected_command in raw_text
 
 
@@ -1298,6 +1321,7 @@ def test_online_mesh_parser_accepts_peer_name_table_format() -> None:
     assert records[0].link_state == "ACTIVE"
     assert records[0].peer_mac_raw == "bc5a-3457-755f"
     assert records[0].metrics["local_rssi_db"] == 51
+    assert records[0].metrics["online_time"] == "00h 36m 52s"
 
 
 def test_online_mesh_parser_accepts_empty_peer_name_table_format() -> None:
@@ -1317,7 +1341,25 @@ def test_online_mesh_parser_accepts_empty_peer_name_table_format() -> None:
     assert records[0].metrics["bssid"] == "5cf7-9605-960f"
     assert records[0].metrics["interface"] == "WLAN-MeshLink25"
     assert records[0].metrics["radio_mode"] == "a"
+    assert records[0].metrics["online_time"] == "00h 43m 10s"
     assert records[0].link_state == "ACTIVE"
+
+
+def test_online_mesh_parser_accepts_empty_peer_name_standby_online_time() -> None:
+    records, status, error = parse_mesh_link_text(
+        " Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"
+        "                        4ce9-e4ef-aae0 30   5cf7-9605-960f WLAN-MeshLink24   Standby(a)       00h 43m 07s\n",
+        datetime(2026, 7, 7, 1, 29, 36),
+    )
+
+    assert status == "OK"
+    assert error == ""
+    assert len(records) == 1
+    assert records[0].metrics["peer_name"] == ""
+    assert records[0].peer_mac_raw == "4ce9-e4ef-aae0"
+    assert records[0].link_state_raw == "Standby(a)"
+    assert records[0].link_state == "STANDBY"
+    assert records[0].metrics["online_time"] == "00h 43m 07s"
 
 
 @pytest.mark.parametrize("peer_name", ["AP-X_3111", "AP-S_3406", "30f5-277a-0ea0", "083b-e9ec-da40"])
@@ -1745,6 +1787,18 @@ def test_repeat_command_groups_match_required_sequences() -> None:
     )
     assert "display ar5drv 3 channelbusy" in repeat_command_group(TASK_CHANNEL_BUSY, interval=9, radio_id=3)
     assert repeat_command_group(TASK_AP_RADIO_STATISTICS, interval=10, radio_id=1)[1] == "display ar5drv 1 statistics"
+    assert repeat_command_group(TASK_WIRELESS_STATUS, interval=3, radio_id=1) == (
+        "display clock",
+        "display ar5drv 1 client all rssi",
+        "display ar5drv 1 client all status",
+        "repeat 3 delay 3",
+    )
+    assert repeat_command_group(TASK_WIRELESS_STATUS, interval=3, radio_id=3) == (
+        "display clock",
+        "display ar5drv 3 client all rssi",
+        "display ar5drv 3 client all status",
+        "repeat 3 delay 3",
+    )
     assert repeat_command_group(TASK_SWITCH_HISTORY, interval=300)[-1] == "repeat 2 delay 300"
     assert repeat_command_group(TASK_INTERFACE_RATE, interval=2) == (
         "display clock",
@@ -1831,6 +1885,7 @@ def test_default_online_mr_intervals_and_radio() -> None:
     assert config.ap_radio_statistics == 10
     assert config.switch_history == 300
     assert config.interface_rate == 2
+    assert config.wireless_status == 3
 
 
 def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> None:
@@ -1885,6 +1940,11 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.advanced_box.maximumWidth() <= 320
     assert page.advanced_box.minimumHeight() >= 190
     assert page.advanced_box.maximumHeight() > 10000
+    assert not hasattr(page, "enable_wireless_status_check")
+    assert page.wireless_status_label.text() == "无线状态"
+    assert isinstance(page.wireless_status_interval_edit, QLineEdit)
+    assert not isinstance(page.wireless_status_interval_edit, QAbstractSpinBox)
+    assert page.wireless_status_interval_edit.text() == "3"
     assert page.period_box.layout().columnStretch(1) == 1
     assert page.collect_status_box.title() == "实时采集状态"
     assert page.collect_status_box.minimumHeight() >= 140
@@ -1991,11 +2051,13 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
 
     analysis_page = OnlineMrCollectionAnalysisPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
-    assert analysis_page.tabs.count() == 12
-    assert analysis_page.tabs.tabText(0) == "历史会话"
-    assert analysis_page.tabs.tabText(5) == "主链路切换日志"
-    assert analysis_page.tabs.tabText(7) == "分析图表"
-    assert analysis_page.tabs.tabText(9) == "诊断结果"
+    tab_names = [analysis_page.tabs.tabText(index) for index in range(analysis_page.tabs.count())]
+    assert tab_names[:2] == ["历史会话", "主链路信息"]
+    assert "链路明细" in tab_names
+    assert "主链路切换日志" in tab_names
+    assert "分析图表" in tab_names
+    assert "fping 1s聚合" in tab_names
+    assert "诊断结果" in tab_names
 
     wheel = FakeWheelEvent()
     assert page._no_wheel_filter.eventFilter(page.mesh_interval, wheel) is True
@@ -2175,10 +2237,10 @@ def test_online_mr_analysis_headers_are_chinese_in_zh(tmp_path: Path) -> None:
     page = OnlineMrCollectionPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths, analysis_only=True)
 
     headers: list[str] = []
-    for table in (page.mesh_table, page.channel_table, page.switch_history_table, page.active_link_switch_table, page.interface_rate_table, page.diagnosis_table):
+    for table in (page.mesh_table, page.mesh_detail_table, page.channel_table, page.switch_history_table, page.active_link_switch_table, page.interface_rate_table, page.fping_1s_table, page.diagnosis_table):
         headers.extend(table.horizontalHeaderItem(column).text() for column in range(table.columnCount()))
 
-    forbidden = {"online_mr.radio_id", "radio_id", "PeerName", "PeerMac", "Online time", "对端AP序列号", "原AP序列号", "新AP序列号"}
+    forbidden = {"online_mr.radio_id", "radio_id", "PeerName", "Online time", "对端AP序列号", "原AP序列号", "新AP序列号"}
     assert forbidden.isdisjoint(headers)
     assert "序号" in headers
     assert "射频ID" in headers
@@ -2191,6 +2253,9 @@ def test_online_mr_analysis_headers_are_chinese_in_zh(tmp_path: Path) -> None:
         for column in range(page.active_link_switch_table.columnCount())
     ]
     assert "控制信道繁忙度" in headers
+    assert "采样时间" in headers
+    assert "设备时间" in headers or "Device Time" in headers
+    assert "链路明细" in [page.tabs.tabText(index) for index in range(page.tabs.count())]
 
 
 def test_analysis_table_style_centers_headers_and_cells() -> None:
@@ -2309,9 +2374,9 @@ def test_online_mr_traffic_chart_renders_iperf_and_empty_state(tmp_path: Path) -
     assert traffic_axis.lines
     assert "traffic" in page.analysis_chart_hover_controllers
     tooltip = page.analysis_chart_hover_controllers["traffic"].tooltip_text(0)
-    assert "打流:" in tooltip
     assert "速率: 88.10 Mbps" in tooltip
     assert "协议: TCP" in tooltip
+    assert "TCP重传: 2" in tooltip
 
     empty_page, _repository, _groups = _online_page_with_devices(tmp_path / "empty")
     empty_session = OnlineMrSessionStore(PathResolver(tmp_path / "empty")).create_session(config)
@@ -2353,7 +2418,7 @@ def test_online_mr_active_rssi_interactive_points_fill_nearby_metrics(tmp_path: 
     assert point.outbound_pps == 80.0
 
 
-def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_path: Path) -> None:
+def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from matplotlib.dates import date2num
     from matplotlib.dates import num2date
 
@@ -2377,11 +2442,18 @@ def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_
     assert hover.nearest_index(middle) == 1
     text = hover.tooltip_text(1)
     assert "采样时间:" in text
-    assert "主链路:" in text
-    assert "空口:" in text
-    assert "Ping:" in text
-    assert "接口:" in text
-    assert "MR侧RSSI: 31" in text
+    assert "RSSI: 31" in text
+    assert "对端MAC: peer-1" in text
+    assert "链路状态: ACTIVE" in text
+    assert "打流:" not in text
+    assert "Jitter" not in text
+    assert "TCP重传" not in text
+    assert "接口:" not in text
+
+    hidden: list[bool] = []
+    monkeypatch.setattr(hover, "hide", lambda: hidden.append(True))
+    page.analysis_charts.setCurrentIndex((page.analysis_charts.currentIndex() + 1) % page.analysis_charts.count())
+    assert hidden
 
 
 def test_online_mr_analysis_tables_show_row_numbers_and_hide_ap_serial(tmp_path: Path) -> None:
@@ -2401,7 +2473,7 @@ def test_online_mr_analysis_tables_show_row_numbers_and_hide_ap_serial(tmp_path:
 
     assert [page.mesh_table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
     headers = [page.mesh_table.horizontalHeaderItem(column).text() for column in range(page.mesh_table.columnCount())]
-    assert headers[:4] == ["No.", "Time", "Radio ID", "Link State"]
+    assert headers[:5] == ["No.", "Sample Time", "Device Time", "Radio ID", "Link State"]
     assert "Peer AP Serial" not in headers
 
     for item in (
@@ -2436,7 +2508,7 @@ def test_online_mr_active_link_switch_log_table_row_numbers(tmp_path: Path) -> N
 
     assert [page.active_link_switch_table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
     headers = [page.active_link_switch_table.horizontalHeaderItem(column).text() for column in range(page.active_link_switch_table.columnCount())]
-    assert page.active_link_switch_table.columnCount() == 18
+    assert page.active_link_switch_table.columnCount() == 17
     assert "原归属区间" in headers
     assert "新归属区间" in headers
     assert "Source" not in headers
@@ -2470,6 +2542,9 @@ def test_online_mr_load_channel_busy_details_row_numbers(tmp_path: Path) -> None
 
     assert page._load_channel_busy_details(session.session_dir) == 3
     assert [page.channel_table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
+    headers = [page.channel_table.horizontalHeaderItem(column).text() for column in range(page.channel_table.columnCount())]
+    assert "设备时间" in headers or "Device Time" in headers
+    assert "记录序号" not in headers
 
 
 def test_online_mr_cached_parse_load_continues_if_channel_busy_table_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2683,10 +2758,9 @@ def test_online_mr_chart_builder_interface_pps_keeps_interface_series(tmp_path: 
 
     chart = OnlineMrChartBuilder(session.db_path).build_interface_rate_series()
 
-    assert [series.name for series in chart.series] == ["WLAN-MESH1 入方向PPS", "WLAN-MESH1 出方向PPS", "XGE1/0/1 入方向PPS"]
+    assert [series.name for series in chart.series] == ["WLAN-MESH1 入方向PPS", "WLAN-MESH1 出方向PPS"]
     assert chart.series[0].points == [("2026-07-03 19:00:00.000", 310.0)]
     assert chart.series[1].points == [("2026-07-03 19:00:00.000", 250.0)]
-    assert chart.series[2].points == [("2026-07-03 19:00:00.000", 90.0)]
     assert all("广播PPS" not in series.name and "组播PPS" not in series.name for series in chart.series)
 
 
@@ -3113,6 +3187,17 @@ def test_online_mr_skips_incomplete_connection_without_hiding_device(tmp_path: P
 
     assert [device.name for device in page.filtered_devices] == ["NoPassword"]
     assert page._build_config_for_device(incomplete) is None
+
+
+def test_online_mr_wireless_status_is_always_collected(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("\u8f66\u8f7d")
+    device = _create_onboard_device(repository, onboard.id, "A")
+
+    config = page._build_config_for_device(device)
+
+    assert config is not None
+    assert TASK_WIRELESS_STATUS in config.tasks.enabled_tasks()
 
 
 def test_online_mr_stop_selected_and_stop_all_are_device_scoped(tmp_path: Path) -> None:
@@ -3769,7 +3854,72 @@ def test_online_mr_mesh_detail_table_defaults_to_active_links(tmp_path: Path) ->
         "2026-07-06 20:59:59.200",
         "2026-07-06 21:00:00.200",
     ]
-    assert [page.mesh_table.item(row, 3).text() for row in range(2)] == ["ACTIVE", "ACTIVE"]
+    assert [page.mesh_table.item(row, 2).text() for row in range(2)] == [
+        "2026-07-06 20:59:59.200",
+        "2026-07-06 21:00:00.200",
+    ]
+    assert [page.mesh_table.item(row, 4).text() for row in range(2)] == ["ACTIVE", "ACTIVE"]
+
+
+def test_online_mr_link_detail_table_loads_all_link_states(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    parser = OnlineMrDiagnosisParser(session.session_dir)
+    parser._ensure_tables()
+    with sqlite3.connect(session.db_path) as conn:
+        _insert_main_link_sample(conn, session.meta.session_id, "2026-07-06 20:59:59.200", link_state="ACTIVE", peer_mac="30f5-277a-2f8f", online_time="00h 43m 04s")
+        _insert_main_link_sample(conn, session.meta.session_id, "2026-07-06 20:59:59.200", link_state="STANDBY", peer_mac="30f5-277a-3bef", online_time="00h 43m 07s")
+
+    assert page._load_mesh_link_detail_records(session.session_dir) == 2
+    headers = [page.mesh_detail_table.horizontalHeaderItem(column).text() for column in range(page.mesh_detail_table.columnCount())]
+    assert page.mesh_detail_table.columnCount() == 15
+    assert "Radio模式" not in headers
+    assert [page.mesh_detail_table.item(row, 0).text() for row in range(2)] == ["1", "2"]
+    assert [page.mesh_detail_table.item(row, 4).text() for row in range(2)] == ["ACTIVE", "STANDBY"]
+    assert [page.mesh_detail_table.item(row, 14).text() for row in range(2)] == ["00h 43m 04s", "00h 43m 07s"]
+
+
+def test_online_mr_diagnosis_parser_writes_mesh_online_time(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2026-07-07 01:29:30 >>> display wlan mesh-link\n"
+        " Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"
+        "                        4ce9-e4ef-aae0 30   5cf7-9605-960f WLAN-MeshLink24   Standby(a)       00h 43m 07s\n"
+        "                        4ce9-e4f1-b880 53   5cf7-9605-960f WLAN-MeshLink25   Active(a)        00h 43m 04s\n",
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.mesh_samples == 1
+    with sqlite3.connect(session.db_path) as conn:
+        rows = conn.execute(
+            "SELECT link_state, peer_mac, online_time FROM main_link_samples ORDER BY link_state ASC"
+        ).fetchall()
+        parser_version = conn.execute("SELECT parser_version FROM online_parse_metadata WHERE session_id = ?", (session.meta.session_id,)).fetchone()[0]
+    assert rows == [
+        ("ACTIVE", "4ce9-e4f1-b880", "00h 43m 04s"),
+        ("STANDBY", "4ce9-e4ef-aae0", "00h 43m 07s"),
+    ]
+    assert parser_version == PARSER_VERSION
+
+
+def test_online_mr_fping_1s_summary_table_loads_rows(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    parser = OnlineMrDiagnosisParser(session.session_dir)
+    parser._ensure_tables()
+    with sqlite3.connect(session.db_path) as conn:
+        _insert_fping_sample(conn, session.meta.session_id, "2026-07-07 01:29:19.341", target_ip="172.28.29.45", success=1, latency_ms=1.1)
+
+    assert page._load_fping_1s_details(session.session_dir) == 1
+    headers = [page.fping_1s_table.horizontalHeaderItem(column).text() for column in range(page.fping_1s_table.columnCount())]
+    assert "时间" in headers or "Time" in headers
+    assert page.fping_1s_table.item(0, 0).text() == "1"
+    assert page.fping_1s_table.item(0, 2).text() == "172.28.29.45"
 
 
 def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: Path) -> None:
@@ -3781,11 +3931,12 @@ def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: 
         "display ar5drv 1 channelbusy\n"
         "repeat 2 delay 9\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX display clock\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX 03:05:13 BeiJing Tue 07/07/2026\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX [MR-probe]display ar5drv 1 channelbusy\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX ChannelBusy information\n"
-        "2025-12-03 10:12:31.001 [collector=repeat] RX  Date/Month/Year: 26/06/2026\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX        Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
-        "2025-12-03 10:12:31.001 [collector=repeat] RX  01     22:08:24          4          1          3          -\n",
+        "2025-12-03 10:12:31.001 [collector=repeat] RX  01     03:05:07         81          2         77          -\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX  02     03:04:58         82          3         78          -\n",
         encoding="utf-8",
     )
 
@@ -3793,7 +3944,10 @@ def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: 
 
     assert summary.channel_samples == 1
     with sqlite3.connect(session.db_path) as conn:
-        assert conn.execute("SELECT tx_busy, rx_busy FROM channel_busy_records").fetchone() == (1, 3)
+        row = conn.execute("SELECT device_time, ctl_busy, tx_busy, rx_busy FROM channel_busy_records").fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM channel_busy_records").fetchone()[0]
+    assert row == ("2026-07-07 03:05:07", 81, 2, 77)
+    assert count == 1
 
 
 def test_online_mr_diagnosis_parser_groups_fping_v5_by_target(tmp_path: Path) -> None:
@@ -3900,7 +4054,7 @@ def test_online_mr_diagnosis_parser_keeps_active_logs_terminal_only(tmp_path: Pa
     with sqlite3.connect(session.db_path) as conn:
         terminal_row = conn.execute(
             """
-            SELECT time_source, collector_time, device_name, old_peer_name, old_peer_mac, old_rssi,
+            SELECT time_source, device_time, device_name, old_peer_name, old_peer_mac, old_rssi,
                    new_peer_name, new_peer_mac, new_rssi, peer_quantity, link_quantity,
                    switch_reason_code, switch_reason_text
             FROM switch_realtime_events
@@ -4017,7 +4171,9 @@ def test_online_mr_realtime_page_hides_offline_parse_controls(tmp_path: Path) ->
     assert analysis.analysis_only is True
     assert analysis.view_row.parentWidget() is not None
     assert analysis.parse_session_button.parentWidget() is analysis.view_row
-    assert analysis.tabs.count() == 12
+    tab_names = [analysis.tabs.tabText(index) for index in range(analysis.tabs.count())]
+    assert "Link Details" in tab_names or "链路明细" in tab_names
+    assert "fping 1s聚合" in tab_names or "fping 1s Summary" in tab_names
 
 
 def test_online_mr_analysis_filters_and_selects_session_combo(tmp_path: Path) -> None:

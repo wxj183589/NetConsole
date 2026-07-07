@@ -17,6 +17,7 @@ from netconsole.models.online_mr_models import (
     TASK_MESH_LINK,
     TASK_SWITCH_HISTORY,
     TASK_TERMINAL_MONITOR,
+    TASK_WIRELESS_STATUS,
     OnlineMrConnectionConfig,
     OnlineMrSessionMeta,
 )
@@ -34,6 +35,7 @@ RAW_FILES = {
     TASK_AP_RADIO_STATISTICS: "ap_radio_statistics_raw.log",
     TASK_SWITCH_HISTORY: "switch_history_latest.log",
     TASK_INTERFACE_RATE: "interface_rate_raw.log",
+    TASK_WIRELESS_STATUS: "wireless_status_raw.log",
     TASK_FPING: "fping_v5_raw.log",
     "reconnect": "reconnect.log",
 }
@@ -147,8 +149,14 @@ class OnlineMrSession:
                     sample_id INTEGER NOT NULL,
                     radio INTEGER,
                     link_state TEXT,
+                    peer_name TEXT DEFAULT '',
                     peer_mac_raw TEXT,
                     peer_mac_normalized TEXT,
+                    resolved_peer_name TEXT DEFAULT '',
+                    belong_station TEXT DEFAULT '',
+                    belong_section TEXT DEFAULT '',
+                    belong_type TEXT DEFAULT 'unknown',
+                    belonging_source TEXT DEFAULT '',
                     establish_time TEXT,
                     duration_seconds INTEGER,
                     link_count INTEGER,
@@ -172,6 +180,13 @@ class OnlineMrSession:
                 CREATE TABLE IF NOT EXISTS live_channel_busy (
                     sample_id INTEGER NOT NULL,
                     radio INTEGER,
+                    ctl_channel INTEGER,
+                    bandwidth INTEGER,
+                    record_interval INTEGER,
+                    row_index INTEGER DEFAULT 1,
+                    sample_time TEXT,
+                    collector_time TEXT,
+                    ctl_busy INTEGER,
                     tx_busy INTEGER,
                     rx_busy INTEGER,
                     raw_text TEXT
@@ -292,6 +307,8 @@ class OnlineMrSession:
                 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_run ON iperf_intervals(run_id);
                 """
             )
+            self._ensure_mesh_link_columns(conn)
+            self._ensure_channel_busy_columns(conn)
 
     def ensure_raw_files(self) -> None:
         for raw_name in set(RAW_FILES.values()) | {COLLECTOR_OUTPUT_RAW_FILE, "fping_v5_samples.jsonl", "fping_v5_final_summary.json"}:
@@ -447,24 +464,48 @@ class OnlineMrSession:
 
     def append_mesh_links(self, sample_id: int, records: list[MeshLogRecord]) -> None:
         with self._connect() as conn:
+            self._ensure_mesh_link_columns(conn)
             conn.executemany(
                 """
                 INSERT INTO live_mesh_links (
-                    sample_id, radio, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
+                    sample_id, radio, link_state, peer_name, peer_mac_raw, peer_mac_normalized,
+                    resolved_peer_name, belong_station, belong_section, belong_type, belonging_source, establish_time,
                     duration_seconds, link_count, local_rssi_db, peer_rssi_db, local_noise_dbm,
                     peer_noise_dbm, local_signal_dbm, peer_signal_dbm, local_tx_busy, peer_tx_busy,
                     local_rx_busy, peer_rx_busy, local_rate_raw, peer_rate_raw, local_retry,
                     peer_retry, local_err, peer_err
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._mesh_values(sample_id, record) for record in records],
             )
 
     def append_channel_busy(self, sample_id: int, rows: list[dict[str, object]]) -> None:
         with self._connect() as conn:
+            self._ensure_channel_busy_columns(conn)
             conn.executemany(
-                "INSERT INTO live_channel_busy (sample_id, radio, tx_busy, rx_busy, raw_text) VALUES (?, ?, ?, ?, ?)",
-                [(sample_id, row.get("radio"), row.get("tx_busy"), row.get("rx_busy"), row.get("raw_text")) for row in rows],
+                """
+                INSERT INTO live_channel_busy (
+                    sample_id, radio, ctl_channel, bandwidth, record_interval, row_index,
+                    sample_time, collector_time, ctl_busy, tx_busy, rx_busy, raw_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        sample_id,
+                        row.get("radio"),
+                        row.get("ctl_channel"),
+                        row.get("bandwidth"),
+                        row.get("record_interval"),
+                        row.get("row_index") or row.get("idx") or 1,
+                        row.get("sample_time"),
+                        row.get("collector_time"),
+                        row.get("ctl_busy"),
+                        row.get("tx_busy"),
+                        row.get("rx_busy"),
+                        row.get("raw_text"),
+                    )
+                    for row in rows
+                ],
             )
 
     def append_raw_index(self, table: str, sample_id: int, raw_text: str) -> None:
@@ -529,7 +570,7 @@ class OnlineMrSession:
                             row.get("broadcast_pps"),
                             row.get("multicast_pps"),
                             row.get("raw_line"),
-                            raw_text,
+                            row.get("raw_line"),
                         )
                         for row in rows
                     ],
@@ -542,7 +583,7 @@ class OnlineMrSession:
                     total_pps, broadcast_pps, multicast_pps, raw_line, raw_text
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (sample_id, collected_at.isoformat(sep=" ", timespec="milliseconds"), None, None, None, None, None, None, None, None, raw_text),
+                (sample_id, collected_at.isoformat(sep=" ", timespec="milliseconds"), None, None, None, None, None, None, None, None, ""),
             )
 
     def append_ping_samples(self, rows: list[dict[str, object]], packet_size: int, interval_ms: int, loss_threshold_ms: int) -> None:
@@ -615,12 +656,20 @@ class OnlineMrSession:
 
     def _mesh_values(self, sample_id: int, record: MeshLogRecord) -> tuple[object, ...]:
         metrics = record.metrics
+        peer_name = str(metrics.get("peer_name") or "")
+        resolved_peer_name = str(metrics.get("resolved_peer_name") or peer_name or record.peer_mac_raw or "")
         return (
             sample_id,
             record.radio,
             record.link_state,
+            peer_name,
             record.peer_mac_raw,
             record.peer_mac_normalized,
+            resolved_peer_name,
+            metrics.get("belong_station") or metrics.get("peer_station") or metrics.get("peer_site") or "",
+            metrics.get("belong_section") or "",
+            metrics.get("belong_type") or "unknown",
+            metrics.get("belonging_source") or metrics.get("match_rule") or "",
             record.establish_time.isoformat(sep=" ", timespec="seconds") if record.establish_time else None,
             record.duration_seconds,
             record.link_count,
@@ -641,3 +690,32 @@ class OnlineMrSession:
             metrics.get("local_err"),
             metrics.get("peer_err"),
         )
+
+    @staticmethod
+    def _ensure_mesh_link_columns(conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(live_mesh_links)").fetchall()}
+        for column, definition in {
+            "peer_name": "TEXT DEFAULT ''",
+            "resolved_peer_name": "TEXT DEFAULT ''",
+            "belong_station": "TEXT DEFAULT ''",
+            "belong_section": "TEXT DEFAULT ''",
+            "belong_type": "TEXT DEFAULT 'unknown'",
+            "belonging_source": "TEXT DEFAULT ''",
+        }.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE live_mesh_links ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _ensure_channel_busy_columns(conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(live_channel_busy)").fetchall()}
+        for column, definition in {
+            "ctl_channel": "INTEGER",
+            "bandwidth": "INTEGER",
+            "record_interval": "INTEGER",
+            "row_index": "INTEGER DEFAULT 1",
+            "sample_time": "TEXT",
+            "collector_time": "TEXT",
+            "ctl_busy": "INTEGER",
+        }.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE live_channel_busy ADD COLUMN {column} {definition}")

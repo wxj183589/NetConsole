@@ -68,11 +68,28 @@ Requirements:
 - Expose the setting through the existing feature-flag configuration page and profile flow.
 - Use `FeatureGate` to control UI creation, entry visibility, or action handling.
 - Avoid scattered one-off `if` checks inside pages.
+- Feature state uses four boolean fields: `visible`, `enabled`, `client_package`, and `internal_only`.
+- Customer effective state must cascade through parent features; if a parent is hidden, internal-only, or not in the customer package, child features must not be visible or enabled.
+- `module.feature_switch` and `system.feature_flags` are protected internal features and must not be enabled in customer mode through local overrides.
 
 Exceptions:
 
 - Pure internal refactors, non-user-facing fixes, and test helpers do not need a new feature ID.
 - If a requirement explicitly defines the change as a permanent baseline capability, document why it does not use a feature flag.
+
+### Fluent Command Bars and Page Action Boundaries
+
+Module-level actions in the Fluent main window should be hosted by `NCCommandBar` and forwarded to the raw page button or handler.
+
+Requirements:
+
+- Command-bar buttons must have Chinese text and icons; do not leave only hidden legacy page buttons as the effective control.
+- Module-level command bars should contain cross-page primary actions only; tab-level, table-level, and file-list context actions stay in the local page.
+- The file-management module command bar should only contain connection actions: connect, disconnect, refresh connection status, and open WinSCP.
+- The config-collection module command bar should only contain save config, download config, compare config, open directory, and refresh; snapshot, diff export, and delete actions stay in the local panel.
+- Multi-tab modules such as AC management and rail transit must not mix tab-specific actions into the global command bar.
+
+Validation should check command-bar text, icons, hidden legacy buttons, and whether clicking the command-bar button triggers the real raw-page behavior.
 
 ### WPS Scope Boundary
 
@@ -120,6 +137,45 @@ Requirements:
 - Do not introduce cloud sync, online accounts, or remote document services as default dependencies.
 - Keep project data under project-controlled or release-package-controlled directories by default.
 - Import, export, analysis, and diagnostics should focus on local files and field device connections.
+
+### AP Extension Belonging Import Rules
+
+FIT-AP extension metadata, trackside AP layout tables, and signal A/B network layout tables should converge on the AP extension belonging fields.
+
+Requirements:
+
+- Standard templates and export templates should keep fields such as belonging type, station, section, section start station, section end station, yard, and area.
+- Belonging type uses one normalized semantic set: station, section, yard, or unknown; it may be inferred from station, section, yard, and area values.
+- When smart-importing signal A/B network layout tables, sheet names `A网` / `B网` determine the network domain; adjacent titles infer section endpoints, while yard/depot titles infer yard and area.
+- Legacy metadata matching templates containing only AP name, station, mileage, location note, and direction are no longer valid import templates; use the current extension metadata template.
+- AP MAC matching remains based on normalized MAC values; extension points without online resources should be treated as extension-not-online state.
+
+Validation should cover A/B network recognition, section/yard inference, standard template headers, legacy-template rejection, and resource matching results.
+
+### Online MR Collection and Analysis Rules
+
+Vehicle MR online collection, raw logs, realtime cache, parser cache, and chart timelines must stay traceable.
+
+Requirements:
+
+- Raw task output is written to each task raw file and is not mirrored to `collector_output_raw.log` by default.
+- `collector_output_raw.log` records collector process logs only; `terminal_monitor_raw.log` records device terminal-monitor output only. Do not mix them.
+- Repeat collection connections should run only the minimal streaming prepare commands, not the full initialization command set; stopped collectors must not start new repeat connections.
+- When parsing online MR RX streams, split sample blocks by recognized commands and use the primary sampling command time as the sample timestamp.
+- If parser cache health checks find collapsed mesh-link samples, concatenated active-peer MAC values, or timeline anomalies, mark the cache stale and reparse.
+- Adding hover markers or reference lines to dynamic charts must not change the original axis range.
+
+### IPERF Follow-Collection Rules
+
+Vehicle MR follow-collection IPERF traffic should follow the collection lifecycle instead of using a short fixed test duration as the formal collection duration.
+
+Requirements:
+
+- Online MR presets use default port `5201`.
+- Follow-collection mode uses `FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS`; the current protection duration is `86400` seconds.
+- Run a 1-second preflight before collection start and reconnect; preflight must not enable `follow_collection`.
+- TCP low-bandwidth cases without an explicit block size use the existing `16K` fallback.
+- IPERF logs should record `duration_mode=follow_collection` and the protection duration so later analysis can explain the run.
 
 ### Data Paths and Site Isolation
 

@@ -57,18 +57,20 @@ class OnlineMrAnalysisReportExporter:
             "质量总览": [["维度", "结论", "说明"], ["业务连通性", "N/A", "缺少 fping 数据时不按 0 计算"], ["Mesh主链路", "N/A", "基于 parsed 数据计算"], ["空口繁忙度", "N/A", "无数据时显示 N/A"]],
             "时间轴质量分析": [["时间", "Active Peer", "MR侧RSSI", "TxBusy", "RxBusy", "fping丢包率", "平均延迟", "质量等级", "原因"]],
             "fping业务质量": self._fping_quality_rows(db_path),
+            "fping 1s聚合": self._fping_1s_rows(db_path),
             "Mesh主链路质量": self._mesh_main_link_rows(db_path),
+            "链路明细": self._mesh_link_detail_rows(db_path),
             "Peer稳定性分析": [["Peer", "Active次数", "平均RSSI", "最低RSSI", "切换次数", "结论"]],
             "主链路切换历史": self._switch_history_rows(db_path),
             "主链路切换日志": self._active_switch_log_rows(db_path),
             "切换影响分析": [["切换时间", "原Peer", "新Peer", "切换前RSSI", "切换后RSSI", "切换原因", "是否影响业务", "建议"]],
             "丢包关联分析": [["丢包时间", "丢包率", "Active RSSI", "是否切换", "TxBusy", "RxBusy", "判断"]],
             "异常事件清单": [["事件ID", "事件时间", "事件类型", "级别", "说明", "证据ID"]],
-            "空口繁忙度分析": [["时间", "射频ID", "CtlBusy", "TxBusy", "RxBusy", "结论"]],
+            "空口繁忙度分析": self._channel_busy_rows(db_path),
             "射频统计分析": [["时间", "指标", "当前值", "增量", "结论"]],
-            "接口速率分析": [["时间", "方向", "接口", "总PPS", "广播PPS", "组播PPS", "说明"]],
+            "接口速率分析": self._interface_rate_rows(db_path),
             "链路重建与连接异常": [["时间", "Peer", "事件", "RSSI", "原因", "证据ID"]],
-            "原始证据片段": [["证据ID", "来源Sheet", "事件类型", "采样时间", "源文件", "源行号", "原始日志片段"]],
+            "原始证据片段": [["证据ID", "来源Sheet", "事件类型", "采样时间", "源文件", "源行号"]],
             "参数配置": [["配置项", "值"], ["规则来源", "resources/mesh_quality_rules.json"], ["报告类型", "VEHICLE_MR_REALTIME_OFFLINE"]],
         }
         for name, rows in sheet_rows.items():
@@ -77,14 +79,14 @@ class OnlineMrAnalysisReportExporter:
                 sheet.append(["N/A" if value is None else value for value in row])
 
     def _mesh_main_link_rows(self, db_path: Path) -> list[list[object]]:
-        rows: list[list[object]] = [["时间", "射频ID", "链路状态", "对端名称", "对端MAC", "MR侧RSSI", "归属站点", "归属区间", "归属类型", "归属来源"]]
+        rows: list[list[object]] = [["采样时间", "设备时间", "射频ID", "链路状态", "对端名称", "对端MAC", "MR侧RSSI", "归属站点", "归属区间", "归属类型", "归属来源"]]
         if not db_path.exists():
             return rows
         with sqlite3.connect(db_path) as conn:
             try:
                 data = conn.execute(
                     """
-                    SELECT collector_time, radio, link_state,
+                    SELECT collector_time, COALESCE(NULLIF(device_time, ''), device_clock, collector_time), radio, link_state,
                            COALESCE(NULLIF(resolved_peer_name, ''), NULLIF(peer_name, ''), peer_mac) AS peer_name,
                            peer_mac, mr_rssi, belong_station, belong_section, belong_type, belonging_source
                     FROM main_link_samples
@@ -95,6 +97,90 @@ class OnlineMrAnalysisReportExporter:
                 ).fetchall()
             except sqlite3.Error:
                 return rows
+        rows.extend([list(row) for row in data])
+        return rows
+
+    def _mesh_link_detail_rows(self, db_path: Path) -> list[list[object]]:
+        rows: list[list[object]] = [["采样时间", "设备时间", "Radio", "状态", "PeerMac", "当前PEER AP名称", "AP MAC", "归属站点", "归属区间", "Peer Radio MAC", "MR RSSI", "BSSID", "Mesh接口", "Online Time"]]
+        if not db_path.exists():
+            return rows
+        try:
+            with sqlite3.connect(db_path) as conn:
+                data = conn.execute(
+                    """
+                    SELECT collector_time, COALESCE(NULLIF(device_time, ''), device_clock, collector_time),
+                           radio, link_state, peer_mac,
+                           COALESCE(NULLIF(resolved_peer_name, ''), NULLIF(peer_name, ''), peer_mac),
+                           peer_mac, belong_station, belong_section, peer_mac, mr_rssi, bssid,
+                           mesh_interface, online_time
+                    FROM main_link_samples
+                    ORDER BY collector_time ASC, id ASC
+                    LIMIT 20000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return rows
+        rows.extend([list(row) for row in data])
+        return rows
+
+    def _channel_busy_rows(self, db_path: Path) -> list[list[object]]:
+        rows: list[list[object]] = [["设备时间", "射频ID", "控制信道", "频宽", "记录间隔", "控制信道繁忙度", "发送繁忙度", "接收繁忙度"]]
+        if not db_path.exists():
+            return rows
+        try:
+            with sqlite3.connect(db_path) as conn:
+                data = conn.execute(
+                    """
+                    SELECT device_time, radio, ctl_channel, bandwidth, record_interval, ctl_busy, tx_busy, rx_busy
+                    FROM channel_busy_records
+                    WHERE COALESCE(row_index, 1) = 1
+                    ORDER BY device_time ASC, id ASC
+                    LIMIT 20000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return rows
+        rows.extend([list(row) for row in data])
+        return rows
+
+    def _interface_rate_rows(self, db_path: Path) -> list[list[object]]:
+        rows: list[list[object]] = [["设备时间", "方向", "接口", "总PPS", "广播PPS", "组播PPS", "说明"]]
+        if not db_path.exists():
+            return rows
+        try:
+            with sqlite3.connect(db_path) as conn:
+                data = conn.execute(
+                    """
+                    SELECT device_time, direction, COALESCE(NULLIF(interface_normalized, ''), interface_name),
+                           total_pps, broadcast_pps, multicast_pps, ''
+                    FROM interface_rate_samples
+                    ORDER BY device_time ASC, id ASC
+                    LIMIT 20000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return rows
+        rows.extend([list(row) for row in data])
+        return rows
+
+    def _fping_1s_rows(self, db_path: Path) -> list[list[object]]:
+        rows: list[list[object]] = [["时间", "目标IP", "目标名称", "发送数", "接收数", "丢失数", "丢包率", "平均延迟", "最小延迟", "最大延迟", "Jitter", "状态"]]
+        if not db_path.exists():
+            return rows
+        try:
+            with sqlite3.connect(db_path) as conn:
+                data = conn.execute(
+                    """
+                    SELECT bucket_time, target_ip, COALESCE(target_name, ''), sent, received,
+                           COALESCE(lost, sent - received), loss_percent, avg_latency_ms,
+                           min_latency_ms, max_latency_ms, jitter_ms, COALESCE(status, '')
+                    FROM fping_1s_summary
+                    ORDER BY bucket_time ASC, target_ip ASC
+                    LIMIT 20000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return rows
         rows.extend([list(row) for row in data])
         return rows
 
@@ -178,19 +264,19 @@ class OnlineMrAnalysisReportExporter:
         return rows
 
     def _active_switch_log_rows(self, db_path: Path) -> list[list[object]]:
-        rows: list[list[object]] = [["时间", "设备名称", "原AP名称", "原AP MAC", "原RSSI", "原归属站点", "原归属区间", "新AP名称", "新AP MAC", "新RSSI", "新归属站点", "新归属区间", "Peer数量", "Link数量", "切换原因码", "切换原因", "原始日志"]]
+        rows: list[list[object]] = [["设备时间", "设备名称", "原AP名称", "原AP MAC", "原RSSI", "原归属站点", "原归属区间", "新AP名称", "新AP MAC", "新RSSI", "新归属站点", "新归属区间", "Peer数量", "Link数量", "切换原因码", "切换原因"]]
         if not db_path.exists():
             return rows
         try:
             with sqlite3.connect(db_path) as conn:
                 data = conn.execute(
                     """
-                    SELECT collector_time, device_name,
+                    SELECT device_time, device_name,
                            old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
                            new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
-                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_line
+                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text
                     FROM switch_realtime_events
-                    ORDER BY collector_time ASC, id ASC
+                    ORDER BY device_time ASC, id ASC
                     LIMIT 20000
                     """
                 ).fetchall()

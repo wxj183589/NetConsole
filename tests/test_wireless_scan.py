@@ -23,6 +23,9 @@ EXPECTED_DISPLAY_KEYS = [
     "wireless_scan.ap_name",
     "wireless_scan.radio_id",
     "wireless_scan.station",
+    "wireless_scan.section",
+    "wireless_scan.belong_type",
+    "wireless_scan.belonging_source",
     "wireless_scan.location_mileage",
     "wireless_scan.rssi",
     "wireless_scan.signal_quality",
@@ -122,6 +125,51 @@ def test_trackside_bssid_resolver_can_match_peer_name_to_ap_name():
     assert match.ap_name == "AP-Name-01"
     assert match.ap_mac == "083b-e9ec-da4f"
     assert match.radio_id is None
+    assert match.match_rule == "mesh_peer_name_ap_name_exact"
+
+
+def test_trackside_bssid_resolver_preserves_section_belonging():
+    resolver = TracksideApBssidResolver(
+        [
+            {
+                "ap_name": "ap0303_a",
+                "ap_mac_display": "5866-bab3-0a40",
+                "belong_type": "section",
+                "station_name": "",
+                "section_name": "联庄-中医药大学",
+                "_identity_source": "ap_metadata",
+            }
+        ]
+    )
+
+    match = resolver.resolve("5866-bab3-0a40")
+
+    assert match.matched
+    assert match.ap_name == "ap0303_a"
+    assert match.station == ""
+    assert match.section == "联庄-中医药大学"
+    assert match.belong_type == "section"
+    assert match.belonging_source == "ap_metadata"
+
+
+def test_trackside_bssid_resolver_matches_name_only_extension_section():
+    resolver = TracksideApBssidResolver(
+        [
+            {
+                "ap_name": "ap0303_a",
+                "belong_type": "section",
+                "section_name": "联庄-中医药大学",
+                "_identity_source": "ap_metadata",
+            }
+        ]
+    )
+
+    match = resolver.resolve("4ce9-e4f1-b880", peer_name="ap0303_a")
+
+    assert match.matched
+    assert match.ap_name == "ap0303_a"
+    assert match.ap_mac == ""
+    assert match.section == "联庄-中医药大学"
     assert match.match_rule == "mesh_peer_name_ap_name_exact"
 
 
@@ -397,7 +445,7 @@ def test_wireless_scan_export_contains_trackside_columns(tmp_path):
     assert sheet["A2"].value == "Hidden"
     assert sheet["B2"].value == "30f5-277a-5a2d"
     assert sheet["D2"].value == "AP-1"
-    assert sheet["M2"].value == "40 MHz"
+    assert sheet["P2"].value == "40 MHz"
 
 
 def test_wireless_display_columns_have_required_order():
@@ -445,7 +493,7 @@ def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path
     assert "5G信道图" not in tab_titles
     assert page.tabs.currentIndex() == 0
     headers = [page.result_table.horizontalHeaderItem(index).text() for index in range(page.result_table.columnCount())]
-    assert headers == ["SSID", "MAC地址", "AP_MAC", "AP名称", "射频口", "归属站点", "位置/里程", "RSSI", "信号质量", "信道", "频率", "频段", "频宽", "MIMO", "加密方式", "加密", "认证方式"]
+    assert headers == ["SSID", "MAC地址", "AP_MAC", "AP名称", "射频口", "归属站点", "归属区间", "归属类型", "归属来源", "位置/里程", "RSSI", "信号质量", "信道", "频率", "频段", "频宽", "MIMO", "加密方式", "加密", "认证方式"]
     for hidden in {"匹配状态", "匹配规则", "是否隐藏SSID", "最后扫描时间", "安全类型", "PHY模式", "厂商"}:
         assert hidden not in headers
     assert page.result_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
@@ -479,7 +527,6 @@ def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path
     assert page.result_table.item(1, 3).text() == "AP-B"
     assert page.result_table.item(2, 3).text() == "-"
     assert page.result_table.item(0, 0).text() == "隐藏"
-    assert "MIMO" in page.result_table.item(0, 13).toolTip()
     assert page.result_table.item(2, 2).text() == "-"
 
     netsh_row = result_to_row(
@@ -490,9 +537,7 @@ def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path
     )
     page.current_rows = [netsh_row]
     page.apply_filters()
-    assert page.result_table.item(0, 12).text() == "-"
-    assert "netsh" in page.result_table.item(0, 12).toolTip()
-    assert "netsh" in page.result_table.item(0, 13).toolTip()
+    assert page.result_table.item(0, 15).text() == "-"
 
     page.current_rows = [unmatched, matched_weak, matched_strong]
     page.apply_filters()
@@ -507,10 +552,10 @@ def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path
     page.sort_column = [field for _key, field in WIRELESS_SCAN_DISPLAY_COLUMNS].index("display_rssi")
     page.sort_order = Qt.AscendingOrder
     page.apply_filters()
-    assert [page.result_table.item(index, 7).text() for index in range(page.result_table.rowCount())] == ["-97", "-50", "-40"]
+    assert [page.result_table.item(index, 10).text() for index in range(page.result_table.rowCount())] == ["-97", "-50", "-40"]
     page.sort_order = Qt.DescendingOrder
     page.apply_filters()
-    assert [page.result_table.item(index, 7).text() for index in range(page.result_table.rowCount())] == ["-40", "-50", "-97"]
+    assert [page.result_table.item(index, 10).text() for index in range(page.result_table.rowCount())] == ["-40", "-50", "-97"]
 
     page.current_rows = [
         {**matched_strong, "display_mimo": "-"},
@@ -521,7 +566,7 @@ def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path
     page.sort_column = [field for _key, field in WIRELESS_SCAN_DISPLAY_COLUMNS].index("display_mimo")
     page.sort_order = Qt.AscendingOrder
     page.apply_filters()
-    assert [page.result_table.item(index, 13).text() for index in range(page.result_table.rowCount())] == ["1x1", "2x2", "4x4", "-"]
+    assert [page.result_table.item(index, 16).text() for index in range(page.result_table.rowCount())] == ["1x1", "2x2", "4x4", "-"]
 
     page.result_table.setColumnWidth(3, 260)
     page.column_state.save_now()

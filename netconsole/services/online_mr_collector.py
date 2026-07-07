@@ -30,6 +30,7 @@ from netconsole.models.online_mr_models import (
     TASK_INTERFACE_RATE,
     TASK_MESH_LINK,
     TASK_SWITCH_HISTORY,
+    TASK_WIRELESS_STATUS,
     repeat_command_group,
     OnlineMrConnection,
     OnlineMrConnectionConfig,
@@ -50,6 +51,7 @@ from netconsole.services.online_mr.core.event_model import (
     EVENT_BUSY_SAMPLE,
     EVENT_INTERFACE_SAMPLE,
     EVENT_MESH_SAMPLE,
+    EVENT_RAW_LINE,
     EVENT_STATS_SAMPLE,
     OnlineMrEvent,
 )
@@ -78,7 +80,7 @@ PREPARE_FAILURE_MARKERS: tuple[str, ...] = (
 
 
 def stream_prepare_commands(task_type: str) -> tuple[str, ...]:
-    if task_type in {TASK_CHANNEL_BUSY, TASK_AP_RADIO_STATISTICS}:
+    if task_type in {TASK_CHANNEL_BUSY, TASK_AP_RADIO_STATISTICS, TASK_WIRELESS_STATUS}:
         return PROBE_STREAM_PREPARE_COMMANDS
     return NORMAL_DISPLAY_PREPARE_COMMANDS
 
@@ -577,6 +579,7 @@ class OnlineMrCollector:
             + self.stats.ap_radio_statistics_success
             + self.stats.switch_history_success
             + self.stats.interface_rate_success
+            + self.stats.wireless_status_success
         )
         failed = (
             self.stats.mesh_link_failed
@@ -584,6 +587,7 @@ class OnlineMrCollector:
             + self.stats.ap_radio_statistics_failed
             + self.stats.switch_history_failed
             + self.stats.interface_rate_failed
+            + self.stats.wireless_status_failed
         )
         if self.latest_snapshot is not None:
             snapshot = replace(self.latest_snapshot)
@@ -672,6 +676,12 @@ class OnlineMrCollector:
             return ("display clock", f"display ar5drv {radio.channel_busy_radio} channelbusy")
         if task_type == TASK_AP_RADIO_STATISTICS:
             return ("display clock", f"display ar5drv {radio.ap_radio_statistics_radio} statistics")
+        if task_type == TASK_WIRELESS_STATUS:
+            return (
+                "display clock",
+                f"display ar5drv {radio.wireless_status_radio} client all rssi",
+                f"display ar5drv {radio.wireless_status_radio} client all status",
+            )
         return TASK_COMMANDS[task_type]
 
     def _repeat_commands(self, task_type: str) -> tuple[str, ...]:
@@ -681,6 +691,8 @@ class OnlineMrCollector:
             return repeat_command_group(task_type, interval=intervals.channel_busy, radio_id=radio.channel_busy_radio)
         if task_type == TASK_AP_RADIO_STATISTICS:
             return repeat_command_group(task_type, interval=intervals.ap_radio_statistics, radio_id=radio.ap_radio_statistics_radio)
+        if task_type == TASK_WIRELESS_STATUS:
+            return repeat_command_group(task_type, interval=intervals.wireless_status, radio_id=radio.wireless_status_radio)
         if task_type == TASK_INTERFACE_RATE:
             return repeat_command_group(task_type, interval=intervals.interface_rate)
         if task_type == TASK_MESH_LINK:
@@ -696,6 +708,7 @@ class OnlineMrCollector:
             TASK_CHANNEL_BUSY,
             TASK_AP_RADIO_STATISTICS,
             TASK_INTERFACE_RATE,
+            TASK_WIRELESS_STATUS,
         ]
         enabled = self.config.tasks.enabled_tasks()
         self._start_collector_output_writer()
@@ -741,6 +754,7 @@ class OnlineMrCollector:
             TASK_CHANNEL_BUSY: "channel_busy_raw.log",
             TASK_AP_RADIO_STATISTICS: "ap_radio_statistics_raw.log",
             TASK_INTERFACE_RATE: "interface_rate_raw.log",
+            TASK_WIRELESS_STATUS: "wireless_status_raw.log",
         }[task_type]
 
         def target() -> None:
@@ -852,6 +866,7 @@ class OnlineMrCollector:
             TASK_CHANNEL_BUSY: ("busy", EVENT_BUSY_SAMPLE),
             TASK_AP_RADIO_STATISTICS: ("stats", EVENT_STATS_SAMPLE),
             TASK_INTERFACE_RATE: ("interface_rate", EVENT_INTERFACE_SAMPLE),
+            TASK_WIRELESS_STATUS: ("wireless_status", EVENT_RAW_LINE),
         }.get(task_type)
         if module_event is None:
             return
@@ -979,6 +994,7 @@ class OnlineMrCollector:
             TASK_AP_RADIO_STATISTICS: f"ap_radio_statistics_{suffix}",
             TASK_SWITCH_HISTORY: f"switch_history_{suffix}",
             TASK_INTERFACE_RATE: f"interface_rate_{suffix}",
+            TASK_WIRELESS_STATUS: f"wireless_status_{suffix}",
         }[task_type]
         setattr(self.stats, attr, getattr(self.stats, attr) + 1)
 

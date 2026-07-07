@@ -36,6 +36,8 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("rail.raw_mesh_log_analysis", "mesh_analysis.title", "module.rail_transit", "tab"),
     FeatureItem("rail.online_mr_collection", "rail_transit.online_mr_collection", "module.rail_transit", "tab"),
     FeatureItem("rail.online_mr_analysis", "rail_transit.online_mr_collection_analysis", "module.rail_transit", "tab"),
+    FeatureItem("online_mr.analysis_link_details", "online_mr.link_details", "rail.online_mr_analysis", "tab"),
+    FeatureItem("online_mr.analysis_fping_1s", "online_mr.fping_1s_summary", "rail.online_mr_analysis", "tab"),
     FeatureItem("ac.trackside_ap_plan", "ac.trackside_ap_plan", "module.ac", "tab"),
     FeatureItem("ac.ap_online_overview", "ac.ap_online_overview", "module.ac", "tab"),
     FeatureItem("ac.fit_ap_resources", "ac.fit_ap_resources", "module.ac", "tab"),

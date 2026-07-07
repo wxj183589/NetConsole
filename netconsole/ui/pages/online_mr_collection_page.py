@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QDoubleValidator, QTextCursor
+from PySide6.QtGui import QColor, QDoubleValidator, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -66,6 +66,7 @@ from netconsole.models.online_mr_models import (
     OnlineMrIntervals,
     OnlineMrRadioConfig,
     OnlineMrSnapshot,
+    OnlineMrTaskToggles,
 )
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
@@ -118,11 +119,13 @@ from netconsole.ui.widgets.table_check_delegate import create_checkable_table_it
 TABLE_WIDTH_KEYS = {
     "session_summary": "online_mr/table_widths/session_summary",
     "mesh_link": "online_mr/table_widths/mesh_link",
+    "mesh_link_detail": "online_mr/table_widths/mesh_link_detail",
     "channel_busy": "online_mr/table_widths/channel_busy",
     "statistics": "online_mr/table_widths/statistics",
     "switch_history": "online_mr/table_widths/switch_history",
     "active_link_switch_logs": "online_mr/table_widths/active_link_switch_logs",
     "interface_rate": "online_mr/table_widths/interface_rate",
+    "fping_1s": "online_mr/table_widths/fping_1s",
     "iperf": "online_mr/table_widths/iperf",
     "diagnosis": "online_mr/table_widths/diagnosis",
     "history_sessions": "online_mr/table_widths/history_sessions",
@@ -494,6 +497,9 @@ class OnlineMrCollectionPage(QWidget):
         self.statistics_interval = self._interval_spin(1, 3600, 10)
         self.switch_interval = self._interval_spin(10, 86400, 300)
         self.interface_rate_interval = self._interval_spin(1, 3600, 2)
+        self.wireless_status_label = QLabel()
+        self.wireless_status_interval_edit = QLineEdit("3")
+        self.wireless_status_interval_edit.setValidator(QIntValidator(1, 3600, self))
         self.radio_port = self._radio_combo()
         self.channel_radio = self.radio_port
         self.statistics_radio = self.radio_port
@@ -569,17 +575,19 @@ class OnlineMrCollectionPage(QWidget):
 
         self.summary_table = QTableWidget(0, 18)
         self.mesh_table = QTableWidget(0, 13)
-        self.channel_table = QTableWidget(0, 12)
+        self.mesh_detail_table = QTableWidget(0, 15)
+        self.channel_table = QTableWidget(0, 9)
         self.events_table = QTableWidget(0, 6)
         self.statistics_text = QTextEdit()
-        self.switch_history_table = QTableWidget(0, 14)
+        self.switch_history_table = QTableWidget(0, 13)
         self.switch_history_text = QTextEdit()
-        self.active_link_switch_table = QTableWidget(0, 18)
-        self.interface_rate_table = QTableWidget(0, 9)
+        self.active_link_switch_table = QTableWidget(0, 17)
+        self.interface_rate_table = QTableWidget(0, 8)
+        self.fping_1s_table = QTableWidget(0, 12)
         self.iperf_table = QTableWidget(0, 5)
         self.diagnosis_table = QTableWidget(0, 14)
         self.history_table = QTableWidget(0, 9)
-        for table in (self.summary_table, self.mesh_table, self.channel_table, self.events_table, self.switch_history_table, self.active_link_switch_table, self.interface_rate_table, self.iperf_table, self.diagnosis_table, self.history_table):
+        for table in (self.summary_table, self.mesh_table, self.mesh_detail_table, self.channel_table, self.events_table, self.switch_history_table, self.active_link_switch_table, self.interface_rate_table, self.fping_1s_table, self.iperf_table, self.diagnosis_table, self.history_table):
             configure_readonly_table(table)
             self._configure_online_table(table)
         self.statistics_text.setReadOnly(True)
@@ -1014,6 +1022,7 @@ class OnlineMrCollectionPage(QWidget):
         self.collect_config_on_start_check.setText(self.i18n.t("online_mr.collect_config_on_start"))
         self.enable_fping_check.setText(self.i18n.t("online_mr.high_freq_ping"))
         self.enable_iperf_check.setText(self.i18n.t("online_mr.enable_traffic_test"))
+        self.wireless_status_label.setText(self.i18n.t("online_mr.wireless_status"))
         self.iperf_follow_check.setText(self.i18n.t("iperf.follow_collection"))
         self.iperf_duration_mode_label.setText("运行方式：跟随采集启停")
         self.iperf_check_server_button.setText("检测打流服务端")
@@ -1076,12 +1085,12 @@ class OnlineMrCollectionPage(QWidget):
                 "ID",
             ]
         )
-        self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.link_state"), self.i18n.t("online_mr.peer_name"), self.i18n.t("online_mr.peer_mac"), "MR侧RSSI", "BSSID", self.i18n.t("online_mr.mesh_interface"), self.i18n.t("online_mr.peer_site"), self.i18n.t("online_mr.peer_section"), self.i18n.t("online_mr.belong_type"), self.i18n.t("online_mr.online_time")])
+        self.mesh_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.sample_time"), self.i18n.t("online_mr.device_time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.link_state"), self.i18n.t("online_mr.peer_name"), self.i18n.t("online_mr.peer_mac"), "MR侧RSSI", "BSSID", self.i18n.t("online_mr.mesh_interface"), self.i18n.t("online_mr.peer_site"), self.i18n.t("online_mr.peer_section"), self.i18n.t("online_mr.online_time")])
+        self.mesh_detail_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.sample_time"), self.i18n.t("online_mr.device_time"), "Radio", self.i18n.t("online_mr.status"), "PeerMac", "当前PEER AP名称", "AP MAC", self.i18n.t("online_mr.peer_site"), self.i18n.t("online_mr.peer_section"), "Peer Radio MAC", "MR RSSI", "BSSID", self.i18n.t("online_mr.mesh_interface"), "Online Time"])
         self.channel_table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("online_mr.row_number"),
-                "采集时间",
-                "记录时间",
+                self.i18n.t("online_mr.device_time"),
                 self.i18n.t("online_mr.radio_id"),
                 "控制信道",
                 "频宽",
@@ -1089,16 +1098,14 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.ctl_busy"),
                 self.i18n.t("online_mr.tx_busy"),
                 self.i18n.t("online_mr.rx_busy"),
-                "记录序号",
-                self.i18n.t("online_mr.raw"),
             ]
         )
         self.events_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), self.i18n.t("online_mr.type"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer"), self.i18n.t("online_mr.to_peer"), self.i18n.t("online_mr.details")])
-        self.switch_history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.switch_time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer_name"), self.i18n.t("online_mr.to_peer_name"), self.i18n.t("online_mr.from_peer_mac"), self.i18n.t("online_mr.to_peer_mac"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_peer_site"), "归属区间", self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.in_out_rssi"), self.i18n.t("online_mr.active_duration"), self.i18n.t("online_mr.raw")])
+        self.switch_history_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.switch_time"), self.i18n.t("online_mr.radio_id"), self.i18n.t("online_mr.from_peer_name"), self.i18n.t("online_mr.to_peer_name"), self.i18n.t("online_mr.from_peer_mac"), self.i18n.t("online_mr.to_peer_mac"), self.i18n.t("online_mr.from_peer_site"), self.i18n.t("online_mr.to_peer_site"), "归属区间", self.i18n.t("online_mr.switch_reason"), self.i18n.t("online_mr.in_out_rssi"), self.i18n.t("online_mr.active_duration")])
         self.active_link_switch_table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("online_mr.row_number"),
-                self.i18n.t("online_mr.time"),
+                self.i18n.t("online_mr.device_time"),
                 self.i18n.t("online_mr.device_name"),
                 self.i18n.t("online_mr.from_ap_name"),
                 self.i18n.t("online_mr.from_radio_mac"),
@@ -1114,10 +1121,10 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.link_quantity"),
                 self.i18n.t("online_mr.switch_reason_code"),
                 self.i18n.t("online_mr.switch_reason"),
-                self.i18n.t("online_mr.raw_log"),
             ]
         )
-        self.interface_rate_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), self.i18n.t("online_mr.direction"), self.i18n.t("online_mr.interface"), self.i18n.t("online_mr.usage_percent"), self.i18n.t("online_mr.total_pps"), self.i18n.t("online_mr.broadcast_pps"), self.i18n.t("online_mr.multicast_pps"), self.i18n.t("online_mr.raw")])
+        self.interface_rate_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.device_time"), self.i18n.t("online_mr.direction"), self.i18n.t("online_mr.interface"), self.i18n.t("online_mr.usage_percent"), self.i18n.t("online_mr.total_pps"), self.i18n.t("online_mr.broadcast_pps"), self.i18n.t("online_mr.multicast_pps")])
+        self.fping_1s_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), "目标IP", "目标名称", "发送数", "接收数", "丢失数", "丢包率", "平均延迟", "最小延迟", "最大延迟", "Jitter"])
         self.iperf_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), "Mbps", self.i18n.t("iperf.retransmits"), self.i18n.t("iperf.transfer"), self.i18n.t("online_mr.raw")])
         self.diagnosis_table.setHorizontalHeaderLabels(
             [
@@ -1143,12 +1150,14 @@ class OnlineMrCollectionPage(QWidget):
             labels = (
                 self.i18n.t("online_mr.history_sessions"),
                 self.i18n.t("online_mr.mesh_link"),
+                self.i18n.t("online_mr.link_details"),
                 self.i18n.t("online_mr.channel_busy"),
                 self.i18n.t("online_mr.ap_radio_statistics"),
                 self.i18n.t("online_mr.switch_history"),
                 self.i18n.t("online_mr.active_link_switch_logs"),
                 self.i18n.t("online_mr.interface_rate"),
                 self.i18n.t("online_mr.analysis_charts"),
+                self.i18n.t("online_mr.fping_1s_summary"),
                 self.i18n.t("online_mr.traffic_test"),
                 self.i18n.t("online_mr.diagnosis_results"),
                 self.i18n.t("online_mr.raw_output"),
@@ -1363,12 +1372,14 @@ class OnlineMrCollectionPage(QWidget):
         if self.analysis_only:
             self.tabs.addTab(self.history_table, "")
             self.tabs.addTab(self.mesh_table, "")
+            self.tabs.addTab(self.mesh_detail_table, "")
             self.tabs.addTab(self.channel_table, "")
             self.tabs.addTab(self.statistics_text, "")
             self.tabs.addTab(self.switch_history_panel, "")
             self.tabs.addTab(self.active_link_switch_table, "")
             self.tabs.addTab(self.interface_rate_table, "")
             self.tabs.addTab(self.analysis_charts, "")
+            self.tabs.addTab(self.fping_1s_table, "")
             self.tabs.addTab(self.iperf_table, "")
             self.tabs.addTab(self.diagnosis_table, "")
             self.tabs.addTab(self.raw_text, "")
@@ -1442,6 +1453,7 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_tcp_pacing_check.toggled.connect(lambda checked: self.iperf_tcp_pacing_edit.setEnabled(bool(checked)))
         self.iperf_check_server_button.clicked.connect(self.check_iperf_server)
         self.iperf_retry_button.clicked.connect(self.retry_iperf_for_running_sessions)
+        self.analysis_charts.currentChanged.connect(self._analysis_chart_tab_changed)
 
     def _build_analysis_chart_placeholders(self) -> None:
         if self.analysis_charts.count() > 0:
@@ -2249,8 +2261,10 @@ class OnlineMrCollectionPage(QWidget):
 
     def _load_offline_analysis(self, session_dir: Path) -> int:
         self._safe_load_analysis_table("mesh_link", session_dir, self._load_mesh_link_details)
+        self._safe_load_analysis_table("mesh_link_detail", session_dir, self._load_mesh_link_detail_records)
         self._safe_load_analysis_table("channel_busy", session_dir, self._load_channel_busy_details)
         self._safe_load_analysis_table("interface_rate", session_dir, self._load_interface_rate_details)
+        self._safe_load_analysis_table("fping_1s", session_dir, self._load_fping_1s_details)
         self._safe_load_analysis_table("iperf", session_dir, self._load_iperf_details)
         self._safe_load_analysis_table("switch_history", session_dir, self._load_link_switch_history)
         self._safe_load_analysis_table("active_link_switch_logs", session_dir, self._load_active_link_switch_logs)
@@ -2275,6 +2289,39 @@ class OnlineMrCollectionPage(QWidget):
         from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrRawBlockSplitter
 
         self.mesh_table.setRowCount(0)
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if db_path.exists():
+            import sqlite3
+
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT collector_time, COALESCE(NULLIF(device_time, ''), device_clock, collector_time),
+                               radio, link_state, COALESCE(NULLIF(resolved_peer_name, ''), NULLIF(peer_name, ''), peer_mac),
+                               peer_mac, mr_rssi, bssid, mesh_interface, belong_station, belong_section, online_time
+                        FROM main_link_samples
+                        WHERE UPPER(COALESCE(link_state, '')) LIKE 'ACTIVE%'
+                        ORDER BY collector_time ASC, id ASC
+                        LIMIT 5000
+                        """
+                    ).fetchall()
+            except sqlite3.Error:
+                rows = []
+            if rows:
+                self.mesh_table.setUpdatesEnabled(False)
+                try:
+                    for row_data in rows:
+                        row = self.mesh_table.rowCount()
+                        self.mesh_table.insertRow(row)
+                        values = [row + 1, *row_data]
+                        for column, value in enumerate(values):
+                            self._set_table_item(self.mesh_table, row, column, value, active=True)
+                finally:
+                    self.mesh_table.setUpdatesEnabled(True)
+                self._auto_fit_online_table(self.mesh_table, "mesh_link")
+                return len(rows)
+
         raw_path = session_dir / "raw" / "mesh_link_raw.log"
         if not raw_path.exists():
             return 0
@@ -2302,6 +2349,7 @@ class OnlineMrCollectionPage(QWidget):
                 values = [
                     row + 1,
                     block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                    block.collected_at.isoformat(sep=" ", timespec="milliseconds"),
                     record.radio,
                     record.link_state,
                     resolved_peer_name,
@@ -2311,7 +2359,6 @@ class OnlineMrCollectionPage(QWidget):
                     metrics.get("interface") or "",
                     station,
                     section,
-                    belong_type,
                     metrics.get("online_time") or "",
                 ]
                 self.mesh_table.insertRow(row)
@@ -2325,6 +2372,43 @@ class OnlineMrCollectionPage(QWidget):
         self.mesh_table.setUpdatesEnabled(True)
         self._auto_fit_online_table(self.mesh_table, "mesh_link")
         return count
+
+    def _load_mesh_link_detail_records(self, session_dir: Path) -> int:
+        import sqlite3
+
+        self.mesh_detail_table.setRowCount(0)
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not db_path.exists():
+            return 0
+        try:
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT collector_time, COALESCE(NULLIF(device_time, ''), device_clock, collector_time),
+                           radio, link_state, peer_mac,
+                           COALESCE(NULLIF(resolved_peer_name, ''), NULLIF(peer_name, ''), peer_mac),
+                           peer_mac, belong_station, belong_section, peer_mac, mr_rssi, bssid,
+                           mesh_interface, online_time
+                    FROM main_link_samples
+                    ORDER BY collector_time ASC, id ASC
+                    LIMIT 20000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return 0
+        self.mesh_detail_table.setUpdatesEnabled(False)
+        try:
+            for row_data in rows:
+                row = self.mesh_detail_table.rowCount()
+                self.mesh_detail_table.insertRow(row)
+                values = [row + 1, *row_data]
+                active = str(row_data[3] or "").upper().startswith("ACTIVE")
+                for column, value in enumerate(values):
+                    self._set_table_item(self.mesh_detail_table, row, column, value, active=active)
+        finally:
+            self.mesh_detail_table.setUpdatesEnabled(True)
+        self._auto_fit_online_table(self.mesh_detail_table, "mesh_link_detail")
+        return len(rows)
 
     def _load_link_switch_history(self, session_dir: Path) -> int:
         from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrRawBlockSplitter
@@ -2469,7 +2553,6 @@ class OnlineMrCollectionPage(QWidget):
             parsed.get("reason") or parsed.get("role"),
             _format_in_out_rssi(parsed.get("in_rssi"), parsed.get("out_rssi")),
             parsed.get("active_time"),
-            parsed.get("raw_line"),
         ]
         self.switch_history_table.insertRow(row)
         reason = str(parsed.get("reason") or parsed.get("role") or "")
@@ -2489,12 +2572,12 @@ class OnlineMrCollectionPage(QWidget):
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
                     """
-                    SELECT 'terminal_monitor', collector_time, device_name,
+                    SELECT 'terminal_monitor', device_time, device_name,
                            old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section, '', CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
                            new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section, '', CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
-                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text, raw_file
+                           peer_quantity, link_quantity, switch_reason_code, switch_reason_text
                     FROM switch_realtime_events
-                    ORDER BY collector_time ASC, id ASC
+                    ORDER BY device_time ASC, id ASC
                     LIMIT 5000
                     """
                 ).fetchall()
@@ -2528,13 +2611,12 @@ class OnlineMrCollectionPage(QWidget):
                 row_data[18],
                 row_data[19],
                 row_data[20],
-                row_data[21],
             ]
             reason_code = row_data[19]
             warning = reason_code == 4 or to_empty
             active = from_empty and not to_empty
             for column, value in enumerate(values):
-                self._set_table_item(self.active_link_switch_table, row, column, value, active=active and column in {8, 9, 10, 11, 16}, emphasize=column in {8, 9, 10, 11}, warning=warning and column in {0, 8, 10, 16, 17})
+                self._set_table_item(self.active_link_switch_table, row, column, value, active=active and column in {8, 9, 10, 11, 16}, emphasize=column in {8, 9, 10, 11}, warning=warning and column in {0, 8, 10, 16})
         self._auto_fit_online_table(self.active_link_switch_table, "active_link_switch_logs")
         return len(rows)
 
@@ -2548,12 +2630,11 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT block_collector_time, record_time_local, radio, ctl_channel, bandwidth,
-                       record_interval, ctl_busy, tx_busy, rx_busy, COALESCE(row_index, 1),
-                       'display ar5drv ' || COALESCE(radio, 1) || ' channelbusy | CtlBusy=' ||
-                       COALESCE(ctl_busy, '-') || ' TxBusy=' || COALESCE(tx_busy, '-') || ' RxBusy=' || COALESCE(rx_busy, '-')
+                SELECT device_time, radio, ctl_channel, bandwidth,
+                       record_interval, ctl_busy, tx_busy, rx_busy
                 FROM channel_busy_records
-                ORDER BY block_collector_time ASC, COALESCE(row_index, 1) ASC
+                WHERE COALESCE(row_index, 1) = 1
+                ORDER BY device_time ASC, COALESCE(row_index, 1) ASC
                 LIMIT 10000
                 """
             ).fetchall()
@@ -2572,9 +2653,6 @@ class OnlineMrCollectionPage(QWidget):
                     row_data[5],
                     row_data[6],
                     row_data[7],
-                    row_data[8],
-                    row_data[9],
-                    row_data[10],
                 ]
                 for column, value in enumerate(values):
                     self._set_table_item(self.channel_table, row, column, value)
@@ -2593,10 +2671,14 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT collector_time, direction, interface_name, usage_percent, total_pps, broadcast_pps, multicast_pps,
-                       'dis counters rate ' || COALESCE(direction, '') || ' interface | ' || COALESCE(interface_name, '') || ' total_pps=' || COALESCE(total_pps, '-')
+                SELECT device_time, direction, COALESCE(NULLIF(interface_normalized, ''), interface_name), usage_percent,
+                       total_pps, broadcast_pps, multicast_pps
                 FROM interface_rate_samples
-                ORDER BY collector_time ASC
+                WHERE lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'xge%'
+                  AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'xgigabitethernet%'
+                  AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'ten-gigabitethernet%'
+                  AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'tengigabitethernet%'
+                ORDER BY device_time ASC
                 LIMIT 5000
                 """
             ).fetchall()
@@ -2607,6 +2689,43 @@ class OnlineMrCollectionPage(QWidget):
             for column, value in enumerate(values):
                 self._set_table_item(self.interface_rate_table, row, column, value)
         self._auto_fit_online_table(self.interface_rate_table, "interface_rate")
+        return len(rows)
+
+    def _load_fping_1s_details(self, session_dir: Path) -> int:
+        import sqlite3
+
+        self.fping_1s_table.setRowCount(0)
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not db_path.exists():
+            return 0
+        try:
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT bucket_time, target_ip,
+                           COALESCE(target_name, ''),
+                           sent, received,
+                           COALESCE(lost, sent - received),
+                           loss_percent, avg_latency_ms,
+                           min_latency_ms, max_latency_ms, jitter_ms
+                    FROM fping_1s_summary
+                    ORDER BY bucket_time ASC, target_ip ASC
+                    LIMIT 20000
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return 0
+        self.fping_1s_table.setUpdatesEnabled(False)
+        try:
+            for row_data in rows:
+                row = self.fping_1s_table.rowCount()
+                self.fping_1s_table.insertRow(row)
+                values = [row + 1, *row_data]
+                for column, value in enumerate(values):
+                    self._set_table_item(self.fping_1s_table, row, column, value)
+        finally:
+            self.fping_1s_table.setUpdatesEnabled(True)
+        self._auto_fit_online_table(self.fping_1s_table, "fping_1s")
         return len(rows)
 
     def _load_iperf_details(self, session_dir: Path) -> int:
@@ -2699,6 +2818,7 @@ class OnlineMrCollectionPage(QWidget):
 
     def _render_analysis_charts(self, session_dir: Path) -> None:
         db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        self._hide_all_analysis_chart_hovers()
         if not db_path.exists():
             for key, title in self._analysis_chart_titles():
                 self._plot_analysis_chart(key, title, "", [], empty_text="未解析到图表数据")
@@ -2856,6 +2976,13 @@ class OnlineMrCollectionPage(QWidget):
         controller = self.analysis_chart_hover_controllers.pop(key, None)
         if controller is not None:
             controller.disconnect()
+
+    def _hide_all_analysis_chart_hovers(self) -> None:
+        for controller in list(self.analysis_chart_hover_controllers.values()):
+            controller.hide()
+
+    def _analysis_chart_tab_changed(self, _index: int) -> None:
+        self._hide_all_analysis_chart_hovers()
 
     @staticmethod
     def _interface_pps_from_details(details_json: object) -> tuple[object, object]:
@@ -3836,8 +3963,10 @@ class OnlineMrCollectionPage(QWidget):
                 self.switch_interval.value(),
                 self.interface_rate_interval.value(),
                 self.fping_interval_ms.value(),
+                self._wireless_status_interval_seconds(),
             ),
-            radio=OnlineMrRadioConfig(int(self.channel_radio.currentData()), int(self.statistics_radio.currentData())),
+            tasks=OnlineMrTaskToggles(wireless_status=True),
+            radio=OnlineMrRadioConfig(int(self.channel_radio.currentData()), int(self.statistics_radio.currentData()), int(self.radio_port.currentData())),
             fping=FpingConfig(
                 enabled=self.enable_fping_check.isChecked() and bool(fping_target),
                 target=fping_target,
@@ -3878,6 +4007,13 @@ class OnlineMrCollectionPage(QWidget):
             duration_minutes=None if self.duration_minutes.value() == 0 else self.duration_minutes.value(),
             collect_config_on_start=self.collect_config_on_start_check.isChecked(),
         )
+
+    def _wireless_status_interval_seconds(self) -> int:
+        try:
+            value = int(self.wireless_status_interval_edit.text().strip() or "3")
+        except ValueError:
+            value = 3
+        return max(1, min(3600, value))
 
     def _fill_devices(self) -> None:
         self.available_devices = sorted([device for device in self.devices if self._is_vehicle_fat_ap(device)], key=natural_device_sort_key)
@@ -4858,7 +4994,16 @@ class OnlineMrCollectionPage(QWidget):
             spin.setMinimumHeight(28)
             grid.addWidget(spin, row, 1)
             grid.addWidget(unit, row, 2)
-        radio_row = len(rows)
+        wireless_row = len(rows)
+        self.wireless_status_label.setMinimumHeight(28)
+        self._configure_numeric_line_edit(self.wireless_status_interval_edit)
+        grid.addWidget(self.wireless_status_label, wireless_row, 0)
+        grid.addWidget(self.wireless_status_interval_edit, wireless_row, 1)
+        unit = self._text_label("online_mr.seconds")
+        unit.setMinimumWidth(24)
+        unit.setMinimumHeight(28)
+        grid.addWidget(unit, wireless_row, 2)
+        radio_row = wireless_row + 1
         radio_label = QLabel("Radio")
         radio_label.setMinimumWidth(100)
         radio_label.setMinimumHeight(28)
@@ -5284,11 +5429,13 @@ class OnlineMrCollectionPage(QWidget):
         for table in (
             self.summary_table,
             self.mesh_table,
+            self.mesh_detail_table,
             self.channel_table,
             self.events_table,
             self.switch_history_table,
             self.active_link_switch_table,
             self.interface_rate_table,
+            self.fping_1s_table,
             self.iperf_table,
             self.diagnosis_table,
             self.history_table,
@@ -5302,11 +5449,13 @@ class OnlineMrCollectionPage(QWidget):
     @staticmethod
     def _analysis_table_width_bounds(name: str) -> tuple[dict[int, int], dict[int, int]]:
         min_bounds: dict[str, dict[int, int]] = {
-            "mesh_link": {0: 60, 1: 190, 2: 80, 3: 100, 4: 150, 5: 150, 6: 90, 7: 150, 8: 160, 9: 140, 10: 160, 11: 100, 12: 120},
-            "channel_busy": {0: 60, 1: 190, 2: 190, 3: 80, 4: 100, 5: 80, 6: 90, 7: 150, 8: 120, 9: 120, 10: 90, 11: 420},
+            "mesh_link": {0: 60, 1: 190, 2: 190, 3: 80, 4: 100, 5: 150, 6: 150, 7: 90, 8: 150, 9: 160, 10: 140, 11: 160, 12: 120},
+            "mesh_link_detail": {0: 60, 1: 190, 2: 190, 3: 80, 4: 100, 5: 150, 6: 160, 7: 150, 8: 140, 9: 160, 10: 150, 11: 90, 12: 150, 13: 160, 14: 120},
+            "channel_busy": {0: 60, 1: 190, 2: 80, 3: 100, 4: 80, 5: 90, 6: 150, 7: 120, 8: 120},
             "switch_history": {0: 60, 1: 190, 2: 80, 3: 150, 4: 150, 5: 150, 6: 150, 7: 140, 8: 140, 9: 180, 10: 220, 11: 100, 12: 130, 13: 700},
             "active_link_switch_logs": {0: 60, 1: 190, 2: 160, 3: 150, 4: 150, 5: 80, 6: 140, 7: 160, 8: 150, 9: 150, 10: 80, 11: 140, 12: 160, 13: 90, 14: 90, 15: 100, 16: 260, 17: 520},
             "interface_rate": {0: 60, 1: 190, 2: 100, 3: 120, 4: 100, 5: 100, 6: 100, 7: 100, 8: 700},
+            "fping_1s": {0: 60, 1: 190, 2: 140, 3: 150, 4: 90, 5: 90, 6: 90, 7: 100, 8: 110, 9: 110, 10: 110, 11: 100},
             "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 150, 5: 80, 6: 130, 7: 160, 8: 80, 9: 90, 10: 90, 11: 90, 12: 90, 13: 190, 14: 100, 15: 80, 16: 170, 17: 80},
             "statistics": {0: 180, 1: 120, 2: 90, 3: 180, 4: 180, 5: 320},
             "iperf": {0: 180, 1: 100, 2: 90, 3: 120, 4: 700},
@@ -5320,23 +5469,27 @@ class OnlineMrCollectionPage(QWidget):
         tables = {
             "session_summary": self.summary_table,
             "mesh_link": self.mesh_table,
+            "mesh_link_detail": self.mesh_detail_table,
             "channel_busy": self.channel_table,
             "statistics": self.events_table,
             "switch_history": self.switch_history_table,
             "active_link_switch_logs": self.active_link_switch_table,
             "interface_rate": self.interface_rate_table,
+            "fping_1s": self.fping_1s_table,
             "iperf": self.iperf_table,
             "diagnosis": self.diagnosis_table,
             "history_sessions": self.history_table,
         }
         defaults = {
             "session_summary": [180, 130, 90, 190, 150, 80, 130, 160, 80, 90, 90, 90, 90, 190, 100, 80, 170, 80],
-            "mesh_link": [70, 190, 90, 110, 160, 170, 90, 160, 150, 130, 160, 100, 140],
-            "channel_busy": [60, 190, 190, 80, 100, 80, 90, 150, 120, 120, 90, 420],
+            "mesh_link": [70, 190, 190, 90, 110, 160, 170, 90, 160, 150, 130, 160, 140],
+            "mesh_link_detail": [70, 190, 190, 90, 110, 160, 170, 160, 130, 160, 160, 90, 160, 150, 140],
+            "channel_busy": [60, 190, 90, 100, 80, 90, 150, 120, 120],
             "statistics": [180, 120, 90, 180, 180, 320],
             "switch_history": [70, 190, 90, 150, 150, 150, 150, 130, 130, 180, 150, 120, 140, 500],
             "active_link_switch_logs": [60, 190, 160, 150, 150, 80, 140, 160, 150, 150, 80, 140, 160, 90, 90, 100, 260, 520],
             "interface_rate": [60, 190, 100, 120, 100, 100, 100, 100, 700],
+            "fping_1s": [60, 190, 140, 150, 90, 90, 90, 100, 110, 110, 110, 100],
             "iperf": [180, 100, 90, 120, 520],
             "diagnosis": [190, 190, 170, 90, 90, 90, 110, 110, 110, 130, 130, 100, 100, 100],
             "history_sessions": [170, 170, 170, 110, 120, 120, 100, 120, 360],
@@ -5463,18 +5616,19 @@ def _analysis_chart_generic_hover_points(
                 SimpleNamespace(
                     timestamp=timestamp,
                     timestamp_label=timestamp_label,
+                    chart_key=key,
                     series_name=series_name,
                     metric_label=_chart_metric_label(key, title),
                     metric_value=metric_value,
                     detail=detail,
-                    traffic_direction=detail.get("direction", ""),
-                    traffic_rate_mbps=detail.get("rate_mbps", metric_value),
-                    traffic_protocol=detail.get("protocol", ""),
-                    traffic_role=detail.get("role", ""),
-                    traffic_jitter_ms=detail.get("jitter_ms"),
-                    traffic_loss_percent=detail.get("loss_percent"),
-                    traffic_retransmits=detail.get("retransmits"),
-                    traffic_transfer_bytes=detail.get("transfer_bytes"),
+                    traffic_direction=detail.get("direction", "") if key == "traffic" else "",
+                    traffic_rate_mbps=detail.get("rate_mbps", metric_value) if key == "traffic" else None,
+                    traffic_protocol=detail.get("protocol", "") if key == "traffic" else "",
+                    traffic_role=detail.get("role", "") if key == "traffic" else "",
+                    traffic_jitter_ms=detail.get("jitter_ms") if key == "traffic" else None,
+                    traffic_loss_percent=detail.get("loss_percent") if key == "traffic" else None,
+                    traffic_retransmits=detail.get("retransmits") if key == "traffic" else None,
+                    traffic_transfer_bytes=detail.get("transfer_bytes") if key == "traffic" else None,
                     raw=detail.get("raw", ""),
                 )
             )
@@ -5498,79 +5652,64 @@ def _online_mr_active_rssi_tooltip_text(point: object) -> str:
         [
             "采样时间:",
             _display_value(getattr(point, "timestamp_label", "")),
-            "",
-            "主链路:",
-            f"设备名称: {_display_value(getattr(point, 'device_name', None))}",
-            f"射频ID: {_display_value(getattr(point, 'radio_id', None))}",
-            f"主链路AP: {_display_value(getattr(point, 'peer_name', None))} / {_display_value(getattr(point, 'station', None))}",
+            f"RSSI: {_display_value(getattr(point, 'rssi', None))}",
+            f"对端AP: {_display_value(getattr(point, 'peer_name', None))}",
             f"对端MAC: {_display_value(getattr(point, 'peer_mac', None))}",
+            f"归属站点: {_display_value(getattr(point, 'station', None))}",
             f"归属区间: {_display_value(getattr(point, 'section', None))}",
-            f"归属类型: {_display_belong_type(getattr(point, 'belong_type', None))}",
-            f"BSSID: {_display_value(getattr(point, 'bssid', None))}",
-            f"Mesh接口: {_display_value(getattr(point, 'mesh_interface', None))}",
-            f"MR侧RSSI: {_display_value(getattr(point, 'rssi', None))}",
             f"链路状态: {_display_value(getattr(point, 'link_state', None))}",
-            f"在线时长: {_format_duration_value(getattr(point, 'online_time', None))}",
-            "",
-            "空口:",
-            f"控制信道繁忙度: {_format_percent_value(getattr(point, 'ctl_busy', None))}",
-            f"发送繁忙度: {_format_percent_value(getattr(point, 'tx_busy', None))}",
-            f"接收繁忙度: {_format_percent_value(getattr(point, 'rx_busy', None))}",
-            "",
-            "Ping:",
-            f"丢包率: {_format_percent_value(getattr(point, 'ping_loss', None))}",
-            f"平均延迟: {_format_ms_value(getattr(point, 'ping_avg_latency', None))}",
-            f"最大延迟: {_format_ms_value(getattr(point, 'ping_max_latency', None))}",
-            "",
-            "接口:",
-            f"入方向总PPS: {_display_value(getattr(point, 'inbound_pps', None))}",
-            f"出方向总PPS: {_display_value(getattr(point, 'outbound_pps', None))}",
         ]
     )
 
 
 def _online_mr_generic_chart_tooltip_text(point: object) -> str:
     detail = getattr(point, "detail", {}) or {}
-    lines = [
-        "采样时间:",
-        _display_value(getattr(point, "timestamp_label", "")),
-        "",
-        "图表:",
-        f"曲线: {_display_value(getattr(point, 'series_name', None))}",
-        f"{_display_value(getattr(point, 'metric_label', None))}: {_display_value(getattr(point, 'metric_value', None))}",
-    ]
-    if getattr(point, "traffic_rate_mbps", None) is not None or detail.get("direction"):
-        lines.extend(
+    chart_key = str(getattr(point, "chart_key", "") or "")
+    timestamp = _display_value(getattr(point, "timestamp_label", ""))
+    series_name = _display_value(getattr(point, "series_name", None))
+    metric_value = getattr(point, "metric_value", None)
+    if chart_key == "ping_loss":
+        return "\n".join(["采样时间:", timestamp, f"目标: {_display_value(detail.get('target'))}", f"丢包率: {_format_percent_value(metric_value)}"])
+    if chart_key == "ping":
+        return "\n".join(["采样时间:", timestamp, f"目标: {_display_value(detail.get('target'))}", f"延迟: {_format_ms_value(metric_value)}"])
+    if chart_key == "interface":
+        return "\n".join(["采样时间:", timestamp, f"接口: {_display_value(detail.get('interface') or series_name)}", f"方向: {_display_direction(detail.get('direction'))}", f"PPS: {_display_value(metric_value)}"])
+    if chart_key == "traffic":
+        return "\n".join(
             [
-                "",
-                "打流:",
-                f"方向: {_display_value(getattr(point, 'traffic_direction', None))}",
-                f"速率: {_format_bitrate_mbps(getattr(point, 'traffic_rate_mbps', None))}",
+                "采样时间:",
+                timestamp,
+                f"速率: {_format_bitrate_mbps(getattr(point, 'traffic_rate_mbps', metric_value))}",
                 f"协议: {_display_value(getattr(point, 'traffic_protocol', None))}",
-                f"角色: {_display_value(getattr(point, 'traffic_role', None))}",
-                f"服务端: {_display_value(detail.get('server_ip'))}:{_display_value(detail.get('server_port'))}",
-                f"Jitter: {_format_ms_value(getattr(point, 'traffic_jitter_ms', None))}",
+                f"方向: {_display_value(getattr(point, 'traffic_direction', None))}",
                 f"丢包率: {_format_percent_value(getattr(point, 'traffic_loss_percent', None))}",
                 f"TCP重传: {_display_value(getattr(point, 'traffic_retransmits', None))}",
             ]
         )
-    for label, field in (
-        ("目标地址", "target"),
-        ("射频ID", "radio"),
-        ("方向", "direction"),
-        ("接口", "interfaces"),
-        ("控制信道繁忙度", "ctl_busy"),
-        ("发送繁忙度", "tx_busy"),
-        ("接收繁忙度", "rx_busy"),
-        ("切换前 AP", "from_peer_name"),
-        ("切换后 AP", "to_peer_name"),
-        ("切换前 MAC", "from_peer_mac"),
-        ("切换后 MAC", "to_peer_mac"),
-        ("切换原因", "reason_text"),
-    ):
-        if field in detail:
-            lines.append(f"{label}: {_display_value(detail.get(field))}")
-    return "\n".join(lines)
+    if chart_key == "busy":
+        return "\n".join(
+            [
+                "设备时间:",
+                timestamp,
+                f"射频ID: {_display_value(detail.get('radio'))}",
+                f"控制信道繁忙度: {_format_percent_value(detail.get('ctl_busy'))}",
+                f"发送繁忙度: {_format_percent_value(detail.get('tx_busy'))}",
+                f"接收繁忙度: {_format_percent_value(detail.get('rx_busy'))}",
+            ]
+        )
+    if chart_key == "switch_rssi":
+        return "\n".join(
+            [
+                "切换时间:",
+                timestamp,
+                f"原AP: {_display_value(detail.get('from_peer_name'))}",
+                f"新AP: {_display_value(detail.get('to_peer_name'))}",
+                f"原RSSI: {_display_value(detail.get('from_rssi'))}",
+                f"新RSSI: {_display_value(detail.get('to_rssi'))}",
+                f"切换原因: {_display_value(detail.get('reason_text'))}",
+            ]
+        )
+    return "\n".join(["采样时间:", timestamp, f"曲线: {series_name}", f"{_display_value(getattr(point, 'metric_label', None))}: {_display_value(metric_value)}"])
 
 
 def _display_value(value: object) -> str:
@@ -5592,6 +5731,11 @@ def _format_percent_value(value: object) -> str:
 def _format_ms_value(value: object) -> str:
     text = _display_value(value)
     return text if text == "-" or text.endswith("ms") else f"{text} ms"
+
+
+def _display_direction(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return {"inbound": "入方向", "outbound": "出方向", "download": "下行", "upload": "上行"}.get(text, _display_value(value))
 
 
 def _format_bitrate_mbps(value: object) -> str:

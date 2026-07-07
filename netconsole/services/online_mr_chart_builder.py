@@ -162,10 +162,10 @@ class OnlineMrChartBuilder:
     def build_channel_busy_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT COALESCE(record_time_local, block_collector_time), radio, ctl_busy, tx_busy, rx_busy
+            SELECT device_time, radio, ctl_busy, tx_busy, rx_busy
             FROM channel_busy_records
             WHERE COALESCE(row_index, 1) = 1
-            ORDER BY COALESCE(record_time_local, block_collector_time) ASC
+            ORDER BY device_time ASC
             LIMIT 5000
             """
         )
@@ -271,10 +271,15 @@ class OnlineMrChartBuilder:
     def build_interface_rate_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT collector_time, direction, total_pps, broadcast_pps, multicast_pps, interface_name, id
+            SELECT device_time, direction, total_pps, broadcast_pps, multicast_pps,
+                   COALESCE(NULLIF(interface_normalized, ''), interface_name), id
             FROM interface_rate_samples
             WHERE direction IS NOT NULL AND total_pps IS NOT NULL
-            ORDER BY collector_time ASC, id ASC
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'xge%'
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'xgigabitethernet%'
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'ten-gigabitethernet%'
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'tengigabitethernet%'
+            ORDER BY device_time ASC, id ASC
             LIMIT 10000
             """
         )
@@ -379,13 +384,13 @@ class OnlineMrChartBuilder:
     def build_switch_rssi_series(self) -> ChartData:
         switch_rows = self._query(
             """
-            SELECT collector_time, 'terminal_monitor', device_name,
+            SELECT device_time, 'terminal_monitor', device_name,
                    old_peer_name, old_peer_mac, old_rssi, CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
                    new_peer_name, new_peer_mac, new_rssi, CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
                    switch_reason_code, switch_reason_text,
                    peer_quantity, link_quantity
             FROM switch_realtime_events
-            ORDER BY collector_time ASC, id ASC
+            ORDER BY device_time ASC, id ASC
             LIMIT 5000
             """
         )
@@ -490,10 +495,10 @@ class OnlineMrChartBuilder:
     def _nearest_channel_busy_index(self) -> list[dict[str, object]]:
         rows = self._query(
             """
-            SELECT COALESCE(record_time_local, block_collector_time), radio, ctl_busy, tx_busy, rx_busy
+            SELECT device_time, radio, ctl_busy, tx_busy, rx_busy
             FROM channel_busy_records
             WHERE COALESCE(row_index, 1) = 1
-            ORDER BY COALESCE(record_time_local, block_collector_time) ASC
+            ORDER BY device_time ASC
             LIMIT 10000
             """
         )
@@ -547,10 +552,14 @@ class OnlineMrChartBuilder:
     def _nearest_interface_index(self) -> list[dict[str, object]]:
         rows = self._query(
             """
-            SELECT collector_time, direction, total_pps
+            SELECT device_time, direction, total_pps
             FROM interface_rate_samples
             WHERE direction IS NOT NULL AND total_pps IS NOT NULL
-            ORDER BY collector_time ASC
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'xge%'
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'xgigabitethernet%'
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'ten-gigabitethernet%'
+              AND lower(COALESCE(NULLIF(interface_normalized, ''), interface_name, '')) NOT LIKE 'tengigabitethernet%'
+            ORDER BY device_time ASC
             LIMIT 10000
             """
         )

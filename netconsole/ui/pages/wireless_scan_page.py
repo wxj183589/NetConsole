@@ -275,7 +275,7 @@ class WirelessScanPage(QWidget):
             rows = [row for row in rows if row.get("matched_radio_id") == radio]
         search = self.search_edit.text().strip().casefold()
         if search:
-            fields = ("display_ssid", "display_mac_address", "display_ap_mac", "display_ap_name", "display_station", "display_location_mileage")
+            fields = ("display_ssid", "display_mac_address", "display_ap_mac", "display_ap_name", "display_station", "display_section", "display_belong_type", "display_location_mileage")
             rows = [row for row in rows if any(search in str(row.get(field) or "").casefold() for field in fields)]
         rows = self._sort_rows(rows)
         self.filtered_rows = rows
@@ -569,6 +569,9 @@ def wireless_scan_default_column_widths() -> dict[str, int]:
         "display_ap_name": 190,
         "display_radio_id": 80,
         "display_station": 140,
+        "display_section": 170,
+        "display_belong_type": 90,
+        "display_belonging_source": 120,
         "display_location_mileage": 170,
         "display_rssi": 80,
         "display_signal_quality": 95,

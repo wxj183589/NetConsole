@@ -12,6 +12,9 @@ class PeerResolveResult:
     peer_mac: str
     ap_name: str | None
     site: str | None
+    section: str | None
+    belong_type: str | None
+    belonging_source: str | None
     radio: str | None
     radio_mac: str | None
     serial_number: str | None
@@ -27,15 +30,18 @@ class ApRadioMappingService:
     def refresh_from_fit_ap_resources(self, site_id: str | None = None) -> None:
         self._mesh_service = MeshPeerMappingService(site_id or self.site_name, self.paths)
 
-    def resolve_peer_mac(self, peer_mac: str) -> PeerResolveResult:
+    def resolve_peer_mac(self, peer_mac: str, peer_name: str | None = None) -> PeerResolveResult:
         peer = normalize_mac(peer_mac)
-        resolved = self._mesh_service.resolve(peer)
+        resolved = self._mesh_service.resolve(peer, peer_name=peer_name)
         if not peer or not resolved:
-            return PeerResolveResult(peer, None, None, None, None, None, "unresolved")
+            return PeerResolveResult(peer, None, None, None, None, None, None, None, None, "unresolved")
         return PeerResolveResult(
             peer_mac=peer,
             ap_name=str(resolved.get("peer_ap_name") or "") or None,
             site=str(resolved.get("peer_site") or "") or None,
+            section=str(resolved.get("peer_section") or "") or None,
+            belong_type=str(resolved.get("belong_type") or "") or None,
+            belonging_source=str(resolved.get("belonging_source") or "") or None,
             radio=str(resolved.get("peer_radio_label") or "") or None,
             radio_mac=format_h3c_mac(str(resolved.get("peer_radio_mac") or peer)),
             serial_number=str(resolved.get("peer_serial_number") or resolved.get("serial_number") or "") or None,

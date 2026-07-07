@@ -16,14 +16,14 @@ class MeshPeerMappingService:
         self.paths = paths
         self._resolver: TracksideApBssidResolver | None = None
 
-    def resolve(self, peer_mac: object) -> dict[str, object] | None:
+    def resolve(self, peer_mac: object, peer_name: object | None = None) -> dict[str, object] | None:
         peer = normalize_mac(peer_mac)
         if not peer:
             return None
         resolver = self._get_resolver()
         if resolver is None:
             return _unresolved(peer)
-        match = resolver.resolve(peer)
+        match = resolver.resolve(peer, peer_name=peer_name)
         if not match.matched:
             return _unresolved(peer)
         radio_id = int(match.radio_id or 0) or None
@@ -37,6 +37,9 @@ class MeshPeerMappingService:
             "peer_radio_label": f"radio{radio_id}" if radio_id else "",
             "peer_radio_mac": peer_radio_mac,
             "peer_site": match.station,
+            "peer_section": match.section,
+            "belong_type": match.belong_type,
+            "belonging_source": match.belonging_source,
             "peer_serial_number": match.serial_number,
             "serial_number": match.serial_number,
             "peer_location": match.location,
@@ -87,6 +90,9 @@ def _unresolved(peer_mac: str) -> dict[str, object]:
         "peer_radio_label": "",
         "peer_radio_mac": "",
         "peer_site": "",
+        "peer_section": "",
+        "belong_type": "unknown",
+        "belonging_source": "",
         "peer_serial_number": "",
         "serial_number": "",
         "peer_location": "",
