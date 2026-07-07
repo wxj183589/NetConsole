@@ -2325,16 +2325,37 @@ def test_online_mr_analysis_charts_render_from_parsed_sqlite(tmp_path: Path) -> 
         _insert_channel_busy_record(conn, session.meta.session_id, "2026-07-03 19:00:00.000", ctl_busy=7, tx_busy=4, rx_busy=3)
         _insert_fping_sample(conn, session.meta.session_id, "2026-07-03 19:00:00.000", latency_ms=2.5)
         _insert_interface_rate_sample(conn, session.meta.session_id, "2026-07-03 19:00:00.000", direction="inbound", interface_name="GE1/0/1", total_pps=100)
+        _insert_switch_realtime_event(
+            conn,
+            session.meta.session_id,
+            "2026-07-03 19:00:00.000",
+            old_peer_name="AP-A",
+            old_peer_mac="1111-2222-3333",
+            old_rssi=30,
+            new_peer_name="AP-B",
+            new_peer_mac="4444-5555-6666",
+            new_rssi=36,
+            reason_text="Better RSSI",
+        )
 
     page._render_analysis_charts(session.session_dir)
 
     assert {"rssi", "busy", "ping_loss", "ping", "interface", "switch_rssi"}.issubset(page.analysis_chart_canvases)
     assert {"rssi", "switch_rssi"}.issubset(page.analysis_chart_views)
+    assert {"rssi", "busy", "ping_loss", "ping", "interface", "traffic", "switch_rssi"}.issubset(page.analysis_chart_widgets)
     assert "switch" not in page.analysis_chart_canvases
     for key in ("rssi", "busy", "ping_loss", "ping", "interface"):
         axis = page.analysis_chart_canvases[key].figure.axes[0]
         assert axis.lines or axis.collections
+        assert axis.spines["right"].get_visible()
+        assert any(tick.label2.get_visible() for tick in axis.yaxis.get_major_ticks())
     rssi_view = page.analysis_chart_views["rssi"]
+    rssi_widget = page.analysis_chart_widgets["rssi"]
+    assert rssi_widget.summary_labels["main_link"].text() == "1"
+    assert rssi_widget.summary_labels["switch"].text() == "1"
+    assert not rssi_widget.show_switch_points_checkbox.isHidden()
+    rssi_axis = page.analysis_chart_canvases["rssi"].figure.axes[0]
+    assert rssi_axis.collections
     assert rssi_view.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert rssi_view.chart_container.minimumWidth() >= 1300
     visible_actions = [action for action in rssi_view.toolbar.actions() if action.isVisible()]
@@ -2345,8 +2366,8 @@ def test_online_mr_analysis_charts_render_from_parsed_sqlite(tmp_path: Path) -> 
         assert english not in visible_tooltips
     assert all(action.text().replace("&", "") not in {"Subplots", "Customize"} or not action.isVisible() for action in rssi_view.toolbar.actions())
     switch_axis = page.analysis_chart_canvases["switch_rssi"].figure.axes[0]
-    assert not switch_axis.lines
-    assert not switch_axis.collections
+    assert switch_axis.lines or switch_axis.collections
+    assert switch_axis.spines["right"].get_visible()
 
 
 def test_online_mr_traffic_chart_renders_iperf_and_empty_state(tmp_path: Path) -> None:

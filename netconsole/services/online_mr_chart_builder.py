@@ -13,11 +13,21 @@ class ChartSeries:
 
 
 @dataclass(frozen=True)
+class ChartEvent:
+    time: datetime
+    event_type: str
+    label: str
+    severity: str = "info"
+    tooltip: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ChartData:
     title: str
     y_label: str
     series: list[ChartSeries] = field(default_factory=list)
     tooltip_rows: list[dict[str, object]] = field(default_factory=list)
+    events: list[ChartEvent] = field(default_factory=list)
     empty_message: str = "无数据"
 
     @property
@@ -68,10 +78,76 @@ class OnlineMrChartBuilder:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
 
+    def build_session_summary(self) -> dict[str, object]:
+        meta = self._read_session_meta()
+        counts = {
+            "main_link": self._scalar("SELECT COUNT(*) FROM main_link_samples"),
+            "active_link": self._scalar("SELECT COUNT(*) FROM main_link_samples WHERE UPPER(link_state) LIKE 'ACTIVE%'"),
+            "switch": self._scalar("SELECT COUNT(*) FROM switch_realtime_events"),
+            "fping": self._scalar("SELECT COUNT(*) FROM fping_1s_summary"),
+            "iperf": self._scalar("SELECT COUNT(*) FROM iperf_intervals"),
+            "channel_busy": self._scalar("SELECT COUNT(*) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1"),
+            "interface_rate": self._scalar("SELECT COUNT(*) FROM interface_rate_samples"),
+        }
+        first_last = self._query(
+            """
+            SELECT MIN(collector_time), MAX(collector_time)
+            FROM main_link_samples
+            WHERE collector_time IS NOT NULL AND collector_time <> ''
+            """
+        )
+        start_time, end_time = first_last[0] if first_last else (None, None)
+        return {
+            "device_name": meta.get("device_name") or meta.get("host") or "-",
+            "session_start": start_time or meta.get("started_at") or "-",
+            "session_end": end_time or meta.get("ended_at") or "-",
+            **counts,
+        }
+
+    def build_switch_events(self) -> list[ChartEvent]:
+        rows = self._query(
+            """
+            SELECT device_time, switch_reason_text, old_peer_name, old_peer_mac,
+                   new_peer_name, new_peer_mac, old_rssi, new_rssi, switch_reason_code
+            FROM switch_realtime_events
+            WHERE device_time IS NOT NULL AND device_time <> ''
+            ORDER BY device_time ASC, id ASC
+            LIMIT 5000
+            """
+        )
+        events: list[ChartEvent] = []
+        for row in rows:
+            timestamp = _parse_time(row[0])
+            if timestamp is None:
+                continue
+            reason = str(row[1] or "链路切换").strip() or "链路切换"
+            events.append(
+                ChartEvent(
+                    time=timestamp,
+                    event_type="active_link_switch",
+                    label=reason,
+                    severity=_switch_reason_severity(reason, row[8]),
+                    tooltip={
+                        "time": row[0],
+                        "reason": reason,
+                        "from_peer_name": row[2],
+                        "from_peer_mac": row[3],
+                        "from_rssi": row[6],
+                        "to_peer_name": row[4],
+                        "to_peer_mac": row[5],
+                        "to_rssi": row[7],
+                        "reason_code": row[8],
+                    },
+                )
+            )
+        return events
+
     def build_active_rssi_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT collector_time, radio, peer_mac, mr_rssi, link_state
+            SELECT collector_time, radio, peer_mac, mr_rssi, link_state,
+                   COALESCE(NULLIF(resolved_peer_name, ''), peer_name, peer_mac),
+                   belong_station, belong_section, online_time, bssid, mesh_interface
             FROM main_link_samples
             WHERE UPPER(link_state) LIKE 'ACTIVE%' AND mr_rssi IS NOT NULL
             ORDER BY collector_time ASC
@@ -82,7 +158,22 @@ class OnlineMrChartBuilder:
             title="主链路 RSSI",
             y_label="RSSI",
             series=[ChartSeries("当前Active MR侧RSSI", [(row[0], abs(float(row[3]))) for row in rows])],
-            tooltip_rows=[{"time": row[0], "radio": row[1], "peer_mac": row[2], "rssi": row[3], "status": row[4]} for row in rows],
+            tooltip_rows=[
+                {
+                    "time": row[0],
+                    "radio": row[1],
+                    "peer_mac": row[2],
+                    "rssi": row[3],
+                    "status": row[4],
+                    "peer_name": row[5],
+                    "station": row[6],
+                    "section": row[7],
+                    "online_time": row[8],
+                    "bssid": row[9],
+                    "mesh_interface": row[10],
+                }
+                for row in rows
+            ],
             empty_message="未解析到主链路RSSI",
         )
 
@@ -482,6 +573,15 @@ class OnlineMrChartBuilder:
             except sqlite3.Error:
                 return []
 
+    def _scalar(self, sql: str, params: tuple[object, ...] = ()) -> int:
+        rows = self._query(sql, params)
+        if not rows:
+            return 0
+        try:
+            return int(rows[0][0] or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _read_session_meta(self) -> dict[str, object]:
         meta_path = self.db_path.parent.parent / "session_meta.json"
         if not meta_path.exists():
@@ -614,3 +714,13 @@ def _traffic_direction_label(direction: object, role: object) -> str:
     if text in {"bidirectional", "both"}:
         return "双向"
     return "上行"
+
+
+def _switch_reason_severity(reason: object, code: object) -> str:
+    text = str(reason or "").casefold()
+    code_text = str(code or "").strip()
+    if code_text in {"4", "5"} or "fault" in text or "断开" in text or "强制" in text:
+        return "warning"
+    if "better" in text or "rssi" in text:
+        return "info"
+    return "info"

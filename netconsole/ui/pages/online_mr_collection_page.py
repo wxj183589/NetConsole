@@ -8,7 +8,7 @@ import time
 import traceback
 import weakref
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,6 +111,7 @@ from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 from netconsole.ui.online_mr_parse_worker import OnlineMrParseWorker
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
+from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
 from netconsole.ui.widgets.scrollable_matplotlib_view import AnalysisChartHoverController, ScrollableMatplotlibView
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
@@ -615,6 +616,7 @@ class OnlineMrCollectionPage(QWidget):
         self.analysis_chart_xsyncing = False
         self.analysis_chart_views: dict[str, ScrollableMatplotlibView] = {}
         self.analysis_chart_hover_controllers: dict[str, AnalysisChartHoverController] = {}
+        self.analysis_chart_widgets: dict[str, OnlineMrAnalysisChartWidget] = {}
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(self.throttle.interval_ms)
         self.refresh_timer.timeout.connect(self._flush_snapshot)
@@ -1462,11 +1464,13 @@ class OnlineMrCollectionPage(QWidget):
             page = QWidget()
             layout = QVBoxLayout(page)
             layout.setContentsMargins(6, 6, 6, 6)
-            placeholder = QLabel("解析采集数据后显示图表")
-            placeholder.setAlignment(Qt.AlignCenter)
-            layout.addWidget(placeholder, 1)
+            chart_widget = OnlineMrAnalysisChartWidget(key, title, page)
+            chart_widget.hoverChanged.connect(lambda controller, chart_key=key: self._analysis_chart_hover_changed(chart_key, controller))
+            layout.addWidget(chart_widget, 1)
             self.analysis_chart_pages[key] = page
-            self.analysis_chart_placeholders[key] = placeholder
+            self.analysis_chart_widgets[key] = chart_widget
+            self.analysis_chart_views[key] = chart_widget.view
+            self.analysis_chart_canvases[key] = chart_widget.canvas
             self.analysis_charts.addTab(page, title)
 
     def _build_output_panel(self) -> None:
@@ -2821,11 +2825,16 @@ class OnlineMrCollectionPage(QWidget):
         self._hide_all_analysis_chart_hovers()
         if not db_path.exists():
             for key, title in self._analysis_chart_titles():
-                self._plot_analysis_chart(key, title, "", [], empty_text="未解析到图表数据")
+                widget = self.analysis_chart_widgets.get(key)
+                if widget is not None:
+                    widget.set_summary({})
+                    widget.clear("未解析到图表数据")
             return
         from netconsole.services.online_mr_chart_builder import OnlineMrChartBuilder
 
         builder = OnlineMrChartBuilder(db_path)
+        summary = builder.build_session_summary()
+        switch_events = builder.build_switch_events()
         rssi_interactive_points = builder.build_active_rssi_interactive_points()
         charts = {
             "rssi": builder.build_active_rssi_series(),
@@ -2837,15 +2846,23 @@ class OnlineMrCollectionPage(QWidget):
             "switch_rssi": builder.build_switch_rssi_series(),
         }
         for key, chart in charts.items():
-            self._plot_analysis_chart(
-                key,
-                chart.title,
-                chart.y_label,
-                [(series.name, series.points) for series in chart.series],
-                empty_text=chart.empty_message,
-                hover_points=rssi_interactive_points if key == "rssi" else None,
-                tooltip_rows=chart.tooltip_rows,
-            )
+            chart = replace(chart, events=switch_events if key in {"rssi", "ping_loss", "ping", "traffic", "switch_rssi"} else [])
+            widget = self.analysis_chart_widgets.get(key)
+            if widget is None:
+                continue
+            widget.set_summary(summary)
+            tooltip_builder = _online_mr_active_rssi_tooltip_text if key == "rssi" else _online_mr_generic_chart_tooltip_text
+            widget.render_chart(chart, hover_points=rssi_interactive_points if key == "rssi" else None, tooltip_builder=tooltip_builder)
+            self.analysis_chart_canvases[key] = widget.canvas
+            self.analysis_chart_views[key] = widget.view
+            if widget.axis is not None:
+                self.analysis_chart_axes[key] = widget.axis
+
+    def _analysis_chart_hover_changed(self, key: str, controller: object) -> None:
+        if controller is None:
+            self.analysis_chart_hover_controllers.pop(key, None)
+            return
+        self.analysis_chart_hover_controllers[key] = controller
 
     def _plot_analysis_chart(
         self,
