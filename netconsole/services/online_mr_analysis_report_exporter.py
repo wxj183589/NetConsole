@@ -26,6 +26,7 @@ class OnlineMrAnalysisReportExporter:
         chart_specs = [
             ("主链路信号趋势表", "主链路信号趋势图", builder.build_active_rssi_series(), LineChart),
             ("主链路切换前后信号趋势表", "主链路切换前后信号趋势图", builder.build_switch_rssi_series(), LineChart),
+            ("主链路切换日志RSSI趋势表", "主链路切换日志RSSI趋势图", builder.build_switch_log_rssi_series(), LineChart),
             ("信道繁忙度趋势表", "信道繁忙度趋势图", builder.build_channel_busy_series(), LineChart),
             ("Ping丢包率趋势表", "Ping丢包率趋势图", builder.build_ping_loss_series(), LineChart),
             ("Ping延迟趋势表", "Ping延迟趋势图", builder.build_ping_latency_series(), LineChart),
@@ -164,42 +165,53 @@ class OnlineMrAnalysisReportExporter:
         return rows
 
     def _fping_1s_rows(self, db_path: Path) -> list[list[object]]:
-        rows: list[list[object]] = [["时间", "目标IP", "目标名称", "发送数", "接收数", "丢失数", "丢包率", "平均延迟", "最小延迟", "最大延迟", "Jitter", "状态"]]
+        rows: list[list[object]] = [["时间", "设备对齐时间", "本地时间", "时间偏移(ms)", "目标IP", "目标名称", "发送数", "接收数", "丢失数", "丢包率(%)", "平均延迟(ms)", "最小延迟(ms)", "最大延迟(ms)", "Jitter(ms)", "状态"]]
         if not db_path.exists():
             return rows
         try:
             with sqlite3.connect(db_path) as conn:
                 data = conn.execute(
                     """
-                    SELECT bucket_time, target_ip, COALESCE(target_name, ''), sent, received,
+                    SELECT COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time),
+                           COALESCE(NULLIF(device_bucket_time, ''), ''),
+                           COALESCE(NULLIF(local_bucket_time, ''), NULLIF(bucket_time, ''), ''),
+                           clock_offset_ms,
+                           target_ip, COALESCE(target_name, ''), sent, received,
                            COALESCE(lost, sent - received), loss_percent, avg_latency_ms,
                            min_latency_ms, max_latency_ms, jitter_ms, COALESCE(status, '')
                     FROM fping_1s_summary
-                    ORDER BY bucket_time ASC, target_ip ASC
+                    ORDER BY COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time) ASC, target_ip ASC
                     LIMIT 20000
                     """
                 ).fetchall()
         except sqlite3.Error:
             return rows
-        rows.extend([list(row) for row in data])
+        for row in data:
+            values = list(row)
+            values[-1] = _fping_status_label(values[-1])
+            rows.append(values)
         return rows
 
     def _fping_quality_rows(self, db_path: Path) -> list[list[object]]:
-        rows: list[list[object]] = [["时间", "目标IP", "序号", "状态", "延迟(ms)", "发送", "接收", "丢包", "丢包率(%)", "平均延迟(ms)", "最大延迟(ms)", "原始记录"]]
+        rows: list[list[object]] = [["本地时间", "设备对齐时间", "时间偏移(ms)", "目标IP", "序号", "状态", "延迟(ms)", "发送", "接收", "丢包", "丢包率(%)", "平均延迟(ms)", "最大延迟(ms)", "原始记录"]]
         if not db_path.exists():
             return rows
         try:
             with sqlite3.connect(db_path) as conn:
                 samples = conn.execute(
                     """
-                    SELECT p.collector_time, p.target_ip, p.seq, p.success, p.latency_ms,
+                    SELECT COALESCE(NULLIF(p.local_time, ''), p.collector_time),
+                           p.device_aligned_time,
+                           p.clock_offset_ms,
+                           p.target_ip, p.seq, p.success, p.latency_ms,
                            s.sent, s.received, s.sent - s.received, s.loss_percent,
                            s.avg_latency_ms, s.max_latency_ms,
                            p.status
                     FROM fping_samples p
                     LEFT JOIN fping_1s_summary s ON s.target_ip = p.target_ip
-                       AND s.bucket_time = substr(replace(p.collector_time, 'T', ' '), 1, 19)
-                    ORDER BY p.collector_time ASC, p.seq ASC
+                       AND COALESCE(NULLIF(s.device_bucket_time, ''), s.bucket_time, s.local_bucket_time)
+                           = substr(replace(COALESCE(NULLIF(p.device_aligned_time, ''), p.collector_time), 'T', ' '), 1, 19)
+                    ORDER BY COALESCE(NULLIF(p.device_aligned_time, ''), p.collector_time) ASC, p.seq ASC
                     LIMIT 20000
                     """
                 ).fetchall()
@@ -211,15 +223,17 @@ class OnlineMrAnalysisReportExporter:
                     sample[0],
                     sample[1],
                     sample[2],
-                    "成功" if int(sample[3] or 0) else "超时",
+                    sample[3],
                     sample[4],
-                    sample[5],
+                    "成功" if int(sample[5] or 0) else "超时",
                     sample[6],
                     sample[7],
                     sample[8],
                     sample[9],
                     sample[10],
                     sample[11],
+                    sample[12],
+                    sample[13],
                 ]
             )
         return rows
@@ -300,7 +314,7 @@ class OnlineMrAnalysisReportExporter:
         if db_path.exists():
             with sqlite3.connect(db_path) as conn:
                 table_counts = []
-                for table in ("main_link_samples", "channel_busy_records", "radio_statistics_samples", "switch_history_events", "switch_realtime_events", "fping_samples", "interface_rate_samples"):
+                for table in ("main_link_samples", "channel_busy_records", "radio_statistics_samples", "switch_history_events", "switch_realtime_events", "time_sync_samples", "fping_samples", "interface_rate_samples"):
                     try:
                         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                     except sqlite3.Error:
@@ -320,6 +334,11 @@ class OnlineMrAnalysisReportExporter:
             "平均信道繁忙度": None,
             "Ping平均丢包率": None,
             "Ping平均延迟": None,
+            "时间同步状态": "未建立",
+            "平均偏移(ms)": None,
+            "最大偏移(ms)": None,
+            "最小偏移(ms)": None,
+            "fping对齐模式": "local_fallback",
         }
         if db_path.exists():
             with sqlite3.connect(db_path) as conn:
@@ -332,6 +351,14 @@ class OnlineMrAnalysisReportExporter:
                     stats["平均信道繁忙度"] = round((float(busy[0]) + float(busy[1])) / 2, 2)
                 ping = conn.execute("SELECT AVG(loss_percent), AVG(avg_latency_ms) FROM fping_1s_summary").fetchone()
                 stats["Ping平均丢包率"], stats["Ping平均延迟"] = ping
+                sync = conn.execute("SELECT COUNT(*), AVG(offset_ms), MAX(offset_ms), MIN(offset_ms) FROM time_sync_samples").fetchone()
+                if sync and int(sync[0] or 0) > 0:
+                    stats["时间同步状态"] = "已建立"
+                    stats["平均偏移(ms)"] = sync[1]
+                    stats["最大偏移(ms)"] = sync[2]
+                    stats["最小偏移(ms)"] = sync[3]
+                    aligned = conn.execute("SELECT COUNT(*) FROM fping_1s_summary WHERE device_bucket_time IS NOT NULL AND device_bucket_time <> ''").fetchone()
+                    stats["fping对齐模式"] = "device_aligned" if aligned and int(aligned[0] or 0) > 0 else "local_fallback"
         sheet.append(["指标", "值"])
         for key, value in stats.items():
             sheet.append([key, "" if value is None else value])
@@ -367,3 +394,18 @@ class OnlineMrAnalysisReportExporter:
         chart.height = 14
         chart.width = 28
         sheet.add_chart(chart, "A3")
+
+
+def _fping_status_label(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"ok", "success", "normal"}:
+        return "正常"
+    if text in {"loss", "lost"}:
+        return "丢包"
+    if text in {"timeout", "time_out"}:
+        return "超时"
+    if text in {"no_data", "nodata"}:
+        return "无数据"
+    if text in {"error", "failed", "fail"}:
+        return "错误"
+    return str(value or "-") or "-"

@@ -275,6 +275,57 @@ def test_duplicate_sha_is_skipped(tmp_path):
     assert len(repo.list_source_files()) == 1
 
 
+def test_mesh_import_creates_compact_schema_without_raw_payload_columns(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.579\n" + LINE_A + "\n", encoding="utf-8")
+
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+
+    with sqlite3.connect(repo.path) as conn:
+        schema_version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        assert schema_version == "meshlog_compact_v2_single_log"
+        parsed_db_path = Path(conn.execute("SELECT parsed_db_path FROM source_files").fetchone()[0])
+        assert parsed_db_path.name.endswith(".mesh.sqlite")
+        assert conn.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0] == 0
+    with sqlite3.connect(parsed_db_path) as conn:
+        schema_version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        assert schema_version == "meshlog_compact_v2_single_log"
+        table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()}
+        assert {"active_points", "active_segments", "switch_events", "rssi_stats", "diagnosis_events"} <= table_names
+        forbidden = {"raw_line", "raw_text", "raw_block", "raw_payload", "full_command_output", "debug_text", "metrics_json", "deltas_json", "raw_file"}
+        for table in ("mesh_links", "parse_issues", "samples", "active_points"):
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            assert not (columns & forbidden)
+        assert conn.execute("SELECT COUNT(*) FROM active_points").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM rssi_stats").fetchone()[0] >= 1
+
+
+def test_mesh_repository_recovers_when_schema_meta_table_is_missing(tmp_path):
+    db_path = tmp_path / "mesh.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE mesh_links(raw_line TEXT)")
+    conn.commit()
+    conn.close()
+
+    repo = MeshMrRepository(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP TABLE schema_meta")
+    conn.commit()
+    conn.close()
+
+    assert not repo.needs_derived_analysis_rebuild()
+    with sqlite3.connect(db_path) as conn:
+        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(mesh_links)").fetchall()}
+    assert version == "meshlog_compact_v2_single_log"
+    assert "raw_line" not in columns
+    assert list(tmp_path.glob("mesh.sqlite.legacy_*"))
+
+
 def test_multiple_mrs_use_isolated_databases(tmp_path):
     paths = PathResolver(tmp_path)
     storage = MeshStorageService("demo", paths)
@@ -323,7 +374,8 @@ def test_mesh_query_sorts_record_seq_as_integer(tmp_path):
 
     MeshImportService("demo", paths).import_files(profile, [source])
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
-    with sqlite3.connect(repo.path) as conn:
+    detail_path = Path(repo.list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(detail_path) as conn:
         ids = [row[0] for row in conn.execute("SELECT id FROM mesh_links ORDER BY id ASC").fetchall()]
         for link_id, seq in zip(ids, [1000, 10, 1, 100, 2], strict=True):
             conn.execute("UPDATE mesh_links SET record_seq = ? WHERE id = ?", (seq, link_id))
@@ -447,24 +499,24 @@ def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
     assert [row["sample_time"] for row in chart_first["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000"]
     assert [row["sample_time"] for row in chart_all["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000", "2025-12-03 10:00:01.000"]
 
-    with sqlite3.connect(repo.path) as conn:
+    first_db = Path(sources[0]["parsed_db_path"])
+    second_db = Path(sources[1]["parsed_db_path"])
+    with sqlite3.connect(first_db) as conn:
         conn.execute(
             """
-            INSERT INTO mesh_events (
+            INSERT INTO switch_events (
                 event_type, event_time, radio, previous_sample_time, current_sample_time,
                 observed_window_ms, from_peer_mac, to_peer_mac, details_json, source_file_id, source_line_number
             ) VALUES
-                ('ACTIVE_SWITCH', '2025-12-03 10:00:00.000', 1, NULL, '2025-12-03 10:00:00.000', NULL, NULL, NULL, '{}', ?, 2),
-                ('ACTIVE_SWITCH', '2025-12-03 10:00:01.000', 1, NULL, '2025-12-03 10:00:01.000', NULL, NULL, NULL, '{}', ?, 2)
+                ('ACTIVE_SWITCH', '2025-12-03 10:00:00.000', 1, NULL, '2025-12-03 10:00:00.000', NULL, NULL, NULL, '{}', 1, 2)
             """,
-            (first_id, second_id),
         )
+    with sqlite3.connect(second_db) as conn:
         conn.execute(
             """
-            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line)
-            VALUES (?, 'first.log', 9, 'ERROR', 'x', 'x', 'first', 'bad'), (?, 'second.log', 9, 'ERROR', 'x', 'x', 'second', 'bad')
+            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line_start, raw_line_end)
+            VALUES (1, 'second.log', 9, 'ERROR', 'x', 'x', 'second', 9, 9)
             """,
-            (first_id, second_id),
         )
 
     event_total, events = repo.query_events(100, 0, first_id)
@@ -1842,8 +1894,8 @@ def test_mesh_repository_lists_pages_in_record_sequence_order(tmp_path):
     with sqlite3.connect(repo.path) as conn:
         conn.execute(
             """
-            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line)
-            VALUES (NULL, 'z.log', 9, 'ERROR', 'x', 'x', 'x', 'x'), (NULL, 'a.log', 2, 'ERROR', 'x', 'x', 'x', 'x')
+            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_file, raw_line_start, raw_line_end)
+            VALUES (NULL, 'z.log', 9, 'ERROR', 'x', 'x', 'x', 'z.log', 9, 9), (NULL, 'a.log', 2, 'ERROR', 'x', 'x', 'x', 'a.log', 2, 2)
             """
         )
     _, issues = repo.query_issues(10, 0)
@@ -1964,8 +2016,8 @@ def test_parse_issues_table_returns_when_issues_exist(tmp_path):
             """
             INSERT INTO parse_issues (
                 source_file_id, source_file, line_number, severity, issue_type,
-                field_name, message, raw_line
-            ) VALUES (NULL, 'bad.log', 7, 'ERROR', 'field_count', 'metrics', 'too few fields', 'bad line')
+                field_name, message, raw_line_start, raw_line_end
+            ) VALUES (NULL, 'bad.log', 7, 'ERROR', 'field_count', 'metrics', 'too few fields', 7, 7)
             """
         )
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
@@ -1996,7 +2048,7 @@ def test_old_derived_events_upgrade_to_raw_positive_rssi(tmp_path):
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM schema_meta WHERE key = 'derived_analysis_version'")
         conn.execute(
-            "UPDATE mesh_events SET details_json = ? WHERE event_type = ?",
+            "UPDATE switch_events SET details_json = ? WHERE event_type = ?",
             (json.dumps({"from_local_signal_dbm": -65, "to_local_signal_dbm": -50, "from_peer_signal_dbm": -71, "to_peer_signal_dbm": -60}), EVENT_ACTIVE_SWITCH),
         )
     repo = MeshMrRepository(db_path)
@@ -2087,7 +2139,6 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
                             1,
                             link_id,
                             1,
-                            "raw",
                         1,
                         dt,
                         "Active",
@@ -2108,13 +2159,14 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
         conn.executemany(
             """
                 INSERT INTO mesh_links (
-                    id, sample_id, source_file_id, source_file_order, record_seq, source_line_number, raw_line, radio, sample_time,
+                    id, sample_id, source_file_id, source_file_order, record_seq, source_line_number, radio, sample_time,
                     link_state_raw, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
                     duration_text, duration_seconds, session_id, metrics_json, deltas_json, record_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             links,
         )
+    MeshMrRepository(db_path).rebuild_derived_analysis()
 
 
 def _chart_row(link_id: int, sample_time: str) -> dict[str, object]:

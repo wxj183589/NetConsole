@@ -101,6 +101,7 @@ class OnlineMrChartBuilder:
             "device_name": meta.get("device_name") or meta.get("host") or "-",
             "session_start": start_time or meta.get("started_at") or "-",
             "session_end": end_time or meta.get("ended_at") or "-",
+            "time_sync": self._time_sync_status_text(),
             **counts,
         }
 
@@ -147,33 +148,66 @@ class OnlineMrChartBuilder:
             """
             SELECT collector_time, radio, peer_mac, mr_rssi, link_state,
                    COALESCE(NULLIF(resolved_peer_name, ''), peer_name, peer_mac),
-                   belong_station, belong_section, online_time, bssid, mesh_interface
+                   belong_station, belong_section
             FROM main_link_samples
-            WHERE UPPER(link_state) LIKE 'ACTIVE%' AND mr_rssi IS NOT NULL
-            ORDER BY collector_time ASC
-            LIMIT 5000
+            WHERE mr_rssi IS NOT NULL
+            ORDER BY collector_time ASC, id ASC
+            LIMIT 20000
             """
         )
+        channel_busy = self._nearest_channel_busy_index()
+        active_rows: list[tuple[object, ...]] = []
+        standby_rows: list[dict[str, object]] = []
+        for row in rows:
+            timestamp = _parse_time(row[0])
+            rssi = _normalize_rssi(row[3])
+            if timestamp is None or rssi is None:
+                continue
+            link_state = str(row[4] or "").upper()
+            if link_state.startswith("ACTIVE"):
+                active_rows.append(row)
+            elif "STANDBY" in link_state:
+                standby_rows.append(
+                    {
+                        "timestamp": timestamp,
+                        "radio": row[1],
+                        "peer_name": row[5] or row[2],
+                        "peer_mac": row[2],
+                        "station": row[6],
+                        "section": row[7],
+                        "rssi": rssi,
+                    }
+                )
+        points: list[tuple[object, object]] = []
+        tooltips: list[dict[str, object]] = []
+        for row in active_rows:
+            timestamp = _parse_time(row[0])
+            rssi = _normalize_rssi(row[3])
+            if timestamp is None or rssi is None:
+                continue
+            radio = row[1]
+            busy = _nearest_by_time(channel_busy, timestamp, max_seconds=5, predicate=lambda item: str(item.get("radio") or "") == str(radio or ""))
+            points.append((row[0], rssi))
+            tooltips.append(
+                {
+                    "time": row[0],
+                    "sample_time": row[0],
+                    "radio": radio,
+                    "peer_name": row[5] or row[2],
+                    "peer_mac": row[2],
+                    "rssi": rssi,
+                    "station": row[6],
+                    "section": row[7],
+                    "tx_busy": busy.get("tx_busy") if busy else None,
+                    "rx_busy": busy.get("rx_busy") if busy else None,
+                    "standby_links": _standby_links_near(standby_rows, timestamp, radio),
+                }
+            )
         return ChartData(
             title="主链路 RSSI",
             y_label="RSSI",
-            series=[ChartSeries("当前Active MR侧RSSI", [(row[0], abs(float(row[3]))) for row in rows])],
-            tooltip_rows=[
-                {
-                    "time": row[0],
-                    "radio": row[1],
-                    "peer_mac": row[2],
-                    "rssi": row[3],
-                    "status": row[4],
-                    "peer_name": row[5],
-                    "station": row[6],
-                    "section": row[7],
-                    "online_time": row[8],
-                    "bssid": row[9],
-                    "mesh_interface": row[10],
-                }
-                for row in rows
-            ],
+            series=[ChartSeries("当前ACTIVE主链路RSSI", points)],
+            tooltip_rows=tooltips,
             empty_message="未解析到主链路RSSI",
         )
 
@@ -283,29 +317,40 @@ class OnlineMrChartBuilder:
     def build_ping_latency_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT bucket_time, target_ip, avg_latency_ms
+            SELECT COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time),
+                   local_bucket_time, device_bucket_time, clock_offset_ms, target_ip, avg_latency_ms
             FROM fping_1s_summary
             WHERE avg_latency_ms IS NOT NULL
-            ORDER BY target_ip ASC, bucket_time ASC
+            ORDER BY target_ip ASC, COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time) ASC
             LIMIT 5000
             """
         )
         if not rows:
             rows = self._query(
                 """
-                SELECT collector_time, target_ip, latency_ms
+                SELECT COALESCE(NULLIF(device_aligned_time, ''), collector_time, local_time),
+                       local_time, device_aligned_time, clock_offset_ms, target_ip, latency_ms
                 FROM fping_samples
                 WHERE success = 1 AND latency_ms IS NOT NULL
-                ORDER BY target_ip ASC, collector_time ASC
+                ORDER BY target_ip ASC, COALESCE(NULLIF(device_aligned_time, ''), collector_time, local_time) ASC
                 LIMIT 5000
                 """
             )
         grouped: dict[str, list[tuple[object, object]]] = {}
         tooltips: list[dict[str, object]] = []
-        for collected_at, target_ip, latency_ms in rows:
+        for collected_at, local_time, device_time, offset_ms, target_ip, latency_ms in rows:
             target = str(target_ip or "Ping")
             grouped.setdefault(target, []).append((collected_at, latency_ms))
-            tooltips.append({"time": collected_at, "target": target_ip, "latency_ms": latency_ms})
+            tooltips.append(
+                {
+                    "time": collected_at,
+                    "device_time": device_time or collected_at,
+                    "local_time": local_time,
+                    "clock_offset_ms": offset_ms,
+                    "target": target_ip,
+                    "latency_ms": latency_ms,
+                }
+            )
         return ChartData(
             title="Ping 延迟",
             y_label="ms",
@@ -317,31 +362,43 @@ class OnlineMrChartBuilder:
     def build_ping_loss_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT bucket_time, target_ip, loss_percent
+            SELECT COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time),
+                   local_bucket_time, device_bucket_time, clock_offset_ms, target_ip, loss_percent, avg_latency_ms
             FROM fping_1s_summary
-            ORDER BY target_ip ASC, bucket_time ASC
+            ORDER BY target_ip ASC, COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time) ASC
             LIMIT 5000
             """
         )
         grouped: dict[str, list[tuple[object, object]]] = {}
         tooltips: list[dict[str, object]] = []
         if rows:
-            for collected_at, target_ip, loss_percent in rows:
+            for collected_at, local_time, device_time, offset_ms, target_ip, loss_percent, avg_latency in rows:
                 target = str(target_ip or "Ping")
                 grouped.setdefault(target, []).append((collected_at, loss_percent))
-                tooltips.append({"time": collected_at, "target": target_ip, "loss_percent": loss_percent})
+                tooltips.append(
+                    {
+                        "time": collected_at,
+                        "device_time": device_time or collected_at,
+                        "local_time": local_time,
+                        "clock_offset_ms": offset_ms,
+                        "target": target_ip,
+                        "loss_percent": loss_percent,
+                        "avg_latency_ms": avg_latency,
+                    }
+                )
         else:
             sample_rows = self._query(
                 """
-                SELECT collector_time, target_ip, success
+                SELECT COALESCE(NULLIF(device_aligned_time, ''), collector_time, local_time),
+                       local_time, device_aligned_time, clock_offset_ms, target_ip, success
                 FROM fping_samples
-                ORDER BY target_ip ASC, collector_time ASC
+                ORDER BY target_ip ASC, COALESCE(NULLIF(device_aligned_time, ''), collector_time, local_time) ASC
                 LIMIT 5000
                 """
             )
             windows: dict[str, list[int]] = {}
             window_size = 20
-            for collected_at, target_ip, success in sample_rows:
+            for collected_at, local_time, device_time, offset_ms, target_ip, success in sample_rows:
                 target = str(target_ip or "Ping")
                 ok = 1 if int(success or 0) else 0
                 window = windows.setdefault(target, [])
@@ -350,7 +407,17 @@ class OnlineMrChartBuilder:
                     del window[0]
                 loss_percent = round((1 - (sum(window) / len(window))) * 100.0, 2) if window else 0.0
                 grouped.setdefault(target, []).append((collected_at, loss_percent))
-                tooltips.append({"time": collected_at, "target": target_ip, "success": bool(ok), "loss_percent": loss_percent})
+                tooltips.append(
+                    {
+                        "time": collected_at,
+                        "device_time": device_time or collected_at,
+                        "local_time": local_time,
+                        "clock_offset_ms": offset_ms,
+                        "target": target_ip,
+                        "success": bool(ok),
+                        "loss_percent": loss_percent,
+                    }
+                )
         return ChartData(
             title="Ping 丢包率",
             y_label="%",
@@ -476,8 +543,10 @@ class OnlineMrChartBuilder:
         switch_rows = self._query(
             """
             SELECT device_time, 'terminal_monitor', device_name,
-                   old_peer_name, old_peer_mac, old_rssi, CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
-                   new_peer_name, new_peer_mac, new_rssi, CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                   old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
+                   CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                   new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
+                   CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
                    switch_reason_code, switch_reason_text,
                    peer_quantity, link_quantity
             FROM switch_realtime_events
@@ -507,11 +576,13 @@ class OnlineMrChartBuilder:
         window = timedelta(seconds=30)
         for row in switch_rows:
             event_time = _parse_time(row[0])
+            reason_code = row[15]
+            reason_text = str(row[16] or "链路切换").strip() or "链路切换"
             before_rssi = _normalize_rssi(row[5])
-            after_rssi = _normalize_rssi(row[9])
-            if row[6] != "empty_link" and before_rssi is not None:
+            after_rssi = _normalize_rssi(row[11])
+            if row[8] != "empty_link" and before_rssi is not None:
                 before_by_time[row[0]] = (row[0], before_rssi)
-            if row[10] != "empty_link" and after_rssi is not None:
+            if row[14] != "empty_link" and after_rssi is not None:
                 after_by_time[row[0]] = (row[0], after_rssi)
             if event_time is not None:
                 for sample_time, collected_at, _peer_mac, rssi in active_points:
@@ -525,16 +596,20 @@ class OnlineMrChartBuilder:
                     "time": row[0],
                     "source": row[1],
                     "device_name": row[2],
-                    "from_peer_name": "空链路" if row[6] == "empty_link" else row[3],
-                    "from_peer_mac": "-" if row[6] == "empty_link" else row[4],
-                    "from_rssi": None if row[6] == "empty_link" else before_rssi,
-                    "to_peer_name": "空链路" if row[10] == "empty_link" else row[7],
-                    "to_peer_mac": "-" if row[10] == "empty_link" else row[8],
-                    "to_rssi": None if row[10] == "empty_link" else after_rssi,
-                    "reason_code": row[11],
-                    "reason_text": row[12],
-                    "peer_quantity": row[13],
-                    "link_quantity": row[14],
+                    "from_peer_name": "空链路" if row[8] == "empty_link" else row[3],
+                    "from_peer_mac": "-" if row[8] == "empty_link" else row[4],
+                    "from_rssi": None if row[8] == "empty_link" else before_rssi,
+                    "from_station": row[6],
+                    "from_section": row[7],
+                    "to_peer_name": "空链路" if row[14] == "empty_link" else row[9],
+                    "to_peer_mac": "-" if row[14] == "empty_link" else row[10],
+                    "to_rssi": None if row[14] == "empty_link" else after_rssi,
+                    "to_station": row[12],
+                    "to_section": row[13],
+                    "reason_code": reason_code,
+                    "reason_text": reason_text,
+                    "peer_quantity": row[17],
+                    "link_quantity": row[18],
                 }
             )
         before = sorted(before_by_time.values(), key=lambda point: (_parse_time(point[0]) or datetime.max, str(point[0] or "")))
@@ -544,6 +619,76 @@ class OnlineMrChartBuilder:
             y_label="RSSI",
             series=[ChartSeries("切换前RSSI", before), ChartSeries("切换后RSSI", after)],
             tooltip_rows=tooltips,
+            empty_message="未解析到主链路切换日志",
+        )
+
+    def build_switch_log_rssi_series(self) -> ChartData:
+        switch_rows = self._query(
+            """
+            SELECT device_time, 'terminal_monitor', device_name,
+                   old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
+                   CASE WHEN old_peer_mac IS NULL OR old_peer_mac = '' OR old_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                   new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
+                   CASE WHEN new_peer_mac IS NULL OR new_peer_mac = '' OR new_peer_mac LIKE '0000%' THEN 'empty_link' ELSE '' END,
+                   switch_reason_code, switch_reason_text,
+                   peer_quantity, link_quantity
+            FROM switch_realtime_events
+            ORDER BY device_time ASC, id ASC
+            LIMIT 5000
+            """
+        )
+        before: list[tuple[object, object]] = []
+        after: list[tuple[object, object]] = []
+        tooltips: list[dict[str, object]] = []
+        events: list[ChartEvent] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for row in switch_rows:
+            event_time_text = str(row[0] or "")
+            event_time = _parse_time(event_time_text)
+            if event_time is None:
+                continue
+            reason_code = row[15]
+            reason_text = str(row[16] or "链路切换").strip() or "链路切换"
+            dedup_key = (event_time_text, str(row[4] or ""), str(row[10] or ""), str(reason_code or ""))
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            before_rssi = _normalize_rssi(row[5])
+            after_rssi = _normalize_rssi(row[11])
+            if row[8] != "empty_link" and before_rssi is not None:
+                before.append((event_time_text, before_rssi))
+            if row[14] != "empty_link" and after_rssi is not None:
+                after.append((event_time_text, after_rssi))
+            tooltips.append(
+                {
+                    "time": event_time_text,
+                    "source": row[1],
+                    "device_name": row[2],
+                    "from_peer_name": "空链路" if row[8] == "empty_link" else row[3],
+                    "from_peer_mac": "-" if row[8] == "empty_link" else row[4],
+                    "from_rssi": None if row[8] == "empty_link" else before_rssi,
+                    "from_station": row[6],
+                    "from_section": row[7],
+                    "to_peer_name": "空链路" if row[14] == "empty_link" else row[9],
+                    "to_peer_mac": "-" if row[14] == "empty_link" else row[10],
+                    "to_rssi": None if row[14] == "empty_link" else after_rssi,
+                    "to_station": row[12],
+                    "to_section": row[13],
+                    "reason_code": reason_code,
+                    "reason_text": reason_text,
+                    "peer_quantity": row[17],
+                    "link_quantity": row[18],
+                }
+            )
+            events.append(ChartEvent(event_time, "active_link_switch", reason_text, _switch_reason_severity(reason_text, reason_code)))
+        before = sorted(before, key=lambda point: (_parse_time(point[0]) or datetime.max, str(point[0] or "")))
+        after = sorted(after, key=lambda point: (_parse_time(point[0]) or datetime.max, str(point[0] or "")))
+        return ChartData(
+            title="主链路切换日志RSSI",
+            y_label="RSSI",
+            series=[ChartSeries("原AP RSSI", before), ChartSeries("新AP RSSI", after)],
+            tooltip_rows=tooltips,
+            events=events,
             empty_message="未解析到主链路切换日志",
         )
 
@@ -613,9 +758,10 @@ class OnlineMrChartBuilder:
     def _nearest_ping_index(self) -> list[dict[str, object]]:
         rows = self._query(
             """
-            SELECT bucket_time, loss_percent, avg_latency_ms, max_latency_ms
+            SELECT COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time),
+                   loss_percent, avg_latency_ms, max_latency_ms
             FROM fping_1s_summary
-            ORDER BY bucket_time ASC
+            ORDER BY COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time) ASC
             LIMIT 10000
             """
         )
@@ -629,9 +775,9 @@ class OnlineMrChartBuilder:
             return result
         rows = self._query(
             """
-            SELECT collector_time, success, latency_ms
+            SELECT COALESCE(NULLIF(device_aligned_time, ''), collector_time, local_time), success, latency_ms
             FROM fping_samples
-            ORDER BY collector_time ASC
+            ORDER BY COALESCE(NULLIF(device_aligned_time, ''), collector_time, local_time) ASC
             LIMIT 10000
             """
         )
@@ -674,6 +820,26 @@ class OnlineMrChartBuilder:
                 item[key] = float(item[key] or 0) + float(total_pps or 0)
         return [grouped[key] for key in sorted(grouped)]
 
+    def _time_sync_status_text(self) -> str:
+        rows = self._query(
+            """
+            SELECT COUNT(*), MIN(offset_ms), MAX(offset_ms), AVG(offset_ms)
+            FROM time_sync_samples
+            """
+        )
+        if not rows or not rows[0] or int(rows[0][0] or 0) <= 0:
+            return "时间同步：未建立，fping 使用本地时间"
+        count, min_offset, max_offset, avg_offset = rows[0]
+        spread = abs(float(max_offset or 0) - float(min_offset or 0))
+        status = "偏移波动较大，请检查设备时钟或采集延迟" if spread > 3000 else "已建立"
+        aligned_count = self._scalar("SELECT COUNT(*) FROM fping_1s_summary WHERE device_bucket_time IS NOT NULL AND device_bucket_time <> ''")
+        align_text = "已使用设备时间" if aligned_count > 0 else "未建立，使用本地时间"
+        return (
+            f"时间同步：{status}，样本 {int(count or 0)} 个，"
+            f"偏移范围：{_format_offset_ms(min_offset)} ~ {_format_offset_ms(max_offset)}，"
+            f"平均偏移：{_format_offset_ms(avg_offset)}，fping 对齐：{align_text}"
+        )
+
 
 def _parse_time(value: object) -> datetime | None:
     if isinstance(value, datetime):
@@ -697,6 +863,15 @@ def _normalize_rssi(value: object) -> float | None:
     return abs(number)
 
 
+def _format_offset_ms(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    sign = "+" if number >= 0 else ""
+    return f"{sign}{number:.0f}ms"
+
+
 def _nearest_by_time(rows: list[dict[str, object]], timestamp: datetime, *, max_seconds: float, predicate=None) -> dict[str, object] | None:
     candidates = rows if predicate is None else [row for row in rows if predicate(row)]
     if not candidates:
@@ -704,6 +879,36 @@ def _nearest_by_time(rows: list[dict[str, object]], timestamp: datetime, *, max_
     nearest = min(candidates, key=lambda row: abs((row["timestamp"] - timestamp).total_seconds()))  # type: ignore[operator]
     delta = abs((nearest["timestamp"] - timestamp).total_seconds())  # type: ignore[operator]
     return nearest if delta <= max_seconds else None
+
+
+def _standby_links_near(rows: list[dict[str, object]], timestamp: datetime, radio: object, *, max_seconds: float = 0.5, limit: int = 5) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    radio_text = str(radio or "")
+    for row in rows:
+        row_time = row.get("timestamp")
+        if not isinstance(row_time, datetime):
+            continue
+        if radio_text and str(row.get("radio") or "") != radio_text:
+            continue
+        if abs((row_time - timestamp).total_seconds()) > max_seconds:
+            continue
+        result.append(
+            {
+                "peer_name": row.get("peer_name") or row.get("peer_mac") or "-",
+                "peer_mac": row.get("peer_mac") or "-",
+                "belong_station": row.get("station") or "-",
+                "belong_section": row.get("section") or "-",
+                "rssi": row.get("rssi"),
+            }
+        )
+
+    def sort_key(item: dict[str, object]) -> float:
+        try:
+            return float(item.get("rssi") or -9999)
+        except (TypeError, ValueError):
+            return -9999.0
+
+    return sorted(result, key=sort_key, reverse=True)[:limit]
 
 
 def _traffic_direction_label(direction: object, role: object) -> str:

@@ -117,6 +117,10 @@ class MeshLogRecord:
     deltas: dict[str, int | None] = field(default_factory=dict)
     source_file_order: int = 0
     record_seq: int = 0
+    raw_line_start: int = 0
+    raw_line_end: int = 0
+    raw_offset_start: int = 0
+    raw_offset_end: int = 0
 
     def peer_mac_h3c(self) -> str:
         return format_mac_h3c(self.peer_mac_normalized) if self.peer_mac_normalized else self.peer_mac_raw

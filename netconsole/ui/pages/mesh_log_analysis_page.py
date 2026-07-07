@@ -901,7 +901,7 @@ class MeshLogAnalysisPage(QWidget):
             f"Tx/Rx: {metrics.get('local_tx')}/{metrics.get('peer_tx')}  {metrics.get('local_rx')}/{metrics.get('peer_rx')}",
             f"Retry/Err: {metrics.get('local_retry')}/{metrics.get('peer_retry')}  {metrics.get('local_err')}/{metrics.get('peer_err')}",
             f"Delta: {deltas}",
-            f"Raw: {data.get('raw_line')}",
+            f"Raw定位: {data.get('raw_file') or data.get('archived_filename') or '-'}:{data.get('raw_line_start') or data.get('source_line_number') or '-'}",
         ]
         self.detail_text.setPlainText("\n".join(lines))
 
@@ -1224,7 +1224,8 @@ class MeshLogAnalysisPage(QWidget):
         _begin_table_update(self.issue_table)
         self.issue_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            values = [Path(str(row.get("source_file"))).name, row.get("line_number"), row.get("severity"), row.get("issue_type"), row.get("field_name"), row.get("message"), row.get("raw_line")]
+            raw_location = f"{Path(str(row.get('raw_file') or row.get('source_file') or '')).name}:{row.get('raw_line_start') or row.get('line_number') or '-'}"
+            values = [Path(str(row.get("source_file"))).name, row.get("line_number"), row.get("severity"), row.get("issue_type"), row.get("field_name"), row.get("message"), raw_location]
             _set_row(self.issue_table, row_index, values)
         _end_table_update(self.issue_table)
 
@@ -1747,6 +1748,8 @@ class MeshLogAnalysisPage(QWidget):
             return repo
         app_logger.log_info("MESH_MR_CACHE_MISS", mr_id)
         repo = MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, self.current_profile.safe_folder_name))
+        if repo.rebuilt_legacy_path is not None:
+            self.progress_label.setText("当前解析结果为旧版本数据库结构，体积较大且不再兼容。请重新解析该日志。")
         self.repo_cache[mr_id] = repo
         return repo
 

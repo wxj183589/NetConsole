@@ -8,10 +8,9 @@ import time
 import traceback
 import weakref
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDoubleValidator, QIntValidator, QTextCursor
@@ -108,11 +107,10 @@ from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
 from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
-from netconsole.ui.online_mr_parse_worker import OnlineMrParseWorker
+from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrParseWorker, OnlineMrReportExportWorker
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
-from netconsole.ui.widgets.scrollable_matplotlib_view import AnalysisChartHoverController, ScrollableMatplotlibView
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
 
@@ -426,6 +424,12 @@ class OnlineMrCollectionPage(QWidget):
         self._peer_name_cache_loaded = False
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
         self.parse_worker: OnlineMrParseWorker | None = None
+        self.analysis_load_worker: OnlineMrAnalysisLoadWorker | None = None
+        self.export_report_worker: OnlineMrReportExportWorker | None = None
+        self._analysis_load_task_label = ""
+        self._analysis_load_profile_phase = ""
+        self._analysis_load_profile_start = 0.0
+        self._analysis_load_summary = None
         self.last_session_dir_by_device_id: dict[int, Path] = {}
         self.throttle = OnlineMrUiThrottle(300)
         self._updating_device_checks = False
@@ -584,7 +588,7 @@ class OnlineMrCollectionPage(QWidget):
         self.switch_history_text = QTextEdit()
         self.active_link_switch_table = QTableWidget(0, 17)
         self.interface_rate_table = QTableWidget(0, 8)
-        self.fping_1s_table = QTableWidget(0, 12)
+        self.fping_1s_table = QTableWidget(0, 15)
         self.iperf_table = QTableWidget(0, 5)
         self.diagnosis_table = QTableWidget(0, 14)
         self.history_table = QTableWidget(0, 9)
@@ -610,13 +614,13 @@ class OnlineMrCollectionPage(QWidget):
         self.tabs = QTabWidget()
         self.analysis_charts = QTabWidget()
         self.analysis_chart_pages: dict[str, QWidget] = {}
-        self.analysis_chart_placeholders: dict[str, QLabel] = {}
         self.analysis_chart_canvases: dict[str, object] = {}
         self.analysis_chart_axes: dict[str, object] = {}
-        self.analysis_chart_xsyncing = False
-        self.analysis_chart_views: dict[str, ScrollableMatplotlibView] = {}
-        self.analysis_chart_hover_controllers: dict[str, AnalysisChartHoverController] = {}
+        self.analysis_chart_views: dict[str, object] = {}
+        self.analysis_chart_hover_controllers: dict[str, object] = {}
         self.analysis_chart_widgets: dict[str, OnlineMrAnalysisChartWidget] = {}
+        self.analysis_chart_locked_time: datetime | None = None
+        self.analysis_chart_session_dir: Path | None = None
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(self.throttle.interval_ms)
         self.refresh_timer.timeout.connect(self._flush_snapshot)
@@ -1126,7 +1130,25 @@ class OnlineMrCollectionPage(QWidget):
             ]
         )
         self.interface_rate_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.device_time"), self.i18n.t("online_mr.direction"), self.i18n.t("online_mr.interface"), self.i18n.t("online_mr.usage_percent"), self.i18n.t("online_mr.total_pps"), self.i18n.t("online_mr.broadcast_pps"), self.i18n.t("online_mr.multicast_pps")])
-        self.fping_1s_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.row_number"), self.i18n.t("online_mr.time"), "目标IP", "目标名称", "发送数", "接收数", "丢失数", "丢包率", "平均延迟", "最小延迟", "最大延迟", "Jitter"])
+        self.fping_1s_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("online_mr.row_number"),
+                self.i18n.t("online_mr.time"),
+                "设备对齐时间",
+                "本地时间",
+                "目标IP",
+                "目标名称",
+                "发送数",
+                "接收数",
+                "丢失数",
+                "丢包率(%)",
+                "平均延迟(ms)",
+                "最小延迟(ms)",
+                "最大延迟(ms)",
+                "Jitter(ms)",
+                "状态",
+            ]
+        )
         self.iperf_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), "Mbps", self.i18n.t("iperf.retransmits"), self.i18n.t("iperf.transfer"), self.i18n.t("online_mr.raw")])
         self.diagnosis_table.setHorizontalHeaderLabels(
             [
@@ -1370,7 +1392,7 @@ class OnlineMrCollectionPage(QWidget):
         self.export_analysis_report_button.setVisible(self.analysis_only)
         view_layout.addWidget(self.export_analysis_report_button)
         view_layout.addStretch(1)
-        self._build_analysis_chart_placeholders()
+        self._build_analysis_chart_pages()
         if self.analysis_only:
             self.tabs.addTab(self.history_table, "")
             self.tabs.addTab(self.mesh_table, "")
@@ -1457,15 +1479,19 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_retry_button.clicked.connect(self.retry_iperf_for_running_sessions)
         self.analysis_charts.currentChanged.connect(self._analysis_chart_tab_changed)
 
-    def _build_analysis_chart_placeholders(self) -> None:
+    def _build_analysis_chart_pages(self) -> None:
         if self.analysis_charts.count() > 0:
             return
         for key, title in self._analysis_chart_titles():
             page = QWidget()
+            page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             layout = QVBoxLayout(page)
-            layout.setContentsMargins(6, 6, 6, 6)
-            chart_widget = OnlineMrAnalysisChartWidget(key, title, page)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(4)
+            chart_widget = OnlineMrAnalysisChartWidget(self.i18n, key, title, page)
             chart_widget.hoverChanged.connect(lambda controller, chart_key=key: self._analysis_chart_hover_changed(chart_key, controller))
+            chart_widget.lockTimeRequested.connect(self._set_analysis_chart_locked_time)
+            chart_widget.lockTimeCleared.connect(self._clear_analysis_chart_locked_time)
             layout.addWidget(chart_widget, 1)
             self.analysis_chart_pages[key] = page
             self.analysis_chart_widgets[key] = chart_widget
@@ -1666,6 +1692,7 @@ class OnlineMrCollectionPage(QWidget):
             ("traffic", "业务打流"),
             ("busy", "信道繁忙度"),
             ("switch_rssi", "主链路切换前后信号"),
+            ("switch_log_rssi", "主链路切换日志RSSI"),
         )
 
     def _install_no_wheel_filter_for_controls(self, root_widget: QWidget) -> None:
@@ -2141,6 +2168,16 @@ class OnlineMrCollectionPage(QWidget):
         self.parse_progress_bar.setValue(max(0, min(100, int(percent))))
         self.parse_progress_label.setText(message)
 
+    def _set_analysis_task_progress(self, running: bool, message: str = "", percent: int = 0) -> None:
+        self.parse_session_button.setEnabled(not running)
+        self.force_parse_button.setEnabled(not running)
+        self.export_analysis_report_button.setEnabled(not running)
+        self.parse_cancel_button.setVisible(False)
+        self.parse_progress_bar.setVisible(running)
+        self.parse_progress_label.setVisible(running or bool(message))
+        self.parse_progress_bar.setValue(max(0, min(100, int(percent))))
+        self.parse_progress_label.setText(message)
+
     def _parse_progress(self, stage: str, current: int, total: int, message: str) -> None:
         percent = int(max(0, min(100, current * 100 / max(1, total))))
         text = f"正在解析：{stage}  {percent}%"
@@ -2167,13 +2204,10 @@ class OnlineMrCollectionPage(QWidget):
             return False
         if summary is None:
             return False
-        profile_start = time.perf_counter()
-        rows = self._load_offline_analysis(session_dir)
-        self._log_page_profile("load.cached_analysis", profile_start, rows=rows)
-        self.log_text.append(f"Loaded parsed cache: {session_dir}")
-        self.tabs.setCurrentWidget(self.diagnosis_table)
-        self._refresh_parse_button_state()
-        return True
+        started = self._start_offline_analysis_load(session_dir, task_label="加载已解析结果", profile_phase="load.cached_analysis")
+        if started:
+            self.log_text.append(f"Parsed cache is valid, loading in background: {session_dir}")
+        return started
 
     def _refresh_parse_button_state(self) -> None:
         if not self.analysis_only:
@@ -2210,14 +2244,16 @@ class OnlineMrCollectionPage(QWidget):
         path_text, _filter = QFileDialog.getSaveFileName(self, self.i18n.t("online_mr.export_analysis_report"), str(default_path), "Excel (*.xlsx)")
         if not path_text:
             return
-        try:
-            from netconsole.services.vehicle_mr_offline_excel_report import VehicleMrOfflineExcelReportExporter
-
-            output_path = VehicleMrOfflineExcelReportExporter().export(session_dir, Path(path_text))
-        except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), str(exc))
+        if self.export_report_worker is not None:
+            QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), "离线分析报告正在导出，请稍后")
             return
-        QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
+        self._set_analysis_task_progress(True, "正在导出离线分析报告：准备导出数据 5%", 5)
+        worker = OnlineMrReportExportWorker(session_dir, Path(path_text), parent=self)
+        self.export_report_worker = worker
+        worker.progress.connect(self._export_report_progress)
+        worker.completed.connect(self._export_report_completed)
+        worker.failed.connect(self._export_report_failed)
+        worker.start()
 
     def _parse_completed(self, session_dir: Path, summary) -> None:
         if not self._can_update_ui():
@@ -2233,26 +2269,9 @@ class OnlineMrCollectionPage(QWidget):
             f"switch_history_samples={getattr(summary, 'switch_history_samples', 0)}, "
             f"ping_samples={summary.ping_samples}, iperf_samples={summary.iperf_samples}, issues={summary.issues}"
         )
-        rows = self._load_offline_analysis(session_dir)
-        self._log_page_profile("render.analysis", profile_start, rows=rows)
-        self.tabs.setCurrentWidget(self.diagnosis_table)
-        if rows == 0:
-            message = (
-                "解析完成，但没有生成诊断结果。\n"
-                f"已检查：\n"
-                f"mesh-link：{getattr(summary, 'mesh_samples', 0)} 条\n"
-                f"channelbusy：{getattr(summary, 'channel_samples', 0)} 条\n"
-                f"AP射频统计：{getattr(summary, 'radio_stats_samples', 0)} 条\n"
-                f"主链路切换历史：{getattr(summary, 'switch_history_samples', 0)} 条\n"
-                f"fping：{getattr(summary, 'ping_samples', 0)} 条\n"
-                f"interface-rate：{getattr(summary, 'interface_samples', 0)} 条\n"
-                f"iperf3：{getattr(summary, 'iperf_samples', 0)} 条\n"
-                "请检查 raw 文件格式。"
-            )
-            self.log_text.append(message)
-            QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
         self.parse_worker = None
-        self._refresh_parse_button_state()
+        if not self._start_offline_analysis_load(session_dir, task_label="刷新分析结果", profile_phase="render.analysis", profile_start=profile_start, summary=summary):
+            self._refresh_parse_button_state()
 
     def _parse_failed(self, message: str) -> None:
         if not self._can_update_ui():
@@ -2263,18 +2282,134 @@ class OnlineMrCollectionPage(QWidget):
         self.parse_worker = None
         QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), message)
 
-    def _load_offline_analysis(self, session_dir: Path) -> int:
-        self._safe_load_analysis_table("mesh_link", session_dir, self._load_mesh_link_details)
-        self._safe_load_analysis_table("mesh_link_detail", session_dir, self._load_mesh_link_detail_records)
-        self._safe_load_analysis_table("channel_busy", session_dir, self._load_channel_busy_details)
-        self._safe_load_analysis_table("interface_rate", session_dir, self._load_interface_rate_details)
-        self._safe_load_analysis_table("fping_1s", session_dir, self._load_fping_1s_details)
-        self._safe_load_analysis_table("iperf", session_dir, self._load_iperf_details)
-        self._safe_load_analysis_table("switch_history", session_dir, self._load_link_switch_history)
-        self._safe_load_analysis_table("active_link_switch_logs", session_dir, self._load_active_link_switch_logs)
-        self._safe_load_analysis_table("radio_statistics", session_dir, self._load_radio_statistics_details)
-        rows = self._safe_load_analysis_table("diagnosis", session_dir, self._load_diagnosis_results)
-        self._safe_load_analysis_table("analysis_charts", session_dir, self._render_analysis_charts)
+    def _start_offline_analysis_load(
+        self,
+        session_dir: Path,
+        *,
+        task_label: str,
+        profile_phase: str,
+        profile_start: float | None = None,
+        summary=None,
+    ) -> bool:
+        if self.analysis_load_worker is not None:
+            self.log_text.append(f"{task_label}仍在后台执行，请稍后")
+            return False
+        self._analysis_load_task_label = task_label
+        self._analysis_load_profile_phase = profile_phase
+        self._analysis_load_profile_start = profile_start if profile_start is not None else time.perf_counter()
+        self._analysis_load_summary = summary
+        self._set_analysis_task_progress(True, f"正在{task_label}：准备后台加载 1%", 1)
+        worker = OnlineMrAnalysisLoadWorker(session_dir, parent=self)
+        self.analysis_load_worker = worker
+        worker.progress.connect(self._analysis_load_progress)
+        worker.completed.connect(self._analysis_load_completed)
+        worker.failed.connect(self._analysis_load_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        return True
+
+    def _analysis_load_progress(self, stage: str, current: int, total: int, message: str) -> None:
+        percent = int(max(0, min(100, current * 100 / max(1, total))))
+        task_label = self._analysis_load_task_label or "加载已解析结果"
+        stage_text = message or stage
+        self._set_analysis_task_progress(True, f"正在{task_label}：{stage_text} {percent}%", percent)
+
+    def _analysis_load_completed(self, payload: object) -> None:
+        if not self._can_update_ui():
+            self.analysis_load_worker = None
+            return
+        task_label = self._analysis_load_task_label or "加载已解析结果"
+        summary = self._analysis_load_summary
+        rows = 0
+        try:
+            if not isinstance(payload, dict):
+                raise RuntimeError("后台分析结果格式异常")
+            session_dir = Path(payload.get("session_dir") or "")
+            self._set_analysis_task_progress(True, f"正在{task_label}：刷新表格显示 90%", 90)
+            rows = self._load_offline_analysis(session_dir, include_charts=False)
+            self._apply_analysis_chart_payload(session_dir, payload)
+            if self._analysis_load_profile_phase:
+                self._log_page_profile(self._analysis_load_profile_phase, self._analysis_load_profile_start, rows=rows)
+            self.log_text.append(f"{task_label}完成：{session_dir}")
+            self.tabs.setCurrentWidget(self.diagnosis_table)
+            if rows == 0 and summary is not None:
+                message = (
+                    "解析完成，但没有生成诊断结果。\n"
+                    f"已检查：\n"
+                    f"mesh-link：{getattr(summary, 'mesh_samples', 0)} 条\n"
+                    f"channelbusy：{getattr(summary, 'channel_samples', 0)} 条\n"
+                    f"AP射频统计：{getattr(summary, 'radio_stats_samples', 0)} 条\n"
+                    f"主链路切换历史：{getattr(summary, 'switch_history_samples', 0)} 条\n"
+                    f"fping：{getattr(summary, 'ping_samples', 0)} 条\n"
+                    f"interface-rate：{getattr(summary, 'interface_samples', 0)} 条\n"
+                    f"iperf3：{getattr(summary, 'iperf_samples', 0)} 条\n"
+                    "请检查 raw 文件格式。"
+                )
+                self.log_text.append(message)
+                QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
+            self._set_analysis_task_progress(False, f"{task_label}完成", 100)
+        except Exception as exc:
+            stack = traceback.format_exc()
+            app_logger.log_error("ONLINE_MR_ANALYSIS_LOAD_APPLY_FAILED", f"task={task_label} error={exc}\n{stack}")
+            self.log_text.append(f"{task_label}失败：{exc}")
+            self._set_analysis_task_progress(False, f"{task_label}失败：{exc}", 0)
+            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"{task_label}失败：{exc}")
+        finally:
+            self.analysis_load_worker = None
+            self._analysis_load_summary = None
+            self._refresh_parse_button_state()
+
+    def _analysis_load_failed(self, message: str) -> None:
+        task_label = self._analysis_load_task_label or "加载已解析结果"
+        app_logger.log_error("ONLINE_MR_ANALYSIS_LOAD_FAILED", f"task={task_label} error={message}")
+        if self._can_update_ui():
+            self.log_text.append(f"{task_label}失败：{message}")
+            self._set_analysis_task_progress(False, f"{task_label}失败：{message}", 0)
+            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"{task_label}失败：{message}")
+            self._refresh_parse_button_state()
+        self.analysis_load_worker = None
+        self._analysis_load_summary = None
+
+    def _export_report_progress(self, stage: str, current: int, total: int, message: str) -> None:
+        percent = int(max(0, min(100, current * 100 / max(1, total))))
+        self._set_analysis_task_progress(True, f"正在导出离线分析报告：{message or stage} {percent}%", percent)
+
+    def _export_report_completed(self, output_path: str) -> None:
+        self.export_report_worker = None
+        self._set_analysis_task_progress(False, "导出完成", 100)
+        QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
+
+    def _export_report_failed(self, message: str) -> None:
+        self.export_report_worker = None
+        app_logger.log_error("ONLINE_MR_ANALYSIS_REPORT_EXPORT_FAILED", message)
+        self._set_analysis_task_progress(False, f"导出失败：{message}", 0)
+        QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), message)
+
+    def _load_offline_analysis(self, session_dir: Path, *, show_progress: bool = False, task_label: str = "加载已解析结果", include_charts: bool = True) -> int:
+        stages = [
+            ("mesh_link", "读取主链路信息", self._load_mesh_link_details),
+            ("mesh_link_detail", "读取链路明细", self._load_mesh_link_detail_records),
+            ("channel_busy", "读取信道繁忙度", self._load_channel_busy_details),
+            ("interface_rate", "读取接口速率", self._load_interface_rate_details),
+            ("fping_1s", "读取fping 1s聚合", self._load_fping_1s_details),
+            ("iperf", "读取打流数据", self._load_iperf_details),
+            ("switch_history", "读取主链路切换历史", self._load_link_switch_history),
+            ("active_link_switch_logs", "读取主链路切换日志", self._load_active_link_switch_logs),
+            ("radio_statistics", "读取AP射频统计", self._load_radio_statistics_details),
+            ("diagnosis", "读取诊断结果", self._load_diagnosis_results),
+        ]
+        if include_charts:
+            stages.append(("analysis_charts", "构建图表数据", self._render_analysis_charts))
+        rows = 0
+        for index, (name, stage_text, loader) in enumerate(stages, start=1):
+            percent = int(index * 100 / max(1, len(stages)))
+            if show_progress:
+                self._set_analysis_task_progress(True, f"正在{task_label}：{stage_text} {percent}%", percent)
+            result = self._safe_load_analysis_table(name, session_dir, loader)
+            if name == "diagnosis":
+                rows = result
+        if show_progress:
+            self._set_analysis_task_progress(False, f"{task_label}完成", 100)
         return rows
 
     def _safe_load_analysis_table(self, table_name: str, session_dir: Path, loader) -> int:
@@ -2706,31 +2841,67 @@ class OnlineMrCollectionPage(QWidget):
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
                     """
-                    SELECT bucket_time, target_ip,
+                    SELECT COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time) AS display_time,
+                           COALESCE(NULLIF(device_bucket_time, ''), '-'),
+                           COALESCE(NULLIF(local_bucket_time, ''), NULLIF(bucket_time, ''), '-'),
+                           target_ip,
                            COALESCE(target_name, ''),
                            sent, received,
                            COALESCE(lost, sent - received),
                            loss_percent, avg_latency_ms,
-                           min_latency_ms, max_latency_ms, jitter_ms
+                           min_latency_ms, max_latency_ms, jitter_ms,
+                           COALESCE(status, '')
                     FROM fping_1s_summary
-                    ORDER BY bucket_time ASC, target_ip ASC
+                    ORDER BY display_time ASC, target_ip ASC
                     LIMIT 20000
                     """
                 ).fetchall()
         except sqlite3.Error:
-            return 0
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT bucket_time, '-', bucket_time, target_ip,
+                               COALESCE(target_name, ''),
+                               sent, received,
+                               COALESCE(lost, sent - received),
+                               loss_percent, avg_latency_ms,
+                               min_latency_ms, max_latency_ms, jitter_ms,
+                               COALESCE(status, '')
+                        FROM fping_1s_summary
+                        ORDER BY bucket_time ASC, target_ip ASC
+                        LIMIT 20000
+                        """
+                    ).fetchall()
+            except sqlite3.Error:
+                return 0
         self.fping_1s_table.setUpdatesEnabled(False)
         try:
             for row_data in rows:
                 row = self.fping_1s_table.rowCount()
                 self.fping_1s_table.insertRow(row)
-                values = [row + 1, *row_data]
+                values = [row + 1, *row_data[:-1], self._fping_status_label(row_data[-1])]
                 for column, value in enumerate(values):
                     self._set_table_item(self.fping_1s_table, row, column, value)
         finally:
             self.fping_1s_table.setUpdatesEnabled(True)
         self._auto_fit_online_table(self.fping_1s_table, "fping_1s")
         return len(rows)
+
+    @staticmethod
+    def _fping_status_label(value: object) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"ok", "success", "normal"}:
+            return "正常"
+        if text in {"loss", "lost"}:
+            return "丢包"
+        if text in {"timeout", "time_out"}:
+            return "超时"
+        if text in {"no_data", "nodata"}:
+            return "无数据"
+        if text in {"error", "failed", "fail"}:
+            return "错误"
+        return str(value or "-") or "-"
 
     def _load_iperf_details(self, session_dir: Path) -> int:
         import sqlite3
@@ -2822,37 +2993,45 @@ class OnlineMrCollectionPage(QWidget):
 
     def _render_analysis_charts(self, session_dir: Path) -> None:
         db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
-        self._hide_all_analysis_chart_hovers()
         if not db_path.exists():
-            for key, title in self._analysis_chart_titles():
-                widget = self.analysis_chart_widgets.get(key)
-                if widget is not None:
-                    widget.set_summary({})
-                    widget.clear("未解析到图表数据")
+            self._clear_analysis_charts(session_dir)
             return
-        from netconsole.services.online_mr_chart_builder import OnlineMrChartBuilder
+        from netconsole.services.vehicle_mr_offline_analysis import build_vehicle_mr_analysis_chart_payload
 
-        builder = OnlineMrChartBuilder(db_path)
-        summary = builder.build_session_summary()
-        switch_events = builder.build_switch_events()
-        rssi_interactive_points = builder.build_active_rssi_interactive_points()
-        charts = {
-            "rssi": builder.build_active_rssi_series(),
-            "ping_loss": builder.build_ping_loss_series(),
-            "ping": builder.build_ping_latency_series(),
-            "interface": builder.build_interface_rate_series(),
-            "traffic": builder.build_traffic_rate_series(),
-            "busy": builder.build_channel_busy_series(),
-            "switch_rssi": builder.build_switch_rssi_series(),
-        }
+        payload = build_vehicle_mr_analysis_chart_payload(session_dir)
+        self._apply_analysis_chart_payload(session_dir, payload)
+
+    def _clear_analysis_charts(self, session_dir: Path) -> None:
+        self._hide_all_analysis_chart_hovers()
+        if self.analysis_chart_session_dir != session_dir:
+            self.analysis_chart_session_dir = session_dir
+            self.analysis_chart_locked_time = None
+            for widget in self.analysis_chart_widgets.values():
+                widget.clear_locked_time(redraw=False)
+        self.analysis_chart_locked_time = None
+        for key, _title in self._analysis_chart_titles():
+            widget = self.analysis_chart_widgets.get(key)
+            if widget is not None:
+                widget.clear_locked_time(redraw=False)
+                widget.set_summary({})
+                widget.clear("未解析到图表数据")
+
+    def _apply_analysis_chart_payload(self, session_dir: Path, payload: dict[str, object]) -> None:
+        self._hide_all_analysis_chart_hovers()
+        if self.analysis_chart_session_dir != session_dir:
+            self.analysis_chart_session_dir = session_dir
+            self.analysis_chart_locked_time = None
+            for widget in self.analysis_chart_widgets.values():
+                widget.clear_locked_time(redraw=False)
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        charts = payload.get("charts") if isinstance(payload.get("charts"), dict) else {}
         for key, chart in charts.items():
-            chart = replace(chart, events=switch_events if key in {"rssi", "ping_loss", "ping", "traffic", "switch_rssi"} else [])
             widget = self.analysis_chart_widgets.get(key)
             if widget is None:
                 continue
             widget.set_summary(summary)
-            tooltip_builder = _online_mr_active_rssi_tooltip_text if key == "rssi" else _online_mr_generic_chart_tooltip_text
-            widget.render_chart(chart, hover_points=rssi_interactive_points if key == "rssi" else None, tooltip_builder=tooltip_builder)
+            widget.set_locked_time(self.analysis_chart_locked_time, redraw=False)
+            widget.render_chart(chart)
             self.analysis_chart_canvases[key] = widget.canvas
             self.analysis_chart_views[key] = widget.view
             if widget.axis is not None:
@@ -2864,135 +3043,19 @@ class OnlineMrCollectionPage(QWidget):
             return
         self.analysis_chart_hover_controllers[key] = controller
 
-    def _plot_analysis_chart(
-        self,
-        key: str,
-        title: str,
-        ylabel: str,
-        series: list[tuple[str, list[object]]],
-        *,
-        empty_text: str = "无数据",
-        hover_points: list[object] | None = None,
-        tooltip_rows: list[dict[str, object]] | None = None,
-    ) -> None:
-        canvas = self._ensure_analysis_chart_canvas(key)
-        self._clear_analysis_chart_hover(key)
-        figure = canvas.figure
-        figure.clear()
-        axis = figure.add_subplot(111)
-        self.analysis_chart_axes[key] = axis
-        plotted = False
-        total_points = 0
-        for label, values in series:
-            points = [_chart_point(value) for value in values]
-            points = [point for point in points if point is not None]
-            if not points:
-                continue
-            total_points += len(points)
-            segments = _split_chart_segments(points, max_gap_seconds=60 if key == "switch_rssi" else 180)
-            first_segment = True
-            for segment in segments:
-                x_values = [point[0] for point in segment]
-                y_values = [point[1] for point in segment]
-                plot_label = label if first_segment else None
-                if key == "switch_rssi":
-                    axis.plot(x_values, y_values, linewidth=1.0, marker="o", markersize=4, label=plot_label)
-                elif key == "rssi":
-                    axis.plot(x_values, y_values, linewidth=1.2, marker="o", markersize=2.5, label=plot_label)
-                else:
-                    axis.plot(x_values, y_values, linewidth=1.2, label=plot_label)
-                first_segment = False
-            plotted = True
-        self._resize_analysis_chart_canvas(key, total_points)
-        if key in {"rssi", "switch_rssi"} and plotted:
-            if ylabel:
-                axis.set_ylabel(f"{ylabel}（设备原始值）")
-            else:
-                axis.set_ylabel("RSSI（设备原始值）")
-        axis.set_title(title)
-        axis.set_xlabel("时间")
-        if key not in {"rssi", "switch_rssi"}:
-            axis.set_ylabel(ylabel)
-        if plotted:
-            axis.grid(True, alpha=0.25)
-            axis.legend(loc="best")
-            figure.autofmt_xdate()
-        else:
-            axis.text(0.5, 0.5, empty_text, ha="center", va="center", transform=axis.transAxes)
-            axis.set_xticks([])
-            axis.set_yticks([])
-        try:
-            from netconsole.ui.mesh_chart_font import apply_cjk_font
-
-            apply_cjk_font(axis)
-        except Exception:
-            pass
-        self._apply_analysis_chart_y_ticks(axis)
-        self._connect_analysis_chart_axis_sync(key, axis)
-        chart_hover_points = hover_points or _analysis_chart_generic_hover_points(key, title, series, tooltip_rows or [])
-        if chart_hover_points:
-            tooltip_builder = _online_mr_active_rssi_tooltip_text if key == "rssi" and hover_points else _online_mr_generic_chart_tooltip_text
-            self.analysis_chart_hover_controllers[key] = AnalysisChartHoverController(canvas, axis, chart_hover_points, tooltip_builder)
-        canvas.draw_idle()
-
-    @staticmethod
-    def _apply_analysis_chart_y_ticks(axis) -> None:
-        axis.yaxis.set_ticks_position("both")
-        axis.tick_params(axis="y", which="both", labelleft=True, labelright=True)
-        axis.spines["right"].set_visible(True)
-
-    def _connect_analysis_chart_axis_sync(self, key: str, axis) -> None:
-        axis.callbacks.connect("xlim_changed", lambda changed_axis, source_key=key: self._sync_analysis_chart_xlimits(source_key, changed_axis.get_xlim()))
-
-    def _sync_analysis_chart_xlimits(self, source_key: str, limits: tuple[float, float]) -> None:
-        if self.analysis_chart_xsyncing:
+    def _set_analysis_chart_locked_time(self, timestamp: object) -> None:
+        if not isinstance(timestamp, datetime):
             return
-        self.analysis_chart_xsyncing = True
-        try:
-            for key, axis in self.analysis_chart_axes.items():
-                if key == source_key:
-                    continue
-                axis.set_xlim(limits)
-                canvas = self.analysis_chart_canvases.get(key)
-                if canvas is not None:
-                    canvas.draw_idle()
-        finally:
-            self.analysis_chart_xsyncing = False
+        self.analysis_chart_locked_time = timestamp.replace(tzinfo=None)
+        self._hide_all_analysis_chart_hovers()
+        for widget in self.analysis_chart_widgets.values():
+            widget.set_locked_time(self.analysis_chart_locked_time)
 
-    def _ensure_analysis_chart_canvas(self, key: str):
-        canvas = self.analysis_chart_canvases.get(key)
-        if canvas is not None:
-            return canvas
-
-        page = self.analysis_chart_pages[key]
-        layout = page.layout()
-        placeholder = self.analysis_chart_placeholders.pop(key, None)
-        if placeholder is not None and layout is not None:
-            layout.removeWidget(placeholder)
-            placeholder.deleteLater()
-        view = ScrollableMatplotlibView(page)
-        canvas = view.canvas
-        if layout is not None:
-            layout.addWidget(view, 1)
-        self.analysis_chart_views[key] = view
-        self.analysis_chart_canvases[key] = canvas
-        return canvas
-
-    def _resize_analysis_chart_canvas(self, key: str, point_count: int) -> None:
-        view = self.analysis_chart_views.get(key)
-        if view is None:
-            return
-        width = 1300
-        if point_count > 120:
-            width += min(6700, (point_count - 120) * 8)
-        if key in {"interface", "busy"}:
-            width += 200
-        view.set_preferred_plot_width(width)
-
-    def _clear_analysis_chart_hover(self, key: str) -> None:
-        controller = self.analysis_chart_hover_controllers.pop(key, None)
-        if controller is not None:
-            controller.disconnect()
+    def _clear_analysis_chart_locked_time(self) -> None:
+        self.analysis_chart_locked_time = None
+        self._hide_all_analysis_chart_hovers()
+        for widget in self.analysis_chart_widgets.values():
+            widget.clear_locked_time()
 
     def _hide_all_analysis_chart_hovers(self) -> None:
         for controller in list(self.analysis_chart_hover_controllers.values()):
@@ -4484,7 +4547,7 @@ class OnlineMrCollectionPage(QWidget):
         )
         current = self.tabs.currentWidget()
         if current in {self.diagnosis_table, self.analysis_charts, self.switch_history_panel, self.active_link_switch_table}:
-            self._load_offline_analysis(session_dir)
+            self._start_offline_analysis_load(session_dir, task_label="刷新实时解析结果", profile_phase="render.realtime_analysis")
         self.realtime_parse_worker = None
 
     def _realtime_parse_failed(self, message: str) -> None:
@@ -5472,7 +5535,7 @@ class OnlineMrCollectionPage(QWidget):
             "switch_history": {0: 60, 1: 190, 2: 80, 3: 150, 4: 150, 5: 150, 6: 150, 7: 140, 8: 140, 9: 180, 10: 220, 11: 100, 12: 130, 13: 700},
             "active_link_switch_logs": {0: 60, 1: 190, 2: 160, 3: 150, 4: 150, 5: 80, 6: 140, 7: 160, 8: 150, 9: 150, 10: 80, 11: 140, 12: 160, 13: 90, 14: 90, 15: 100, 16: 260, 17: 520},
             "interface_rate": {0: 60, 1: 190, 2: 100, 3: 120, 4: 100, 5: 100, 6: 100, 7: 100, 8: 700},
-            "fping_1s": {0: 60, 1: 190, 2: 140, 3: 150, 4: 90, 5: 90, 6: 90, 7: 100, 8: 110, 9: 110, 10: 110, 11: 100},
+            "fping_1s": {0: 60, 1: 190, 2: 190, 3: 190, 4: 140, 5: 150, 6: 90, 7: 90, 8: 90, 9: 100, 10: 120, 11: 120, 12: 120, 13: 100, 14: 90},
             "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 150, 5: 80, 6: 130, 7: 160, 8: 80, 9: 90, 10: 90, 11: 90, 12: 90, 13: 190, 14: 100, 15: 80, 16: 170, 17: 80},
             "statistics": {0: 180, 1: 120, 2: 90, 3: 180, 4: 180, 5: 320},
             "iperf": {0: 180, 1: 100, 2: 90, 3: 120, 4: 700},
@@ -5506,7 +5569,7 @@ class OnlineMrCollectionPage(QWidget):
             "switch_history": [70, 190, 90, 150, 150, 150, 150, 130, 130, 180, 150, 120, 140, 500],
             "active_link_switch_logs": [60, 190, 160, 150, 150, 80, 140, 160, 150, 150, 80, 140, 160, 90, 90, 100, 260, 520],
             "interface_rate": [60, 190, 100, 120, 100, 100, 100, 100, 700],
-            "fping_1s": [60, 190, 140, 150, 90, 90, 90, 100, 110, 110, 110, 100],
+            "fping_1s": [60, 190, 190, 190, 140, 150, 90, 90, 90, 100, 120, 120, 120, 100, 90],
             "iperf": [180, 100, 90, 120, 520],
             "diagnosis": [190, 190, 170, 90, 90, 90, 110, 110, 110, 130, 130, 100, 100, 100],
             "history_sessions": [170, 170, 170, 110, 120, 120, 100, 120, 360],
@@ -5584,199 +5647,13 @@ def _format_in_out_rssi(in_rssi: object, out_rssi: object) -> str:
     return f"{left or '-'}/{right or '-'}"
 
 
-def _chart_point(value: object) -> tuple[datetime, float] | None:
-    if not isinstance(value, (tuple, list)) or len(value) != 2:
-        return None
-    try:
-        x_value = datetime.fromisoformat(str(value[0]).replace(" ", "T"))
-        y_value = float(value[1])
-    except (TypeError, ValueError):
-        return None
-    return x_value, y_value
-
-
-def _split_chart_segments(points: list[tuple[datetime, float]], *, max_gap_seconds: int) -> list[list[tuple[datetime, float]]]:
-    if not points:
-        return []
-    ordered = sorted(points, key=lambda point: point[0])
-    segments: list[list[tuple[datetime, float]]] = [[ordered[0]]]
-    for point in ordered[1:]:
-        gap_seconds = (point[0] - segments[-1][-1][0]).total_seconds()
-        if gap_seconds > max_gap_seconds:
-            segments.append([point])
-        else:
-            segments[-1].append(point)
-    return segments
-
-
-def _analysis_chart_generic_hover_points(
-    key: str,
-    title: str,
-    series: list[tuple[str, list[object]]],
-    tooltip_rows: list[dict[str, object]],
-) -> list[object]:
-    rows_by_time: dict[str, dict[str, object]] = {}
-    for row in tooltip_rows:
-        time_value = str(row.get("time") or row.get("collected_at") or "").strip()
-        if time_value:
-            rows_by_time.setdefault(time_value, row)
-    points: list[object] = []
-    for series_name, values in series:
-        for value in values:
-            point = _chart_point(value)
-            if point is None:
-                continue
-            timestamp, metric_value = point
-            timestamp_label = str(value[0]) if isinstance(value, (tuple, list)) and value else timestamp.isoformat(sep=" ", timespec="milliseconds")
-            detail = rows_by_time.get(timestamp_label, {})
-            points.append(
-                SimpleNamespace(
-                    timestamp=timestamp,
-                    timestamp_label=timestamp_label,
-                    chart_key=key,
-                    series_name=series_name,
-                    metric_label=_chart_metric_label(key, title),
-                    metric_value=metric_value,
-                    detail=detail,
-                    traffic_direction=detail.get("direction", "") if key == "traffic" else "",
-                    traffic_rate_mbps=detail.get("rate_mbps", metric_value) if key == "traffic" else None,
-                    traffic_protocol=detail.get("protocol", "") if key == "traffic" else "",
-                    traffic_role=detail.get("role", "") if key == "traffic" else "",
-                    traffic_jitter_ms=detail.get("jitter_ms") if key == "traffic" else None,
-                    traffic_loss_percent=detail.get("loss_percent") if key == "traffic" else None,
-                    traffic_retransmits=detail.get("retransmits") if key == "traffic" else None,
-                    traffic_transfer_bytes=detail.get("transfer_bytes") if key == "traffic" else None,
-                    raw=detail.get("raw", ""),
-                )
-            )
-    points.sort(key=lambda item: item.timestamp)
-    return points
-
-
-def _chart_metric_label(key: str, title: str) -> str:
-    return {
-        "ping_loss": "丢包率",
-        "ping": "延迟",
-        "interface": "接口 PPS",
-        "traffic": "打流速率",
-        "busy": "信道繁忙度",
-        "switch_rssi": "RSSI",
-    }.get(key, title)
-
-
-def _online_mr_active_rssi_tooltip_text(point: object) -> str:
-    return "\n".join(
-        [
-            "采样时间:",
-            _display_value(getattr(point, "timestamp_label", "")),
-            f"RSSI: {_display_value(getattr(point, 'rssi', None))}",
-            f"对端AP: {_display_value(getattr(point, 'peer_name', None))}",
-            f"对端MAC: {_display_value(getattr(point, 'peer_mac', None))}",
-            f"归属站点: {_display_value(getattr(point, 'station', None))}",
-            f"归属区间: {_display_value(getattr(point, 'section', None))}",
-            f"链路状态: {_display_value(getattr(point, 'link_state', None))}",
-        ]
-    )
-
-
-def _online_mr_generic_chart_tooltip_text(point: object) -> str:
-    detail = getattr(point, "detail", {}) or {}
-    chart_key = str(getattr(point, "chart_key", "") or "")
-    timestamp = _display_value(getattr(point, "timestamp_label", ""))
-    series_name = _display_value(getattr(point, "series_name", None))
-    metric_value = getattr(point, "metric_value", None)
-    if chart_key == "ping_loss":
-        return "\n".join(["采样时间:", timestamp, f"目标: {_display_value(detail.get('target'))}", f"丢包率: {_format_percent_value(metric_value)}"])
-    if chart_key == "ping":
-        return "\n".join(["采样时间:", timestamp, f"目标: {_display_value(detail.get('target'))}", f"延迟: {_format_ms_value(metric_value)}"])
-    if chart_key == "interface":
-        return "\n".join(["采样时间:", timestamp, f"接口: {_display_value(detail.get('interface') or series_name)}", f"方向: {_display_direction(detail.get('direction'))}", f"PPS: {_display_value(metric_value)}"])
-    if chart_key == "traffic":
-        return "\n".join(
-            [
-                "采样时间:",
-                timestamp,
-                f"速率: {_format_bitrate_mbps(getattr(point, 'traffic_rate_mbps', metric_value))}",
-                f"协议: {_display_value(getattr(point, 'traffic_protocol', None))}",
-                f"方向: {_display_value(getattr(point, 'traffic_direction', None))}",
-                f"丢包率: {_format_percent_value(getattr(point, 'traffic_loss_percent', None))}",
-                f"TCP重传: {_display_value(getattr(point, 'traffic_retransmits', None))}",
-            ]
-        )
-    if chart_key == "busy":
-        return "\n".join(
-            [
-                "设备时间:",
-                timestamp,
-                f"射频ID: {_display_value(detail.get('radio'))}",
-                f"控制信道繁忙度: {_format_percent_value(detail.get('ctl_busy'))}",
-                f"发送繁忙度: {_format_percent_value(detail.get('tx_busy'))}",
-                f"接收繁忙度: {_format_percent_value(detail.get('rx_busy'))}",
-            ]
-        )
-    if chart_key == "switch_rssi":
-        return "\n".join(
-            [
-                "切换时间:",
-                timestamp,
-                f"原AP: {_display_value(detail.get('from_peer_name'))}",
-                f"新AP: {_display_value(detail.get('to_peer_name'))}",
-                f"原RSSI: {_display_value(detail.get('from_rssi'))}",
-                f"新RSSI: {_display_value(detail.get('to_rssi'))}",
-                f"切换原因: {_display_value(detail.get('reason_text'))}",
-            ]
-        )
-    return "\n".join(["采样时间:", timestamp, f"曲线: {series_name}", f"{_display_value(getattr(point, 'metric_label', None))}: {_display_value(metric_value)}"])
-
-
-def _display_value(value: object) -> str:
-    if value is None:
-        return "-"
-    text = str(value).strip()
-    if not text:
-        return "-"
-    if text.endswith(".0"):
-        return text[:-2]
-    return text
-
-
-def _format_percent_value(value: object) -> str:
-    text = _display_value(value)
-    return text if text == "-" or text.endswith("%") else f"{text}%"
-
-
-def _format_ms_value(value: object) -> str:
-    text = _display_value(value)
-    return text if text == "-" or text.endswith("ms") else f"{text} ms"
-
-
-def _display_direction(value: object) -> str:
-    text = str(value or "").strip().casefold()
-    return {"inbound": "入方向", "outbound": "出方向", "download": "下行", "upload": "上行"}.get(text, _display_value(value))
-
-
-def _format_bitrate_mbps(value: object) -> str:
-    try:
-        mbps = float(value)
-    except (TypeError, ValueError):
-        return "-"
-    bps = mbps * 1_000_000
-    if bps >= 1_000_000_000:
-        return f"{bps / 1_000_000_000:.2f} Gbps"
-    if bps >= 1_000_000:
-        return f"{bps / 1_000_000:.2f} Mbps"
-    if bps >= 1_000:
-        return f"{bps / 1_000:.2f} Kbps"
-    return f"{bps:.0f} bps"
-
-
 def _format_duration_value(value: object) -> str:
     if value is None or str(value).strip() == "":
         return "-"
     try:
         seconds = int(float(value))
     except (TypeError, ValueError):
-        return _display_value(value)
+        return str(value).strip() or "-"
     hours, remainder = divmod(max(0, seconds), 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m {secs:02d}s"

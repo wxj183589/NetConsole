@@ -29,7 +29,7 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_sampling_model_v6_mesh_online_time"
+PARSER_VERSION = "online_mr_sampling_model_v7_time_alignment"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -61,6 +61,15 @@ class RawBlock:
     text: str
     offset_start: int
     offset_end: int
+    clock_collected_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class TimeSyncSample:
+    collector_time: datetime
+    device_time: datetime
+    offset_ms: float
+    source: str = "mesh_link_display_clock"
 
 
 @dataclass
@@ -80,6 +89,22 @@ class OnlineMrParseSummary:
     active_segments: int = 0
     issues: int = 0
     cache_used: bool = False
+
+
+def estimate_device_time_from_local(local_time: datetime, sync_samples: list[TimeSyncSample]) -> tuple[datetime | None, float | None, str]:
+    if not sync_samples:
+        return None, None, "none"
+    samples = sorted(sync_samples, key=lambda item: item.collector_time)
+    if local_time <= samples[0].collector_time:
+        sample = samples[0]
+        source = "first_sample"
+    elif local_time >= samples[-1].collector_time:
+        sample = samples[-1]
+        source = "last_sample"
+    else:
+        sample = min(samples, key=lambda item: abs((item.collector_time - local_time).total_seconds()))
+        source = "nearest_sample"
+    return local_time + timedelta(milliseconds=float(sample.offset_ms)), float(sample.offset_ms), source
 
 
 def _float_or_none(*values: object) -> float | None:
@@ -131,6 +156,7 @@ class OnlineMrRawBlockSplitter:
                     text=text[body_start:body_end].strip(),
                     offset_start=match.start(),
                     offset_end=body_end,
+                    clock_collected_at=None,
                 )
             )
         return blocks
@@ -157,6 +183,7 @@ class OnlineMrRawBlockSplitter:
                     text="\n".join(current_lines).strip(),
                     offset_start=current_offset,
                     offset_end=max(current_offset, offset_end),
+                    clock_collected_at=current_stamp,
                 )
             )
             current_lines = []
@@ -323,6 +350,7 @@ class OnlineMrDiagnosisParser:
             "switch_history_events",
             "switch_realtime_events",
             "interface_rate_samples",
+            "time_sync_samples",
             "fping_samples",
             "fping_1s_summary",
             "active_segments",
@@ -470,12 +498,40 @@ class OnlineMrDiagnosisParser:
             records, status, error = parse_mesh_link_text(block.text, block.collected_at)
             self._enrich_mesh_records(records)
             device_clock = self._extract_device_clock(block.text)
+            if device_clock:
+                self._write_time_sync_sample(block, device_clock, source="mesh_link_display_clock")
             if records:
                 self._write_main_link_samples(block, records, device_clock=device_clock)
                 count += 1
             elif error:
                 self._issue("mesh_link_raw.log", "mesh-link", error, block.text[:500])
         return count
+
+    def _write_time_sync_sample(self, block: RawBlock, device_clock: str, *, source: str) -> None:
+        device_dt = self._parse_device_clock_value(device_clock)
+        if device_dt is None:
+            return
+        collector_dt = block.clock_collected_at or block.collected_at
+        offset_ms = (device_dt - collector_dt).total_seconds() * 1000.0
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO time_sync_samples (
+                    session_id, collector_time, device_time, offset_ms, source,
+                    raw_file, raw_line_start, raw_line_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.meta.session_id,
+                    collector_dt.isoformat(sep=" ", timespec="milliseconds"),
+                    device_dt.isoformat(sep=" ", timespec="milliseconds"),
+                    offset_ms,
+                    source,
+                    "raw/mesh_link_raw.log",
+                    block.offset_start,
+                    block.offset_end,
+                ),
+            )
 
     def _enrich_mesh_records(self, records) -> None:
         if not records:
@@ -1091,16 +1147,25 @@ class OnlineMrDiagnosisParser:
     def _write_fping_sampling_tables(self, rows: list[dict[str, object]]) -> None:
         sample_values: list[tuple[object, ...]] = []
         buckets: dict[tuple[str, str], dict[str, object]] = {}
+        sync_samples = self._load_time_sync_samples()
         for row in rows:
-            collector_time = str(row.get("collected_at") or "")
+            local_time = str(row.get("collected_at") or "")
             target_ip = str(row.get("target_ip") or "")
             success = 1 if row.get("success") else 0
             latency = row.get("latency_ms")
             loss_percent = 0.0 if success else 100.0
+            local_dt = self._parse_iso_datetime(local_time) or self.meta.started_at
+            device_dt, clock_offset_ms, offset_source = estimate_device_time_from_local(local_dt, sync_samples)
+            device_time = device_dt.isoformat(sep=" ", timespec="milliseconds") if device_dt is not None else None
+            local_time = local_dt.isoformat(sep=" ", timespec="milliseconds")
             sample_values.append(
                 (
                     self.meta.session_id,
-                    collector_time,
+                    local_time,
+                    local_time,
+                    device_time,
+                    clock_offset_ms,
+                    offset_source,
                     "local_tool",
                     target_ip,
                     "",
@@ -1111,9 +1176,26 @@ class OnlineMrDiagnosisParser:
                     "OK" if success else "TIMEOUT",
                 )
             )
-            timestamp = self._parse_iso_datetime(collector_time) or self.meta.started_at
-            bucket_time = timestamp.replace(microsecond=0).isoformat(sep=" ", timespec="seconds")
-            bucket = buckets.setdefault((bucket_time, target_ip), {"sent": 0, "received": 0, "latencies": []})
+            local_bucket_time = local_dt.replace(microsecond=0).isoformat(sep=" ", timespec="seconds")
+            device_bucket_time = device_dt.replace(microsecond=0).isoformat(sep=" ", timespec="seconds") if device_dt is not None else None
+            bucket_time = device_bucket_time or local_bucket_time
+            bucket = buckets.setdefault(
+                (bucket_time, target_ip),
+                {
+                    "local_bucket_time": local_bucket_time,
+                    "device_bucket_time": device_bucket_time,
+                    "offsets": [],
+                    "sent": 0,
+                    "received": 0,
+                    "latencies": [],
+                },
+            )
+            if str(local_bucket_time) < str(bucket.get("local_bucket_time") or local_bucket_time):
+                bucket["local_bucket_time"] = local_bucket_time
+            if device_bucket_time is not None:
+                bucket["device_bucket_time"] = device_bucket_time
+            if clock_offset_ms is not None:
+                bucket["offsets"].append(float(clock_offset_ms))  # type: ignore[union-attr]
             bucket["sent"] = int(bucket["sent"]) + 1
             bucket["received"] = int(bucket["received"]) + success
             if success and latency is not None:
@@ -1128,10 +1210,15 @@ class OnlineMrDiagnosisParser:
             min_latency = min(latencies) if latencies else None
             max_latency = max(latencies) if latencies else None
             jitter = (max_latency - min_latency) if min_latency is not None and max_latency is not None else None
+            offsets = list(item.get("offsets") or [])
+            avg_offset = (sum(offsets) / len(offsets)) if offsets else None
             summary_values.append(
                 (
                     self.meta.session_id,
                     bucket_time,
+                    item.get("local_bucket_time"),
+                    item.get("device_bucket_time"),
+                    avg_offset,
                     target_ip,
                     "",
                     sent,
@@ -1149,21 +1236,52 @@ class OnlineMrDiagnosisParser:
             conn.executemany(
                 """
                 INSERT INTO fping_samples (
-                    session_id, collector_time, time_source, target_ip, target_name, seq,
+                    session_id, collector_time, local_time, device_aligned_time, clock_offset_ms,
+                    offset_source, time_source, target_ip, target_name, seq,
                     success, latency_ms, loss_percent, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 sample_values,
             )
             conn.executemany(
                 """
                 INSERT INTO fping_1s_summary (
-                    session_id, bucket_time, target_ip, target_name, sent, received, lost, loss_percent,
+                    session_id, bucket_time, local_bucket_time, device_bucket_time, clock_offset_ms,
+                    target_ip, target_name, sent, received, lost, loss_percent,
                     avg_latency_ms, min_latency_ms, max_latency_ms, jitter_ms, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 summary_values,
             )
+
+    def _load_time_sync_samples(self) -> list[TimeSyncSample]:
+        if not self.db_path.exists():
+            return []
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT collector_time, device_time, offset_ms, COALESCE(source, 'mesh_link_display_clock')
+                    FROM time_sync_samples
+                    WHERE session_id = ?
+                    ORDER BY collector_time ASC, id ASC
+                    """,
+                    (self.meta.session_id,),
+                ).fetchall()
+            except sqlite3.Error:
+                return []
+        samples: list[TimeSyncSample] = []
+        for collector_time, device_time, offset_ms, source in rows:
+            collector_dt = self._parse_iso_datetime(collector_time)
+            device_dt = self._parse_iso_datetime(device_time)
+            if collector_dt is None or device_dt is None:
+                continue
+            try:
+                offset = float(offset_ms)
+            except (TypeError, ValueError):
+                offset = (device_dt - collector_dt).total_seconds() * 1000.0
+            samples.append(TimeSyncSample(collector_dt, device_dt, offset, str(source or "mesh_link_display_clock")))
+        return samples
 
     def _normalize_fping_v5_sample(self, sample: dict[str, object], payload_text: str, stamp: str, timeout_ms: int) -> dict[str, object] | None:
         raw_type = sample.get("raw_type")
@@ -1349,10 +1467,25 @@ class OnlineMrDiagnosisParser:
                     raw_line_start INTEGER,
                     raw_line_end INTEGER
                 );
+                CREATE TABLE IF NOT EXISTS time_sync_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    collector_time TEXT NOT NULL,
+                    device_time TEXT NOT NULL,
+                    offset_ms REAL NOT NULL,
+                    source TEXT,
+                    raw_file TEXT,
+                    raw_line_start INTEGER,
+                    raw_line_end INTEGER
+                );
                 CREATE TABLE IF NOT EXISTS fping_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
                     collector_time TEXT,
+                    local_time TEXT,
+                    device_aligned_time TEXT,
+                    clock_offset_ms REAL,
+                    offset_source TEXT,
                     time_source TEXT,
                     target_ip TEXT,
                     target_name TEXT,
@@ -1366,6 +1499,9 @@ class OnlineMrDiagnosisParser:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
                     bucket_time TEXT,
+                    local_bucket_time TEXT,
+                    device_bucket_time TEXT,
+                    clock_offset_ms REAL,
                     target_ip TEXT,
                     target_name TEXT,
                     sent INTEGER,
@@ -1537,8 +1673,11 @@ class OnlineMrDiagnosisParser:
                 CREATE INDEX IF NOT EXISTS idx_main_link_samples_active ON main_link_samples(link_state, collector_time);
                 CREATE INDEX IF NOT EXISTS idx_channel_busy_records_time ON channel_busy_records(device_time);
                 CREATE INDEX IF NOT EXISTS idx_interface_rate_samples_time ON interface_rate_samples(device_time);
+                CREATE INDEX IF NOT EXISTS idx_time_sync_samples_collector_time ON time_sync_samples(collector_time);
                 CREATE INDEX IF NOT EXISTS idx_fping_samples_time ON fping_samples(collector_time);
+                CREATE INDEX IF NOT EXISTS idx_fping_samples_device_time ON fping_samples(device_aligned_time);
                 CREATE INDEX IF NOT EXISTS idx_fping_1s_summary_time ON fping_1s_summary(bucket_time);
+                CREATE INDEX IF NOT EXISTS idx_fping_1s_summary_device_time ON fping_1s_summary(device_bucket_time);
                 CREATE INDEX IF NOT EXISTS idx_analysis_events_time ON analysis_events(collector_time);
                 CREATE INDEX IF NOT EXISTS idx_switch_history_events_time ON switch_history_events(event_time_local);
                 CREATE INDEX IF NOT EXISTS idx_switch_realtime_events_time ON switch_realtime_events(device_time);
@@ -1558,6 +1697,7 @@ class OnlineMrDiagnosisParser:
                 "interface_rate_samples",
                 "switch_history_events",
                 "switch_realtime_events",
+                "time_sync_samples",
                 "fping_samples",
                 "fping_1s_summary",
                 "iperf_runs",
@@ -1898,7 +2038,7 @@ class OnlineMrTimelineFusionService:
         ping = conn.execute(
             """
             SELECT COUNT(*) sent, SUM(success) success, AVG(latency_ms) avg_latency, MAX(latency_ms) max_latency
-            FROM fping_samples WHERE collector_time >= ? AND collector_time < ?
+            FROM fping_samples WHERE COALESCE(device_aligned_time, collector_time) >= ? AND COALESCE(device_aligned_time, collector_time) < ?
             """,
             (start_time, end_time),
         ).fetchone()
@@ -1929,7 +2069,8 @@ class OnlineMrTimelineFusionService:
                 """
                 SELECT SUM(sent), SUM(received), AVG(loss_percent), AVG(avg_latency_ms), MAX(max_latency_ms)
                 FROM fping_1s_summary
-                WHERE bucket_time >= ? AND bucket_time < ?
+                WHERE COALESCE(device_bucket_time, bucket_time, local_bucket_time) >= ?
+                  AND COALESCE(device_bucket_time, bucket_time, local_bucket_time) < ?
                 LIMIT 1
                 """,
                 (start_time, end_time),

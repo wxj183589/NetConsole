@@ -63,42 +63,68 @@ class ChineseNavigationToolbar:
 
 
 class ScrollableMatplotlibView(QWidget):
-    def __init__(self, parent: QWidget | None = None, *, min_plot_width: int = 1300, min_plot_height: int = 520) -> None:
+    def __init__(self, parent: QWidget | None = None, *, min_plot_width: int = 1300, min_plot_height: int = 520, fill_parent: bool = False) -> None:
         super().__init__(parent)
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
         from matplotlib.figure import Figure
 
-        self.figure = Figure(figsize=(min_plot_width / 100, min_plot_height / 100), tight_layout=True)
+        self.fill_parent = bool(fill_parent)
+        self.figure = Figure(tight_layout=True) if self.fill_parent else Figure(figsize=(min_plot_width / 100, min_plot_height / 100), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.canvas.setMinimumSize(min_plot_width, min_plot_height)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding if self.fill_parent else QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.canvas.setMinimumSize(640 if self.fill_parent else min_plot_width, 360 if self.fill_parent else min_plot_height)
 
         self.chart_container = QWidget()
+        self.chart_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         container_layout = QVBoxLayout(self.chart_container)
         container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.addWidget(self.canvas)
-        self.chart_container.setMinimumSize(min_plot_width, min_plot_height)
+        container_layout.addWidget(self.canvas, 1)
+        self.chart_container.setMinimumSize(self.canvas.minimumSize())
 
         self.toolbar = ChineseNavigationToolbar.create(self.canvas, self)
+        self.toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.scroll_area.setWidgetResizable(self.fill_parent)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setWidget(self.chart_container)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self.refresh_figure_layout)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        layout.addWidget(self.toolbar)
+        layout.addWidget(self.toolbar, 0)
         layout.addWidget(self.scroll_area, 1)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def set_preferred_plot_width(self, width: int, *, height: int = 520) -> None:
         width = max(900, int(width))
         height = max(420, int(height))
+        if self.fill_parent:
+            self.canvas.setMinimumSize(min(width, 900), min(height, 520))
+            self.chart_container.setMinimumSize(self.canvas.minimumSize())
+            self.refresh_figure_layout()
+            return
         self.figure.set_size_inches(width / 100, height / 100, forward=True)
         self.canvas.setMinimumSize(width, height)
         self.canvas.resize(width, height)
         self.chart_container.setMinimumSize(width, height)
+
+    def refresh_figure_layout(self) -> None:
+        try:
+            self.figure.tight_layout()
+        except Exception:
+            self.figure.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+        self.canvas.draw_idle()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.fill_parent:
+            self._resize_timer.start()
 
 
 class AnalysisChartHoverController:

@@ -246,7 +246,9 @@ class MeshAnalysisReportService:
                 f"""
                 SELECT
                     ml.id, ml.sample_id, ml.source_file_id, ml.source_file_order, ml.record_seq,
-                    ml.source_line_number, ml.raw_line, ml.radio, ml.sample_time,
+                    ml.source_line_number,
+                    ('raw定位:' || COALESCE(sf.archived_filename, '') || ':' || COALESCE(ml.raw_line_start, ml.source_line_number)) AS raw_line,
+                    ml.radio, ml.sample_time,
                     ml.link_state_raw, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
                     ml.peer_mac, ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site,
                     ml.peer_radio_id, ml.peer_radio, ml.peer_radio_label, ml.peer_radio_mac,
@@ -281,7 +283,7 @@ class MeshAnalysisReportService:
             values.append(options.end_time)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT * FROM mesh_events {where} ORDER BY event_time ASC, id ASC", values).fetchall()
+            rows = conn.execute(f"SELECT * FROM switch_events {where} ORDER BY event_time ASC, id ASC", values).fetchall()
         return [dict(row) for row in rows]
 
     def _load_parse_issues(self, options: MeshReportOptions) -> list[dict[str, object]]:
@@ -292,7 +294,16 @@ class MeshAnalysisReportService:
             values.append(options.source_file_id)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT * FROM parse_issues {where} ORDER BY source_file ASC, line_number ASC, id ASC", values).fetchall()
+            rows = conn.execute(
+                f"""
+                SELECT *,
+                       ('raw定位:' || COALESCE(raw_file, source_file, '') || ':' || COALESCE(raw_line_start, line_number)) AS raw_line
+                FROM parse_issues
+                {where}
+                ORDER BY source_file ASC, line_number ASC, id ASC
+                """,
+                values,
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def _load_source_files(self, options: MeshReportOptions) -> list[dict[str, object]]:

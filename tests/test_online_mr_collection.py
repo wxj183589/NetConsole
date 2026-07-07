@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QLineEdit, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QLineEdit, QSizePolicy, QTableWidget, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -92,6 +92,7 @@ from netconsole.ui.pages.online_mr_collection_page import (
 )
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, make_table_item
+from netconsole.ui.widgets.online_mr_analysis_chart_widget import ANOMALY_MARKER_STYLE, SWITCH_MARKER_STYLE
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.online_mr_collector import (
     NORMAL_DISPLAY_PREPARE_COMMANDS,
@@ -102,7 +103,7 @@ from netconsole.services.online_mr_collector import (
     stream_prepare_commands,
 )
 from netconsole.services.online_mr_session_store import COLLECTOR_OUTPUT_RAW_FILE, DEVICE_TERMINAL_MONITOR_RAW_FILE, OnlineMrSessionStore
-from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION, OnlineMrDiagnosisParser
+from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION, OnlineMrDiagnosisParser, TimeSyncSample, estimate_device_time_from_local
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
 from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
@@ -113,6 +114,17 @@ LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2
 
 def _qt_app():
     return QApplication.instance() or QApplication([])
+
+
+def _process_qt_until(predicate, *, timeout: float = 5.0) -> None:
+    app = _qt_app()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for Qt background task")
 
 
 class FakeConnection:
@@ -485,7 +497,11 @@ def _insert_main_link_sample(
     radio: int = 1,
     link_state: str = "ACTIVE",
     peer_mac: str = "bc5a-3457-cbef",
+    peer_name: str | None = None,
+    resolved_peer_name: str | None = None,
     rssi: int = -36,
+    station: str = "",
+    section: str = "",
     online_time: str = "00h 00m 01s",
 ) -> None:
     _ensure_test_new_parsed_tables(conn)
@@ -506,15 +522,15 @@ def _insert_main_link_sample(
             "collector",
             radio,
             link_state,
-            peer_mac,
+            peer_name if peer_name is not None else peer_mac,
             peer_mac,
             peer_mac.replace("-", ""),
-            peer_mac,
+            resolved_peer_name if resolved_peer_name is not None else peer_name if peer_name is not None else peer_mac,
             rssi,
             "",
             "",
-            "",
-            "",
+            station,
+            section,
             "unknown",
             "",
             online_time,
@@ -560,22 +576,27 @@ def _insert_fping_sample(
     conn.execute(
         """
         INSERT INTO fping_samples (
-            session_id, collector_time, time_source, target_ip, target_name, seq,
+            session_id, collector_time, local_time, device_aligned_time, clock_offset_ms,
+            offset_source, time_source, target_ip, target_name, seq,
             success, latency_ms, loss_percent, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, collected_at, "local_tool", target_ip, "", 1, success, latency_ms, 0 if success else 100, "OK" if success else "TIMEOUT"),
+        (session_id, collected_at, collected_at, collected_at, 0.0, "nearest_sample", "local_tool", target_ip, "", 1, success, latency_ms, 0 if success else 100, "OK" if success else "TIMEOUT"),
     )
     conn.execute(
         """
         INSERT INTO fping_1s_summary (
-            session_id, bucket_time, target_ip, target_name, sent, received, lost, loss_percent,
+            session_id, bucket_time, local_bucket_time, device_bucket_time, clock_offset_ms,
+            target_ip, target_name, sent, received, lost, loss_percent,
             avg_latency_ms, min_latency_ms, max_latency_ms, jitter_ms, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
             collected_at[:19],
+            collected_at[:19],
+            collected_at[:19],
+            0.0,
             target_ip,
             "",
             1,
@@ -692,16 +713,24 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE TABLE IF NOT EXISTS fping_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, collector_time TEXT, time_source TEXT, target_ip TEXT,
+            session_id TEXT, collector_time TEXT, local_time TEXT, device_aligned_time TEXT,
+            clock_offset_ms REAL, offset_source TEXT, time_source TEXT, target_ip TEXT,
             target_name TEXT, seq INTEGER, success INTEGER, latency_ms REAL,
             loss_percent REAL, status TEXT
         );
         CREATE TABLE IF NOT EXISTS fping_1s_summary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, bucket_time TEXT, target_ip TEXT, target_name TEXT,
+            session_id TEXT, bucket_time TEXT, local_bucket_time TEXT, device_bucket_time TEXT,
+            clock_offset_ms REAL, target_ip TEXT, target_name TEXT,
             sent INTEGER, received INTEGER, lost INTEGER, loss_percent REAL,
             avg_latency_ms REAL, min_latency_ms REAL, max_latency_ms REAL,
             jitter_ms REAL, status TEXT
+        );
+        CREATE TABLE IF NOT EXISTS time_sync_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL, collector_time TEXT NOT NULL, device_time TEXT NOT NULL,
+            offset_ms REAL NOT NULL, source TEXT, raw_file TEXT,
+            raw_line_start INTEGER, raw_line_end INTEGER
         );
         CREATE TABLE IF NOT EXISTS interface_rate_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2340,9 +2369,9 @@ def test_online_mr_analysis_charts_render_from_parsed_sqlite(tmp_path: Path) -> 
 
     page._render_analysis_charts(session.session_dir)
 
-    assert {"rssi", "busy", "ping_loss", "ping", "interface", "switch_rssi"}.issubset(page.analysis_chart_canvases)
-    assert {"rssi", "switch_rssi"}.issubset(page.analysis_chart_views)
-    assert {"rssi", "busy", "ping_loss", "ping", "interface", "traffic", "switch_rssi"}.issubset(page.analysis_chart_widgets)
+    assert {"rssi", "busy", "ping_loss", "ping", "interface", "switch_rssi", "switch_log_rssi"}.issubset(page.analysis_chart_canvases)
+    assert {"rssi", "switch_rssi", "switch_log_rssi"}.issubset(page.analysis_chart_views)
+    assert {"rssi", "busy", "ping_loss", "ping", "interface", "traffic", "switch_rssi", "switch_log_rssi"}.issubset(page.analysis_chart_widgets)
     assert "switch" not in page.analysis_chart_canvases
     for key in ("rssi", "busy", "ping_loss", "ping", "interface"):
         axis = page.analysis_chart_canvases[key].figure.axes[0]
@@ -2357,7 +2386,9 @@ def test_online_mr_analysis_charts_render_from_parsed_sqlite(tmp_path: Path) -> 
     rssi_axis = page.analysis_chart_canvases["rssi"].figure.axes[0]
     assert rssi_axis.collections
     assert rssi_view.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-    assert rssi_view.chart_container.minimumWidth() >= 1300
+    assert rssi_view.scroll_area.widgetResizable() is True
+    assert rssi_view.canvas.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+    assert rssi_view.canvas.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
     visible_actions = [action for action in rssi_view.toolbar.actions() if action.isVisible()]
     toolbar_texts = {action.text().replace("&", "") for action in visible_actions}
     assert {"复位", "后退", "前进", "平移", "缩放", "保存图片"}.issubset(toolbar_texts)
@@ -2368,6 +2399,9 @@ def test_online_mr_analysis_charts_render_from_parsed_sqlite(tmp_path: Path) -> 
     switch_axis = page.analysis_chart_canvases["switch_rssi"].figure.axes[0]
     assert switch_axis.lines or switch_axis.collections
     assert switch_axis.spines["right"].get_visible()
+    switch_log_axis = page.analysis_chart_canvases["switch_log_rssi"].figure.axes[0]
+    assert switch_log_axis.lines or switch_log_axis.collections
+    assert switch_log_axis.spines["right"].get_visible()
 
 
 def test_online_mr_traffic_chart_renders_iperf_and_empty_state(tmp_path: Path) -> None:
@@ -2404,6 +2438,76 @@ def test_online_mr_traffic_chart_renders_iperf_and_empty_state(tmp_path: Path) -
     empty_page._render_analysis_charts(empty_session.session_dir)
     empty_axis = empty_page.analysis_chart_canvases["traffic"].figure.axes[0]
     assert "当前会话无打流数据" in empty_axis.texts[0].get_text()
+
+
+def test_online_mr_analysis_charts_use_dynamic_mesh_style_window(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    OnlineMrDiagnosisParser(session.session_dir)._ensure_tables()
+    base_time = datetime.fromisoformat("2026-07-03 19:00:00.000")
+    with sqlite3.connect(session.db_path) as conn:
+        for index in range(180):
+            collected_at = (base_time + timedelta(seconds=index)).isoformat(sep=" ", timespec="milliseconds")
+            _insert_main_link_sample(conn, session.meta.session_id, collected_at, peer_mac=f"peer-{index % 3}", rssi=-35 - (index % 10))
+
+    page._render_analysis_charts(session.session_dir)
+
+    assert not hasattr(page, "_plot_analysis_chart")
+    rssi_widget = page.analysis_chart_widgets["rssi"]
+    assert hasattr(rssi_widget, "time_window_controller")
+    assert rssi_widget.view.fill_parent is True
+    assert rssi_widget.view.scroll_area.widgetResizable() is True
+    assert rssi_widget.canvas.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+    assert rssi_widget.canvas.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+    assert rssi_widget.view.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+    assert rssi_widget.view.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+    assert rssi_widget.time_scrollbar.maximum() > 0
+    assert rssi_widget.effective_visible_sample_count() == 120
+
+    index_60 = rssi_widget.visible_samples_combo.findData(60)
+    rssi_widget.visible_samples_combo.setCurrentIndex(index_60)
+
+    assert rssi_widget.effective_visible_sample_count() == 60
+    assert rssi_widget.time_scrollbar.maximum() >= 120
+
+
+def test_online_mr_analysis_chart_lock_time_syncs_and_marker_styles(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    OnlineMrDiagnosisParser(session.session_dir)._ensure_tables()
+    base_time = datetime.fromisoformat("2026-07-03 19:00:00.000")
+    with sqlite3.connect(session.db_path) as conn:
+        for index in range(3):
+            collected_at = (base_time + timedelta(seconds=index)).isoformat(sep=" ", timespec="milliseconds")
+            _insert_main_link_sample(conn, session.meta.session_id, collected_at, peer_mac=f"peer-{index}", rssi=-15 if index == 1 else -36 - index)
+            _insert_channel_busy_record(conn, session.meta.session_id, collected_at, tx_busy=10 + index, rx_busy=20 + index)
+        _insert_switch_realtime_event(conn, session.meta.session_id, "2026-07-03 19:00:01.000")
+
+    page._render_analysis_charts(session.session_dir)
+    locked_time = datetime.fromisoformat("2026-07-03 19:00:01.000")
+    page._set_analysis_chart_locked_time(locked_time)
+
+    assert page.analysis_chart_locked_time == locked_time
+    for key in ("rssi", "busy"):
+        widget = page.analysis_chart_widgets[key]
+        assert widget.locked_time == locked_time
+        assert widget.locked_index >= 0
+        assert "已锁定时间点：2026-07-03 19:00:01.000" in widget.status_label.text()
+        assert "当前图表最近点：2026-07-03 19:00:01.000" in widget.status_label.text()
+
+    assert SWITCH_MARKER_STYLE["label"] == "链路切换点"
+    assert ANOMALY_MARKER_STYLE["marker"] == "D"
+    assert SWITCH_MARKER_STYLE["color"] != ANOMALY_MARKER_STYLE["color"]
+    rssi_axis = page.analysis_chart_canvases["rssi"].figure.axes[0]
+    collection_labels = {collection.get_label() for collection in rssi_axis.collections}
+    assert "链路切换点" in collection_labels
+    assert "异常点" in collection_labels
+
+    page._clear_analysis_chart_locked_time()
+    assert page.analysis_chart_locked_time is None
+    assert page.analysis_chart_widgets["rssi"].locked_time is None
 
 
 def test_online_mr_active_rssi_interactive_points_fill_nearby_metrics(tmp_path: Path) -> None:
@@ -2450,7 +2554,44 @@ def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_
     parser._ensure_tables()
     with sqlite3.connect(session.db_path) as conn:
         for index, collected_at in enumerate(("2026-07-03 19:00:00.000", "2026-07-03 19:00:10.000")):
-            _insert_main_link_sample(conn, session.meta.session_id, collected_at, link_state="ACTIVE", peer_mac=f"peer-{index}", rssi=-30 - index, online_time=f"00h 00m 0{index}s")
+            _insert_main_link_sample(
+                conn,
+                session.meta.session_id,
+                collected_at,
+                link_state="ACTIVE",
+                peer_mac=f"peer-{index}",
+                peer_name=f"ap240{index}_b",
+                resolved_peer_name=f"ap240{index}_b",
+                rssi=-30 - index,
+                station="03横溪站",
+                section="桃源街-皋亭坝",
+                online_time=f"00h 00m 0{index}s",
+            )
+        _insert_main_link_sample(
+            conn,
+            session.meta.session_id,
+            "2026-07-03 19:00:10.000",
+            link_state="STANDBY",
+            peer_mac="standby-1",
+            peer_name="ap2403_b",
+            resolved_peer_name="ap2403_b",
+            rssi=-28,
+            station="04横溪站",
+            section="桃源街-皋亭坝",
+        )
+        _insert_main_link_sample(
+            conn,
+            session.meta.session_id,
+            "2026-07-03 19:00:10.000",
+            link_state="STANDBY",
+            peer_mac="standby-2",
+            peer_name="ap2405_b",
+            resolved_peer_name="ap2405_b",
+            rssi=-24,
+            station="05横溪站",
+            section="桃源街-皋亭坝",
+        )
+        _insert_channel_busy_record(conn, session.meta.session_id, "2026-07-03 19:00:12.000", tx_busy=11, rx_busy=22)
 
     page._render_analysis_charts(session.session_dir)
 
@@ -2464,12 +2605,23 @@ def test_online_mr_active_rssi_hover_snaps_nearest_and_formats_chinese_card(tmp_
     text = hover.tooltip_text(1)
     assert "采样时间:" in text
     assert "RSSI: 31" in text
+    assert "对端名称: ap2401_b" in text
     assert "对端MAC: peer-1" in text
-    assert "链路状态: ACTIVE" in text
+    assert "归属站点: 03横溪站" in text
+    assert "归属区间: 桃源街-皋亭坝" in text
+    assert "MR侧发送信道繁忙度: 11%" in text
+    assert "MR侧接收信道繁忙度: 22%" in text
+    assert "备份链路:" in text
+    assert "1. ap2403_b / 04横溪站 / 桃源街-皋亭坝 / RSSI 28" in text
+    assert "2. ap2405_b / 05横溪站 / 桃源街-皋亭坝 / RSSI 24" in text
+    assert "Mesh接口" not in text
+    assert "Online Time" not in text
+    assert "BSSID" not in text
+    assert "链路状态" not in text
     assert "打流:" not in text
     assert "Jitter" not in text
     assert "TCP重传" not in text
-    assert "接口:" not in text
+    assert "接口 PPS" not in text
 
     hidden: list[bool] = []
     monkeypatch.setattr(hover, "hide", lambda: hidden.append(True))
@@ -2578,6 +2730,7 @@ def test_online_mr_cached_parse_load_continues_if_channel_busy_table_fails(tmp_p
     monkeypatch.setattr(page, "_load_channel_busy_details", fail_channel)
 
     assert page._load_cached_parse_if_valid(session.session_dir) is True
+    _process_qt_until(lambda: page.analysis_load_worker is None)
     assert page.diagnosis_table.rowCount() == 1
     assert "channel_busy" in page.log_text.toPlainText()
 
@@ -2603,6 +2756,7 @@ def test_online_mr_parse_completed_continues_if_channel_busy_table_fails(tmp_pat
     )
 
     page._parse_completed(session.session_dir, summary)
+    _process_qt_until(lambda: page.analysis_load_worker is None)
 
     assert page.diagnosis_table.rowCount() == 1
     assert page.parse_worker is None
@@ -2625,6 +2779,7 @@ def test_online_mr_export_analysis_report_uses_qfiledialog(tmp_path: Path, monke
     monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.QMessageBox.information", lambda _parent, _title, message: messages.append(str(message)))
 
     page.export_analysis_report()
+    _process_qt_until(lambda: page.export_report_worker is None, timeout=10.0)
 
     assert output_path.exists()
     assert messages and str(output_path) in messages[-1]
@@ -2724,7 +2879,7 @@ def test_online_mr_chart_builder_active_rssi_switch_empty_link_and_export(tmp_pa
     }.issubset(set(workbook.sheetnames))
 
 
-def test_online_mr_switch_rssi_chart_adds_active_context_and_skips_empty_zero(tmp_path: Path) -> None:
+def test_online_mr_switch_rssi_chart_keeps_active_context_and_skips_empty_zero(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)
     parser = OnlineMrDiagnosisParser(session.session_dir)
@@ -2760,10 +2915,47 @@ def test_online_mr_switch_rssi_chart_adds_active_context_and_skips_empty_zero(tm
 
     before_points = chart.series[0].points
     after_points = chart.series[1].points
-    assert len(before_points) > 1
+    assert before_points == [
+        ("2026-07-03 19:00:50.000", 35.0),
+        ("2026-07-03 19:00:55.000", 36.0),
+        ("2026-07-03 19:01:00.000", 34.0),
+    ]
     assert after_points == [("2026-07-03 19:01:05.000", 42.0)]
     assert all(value != 0 for _time, value in before_points + after_points)
     assert chart.tooltip_rows[0]["to_peer_name"] == "空链路"
+
+
+def test_online_mr_switch_log_rssi_chart_uses_switch_event_rssi_only(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    parser = OnlineMrDiagnosisParser(session.session_dir)
+    parser._ensure_tables()
+    with sqlite3.connect(session.db_path) as conn:
+        _insert_main_link_sample(conn, session.meta.session_id, "2026-07-03 19:00:55.000", link_state="ACTIVE", peer_mac="active-before", rssi=-36)
+        _insert_main_link_sample(conn, session.meta.session_id, "2026-07-03 19:01:05.000", link_state="ACTIVE", peer_mac="active-after", rssi=-42)
+        _insert_switch_realtime_event(
+            conn,
+            session.meta.session_id,
+            "2026-07-03 19:01:00.000",
+            device_name=config.device_name,
+            old_peer_name="AP-A",
+            old_peer_mac="1111-2222-3333",
+            old_rssi=34,
+            old_station="站点A",
+            new_peer_name="NA",
+            new_peer_mac="0000-0000-0000",
+            new_rssi=0,
+            new_station="-",
+            reason_code=4,
+            reason_text="被动切换或强制断开后切换",
+        )
+
+    chart = OnlineMrChartBuilder(session.db_path).build_switch_log_rssi_series()
+
+    assert chart.series[0].points == [("2026-07-03 19:01:00.000", 34.0)]
+    assert chart.series[1].points == []
+    assert chart.tooltip_rows[0]["to_peer_name"] == "空链路"
+    assert chart.events[0].severity == "warning"
 
 
 def test_online_mr_chart_builder_interface_pps_keeps_interface_series(tmp_path: Path) -> None:
@@ -3939,8 +4131,11 @@ def test_online_mr_fping_1s_summary_table_loads_rows(tmp_path: Path) -> None:
     assert page._load_fping_1s_details(session.session_dir) == 1
     headers = [page.fping_1s_table.horizontalHeaderItem(column).text() for column in range(page.fping_1s_table.columnCount())]
     assert "时间" in headers or "Time" in headers
+    assert "设备对齐时间" in headers
+    assert "本地时间" in headers
     assert page.fping_1s_table.item(0, 0).text() == "1"
-    assert page.fping_1s_table.item(0, 2).text() == "172.28.29.45"
+    assert page.fping_1s_table.item(0, 4).text() == "172.28.29.45"
+    assert page.fping_1s_table.item(0, 14).text() == "正常"
 
 
 def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: Path) -> None:
@@ -4029,10 +4224,97 @@ def test_online_mr_diagnosis_parser_falls_back_to_fping_v5_raw_log(tmp_path: Pat
             """
         ).fetchone()
     assert rows == [
-        ("2026-07-07T01:29:19.341", "172.28.29.45", 0, 1, 1.1),
-        ("2026-07-07T01:29:19.382", "172.28.29.45", 1, 0, None),
+        ("2026-07-07 01:29:19.341", "172.28.29.45", 0, 1, 1.1),
+        ("2026-07-07 01:29:19.382", "172.28.29.45", 1, 0, None),
     ]
     assert summary_row == ("172.28.29.45", 2, 1, 1, 50.0, 1.1)
+
+
+def test_online_mr_estimates_device_time_from_local_offset() -> None:
+    sample = TimeSyncSample(
+        collector_time=datetime(2026, 7, 7, 2, 32, 58, 532000),
+        device_time=datetime(2026, 7, 7, 2, 33, 0),
+        offset_ms=1468.0,
+        source="mesh_link_display_clock",
+    )
+
+    aligned, offset_ms, source = estimate_device_time_from_local(datetime(2026, 7, 7, 2, 32, 58, 532000), [sample])
+
+    assert aligned == datetime(2026, 7, 7, 2, 33, 0)
+    assert offset_ms == 1468.0
+    assert source == "first_sample"
+
+
+def test_online_mr_diagnosis_parser_aligns_fping_raw_with_mesh_clock(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2026-07-07 01:29:17.532 [collector=repeat] RX <MR>display clock\n"
+        "2026-07-07 01:29:17.532 [collector=repeat] RX 01:29:19 BeiJing Tue 07/07/2026\n",
+        encoding="utf-8",
+    )
+    (session.session_dir / "raw" / "fping_v5_raw.log").write_text(
+        '2026-07-07T01:29:19.341 {"resp": {"host": "172.28.29.45", "seq": 0, "size": 64, "rtt": 1.10}}\n',
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.ping_samples == 1
+    with sqlite3.connect(session.db_path) as conn:
+        sync_row = conn.execute("SELECT collector_time, device_time, offset_ms, source FROM time_sync_samples").fetchone()
+        fping_row = conn.execute(
+            "SELECT local_time, device_aligned_time, clock_offset_ms, offset_source FROM fping_samples"
+        ).fetchone()
+    assert sync_row == ("2026-07-07 01:29:17.532", "2026-07-07 01:29:19.000", 1468.0, "mesh_link_display_clock")
+    assert fping_row == ("2026-07-07 01:29:19.341", "2026-07-07 01:29:20.809", 1468.0, "last_sample")
+
+
+def test_online_mr_diagnosis_parser_keeps_fping_local_time_without_offset(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "fping_v5_raw.log").write_text(
+        '2026-07-07T01:29:19.341 {"resp": {"host": "172.28.29.45", "seq": 0, "size": 64, "rtt": 1.10}}\n',
+        encoding="utf-8",
+    )
+
+    OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    with sqlite3.connect(session.db_path) as conn:
+        fping_row = conn.execute(
+            "SELECT local_time, device_aligned_time, clock_offset_ms, offset_source FROM fping_samples"
+        ).fetchone()
+        summary_row = conn.execute("SELECT bucket_time, local_bucket_time, device_bucket_time FROM fping_1s_summary").fetchone()
+    assert fping_row == ("2026-07-07 01:29:19.341", None, None, "none")
+    assert summary_row == ("2026-07-07 01:29:19", "2026-07-07 01:29:19", None)
+
+
+def test_online_mr_diagnosis_parser_groups_fping_by_device_bucket(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2026-07-07 01:29:17.532 [collector=repeat] RX <MR>display clock\n"
+        "2026-07-07 01:29:17.532 [collector=repeat] RX 01:29:19 BeiJing Tue 07/07/2026\n",
+        encoding="utf-8",
+    )
+    (session.session_dir / "raw" / "fping_v5_raw.log").write_text(
+        "\n".join(
+            [
+                '2026-07-07T01:29:19.341 {"resp": {"host": "172.28.29.45", "seq": 0, "size": 64, "rtt": 1.10}}',
+                '2026-07-07T01:29:19.382 {"resp": {"host": "172.28.29.45", "seq": 1, "size": 64, "rtt": 1.20}}',
+                '2026-07-07T01:29:19.414 {"resp": {"host": "172.28.29.45", "seq": 2, "size": 64, "rtt": 1.30}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    with sqlite3.connect(session.db_path) as conn:
+        row = conn.execute(
+            "SELECT local_bucket_time, device_bucket_time, sent, received, avg_latency_ms FROM fping_1s_summary"
+        ).fetchone()
+    assert row == ("2026-07-07 01:29:19", "2026-07-07 01:29:20", 3, 3, 1.2)
 
 
 def test_online_mr_diagnosis_parser_finds_alternate_switch_history_filename(tmp_path: Path) -> None:
@@ -4145,11 +4427,15 @@ def test_online_mr_switch_history_never_populates_active_link_switch_logs(tmp_pa
     with sqlite3.connect(session.db_path) as conn:
         active_count = conn.execute("SELECT COUNT(*) FROM switch_realtime_events").fetchone()[0]
         switch_history_event_count = conn.execute("SELECT COUNT(*) FROM switch_history_events").fetchone()[0]
-    chart = OnlineMrChartBuilder(session.db_path).build_switch_rssi_series()
+    builder = OnlineMrChartBuilder(session.db_path)
+    chart = builder.build_switch_rssi_series()
+    log_chart = builder.build_switch_log_rssi_series()
 
     assert active_count == 0
     assert switch_history_event_count == 1
     assert chart.series[1].points == []
+    assert log_chart.series[0].points == []
+    assert log_chart.series[1].points == []
 
 
 def test_online_mr_diagnosis_parser_skips_locked_fping_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

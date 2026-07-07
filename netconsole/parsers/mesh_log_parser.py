@@ -48,7 +48,7 @@ class MeshLogParser:
         read_lines = 0
         record_seq = 0
         try:
-            for line_number, line in enumerate(_iter_decoded_lines(path), start=1):
+            for line_number, raw_offset_start, raw_offset_end, line in _iter_decoded_lines(path):
                 if should_cancel and should_cancel():
                     info.status = "cancelled"
                     break
@@ -74,6 +74,8 @@ class MeshLogParser:
                     raw_line,
                     path,
                     line_number,
+                    raw_offset_start,
+                    raw_offset_end,
                     info.source_label,
                     current_radio,
                     current_sample_time,
@@ -118,6 +120,8 @@ class MeshLogParser:
         raw_line: str,
         path: Path,
         line_number: int,
+        raw_offset_start: int,
+        raw_offset_end: int,
         source_label: str,
         current_radio: int | None,
         current_sample_time: datetime | None,
@@ -182,6 +186,10 @@ class MeshLogParser:
             local_signal_dbm=local_signal_dbm,
             peer_signal_dbm=peer_signal_dbm,
         )
+        record.raw_line_start = line_number
+        record.raw_line_end = line_number
+        record.raw_offset_start = raw_offset_start
+        record.raw_offset_end = raw_offset_end
         record.sample_time_epoch_ms = int(current_sample_time.timestamp() * 1000)
         if establish_time is not None:
             expected = int((current_sample_time - establish_time).total_seconds())
@@ -294,6 +302,8 @@ def parse_mesh_link_table(
             raw_line,
             path,
             line_number,
+            0,
+            0,
             source_label,
             current_radio,
             current_sample_time,
@@ -350,11 +360,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _iter_decoded_lines(path: Path) -> Iterable[str]:
+def _iter_decoded_lines(path: Path) -> Iterable[tuple[int, int, int, str]]:
     opener = gzip.open if path.suffix.lower() == ".gz" else open
+    offset = 0
     with opener(path, "rb") as raw:
-        for line in raw:
-            yield _decode_line(line)
+        for line_number, line in enumerate(raw, start=1):
+            line_start = offset
+            offset += len(line)
+            yield line_number, line_start, offset, _decode_line(line)
 
 
 def _decode_line(line: bytes) -> str:
