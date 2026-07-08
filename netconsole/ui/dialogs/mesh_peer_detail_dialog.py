@@ -31,6 +31,12 @@ from netconsole.ui.mesh_time_window_controller import MeshTimeWindowController
 
 
 DEFAULT_VISIBLE_SAMPLES = 120
+_LIVE_CHART_WORKERS: set[MeshPeerSeriesWorker] = set()
+
+
+def _release_chart_worker(worker: MeshPeerSeriesWorker) -> None:
+    _LIVE_CHART_WORKERS.discard(worker)
+    worker.deleteLater()
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,7 @@ class MeshPeerDetailDialog(QDialog):
         self.active_only = active_only
         self.source_label = source_label
         self.worker: MeshPeerSeriesWorker | None = None
+        self._worker_connections: list[tuple[object, object]] = []
         self.segment: dict[str, object] = {}
         self.chart_payload: dict[str, object] | None = None
         self.window_start_index = 0
@@ -233,19 +240,38 @@ class MeshPeerDetailDialog(QDialog):
 
     def _load(self) -> None:
         self.status_label.setText(self.i18n.t("mesh_analysis.loading_full_active_links") if self.active_only else self.i18n.t("mesh_analysis.loading_chart"))
-        self.worker = MeshPeerSeriesWorker(self.db_path, self.peer_mac, self.radio, self.initial_session_id, self, self.anchor_link_id, self.source_file_id, active_only=self.active_only)
+        self.worker = MeshPeerSeriesWorker(self.db_path, self.peer_mac, self.radio, self.initial_session_id, None, self.anchor_link_id, self.source_file_id, active_only=self.active_only)
+        _LIVE_CHART_WORKERS.add(self.worker)
+        self.worker.finished.connect(lambda worker=self.worker: _release_chart_worker(worker))
+        self._connect_worker_signal(self.worker.finished, self._on_worker_finished)
         if self.active_only:
-            self.worker.loaded.connect(self._on_loaded)
-            self.worker.failed.connect(self._on_failed)
+            self._connect_worker_signal(self.worker.loaded, self._on_loaded)
+            self._connect_worker_signal(self.worker.failed, self._on_failed)
             self.worker.start()
             return
         if self.anchor_link_id is None:
-            self.worker.loaded.connect(self._on_loaded)
+            self._connect_worker_signal(self.worker.loaded, self._on_loaded)
         else:
-            self.worker.loaded_initial.connect(self._on_loaded)
-            self.worker.loaded_full.connect(self._on_loaded)
-        self.worker.failed.connect(self._on_failed)
+            self._connect_worker_signal(self.worker.loaded_initial, self._on_loaded)
+            self._connect_worker_signal(self.worker.loaded_full, self._on_loaded)
+        self._connect_worker_signal(self.worker.failed, self._on_failed)
         self.worker.start()
+
+    def _connect_worker_signal(self, signal: object, slot: object) -> None:
+        signal.connect(slot)
+        self._worker_connections.append((signal, slot))
+
+    def _on_worker_finished(self) -> None:
+        if self.worker is not None and not self.worker.isRunning():
+            self.worker = None
+
+    def _disconnect_worker_signals(self) -> None:
+        for signal, slot in self._worker_connections:
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        self._worker_connections.clear()
 
     def _on_loaded(self, payload: object) -> None:
         if self._is_closing:
@@ -266,8 +292,20 @@ class MeshPeerDetailDialog(QDialog):
             self.chart_payload = build_chart_payload(segment, {**segment, "events": []})
             self.segment = segment
         metadata = self.chart_payload.get("metadata", {}) if isinstance(self.chart_payload, dict) else {}
+        if isinstance(metadata, dict):
+            metadata.setdefault("mr_name", self.profile.display_name)
         is_partial = bool(metadata.get("partial"))
-        if is_partial:
+        if self._sample_count() == 0:
+            message = self._empty_chart_message(payload)
+            self.status_label.setText(message)
+            app_logger.log_warning(
+                "MESH_CHART_EMPTY_PAYLOAD",
+                (
+                    f"reason={message}, peer_mac={self.peer_mac}, radio={self.radio}, "
+                    f"anchor_link_id={self.anchor_link_id}, source_file_id={self.source_file_id}"
+                ),
+            )
+        elif is_partial:
             self.status_label.setText(self.i18n.t("mesh_analysis.loading_full_chart_data"))
         elif was_partial or kind == "full":
             self.status_label.setText(self.i18n.t("mesh_analysis.full_chart_data_loaded"))
@@ -287,17 +325,20 @@ class MeshPeerDetailDialog(QDialog):
             index = self.tab_keys.index(self.initial_tab) if self.initial_tab in self.tab_keys else -1
             if index >= 0:
                 self.tabs.setCurrentIndex(index)
-        if self.worker is not None and not is_partial:
-            self.worker.deleteLater()
-            self.worker = None
 
     def _on_failed(self, error: str) -> None:
         if self._is_closing:
             return
+        app_logger.log_error(
+            "MESH_CHART_WORKER_FAILED",
+            f"peer_mac={self.peer_mac}, radio={self.radio}, anchor_link_id={self.anchor_link_id}, source_file_id={self.source_file_id}, error={error}",
+        )
         self.status_label.setText(error)
-        if self.worker is not None:
-            self.worker.deleteLater()
-            self.worker = None
+
+    def _empty_chart_message(self, payload: object | None = None) -> str:
+        if isinstance(payload, dict) and payload.get("message"):
+            return str(payload.get("message"))
+        return "未找到该 AP 的趋势数据，请检查源文件、PeerMac、Radio、source_file_id"
 
     def _populate_sessions(self) -> None:
         self.session_filter.blockSignals(True)
@@ -411,6 +452,7 @@ class MeshPeerDetailDialog(QDialog):
         payload = self.chart_payload or {}
         timestamp_numeric = payload.get("timestamp_numeric")
         if not isinstance(timestamp_numeric, np.ndarray) or len(timestamp_numeric) == 0:
+            self._show_empty_chart(key, artists)
             return
         axis = artists["axis"]
         lines: dict[str, object] = artists["lines"]
@@ -459,6 +501,30 @@ class MeshPeerDetailDialog(QDialog):
                 ),
             )
         self.canvases[key].draw_idle()
+
+    def _show_empty_chart(self, key: str, artists: dict[str, object]) -> None:
+        axis = artists["axis"]
+        lines: dict[str, object] = artists.get("lines", {})
+        for line in lines.values():
+            line.set_data([], [])
+        self._clear_overlay_artists(artists)
+        axis.set_xlim(0, 1)
+        axis.set_ylim(0, 1)
+        text = axis.text(
+            0.5,
+            0.5,
+            self._empty_chart_message(),
+            transform=axis.transAxes,
+            ha="center",
+            va="center",
+            color="#64748b",
+            fontsize=11,
+            wrap=True,
+        )
+        artists["texts"].append(text)
+        artists["last_count"] = 0
+        if key in self.canvases and not self._is_closing:
+            self.canvases[key].draw_idle()
 
     def _current_tab_key(self) -> str:
         return self.tab_keys[self.tabs.currentIndex()] if self.tab_keys else ""
@@ -1086,9 +1152,12 @@ class MeshPeerDetailDialog(QDialog):
     def closeEvent(self, event) -> None:
         self._is_closing = True
         self._save_window_geometry()
+        self._disconnect_worker_signals()
         if self.worker is not None and self.worker.isRunning():
+            self.worker.requestInterruption()
             self.worker.quit()
-            self.worker.wait(1000)
+        elif self.worker is not None:
+            self.worker = None
         self.window_update_timer.stop()
         self.interaction_resume_timer.stop()
         for controller in self.interaction_controllers.values():

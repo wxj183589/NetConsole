@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
@@ -87,13 +88,20 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     active_peer_ap_names = [""] * count
     active_peer_sites = [""] * count
     active_peer_radios = [""] * count
+    active_source_file_ids = [""] * count
     active_peer_rssi = np.full(count, np.nan, dtype=np.float32)
     standby_links_by_index = [[] for _ in range(count)]
+    main_links_by_index = [{} for _ in range(count)]
     peer_change_indices = [run.start_sample_index for run in active_runs[1:]]
     rapid_flaps = detect_rapid_flaps(active_runs, master_times, peer_segment.get("estimated_interval_seconds") or run_segment.get("estimated_interval_seconds"))
     rapid_flap_indices = [int(item["return_sample_index"]) for item in rapid_flaps]
     assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs, active_peer_ap_names, active_peer_sites, active_peer_radios, active_peer_rssi)
-    assign_standby_links(master_times, rows_by_time, standby_links_by_index)
+    assign_standby_links(master_times, rows_by_time, standby_links_by_index, unique_active_by_index, main_links_by_index)
+    for index, row in unique_active_by_index.items():
+        active_source_file_ids[index] = str(row.get("source_file_id") or "")
+    for index, context in enumerate(main_links_by_index):
+        if context and not active_source_file_ids[index]:
+            active_source_file_ids[index] = str(context.get("source_file_id") or "")
     events_by_index = _events_by_index(events, time_index, active_peer_macs, active_peer_ap_names, active_peer_sites)
     switch_indices = [index for index, items in events_by_index.items() if any(item.get("event_type") == "ACTIVE_SWITCH" for item in items)]
     anchor_index = _nearest_time_index(master_times, anchor_time)
@@ -123,8 +131,11 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         "active_peer_ap_names": active_peer_ap_names,
         "active_peer_sites": active_peer_sites,
         "active_peer_radios": active_peer_radios,
+        "active_source_file_ids": active_source_file_ids,
         "active_peer_rssi": active_peer_rssi,
+        "main_links_by_index": main_links_by_index,
         "standby_links_by_index": standby_links_by_index,
+        "backup_links_by_index": standby_links_by_index,
         "peer_macs": peer_macs,
         "peer_ap_names": peer_ap_names,
         "peer_sites": peer_sites,
@@ -312,25 +323,164 @@ def assign_standby_links(
     master_times: list[str],
     rows_by_time: dict[str, list[dict[str, object]]],
     standby_links_by_index: list[list[dict[str, object]]],
+    unique_active_by_index: dict[int, dict[str, object]],
+    main_links_by_index: list[dict[str, object]],
 ) -> None:
+    fallback_index = _standby_fallback_index(rows_by_time)
+    active_fallback_index = _active_fallback_index(rows_by_time)
     for index, sample_time in enumerate(master_times):
-        standby_rows = [row for row in rows_by_time.get(sample_time, []) if row.get("link_state") == "STANDBY"]
+        active_row = unique_active_by_index.get(index) or _nearest_active_row(active_fallback_index, _source_for_time(rows_by_time, sample_time), sample_time)
+        if not active_row:
+            continue
+        main_links_by_index[index] = _link_context_summary(active_row)
+        active_source = _source_key(active_row)
+        active_peer = canonical_mesh_mac(active_row)
+        standby_rows = [
+            row
+            for row in rows_by_time.get(sample_time, [])
+            if row.get("link_state") == "STANDBY" and _source_key(row) == active_source and canonical_mesh_mac(row) != active_peer
+        ]
+        if not standby_rows:
+            standby_rows = _nearest_standby_rows(fallback_index, active_source, sample_time, active_peer)
         items = [_standby_summary(row) for row in standby_rows]
-        items.sort(key=lambda item: _sort_rssi(item.get("mr_rssi")), reverse=True)
-        standby_links_by_index[index] = items[:3]
+        items.sort(key=_standby_sort_key)
+        standby_links_by_index[index] = items
 
 
 def _standby_summary(row: dict[str, object]) -> dict[str, object]:
+    return _link_context_summary(row)
+
+
+def _link_context_summary(row: dict[str, object]) -> dict[str, object]:
     metrics = _metrics(row)
     return {
         "peer_mac": row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "",
+        "ap_mac": row.get("peer_ap_mac") or "",
         "ap_name": row.get("peer_ap_name") or "",
         "site": row.get("peer_site") or "",
+        "station_name": row.get("peer_site") or "",
         "radio": row.get("radio") or "",
         "peer_radio": row.get("peer_radio") or row.get("peer_radio_label") or "",
+        "peer_radio_mac": row.get("peer_radio_mac") or "",
         "mr_rssi": metrics.get("local_rssi_db"),
         "ap_rssi": metrics.get("peer_rssi_db"),
+        "status": row.get("link_state") or "",
+        "sample_time": row.get("sample_time") or "",
+        "source_file_id": row.get("source_file_id") or "",
     }
+
+
+def _standby_sort_key(item: dict[str, object]) -> tuple[int, str, float]:
+    try:
+        radio = int(item.get("radio") or 9999)
+    except (TypeError, ValueError):
+        radio = 9999
+    peer = canonical_mesh_mac(item.get("peer_mac") or "")
+    return radio, peer, -_sort_rssi(item.get("mr_rssi"))
+
+
+def _source_key(row: dict[str, object]) -> str:
+    return str(row.get("source_file_id") or "")
+
+
+def _standby_fallback_index(rows_by_time: dict[str, list[dict[str, object]]]) -> dict[str, tuple[list[float], list[list[dict[str, object]]]]]:
+    grouped: dict[str, dict[str, list[dict[str, object]]]] = {}
+    for sample_time, rows in rows_by_time.items():
+        for row in rows:
+            if row.get("link_state") != "STANDBY":
+                continue
+            grouped.setdefault(_source_key(row), {}).setdefault(sample_time, []).append(row)
+    indexed: dict[str, tuple[list[float], list[list[dict[str, object]]]]] = {}
+    for source, rows_by_sample_time in grouped.items():
+        entries: list[tuple[float, list[dict[str, object]]]] = []
+        for sample_time, rows in rows_by_sample_time.items():
+            try:
+                entries.append((_parse_time(sample_time).timestamp(), rows))
+            except (TypeError, ValueError):
+                continue
+        entries.sort(key=lambda item: item[0])
+        indexed[source] = ([item[0] for item in entries], [item[1] for item in entries])
+    return indexed
+
+
+def _nearest_standby_rows(
+    fallback_index: dict[str, tuple[list[float], list[list[dict[str, object]]]]],
+    source: str,
+    sample_time: str,
+    active_peer: str,
+) -> list[dict[str, object]]:
+    try:
+        target = _parse_time(sample_time).timestamp()
+    except (TypeError, ValueError):
+        return []
+    times, rows_by_position = fallback_index.get(source, ([], []))
+    if not times:
+        return []
+    candidates: list[tuple[float, list[dict[str, object]]]] = []
+    position = bisect_left(times, target)
+    for candidate in (position - 1, position, position + 1):
+        if 0 <= candidate < len(times):
+            delta = abs(times[candidate] - target)
+            if delta <= 1.0:
+                rows = [row for row in rows_by_position[candidate] if canonical_mesh_mac(row) != active_peer]
+                if rows:
+                    candidates.append((delta, rows))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _active_fallback_index(rows_by_time: dict[str, list[dict[str, object]]]) -> dict[str, tuple[list[float], list[list[dict[str, object]]]]]:
+    grouped: dict[str, dict[str, list[dict[str, object]]]] = {}
+    for sample_time, rows in rows_by_time.items():
+        for row in rows:
+            if row.get("link_state") != LINK_STATE_ACTIVE:
+                continue
+            grouped.setdefault(_source_key(row), {}).setdefault(sample_time, []).append(row)
+    indexed: dict[str, tuple[list[float], list[list[dict[str, object]]]]] = {}
+    for source, rows_by_sample_time in grouped.items():
+        entries: list[tuple[float, list[dict[str, object]]]] = []
+        for sample_time, rows in rows_by_sample_time.items():
+            try:
+                entries.append((_parse_time(sample_time).timestamp(), sorted(rows, key=lambda row: (int(row.get("radio") or 0), canonical_mesh_mac(row), int(row.get("id") or 0)))))
+            except (TypeError, ValueError):
+                continue
+        entries.sort(key=lambda item: item[0])
+        indexed[source] = ([item[0] for item in entries], [item[1] for item in entries])
+    return indexed
+
+
+def _nearest_active_row(
+    fallback_index: dict[str, tuple[list[float], list[list[dict[str, object]]]]],
+    source: str,
+    sample_time: str,
+) -> dict[str, object] | None:
+    if not source:
+        return None
+    try:
+        target = _parse_time(sample_time).timestamp()
+    except (TypeError, ValueError):
+        return None
+    times, rows_by_position = fallback_index.get(source, ([], []))
+    if not times:
+        return None
+    candidates: list[tuple[float, dict[str, object]]] = []
+    position = bisect_left(times, target)
+    for candidate in (position - 1, position, position + 1):
+        if 0 <= candidate < len(times):
+            delta = abs(times[candidate] - target)
+            if delta <= 1.0 and rows_by_position[candidate]:
+                candidates.append((delta, rows_by_position[candidate][0]))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], int(item[1].get("radio") or 0), canonical_mesh_mac(item[1])))
+    return candidates[0][1]
+
+
+def _source_for_time(rows_by_time: dict[str, list[dict[str, object]]], sample_time: str) -> str:
+    rows = rows_by_time.get(sample_time) or []
+    return _source_key(rows[0]) if rows else ""
 
 
 def _sort_rssi(value: object) -> float:
@@ -340,7 +490,7 @@ def _sort_rssi(value: object) -> float:
 
 def _metrics(row: dict[str, object]) -> dict[str, object]:
     metrics = row.get("metrics")
-    if isinstance(metrics, dict):
+    if isinstance(metrics, dict) and metrics:
         return metrics
     metrics_json = row.get("metrics_json")
     if isinstance(metrics_json, str) and metrics_json.strip():

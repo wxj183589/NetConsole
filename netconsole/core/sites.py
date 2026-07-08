@@ -50,6 +50,7 @@ class SiteManager:
         network_domain: str = "default",
         display_name: str = "",
         remark: str = "",
+        mesh_analysis_params: dict[str, object] | None = None,
     ) -> Site:
         site_name = self.validate_site_name(site_name)
         if site_name in self.list_sites():
@@ -63,6 +64,7 @@ class SiteManager:
                 "system_type": system_type,
                 "network_domain": network_domain or "default",
                 "remark": remark,
+                "mesh_analysis_params": mesh_analysis_params,
             },
         )
         self.switch_site(site_name)

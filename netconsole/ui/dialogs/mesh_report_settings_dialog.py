@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from math import ceil
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -19,13 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core.i18n import I18n
+from netconsole.models.mesh_analysis_params import MeshAnalysisParams
 from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.mesh_quality_analysis import get_threshold_template, load_threshold_templates
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
 class MeshReportSettingsDialog(QDialog):
-    def __init__(self, i18n: I18n, default_name: str, parent=None) -> None:
+    def __init__(self, i18n: I18n, default_name: str, parent=None, analysis_params: MeshAnalysisParams | None = None) -> None:
         super().__init__(parent)
         self.i18n = i18n
         self.setWindowTitle("MR原始MESH日志分析报告设置")
@@ -152,6 +154,11 @@ class MeshReportSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         self.threshold_template_combo.currentIndexChanged.connect(self._apply_threshold_template)
         self._apply_threshold_template()
+        self.analysis_params = analysis_params
+        if analysis_params is not None:
+            self.short_segment_spin.setValue(max(1, int(ceil(analysis_params.short_link_threshold_ms / 1000.0))))
+            self._set_combo_text(self.business_type_combo, analysis_params.service_type)
+            self._set_combo_text(self.working_mode_combo, analysis_params.wifi_type)
 
         content = QWidget(self)
         content_layout = QVBoxLayout(content)
@@ -279,4 +286,6 @@ class MeshReportSettingsDialog(QDialog):
             bandwidth=self.bandwidth_combo.currentText(),
             ap_spacing=self.ap_spacing_combo.currentText(),
             threshold_template_description=template.description,
+            analysis_params_override=None,
+            site_analysis_params=None,
         )

@@ -163,7 +163,24 @@ Requirements:
 - Repeat collection connections should run only the minimal streaming prepare commands, not the full initialization command set; stopped collectors must not start new repeat connections.
 - When parsing online MR RX streams, split sample blocks by recognized commands and use the primary sampling command time as the sample timestamp.
 - If parser cache health checks find collapsed mesh-link samples, concatenated active-peer MAC values, or timeline anomalies, mark the cache stale and reparse.
+- fping raw samples must preserve local time; when `display clock` provides a device-time offset, also write the device-aligned time and prefer device-second buckets for 1-second summaries.
+- Without a device-time offset, fping summaries fall back to local-second buckets and keep `offset_source=none`.
+- Active-link switch realtime events come only from `terminal_monitor_raw.log`; `switch_history` files must not backfill active-link switch realtime events.
 - Adding hover markers or reference lines to dynamic charts must not change the original axis range.
+
+### Raw MR MESH Large-Data Rules
+
+Raw MR MESH logs may be large or imported from multiple files, so parsing, charts, and reports must prioritize traceability and performance.
+
+Requirements:
+
+- When directory-level `mesh.sqlite` acts as a catalog and entry point, detailed parsed data comes from the per-file parsed SQLite referenced by `source_files.parsed_db_path`.
+- Charts, details, and reports filtered by source file must resolve to the corresponding detail database instead of assuming the catalog database contains all `mesh_links` rows.
+- compact v2 parsed databases should use scalar columns for RSSI, channel busy, rate, retry, and error metrics; only fall back to `metrics_json` / `deltas_json` for legacy databases.
+- Large-sample charts should draw only the visible window or a downsampled result while preserving switch points, anchors, and other important samples; do not draw every sample at once.
+- Page switching, MR selection, and table refreshes should use debouncing, lazy loading, and repository caching so the same MR is not loaded repeatedly.
+
+Validation should cover per-file parsed DB queries, compact v2 scalar metrics, source-file-filtered charts and reports, visible-window rendering, all-view downsampling, and duplicate-load debouncing.
 
 ### IPERF Follow-Collection Rules
 

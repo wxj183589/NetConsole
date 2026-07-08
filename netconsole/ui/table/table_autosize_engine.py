@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QTableWidget
 
 
 DEFAULT_PADDING = 28
 DEFAULT_CHAR_PIXEL = 8
+DEFAULT_MAX_SAMPLE_ROWS = 500
 MIN_COLUMN_WIDTH = 72
 MAX_COLUMN_WIDTH = 520
 HIGH_PRIORITY_MIN_WIDTH = 180
@@ -29,6 +31,21 @@ HIGH_PRIORITY_FIELDS = {
     "neighbor_interface",
     "description",
     "site",
+    "peer_site",
+    "station_name",
+    "source_file",
+    "source_file_name",
+    "file_name",
+    "archived_filename",
+    "sample_time",
+    "start_time",
+    "end_time",
+    "first_sample_time",
+    "last_sample_time",
+    "event_time",
+    "build_start_time",
+    "build_end_time",
+    "imported_at",
 }
 MEDIUM_PRIORITY_FIELDS = {
     "ap_mac",
@@ -82,25 +99,25 @@ def weighted_text_pixel_width(value: object, char_pixel: int = DEFAULT_CHAR_PIXE
     return weighted_text_length(value) * char_pixel
 
 
-def calculate_column_widths(table: QTableWidget, screen_width: int | None = None) -> dict[int, int]:
+def calculate_column_widths(table: QTableWidget, screen_width: int | None = None, max_rows: int = DEFAULT_MAX_SAMPLE_ROWS) -> dict[int, int]:
     _ = screen_width
     if table.columnCount() <= 0:
         return {}
 
     fields = _column_fields(table)
-    table.resizeColumnsToContents()
+    row_indexes = _sample_rows(table.rowCount(), max_rows)
     base: dict[int, AutosizeColumn] = {}
     for column in range(table.columnCount()):
         field = fields[column] if column < len(fields) else ""
         priority = _column_priority(field, _header_text(table, column))
-        width = _base_column_width(table, column, priority)
+        width = _base_column_width(table, column, priority, row_indexes)
         base[column] = AutosizeColumn(width=width, priority=priority)
     target = {column: sizing.width for column, sizing in base.items()}
     return target
 
 
-def apply_table_autosize(table: QTableWidget, screen_width: int | None = None) -> dict[int, int]:
-    widths = calculate_column_widths(table, screen_width)
+def apply_table_autosize(table: QTableWidget, screen_width: int | None = None, max_rows: int = DEFAULT_MAX_SAMPLE_ROWS) -> dict[int, int]:
+    widths = calculate_column_widths(table, screen_width, max_rows=max_rows)
     if not widths:
         return {}
 
@@ -128,9 +145,33 @@ def apply_table_autosize(table: QTableWidget, screen_width: int | None = None) -
     return widths
 
 
-def excel_column_width(value: object, minimum: float = 8.0, maximum: float = 60.0) -> float:
-    width = weighted_text_length(value) * 1.15 + 2
-    return max(minimum, min(width, maximum))
+def excel_column_width(value: object, minimum: float = 8.0, maximum: float = 60.0, field: str | None = None, header: str | None = None) -> float:
+    field_min, field_max = excel_column_width_bounds(field, header)
+    effective_min = max(minimum, field_min)
+    effective_max = min(maximum, field_max) if maximum else field_max
+    width = weighted_text_length(value) * 1.15 + 3
+    return max(effective_min, min(width, effective_max))
+
+
+def excel_column_width_bounds(field: str | None = None, header: str | None = None) -> tuple[float, float]:
+    text = f"{field or ''} {header or ''}".casefold()
+    if any(token in text for token in ("序号", "source_line_number", "line_number", "record_seq")):
+        return 8.0, 12.0
+    if "radio" in text:
+        return 8.0, 12.0
+    if any(token in text for token in ("状态", "state", "result", "结果")):
+        return 10.0, 18.0
+    if any(token in text for token in ("rssi", "busy", "采样点数", "sample_count", "链路数", "link_count")):
+        return 10.0, 14.0
+    if any(token in text for token in ("mac", "peermac")):
+        return 18.0, 22.0
+    if any(token in text for token in ("time", "时间", "duration", "时长")):
+        return 18.0, 26.0
+    if any(token in text for token in ("ap名称", "ap name", "peer_ap_name", "站点", "station", "peer_site")):
+        return 18.0, 32.0
+    if any(token in text for token in ("source_file", "archived_filename", "file", "文件", "路径", "path")):
+        return 30.0, 80.0
+    return 8.0, 40.0
 
 
 def calculate_excel_column_widths(
@@ -138,16 +179,16 @@ def calculate_excel_column_widths(
     rows: Iterable[Mapping[str, object | None] | Sequence[object]],
     fields: Sequence[str] | None = None,
 ) -> list[float]:
-    widths = [excel_column_width(header) for header in headers]
+    widths = [excel_column_width(header, field=fields[index] if fields and index < len(fields) else None, header=str(header)) for index, header in enumerate(headers)]
     for row in rows:
         for index in range(len(widths)):
             value: object | None
+            field = fields[index] if fields and index < len(fields) else str(headers[index])
             if isinstance(row, Mapping):
-                field = fields[index] if fields and index < len(fields) else str(headers[index])
                 value = row.get(field)
             else:
                 value = row[index] if index < len(row) else None
-            widths[index] = max(widths[index], excel_column_width(value))
+            widths[index] = max(widths[index], excel_column_width(value, field=field, header=str(headers[index])))
     return widths
 
 
@@ -168,9 +209,10 @@ def apply_worksheet_autofit(sheet, maximum: float = 60.0) -> None:
     from openpyxl.utils import get_column_letter
 
     for column_index in range(1, sheet.max_column + 1):
-        width = 0.0
+        header_value = sheet.cell(row=1, column=column_index).value
+        width = excel_column_width(header_value, header=str(header_value or ""), maximum=maximum)
         for cell in sheet[get_column_letter(column_index)]:
-            width = max(width, excel_column_width(cell.value, maximum=maximum))
+            width = max(width, excel_column_width(cell.value, header=str(header_value or ""), maximum=maximum))
         sheet.column_dimensions[get_column_letter(column_index)].width = min(width, maximum)
 
 
@@ -187,21 +229,27 @@ def _install_resize_hook(table: QTableWidget) -> None:
     table.setProperty("netconsole_table_autosize_hooked", True)
 
 
-def _base_column_width(table: QTableWidget, column: int, priority: str) -> int:
-    header_width = max(_font_width(table, _header_text(table, column)), weighted_text_pixel_width(_header_text(table, column))) + DEFAULT_PADDING
+def _base_column_width(table: QTableWidget, column: int, priority: str, row_indexes: list[int]) -> int:
+    header = table.horizontalHeader()
+    header_text = _header_text(table, column)
+    header_metrics = QFontMetrics(header.font())
+    cell_metrics = QFontMetrics(table.font())
+    header_width = max(header_metrics.horizontalAdvance(header_text), weighted_text_pixel_width(header_text)) + DEFAULT_PADDING + 12
     content_width = 0
-    for row in range(table.rowCount()):
+    for row in row_indexes:
         item = table.item(row, column)
         text = item.text() if item else ""
-        content_width = max(content_width, _font_width(table, text), weighted_text_pixel_width(text))
-    width = max(header_width, content_width + DEFAULT_PADDING, table.columnWidth(column))
+        content_width = max(content_width, cell_metrics.horizontalAdvance(text), weighted_text_pixel_width(text))
+        if item is not None and text and not item.toolTip():
+            item.setToolTip(text)
+    width = max(header_width, content_width + DEFAULT_PADDING)
     if priority == "high":
-        return max(HIGH_PRIORITY_MIN_WIDTH, min(width, MAX_COLUMN_WIDTH))
+        return max(HIGH_PRIORITY_MIN_WIDTH, int(header_width), min(width, MAX_COLUMN_WIDTH))
     if priority == "medium":
-        return max(MEDIUM_PRIORITY_MIN_WIDTH, min(width, MEDIUM_PRIORITY_MAX_WIDTH))
+        return max(MEDIUM_PRIORITY_MIN_WIDTH, int(header_width), min(width, MEDIUM_PRIORITY_MAX_WIDTH))
     if priority == "low":
-        return max(LOW_PRIORITY_MIN_WIDTH, min(width, LOW_PRIORITY_MAX_WIDTH))
-    return max(MIN_COLUMN_WIDTH, min(width, MAX_COLUMN_WIDTH))
+        return max(LOW_PRIORITY_MIN_WIDTH, int(header_width), min(width, LOW_PRIORITY_MAX_WIDTH))
+    return max(MIN_COLUMN_WIDTH, int(header_width), min(width, MAX_COLUMN_WIDTH))
 
 
 def _compress_columns(target: dict[int, int], base: dict[int, AutosizeColumn], overflow: int) -> dict[int, int]:
@@ -225,22 +273,29 @@ def _available_width(table: QTableWidget, screen_width: int | None) -> int:
     return width if width > 0 else 1200
 
 
+def _sample_rows(row_count: int, max_rows: int) -> list[int]:
+    if row_count <= 0:
+        return []
+    max_rows = max(1, int(max_rows or DEFAULT_MAX_SAMPLE_ROWS))
+    if row_count <= max_rows:
+        return list(range(row_count))
+    tail_count = min(50, max_rows // 5)
+    head_count = max_rows - tail_count
+    return list(range(head_count)) + list(range(row_count - tail_count, row_count))
+
+
 def _column_priority(field: str, header: str) -> str:
     normalized_field = field.casefold()
     normalized_header = header.casefold()
     if normalized_field in {"actions", "select"}:
         return "utility"
-    if normalized_field in HIGH_PRIORITY_FIELDS or any(token in normalized_header for token in ("ap名称", "ap name", "设备名称", "device name", "接口名称", "interface", "描述", "description", "车站", "station")):
+    if normalized_field in HIGH_PRIORITY_FIELDS or any(token in normalized_header for token in ("ap名称", "ap name", "设备名称", "device name", "接口名称", "interface", "描述", "description", "车站", "站点", "文件", "station")):
         return "high"
     if normalized_field in MEDIUM_PRIORITY_FIELDS or any(token in normalized_header for token in ("mac", "ip", "vlan", "pvid", "状态", "status")):
         return "medium"
     if normalized_field in LOW_PRIORITY_FIELDS or any(token in normalized_header for token in ("time", "时间", "id", "rx", "tx", "power", "功率")):
         return "low"
     return "normal"
-
-
-def _font_width(table: QTableWidget, value: object) -> int:
-    return table.fontMetrics().horizontalAdvance(str(value or ""))
 
 
 def _header_text(table: QTableWidget, column: int) -> str:

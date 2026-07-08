@@ -47,7 +47,7 @@ class MeshReportOptions:
     switch_late_window_seconds: int = 5
     switch_target_window_seconds: int = 5
     flap_window_seconds: int = 30
-    short_active_segment_seconds: int = 5
+    short_active_segment_seconds: float = 2.0
     include_raw_evidence: bool = True
     include_all_link_details: bool = False
     include_busy_analysis: bool = True
@@ -70,6 +70,8 @@ class MeshReportOptions:
     bandwidth: str = "40M / 80M 混合"
     ap_spacing: str = "80~150m"
     threshold_template_description: str = ""
+    analysis_params_override: dict[str, object] | None = None
+    site_analysis_params: dict[str, object] | None = None
 
 
 @dataclass

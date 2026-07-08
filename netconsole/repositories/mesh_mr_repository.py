@@ -7,9 +7,11 @@ import sqlite3
 from dataclasses import dataclass
 from collections import defaultdict
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from statistics import median
 
+from netconsole.core import app_logger
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.models.mesh_log_models import (
     EVENT_ACTIVE_SWITCH,
@@ -17,12 +19,14 @@ from netconsole.models.mesh_log_models import (
     EVENT_MULTI_ACTIVE,
     EVENT_NO_ACTIVE,
     LINK_STATE_ACTIVE,
+    LINK_STATE_STANDBY,
     MeshLogRecord,
     PAIRED_METRICS,
     MeshSwitchEvent,
     ParseIssue,
     format_mac_h3c,
 )
+from netconsole.models.mesh_analysis_params import MeshAnalysisParams, mesh_analysis_params_from_json, normalize_mesh_analysis_params
 from netconsole.repositories.mesh_catalog_repository import dt_text
 
 
@@ -31,6 +35,7 @@ SCHEMA_KEY = "schema_" + "version"
 PARSER_VERSION = "meshlog_compact_v2_single_log"
 DERIVED_ANALYSIS_VERSION = "6"
 DERIVED_ANALYSIS_KEY = "derived_analysis_version"
+MIN_NORMAL_ACTIVE_SAMPLE_COUNT = 3
 _METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
 _METRIC_SELECT_COLUMNS = ", ".join(_METRIC_COLUMNS)
 _MESH_LINK_CHART_COLUMNS = (
@@ -123,7 +128,8 @@ class MeshMrRepository:
                     file_status TEXT DEFAULT 'ok',
                     parsed_deleted_at TEXT DEFAULT '',
                     parsed_delete_error TEXT DEFAULT '',
-                    source_file_order INTEGER DEFAULT 0
+                    source_file_order INTEGER DEFAULT 0,
+                    analysis_params_json TEXT DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -395,6 +401,7 @@ class MeshMrRepository:
             self._ensure_column(conn, "source_files", "parsed_db_path", "TEXT DEFAULT ''")
             self._ensure_column(conn, "source_files", "parsed_db_size", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "source_files", "db_schema_version", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "analysis_params_json", "TEXT DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_ap ON mesh_links(peer_ap_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_site ON mesh_links(peer_site)")
             self._backfill_peer_columns(conn)
@@ -508,6 +515,7 @@ class MeshMrRepository:
         records: list[MeshLogRecord],
         events: list[MeshSwitchEvent],
         issues: list[ParseIssue],
+        analysis_params_json: str = "",
     ) -> int:
         if not self._is_index_database():
             return self._insert_file_result_current_db(
@@ -530,6 +538,7 @@ class MeshMrRepository:
                 records,
                 events,
                 issues,
+                analysis_params_json,
             )
 
         detail_path = self._single_log_db_path(archived_path, sha256)
@@ -546,8 +555,9 @@ class MeshMrRepository:
                     mr_id, original_path, archived_path, parsed_db_path, parsed_db_size, db_schema_version,
                     original_filename, archived_filename, sha256, file_size, file_mtime, imported_at,
                     parser_version, parse_status, encoding, is_gzip, first_sample_time, last_sample_time,
-                    lines_read, records_parsed, records_skipped, duplicate_records, issue_count, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    lines_read, records_parsed, records_skipped, duplicate_records, issue_count, error_message,
+                    analysis_params_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mr_id,
@@ -574,6 +584,7 @@ class MeshMrRepository:
                     duplicate_records,
                     issue_count,
                     error_message,
+                    analysis_params_json,
                 ),
             )
             source_file_id = int(cursor.lastrowid)
@@ -602,6 +613,7 @@ class MeshMrRepository:
             records,
             events,
             issues,
+            analysis_params_json,
         )
         detail_repo.rebuild_derived_analysis()
         parsed_size = detail_path.stat().st_size if detail_path.exists() else 0
@@ -634,6 +646,7 @@ class MeshMrRepository:
         records: list[MeshLogRecord],
         events: list[MeshSwitchEvent],
         issues: list[ParseIssue],
+        analysis_params_json: str = "",
     ) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
@@ -643,8 +656,8 @@ class MeshMrRepository:
                     original_filename, archived_filename, sha256,
                     file_size, file_mtime, imported_at, parser_version, parse_status, encoding, is_gzip,
                     first_sample_time, last_sample_time, lines_read, records_parsed, records_skipped,
-                    duplicate_records, issue_count, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duplicate_records, issue_count, error_message, analysis_params_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mr_id,
@@ -671,6 +684,7 @@ class MeshMrRepository:
                     duplicate_records,
                     issue_count,
                     error_message,
+                    analysis_params_json,
                 ),
             )
             source_file_id = int(cursor.lastrowid)
@@ -1018,6 +1032,53 @@ class MeshMrRepository:
             result.append(data)
         return int(total), result
 
+    def count_link_details(self, filters: dict[str, object] | None = None) -> int:
+        filters = dict(filters or {})
+        if self._is_index_database():
+            source_file_id = filters.get("source_file_id")
+            if source_file_id not in (None, ""):
+                repo = self._detail_repo_for_source(source_file_id)
+                if repo is None:
+                    return 0
+                filters.pop("source_file_id", None)
+                return repo.count_link_details(filters)
+            total = 0
+            for _source_id, repo in self._detail_repo_items():
+                total += repo.count_link_details(filters)
+            return total
+        total, _rows = self.query_links(1, 0, filters)
+        return int(total)
+
+    def iter_link_details(self, filters: dict[str, object] | None = None, batch_size: int = 2000):
+        filters = dict(filters or {})
+        batch_size = max(1, int(batch_size or 2000))
+        if self._is_index_database():
+            source_file_id = filters.get("source_file_id")
+            if source_file_id not in (None, ""):
+                repo = self._detail_repo_for_source(source_file_id)
+                if repo is None:
+                    return
+                filters.pop("source_file_id", None)
+                for row in repo.iter_link_details(filters, batch_size):
+                    row["source_file_id"] = int(source_file_id)
+                    yield row
+                return
+            for source_id, repo in self._detail_repo_items():
+                for row in repo.iter_link_details(filters, batch_size):
+                    row["source_file_id"] = source_id
+                    yield row
+            return
+        offset = 0
+        while True:
+            _total, rows = self.query_links(batch_size, offset, filters)
+            if not rows:
+                break
+            for row in rows:
+                yield row
+            if len(rows) < batch_size:
+                break
+            offset += len(rows)
+
     def find_sample_row_position(
         self,
         session_id: str,
@@ -1280,24 +1341,7 @@ class MeshMrRepository:
             if source_file_id not in (None, ""):
                 repo = self._detail_repo_for_source(source_file_id)
                 return repo.query_peer_chart_segments(anchor_link_id, None) if repo else {"anchor": None, "peer_segment": _segment_payload(None, [], None, None), "run_segment": _segment_payload(None, [], None, None)}
-            rows: list[dict[str, object]] = []
-            events: list[dict[str, object]] = []
-            anchor = None
-            interval: float | None = None
-            gap: float | None = None
-            for repo in self._detail_repos():
-                payload = repo.query_peer_chart_segments(anchor_link_id, None)
-                if payload.get("anchor") is not None and anchor is None:
-                    anchor = payload.get("anchor")
-                run = dict(payload.get("run_segment") or {})
-                rows.extend(list(run.get("rows") or []))
-                events.extend(list(run.get("events") or []))
-                interval = interval or run.get("estimated_interval_seconds")
-                gap = gap or run.get("continuity_gap_seconds")
-            rows.sort(key=lambda row: (str(row.get("sample_time") or ""), int(row.get("radio") or 0), int(row.get("id") or 0)))
-            run_segment = _segment_payload(anchor, rows, interval, gap)
-            run_segment["events"] = events
-            return {"anchor": anchor, "peer_segment": _segment_payload(anchor, rows, interval, gap), "run_segment": run_segment}
+            return _empty_peer_chart_payload("index database peer chart requires source_file_id because mesh_links.id is local to each parsed database")
         anchor, start_time, end_time, interval, gap = self._locate_run_segment(anchor_link_id, source_file_id=source_file_id)
         if anchor is None or start_time is None or end_time is None:
             return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
@@ -1335,8 +1379,15 @@ class MeshMrRepository:
             interval, gap = _interval_and_threshold([str(row.get("sample_time") or "") for row in rows if row.get("sample_time")])
             anchor = rows[0] if rows else None
             run_segment = _segment_payload(anchor, rows, interval, gap)
+            active_count = len([row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE])
+            peer_segment = _segment_payload(anchor, [], interval, gap)
+            for segment in (peer_segment, run_segment):
+                segment["partial"] = False
+                segment["full_loading"] = False
+                segment["full_active_payload"] = True
+                segment["query_active_count"] = active_count
             run_segment["events"] = events
-            return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": run_segment}
+            return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
         clauses: list[str] = []
         values: list[object] = []
         if source_file_id not in (None, ""):
@@ -1360,6 +1411,7 @@ class MeshMrRepository:
                     values,
                 ).fetchall()
             ]
+            standby_rows = self._query_active_path_backup_rows(conn, rows)
             events = [
                 dict(row)
                 for row in conn.execute(
@@ -1373,6 +1425,15 @@ class MeshMrRepository:
                 ).fetchall()
             ]
         active_count = len(rows)
+        matched_backup_count = _count_exact_backup_matches(rows, standby_rows)
+        app_logger.log_info(
+            "MESH_ACTIVE_PATH_BACKUP_QUERY_DONE",
+            f"active_count={active_count}, standby_count={len(standby_rows)}, matched_backup_count={matched_backup_count}",
+        )
+        rows = sorted(
+            [*rows, *standby_rows],
+            key=lambda row: (str(row.get("sample_time") or ""), int(row.get("radio") or 0), str(row.get("link_state") or ""), int(row.get("id") or 0)),
+        )
         anchor = next((row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE), rows[0] if rows else None)
         interval, gap = _interval_and_threshold([str(row.get("sample_time") or "") for row in rows if row.get("sample_time")])
         run_segment = _segment_payload(anchor, rows, interval, gap)
@@ -1385,17 +1446,56 @@ class MeshMrRepository:
         run_segment["events"] = events
         return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
 
-    def query_active_link_build_order(self, source_file_id: int | str | None = None, radio: int | None = None) -> list[dict[str, object]]:
+    def _query_active_path_backup_rows(self, conn: sqlite3.Connection, active_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        if not active_rows:
+            return []
+        source_ids = sorted({int(row.get("source_file_id")) for row in active_rows if row.get("source_file_id") not in (None, "")})
+        times = [str(row.get("sample_time") or "") for row in active_rows if row.get("sample_time")]
+        if not source_ids or not times:
+            app_logger.log_warning(
+                "MESH_ACTIVE_PATH_BACKUP_QUERY_DONE",
+                f"active_count={len(active_rows)}, standby_count=0, matched_backup_count=0, reason=missing_source_or_time",
+            )
+            return []
+        start_time, end_time = _expand_time_range(min(times), max(times), 1.0)
+        placeholders = ",".join("?" for _ in source_ids)
+        app_logger.log_info(
+            "MESH_ACTIVE_PATH_BACKUP_QUERY_START",
+            f"active_count={len(active_rows)}, source_count={len(source_ids)}, start_time={start_time}, end_time={end_time}",
+        )
+        return [
+            _with_synthetic_payload(row)
+            for row in conn.execute(
+                f"""
+                SELECT {_MESH_LINK_CHART_COLUMNS}, peer_ap_mac, peer_radio_mac
+                FROM mesh_links
+                WHERE link_state = ?
+                  AND source_file_id IN ({placeholders})
+                  AND sample_time >= ?
+                  AND sample_time <= ?
+                ORDER BY source_file_id ASC, sample_time ASC, radio ASC, peer_mac_normalized ASC, id ASC
+                """,
+                (LINK_STATE_STANDBY, *source_ids, start_time, end_time),
+            ).fetchall()
+        ]
+
+    def query_active_link_build_order(
+        self,
+        source_file_id: int | str | None = None,
+        radio: int | None = None,
+        analysis_params: MeshAnalysisParams | dict[str, object] | str | None = None,
+        fallback_analysis_params: MeshAnalysisParams | dict[str, object] | str | None = None,
+    ) -> list[dict[str, object]]:
         if self._is_index_database():
             if source_file_id not in (None, ""):
                 repo = self._detail_repo_for_source(source_file_id)
-                rows = repo.query_active_link_build_order(None, radio) if repo else []
+                rows = repo.query_active_link_build_order(None, radio, analysis_params, fallback_analysis_params) if repo else []
                 for row in rows:
                     row["source_file_id"] = int(source_file_id)
                 return rows
             rows: list[dict[str, object]] = []
             for source_id, repo in self._detail_repo_items():
-                detail_rows = repo.query_active_link_build_order(None, radio)
+                detail_rows = repo.query_active_link_build_order(None, radio, analysis_params, fallback_analysis_params)
                 for row in detail_rows:
                     row["source_file_id"] = source_id
                 rows.extend(detail_rows)
@@ -1405,10 +1505,10 @@ class MeshMrRepository:
         clauses: list[str] = []
         values: list[object] = []
         if source_file_id not in (None, ""):
-            clauses.append("s.source_file_id = ?")
+            clauses.append("ap.source_file_id = ?")
             values.append(int(source_file_id))
         if radio is not None:
-            clauses.append("s.radio = ?")
+            clauses.append("ap.radio = ?")
             values.append(int(radio))
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as conn:
@@ -1416,51 +1516,32 @@ class MeshMrRepository:
                 dict(row)
                 for row in conn.execute(
                     f"""
-                    SELECT s.id, s.source_file_id, s.radio, s.peer_mac_normalized, s.peer_mac,
-                           s.peer_ap_name, s.belong_station AS peer_site, '' AS peer_radio,
-                           s.start_time AS build_start_time, s.end_time AS build_end_time,
-                           s.duration_sec AS main_link_duration_seconds,
-                           s.sample_count, s.avg_rssi AS avg_mr_rssi, s.min_rssi AS min_mr_rssi,
-                           s.max_rssi AS max_mr_rssi, s.event_type AS build_result,
-                           sf.archived_filename AS source_file
-                    FROM active_segments s
-                    LEFT JOIN source_files sf ON sf.id = s.source_file_id
+                    SELECT ap.id, ap.link_id, ap.source_file_id, ap.radio, ap.sample_time,
+                           ap.peer_mac_raw, ap.peer_mac_normalized, ap.peer_mac,
+                           ap.peer_ap_name, ap.peer_site, ap.peer_radio, ap.peer_radio_label,
+                           ml.peer_ap_mac, ml.peer_radio_mac,
+                           ap.duration_text, ap.duration_seconds,
+                           ap.local_rssi_db, ap.peer_rssi_db,
+                           ap.local_tx_busy, ap.peer_tx_busy, ap.local_rx_busy, ap.peer_rx_busy,
+                           sf.archived_filename AS source_file,
+                           sf.analysis_params_json AS analysis_params_json
+                    FROM active_points ap
+                    LEFT JOIN source_files sf ON sf.id = ap.source_file_id
+                    LEFT JOIN mesh_links ml ON ml.id = ap.link_id
                     {where}
-                    ORDER BY s.radio ASC, s.start_time ASC, s.id ASC
+                    ORDER BY ap.source_file_id ASC, ap.radio ASC, ap.sample_time ASC, ap.id ASC
                     """,
                     values,
                 ).fetchall()
             ]
-        result: list[dict[str, object]] = []
-        for sequence, row in enumerate(rows, start=1):
-            result.append(
-                {
-                    "sequence": sequence,
-                    "radio": row.get("radio"),
-                    "active_peer_mac": row.get("peer_mac_normalized") or row.get("peer_mac") or "",
-                    "peer_ap_name": row.get("peer_ap_name") or "",
-                    "peer_site": row.get("peer_site") or "",
-                    "peer_radio": row.get("peer_radio") or "",
-                    "build_start_time": row.get("build_start_time") or "",
-                    "build_end_time": row.get("build_end_time") or "",
-                    "main_link_duration_seconds": row.get("main_link_duration_seconds") or "",
-                    "reported_duration_seconds": "",
-                    "sample_count": row.get("sample_count") or "",
-                    "avg_mr_rssi": row.get("avg_mr_rssi") or "",
-                    "min_mr_rssi": row.get("min_mr_rssi") or "",
-                    "max_mr_rssi": row.get("max_mr_rssi") or "",
-                    "avg_tx_busy": "",
-                    "avg_rx_busy": "",
-                    "build_result": "short" if (_float(row.get("main_link_duration_seconds")) or 0.0) < 2.0 else "normal",
-                    "source_file": row.get("source_file") or "",
-                }
-            )
-        return result
+        return _active_build_order_rows_from_points(rows, analysis_params, fallback_analysis_params)
 
     def query_peer_chart_initial_segments(self, anchor_link_id: int, visible_samples: int = 300, margin_samples: int = 60, source_file_id: int | str | None = None) -> dict[str, object]:
         if self._is_index_database() and source_file_id not in (None, ""):
             repo = self._detail_repo_for_source(source_file_id)
             return repo.query_peer_chart_initial_segments(anchor_link_id, visible_samples, margin_samples, None) if repo else {"anchor": None, "peer_segment": _segment_payload(None, [], None, None), "run_segment": _segment_payload(None, [], None, None)}
+        if self._is_index_database():
+            return _empty_peer_chart_payload("index database peer chart initial query requires source_file_id because mesh_links.id is local to each parsed database")
         with self._connect() as conn:
             anchor_row = conn.execute(f"SELECT {_MESH_LINK_CHART_COLUMNS} FROM mesh_links WHERE id = ?", (anchor_link_id,)).fetchone()
             if anchor_row is None:
@@ -1523,6 +1604,13 @@ class MeshMrRepository:
         if effective_source_file_id is not None:
             peer_clauses.append("source_file_id = ?")
             peer_values.append(effective_source_file_id)
+        app_logger.log_info(
+            "MESH_PEER_CHART_CONTEXT_QUERY_START",
+            (
+                f"anchor_link_id={anchor.get('id')}, source_file_id={effective_source_file_id or ''}, "
+                f"radio={anchor.get('radio')}, start_time={start_time}, end_time={end_time}"
+            ),
+        )
         with self._connect() as conn:
             peer_rows = [
                 _with_synthetic_payload(row)
@@ -1537,10 +1625,10 @@ class MeshMrRepository:
                     f"""
                     SELECT {_MESH_LINK_CHART_COLUMNS}
                     FROM mesh_links
-                    WHERE radio = ? AND sample_time >= ? AND sample_time <= ? AND (? IS NULL OR session_id = ?) AND (? IS NULL OR source_file_id = ?)
+                    WHERE radio = ? AND sample_time >= ? AND sample_time <= ? AND (? IS NULL OR source_file_id = ?)
                     ORDER BY sample_time ASC, id ASC
                     """,
-                    (anchor.get("radio"), start_time, end_time, anchor.get("session_id"), anchor.get("session_id"), effective_source_file_id, effective_source_file_id),
+                    (anchor.get("radio"), start_time, end_time, effective_source_file_id, effective_source_file_id),
                 ).fetchall()
             ]
             events = [
@@ -1555,6 +1643,16 @@ class MeshMrRepository:
                     (anchor.get("radio"), start_time, end_time, effective_source_file_id, effective_source_file_id),
                 ).fetchall()
             ]
+        active_context = [row for row in run_rows if row.get("link_state") == LINK_STATE_ACTIVE]
+        standby_context = [row for row in run_rows if row.get("link_state") == LINK_STATE_STANDBY]
+        app_logger.log_info(
+            "MESH_PEER_CHART_CONTEXT_QUERY_DONE",
+            (
+                f"selected_points={len(peer_rows)}, active_context_count={len(active_context)}, "
+                f"standby_context_count={len(standby_context)}, "
+                f"matched_backup_count={_count_exact_backup_matches(active_context, standby_context)}"
+            ),
+        )
         peer_segment = _segment_payload(anchor, peer_rows, interval, gap)
         run_segment = _segment_payload(anchor, run_rows, interval, gap)
         peer_segment["partial"] = partial
@@ -2647,6 +2745,39 @@ def _segment_payload(anchor: dict[str, object] | None, rows: list[dict[str, obje
     }
 
 
+def _empty_peer_chart_payload(message: str) -> dict[str, object]:
+    peer_segment = _segment_payload(None, [], None, None)
+    run_segment = _segment_payload(None, [], None, None)
+    peer_segment["message"] = message
+    run_segment["message"] = message
+    return {"anchor": None, "peer_segment": peer_segment, "run_segment": run_segment, "message": message}
+
+
+def _expand_time_range(start_time: str, end_time: str, margin_seconds: float) -> tuple[str, str]:
+    try:
+        start = datetime.fromisoformat(start_time) - timedelta(seconds=margin_seconds)
+        end = datetime.fromisoformat(end_time) + timedelta(seconds=margin_seconds)
+    except (TypeError, ValueError):
+        return start_time, end_time
+    return _format_sample_time(start), _format_sample_time(end)
+
+
+def _format_sample_time(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _count_exact_backup_matches(active_rows: list[dict[str, object]], standby_rows: list[dict[str, object]]) -> int:
+    standby_index: dict[tuple[str, str], int] = defaultdict(int)
+    for row in standby_rows:
+        key = (str(row.get("source_file_id") or ""), str(row.get("sample_time") or ""))
+        standby_index[key] += 1
+    matched = 0
+    for row in active_rows:
+        key = (str(row.get("source_file_id") or ""), str(row.get("sample_time") or ""))
+        matched += standby_index.get(key, 0)
+    return matched
+
+
 def _seconds_between(previous: str, current: str) -> float:
     try:
         return (datetime.fromisoformat(current) - datetime.fromisoformat(previous)).total_seconds()
@@ -2654,7 +2785,63 @@ def _seconds_between(previous: str, current: str) -> float:
         return 0.0
 
 
-def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample_interval: float) -> dict[str, object]:
+def _active_build_order_rows_from_points(
+    rows: list[dict[str, object]],
+    analysis_params: MeshAnalysisParams | dict[str, object] | str | None = None,
+    fallback_analysis_params: MeshAnalysisParams | dict[str, object] | str | None = None,
+) -> list[dict[str, object]]:
+    if not rows:
+        return []
+    override_params = normalize_mesh_analysis_params(analysis_params) if analysis_params is not None else None
+    fallback_params = normalize_mesh_analysis_params(fallback_analysis_params) if fallback_analysis_params is not None else None
+    times_by_scope: dict[tuple[object, object], list[str]] = defaultdict(list)
+    params_by_scope: dict[tuple[object, object], MeshAnalysisParams] = {}
+    for row in rows:
+        sample_time = str(row.get("sample_time") or "")
+        scope = (row.get("source_file_id"), row.get("radio"))
+        if sample_time:
+            times_by_scope[scope].append(sample_time)
+        params_by_scope.setdefault(scope, _analysis_params_for_row(row, override_params, fallback_params))
+    interval_by_scope: dict[tuple[object, object], tuple[float, float]] = {}
+    for scope, times in times_by_scope.items():
+        params = params_by_scope.get(scope) or MeshAnalysisParams()
+        if params.sample_interval_ms:
+            interval = max(params.sample_interval_ms / 1000.0, 0.001)
+            threshold = min(max(interval * 5, 5.0), 60.0)
+        else:
+            interval, threshold = _interval_and_threshold(sorted(set(times)))
+        interval_by_scope[scope] = (float(interval or 1.0), threshold)
+
+    result: list[dict[str, object]] = []
+    current: list[dict[str, object]] = []
+    last_key: tuple[object, object, str] | None = None
+    last_time = ""
+
+    def flush_segment() -> None:
+        nonlocal current
+        if not current:
+            return
+        scope = (current[0].get("source_file_id"), current[0].get("radio"))
+        sample_interval, _threshold = interval_by_scope.get(scope, (1.0, 5.0))
+        params = params_by_scope.get(scope) or _analysis_params_for_row(current[0], override_params, fallback_params)
+        result.append(_active_build_order_row(len(result) + 1, current, sample_interval, params))
+        current = []
+
+    for row in rows:
+        sample_time = str(row.get("sample_time") or "")
+        key = (row.get("source_file_id"), row.get("radio"), _canonical_mac(row.get("peer_mac_normalized") or row.get("peer_mac_raw") or row.get("peer_mac")))
+        _interval, threshold = interval_by_scope.get((row.get("source_file_id"), row.get("radio")), (1.0, 5.0))
+        if current and (key != last_key or _seconds_between(last_time, sample_time) > threshold):
+            flush_segment()
+        current.append(row)
+        last_key = key
+        last_time = sample_time
+    flush_segment()
+    _mark_same_physical_ap_radio_switches(result)
+    return result
+
+
+def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample_interval: float, params: MeshAnalysisParams) -> dict[str, object]:
     first = rows[0]
     last = rows[-1]
     duration = max(_seconds_between(str(first.get("sample_time") or ""), str(last.get("sample_time") or "")) + max(sample_interval, 0.0), 0.0)
@@ -2662,13 +2849,29 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
     rssi_values = [_float(row.get("local_rssi_db")) for row in rows]
     tx_values = [_float(row.get("local_tx_busy")) for row in rows]
     rx_values = [_float(row.get("local_rx_busy")) for row in rows]
+    peer_tx_values = [_float(row.get("peer_tx_busy")) for row in rows]
+    peer_rx_values = [_float(row.get("peer_rx_busy")) for row in rows]
+    peer_radio = _first_nonempty([row.get("peer_radio_label") for row in rows]) or _first_nonempty([row.get("peer_radio") for row in rows])
+    duration_ms = int(round(duration * 1000))
+    short_threshold_ms = params.short_link_threshold_ms
+    is_short = duration_ms < short_threshold_ms
+    if duration_ms < short_threshold_ms:
+        judge_reason = f"持续 {duration_ms}ms < 短时阈值 {short_threshold_ms}ms"
+    elif duration_ms < params.main_link_switch_time_ms:
+        judge_reason = f"持续 {duration_ms}ms 处于容差范围，未判短时建链"
+    elif len(rows) < MIN_NORMAL_ACTIVE_SAMPLE_COUNT:
+        judge_reason = f"采样点数 {len(rows)} 偏少，但持续时间未低于短时阈值"
+    else:
+        judge_reason = "持续时间和采样点数达到配置阈值"
+    physical_ap_key = _physical_ap_key(first)
     return {
         "sequence": sequence,
+        "source_file_id": first.get("source_file_id"),
         "radio": first.get("radio"),
         "active_peer_mac": first.get("peer_mac_normalized") or first.get("peer_mac_raw") or "",
         "peer_ap_name": first.get("peer_ap_name") or "",
         "peer_site": first.get("peer_site") or "",
-        "peer_radio": first.get("peer_radio_label") or first.get("peer_radio") or "",
+        "peer_radio": peer_radio,
         "build_start_time": first.get("sample_time") or "",
         "build_end_time": last.get("sample_time") or "",
         "main_link_duration_seconds": round(duration, 3),
@@ -2679,9 +2882,89 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "max_mr_rssi": _maximum(rssi_values),
         "avg_tx_busy": _average(tx_values),
         "avg_rx_busy": _average(rx_values),
-        "build_result": "normal" if duration >= 2.0 else "short",
-        "source_file": first.get("archived_filename") or first.get("source_file_id") or "",
+        "avg_peer_tx_busy": _average(peer_tx_values),
+        "avg_peer_rx_busy": _average(peer_rx_values),
+        "main_link_switch_time_ms": params.main_link_switch_time_ms,
+        "short_link_tolerance_ms": params.short_link_tolerance_ms,
+        "short_threshold_seconds": round(short_threshold_ms / 1000.0, 3),
+        "min_normal_sample_count": MIN_NORMAL_ACTIVE_SAMPLE_COUNT,
+        "is_same_physical_ap_radio_switch": False,
+        "physical_ap_key": physical_ap_key,
+        "merge_same_physical_ap_dual_radio": params.merge_same_physical_ap_dual_radio,
+        "build_result": "short" if is_short else "normal",
+        "judge_reason": judge_reason,
+        "source_file": first.get("source_file") or first.get("archived_filename") or first.get("source_file_id") or "",
     }
+
+
+def _analysis_params_for_row(
+    row: dict[str, object],
+    override_params: MeshAnalysisParams | None,
+    fallback_params: MeshAnalysisParams | None,
+) -> MeshAnalysisParams:
+    if override_params is not None:
+        return override_params
+    raw_snapshot = row.get("analysis_params_json")
+    if str(raw_snapshot or "").strip():
+        return mesh_analysis_params_from_json(raw_snapshot)
+    return fallback_params or MeshAnalysisParams()
+
+
+def _mark_same_physical_ap_radio_switches(rows: list[dict[str, object]]) -> None:
+    for index, row in enumerate(rows):
+        if row.get("build_result") != "short" or not row.get("merge_same_physical_ap_dual_radio"):
+            continue
+        key = str(row.get("physical_ap_key") or "")
+        if not key:
+            continue
+        for neighbor in _neighbor_segments(rows, index):
+            if not _same_switch_scope(row, neighbor):
+                continue
+            if key != str(neighbor.get("physical_ap_key") or ""):
+                continue
+            if _canonical_mac(row.get("active_peer_mac")) == _canonical_mac(neighbor.get("active_peer_mac")):
+                continue
+            row["is_same_physical_ap_radio_switch"] = True
+            row["build_result"] = "same_ap_radio_switch"
+            row["judge_reason"] = "同一物理 AP 的双射频口切换，未判短时建链"
+            break
+
+
+def _neighbor_segments(rows: list[dict[str, object]], index: int) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    if index > 0:
+        result.append(rows[index - 1])
+    if index + 1 < len(rows):
+        result.append(rows[index + 1])
+    return result
+
+
+def _same_switch_scope(left: dict[str, object], right: dict[str, object]) -> bool:
+    return left.get("source_file_id") == right.get("source_file_id") and left.get("radio") == right.get("radio")
+
+
+def _physical_ap_key(row: dict[str, object]) -> str:
+    ap_mac = _canonical_mac(row.get("peer_ap_mac"))
+    if ap_mac:
+        return f"ap_mac:{ap_mac}"
+    ap_name = str(row.get("peer_ap_name") or "").strip().lower()
+    if ap_name:
+        return f"ap_name:{ap_name}"
+    peer_radio_mac = _canonical_mac(row.get("peer_radio_mac"))
+    if peer_radio_mac:
+        return f"peer_radio_mac:{peer_radio_mac}"
+    station = str(row.get("peer_site") or "").strip().lower()
+    if station and ap_name:
+        return f"station_ap:{station}:{ap_name}"
+    return ""
+
+
+def _first_nonempty(values: list[object]) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _float(value: object) -> float | None:

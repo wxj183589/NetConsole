@@ -8,12 +8,13 @@
 2. [开发约定](DEVELOPMENT_CONVENTIONS.md)
 3. [Codex 工作流](CODEX_WORKFLOW.md)
 4. [UI 表格与全选框规范](ui_table_guidelines.md)
-5. [功能模块说明](FEATURE_MODULES.md)
-6. [数据目录规范](DATA_LAYOUT.md)
-7. [轨道交通业务规则](RAIL_TRANSIT_RULES.md)
-8. [构建与发布](BUILD_AND_RELEASE.md)
-9. [第三方依赖说明](THIRD_PARTY_DEPENDENCIES.md)
-10. [开发历史](DEVELOPMENT_HISTORY.md)
+5. [MR 原始 MESH 日志分析规则](mr_mesh_log_analysis_rules.md)
+6. [功能模块说明](FEATURE_MODULES.md)
+7. [数据目录规范](DATA_LAYOUT.md)
+8. [轨道交通业务规则](RAIL_TRANSIT_RULES.md)
+9. [构建与发布](BUILD_AND_RELEASE.md)
+10. [第三方依赖说明](THIRD_PARTY_DEPENDENCIES.md)
+11. [开发历史](DEVELOPMENT_HISTORY.md)
 
 ## 现有编号文档
 

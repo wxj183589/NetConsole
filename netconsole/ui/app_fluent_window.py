@@ -11,9 +11,14 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidgetItem,
     QMenu,
     QMessageBox,
@@ -22,6 +27,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpacerItem,
     QStackedWidget,
+    QTabWidget,
     QTableView,
     QTextEdit,
     QVBoxLayout,
@@ -42,6 +48,7 @@ from netconsole.core import version as version_info
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
 from netconsole.ui.pages.settings_page import SettingsPage
+from netconsole.ui.dialogs.mesh_analysis_params_dialog import MeshAnalysisParamsEditor
 from netconsole.ui.components.nc_command_bar import NCCommandAction, NCCommandBar
 from netconsole.ui.shell.fluent_bridge import (
     FIF,
@@ -879,12 +886,51 @@ class AppFluentWindow(SplitFluentWindow):
         self.activate_page(page_id, force_if_empty=(page_id == "rail_transit"))
 
     def create_site(self) -> None:
-        name, accepted = QInputDialog.getText(self, "新建局点", "局点名称")
-        name = name.strip() if name else ""
-        if not accepted or not name:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("新建局点")
+        form = QFormLayout()
+        name_input = QLineEdit()
+        line_input = QLineEdit()
+        system_combo = QComboBox()
+        system_combo.addItems(["PIS", "信号", "其他"])
+        network_combo = QComboBox()
+        network_combo.addItems(["default", "A网", "B网", "红网", "蓝网", "其他"])
+        remark_input = QLineEdit()
+        form.addRow("局点名称", name_input)
+        form.addRow("线路名称", line_input)
+        form.addRow("系统类型", system_combo)
+        form.addRow("网络域", network_combo)
+        form.addRow("备注", remark_input)
+        basic_page = QWidget()
+        basic_page.setLayout(form)
+        mesh_params_editor = MeshAnalysisParamsEditor()
+        tabs = QTabWidget()
+        tabs.addTab(basic_page, "基础信息")
+        tabs.addTab(mesh_params_editor, "MR / MESH 分析参数")
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(tabs)
+        layout.addWidget(buttons)
+        dialog.setMinimumWidth(560)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name = name_input.text().strip()
+        if not name:
             return
         try:
-            site = self.site_manager.create_site(name, display_name=name)
+            site = self.site_manager.create_site(
+                name,
+                display_name=name,
+                line_name=line_input.text().strip(),
+                system_type=str(system_combo.currentText() or "").strip(),
+                network_domain=str(network_combo.currentText() or "default").strip(),
+                remark=remark_input.text().strip(),
+                mesh_analysis_params=mesh_params_editor.params().to_dict(),
+            )
         except Exception as exc:
             app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
             QMessageBox.warning(self, "新建局点", str(exc))

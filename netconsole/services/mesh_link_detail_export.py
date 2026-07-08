@@ -2,43 +2,52 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from netconsole.models.mesh_log_models import format_mac_h3c
-from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
+from netconsole.ui.table.table_autosize_engine import excel_column_width
 
 MESH_LINK_EXPORT_ACTIVE_FONT_COLOR = "15803D"
 MESH_LINK_EXPORT_GROUP_FILL_1 = "FFFFFF"
 MESH_LINK_EXPORT_GROUP_FILL_2 = "F3F4F6"
 
+ProgressCallback = Callable[[int, int, str], None]
+CancelCallback = Callable[[], bool]
+
+
+class MeshLinkDetailExportCancelled(Exception):
+    pass
+
 
 LINK_DETAIL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("序号", "record_seq"),
-    ("时间", "sample_time"),
+    ("采样时间", "sample_time"),
     ("Radio", "radio"),
-    ("LinkState", "link_state"),
+    ("链路状态", "link_state"),
     ("PeerMac", "peer_mac"),
     ("当前PEER AP名称", "peer_ap_name"),
     ("AP MAC", "peer_ap_mac"),
     ("归属站点", "peer_site"),
     ("Peer Radio MAC", "peer_radio_mac"),
-    ("EER Radio", "peer_radio"),
-    ("EstablishTime", "establish_time"),
-    ("DurationTime", "duration_text"),
-    ("LinkCnt", "link_count"),
-    ("L_Rssi", "local_rssi_db"),
-    ("P_Rssi", "peer_rssi_db"),
-    ("L_Cpu", "local_cpu_percent"),
-    ("P_Cpu", "peer_cpu_percent"),
-    ("L_Mem", "local_mem_percent"),
-    ("P_Mem", "peer_mem_percent"),
-    ("L_TxBusy", "local_tx_busy"),
-    ("L_RxBusy", "local_rx_busy"),
-    ("P_TxBusy", "peer_tx_busy"),
-    ("P_RxBusy", "peer_rx_busy"),
+    ("PEER Radio", "peer_radio"),
+    ("建链时间", "establish_time"),
+    ("链路时长", "duration_text"),
+    ("链路数", "link_count"),
+    ("MR侧RSSI差值", "local_rssi_db"),
+    ("Peer侧RSSI差值", "peer_rssi_db"),
+    ("MR侧CPU", "local_cpu_percent"),
+    ("Peer侧CPU", "peer_cpu_percent"),
+    ("MR侧内存", "local_mem_percent"),
+    ("Peer侧内存", "peer_mem_percent"),
+    ("MR侧发送繁忙度", "local_tx_busy"),
+    ("MR侧接收繁忙度", "local_rx_busy"),
+    ("Peer侧发送繁忙度", "peer_tx_busy"),
+    ("Peer侧接收繁忙度", "peer_rx_busy"),
     ("源文件", "archived_filename"),
     ("源行号", "source_line_number"),
 )
@@ -47,22 +56,26 @@ LINK_DETAIL_COLUMNS: tuple[tuple[str, str], ...] = (
 ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("序号", "sequence"),
     ("Radio", "radio"),
-    ("Active PeerMac", "active_peer_mac"),
+    ("主链路 PeerMac", "active_peer_mac"),
     ("当前PEER AP名称", "peer_ap_name"),
     ("归属站点", "peer_site"),
     ("Peer Radio", "peer_radio"),
     ("建链开始时间", "build_start_time"),
     ("建链结束时间", "build_end_time"),
-    ("主链路维持时长(s)", "main_link_duration_seconds"),
-    ("设备上报链路时长(s)", "reported_duration_seconds"),
-    ("采样数", "sample_count"),
-    ("MR RSSI平均", "avg_mr_rssi"),
-    ("MR RSSI最小", "min_mr_rssi"),
-    ("MR RSSI最大", "max_mr_rssi"),
-    ("TxBusy平均", "avg_tx_busy"),
-    ("RxBusy平均", "avg_rx_busy"),
+    ("主链路持续时长(秒)", "main_link_duration_seconds"),
+    ("日志上报时长(秒)", "reported_duration_seconds"),
+    ("采样点数", "sample_count"),
+    ("MR侧平均RSSI", "avg_mr_rssi"),
+    ("最小RSSI", "min_mr_rssi"),
+    ("最大RSSI", "max_mr_rssi"),
+    ("发送繁忙度", "avg_tx_busy"),
+    ("接收繁忙度", "avg_rx_busy"),
+    ("配置切换时间(ms)", "main_link_switch_time_ms"),
+    ("短时判定容差(ms)", "short_link_tolerance_ms"),
+    ("是否同AP射频切换", "is_same_physical_ap_radio_switch"),
     ("建链结果", "build_result"),
-    ("来源文件", "source_file"),
+    ("判定原因", "judge_reason"),
+    ("源文件", "source_file"),
 )
 
 
@@ -117,63 +130,152 @@ def active_build_order_row_values(row: dict[str, object]) -> list[object]:
         row.get("max_mr_rssi") or "",
         row.get("avg_tx_busy") or "",
         row.get("avg_rx_busy") or "",
-        "正常" if result == "normal" else "短时建链" if result == "short" else result,
+        row.get("main_link_switch_time_ms") or "",
+        row.get("short_link_tolerance_ms") or "",
+        "是" if row.get("is_same_physical_ap_radio_switch") else "否",
+        _build_result_text(result),
+        row.get("judge_reason") or "",
         row.get("source_file") or "",
     ]
 
 
-def export_mesh_link_details_xlsx(path: Path, rows: Iterable[dict[str, object]], active_build_order_rows: Iterable[dict[str, object]] | None = None) -> None:
-    materialized = list(rows)
-    active_build_order_materialized = list(active_build_order_rows or [])
+def export_mesh_link_details_xlsx(
+    path: Path,
+    rows: Iterable[dict[str, object]],
+    active_build_order_rows: Iterable[dict[str, object]] | None = None,
+    *,
+    total_rows: int | None = None,
+    progress_callback: ProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    workbook = Workbook()
-    _write_link_detail_sheet(workbook.active, "链路明细", LINK_DETAIL_COLUMNS, materialized)
-    _write_basic_sheet(workbook.create_sheet("主链路建链顺序"), ACTIVE_BUILD_ORDER_COLUMNS, active_build_order_materialized, active_build_order_row_values)
+    workbook = Workbook(write_only=True)
+    _write_link_detail_sheet(
+        workbook.create_sheet("链路明细"),
+        LINK_DETAIL_COLUMNS,
+        rows,
+        total_rows=max(int(total_rows or 0), 0),
+        progress_callback=progress_callback,
+        should_cancel=should_cancel,
+    )
+    _write_basic_sheet(
+        workbook.create_sheet("主链路建链顺序"),
+        ACTIVE_BUILD_ORDER_COLUMNS,
+        active_build_order_rows or [],
+        active_build_order_row_values,
+        should_cancel=should_cancel,
+    )
+    _raise_if_cancelled(should_cancel)
     workbook.save(path)
 
 
-def _write_link_detail_sheet(worksheet, title: str, columns: tuple[tuple[str, str], ...], rows: list[dict[str, object]]) -> None:
-    worksheet.title = title
-    worksheet.append([header for header, _field in columns])
+def _write_link_detail_sheet(
+    worksheet,
+    columns: tuple[tuple[str, str], ...],
+    rows: Iterable[dict[str, object]],
+    *,
+    total_rows: int,
+    progress_callback: ProgressCallback | None,
+    should_cancel: CancelCallback | None,
+) -> int:
+    headers = [header for header, _field in columns]
     alignment = Alignment(horizontal="center", vertical="center")
     header_font = Font(bold=True)
     active_font = Font(bold=True, color=MESH_LINK_EXPORT_ACTIVE_FONT_COLOR)
     standby_font = Font(bold=False)
     group_fill_1 = PatternFill(fill_type="solid", fgColor=MESH_LINK_EXPORT_GROUP_FILL_1)
     group_fill_2 = PatternFill(fill_type="solid", fgColor=MESH_LINK_EXPORT_GROUP_FILL_2)
-    for cell in worksheet[1]:
-        cell.font = header_font
-        cell.alignment = alignment
-    group_indexes = _sample_group_indexes(rows)
-    for row_index, row in enumerate(rows, start=2):
-        worksheet.append(link_detail_row_values(row))
-        group_index = group_indexes[row_index - 2]
+    widths = _initial_widths(columns)
+    worksheet.freeze_panes = "A2"
+    worksheet.append(_styled_cells(worksheet, headers, alignment, header_font))
+    group_index = -1
+    previous_group_key: tuple[object, object, object] | None = None
+    written = 0
+    for row in rows:
+        _raise_if_cancelled(should_cancel)
+        values = link_detail_row_values(row)
+        _update_widths(widths, columns, values)
+        group_key = (row.get("source_file_id"), row.get("sample_time"), row.get("radio"))
+        if group_key != previous_group_key:
+            group_index += 1
+            previous_group_key = group_key
         fill = group_fill_1 if group_index % 2 == 0 else group_fill_2
         font = active_font if str(row.get("link_state") or "").upper() == "ACTIVE" else standby_font
-        for cell in worksheet[row_index]:
-            cell.alignment = alignment
-            cell.fill = fill
-            cell.font = font
-    worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
-    apply_worksheet_autofit(worksheet, maximum=80)
+        worksheet.append(_styled_cells(worksheet, values, alignment, font, fill))
+        written += 1
+        if progress_callback is not None and (written % 500 == 0 or (total_rows and written >= total_rows)):
+            progress_callback(written, total_rows, "mesh_analysis.export_progress_write_links")
+    worksheet.auto_filter.ref = _sheet_range(len(columns), written + 1)
+    _apply_widths(worksheet, widths)
+    if progress_callback is not None:
+        progress_callback(written, total_rows, "mesh_analysis.export_progress_write_links")
+    return written
 
 
-def _write_basic_sheet(worksheet, columns: tuple[tuple[str, str], ...], rows: list[dict[str, object]], row_factory) -> None:
-    worksheet.append([header for header, _field in columns])
+def _write_basic_sheet(worksheet, columns: tuple[tuple[str, str], ...], rows: Iterable[dict[str, object]], row_factory, should_cancel: CancelCallback | None = None) -> None:
+    headers = [header for header, _field in columns]
     alignment = Alignment(horizontal="center", vertical="center")
     header_font = Font(bold=True)
-    for cell in worksheet[1]:
-        cell.font = header_font
-        cell.alignment = alignment
-    for row in rows:
-        worksheet.append(row_factory(row))
-    for row_cells in worksheet.iter_rows(min_row=2):
-        for cell in row_cells:
-            cell.alignment = alignment
+    widths = _initial_widths(columns)
     worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
-    apply_worksheet_autofit(worksheet, maximum=80)
+    worksheet.append(_styled_cells(worksheet, headers, alignment, header_font))
+    written = 0
+    for row in rows:
+        _raise_if_cancelled(should_cancel)
+        values = row_factory(row)
+        _update_widths(widths, columns, values)
+        worksheet.append(_styled_cells(worksheet, values, alignment))
+        written += 1
+    worksheet.auto_filter.ref = _sheet_range(len(columns), written + 1)
+    _apply_widths(worksheet, widths)
+
+
+def _styled_cells(worksheet, values: list[object] | tuple[object, ...], alignment: Alignment, font: Font | None = None, fill: PatternFill | None = None) -> list[WriteOnlyCell]:
+    cells: list[WriteOnlyCell] = []
+    for value in values:
+        cell = WriteOnlyCell(worksheet, value="" if value is None else value)
+        cell.alignment = alignment
+        if font is not None:
+            cell.font = font
+        if fill is not None:
+            cell.fill = fill
+        cells.append(cell)
+    return cells
+
+
+def _initial_widths(columns: tuple[tuple[str, str], ...]) -> list[float]:
+    return [excel_column_width(header, maximum=80.0, field=field, header=header) for header, field in columns]
+
+
+def _update_widths(widths: list[float], columns: tuple[tuple[str, str], ...], values: list[object]) -> None:
+    for index, value in enumerate(values):
+        if index < len(widths):
+            header, field = columns[index]
+            widths[index] = max(widths[index], excel_column_width(value, maximum=80.0, field=field, header=header))
+
+
+def _apply_widths(worksheet, widths: list[float]) -> None:
+    for index, width in enumerate(widths, start=1):
+        worksheet.column_dimensions[get_column_letter(index)].width = min(max(width, 8.0), 80.0)
+
+
+def _sheet_range(column_count: int, row_count: int) -> str:
+    return f"A1:{get_column_letter(max(column_count, 1))}{max(row_count, 1)}"
+
+
+def _raise_if_cancelled(should_cancel: CancelCallback | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise MeshLinkDetailExportCancelled("导出已取消")
+
+
+def _build_result_text(value: str) -> str:
+    if value == "normal":
+        return "正常"
+    if value == "short":
+        return "短时建链"
+    if value == "same_ap_radio_switch":
+        return "同AP射频切换"
+    return value
 
 
 def _sample_group_indexes(rows: list[dict[str, object]]) -> list[int]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -38,6 +39,14 @@ class MeshPeerSeriesWorker(QThread):
         self.active_only = active_only
 
     def run(self) -> None:
+        app_logger.log_info(
+            "MESH_CHART_WORKER_START",
+            (
+                f"db_path={self.db_path}, peer_mac={self.peer_mac}, radio={self.radio}, "
+                f"session_id={self.session_id or ''}, anchor_link_id={self.anchor_link_id}, "
+                f"source_file_id={self.source_file_id}, active_only={self.active_only}"
+            ),
+        )
         try:
             repo = MeshMrRepository(self.db_path)
             if self.active_only:
@@ -66,6 +75,10 @@ class MeshPeerSeriesWorker(QThread):
                 rows = repo.query_peer_series(self.peer_mac, self.radio, self.session_id, source_file_id=self.source_file_id)
                 self.loaded.emit([_decode_row(row) for row in rows])
                 return
+            if self.source_file_id in (None, ""):
+                app_logger.log_warning("MESH_CHART_EMPTY_PAYLOAD", f"reason=missing_source_file_id, anchor_link_id={self.anchor_link_id}, peer_mac={self.peer_mac}")
+                self.loaded_initial.emit(_empty_payload("当前单 AP 图表缺少源文件ID，无法定位单日志数据。"))
+                return
             if hasattr(repo, "query_peer_chart_initial_segments"):
                 initial_started = time.perf_counter()
                 initial_segments = _call_with_optional_source(repo.query_peer_chart_initial_segments, self.anchor_link_id, self.source_file_id)
@@ -78,6 +91,7 @@ class MeshPeerSeriesWorker(QThread):
                 self.loaded_initial.emit(
                     {
                         "kind": "initial",
+                        "message": initial_segments.get("message") or initial_run_segment.get("message") or "",
                         "peer_segment": {key: value for key, value in initial_peer_segment.items() if key != "rows"},
                         "chart_payload": initial_chart_payload,
                     }
@@ -86,6 +100,8 @@ class MeshPeerSeriesWorker(QThread):
                     "MESH_CHART_INITIAL_PAYLOAD_BUILT",
                     f"anchor_link_id={self.anchor_link_id}, rows={len(initial_run_segment.get('rows', []))}, query_ms={initial_query_elapsed * 1000:.1f}, payload_ms={initial_payload_elapsed * 1000:.1f}",
                 )
+            if self.isInterruptionRequested():
+                return
             query_started = time.perf_counter()
             segments = _call_with_optional_source(repo.query_peer_chart_segments, self.anchor_link_id, self.source_file_id)
             query_elapsed = time.perf_counter() - query_started
@@ -102,18 +118,51 @@ class MeshPeerSeriesWorker(QThread):
                 "MESH_CHART_PAYLOAD_BUILT",
                 f"anchor_link_id={self.anchor_link_id}, raw_samples={chart_payload['metadata']['sample_count']}, peer_samples={chart_payload['metadata']['peer_sample_count']}, elapsed_ms={payload_elapsed * 1000:.1f}, backend={chart_payload['metadata']['backend']}",
             )
-            payload = {"kind": "full", "peer_segment": {key: value for key, value in peer_segment.items() if key != "rows"}, "chart_payload": chart_payload}
+            payload = {
+                "kind": "full",
+                "message": segments.get("message") or run_segment.get("message") or "",
+                "peer_segment": {key: value for key, value in peer_segment.items() if key != "rows"},
+                "chart_payload": chart_payload,
+            }
             self.loaded_full.emit(payload)
-            self.loaded.emit(payload)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            detail = traceback.format_exc()
+            app_logger.log_error(
+                "MESH_CHART_WORKER_FAILED",
+                (
+                    f"peer_mac={self.peer_mac}, radio={self.radio}, anchor_link_id={self.anchor_link_id}, "
+                    f"source_file_id={self.source_file_id}, error={exc}, traceback={detail}"
+                ),
+            )
+            self.failed.emit(f"{exc}\n{detail}")
+        finally:
+            app_logger.log_info(
+                "MESH_CHART_WORKER_FINISHED",
+                f"peer_mac={self.peer_mac}, radio={self.radio}, anchor_link_id={self.anchor_link_id}, source_file_id={self.source_file_id}",
+            )
 
 
 def _decode_row(row: dict[str, object]) -> dict[str, object]:
     decoded = dict(row)
-    decoded["metrics"] = _json_dict(row.get("metrics_json"))
+    metrics = _json_dict(row.get("metrics_json"))
+    if metrics:
+        decoded["metrics"] = metrics
+    elif not isinstance(decoded.get("metrics"), dict):
+        decoded.pop("metrics", None)
     decoded["deltas"] = {}
     return decoded
+
+
+def _empty_payload(message: str) -> dict[str, object]:
+    return {
+        "kind": "empty",
+        "message": message,
+        "peer_segment": {},
+        "chart_payload": build_chart_payload(
+            {"anchor": None, "rows": []},
+            {"anchor": None, "rows": [], "events": [], "message": message},
+        ),
+    }
 
 
 def _call_with_optional_source(method, anchor_link_id: int, source_file_id: int | str | None) -> dict[str, object]:

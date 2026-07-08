@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +44,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.dialogs.about_dialog import AboutRepositoryDialog
 from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
 from netconsole.ui.dialogs.shutdown_progress_dialog import ShutdownProgressDialog
+from netconsole.ui.dialogs.mesh_analysis_params_dialog import MeshAnalysisParamsEditor
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
 from netconsole.ui.shell import AppFramelessMainWindow
@@ -605,6 +607,12 @@ class MainWindow(AppFramelessMainWindow):
         form.addRow("系统类型", system_combo)
         form.addRow("网络域", network_combo)
         form.addRow("备注", remark_input)
+        basic_page = QWidget()
+        basic_page.setLayout(form)
+        mesh_params_editor = MeshAnalysisParamsEditor()
+        tabs = QTabWidget()
+        tabs.addTab(basic_page, "基础信息")
+        tabs.addTab(mesh_params_editor, "MR / MESH 分析参数")
         buttons = QHBoxLayout()
         ok_button = QPushButton("确定")
         cancel_button = QPushButton("取消")
@@ -612,7 +620,7 @@ class MainWindow(AppFramelessMainWindow):
         buttons.addWidget(ok_button)
         buttons.addWidget(cancel_button)
         layout = QVBoxLayout()
-        layout.addLayout(form)
+        layout.addWidget(tabs)
         layout.addLayout(buttons)
         dialog.setLayout(layout)
         ok_button.clicked.connect(dialog.accept)
@@ -628,6 +636,7 @@ class MainWindow(AppFramelessMainWindow):
                 system_type=str(system_combo.currentText() or "").strip(),
                 network_domain=str(network_combo.currentText() or "default").strip(),
                 remark=remark_input.text().strip(),
+                mesh_analysis_params=mesh_params_editor.params().to_dict(),
             )
         except Exception as exc:
             app_logger.log_warning("SITE_CREATE_FAILED", str(exc))

@@ -23,6 +23,7 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
@@ -222,9 +223,11 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     assert sheet.auto_filter.ref
     build_sheet = workbook["主链路建链顺序"]
     assert build_sheet["A1"].value == "序号"
-    assert build_sheet["Q2"].value == "短时建链"
+    assert build_sheet["Q1"].value == "配置切换时间(ms)"
+    assert build_sheet["T1"].value == "建链结果"
+    assert build_sheet["T2"].value == "短时建链"
     headers = [cell.value for cell in sheet[1]]
-    for header in ("时间", "Radio", "PeerMac", "LinkState", "EstablishTime", "DurationTime", "LinkCnt", "L_Rssi", "P_Rssi", "L_Cpu", "P_Cpu", "L_Mem", "P_Mem", "L_TxBusy", "L_RxBusy", "P_TxBusy", "P_RxBusy"):
+    for header in ("采样时间", "Radio", "PeerMac", "链路状态", "建链时间", "链路时长", "链路数", "MR侧RSSI差值", "Peer侧RSSI差值", "MR侧CPU", "Peer侧CPU", "MR侧内存", "Peer侧内存", "MR侧发送繁忙度", "Peer侧接收繁忙度"):
         assert header in headers
     assert any("链路明细已导出" in message for message in messages)
 
@@ -497,7 +500,8 @@ def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
     chart_first = repo.query_peer_chart_segments(int(first_links[0]["id"]), source_file_id=first_id)
     chart_all = repo.query_peer_chart_segments(int(first_links[0]["id"]))
     assert [row["sample_time"] for row in chart_first["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000"]
-    assert [row["sample_time"] for row in chart_all["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000", "2025-12-03 10:00:01.000"]
+    assert chart_all["run_segment"]["rows"] == []
+    assert "source_file_id" in chart_all["message"]
 
     first_db = Path(sources[0]["parsed_db_path"])
     second_db = Path(sources[1]["parsed_db_path"])
@@ -745,6 +749,121 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     assert page.link_table.item(0, 0).font().bold()
 
 
+def test_mesh_link_table_auto_width_keeps_metric_headers_visible(tmp_path):
+    _app()
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QHeaderView
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.refresh_all()
+    page.refresh_current_mr_data()
+
+    header = page.link_table.horizontalHeader()
+    assert header.sectionResizeMode(13) == QHeaderView.Interactive
+    assert page.link_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert page.link_table.wordWrap() is False
+    assert page.link_table.textElideMode() == Qt.TextElideMode.ElideRight
+    for column in range(13, 25):
+        header_text = page.link_table.horizontalHeaderItem(column).text()
+        expected = header.fontMetrics().horizontalAdvance(header_text) + 32
+        assert page.link_table.columnWidth(column) >= expected
+
+
+def test_active_build_order_headers_are_chinese_and_autosized(tmp_path):
+    _app()
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QHeaderView
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    page._render_active_build_order(repo)
+
+    headers = [page.active_build_order_table.horizontalHeaderItem(column).text() for column in range(page.active_build_order_table.columnCount())]
+    assert "mesh_analysis.min_rssi" not in headers
+    assert headers[2] == "主链路 PeerMac"
+    assert headers[12] == "最小RSSI"
+    assert headers[14] == "发送繁忙度"
+    assert headers[16] == "配置切换时间(ms)"
+    assert headers[18] == "是否同AP射频切换"
+    assert headers[20] == "判定原因"
+    header = page.active_build_order_table.horizontalHeader()
+    assert header.sectionResizeMode(6) == QHeaderView.Interactive
+    assert page.active_build_order_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    for column in (6, 7, 21):
+        header_text = page.active_build_order_table.horizontalHeaderItem(column).text()
+        expected = header.fontMetrics().horizontalAdvance(header_text) + 32
+        assert page.active_build_order_table.columnWidth(column) >= expected
+
+
+def test_active_build_order_uses_source_snapshot_before_site_fallback_and_temp_override(tmp_path):
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
+    _insert_mesh_samples(repo.path, first_count=2, second_count=0)
+    snapshot = mesh_analysis_params_to_json(
+        {
+            "main_link_switch_time_ms": 2500,
+            "short_link_tolerance_ms": 500,
+            "merge_same_physical_ap_dual_radio": True,
+        }
+    )
+    with sqlite3.connect(repo.path) as conn:
+        conn.execute("UPDATE source_files SET analysis_params_json = ?", (snapshot,))
+
+    rows = repo.query_active_link_build_order(
+        fallback_analysis_params={"main_link_switch_time_ms": 5000, "short_link_tolerance_ms": 500}
+    )
+    assert rows[0]["main_link_switch_time_ms"] == 2500
+    assert rows[0]["short_link_tolerance_ms"] == 500
+    assert rows[0]["build_result"] == "normal"
+    assert "容差范围" in rows[0]["judge_reason"]
+
+    override_rows = repo.query_active_link_build_order(
+        analysis_params={"main_link_switch_time_ms": 3000, "short_link_tolerance_ms": 500}
+    )
+    assert override_rows[0]["main_link_switch_time_ms"] == 3000
+    assert override_rows[0]["build_result"] == "short"
+
+
+def test_peer_chart_run_context_includes_same_time_standby_from_other_session(tmp_path):
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    total, rows = repo.query_links(10, 0, {"state": "ACTIVE"})
+    assert total == 1
+    anchor = rows[0]
+
+    segments = repo.query_peer_chart_initial_segments(int(anchor["id"]), source_file_id=anchor["source_file_id"])
+    run_rows = segments["run_segment"]["rows"]
+    assert {row["link_state"] for row in run_rows} == {"ACTIVE", "STANDBY"}
+
+    payload = build_chart_payload(segments["peer_segment"], segments["run_segment"])
+    backups = [items for items in payload["backup_links_by_index"] if items]
+    assert backups
+    assert backups[0][0]["peer_mac"] == "30f5277a5a4f"
+    assert payload["main_links_by_index"][0]["peer_mac"] == "30f5277a5a2f"
+
+
 def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
     app = _app()
     from PySide6.QtCore import Qt
@@ -784,6 +903,37 @@ def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
         app.processEvents()
     assert page.tabs.currentIndex() == 1
     assert page.current_source_file_id == target_source_id
+
+
+def test_mesh_page_peer_dialog_uses_row_source_file_id_in_all_files_mode(tmp_path, monkeypatch):
+    _app()
+    from PySide6.QtCore import Qt
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    first = tmp_path / "first-meshlog.log"
+    second = tmp_path / "second-meshlog.log"
+    first.write_text("[1] 2025/12/03 10:00:00.000\n" + LINE_A + "\n", encoding="utf-8")
+    second.write_text("[1] 2025/12/03 10:00:01.000\n" + LINE_B + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [first, second])
+
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    page.current_source_file_id = None
+    page.refresh_link_table()
+    captured: list[tuple[str, int | None, str, int | None, int | None]] = []
+    monkeypatch.setattr(page, "_open_peer_dialog", lambda peer, radio, session, link_id=None, source_file_id=None: captured.append((peer, radio, session, link_id, source_file_id)))
+
+    row_data = page.link_table.item(0, 0).data(Qt.UserRole)
+    for column in (4, 5, 6, 8, 9):
+        page._open_peer_from_link_cell(0, column)
+
+    assert len(captured) == 5
+    assert {item[4] for item in captured} == {int(row_data["source_file_id"])}
+    assert {item[3] for item in captured} == {int(row_data["id"])}
 
 
 def test_mesh_page_double_click_source_without_links_shows_empty_detail(tmp_path):
@@ -990,12 +1140,14 @@ def test_worker_uses_single_chart_segment_query(monkeypatch, tmp_path):
             return {}
 
     monkeypatch.setattr(mesh_peer_series_worker, "MeshMrRepository", FakeRepo)
-    worker = MeshPeerSeriesWorker(tmp_path / "mesh.sqlite", "30f5277a5a2f", 1, anchor_link_id=1)
+    worker = MeshPeerSeriesWorker(tmp_path / "mesh.sqlite", "30f5277a5a2f", 1, anchor_link_id=1, source_file_id=1)
     received = []
-    worker.loaded.connect(received.append)
+    worker.loaded.connect(lambda payload: received.append(("loaded", payload)))
+    worker.loaded_full.connect(lambda payload: received.append(("loaded_full", payload)))
     worker.run()
     assert calls == {"chart": 1, "run": 0}
-    assert received and "chart_payload" in received[0]
+    assert [kind for kind, _payload in received] == ["loaded_full"]
+    assert "chart_payload" in received[0][1]
 
 
 def test_anchor_centering_for_middle_start_and_end(tmp_path):
@@ -1577,15 +1729,21 @@ def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path)
         _payload_row(2, "2025-12-03 10:00:00.000", "30f5-277a-5a3f", "STANDBY", 27, 37),
         _payload_row(3, "2025-12-03 10:00:00.000", "30f5-277a-5a4f", "STANDBY", 31, None),
         _payload_row(4, "2025-12-03 10:00:00.000", "30f5-277a-5a5f", "STANDBY", None, 39),
+        _payload_row(5, "2025-12-03 10:00:00.000", "30f5-277a-5a6f", "STANDBY", 33, 40),
+        _payload_row(6, "2025-12-03 10:00:00.000", "30f5-277a-5a7f", "STANDBY", 34, 41),
+        _payload_row(7, "2025-12-03 10:00:00.000", "30f5-277a-5a8f", "STANDBY", 35, 42),
     ]
     rows[0]["peer_ap_name"] = "AP-X_3111"
     rows[0]["peer_site"] = "31 Site"
     rows[1]["peer_ap_name"] = "AP-X_3110"
     rows[1]["peer_site"] = "31 Site"
+    rows[1]["peer_radio"] = "radio2"
     rows[2]["peer_ap_name"] = ""
     rows[2]["peer_site"] = ""
+    rows[2]["peer_radio"] = "radio2"
     rows[3]["peer_ap_name"] = "AP-X_3109"
     rows[3]["peer_site"] = "31 Site"
+    rows[3]["peer_radio"] = "radio2"
     payload = build_chart_payload({"anchor": rows[0], "rows": [rows[0]]}, {"anchor": rows[0], "rows": rows, "events": []})
 
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
@@ -1595,11 +1753,29 @@ def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path)
 
     assert "AP-X_3111 / 31 Site" in text
     assert "MR-AP_RSSI: 45/53" in text
-    assert "1. 30f5-277a-5a4f / - / MR-AP_RSSI 31/-" in text
-    assert "2. AP-X_3110 / 31 Site / MR-AP_RSSI 27/37" in text
-    assert "3. AP-X_3109 / 31 Site / MR-AP_RSSI -/39" in text
-    assert "4." not in text
-    assert "Peer Radio" not in text
+    assert "1. AP-X_3110 / 31 Site" in text
+    assert "PeerMac: 30f5-277a-5a3f" in text
+    assert "Peer Radio: radio2" in text
+    assert "MR-AP_RSSI: 27/37" in text
+    assert "State: STANDBY" in text
+    assert "2. 30f5-277a-5a4f" in text
+    assert "MR-AP_RSSI: 31/-" in text
+    assert "5. 30f5-277a-5a7f" in text
+    assert "6." not in text
+    assert "……另有 1 条备份链路" in text
+
+
+def test_active_payload_backup_links_are_isolated_by_source_and_allow_nearby_time():
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    active = _payload_row(1, "2025-12-03 10:00:00.000", "30f5-277a-5a2f", "ACTIVE", 45, 53, source_file_id=1)
+    same_source = _payload_row(2, "2025-12-03 10:00:00.600", "30f5-277a-5a3f", "STANDBY", 27, 37, source_file_id=1)
+    other_source = _payload_row(3, "2025-12-03 10:00:00.000", "30f5-277a-5a4f", "STANDBY", 31, 39, source_file_id=2)
+    payload = build_chart_payload({"anchor": active, "rows": [active]}, {"anchor": active, "rows": [active, same_source, other_source], "events": []})
+
+    backups = payload["standby_links_by_index"][0]
+    assert [item["peer_mac"] for item in backups] == ["30f5277a5a3f"]
+    assert backups[0]["source_file_id"] == 1
 
 
 def test_aba_active_switch_preserves_three_runs_and_rapid_flap():
@@ -2231,10 +2407,23 @@ def _chart_row(link_id: int, sample_time: str) -> dict[str, object]:
     }
 
 
-def _payload_row(link_id: int, sample_time: str, peer_mac: str, state: str, local_rssi: int, peer_rssi: int, local_tx_busy: int = 3, local_rx_busy: int = 5) -> dict[str, object]:
+def _payload_row(
+    link_id: int,
+    sample_time: str,
+    peer_mac: str,
+    state: str,
+    local_rssi: int | None,
+    peer_rssi: int | None,
+    local_tx_busy: int = 3,
+    local_rx_busy: int = 5,
+    source_file_id: int = 1,
+    radio: int = 1,
+) -> dict[str, object]:
     normalized = "".join(character for character in peer_mac.lower() if character in "0123456789abcdef")
     return {
         "id": link_id,
+        "source_file_id": source_file_id,
+        "radio": radio,
         "sample_time": sample_time,
         "peer_mac_normalized": normalized,
         "peer_mac_raw": peer_mac,
