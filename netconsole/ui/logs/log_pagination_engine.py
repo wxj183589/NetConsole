@@ -55,6 +55,28 @@ def get_logs(
     return LogPage(rows=rows, state=PaginationState(page_size=size, current_page=current_page, total_items=total, total_pages=total_pages))
 
 
+def iter_logs(
+    log_path: Path,
+    keyword: str | None = None,
+    level: str | None = None,
+    parser: Callable[[str], dict[str, str] | None] | None = None,
+) -> Iterator[dict[str, str]]:
+    keyword_text = keyword.strip().casefold() if keyword else None
+    level_text = level.strip().upper() if level else None
+    parse = parser or _default_parse_line
+    if not log_path.exists():
+        return
+    for line in _read_lines_reversed(log_path):
+        parsed = parse(line)
+        if parsed is None:
+            continue
+        if level_text and parsed.get("level") != level_text:
+            continue
+        if keyword_text and keyword_text not in " ".join(parsed.values()).casefold():
+            continue
+        yield parsed
+
+
 def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024) -> Iterator[str]:
     with path.open("rb") as file:
         file.seek(0, 2)

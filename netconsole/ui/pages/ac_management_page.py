@@ -191,6 +191,7 @@ AP_EXTENSION_COLUMNS = (
     ("线别", "line_side"),
     ("方向", "direction"),
     ("里程", "mileage_text"),
+    ("点位说明", "location_desc"),
     ("AP编号", "ap_point_code"),
     ("AP名称", "ap_name"),
     ("AP MAC", "ap_mac_display"),
@@ -1201,7 +1202,7 @@ class AcManagementPage(QWidget):
         self.extension_delete_button.setText("批量删除")
         self.extension_clear_button.setText("清空当前局点扩展信息")
         self.extension_refresh_button.setText("刷新")
-        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、归属站点、归属区间、区间起止、场段、区域、备注")
+        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、归属站点、归属区间、区间起止、方向、里程、点位说明、场段、区域、备注")
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.refresh_optical_button.setText(self.i18n.t("ac.refresh_optical"))
@@ -1993,6 +1994,7 @@ class AcManagementPage(QWidget):
             ("line_side", "线别"),
             ("direction", "方向"),
             ("mileage_text", "里程"),
+            ("location_desc", "点位说明"),
             ("ap_point_code", "AP编号"),
             ("ap_name", "AP名称"),
             ("ap_mac_display", "AP MAC"),

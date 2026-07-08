@@ -52,8 +52,8 @@ def test_build_window_starts_app_fluent_window():
 
     assert isinstance(window, AppFluentWindow)
     assert window.__class__.__name__ == "AppFluentWindow"
-    assert window.windowTitle() == "NetConsole v1.3.6 - 网络设备采集工具"
-    assert any(label.text() == "NetConsole v1.3.6" for label in window.findChildren(QLabel, "appTopBarTitle"))
+    assert window.windowTitle() == "NetConsole v1.3.7 - 网络设备采集工具"
+    assert any(label.text() == "NetConsole v1.3.7" for label in window.findChildren(QLabel, "appTopBarTitle"))
     assert not any(label.text() == "网络设备采集工具" for label in window.findChildren(QLabel, "appTopBarTitle"))
     assert not window.findChildren(QLabel, "fluentTitleSub")
     assert not any(not label.isHidden() and label.text() == window.windowTitle() for label in window.findChildren(QLabel, "titleLabel"))

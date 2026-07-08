@@ -828,6 +828,7 @@ class AcRepository:
                 "direction LIKE ?",
                 "mileage_text LIKE ?",
                 "CAST(mileage_m AS TEXT) LIKE ?",
+                "location_desc LIKE ?",
                 "remark LIKE ?",
             ]
             clauses.append(
@@ -938,6 +939,11 @@ class AcRepository:
                     stats["skipped_rows"] += 1
                     continue
                 if existing_id:
+                    if not payload.get("ap_mac_norm") and not payload.get("ap_mac_display"):
+                        existing = conn.execute("SELECT ap_mac_norm, ap_mac_display FROM ap_extension_points WHERE id = ?", (existing_id,)).fetchone()
+                        if existing is not None:
+                            payload["ap_mac_norm"] = existing["ap_mac_norm"]
+                            payload["ap_mac_display"] = existing["ap_mac_display"]
                     assignments = ", ".join(f"{field} = ?" for field in AP_EXTENSION_POINT_FIELDS if field != "created_at")
                     conn.execute(
                         f"UPDATE ap_extension_points SET {assignments} WHERE id = ?",
@@ -2242,6 +2248,7 @@ class AcRepository:
                     "section_end_station",
                     "yard_name",
                     "area_name",
+                    "network_domain",
                     "line_side",
                     "direction",
                     "mileage_text",

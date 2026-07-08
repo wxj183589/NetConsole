@@ -21,6 +21,7 @@ from netconsole.core.resources import icon_path
 from netconsole.core.settings import SettingsStore
 from netconsole.core import version as version_info
 from netconsole.ui.app_window_factory import create_app_window
+from netconsole.ui.app_auto_cleanup_runner import start_app_auto_cleanup
 from netconsole.ui.main_window import MainWindow
 from netconsole.ui.startup_preload import StartupPreloadManager
 from netconsole.ui.widgets.startup_splash import StartupSplash
@@ -152,6 +153,7 @@ def run() -> int:
     if callable(log_geometry):
         log_geometry("before show")
     window.show()
+    QTimer.singleShot(5000, lambda: start_app_auto_cleanup(window, paths))
     schedule_geometry_checks = getattr(window, "schedule_startup_geometry_checks", None)
     if callable(schedule_geometry_checks):
         QTimer.singleShot(0, schedule_geometry_checks)

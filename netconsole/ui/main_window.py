@@ -322,7 +322,7 @@ class MainWindow(AppFramelessMainWindow):
         elif page_id == "logs":
             from netconsole.ui.pages.app_log_page import AppLogPage
 
-            page = AppLogPage(self.i18n, auto_refresh=False)
+            page = AppLogPage(self.i18n, auto_refresh=False, paths=self.paths)
             self.log_page = page
         elif page_id == "system_settings":
             from netconsole.ui.pages.settings_page import SettingsPage
@@ -393,7 +393,7 @@ class MainWindow(AppFramelessMainWindow):
         if page_id == "logs":
             from netconsole.ui.pages.app_log_page import AppLogPage
 
-            return AppLogPage(self.i18n, auto_refresh=False)
+            return AppLogPage(self.i18n, auto_refresh=False, paths=self.paths)
         if page_id == "system_settings":
             from netconsole.ui.pages.settings_page import SettingsPage
 

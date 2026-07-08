@@ -679,9 +679,10 @@ class AppFluentWindow(SplitFluentWindow):
     def _log_actions(self) -> list[NCCommandAction]:
         return [
             self._action(FIF.SYNC, "刷新", lambda: self._call_raw("logs", "refresh")),
-            self._action(FIF.FOLDER, "打开目录"),
-            self._action(FIF.DELETE, "清空"),
-            self._action(FIF.SHARE, "导出"),
+            self._action(FIF.FOLDER, "打开目录", lambda: self._call_raw("logs", "open_log_dir")),
+            self._action(FIF.DELETE, "清空当前日志记录", lambda: self._call_raw("logs", "clear_logs")),
+            self._action(FIF.DELETE, "清理旧日志", lambda: self._call_raw("logs", "cleanup_old_logs")),
+            self._action(FIF.SHARE, "导出", lambda: self._call_raw("logs", "export_logs")),
         ]
 
     def _settings_actions(self) -> list[NCCommandAction]:
@@ -761,7 +762,7 @@ class AppFluentWindow(SplitFluentWindow):
     def _create_log_page(self) -> QWidget:
         from netconsole.ui.pages.app_log_page import AppLogPage
 
-        self.log_page = AppLogPage(self.i18n, auto_refresh=False)
+        self.log_page = AppLogPage(self.i18n, auto_refresh=False, paths=self.paths)
         return self.log_page
 
     def showEvent(self, event) -> None:

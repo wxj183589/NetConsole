@@ -6137,7 +6137,7 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(AP_EXTENSION_TEMPLATE_FIELDS)
-    sheet.append(["renamed-ap", "30F5:277A:1B00", "站点", "Station X", "", "", "", "", "", "K12+450", "Platform", "上下行"])
+    sheet.append(["renamed-ap", "30F5:277A:1B00", "站点", "Station X", "", "", "", "", "", "", "", "K12+450", "Platform", "上下行", ""])
     workbook.save(import_path)
 
     result = service.import_metadata_file(import_path)
@@ -6278,7 +6278,7 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
 
     assert headers == AP_EXTENSION_TEMPLATE_FIELDS
     assert "归属站点" in headers
-    for forbidden in ("AP_IP", "APID", "SN", "型号", "状态", "AP状态", "AP组", "在线时长", "更新时间", "备注"):
+    for forbidden in ("AP_IP", "APID", "SN", "型号", "状态", "AP状态", "AP组", "在线时长", "更新时间"):
         assert forbidden not in headers
     assert "站点/位置" not in headers
     assert "site" not in headers
@@ -6288,12 +6288,12 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
     assert sheet["A2"].value == "AP-1"
     assert sheet["B2"].value == "0011-2233-4455"
     assert sheet["D2"].value == "Entity Station"
-    assert sheet["J2"].value == "K12+450"
-    assert sheet["K2"].value == "platform"
-    assert sheet["L2"].value == "uplink"
+    assert sheet["L2"].value == "K12+450"
+    assert sheet["M2"].value == "platform"
+    assert sheet["N2"].value == "uplink"
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
-    assert sheet.auto_filter.ref == "A1:L2"
+    assert sheet.auto_filter.ref == "A1:O2"
 
 
 def test_export_ap_extension_template_xlsx_allows_empty_template(tmp_path):

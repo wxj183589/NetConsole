@@ -39,9 +39,12 @@ AP_METADATA_IMPORT_FIELDS = [
     "区间终点站",
     "场段",
     "区域",
+    "网络",
+    "线别",
     "里程",
     "点位说明",
-    "上下行",
+    "方向",
+    "备注",
 ]
 AP_EXPORT_FIELDS = [
     "AP名称",
@@ -78,11 +81,14 @@ AP_EXTENSION_TEMPLATE_FIELDS = [
     "区间终点站",
     "场段",
     "区域",
+    "网络",
+    "线别",
     "里程",
     "点位说明",
-    "上下行",
+    "方向",
+    "备注",
 ]
-AP_EXTENSION_TEMPLATE_EDITABLE_FIELDS = {"归属类型", "归属站点", "归属区间", "区间起点站", "区间终点站", "场段", "区域", "里程", "点位说明", "上下行"}
+AP_EXTENSION_TEMPLATE_EDITABLE_FIELDS = {"归属类型", "归属站点", "归属区间", "区间起点站", "区间终点站", "场段", "区域", "网络", "线别", "里程", "点位说明", "方向", "上下行", "备注"}
 
 
 @dataclass(frozen=True)
@@ -144,7 +150,7 @@ class FitApImportExportService:
         return self.import_metadata_csv(path)
 
     def import_metadata_rows(self, headers: list[str], rows: list[list[object]]) -> ApMetadataImportResult:
-        if headers not in (AP_METADATA_IMPORT_FIELDS, AP_METADATA_LEGACY_IMPORT_FIELDS):
+        if not _is_supported_metadata_header(headers):
             raise ValueError("Unsupported AP metadata template header")
         updated = 0
         skipped = 0
@@ -158,7 +164,7 @@ class FitApImportExportService:
                 errors.append(f"Row {line_number}: AP_MAC is empty or invalid")
                 continue
             mileage = parse_track_mileage(payload["里程"])
-            direction = normalize_ap_direction(payload["上下行"]) or mileage.prefix or ""
+            direction = normalize_ap_direction(payload.get("方向") or payload.get("上下行")) or mileage.prefix or ""
             matched = self.repository.update_ap_entity_extension_by_mac(
                 ap_mac,
                 {
@@ -183,9 +189,12 @@ class FitApImportExportService:
                 "section_end_station": payload.get("区间终点站"),
                 "yard_name": payload.get("场段"),
                 "area_name": payload.get("区域"),
+                "network_domain": payload.get("网络"),
+                "line_side": payload.get("线别"),
                 "mileage": mileage_storage_text(payload["里程"]),
                 "location_note": payload["点位说明"],
                 "direction": direction,
+                "remark": payload.get("备注"),
             }
             if metadata_payload.get("ap_uuid") or metadata_payload.get("ap_name"):
                 self.repository.upsert_fit_ap_metadata(metadata_payload)
@@ -298,10 +307,23 @@ def _ap_extension_template_row(row: dict[str, object | None], entity: dict[str, 
         _text(row.get("section_end_station") or row.get("extension_section_end_station")),
         _text(row.get("yard_name") or row.get("extension_yard_name")),
         _text(row.get("area_name") or row.get("extension_area_name")),
+        _text(row.get("network_domain") or row.get("extension_network_domain")),
+        line_side,
         _format_ap_mileage(_first_non_empty(row.get("mileage"), row.get("milestone"), (entity or {}).get("milestone")), direction, line_side),
         _text(row.get("location_note") or (entity or {}).get("location_note")),
         direction,
+        _text(row.get("remark") or row.get("extension_remark")),
     ]
+
+
+def _is_supported_metadata_header(headers: list[str]) -> bool:
+    if headers == AP_METADATA_LEGACY_IMPORT_FIELDS:
+        return True
+    required = {"AP名称", "AP_MAC", "归属站点", "里程", "点位说明"}
+    direction_fields = {"方向", "上下行"}
+    known = set(AP_METADATA_IMPORT_FIELDS) | set(AP_EXTENSION_TEMPLATE_FIELDS) | direction_fields
+    header_set = set(headers)
+    return required <= header_set and bool(header_set & direction_fields) and header_set <= known
 
 
 def _build_ap_entity_lookup(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:

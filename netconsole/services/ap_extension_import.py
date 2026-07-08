@@ -39,14 +39,16 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "section_end_station": ("区间终点站", "终点站", "section_end_station"),
     "yard_name": ("场段", "车辆段", "停车场", "yard_name"),
     "area_name": ("区域", "area_name"),
+    "line_side": ("线别", "line_side"),
+    "direction": ("方向", "上下行", "direction"),
     "left_mileage": ("左线里程", "左线", "left_mileage"),
     "right_mileage": ("右线里程", "右线", "right_mileage"),
     "start_mileage": ("起点里程", "起始里程", "start_mileage"),
-    "mileage_text": ("里程", "里程原文", "mileage_text", "mileage"),
+    "mileage_text": ("里程", "里程原文", "公里标", "KM", "K标", "桩号", "mileage_text", "mileage"),
     "distance_to_prev_m": ("距上一个AP", "距上一个 AP", "AP间距", "间隔", "distance_to_prev_m"),
     "ap_point_code": ("AP编号", "点位编号", "AP点位", "轨旁AP编号", "ap_point_code"),
     "ap_name": ("AP名称", "AP名", "AP命名", "AP Name", "ap_name"),
-    "ap_mac_display": ("AP MAC", "MAC", "MAC地址", "AP_MAC", "ap_mac", "ap_mac_display"),
+    "ap_mac_display": ("AP MAC", "MAC", "MAC地址", "AP_MAC", "AP MAC地址", "ap_mac", "ap_mac_display"),
     "curve_radius_m": ("曲线半径", "半径", "curve_radius_m"),
     "curve_start_text": ("曲线开始", "曲线起点", "curve_start_text"),
     "curve_end_text": ("曲线终点", "曲线结束", "curve_end_text"),
@@ -275,6 +277,7 @@ class ApExtensionImportService:
             standard_rows, issues = _convert_signal_ab_network_rows(file_name, str(sheet["name"]), rows)
         else:
             standard_rows, issues = _convert_rows(file_name, str(sheet["name"]), rows, data_start, mapping, titles)
+        standard_rows = _infer_sections_by_mileage(standard_rows)
         duplicates = _duplicate_records(standard_rows)
         for duplicate in duplicates:
             issues.append({"type": "duplicate_mac", **duplicate})
@@ -373,10 +376,16 @@ def _field_for_header(label: str) -> str:
         if _normalize_header(header) == normalized:
             return field_name
     for field_name, aliases in FIELD_ALIASES.items():
+        if any(_normalize_header(alias) == normalized for alias in aliases):
+            return field_name
+    partial_matches: list[tuple[int, str]] = []
+    for field_name, aliases in FIELD_ALIASES.items():
         for alias in aliases:
             alias_norm = _normalize_header(alias)
-            if alias_norm and (alias_norm == normalized or alias_norm in normalized):
-                return field_name
+            if alias_norm and len(alias_norm) >= 2 and alias_norm != "ap" and alias_norm in normalized:
+                partial_matches.append((len(alias_norm), field_name))
+    if partial_matches:
+        return max(partial_matches, key=lambda item: item[0])[1]
     return ""
 
 
@@ -448,7 +457,7 @@ def _convert_row(
         line_side = line_side or "左线"
     elif source.get("right_mileage"):
         line_side = line_side or "右线"
-    direction = _default_direction(line_side)
+    source_direction = _direction_from_labels(values, mapping) or _default_direction(line_side)
     mac = normalize_ap_mac(source.get("ap_mac_display"))
     mileage = parse_mileage(mileage_text)
     curve_start = parse_mileage(source.get("curve_start_text"))
@@ -460,6 +469,9 @@ def _convert_row(
     belong_type = _normalize_belong_type(source.get("belong_type"))
     if not belong_type:
         belong_type = _infer_belong_type(station, section, yard_name, area_name)
+    direction_value = source.get("direction") or source_direction
+    if not line_side:
+        line_side = _line_side_from_direction(direction_value, source.get("location_desc") or source.get("install_scene"))
     row = {
         "id": _int_or_none(source.get("id") or source.get("extension_id")),
         "line_name": source.get("line_name"),
@@ -473,7 +485,7 @@ def _convert_row(
         "yard_name": yard_name,
         "area_name": area_name,
         "line_side": line_side,
-        "direction": source.get("direction") or direction,
+        "direction": direction_value,
         "mileage_text": mileage.raw,
         "mileage_m": mileage.meters,
         "distance_to_prev_m": _float_or_none(source.get("distance_to_prev_m")),
@@ -505,6 +517,122 @@ def _convert_row(
     row["curve_impact_level"] = _curve_impact_level(row.get("curve_radius_m"))
     row["interval_risk_level"], row["interval_risk_reason"] = _interval_risk(row.get("distance_to_prev_m"), row.get("curve_radius_m"))
     return row
+
+
+def _direction_from_labels(values: list[str], mapping: dict[str, int]) -> str:
+    for field_name in ("ap_name", "ap_point_code", "left_mileage", "right_mileage"):
+        index = mapping.get(field_name)
+        if index is None or index < 0 or index >= len(values):
+            continue
+        direction = _direction_from_text(values[index])
+        if direction:
+            return direction
+    return ""
+
+
+def _direction_from_text(value: object) -> str:
+    text = str(value or "")
+    if "左线" in text or "下行" in text:
+        return "下行"
+    if "右线" in text or "上行" in text:
+        return "上行"
+    return ""
+
+
+def _line_side_from_direction(direction: object, location_desc: object) -> str:
+    text = str(location_desc or "")
+    if "正线" not in text and "站台" not in text:
+        return ""
+    direction_text = str(direction or "")
+    if "下行" in direction_text:
+        return "左线"
+    if "上行" in direction_text:
+        return "右线"
+    return ""
+
+
+def _infer_sections_by_mileage(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+    groups: dict[tuple[str, str, str, str], list[dict[str, object | None]]] = {}
+    for row in rows:
+        if _is_yard_row(row):
+            row["belong_type"] = "yard"
+            row["section_name"] = ""
+            row["section_start_station"] = ""
+            row["section_end_station"] = ""
+            continue
+        key = (
+            str(row.get("line_name") or ""),
+            str(row.get("system_type") or ""),
+            str(row.get("line_side") or ""),
+            str(row.get("direction") or ""),
+        )
+        groups.setdefault(key, []).append(row)
+    for items in groups.values():
+        anchors = _station_anchors(items)
+        if len(anchors) < 2:
+            continue
+        for row in items:
+            if not _should_infer_section(row):
+                continue
+            pair = _anchor_pair_for_mileage(anchors, row.get("mileage_m"))
+            if pair is None:
+                if not row.get("remark"):
+                    row["remark"] = "无法根据里程推断归属区间"
+                continue
+            start, end = pair
+            if start["station"] == end["station"]:
+                continue
+            row["section_start_station"] = row.get("section_start_station") or start["station"]
+            row["section_end_station"] = row.get("section_end_station") or end["station"]
+            row["section_name"] = row.get("section_name") or f"{start['station']}-{end['station']}"
+            row["belong_type"] = "section"
+    return rows
+
+
+def _station_anchors(rows: list[dict[str, object | None]]) -> list[dict[str, object]]:
+    anchors: list[dict[str, object]] = []
+    seen: set[str] = set()
+    sortable = sorted(
+        (row for row in rows if row.get("mileage_m") is not None and str(row.get("station_name") or "").strip()),
+        key=lambda item: float(item.get("mileage_m") or 0),
+    )
+    for row in sortable:
+        station = str(row.get("station_name") or "").strip()
+        if not station or station in seen or any(keyword in station for keyword in YARD_KEYWORDS):
+            continue
+        seen.add(station)
+        anchors.append({"station": station, "mileage_m": float(row.get("mileage_m") or 0)})
+    return anchors
+
+
+def _anchor_pair_for_mileage(anchors: list[dict[str, object]], mileage_m: object) -> tuple[dict[str, object], dict[str, object]] | None:
+    value = _float_or_none(mileage_m)
+    if value is None:
+        return None
+    for start, end in zip(anchors, anchors[1:]):
+        start_m = float(start["mileage_m"])
+        end_m = float(end["mileage_m"])
+        if min(start_m, end_m) <= value <= max(start_m, end_m):
+            return start, end
+    return None
+
+
+def _should_infer_section(row: dict[str, object | None]) -> bool:
+    if row.get("section_name") and row.get("section_start_station") and row.get("section_end_station"):
+        return False
+    if row.get("mileage_m") is None:
+        return False
+    text = str(row.get("location_desc") or row.get("install_scene") or "")
+    belong_type = str(row.get("belong_type") or "").strip()
+    return belong_type in {"section", "station", ""} and any(token in text for token in ("正线", "站台", "出入段线", "出段线", "入段线"))
+
+
+def _is_yard_row(row: dict[str, object | None]) -> bool:
+    text = " ".join(
+        str(row.get(field) or "")
+        for field in ("belong_type", "station_name", "yard_name", "area_name", "location_desc", "install_scene")
+    )
+    return any(keyword in text for keyword in ("场段", "车辆段", "停车场", "库内"))
 
 
 def _is_signal_ab_network_sheet(sheet_name: object, rows: list[list[str]]) -> bool:

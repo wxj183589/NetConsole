@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
-from netconsole.ui.logs.log_pagination_engine import LogPage, get_logs as paginate_log_file
+from netconsole.ui.logs.log_pagination_engine import LogPage, get_logs as paginate_log_file, iter_logs as iter_paginated_log_file
 
 
 _paths = PathResolver()
@@ -48,6 +48,10 @@ def read_logs(keyword: str | None = None, level: str | None = None) -> list[dict
 
 def get_logs(page: int = 1, page_size: int = 200, keyword: str | None = None, level: str | None = None) -> LogPage:
     return paginate_log_file(_log_path(), page=page, page_size=page_size, keyword=keyword, level=level, parser=_parse_line)
+
+
+def iter_logs(keyword: str | None = None, level: str | None = None):
+    return iter_paginated_log_file(_log_path(), keyword=keyword, level=level, parser=_parse_line)
 
 
 def clear_logs() -> None:

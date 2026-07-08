@@ -75,9 +75,9 @@
       "internal_only": false
     },
     "devices.securecrt_sessions": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
       "internal_only": false
     },
     "rail.train_online": {
@@ -105,21 +105,33 @@
       "internal_only": false
     },
     "rail.online_mr_collection": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
       "internal_only": false
     },
     "rail.online_mr_analysis": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "online_mr.analysis_link_details": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "online_mr.analysis_fping_1s": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
       "internal_only": false
     },
     "ac.trackside_ap_plan": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
       "internal_only": false
     },
     "ac.ap_online_overview": {
@@ -183,26 +195,26 @@
       "internal_only": false
     },
     "online_mr.advanced_ping": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "online_mr.iperf_test": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "mesh.generate_report": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "system.feature_flags": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": true
     }

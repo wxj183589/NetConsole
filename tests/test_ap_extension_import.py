@@ -8,6 +8,7 @@ from netconsole.services.ap_extension_import import (
     AP_NAME_MAC_LIST,
     PIS_LAYOUT_TABLE,
     SIGNAL_AB_NETWORK_TABLE,
+    STANDARD_TEMPLATE_TYPE,
     ApExtensionImportService,
     normalize_ap_mac,
     parse_mileage,
@@ -168,6 +169,38 @@ def test_preview_scans_multiple_sheets(tmp_path):
     assert preview.summary["total_rows"] == 1
 
 
+def test_standard_template_import_keeps_direction_mileage_and_infers_section(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "AP扩展信息模板"
+    sheet.append(["AP名称", "AP_MAC", "归属类型", "归属站点", "归属区间", "区间起点站", "区间终点站", "场段", "区域", "里程", "点位说明", "上下行"])
+    sheet.append(["AP-CLD_01", "10b6-5e92-d3e0", "场段", "高桥南车辆段", "", "", "", "高桥南车辆段", "", "", "场段", ""])
+    sheet.append(["AP-S_1214", "10b6-5e92-c780", "站点", "古林站", "", "", "", "", "", 5276, "正线站台两侧", "上行"])
+    sheet.append(["AP-S_1215", "10b6-5e92-f340", "站点", "古林站", "", "", "", "", "", 5426, "正线", "上行"])
+    sheet.append(["AP-S_1218", "083b-e9ec-b980", "站点", "古林站", "", "", "", "", "", 5876, "正线", "上行"])
+    sheet.append(["AP-S_1301", "94a7-482c-2360", "站点", "云林西路站", "", "", "", "", "", 6026, "正线", "上行"])
+    sheet.append(["AP-CRD-X_1603", "94a7-482c-2440", "区间", "卖面桥站", "", "", "", "", "", 450, "出入段线", "下行"])
+    path = tmp_path / "ningbo_like_template.xlsx"
+    workbook.save(path)
+
+    preview = ApExtensionImportService().preview_file(path, "standard_template")
+    rows = {row["ap_name"]: row for row in preview.standard_rows}
+
+    assert rows["AP-S_1214"]["direction"] == "上行"
+    assert rows["AP-S_1214"]["line_side"] == "右线"
+    assert rows["AP-S_1214"]["mileage_text"] == "5276"
+    assert rows["AP-S_1214"]["mileage_m"] == 5276
+    assert rows["AP-S_1214"]["location_desc"] == "正线站台两侧"
+    assert rows["AP-S_1214"]["belong_type"] == "section"
+    assert rows["AP-S_1214"]["section_name"] == "古林站-云林西路站"
+    assert rows["AP-S_1214"]["section_start_station"] == "古林站"
+    assert rows["AP-S_1214"]["section_end_station"] == "云林西路站"
+    assert rows["AP-CRD-X_1603"]["direction"] == "下行"
+    assert rows["AP-CRD-X_1603"]["belong_type"] == "section"
+    assert rows["AP-CLD_01"]["belong_type"] == "yard"
+    assert rows["AP-CLD_01"]["section_name"] == ""
+
+
 def test_repository_imports_unbound_points_and_matches_resources_by_mac(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "AP-01", "ap_mac": "4ce9-e4ef-5c20"}])
@@ -235,3 +268,31 @@ def test_repository_extension_search_matches_prefixed_mileage(tmp_path):
 
     assert len(rows) == 1
     assert rows[0]["ap_point_code"] == "Z01-01"
+
+
+def test_repository_extension_search_matches_direction_section_and_location_desc(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.import_ap_extension_points(
+        [
+            {
+                "station_name": "古林站",
+                "section_name": "古林站-云林西路站",
+                "section_start_station": "古林站",
+                "section_end_station": "云林西路站",
+                "line_side": "右线",
+                "direction": "上行",
+                "mileage_text": "5276",
+                "mileage_m": 5276,
+                "location_desc": "正线站台两侧",
+                "ap_name": "AP-S_1214",
+                "ap_mac_display": "10b6-5e92-c780",
+            }
+        ],
+        source_file="template.xlsx",
+        template_type=STANDARD_TEMPLATE_TYPE,
+    )
+
+    assert repository.list_ap_extension_points(search="上行")[0]["ap_name"] == "AP-S_1214"
+    assert repository.list_ap_extension_points(search="5276")[0]["ap_name"] == "AP-S_1214"
+    assert repository.list_ap_extension_points(search="正线站台")[0]["ap_name"] == "AP-S_1214"
+    assert repository.list_ap_extension_points(search="古林站-云林西路站")[0]["ap_name"] == "AP-S_1214"
