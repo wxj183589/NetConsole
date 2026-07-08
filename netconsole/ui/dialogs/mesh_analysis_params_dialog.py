@@ -26,6 +26,9 @@ class MeshAnalysisParamsEditor(QWidget):
         params = params or MeshAnalysisParams()
         self.switch_time_spin = self._spin(100, 60000, params.main_link_switch_time_ms)
         self.tolerance_spin = self._spin(0, 60000, params.short_link_tolerance_ms)
+        self.pingpong_tolerance_spin = self._spin(0, 60000, params.pingpong_tolerance_ms)
+        self.pingpong_window_spin = self._spin(0, 60000, params.pingpong_return_window_ms or 0)
+        self.pingpong_window_spin.setSpecialValueText(f"自动({params.effective_pingpong_return_window_ms}ms)")
         self.merge_dual_radio_check = QCheckBox("开启")
         self.merge_dual_radio_check.setChecked(params.merge_same_physical_ap_dual_radio)
         self.include_boundary_check = QCheckBox("开启")
@@ -42,6 +45,8 @@ class MeshAnalysisParamsEditor(QWidget):
         layout = QFormLayout(self)
         layout.addRow("主链路切换时间(ms)", self.switch_time_spin)
         layout.addRow("短时判定容差(ms)", self.tolerance_spin)
+        layout.addRow("乒乓判定容差(ms)", self.pingpong_tolerance_spin)
+        layout.addRow("乒乓返回窗口(ms)", self.pingpong_window_spin)
         layout.addRow("是否合并同AP双射频口", self.merge_dual_radio_check)
         layout.addRow("是否将日志边界段纳入短时建链统计", self.include_boundary_check)
         layout.addRow("采样间隔(ms)", self.sample_interval_spin)
@@ -53,6 +58,8 @@ class MeshAnalysisParamsEditor(QWidget):
             {
                 "main_link_switch_time_ms": self.switch_time_spin.value(),
                 "short_link_tolerance_ms": self.tolerance_spin.value(),
+                "pingpong_tolerance_ms": self.pingpong_tolerance_spin.value(),
+                "pingpong_return_window_ms": self.pingpong_window_spin.value() or None,
                 "merge_same_physical_ap_dual_radio": self.merge_dual_radio_check.isChecked(),
                 "include_log_boundary_segments": self.include_boundary_check.isChecked(),
                 "sample_interval_ms": self.sample_interval_spin.value() or None,

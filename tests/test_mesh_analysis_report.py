@@ -40,12 +40,28 @@ PEER_B = "30f5277a5a30"
 PEER_C = "30f5277a5a31"
 
 
-def _row(sample_time: str, peer: str, state: str = "ACTIVE", radio: int = 1, mr_rssi: int = 41, peer_rssi: int = 39) -> dict[str, object]:
+def _row(
+    sample_time: str,
+    peer: str,
+    state: str = "ACTIVE",
+    radio: int = 1,
+    mr_rssi: int = 41,
+    peer_rssi: int = 39,
+    peer_ap_name: str | None = None,
+    peer_ap_mac: str | None = None,
+    peer_radio: str | None = None,
+) -> dict[str, object]:
     return {
         "sample_time": sample_time,
         "radio": radio,
         "link_state": state,
         "peer_mac_normalized": peer,
+        "peer_ap_name": peer_ap_name or f"AP-{peer[-4:]}",
+        "peer_ap_mac": peer_ap_mac or peer,
+        "peer_site": "03横溪站",
+        "peer_radio": peer_radio or "radio1",
+        "peer_radio_label": peer_radio or "radio1",
+        "peer_radio_mac": peer,
         "establish_time": "2025-12-03 09:59:00.000",
         "duration_seconds": 60,
         "mr_rssi": mr_rssi,
@@ -176,19 +192,62 @@ def test_flap_detects_aba_inside_window_and_ignores_non_flap():
     flap_segments = build_active_segments(
         [
             _row("2025-12-03 10:00:00.000", PEER_A),
-            _row("2025-12-03 10:00:02.000", PEER_B),
-            _row("2025-12-03 10:00:04.000", PEER_A),
+            _row("2025-12-03 10:00:01.000", PEER_B),
+            _row("2025-12-03 10:00:02.000", PEER_A),
         ]
     )
-    assert detect_flap_switches(flap_segments, flap_window_seconds=5)[0]["flap_type"] == "A-B-A"
+    flap = detect_flap_switches(flap_segments, flap_window_seconds=5)[0]
+    assert flap["flap_type"] == "AP乒乓切换异常"
+    assert flap["is_pingpong_abnormal"] is True
     non_flap_segments = build_active_segments(
         [
             _row("2025-12-03 10:00:00.000", PEER_A),
-            _row("2025-12-03 10:00:02.000", PEER_B),
-            _row("2025-12-03 10:00:04.000", PEER_C),
+            _row("2025-12-03 10:00:01.000", PEER_B),
+            _row("2025-12-03 10:00:02.000", PEER_C),
         ]
     )
     assert detect_flap_switches(non_flap_segments, flap_window_seconds=5) == []
+
+
+def test_flap_detects_critical_normal_and_same_ap_radio_return_without_abnormal():
+    critical_segments = build_active_segments(
+        [
+            _row("2025-12-03 10:00:00.000", PEER_A),
+            _row("2025-12-03 10:00:01.000", PEER_B),
+            _row("2025-12-03 10:00:02.000", PEER_B),
+            _row("2025-12-03 10:00:03.000", PEER_B),
+            _row("2025-12-03 10:00:04.000", PEER_A),
+        ]
+    )
+    normal_segments = build_active_segments(
+        [
+            _row("2025-12-03 10:10:00.000", PEER_A),
+            _row("2025-12-03 10:10:01.000", PEER_B),
+            _row("2025-12-03 10:10:02.000", PEER_B),
+            _row("2025-12-03 10:10:03.000", PEER_B),
+            _row("2025-12-03 10:10:04.000", PEER_B),
+            _row("2025-12-03 10:10:05.000", PEER_B),
+            _row("2025-12-03 10:10:06.000", PEER_A),
+        ]
+    )
+    same_ap_segments = build_active_segments(
+        [
+            _row("2025-12-03 10:20:00.000", PEER_A, peer_ap_name="AP-A", peer_ap_mac="aaaa", peer_radio="radio1"),
+            _row("2025-12-03 10:20:01.000", PEER_B, peer_ap_name="AP-A", peer_ap_mac="aaaa", peer_radio="radio2"),
+            _row("2025-12-03 10:20:02.000", PEER_A, peer_ap_name="AP-A", peer_ap_mac="aaaa", peer_radio="radio1"),
+        ]
+    )
+
+    critical = detect_flap_switches(critical_segments, flap_window_seconds=5)[0]
+    normal = detect_flap_switches(normal_segments, flap_window_seconds=10)[0]
+    same_ap = detect_flap_switches(same_ap_segments, flap_window_seconds=5)[0]
+
+    assert critical["flap_type"] == "临界回切"
+    assert critical["is_pingpong_abnormal"] is False
+    assert normal["flap_type"] == "普通回切事件"
+    assert normal["is_pingpong_abnormal"] is False
+    assert same_ap["flap_type"] == "同AP射频往返"
+    assert same_ap["is_pingpong_abnormal"] is False
 
 
 def test_link_establishment_order_lifecycle_and_anomalies():
@@ -367,6 +426,35 @@ def test_quality_switch_late_weak_target_and_flap_detection():
     late_segments = build_quality_active_segments(late_samples, late_rows, rules)
     late_switches = analyze_switch_events(late_segments, late_samples, rules)
     assert late_switches[0]["switch_type"] in {"LATE_SWITCH", "WEAK_TARGET_SWITCH"}
+
+
+def test_quality_switch_long_return_is_not_pingpong_abnormal():
+    rules = MeshQualityRules(
+        switch_late_window_seconds=5,
+        switch_target_window_seconds=5,
+        flap_window_seconds=10,
+        short_active_segment_seconds=0,
+        main_link_switch_time_ms=2500,
+        pingpong_tolerance_ms=500,
+        pingpong_return_window_ms=10000,
+    )
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:01", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:02", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:03", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:04", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:05", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:06", PEER_A, "ACTIVE", mr_rssi=40),
+        ]
+    )
+    samples = build_sample_quality(rows, rules)
+    segments = build_quality_active_segments(samples, rows, rules)
+    switches = analyze_switch_events(segments, samples, rules)
+
+    assert not any(switch["switch_type"] == "FLAP_SWITCH" for switch in switches)
+    assert any(switch["pingpong_type"] == "普通回切事件" and not switch["is_pingpong_abnormal"] for switch in switches)
 
 
 def test_quality_rebuild_busy_and_percentiles():

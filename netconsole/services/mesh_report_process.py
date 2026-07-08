@@ -182,6 +182,10 @@ def _run_sequential_reports(
             source_file_name=file_label,
             report_name=request.options.report_name or f"{request.mr_name} {file_label}",
             short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
+            main_link_switch_time_ms=params.main_link_switch_time_ms,
+            pingpong_tolerance_ms=params.pingpong_tolerance_ms,
+            pingpong_return_window_ms=params.effective_pingpong_return_window_ms,
+            flap_window_seconds=max(1, int(round(params.effective_pingpong_return_window_ms / 1000.0))),
             business_type=params.service_type,
             working_mode=params.wifi_type,
         )
@@ -235,11 +239,19 @@ def _build_report_jobs(output_dir: Path, request: MeshReportProcessRequest, sour
         file_label = str(source_file.get("original_filename") or source_file.get("archived_filename") or source_file.get("id") or "")
         report_path = _unique_report_path(output_dir, request.mr_name, source_file, reserved_paths)
         reserved_paths.add(report_path)
+        params = _analysis_params_for_report(request.options, source_file)
         options = replace(
             request.options,
             source_file_id=int(source_file["id"]),
             source_file_name=file_label,
             report_name=request.options.report_name or f"{request.mr_name} {file_label}",
+            short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
+            main_link_switch_time_ms=params.main_link_switch_time_ms,
+            pingpong_tolerance_ms=params.pingpong_tolerance_ms,
+            pingpong_return_window_ms=params.effective_pingpong_return_window_ms,
+            flap_window_seconds=max(1, int(round(params.effective_pingpong_return_window_ms / 1000.0))),
+            business_type=params.service_type,
+            working_mode=params.wifi_type,
         )
         jobs.append(
             {

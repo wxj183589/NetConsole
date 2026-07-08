@@ -803,10 +803,13 @@ def test_active_build_order_headers_are_chinese_and_autosized(tmp_path):
     assert headers[16] == "配置切换时间(ms)"
     assert headers[18] == "是否同AP射频切换"
     assert headers[20] == "判定原因"
+    assert headers[21] == "是否AP回切"
+    assert headers[23] == "乒乓类型"
+    assert headers[31] == "乒乓判定原因"
     header = page.active_build_order_table.horizontalHeader()
     assert header.sectionResizeMode(6) == QHeaderView.Interactive
     assert page.active_build_order_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-    for column in (6, 7, 21):
+    for column in (6, 7, 31, 32):
         header_text = page.active_build_order_table.horizontalHeaderItem(column).text()
         expected = header.fontMetrics().horizontalAdvance(header_text) + 32
         assert page.active_build_order_table.columnWidth(column) >= expected
@@ -838,6 +841,67 @@ def test_active_build_order_uses_source_snapshot_before_site_fallback_and_temp_o
     )
     assert override_rows[0]["main_link_switch_time_ms"] == 3000
     assert override_rows[0]["build_result"] == "short"
+
+
+def test_active_build_order_marks_ap_pingpong_by_physical_ap_sequence():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    rows = [
+        _active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:00:01.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:00:02.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+    result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
+
+    middle = result[1]
+    assert middle["is_ap_return_event"] is True
+    assert middle["is_pingpong_abnormal"] is True
+    assert middle["pingpong_type"] == "AP乒乓切换异常"
+    assert middle["middle_ap_dwell_ms"] == 1000
+    assert "明显小于配置切换时间 2500ms" in middle["pingpong_judgment_reason"]
+
+
+def test_active_build_order_separates_critical_and_normal_return_events():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    critical_rows = [
+        _active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:00:01.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:00:02.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:00:03.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+    normal_rows = [
+        _active_point("2025-12-03 10:10:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:10:01.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:02.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:03.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:04.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:05.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+
+    critical = _active_build_order_rows_from_points(critical_rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})[1]
+    normal = _active_build_order_rows_from_points(normal_rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})[1]
+
+    assert critical["pingpong_type"] == "临界回切"
+    assert critical["is_pingpong_abnormal"] is False
+    assert normal["pingpong_type"] == "普通回切事件"
+    assert normal["is_pingpong_abnormal"] is False
+
+
+def test_active_build_order_marks_same_physical_ap_radio_roundtrip_not_ap_pingpong():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    rows = [
+        _active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:00:01.000", "30f5277a5a3f", "aaaa-0000-0001", "AP-A", "radio2"),
+        _active_point("2025-12-03 10:00:02.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+    result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
+
+    middle = result[1]
+    assert middle["pingpong_type"] == "同AP射频往返"
+    assert middle["is_ap_return_event"] is False
+    assert middle["is_pingpong_abnormal"] is False
 
 
 def test_peer_chart_run_context_includes_same_time_standby_from_other_session(tmp_path):
@@ -2391,6 +2455,33 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
             links,
         )
     MeshMrRepository(db_path).rebuild_derived_analysis()
+
+
+def _active_point(sample_time: str, peer: str, ap_mac: str, ap_name: str, peer_radio: str) -> dict[str, object]:
+    normalized = "".join(character for character in peer.lower() if character in "0123456789abcdef")
+    return {
+        "id": int(datetime.fromisoformat(sample_time).timestamp() * 1000),
+        "source_file_id": 1,
+        "radio": 1,
+        "sample_time": sample_time,
+        "peer_mac_raw": peer,
+        "peer_mac_normalized": normalized,
+        "peer_mac": normalized,
+        "peer_ap_name": ap_name,
+        "peer_site": "03横溪站",
+        "peer_radio": peer_radio,
+        "peer_radio_label": peer_radio,
+        "peer_ap_mac": ap_mac,
+        "peer_radio_mac": peer,
+        "duration_seconds": 1,
+        "local_rssi_db": 35,
+        "peer_rssi_db": 38,
+        "local_tx_busy": 1,
+        "local_rx_busy": 3,
+        "peer_tx_busy": 1,
+        "peer_rx_busy": 3,
+        "source_file": "mesh.log",
+    }
 
 
 def _chart_row(link_id: int, sample_time: str) -> dict[str, object]:

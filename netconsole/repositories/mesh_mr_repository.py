@@ -2838,6 +2838,7 @@ def _active_build_order_rows_from_points(
         last_time = sample_time
     flush_segment()
     _mark_same_physical_ap_radio_switches(result)
+    _mark_pingpong_events(result)
     return result
 
 
@@ -2886,6 +2887,8 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "avg_peer_rx_busy": _average(peer_rx_values),
         "main_link_switch_time_ms": params.main_link_switch_time_ms,
         "short_link_tolerance_ms": params.short_link_tolerance_ms,
+        "pingpong_tolerance_ms": params.pingpong_tolerance_ms,
+        "pingpong_return_window_ms": params.effective_pingpong_return_window_ms,
         "short_threshold_seconds": round(short_threshold_ms / 1000.0, 3),
         "min_normal_sample_count": MIN_NORMAL_ACTIVE_SAMPLE_COUNT,
         "is_same_physical_ap_radio_switch": False,
@@ -2893,6 +2896,17 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "merge_same_physical_ap_dual_radio": params.merge_same_physical_ap_dual_radio,
         "build_result": "short" if is_short else "normal",
         "judge_reason": judge_reason,
+        "is_ap_return_event": False,
+        "is_pingpong_abnormal": False,
+        "pingpong_type": "无",
+        "pingpong_group_id": "",
+        "pingpong_return_duration_ms": "",
+        "middle_ap_dwell_ms": "",
+        "previous_ap": "",
+        "middle_ap": "",
+        "return_ap": "",
+        "pingpong_count": "",
+        "pingpong_judgment_reason": "",
         "source_file": first.get("source_file") or first.get("archived_filename") or first.get("source_file_id") or "",
     }
 
@@ -2930,6 +2944,158 @@ def _mark_same_physical_ap_radio_switches(rows: list[dict[str, object]]) -> None
             break
 
 
+def _mark_pingpong_events(rows: list[dict[str, object]]) -> None:
+    by_scope: dict[tuple[object, object], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        by_scope[(row.get("source_file_id"), row.get("radio"))].append(row)
+    group_index = 0
+    for scope_rows in by_scope.values():
+        ordered = sorted(scope_rows, key=lambda item: str(item.get("build_start_time") or ""))
+        for index in range(len(ordered) - 2):
+            previous, middle, returned = ordered[index], ordered[index + 1], ordered[index + 2]
+            return_duration_ms = _elapsed_ms(previous.get("build_end_time"), returned.get("build_start_time"))
+            if return_duration_ms is None or return_duration_ms > _pingpong_return_window_ms(middle):
+                continue
+            previous_key = str(previous.get("physical_ap_key") or "")
+            middle_key = str(middle.get("physical_ap_key") or "")
+            returned_key = str(returned.get("physical_ap_key") or "")
+            if not previous_key or not middle_key or not returned_key:
+                continue
+            middle_dwell_ms = _segment_duration_ms(middle)
+            if previous_key == middle_key == returned_key and _canonical_mac(previous.get("active_peer_mac")) != _canonical_mac(middle.get("active_peer_mac")):
+                group_index += 1
+                _set_pingpong_fields(
+                    middle,
+                    group_index,
+                    "同AP射频往返",
+                    False,
+                    False,
+                    return_duration_ms,
+                    middle_dwell_ms,
+                    previous,
+                    middle,
+                    returned,
+                    f"同一物理 AP 内 {previous.get('peer_radio') or '-'} -> {middle.get('peer_radio') or '-'} -> {returned.get('peer_radio') or '-'}，不计入 AP 乒乓。",
+                )
+                continue
+            if previous_key != returned_key or previous_key == middle_key:
+                continue
+            group_index += 1
+            pingpong_type, is_abnormal, reason = _classify_pingpong_return(previous, middle, returned, middle_dwell_ms)
+            _set_pingpong_fields(
+                middle,
+                group_index,
+                pingpong_type,
+                True,
+                is_abnormal,
+                return_duration_ms,
+                middle_dwell_ms,
+                previous,
+                middle,
+                returned,
+                reason,
+            )
+
+
+def _classify_pingpong_return(
+    previous: dict[str, object],
+    middle: dict[str, object],
+    returned: dict[str, object],
+    middle_dwell_ms: int,
+) -> tuple[str, bool, str]:
+    switch_ms = _positive_int_or_default(middle.get("main_link_switch_time_ms"), 2500)
+    tolerance_ms = max(_positive_int_or_default(middle.get("pingpong_tolerance_ms"), 500), 0)
+    abnormal_threshold = max(switch_ms - tolerance_ms, 0)
+    critical_upper = switch_ms + tolerance_ms
+    sequence = f"{_segment_ap_label(previous)} -> {_segment_ap_label(middle)} -> {_segment_ap_label(returned)}"
+    dwell_text = f"{middle_dwell_ms / 1000.0:.2f}s"
+    if middle_dwell_ms < abnormal_threshold:
+        return (
+            "AP乒乓切换异常",
+            True,
+            f"{sequence}，中间 AP 驻留 {dwell_text}，明显小于配置切换时间 {switch_ms}ms。",
+        )
+    if middle_dwell_ms <= critical_upper:
+        return (
+            "临界回切",
+            False,
+            f"{sequence}，中间 AP 驻留 {dwell_text}，接近配置切换时间 {switch_ms}ms，不计入乒乓异常。",
+        )
+    return (
+        "普通回切事件",
+        False,
+        f"{sequence}，中间 AP 驻留 {dwell_text}，已超过配置切换时间 {switch_ms}ms，不计入乒乓异常。",
+    )
+
+
+def _set_pingpong_fields(
+    row: dict[str, object],
+    group_index: int,
+    pingpong_type: str,
+    is_ap_return_event: bool,
+    is_abnormal: bool,
+    return_duration_ms: int,
+    middle_dwell_ms: int,
+    previous: dict[str, object],
+    middle: dict[str, object],
+    returned: dict[str, object],
+    reason: str,
+) -> None:
+    row["is_ap_return_event"] = is_ap_return_event
+    row["is_pingpong_abnormal"] = is_abnormal
+    row["pingpong_type"] = pingpong_type
+    row["pingpong_group_id"] = f"PP{group_index:04d}"
+    row["pingpong_return_duration_ms"] = return_duration_ms
+    row["middle_ap_dwell_ms"] = middle_dwell_ms
+    row["previous_ap"] = _segment_ap_label(previous)
+    row["middle_ap"] = _segment_ap_label(middle)
+    row["return_ap"] = _segment_ap_label(returned)
+    row["pingpong_count"] = group_index
+    row["pingpong_judgment_reason"] = reason
+
+
+def _segment_ap_label(row: dict[str, object]) -> str:
+    ap_name = str(row.get("peer_ap_name") or "").strip()
+    peer = format_mac_h3c(row.get("active_peer_mac")) if row.get("active_peer_mac") else ""
+    label = ap_name or peer or "-"
+    station = str(row.get("peer_site") or "").strip()
+    return f"{label} / {station}" if station else label
+
+
+def _pingpong_return_window_ms(row: dict[str, object]) -> int:
+    configured = _positive_int_or_default(row.get("pingpong_return_window_ms"), 0)
+    if configured > 0:
+        return configured
+    switch_ms = _positive_int_or_default(row.get("main_link_switch_time_ms"), 2500)
+    tolerance_ms = _positive_int_or_default(row.get("pingpong_tolerance_ms"), 500)
+    return max(8000, 3 * (switch_ms + tolerance_ms))
+
+
+def _segment_duration_ms(row: dict[str, object]) -> int:
+    value = _float(row.get("main_link_duration_seconds"))
+    if value is not None:
+        return max(int(round(value * 1000)), 0)
+    elapsed = _elapsed_ms(row.get("build_start_time"), row.get("build_end_time"))
+    return max(elapsed or 0, 0)
+
+
+def _elapsed_ms(start: object, end: object) -> int | None:
+    try:
+        start_dt = datetime.fromisoformat(str(start or ""))
+        end_dt = datetime.fromisoformat(str(end or ""))
+    except ValueError:
+        return None
+    return max(int(round((end_dt - start_dt).total_seconds() * 1000)), 0)
+
+
+def _positive_int_or_default(value: object, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
 def _neighbor_segments(rows: list[dict[str, object]], index: int) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     if index > 0:
@@ -2950,13 +3116,14 @@ def _physical_ap_key(row: dict[str, object]) -> str:
     ap_name = str(row.get("peer_ap_name") or "").strip().lower()
     if ap_name:
         return f"ap_name:{ap_name}"
-    peer_radio_mac = _canonical_mac(row.get("peer_radio_mac"))
-    if peer_radio_mac:
-        return f"peer_radio_mac:{peer_radio_mac}"
     station = str(row.get("peer_site") or "").strip().lower()
     if station and ap_name:
         return f"station_ap:{station}:{ap_name}"
-    return ""
+    peer_radio_mac = _canonical_mac(row.get("peer_radio_mac"))
+    if peer_radio_mac:
+        return f"peer_radio_mac:{peer_radio_mac}"
+    peer_mac = _canonical_mac(row.get("peer_mac_normalized") or row.get("peer_mac_raw") or row.get("peer_mac") or row.get("active_peer_mac"))
+    return f"peer_mac:{peer_mac}" if peer_mac else ""
 
 
 def _first_nonempty(values: list[object]) -> str:

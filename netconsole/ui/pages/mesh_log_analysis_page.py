@@ -134,6 +134,17 @@ MESH_TABLE_FIELDS = {
         "is_same_physical_ap_radio_switch",
         "build_result",
         "judge_reason",
+        "is_ap_return_event",
+        "is_pingpong_abnormal",
+        "pingpong_type",
+        "pingpong_group_id",
+        "pingpong_return_duration_ms",
+        "middle_ap_dwell_ms",
+        "previous_ap",
+        "middle_ap",
+        "return_ap",
+        "pingpong_count",
+        "pingpong_judgment_reason",
         "source_file",
     ],
     "event": [
@@ -176,6 +187,17 @@ MESH_MAIN_LINK_SEQUENCE_HEADERS = [
     "是否同AP射频切换",
     "建链结果",
     "判定原因",
+    "是否AP回切",
+    "是否乒乓异常",
+    "乒乓类型",
+    "乒乓组ID",
+    "乒乓返回耗时(ms)",
+    "中间AP驻留时长(ms)",
+    "前一AP",
+    "中间AP",
+    "返回AP",
+    "乒乓次数",
+    "乒乓判定原因",
     "源文件",
 ]
 REPORT_STAGE_LABELS = {
@@ -1156,6 +1178,10 @@ class MeshLogAnalysisPage(QWidget):
         options = replace(
             options,
             short_active_segment_seconds=current_params.short_link_threshold_ms / 1000.0,
+            main_link_switch_time_ms=current_params.main_link_switch_time_ms,
+            pingpong_tolerance_ms=current_params.pingpong_tolerance_ms,
+            pingpong_return_window_ms=current_params.effective_pingpong_return_window_ms,
+            flap_window_seconds=max(1, int(round(current_params.effective_pingpong_return_window_ms / 1000.0))),
             analysis_params_override=self._analysis_params_override_payload(),
             site_analysis_params=self._site_analysis_params().to_dict(),
         )
@@ -1395,6 +1421,17 @@ class MeshLogAnalysisPage(QWidget):
                 "是" if row.get("is_same_physical_ap_radio_switch") else "否",
                 self._build_result_text(row.get("build_result")),
                 row.get("judge_reason"),
+                "是" if row.get("is_ap_return_event") else "否",
+                "是" if row.get("is_pingpong_abnormal") else "否",
+                row.get("pingpong_type"),
+                row.get("pingpong_group_id"),
+                row.get("pingpong_return_duration_ms"),
+                row.get("middle_ap_dwell_ms"),
+                row.get("previous_ap"),
+                row.get("middle_ap"),
+                row.get("return_ap"),
+                row.get("pingpong_count"),
+                row.get("pingpong_judgment_reason"),
                 row.get("source_file"),
             ]
             _set_row(self.active_build_order_table, row_index, values, row)
@@ -1720,7 +1757,7 @@ class MeshLogAnalysisPage(QWidget):
     def _apply_active_build_order_help(self) -> None:
         text = self.i18n.t("mesh_analysis.short_link_rule_tip")
         self.active_build_order_table.setToolTip(text)
-        for column in (19, 20):
+        for column in range(19, min(self.active_build_order_table.columnCount(), 32)):
             header_item = self.active_build_order_table.horizontalHeaderItem(column)
             if header_item is not None:
                 header_item.setToolTip(text)
@@ -1750,7 +1787,7 @@ class MeshLogAnalysisPage(QWidget):
             "mr": [180],
             "source": [180, 90, 320, 100, 90, 120, 180, 180, 180, 100, 90, 90, 90, 80, 120],
             "link": [90, 180, 70, 90, 180, 180, 140, 140, 150, 110, 140, 110, 80, 90, 90, 90, 90, 90, 90, 110, 110, 90, 90, 90, 90, 240, 80],
-            "active_build_order": [70, 70, 170, 190, 150, 110, 220, 220, 160, 150, 100, 120, 110, 110, 110, 110, 150, 150, 150, 120, 260, 280],
+            "active_build_order": [70, 70, 170, 190, 150, 110, 220, 220, 160, 150, 100, 120, 110, 110, 110, 110, 150, 150, 150, 120, 260, 110, 120, 150, 130, 160, 170, 190, 190, 190, 110, 300, 280],
             "event": [180, 60, 140, 150, 150, 120, 110, 110, 110, 110, 110, 110, 240, 70],
             "issue": [180, 70, 90, 140, 120, 240, 320],
         }

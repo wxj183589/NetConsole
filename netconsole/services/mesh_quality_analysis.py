@@ -5,7 +5,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Callable
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, format_mac_h3c
@@ -32,6 +32,9 @@ class MeshQualityRules:
     switch_late_window_seconds: int = 5
     switch_target_window_seconds: int = 5
     flap_window_seconds: int = 30
+    main_link_switch_time_ms: int = 2500
+    pingpong_tolerance_ms: int = 500
+    pingpong_return_window_ms: int | None = None
     short_active_segment_seconds: int = 5
     score_weights: dict[str, int] = field(
         default_factory=lambda: {
@@ -242,10 +245,21 @@ def load_default_rules() -> MeshQualityRules:
         switch_late_window_seconds=int(data.get("switch", {}).get("late_window_seconds", 5)),
         switch_target_window_seconds=int(data.get("switch", {}).get("target_window_seconds", 5)),
         flap_window_seconds=int(data.get("switch", {}).get("flap_window_seconds", 30)),
+        main_link_switch_time_ms=int(data.get("switch", {}).get("main_link_switch_time_ms", 2500)),
+        pingpong_tolerance_ms=int(data.get("switch", {}).get("pingpong_tolerance_ms", 500)),
+        pingpong_return_window_ms=_optional_int(data.get("switch", {}).get("pingpong_return_window_ms")),
         short_active_segment_seconds=int(data.get("switch", {}).get("short_active_segment_seconds", 5)),
         weak_active_min_seconds=int(data.get("anomaly", {}).get("weak_active_min_seconds", 3)),
         score_weights={key: int(value) for key, value in dict(data.get("score_weights") or {}).items()},
     )
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def percentile(values: list[float], ratio: float) -> float | str:
@@ -473,6 +487,7 @@ def build_sample_quality(rows: list[dict[str, object]], rules: MeshQualityRules)
                 "active_link_cnt": active.get("link_count") if active else "",
                 "active_establish_time": active.get("establish_time") if active else "",
                 "active_duration_time": active.get("duration_seconds") if active else "",
+                "source_file_id": active.get("source_file_id") if active else sample_rows[0].get("source_file_id"),
                 "source_file": active.get("archived_filename") or active.get("source_file") if active else (sample_rows[0].get("archived_filename") or ""),
                 "source_line_number": active.get("source_line_number") if active else sample_rows[0].get("source_line_number"),
                 "quality_level": level,
@@ -489,6 +504,7 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
     current: dict[str, object] | None = None
     current_samples: list[dict[str, object]] = []
     row_index = _build_peer_time_index(rows)
+    interval_by_radio = _sample_interval_by_scope(samples)
     for sample in samples:
         peer = str(sample.get("active_peer_key") or "")
         if not peer:
@@ -497,7 +513,7 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
                 segments.append(current)
             current, current_samples = None, []
             continue
-        if current and current.get("radio") == sample.get("radio") and current.get("active_peer_key") == peer:
+        if current and current.get("source_file_id") == sample.get("source_file_id") and current.get("radio") == sample.get("radio") and current.get("active_peer_key") == peer:
             current["end_time"] = sample.get("sample_time")
             current_samples.append(sample)
             continue
@@ -506,9 +522,11 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
             segments.append(current)
         current = {
             "sequence": len(segments) + 1,
+            "source_file_id": sample.get("source_file_id"),
             "radio": sample.get("radio"),
             "active_peer_key": peer,
             "active_peer_mac": sample.get("active_peer_mac"),
+            "sample_interval_seconds": interval_by_radio.get((sample.get("source_file_id"), sample.get("radio")), 1.0),
             "start_time": sample.get("sample_time"),
             "end_time": sample.get("sample_time"),
         }
@@ -521,23 +539,25 @@ def build_active_segments(samples: list[dict[str, object]], rows: list[dict[str,
 
 def analyze_switch_events(segments: list[dict[str, object]], samples: list[dict[str, object]], rules: MeshQualityRules) -> list[dict[str, object]]:
     events = []
-    by_radio: dict[object, list[dict[str, object]]] = {}
+    by_radio: dict[tuple[object, object], list[dict[str, object]]] = {}
     for segment in segments:
-        by_radio.setdefault(segment.get("radio"), []).append(segment)
-    sample_index = _build_radio_time_index(samples)
-    for radio, radio_segments in by_radio.items():
+        by_radio.setdefault((segment.get("source_file_id"), segment.get("radio")), []).append(segment)
+    sample_index = _build_source_radio_time_index(samples)
+    for (_source_file_id, radio), radio_segments in by_radio.items():
         ordered = sorted(radio_segments, key=lambda row: str(row.get("start_time") or ""))
         for index, (previous, current) in enumerate(zip(ordered, ordered[1:])):
             if previous.get("active_peer_key") == current.get("active_peer_key"):
                 continue
-            before = _samples_between_indexed(sample_index, samples, radio, previous.get("end_time"), rules.switch_late_window_seconds, before=True)
-            after = _samples_between_indexed(sample_index, samples, radio, current.get("start_time"), rules.switch_target_window_seconds, before=False)
+            scope = (current.get("source_file_id"), radio)
+            before = _samples_between_indexed(sample_index, samples, scope, previous.get("end_time"), rules.switch_late_window_seconds, before=True)
+            after = _samples_between_indexed(sample_index, samples, scope, current.get("start_time"), rules.switch_target_window_seconds, before=False)
             switch_type = "NORMAL_SWITCH"
             severity = "GOOD"
             diagnosis = "主链路切换未发现明显异常。"
-            if _is_flap(ordered, index, rules.flap_window_seconds):
-                switch_type, severity, diagnosis = "FLAP_SWITCH", "WARNING", "出现 A-B-A 或 A-B-A-B 乒乓切换。"
-            if _num(current.get("duration_seconds")) is not None and float(current.get("duration_seconds") or 0) < rules.short_active_segment_seconds:
+            pingpong = _classify_pingpong_switch(ordered, index, rules)
+            if pingpong and pingpong.get("is_pingpong_abnormal"):
+                switch_type, severity, diagnosis = "FLAP_SWITCH", "WARNING", str(pingpong.get("judgment_reason") or "出现 AP 乒乓切换异常。")
+            if _num(current.get("duration_seconds")) is not None and float(current.get("duration_seconds") or 0) < rules.short_active_segment_seconds and switch_type == "NORMAL_SWITCH":
                 switch_type, severity, diagnosis = "SHORT_SEGMENT_SWITCH", "WARNING", "新 Active 区段持续时间过短。"
             if switch_type == "NORMAL_SWITCH" and before and (_all_low(before, rules.rssi_good_threshold) and _has_better_backup(before) or _all_low(before, rules.rssi_warning_threshold)):
                 switch_type, severity, diagnosis = "LATE_SWITCH", "BAD", "切换前主链路 RSSI 已偏低且未及时切换。"
@@ -568,6 +588,16 @@ def analyze_switch_events(segments: list[dict[str, object]], samples: list[dict[
                     "switch_type": switch_type,
                     "severity": severity,
                     "diagnosis": diagnosis,
+                    "is_ap_return_event": bool(pingpong.get("is_ap_return_event")) if pingpong else False,
+                    "is_pingpong_abnormal": bool(pingpong.get("is_pingpong_abnormal")) if pingpong else False,
+                    "pingpong_type": pingpong.get("pingpong_type") if pingpong else "",
+                    "pingpong_group_id": pingpong.get("pingpong_group_id") if pingpong else "",
+                    "pingpong_return_duration_ms": pingpong.get("pingpong_return_duration_ms") if pingpong else "",
+                    "middle_ap_dwell_ms": pingpong.get("middle_ap_dwell_ms") if pingpong else "",
+                    "previous_ap": pingpong.get("previous_ap") if pingpong else "",
+                    "middle_ap": pingpong.get("middle_ap") if pingpong else "",
+                    "return_ap": pingpong.get("return_ap") if pingpong else "",
+                    "pingpong_judgment_reason": pingpong.get("judgment_reason") if pingpong else "",
                     "suggestion": _switch_suggestion(switch_type),
                     "evidence_id": evidence_id,
                 }
@@ -670,7 +700,7 @@ def build_peer_quality(rows: list[dict[str, object]], segments: list[dict[str, o
             "max_rx_busy": _max([_num(row.get("rx_busy")) for row in active_rows]),
             "link_rebuild_count": sum(int(segment.get("link_count_delta_count") or 0) + int(segment.get("duration_reset_count") or 0) + int(segment.get("establish_reset_count") or 0) for segment in peer_segments),
             "short_segment_count": len([segment for segment in peer_segments if float(segment.get("duration_seconds") or 0) < rules.short_active_segment_seconds]),
-            "flap_related_count": len([event for event in switches if event.get("switch_type") == "FLAP_SWITCH" and (_canonical(event.get("to_peer")) == peer or _canonical(event.get("from_peer")) == peer)]),
+            "flap_related_count": len([event for event in switches if _is_pingpong_abnormal_event(event) and (_canonical(event.get("to_peer")) == peer or _canonical(event.get("from_peer")) == peer)]),
             "peer_quality_score": max(0, 100 - len(tags) * 15),
             "problem_tags": "; ".join(tags),
             "suggestion": _peer_suggestion(tags),
@@ -881,7 +911,7 @@ def build_overview(
         "总链路记录数": len(rows),
         "Active 区段数量": len(segments),
         "主链路切换次数": len(switches),
-        "乒乓切换次数": len([event for event in switches if event.get("switch_type") == "FLAP_SWITCH"]),
+        "乒乓切换次数": len([event for event in switches if _is_pingpong_abnormal_event(event)]),
         "切换滞后次数": len([event for event in switches if event.get("switch_type") == "LATE_SWITCH"]),
         "切入质量差次数": len([event for event in switches if event.get("switch_type") == "WEAK_TARGET_SWITCH"]),
         "无 Active 次数": len([event for event in anomalies if event.get("event_type") == "NO_ACTIVE"]),
@@ -914,7 +944,10 @@ def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]]
     segment["peer_ap_mac"] = format_mac_h3c(str(row_matches[0].get("peer_ap_mac") or "")) if row_matches and row_matches[0].get("peer_ap_mac") else ""
     segment["peer_site"] = row_matches[0].get("peer_site") if row_matches else ""
     segment["peer_radio"] = row_matches[0].get("peer_radio") or row_matches[0].get("peer_radio_label") if row_matches else ""
-    segment["duration_seconds"] = _seconds_between(segment.get("start_time"), segment.get("end_time")) or 0
+    segment["peer_radio_mac"] = row_matches[0].get("peer_radio_mac") if row_matches else ""
+    segment["physical_ap_key"] = _physical_ap_key(row_matches[0]) if row_matches else f"peer_mac:{peer}"
+    base_duration = _seconds_between(segment.get("start_time"), segment.get("end_time")) or 0
+    segment["duration_seconds"] = round(base_duration + max(float(segment.get("sample_interval_seconds") or 0), 0.0), 3)
     segment["sample_count"] = len(samples)
     segment["first_mr_rssi"] = mr[0] if mr else ""
     segment["last_mr_rssi"] = mr[-1] if mr else ""
@@ -1008,6 +1041,32 @@ def _build_radio_time_index(samples: list[dict[str, object]]) -> dict[object, tu
     for radio, rows in grouped.items():
         ordered = sorted(rows, key=lambda row: _dt(row.get("sample_time")))
         result[radio] = ([_dt(row.get("sample_time")) for row in ordered], ordered)
+    return result
+
+
+def _build_source_radio_time_index(samples: list[dict[str, object]]) -> dict[tuple[object, object], tuple[list[datetime], list[dict[str, object]]]]:
+    grouped: dict[tuple[object, object], list[dict[str, object]]] = {}
+    for sample in samples:
+        grouped.setdefault((sample.get("source_file_id"), sample.get("radio")), []).append(sample)
+    result: dict[tuple[object, object], tuple[list[datetime], list[dict[str, object]]]] = {}
+    for scope, rows in grouped.items():
+        ordered = sorted(rows, key=lambda row: _dt(row.get("sample_time")))
+        result[scope] = ([_dt(row.get("sample_time")) for row in ordered], ordered)
+    return result
+
+
+def _sample_interval_by_scope(samples: list[dict[str, object]]) -> dict[tuple[object, object], float]:
+    grouped: dict[tuple[object, object], list[datetime]] = {}
+    for sample in samples:
+        parsed = _dt_or_none(sample.get("sample_time"))
+        if parsed is not None:
+            grouped.setdefault((sample.get("source_file_id"), sample.get("radio")), []).append(parsed)
+    result: dict[tuple[object, object], float] = {}
+    for scope, times in grouped.items():
+        ordered = sorted(set(times))
+        deltas = [(current - previous).total_seconds() for previous, current in zip(ordered, ordered[1:])]
+        positive = [delta for delta in deltas if delta > 0]
+        result[scope] = float(median(positive)) if positive else 1.0
     return result
 
 
@@ -1128,15 +1187,118 @@ def _duration(samples: list[dict[str, object]]) -> float:
     return _seconds_between(samples[0].get("sample_time"), samples[-1].get("sample_time")) or 0.0
 
 
-def _is_flap(segments: list[dict[str, object]], index: int, window: int) -> bool:
-    if index + 2 < len(segments):
-        a, b, c = segments[index], segments[index + 1], segments[index + 2]
-        if a.get("active_peer_key") == c.get("active_peer_key") and a.get("active_peer_key") != b.get("active_peer_key"):
-            return (_seconds_between(a.get("start_time"), c.get("start_time")) or 999999) <= window
-    if index + 3 < len(segments):
-        peers = [segments[index + offset].get("active_peer_key") for offset in range(4)]
-        return peers[0] == peers[2] and peers[1] == peers[3] and peers[0] != peers[1] and (_seconds_between(segments[index].get("start_time"), segments[index + 3].get("start_time")) or 999999) <= window
-    return False
+def _classify_pingpong_switch(segments: list[dict[str, object]], index: int, rules: MeshQualityRules) -> dict[str, object]:
+    if index + 2 >= len(segments):
+        return {}
+    previous, middle, returned = segments[index], segments[index + 1], segments[index + 2]
+    return_duration_seconds = _seconds_between(previous.get("end_time"), returned.get("start_time"))
+    if return_duration_seconds is None or return_duration_seconds < 0:
+        return {}
+    return_duration_ms = int(round(return_duration_seconds * 1000))
+    if return_duration_ms > _pingpong_return_window_ms(rules):
+        return {}
+    previous_key = _segment_physical_ap_key(previous)
+    middle_key = _segment_physical_ap_key(middle)
+    returned_key = _segment_physical_ap_key(returned)
+    if not previous_key or not middle_key or not returned_key:
+        return {}
+    middle_dwell_ms = max(int(round(_segment_duration_seconds(middle) * 1000)), 0)
+    group_id = f"PP{index + 1:04d}"
+    if previous_key == middle_key == returned_key and previous.get("active_peer_key") != middle.get("active_peer_key"):
+        return {
+            "is_ap_return_event": False,
+            "is_pingpong_abnormal": False,
+            "pingpong_type": "同AP射频往返",
+            "pingpong_group_id": group_id,
+            "pingpong_return_duration_ms": return_duration_ms,
+            "middle_ap_dwell_ms": middle_dwell_ms,
+            "previous_ap": _segment_ap_label(previous),
+            "middle_ap": _segment_ap_label(middle),
+            "return_ap": _segment_ap_label(returned),
+            "judgment_reason": f"同一物理 AP 内 {previous.get('peer_radio') or '-'} -> {middle.get('peer_radio') or '-'} -> {returned.get('peer_radio') or '-'}，不计入 AP 乒乓。",
+        }
+    if previous_key != returned_key or previous_key == middle_key:
+        return {}
+    pingpong_type, is_abnormal, reason = _classify_pingpong_return(
+        previous,
+        middle,
+        returned,
+        middle_dwell_ms,
+        rules,
+    )
+    return {
+        "is_ap_return_event": True,
+        "is_pingpong_abnormal": is_abnormal,
+        "pingpong_type": pingpong_type,
+        "pingpong_group_id": group_id,
+        "pingpong_return_duration_ms": return_duration_ms,
+        "middle_ap_dwell_ms": middle_dwell_ms,
+        "previous_ap": _segment_ap_label(previous),
+        "middle_ap": _segment_ap_label(middle),
+        "return_ap": _segment_ap_label(returned),
+        "judgment_reason": reason,
+    }
+
+
+def _classify_pingpong_return(
+    previous: dict[str, object],
+    middle: dict[str, object],
+    returned: dict[str, object],
+    middle_dwell_ms: int,
+    rules: MeshQualityRules,
+) -> tuple[str, bool, str]:
+    switch_ms = max(int(rules.main_link_switch_time_ms or 2500), 1)
+    tolerance_ms = max(int(rules.pingpong_tolerance_ms or 0), 0)
+    abnormal_threshold = max(switch_ms - tolerance_ms, 0)
+    critical_upper = switch_ms + tolerance_ms
+    sequence = f"{_segment_ap_label(previous)} -> {_segment_ap_label(middle)} -> {_segment_ap_label(returned)}"
+    dwell_text = f"{middle_dwell_ms / 1000.0:.2f}s"
+    if middle_dwell_ms < abnormal_threshold:
+        return "AP乒乓切换异常", True, f"{sequence}，中间 AP 驻留 {dwell_text}，明显小于配置切换时间 {switch_ms}ms。"
+    if middle_dwell_ms <= critical_upper:
+        return "临界回切", False, f"{sequence}，中间 AP 驻留 {dwell_text}，接近配置切换时间 {switch_ms}ms，不计入乒乓异常。"
+    return "普通回切事件", False, f"{sequence}，中间 AP 驻留 {dwell_text}，已超过配置切换时间 {switch_ms}ms，不计入乒乓异常。"
+
+
+def _pingpong_return_window_ms(rules: MeshQualityRules) -> int:
+    if rules.pingpong_return_window_ms:
+        return max(int(rules.pingpong_return_window_ms), 1)
+    return max(8000, 3 * (int(rules.main_link_switch_time_ms or 2500) + int(rules.pingpong_tolerance_ms or 500)))
+
+
+def _segment_ap_label(segment: dict[str, object]) -> str:
+    label = str(segment.get("peer_ap_name") or "").strip() or format_mac_h3c(segment.get("active_peer_key")) or "-"
+    station = str(segment.get("peer_site") or "").strip()
+    return f"{label} / {station}" if station else label
+
+
+def _segment_physical_ap_key(segment: dict[str, object]) -> str:
+    return str(segment.get("physical_ap_key") or "") or _physical_ap_key(segment)
+
+
+def _segment_duration_seconds(segment: dict[str, object]) -> float:
+    value = _num(segment.get("duration_seconds"))
+    if value is not None:
+        return max(value, 0.0)
+    return max(_seconds_between(segment.get("start_time"), segment.get("end_time")) or 0.0, 0.0)
+
+
+def _physical_ap_key(row: dict[str, object]) -> str:
+    ap_mac = _canonical(row.get("peer_ap_mac"))
+    if ap_mac:
+        return f"ap_mac:{ap_mac}"
+    ap_name = str(row.get("peer_ap_name") or "").strip().lower()
+    if ap_name:
+        return f"ap_name:{ap_name}"
+    peer_radio_mac = _canonical(row.get("peer_radio_mac"))
+    if peer_radio_mac:
+        return f"peer_radio_mac:{peer_radio_mac}"
+    peer = _peer(row) or _canonical(row.get("active_peer_key") or row.get("active_peer_mac"))
+    return f"peer_mac:{peer}" if peer else ""
+
+
+def _is_pingpong_abnormal_event(event: dict[str, object]) -> bool:
+    return bool(event.get("is_pingpong_abnormal")) or str(event.get("switch_type") or "") == "FLAP_SWITCH"
 
 
 def _all_low(samples: list[dict[str, object]], threshold: float) -> bool:
@@ -1171,6 +1333,8 @@ def _problem_tags(samples, switches, anomalies, rebuilds, parse_issues) -> list[
             tags.append(tag)
     for switch in switches:
         tag = {"LATE_SWITCH": "切换滞后", "WEAK_TARGET_SWITCH": "切入质量差", "FLAP_SWITCH": "乒乓切换", "SHORT_SEGMENT_SWITCH": "短时建链"}.get(str(switch.get("switch_type")))
+        if _is_pingpong_abnormal_event(switch):
+            tag = "乒乓切换"
         if tag and tag not in tags:
             tags.append(tag)
     if rebuilds:
