@@ -9,6 +9,7 @@ from statistics import mean, median
 from typing import Callable
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, format_mac_h3c
+from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
 
 MR_RAW_MESH_LOG = "MR_RAW_MESH_LOG"
@@ -937,6 +938,7 @@ def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]]
     radio = segment.get("radio")
     row_matches = _peer_rows_between(row_index, radio, peer, segment.get("start_time"), segment.get("end_time"))
     mr = [_num(row.get("active_mr_rssi")) for row in samples]
+    mr_stats = calc_numeric_stats(mr)
     peer_rssi = [_num(row.get("active_peer_rssi")) for row in samples]
     tx = [_num(row.get("active_tx_busy")) for row in samples]
     rx = [_num(row.get("active_rx_busy")) for row in samples]
@@ -951,10 +953,10 @@ def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]]
     segment["sample_count"] = len(samples)
     segment["first_mr_rssi"] = mr[0] if mr else ""
     segment["last_mr_rssi"] = mr[-1] if mr else ""
-    segment["avg_mr_rssi"] = _avg(mr)
-    segment["min_mr_rssi"] = _min(mr)
-    segment["p10_mr_rssi"] = percentile([value for value in mr if value is not None], 0.1)
-    segment["max_mr_rssi"] = _max(mr)
+    segment["avg_mr_rssi"] = mr_stats["avg"]
+    segment["min_mr_rssi"] = mr_stats["min"]
+    segment["p10_mr_rssi"] = mr_stats["p10"]
+    segment["max_mr_rssi"] = mr_stats["max"]
     segment["rssi_jitter"] = _jitter(mr)
     segment["avg_peer_rssi"] = _avg(peer_rssi)
     segment["min_peer_rssi"] = _min(peer_rssi)

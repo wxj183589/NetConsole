@@ -228,8 +228,12 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     assert build_sheet["T1"].value == "建链结果"
     assert build_sheet["T2"].value == "短时建链"
     headers = [cell.value for cell in sheet[1]]
-    for header in ("采样时间", "Radio", "PeerMac", "链路状态", "建链时间", "链路时长", "链路数", "MR侧RSSI差值", "Peer侧RSSI差值", "MR侧CPU", "Peer侧CPU", "MR侧内存", "Peer侧内存", "MR侧发送繁忙度", "Peer侧接收繁忙度"):
+    for header in ("采样时间", "Radio", "Peer MAC", "链路状态", "对端射频口", "建链时间", "链路时长", "链路数", "MR侧RSSI", "对端RSSI", "MR侧CPU", "对端CPU", "MR侧内存", "对端内存", "MR侧发送繁忙度", "对端接收繁忙度"):
         assert header in headers
+    assert "归属来源" not in headers
+    assert "Peer Radio MAC" not in headers
+    state_index = headers.index("链路状态") + 1
+    assert sheet.cell(2, state_index).value == "主链路"
     assert any("链路明细已导出" in message for message in messages)
 
 
@@ -826,7 +830,7 @@ def test_active_build_order_headers_are_chinese_and_autosized(tmp_path):
     headers = [page.active_build_order_table.horizontalHeaderItem(column).text() for column in range(page.active_build_order_table.columnCount())]
     assert "mesh_analysis.min_rssi" not in headers
     assert headers[2] == "主链路 PeerMac"
-    assert headers[12] == "最小RSSI"
+    assert headers[12] == "MR侧最低RSSI"
     assert headers[14] == "发送繁忙度"
     assert headers[16] == "配置切换时间(ms)"
     assert headers[18] == "是否同AP射频切换"
@@ -887,6 +891,23 @@ def test_active_build_order_marks_ap_pingpong_by_physical_ap_sequence():
     assert middle["pingpong_type"] == "AP乒乓切换异常"
     assert middle["middle_ap_dwell_ms"] == 1000
     assert "明显小于配置切换时间 2500ms" in middle["pingpong_judgment_reason"]
+
+
+def test_active_build_order_rssi_stats_use_same_valid_samples():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    rows = [
+        {**_active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"), "local_rssi_db": 0},
+        {**_active_point("2025-12-03 10:00:01.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"), "local_rssi_db": 40},
+        {**_active_point("2025-12-03 10:00:02.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"), "local_rssi_db": 50},
+    ]
+    result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
+
+    segment = result[0]
+    assert segment["avg_mr_rssi"] == 30
+    assert segment["min_mr_rssi"] == 0
+    assert segment["max_mr_rssi"] == 50
+    assert segment["min_mr_rssi"] <= segment["avg_mr_rssi"] <= segment["max_mr_rssi"]
 
 
 def test_active_build_order_separates_critical_and_normal_return_events():

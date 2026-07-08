@@ -2879,6 +2879,54 @@ def test_online_mr_chart_builder_active_rssi_switch_empty_link_and_export(tmp_pa
     }.issubset(set(workbook.sheetnames))
 
 
+def test_vehicle_mr_offline_report_exports_diagnostic_sheets_without_default_details(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    parser = OnlineMrDiagnosisParser(session.session_dir)
+    parser._ensure_tables()
+    with sqlite3.connect(session.db_path) as conn:
+        _insert_main_link_sample(conn, session.meta.session_id, "2026-07-03 19:00:00.000", peer_mac="active", rssi=36, station="站点A", section="区间A")
+        _insert_main_link_sample(conn, session.meta.session_id, "2026-07-03 19:00:00.000", link_state="STANDBY", peer_mac="standby", rssi=30, station="站点A", section="区间A")
+        _insert_channel_busy_record(conn, session.meta.session_id, "2026-07-03 19:00:00.000", tx_busy=10, rx_busy=12)
+        _insert_fping_sample(conn, session.meta.session_id, "2026-07-03 19:00:00.000", latency_ms=2.5)
+        _insert_interface_rate_sample(conn, session.meta.session_id, "2026-07-03 19:00:00.000", total_pps=128)
+        _insert_switch_realtime_event(conn, session.meta.session_id, "2026-07-03 19:01:00.000", old_rssi=35, new_rssi=36)
+
+    from netconsole.services.vehicle_mr_offline_excel_report import VehicleMrOfflineExcelReportExporter
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "vehicle_report.xlsx"
+    VehicleMrOfflineExcelReportExporter().export(session.session_dir, export_path)
+    workbook = load_workbook(export_path)
+
+    expected_order = [
+        "报告总览",
+        "会话信息",
+        "数据完整性",
+        "质量评分",
+        "时间轴质量概览",
+        "fping业务质量",
+        "Mesh主链路区段",
+        "Peer质量排名",
+        "切换影响分析",
+        "丢包关联分析",
+        "异常事件清单",
+        "空口繁忙度分析",
+        "射频统计分析",
+        "接口速率分析",
+        "链路重建与连接异常",
+        "原始证据片段",
+        "参数配置",
+    ]
+    assert workbook.sheetnames == expected_order
+    assert "fping原始样本" not in workbook.sheetnames
+    assert "趋势图表" not in workbook.sheetnames
+    assert workbook["报告总览"]["A2"].value == "报告类型"
+    assert workbook["fping业务质量"].max_row >= 2
+    assert workbook["Mesh主链路区段"]["A2"].value == "未生成主链路区段数据，请先执行离线解析。"
+    assert workbook["异常事件清单"]["A2"].value == "未发现异常事件。"
+
+
 def test_online_mr_switch_rssi_chart_keeps_active_context_and_skips_empty_zero(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)

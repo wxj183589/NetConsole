@@ -10,6 +10,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from netconsole.models.mesh_log_models import format_mac_h3c
+from netconsole.services.excel_report_utils import format_link_state
 from netconsole.ui.table.table_autosize_engine import excel_column_width
 
 MESH_LINK_EXPORT_ACTIVE_FONT_COLOR = "15803D"
@@ -29,25 +30,26 @@ LINK_DETAIL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("采样时间", "sample_time"),
     ("Radio", "radio"),
     ("链路状态", "link_state"),
-    ("PeerMac", "peer_mac"),
-    ("当前PEER AP名称", "peer_ap_name"),
-    ("AP MAC", "peer_ap_mac"),
+    ("Peer MAC", "peer_mac"),
+    ("对端AP名称", "peer_ap_name"),
+    ("对端AP MAC", "peer_ap_mac"),
     ("归属站点", "peer_site"),
-    ("Peer Radio MAC", "peer_radio_mac"),
-    ("PEER Radio", "peer_radio"),
+    ("归属区间", "belong_section"),
+    ("归属类型", "belong_type"),
+    ("对端射频口", "peer_radio"),
     ("建链时间", "establish_time"),
     ("链路时长", "duration_text"),
     ("链路数", "link_count"),
-    ("MR侧RSSI差值", "local_rssi_db"),
-    ("Peer侧RSSI差值", "peer_rssi_db"),
+    ("MR侧RSSI", "local_rssi_db"),
+    ("对端RSSI", "peer_rssi_db"),
     ("MR侧CPU", "local_cpu_percent"),
-    ("Peer侧CPU", "peer_cpu_percent"),
+    ("对端CPU", "peer_cpu_percent"),
     ("MR侧内存", "local_mem_percent"),
-    ("Peer侧内存", "peer_mem_percent"),
+    ("对端内存", "peer_mem_percent"),
     ("MR侧发送繁忙度", "local_tx_busy"),
     ("MR侧接收繁忙度", "local_rx_busy"),
-    ("Peer侧发送繁忙度", "peer_tx_busy"),
-    ("Peer侧接收繁忙度", "peer_rx_busy"),
+    ("对端发送繁忙度", "peer_tx_busy"),
+    ("对端接收繁忙度", "peer_rx_busy"),
     ("源文件", "archived_filename"),
     ("源行号", "source_line_number"),
 )
@@ -56,18 +58,18 @@ LINK_DETAIL_COLUMNS: tuple[tuple[str, str], ...] = (
 ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("序号", "sequence"),
     ("Radio", "radio"),
-    ("主链路 PeerMac", "active_peer_mac"),
-    ("当前PEER AP名称", "peer_ap_name"),
+    ("主链路 Peer MAC", "active_peer_mac"),
+    ("对端AP名称", "peer_ap_name"),
     ("归属站点", "peer_site"),
-    ("Peer Radio", "peer_radio"),
+    ("对端射频口", "peer_radio"),
     ("建链开始时间", "build_start_time"),
     ("建链结束时间", "build_end_time"),
     ("主链路持续时长(秒)", "main_link_duration_seconds"),
     ("日志上报时长(秒)", "reported_duration_seconds"),
     ("采样点数", "sample_count"),
     ("MR侧平均RSSI", "avg_mr_rssi"),
-    ("最小RSSI", "min_mr_rssi"),
-    ("最大RSSI", "max_mr_rssi"),
+    ("MR侧最低RSSI", "min_mr_rssi"),
+    ("MR侧最高RSSI", "max_mr_rssi"),
     ("发送繁忙度", "avg_tx_busy"),
     ("接收繁忙度", "avg_rx_busy"),
     ("配置切换时间(ms)", "main_link_switch_time_ms"),
@@ -97,12 +99,13 @@ def link_detail_row_values(row: dict[str, object]) -> list[object]:
         row.get("record_seq") or row.get("source_line_number"),
         row.get("sample_time"),
         row.get("radio"),
-        row.get("link_state"),
+        format_link_state(row.get("link_state")),
         row.get("peer_mac_raw") or peer,
         row.get("peer_ap_name") or "-",
         format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "-",
         row.get("peer_site") or "-",
-        format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "-",
+        row.get("belong_section") or row.get("peer_section") or "-",
+        _belong_type_text(row.get("belong_type")),
         row.get("peer_radio") or row.get("peer_radio_label") or "-",
         row.get("establish_time"),
         row.get("duration_text"),
@@ -136,9 +139,9 @@ def active_build_order_row_values(row: dict[str, object]) -> list[object]:
         row.get("main_link_duration_seconds") or "",
         row.get("reported_duration_seconds") or "",
         row.get("sample_count") or "",
-        row.get("avg_mr_rssi") or "",
-        row.get("min_mr_rssi") or "",
-        row.get("max_mr_rssi") or "",
+        _rssi_stat_value(row.get("avg_mr_rssi")),
+        _rssi_stat_value(row.get("min_mr_rssi")),
+        _rssi_stat_value(row.get("max_mr_rssi")),
         row.get("avg_tx_busy") or "",
         row.get("avg_rx_busy") or "",
         row.get("main_link_switch_time_ms") or "",
@@ -227,7 +230,13 @@ def _write_link_detail_sheet(
         written += 1
         if progress_callback is not None and (written % 500 == 0 or (total_rows and written >= total_rows)):
             progress_callback(written, total_rows, "mesh_analysis.export_progress_write_links")
-    worksheet.auto_filter.ref = _sheet_range(len(columns), written + 1)
+    data_row_count = written
+    if written == 0:
+        values = ["未找到可导出的链路明细数据；请检查筛选条件、源文件和解析结果。"] + ["" for _ in headers[1:]]
+        _update_widths(widths, columns, values)
+        worksheet.append(_styled_cells(worksheet, values, alignment, standby_font))
+        data_row_count = 1
+    worksheet.auto_filter.ref = _sheet_range(len(columns), data_row_count + 1)
     _apply_widths(worksheet, widths)
     if progress_callback is not None:
         progress_callback(written, total_rows, "mesh_analysis.export_progress_write_links")
@@ -248,7 +257,13 @@ def _write_basic_sheet(worksheet, columns: tuple[tuple[str, str], ...], rows: It
         _update_widths(widths, columns, values)
         worksheet.append(_styled_cells(worksheet, values, alignment))
         written += 1
-    worksheet.auto_filter.ref = _sheet_range(len(columns), written + 1)
+    data_row_count = written
+    if written == 0:
+        values = ["未生成主链路建链顺序；请确认当前日志存在 ACTIVE 主链路采样。"] + ["" for _ in headers[1:]]
+        _update_widths(widths, columns, values)
+        worksheet.append(_styled_cells(worksheet, values, alignment))
+        data_row_count = 1
+    worksheet.auto_filter.ref = _sheet_range(len(columns), data_row_count + 1)
     _apply_widths(worksheet, widths)
 
 
@@ -298,6 +313,25 @@ def _build_result_text(value: str) -> str:
     if value == "same_ap_radio_switch":
         return "同AP射频切换"
     return value
+
+
+def _belong_type_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    mapping = {
+        "station": "车站",
+        "section": "区间",
+        "yard": "场段",
+        "area": "区域",
+        "empty": "空链路",
+        "unknown": "未知",
+    }
+    if not text:
+        return "-"
+    return mapping.get(text, str(value))
+
+
+def _rssi_stat_value(value: object) -> object:
+    return "N/A" if value is None or value == "" else value
 
 
 def _sample_group_indexes(rows: list[dict[str, object]]) -> list[int]:

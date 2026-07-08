@@ -28,6 +28,7 @@ from netconsole.models.mesh_log_models import (
 )
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams, mesh_analysis_params_from_json, normalize_mesh_analysis_params
 from netconsole.repositories.mesh_catalog_repository import dt_text
+from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
 
 SCHEMA_VERSION = "meshlog_compact_v2_single_log"
@@ -2860,6 +2861,7 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
     duration = max(_seconds_between(str(first.get("sample_time") or ""), str(last.get("sample_time") or "")) + max(sample_interval, 0.0), 0.0)
     reported_values = [value for row in rows if (value := _float(row.get("duration_seconds"))) is not None]
     rssi_values = [_float(row.get("local_rssi_db")) for row in rows]
+    rssi_stats = calc_numeric_stats(rssi_values)
     tx_values = [_float(row.get("local_tx_busy")) for row in rows]
     rx_values = [_float(row.get("local_rx_busy")) for row in rows]
     peer_tx_values = [_float(row.get("peer_tx_busy")) for row in rows]
@@ -2890,9 +2892,10 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "main_link_duration_seconds": round(duration, 3),
         "reported_duration_seconds": max(reported_values) if reported_values else "",
         "sample_count": len(rows),
-        "avg_mr_rssi": _average(rssi_values),
-        "min_mr_rssi": _minimum(rssi_values),
-        "max_mr_rssi": _maximum(rssi_values),
+        "avg_mr_rssi": rssi_stats["avg"],
+        "min_mr_rssi": rssi_stats["min"],
+        "max_mr_rssi": rssi_stats["max"],
+        "p10_mr_rssi": rssi_stats["p10"],
         "avg_tx_busy": _average(tx_values),
         "avg_rx_busy": _average(rx_values),
         "avg_peer_tx_busy": _average(peer_tx_values),

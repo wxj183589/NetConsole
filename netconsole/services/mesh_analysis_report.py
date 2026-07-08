@@ -10,6 +10,7 @@ from typing import Callable
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 from netconsole.services.mesh_quality_analysis import (
     MR_RAW_MESH_LOG,
     MeshQualityRules,
@@ -677,8 +678,13 @@ def _finish_segment(segment: dict[str, object], rows: list[dict[str, object]]) -
         segment["peer_radio"] = first.get("peer_radio") or first.get("peer_radio_label") or segment.get("peer_radio") or ""
         segment["peer_radio_mac"] = first.get("peer_radio_mac") or segment.get("peer_radio_mac") or ""
         segment["physical_ap_key"] = _physical_ap_key(first) or segment.get("physical_ap_key") or ""
+    mr_values = [_number(row.get("mr_rssi")) for row in rows]
+    mr_stats = calc_numeric_stats(mr_values, precision=2)
+    segment["avg_mr_rssi"] = mr_stats["avg"]
+    segment["min_mr_rssi"] = mr_stats["min"]
+    segment["p10_mr_rssi"] = mr_stats["p10"]
+    segment["max_mr_rssi"] = mr_stats["max"]
     for output_key, input_key in (
-        ("mr_rssi", "mr_rssi"),
         ("peer_rssi", "peer_rssi"),
         ("tx_busy", "local_tx_busy"),
         ("rx_busy", "local_rx_busy"),

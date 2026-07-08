@@ -93,6 +93,21 @@ def test_active_segments_preserve_aba_runs_and_switch_sequence():
     assert switches[0]["to_mr_rssi"] == 55
 
 
+def test_report_active_segments_rssi_stats_are_complete_and_consistent():
+    rows = [
+        _row("2025-12-03 10:00:00.000", PEER_A, mr_rssi=0),
+        _row("2025-12-03 10:00:01.000", PEER_A, mr_rssi=40),
+        _row("2025-12-03 10:00:02.000", PEER_A, mr_rssi=50),
+    ]
+    segment = build_active_segments(rows)[0]
+
+    assert segment["avg_mr_rssi"] == 30
+    assert segment["min_mr_rssi"] == 0
+    assert segment["max_mr_rssi"] == 50
+    assert segment["p10_mr_rssi"] == 8
+    assert segment["min_mr_rssi"] <= segment["avg_mr_rssi"] <= segment["max_mr_rssi"]
+
+
 def test_mesh_threshold_templates_follow_business_scenario_not_wifi_generation():
     templates = load_threshold_templates()
 
@@ -358,7 +373,7 @@ def test_report_export_translates_internal_enum_values():
     assert translate_report_value("switch_type", "LATE_SWITCH") == "切换滞后"
     assert translate_report_value("event_type", "NO_BACKUP") == "无可用备份"
     assert translate_report_value("rebuild_type", "DURATION_RESET") == "持续时间回退"
-    assert translate_report_value("link_state", "ACTIVE") == "主链路"
+    assert translate_report_value("link_state", "ACTIVE") == "ACTIVE 主链路"
     assert translate_report_value("data_source_type", "MR_RAW_MESH_LOG") == "MR原始MESH日志"
     assert translate_report_value("fping_loss_rate", None) == "N/A"
     assert translate_report_value("related_event_type", "SHORT_SEGMENT_SWITCH") == "短时切换"

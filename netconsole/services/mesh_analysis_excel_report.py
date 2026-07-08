@@ -64,10 +64,10 @@ REPORT_FIELD_LABELS: dict[str, str] = {
     "sample_count": "采样点数",
     "first_mr_rssi": "首个MR侧RSSI",
     "last_mr_rssi": "最后MR侧RSSI",
-    "avg_mr_rssi": "平均MR侧RSSI",
-    "min_mr_rssi": "最低MR侧RSSI",
-    "p10_mr_rssi": "P10 MR侧RSSI",
-    "max_mr_rssi": "最高MR侧RSSI",
+    "avg_mr_rssi": "MR侧平均RSSI",
+    "min_mr_rssi": "MR侧最低RSSI",
+    "p10_mr_rssi": "MR侧P10 RSSI",
+    "max_mr_rssi": "MR侧最高RSSI",
     "rssi_jitter": "RSSI抖动",
     "avg_peer_rssi": "平均对端RSSI",
     "min_peer_rssi": "最低对端RSSI",
@@ -236,17 +236,17 @@ REPORT_FIELD_LABELS.update(
         "peer_ap_name": "对端AP名称",
         "peer_ap_mac": "对端AP MAC",
         "peer_site": "对端站点",
-        "peer_radio": "对端Radio",
+        "peer_radio": "对端射频口",
         "start_time": "开始时间",
         "end_time": "结束时间",
         "duration_seconds": "持续秒数",
         "sample_count": "采样点数",
         "first_mr_rssi": "首个MR RSSI",
         "last_mr_rssi": "最后MR RSSI",
-        "avg_mr_rssi": "平均MR RSSI",
-        "min_mr_rssi": "最小MR RSSI",
-        "p10_mr_rssi": "P10 MR RSSI",
-        "max_mr_rssi": "最大MR RSSI",
+        "avg_mr_rssi": "MR侧平均RSSI",
+        "min_mr_rssi": "MR侧最低RSSI",
+        "p10_mr_rssi": "MR侧P10 RSSI",
+        "max_mr_rssi": "MR侧最高RSSI",
         "rssi_jitter": "RSSI抖动",
         "avg_peer_rssi": "平均对端RSSI",
         "min_peer_rssi": "最小对端RSSI",
@@ -277,9 +277,9 @@ REPORT_FIELD_LABELS.update(
         "active_total_seconds": "Active总秒数",
         "active_total_ratio": "Active占比",
         "avg_active_rssi": "Active平均RSSI",
-        "min_active_rssi": "Active最小RSSI",
+        "min_active_rssi": "Active最低RSSI",
         "p10_active_rssi": "Active P10 RSSI",
-        "max_active_rssi": "Active最大RSSI",
+        "max_active_rssi": "Active最高RSSI",
         "weak_active_seconds": "弱Active秒数",
         "no_backup_when_active_seconds": "Active时无备份秒数",
         "link_rebuild_count": "链路重建次数",
@@ -323,7 +323,7 @@ REPORT_FIELD_LABELS.update(
         "event_time_start": "事件开始时间",
         "event_time_end": "事件结束时间",
         "event_type": "事件类型",
-        "active_rssi_min": "Active最小RSSI",
+        "active_rssi_min": "主链路最低RSSI",
         "active_rssi_avg": "Active平均RSSI",
         "backup_count_min": "最小备份数量",
         "tx_busy_max": "最大TxBusy",
@@ -472,10 +472,11 @@ VALUE_TRANSLATIONS.update(
             "UNKNOWN_REBUILD": "未知重建",
         },
         "link_state": {
-            "ACTIVE": "主链路",
-            "BACKUP": "备份链路",
-            "STANDBY": "备用链路",
+            "ACTIVE": "ACTIVE 主链路",
+            "BACKUP": "STANDBY 备链",
+            "STANDBY": "STANDBY 备链",
             "DOWN": "Down",
+            "UNKNOWN": "UNKNOWN 未知",
         },
         "data_source_type": {
             "MR_RAW_MESH_LOG": "MR原始MESH日志",
@@ -561,6 +562,20 @@ FIXED_WIDTH_BY_FIELD = {
 }
 MAC_FIELDS = {"active_peer_mac", "peer_mac", "peer_mac_display", "peer_ap_mac", "from_peer", "to_peer", "best_backup_peer_mac", "best_backup_peer_before_switch", "active_peer"}
 LARGE_SHEET_ATTRS = {"sample_quality", "raw_evidence", "all_link_details", "active_segments", "peer_ranking", "anomaly_events", "switch_events"}
+RSSI_STAT_FIELDS = {
+    "first_mr_rssi",
+    "last_mr_rssi",
+    "avg_mr_rssi",
+    "min_mr_rssi",
+    "p10_mr_rssi",
+    "max_mr_rssi",
+    "avg_active_rssi",
+    "min_active_rssi",
+    "p10_active_rssi",
+    "max_active_rssi",
+    "active_rssi_min",
+    "active_rssi_avg",
+}
 SHEET_DEFINITIONS = tuple(
     (sheet_name, fields, attr_name)
     for sheet_name, fields, attr_name in (
@@ -586,6 +601,22 @@ STAGE_BY_ATTR = {
     "active_segments": "excel_active_segments",
     "peer_ranking": "excel_peer_ranking",
     "raw_evidence": "excel_raw_evidence",
+}
+
+EMPTY_SHEET_MESSAGES = {
+    "score_rows": "当前数据不足，未生成质量评分。",
+    "source_files": "未找到源文件清单。",
+    "sample_quality": "未生成采样点质量统计。",
+    "active_segments": "未生成 Active 主链路区段。",
+    "peer_ranking": "未生成 Peer 质量排名。",
+    "switch_events": "未发现切换事件。",
+    "anomaly_events": "未发现异常事件。",
+    "no_backup_risks": "未发现无备份链路风险。",
+    "busy_analysis": "未生成空口繁忙度分析。",
+    "link_rebuild_events": "未发现链路重建计数异常。",
+    "raw_evidence": "当前报告没有需要附带的原始证据片段。",
+    "parse_issues": EMPTY_PARSE_ISSUES_TEXT,
+    "all_link_details": "未导出全量链路明细；请确认报告设置和解析结果。",
 }
 
 
@@ -632,12 +663,14 @@ class MeshAnalysisExcelReportExporter:
         field_list = list(fields)
         sheet = workbook.create_sheet(sheet_name)
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:{get_column_letter(len(field_list))}{max(len(rows) + 1, 1)}"
         scan_limit = int(getattr(getattr(workbook, "_mesh_report_options", None), "autofit_scan_limit", 2000) or 2000)
         width_tracker = _WidthTracker(field_list, scan_limit=scan_limit if attr_name in LARGE_SHEET_ATTRS else 100000)
         width_tracker.feed([REPORT_FIELD_LABELS.get(field, field) for field in field_list])
         if attr_name == "parse_issues" and not rows:
             rows = [{"issue_sequence": 1, "issue_type": "N/A", "severity": "INFO", "message": EMPTY_PARSE_ISSUES_TEXT}]
+        elif not rows:
+            rows = [{field_list[0]: EMPTY_SHEET_MESSAGES.get(attr_name, f"{sheet_name}暂无可用数据。")}] if field_list else []
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(field_list))}{max(len(rows) + 1, 1)}"
         for index, row in enumerate(rows[: width_tracker.scan_limit], 1):
             width_tracker.feed(self._row_values(field_list, row, attr_name, index))
         width_tracker.apply(sheet)
@@ -671,6 +704,8 @@ class MeshAnalysisExcelReportExporter:
 
 
 def translate_report_value(field_name: str, value: object) -> object:
+    if field_name in RSSI_STAT_FIELDS and (value is None or value == ""):
+        return "N/A"
     if value is None or value == "":
         return "N/A" if field_name == "fping_loss_rate" else ""
     if field_name == "fping_loss_rate":
