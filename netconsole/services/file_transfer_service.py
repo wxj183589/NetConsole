@@ -25,6 +25,8 @@ FILE_TRANSFER_CONCURRENCY = 50
 FILE_TRANSFER_MAX_CONCURRENCY = 1
 DOWNLOAD_STABLE_WAIT_SECONDS = 2.0
 DOWNLOAD_VERIFY_RETRIES = 3
+DEVICE_FILE_MANAGER_READ_ONLY = True
+DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE = "设备文件管理为只读模式，不允许执行该操作。"
 SftpProgressCallback = Callable[[str], None]
 
 
@@ -371,6 +373,7 @@ class FileTransferService:
         raise TransferVerificationFailed(f"Download verification failed after retries: {last_error}") from last_error
 
     def mkdir(self, remote_path: str) -> str:
+        self._ensure_device_write_allowed()
         sftp = self._require_sftp()
         target = normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path)
         sftp.mkdir(target)
@@ -378,6 +381,7 @@ class FileTransferService:
         return target
 
     def delete(self, remote_file: RemoteDeviceFile) -> None:
+        self._ensure_device_write_allowed()
         sftp = self._require_sftp()
         target = normalize_remote_path(remote_file.remote_path, current_path=self._current_path, root_path=self._root_path)
         if remote_file.is_dir:
@@ -385,6 +389,10 @@ class FileTransferService:
         else:
             sftp.remove(target)
         app_logger.log_info("SFTP_REMOTE_DELETED", f"path={target} is_dir={remote_file.is_dir}")
+
+    def _ensure_device_write_allowed(self) -> None:
+        if DEVICE_FILE_MANAGER_READ_ONLY:
+            raise PermissionError(DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE)
 
     def _require_sftp(self):
         if self._sftp is None:

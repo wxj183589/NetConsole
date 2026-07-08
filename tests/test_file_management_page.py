@@ -115,6 +115,8 @@ def test_file_management_panel_actions_are_contextual_and_textual(tmp_path):
     page = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", PathResolver(tmp_path))
 
     assert not hasattr(page, "upload_button")
+    assert not hasattr(page, "remote_new_folder_button")
+    assert not hasattr(page, "remote_delete_button")
     assert [
         page.local_up_button.text(),
         page.local_refresh_button.text(),
@@ -128,8 +130,6 @@ def test_file_management_panel_actions_are_contextual_and_textual(tmp_path):
         page.remote_clear_selection_button.text(),
         page.remote_mesh_logs_button.text(),
         page.download_button.text(),
-        page.remote_new_folder_button.text(),
-        page.remote_delete_button.text(),
     ] == [
         "Up",
         "Refresh File List",
@@ -137,9 +137,8 @@ def test_file_management_panel_actions_are_contextual_and_textual(tmp_path):
         "Clear Selection",
         "MESH Logs",
         "Download Files",
-        "New Device Directory",
-        "Delete Device Files",
     ]
+    assert page.remote_read_only_label.text() == "Device files are read-only. Browse and download only."
     assert [
         page.open_download_dir_button.text(),
         page.clear_completed_button.text(),
@@ -157,8 +156,6 @@ def test_file_management_panel_actions_are_contextual_and_textual(tmp_path):
         page.remote_clear_selection_button,
         page.remote_mesh_logs_button,
         page.download_button,
-        page.remote_new_folder_button,
-        page.remote_delete_button,
         page.open_download_dir_button,
         page.clear_completed_button,
         page.clear_failed_button,
@@ -176,15 +173,11 @@ def test_file_management_remote_buttons_require_connection(tmp_path):
     page.select_all_remote_files()
 
     assert not page.download_button.isEnabled()
-    assert not page.remote_delete_button.isEnabled()
-    assert not page.remote_new_folder_button.isEnabled()
 
     page.sftp_service = FakeConnectedSftpService()
     page._sync_file_operation_buttons()
 
     assert page.download_button.isEnabled()
-    assert page.remote_delete_button.isEnabled()
-    assert page.remote_new_folder_button.isEnabled()
 
 
 def test_multi_file_download_uses_visible_table_order_and_skips_duplicates(tmp_path, monkeypatch):
@@ -413,9 +406,9 @@ def test_file_management_downloaded_mesh_log_auto_imports_to_raw_mesh_analysis(t
     page.tasks = [task]
 
     page.on_download_completed(task)
-    for _ in range(200):
+    for _ in range(800):
         qt_app.processEvents()
-        if not page.mesh_import_workers:
+        if not page.mesh_import_workers or task.status_key != "file_management.mesh_auto_import_started":
             break
         QTest.qWait(10)
 
@@ -767,7 +760,7 @@ def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
     assert "SSH session not active" not in message
 
 
-def test_file_transfer_service_creates_and_deletes_remote_entries(tmp_path):
+def test_file_transfer_service_rejects_remote_write_operations_in_read_only_mode(tmp_path):
     calls: list[tuple[str, str]] = []
 
     class FakeSftp:
@@ -785,15 +778,14 @@ def test_file_transfer_service_creates_and_deletes_remote_entries(tmp_path):
     service._root_path = "flash:/"
     service._current_path = "flash:/diagfile"
 
-    assert service.mkdir("logs") == "flash:/diagfile/logs"
-    service.delete(RemoteDeviceFile("a.log", "a.log", 1, "", "log"))
-    service.delete(RemoteDeviceFile("old", "old", None, "", "dir", is_dir=True))
+    with pytest.raises(PermissionError, match="只读模式"):
+        service.mkdir("logs")
+    with pytest.raises(PermissionError, match="只读模式"):
+        service.delete(RemoteDeviceFile("a.log", "a.log", 1, "", "log"))
+    with pytest.raises(PermissionError, match="只读模式"):
+        service.delete(RemoteDeviceFile("old", "old", None, "", "dir", is_dir=True))
 
-    assert calls == [
-        ("mkdir", "flash:/diagfile/logs"),
-        ("remove", "flash:/diagfile/a.log"),
-        ("rmdir", "flash:/diagfile/old"),
-    ]
+    assert calls == []
 
 
 def test_sftp_connect_worker_emits_auto_enable_statuses(tmp_path, monkeypatch):

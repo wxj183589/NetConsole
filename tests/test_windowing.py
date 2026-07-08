@@ -538,6 +538,7 @@ def test_lazy_page_activation_errors_are_logged_not_raised(tmp_path, monkeypatch
 
 def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
     import netconsole.app as app_module
+    from netconsole.ui import startup_preload as preload_module
 
     paths = PathResolver(tmp_path)
     paths.ensure_project_dirs()
@@ -584,6 +585,7 @@ def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
     class FakeSettingsStore:
         def __init__(self, paths):
             self.startup_mode = "preload_all"
+            self.language = "en_US"
 
     class FakePreloadManager:
         def __init__(self, i18n, splash, started_at):
@@ -599,14 +601,24 @@ def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "QIcon", lambda path: object())
     monkeypatch.setattr(app_module, "icon_path", lambda name: tmp_path / name)
     monkeypatch.setattr(app_module, "SettingsStore", FakeSettingsStore)
-    monkeypatch.setattr(app_module, "StartupPreloadManager", FakePreloadManager)
+    monkeypatch.setattr(preload_module, "StartupPreloadManager", FakePreloadManager)
     monkeypatch.setattr(app_module, "StartupSplash", FakeSplash)
 
     assert app_module.run() == 0
 
     logs = app_logger.read_logs()
     events = [item["event"] for item in reversed(logs)]
-    assert events == ["APP_START", "STARTUP", "MAIN_WINDOW_CREATED", "MAIN_WINDOW_SHOWN"]
+    assert events == [
+        "APP_START",
+        "BOOT_START",
+        "BOOT_CONFIG_LOADED",
+        "STARTUP",
+        "MAIN_WINDOW_CREATED",
+        "BOOT_MAIN_WINDOW_CREATED",
+        "BOOT_BACKGROUND_TASKS_STARTED",
+        "MAIN_WINDOW_SHOWN",
+        "BOOT_MAIN_WINDOW_SHOWN",
+    ]
     assert shown == [True]
     assert all("elapsed_ms=" in item["detail"] for item in logs if item["event"] != "STARTUP")
 
@@ -655,6 +667,7 @@ def test_app_run_fast_start_uses_build_window(tmp_path, monkeypatch):
     class FakeSettingsStore:
         def __init__(self, paths):
             self.startup_mode = "fast_start"
+            self.language = "en_US"
 
     built: list[bool] = []
     monkeypatch.setattr(app_module, "QApplication", FakeApplication)

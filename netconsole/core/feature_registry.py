@@ -52,6 +52,9 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.advanced_ping", "online_mr.high_freq_ping", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.iperf_test", "online_mr.enable_traffic_test", "rail.online_mr_collection", "action"),
     FeatureItem("mesh.generate_report", "mesh_analysis.generate_report", "rail.raw_mesh_log_analysis", "button"),
+    FeatureItem("system.disk_cleanup", "system.disk_cleanup", "module.system_settings", "page"),
+    FeatureItem("system.changelog", "system.changelog", "module.system_settings", "page"),
+    FeatureItem("system.open_source", "system.open_source", "module.system_settings", "page"),
     FeatureItem("system.feature_flags", "system.feature_flags", "module.feature_switch", "page", internal_only=True),
 )
 

@@ -511,6 +511,13 @@ def test_changelog_path_prefers_packaged_assets_and_keeps_source_fallback(tmp_pa
 
     assert fallback == base_dir / "netconsole" / "docs" / "changelog.md"
 
+    source_base = tmp_path / "source"
+    source_changelog = source_base / "docs" / "CHANGELOG.md"
+    source_changelog.parent.mkdir(parents=True)
+    source_changelog.write_text("source changes", encoding="utf-8")
+
+    assert get_changelog_path(source_base) == source_changelog
+
     packaged_base = tmp_path / "_internal"
     packaged = packaged_base / "netconsole" / "assets" / "changelog.md"
     packaged.parent.mkdir(parents=True)

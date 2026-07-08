@@ -118,7 +118,7 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     assert not buttons["弹出模块"].isHidden()
     assert not buttons["更多"].isHidden()
     visible_menu_texts = [action.text() for action in buttons["更多"].menu().actions() if action.isVisible() and action.text()]
-    assert visible_menu_texts == ["窗口置顶", "打开当前局点目录", "关于 NetConsole", "退出"]
+    assert visible_menu_texts == ["窗口置顶", "打开当前局点目录", "磁盘清理", "版本更新日志", "开源许可", "关于 NetConsole", "退出"]
 
     window.resize(TOP_BAR_MEDIUM_WIDTH, 900)
     window._sync_site_bar_action_modes()
@@ -126,7 +126,7 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     assert not buttons["切换局点"].isHidden()
     assert not buttons["弹出模块"].isHidden()
     visible_menu_texts = [action.text() for action in buttons["更多"].menu().actions() if action.isVisible() and action.text()]
-    assert visible_menu_texts == ["新建局点", "窗口置顶", "打开当前局点目录", "关于 NetConsole", "退出"]
+    assert visible_menu_texts == ["新建局点", "窗口置顶", "打开当前局点目录", "磁盘清理", "版本更新日志", "开源许可", "关于 NetConsole", "退出"]
 
     window.setMinimumSize(900, 600)
     window.resize(TOP_BAR_MEDIUM_WIDTH - 100, 760)
@@ -135,7 +135,7 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     assert buttons["切换局点"].isHidden()
     assert buttons["弹出模块"].isHidden()
     visible_menu_texts = [action.text() for action in buttons["更多"].menu().actions() if action.isVisible() and action.text()]
-    assert visible_menu_texts == ["新建局点", "切换局点", "弹出模块", "窗口置顶", "打开当前局点目录", "关于 NetConsole", "退出"]
+    assert visible_menu_texts == ["新建局点", "切换局点", "弹出模块", "窗口置顶", "打开当前局点目录", "磁盘清理", "版本更新日志", "开源许可", "关于 NetConsole", "退出"]
     window.close()
 
 
@@ -159,6 +159,7 @@ def test_ac_global_command_bar_keeps_tab_specific_actions_out():
             assert not button.icon().isNull()
     for tab_specific_text in ("连接 AC", "导出", "获取 HTTPS 端口", "获取 AP 列表", "获取 AP 地址", "获取 AP 射频", "获取 Mesh Link", "更多"):
         assert tab_specific_text not in buttons
+    window.preload_page("ac")
     ac_page = window.raw_pages["ac"]
     assert ac_page.current_tab_action_labels() == ["新增行", "删除选中", "保存", "导入", "导出", "下载模板", "更新"]
     for button in (
@@ -187,6 +188,7 @@ def test_ac_page_loads_local_data_on_first_enter():
 
     app()
     window = build_window()
+    window.preload_page("ac")
     ac_page = window.raw_pages["ac"]
 
     assert not ac_page._device_list_loaded
@@ -229,6 +231,7 @@ def test_file_management_fluent_connect_action_clicks_raw_connect_button():
 
     app()
     window = build_window()
+    window.preload_page("file_management")
     file_page = window.raw_pages["file_management"]
     command_bar = window.pages["file_management"].findChild(NCCommandBar)
     calls: list[str] = []
@@ -251,6 +254,7 @@ def test_rail_transit_uses_only_tab_local_actions():
     app()
     window = build_window()
     rail_page = window.pages["rail_transit"]
+    window.preload_page("rail_transit")
     raw_rail_page = window.raw_pages["rail_transit"]
 
     assert rail_page.findChild(NCCommandBar) is None
@@ -289,6 +293,7 @@ def test_network_tools_uses_only_tab_local_actions():
     app()
     window = build_window()
     page = window.pages["network_tools"]
+    window.preload_page("network_tools")
     raw_page = window.raw_pages["network_tools"]
 
     assert page.findChild(NCCommandBar) is None
@@ -319,6 +324,7 @@ def test_snmp_center_uses_only_tab_local_actions():
     app()
     window = build_window()
     page = window.pages["snmp_center"]
+    window.preload_page("snmp_center")
     raw_page = window.raw_pages["snmp_center"]
 
     assert page.findChild(NCCommandBar) is None
@@ -498,6 +504,7 @@ def test_config_collection_command_bar_uses_single_main_action_set():
     assert "诊断下载" not in buttons
     assert all(not button.icon().isNull() for button in command_bar.findChildren(QPushButton) if button.text() in buttons)
 
+    window.preload_page("config_collection")
     left_buttons = [button.text() for button in window.raw_pages["config_collection"].left_panel.findChildren(QPushButton) if button.text()]
     for text in ("保存配置", "下载配置", "配置对比", "刷新", "诊断下载"):
         assert text not in left_buttons

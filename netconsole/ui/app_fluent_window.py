@@ -100,6 +100,8 @@ class AppFluentWindow(SplitFluentWindow):
         self._current_theme = self._normalize_theme(self.settings.theme)
         self.pages: dict[str, QWidget] = {}
         self.raw_pages: dict[str, QWidget] = {}
+        self._page_factories: dict[str, Callable[[], QWidget]] = {}
+        self._page_content_widgets: dict[str, QWidget] = {}
         self._nav_items: list[QListWidgetItem] = []
         self._site_labels: list[QLabel] = []
         self._status_labels: list[QLabel] = []
@@ -389,10 +391,27 @@ class AppFluentWindow(SplitFluentWindow):
             feature_id = PAGE_FEATURE_BY_PAGE_ID.get(page_id)
             if feature_id is not None and not self.feature_gate.is_enabled(feature_id):
                 continue
-            raw_page = factory()
-            page = self._command_page(title, description, raw_page, actions)
-            self.raw_pages[page_id] = raw_page
+            self._page_factories[page_id] = factory
+            if page_id == "devices":
+                content = factory()
+                self.raw_pages[page_id] = content
+            else:
+                content = self._lazy_placeholder(title)
+            page = self._command_page(title, description, content, actions)
+            self._page_content_widgets[page_id] = content
             self._add_page(page_id, page, icon, title)
+
+    def _lazy_placeholder(self, title: str) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 28, 0, 0)
+        label = QLabel(f"{title} 页面加载中...")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setObjectName("lazyPagePlaceholder")
+        layout.addStretch(1)
+        layout.addWidget(label)
+        layout.addStretch(2)
+        return widget
 
     def _add_page(self, page_id: str, page: QWidget, icon, text: str) -> None:
         page.setObjectName(page_id)
@@ -426,6 +445,36 @@ class AppFluentWindow(SplitFluentWindow):
                 setattr(page, name, getattr(content, name))
         self._apply_theme_to_widget_tree(page)
         return page
+
+    def _ensure_real_page(self, page_id: str) -> QWidget | None:
+        raw_page = self.raw_pages.get(page_id)
+        if raw_page is not None:
+            return raw_page
+        factory = self._page_factories.get(page_id)
+        wrapper = self.pages.get(page_id)
+        if factory is None or wrapper is None:
+            return None
+        started = perf_counter()
+        app_logger.log_info("BOOT_MODULE_LAZY_LOAD_STARTED", f"page_id={page_id}")
+        raw_page = factory()
+        self._hide_legacy_action_buttons(raw_page)
+        old_content = self._page_content_widgets.get(page_id)
+        layout = wrapper.layout()
+        insert_index = layout.indexOf(old_content) if layout is not None and old_content is not None else -1
+        if layout is not None and old_content is not None:
+            layout.removeWidget(old_content)
+            old_content.deleteLater()
+        if layout is not None:
+            layout.insertWidget(insert_index if insert_index >= 0 else layout.count(), raw_page, 1)
+        self.raw_pages[page_id] = raw_page
+        self._page_content_widgets[page_id] = raw_page
+        for name in ("tabs", "table", "device_table", "navigation", "stack"):
+            if hasattr(raw_page, name):
+                setattr(wrapper, name, getattr(raw_page, name))
+        self._apply_theme_to_widget_tree(wrapper)
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        app_logger.log_info("BOOT_MODULE_LAZY_LOAD_FINISHED", f"page_id={page_id} elapsed_ms={elapsed_ms}")
+        return raw_page
 
     def _site_bar(self) -> QWidget:
         bar = QWidget()
@@ -470,6 +519,9 @@ class AppFluentWindow(SplitFluentWindow):
         overflow_actions = [
             ("top", "窗口置顶", self.toggle_always_on_top),
             ("open_site_dir", "打开当前局点目录", self.open_current_site_dir),
+            ("disk_cleanup", "磁盘清理", self.show_disk_cleanup),
+            ("changelog", "版本更新日志", self.show_changelog),
+            ("open_source", "开源许可", self.show_open_source_notices),
             ("about", "关于 NetConsole", self.show_about),
             ("exit", "退出", self.close),
         ]
@@ -483,6 +535,14 @@ class AppFluentWindow(SplitFluentWindow):
         for key, text, callback in overflow_actions:
             action = more_menu.addAction(text)
             action.triggered.connect(lambda checked=False, action_callback=callback: action_callback())
+            feature_id = {
+                "disk_cleanup": "system.disk_cleanup",
+                "changelog": "system.changelog",
+                "open_source": "system.open_source",
+            }.get(key)
+            if feature_id is not None:
+                action.setVisible(self.feature_gate.is_visible(feature_id))
+                action.setEnabled(self.feature_gate.is_enabled(feature_id))
             overflow_menu_actions[key] = action
 
         for button in (create_button, switch_button, detach_button, more_button):
@@ -702,6 +762,9 @@ class AppFluentWindow(SplitFluentWindow):
             apply_language_callback=self.apply_language_setting,
             create_site_callback=self.create_site,
             switch_site_callback=self.switch_site_dialog,
+            disk_cleanup_callback=self.show_disk_cleanup if self.feature_gate.is_enabled("system.disk_cleanup") else None,
+            changelog_callback=self.show_changelog if self.feature_gate.is_enabled("system.changelog") else None,
+            open_source_callback=self.show_open_source_notices if self.feature_gate.is_enabled("system.open_source") else None,
         )
         return self.settings_page
 
@@ -833,6 +896,8 @@ class AppFluentWindow(SplitFluentWindow):
         self.preloaded_pages.add(page_id)
         if page_id not in self.pages:
             app_logger.log_warning("FLUENT_PAGE_NOT_REGISTERED", page_id)
+            return
+        self._ensure_real_page(page_id)
 
     def mark_preload_failures(self, failures: dict[str, str]) -> None:
         self.preload_failures = dict(failures)
@@ -872,7 +937,7 @@ class AppFluentWindow(SplitFluentWindow):
                 return
 
     def _enter_page(self, page_id: str) -> None:
-        raw_page = self.raw_pages.get(page_id)
+        raw_page = self._ensure_real_page(page_id)
         on_enter = getattr(raw_page, "on_enter", None)
         if callable(on_enter):
             self._page_enter_serial += 1
@@ -1029,24 +1094,68 @@ class AppFluentWindow(SplitFluentWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def show_about(self) -> None:
-        QMessageBox.information(
-            self,
-            "关于 NetConsole",
-            f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}\n网络设备采集工具",
-        )
+        from netconsole.ui.dialogs.about_dialog import AboutRepositoryDialog
+
+        dialog = getattr(self, "about_dialog", None)
+        if dialog is None:
+            dialog = AboutRepositoryDialog(self.i18n, self)
+            dialog.destroyed.connect(lambda _=None: setattr(self, "about_dialog", None))
+            self.about_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_changelog(self) -> None:
+        self.feature_gate.assert_enabled("system.changelog")
+        from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
+
+        dialog = getattr(self, "changelog_dialog", None)
+        if dialog is None:
+            dialog = ChangelogDialog(self.i18n, self)
+            dialog.destroyed.connect(lambda _=None: setattr(self, "changelog_dialog", None))
+            self.changelog_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_disk_cleanup(self) -> None:
+        self.feature_gate.assert_enabled("system.disk_cleanup")
+        from netconsole.ui.dialogs.disk_cleanup_dialog import DiskCleanupDialog
+
+        dialog = getattr(self, "disk_cleanup_dialog", None)
+        if dialog is None:
+            dialog = DiskCleanupDialog(self.paths, self)
+            dialog.destroyed.connect(lambda _=None: setattr(self, "disk_cleanup_dialog", None))
+            self.disk_cleanup_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def show_open_source_notices(self) -> None:
+        self.feature_gate.assert_enabled("system.open_source")
+        from netconsole.ui.dialogs.open_source_notices_dialog import OpenSourceNoticesDialog
+
+        dialog = getattr(self, "open_source_notices_dialog", None)
+        if dialog is None:
+            dialog = OpenSourceNoticesDialog(self)
+            dialog.destroyed.connect(lambda _=None: setattr(self, "open_source_notices_dialog", None))
+            self.open_source_notices_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _click_raw(self, page_id: str, attribute_name: str) -> None:
-        button = getattr(self.raw_pages.get(page_id), attribute_name, None)
+        button = getattr(self._ensure_real_page(page_id), attribute_name, None)
         if button is not None and hasattr(button, "click"):
             button.click()
 
     def _call_raw(self, page_id: str, method_name: str) -> None:
-        method = getattr(self.raw_pages.get(page_id), method_name, None)
+        method = getattr(self._ensure_real_page(page_id), method_name, None)
         if callable(method):
             method()
 
     def _call_raw_args(self, page_id: str, method_name: str, *args) -> None:
-        method = getattr(self.raw_pages.get(page_id), method_name, None)
+        method = getattr(self._ensure_real_page(page_id), method_name, None)
         if callable(method):
             method(*args)
 
@@ -1077,7 +1186,7 @@ class AppFluentWindow(SplitFluentWindow):
             f"[UI] Title bar mode: {self._window_chrome_mode()}",
             f"[UI] Top bar safe right: {WINDOW_CONTROL_SAFE_RIGHT}px",
             "[UI] Top bar actions: 新建局点, 切换局点, 弹出模块, 更多",
-            "[UI] Overflow actions: 窗口置顶, 打开当前局点目录, 关于, 退出",
+            "[UI] Overflow actions: 窗口置顶, 打开当前局点目录, 磁盘清理, 版本更新日志, 开源许可, 关于, 退出",
             "[UI] Language switch: settings-page",
             f"[UI] Current language: {self.i18n.language}",
             "[UI] TopBar event handling: safe",

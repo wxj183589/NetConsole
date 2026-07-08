@@ -9,13 +9,49 @@ from netconsole.core.paths import PathResolver
 
 APP_CLEANUP_RETENTION_DAYS = 3
 APP_LOG_PATTERNS = ("*.log", "*.log.*", "netconsole_*.log", "runtime_*.log", "app_*.log", "ui_*.log")
-CACHE_DIR_NAMES = ("cache", "tmp", "temp", "runtime_cache", "__runtime_cache__", "thumbnails", "chart_cache", "preview_cache")
+CACHE_DIR_NAMES = (
+    "cache",
+    "tmp",
+    "temp",
+    "runtime_cache",
+    "__runtime_cache__",
+    "thumbnails",
+    "chart_cache",
+    "preview_cache",
+    "export_tmp",
+    "download_tmp",
+)
 
 
 @dataclass
 class CleanupFailure:
     path: str
     error: str
+
+
+@dataclass(frozen=True)
+class CleanupCandidate:
+    path: Path
+    size: int
+    is_log: bool
+
+
+@dataclass
+class CleanupItem:
+    item_id: str
+    title: str
+    description: str
+    retention_policy: str
+    status: str
+    candidates: list[CleanupCandidate] = field(default_factory=list)
+
+    @property
+    def file_count(self) -> int:
+        return len(self.candidates)
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(candidate.size for candidate in self.candidates)
 
 
 @dataclass
@@ -44,17 +80,97 @@ class AppCleanupResult:
         )
 
 
+class AppCleanupService:
+    def __init__(self, paths: PathResolver) -> None:
+        self.paths = paths
+
+    def scan_cleanup_items(self, retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> list[CleanupItem]:
+        days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
+        cutoff = datetime.now() - timedelta(days=days)
+        policy = f"保留最近 {days} 天"
+        items = [
+            CleanupItem(
+                "runtime_logs",
+                "软件运行日志",
+                "NetConsole 软件自身运行日志文件",
+                policy,
+                "待清理",
+                self._log_candidates(cutoff),
+            ),
+            CleanupItem(
+                "runtime_cache",
+                "页面/图表缓存",
+                "页面渲染、图表预览、运行时缓存文件",
+                policy,
+                "待清理",
+                self._cache_candidates(cutoff, include_names={"cache", "runtime_cache", "__runtime_cache__", "thumbnails", "chart_cache", "preview_cache"}),
+            ),
+            CleanupItem(
+                "temporary_files",
+                "临时文件",
+                "临时目录、导出缓存、下载缓存中的过期文件",
+                policy,
+                "待清理",
+                self._cache_candidates(cutoff, include_names={"tmp", "temp", "export_tmp", "download_tmp"}),
+            ),
+        ]
+        for item in items:
+            item.status = "可清理" if item.file_count else "无需清理"
+        return items
+
+    def cleanup_items(self, items: list[CleanupItem], retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> AppCleanupResult:
+        days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
+        cutoff = datetime.now() - timedelta(days=days)
+        result = AppCleanupResult(retention_days=days, cutoff=cutoff)
+        allowed_dirs = _existing_dirs([self.paths.logs_dir, *_runtime_cache_dirs(self.paths)])
+        seen: set[Path] = set()
+        for item in items:
+            for candidate in item.candidates:
+                resolved = _safe_resolve(candidate.path)
+                if resolved is None or resolved in seen:
+                    continue
+                seen.add(resolved)
+                if not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
+                    continue
+                _delete_file(resolved, result, is_log=candidate.is_log)
+        _remove_empty_dirs(_existing_dirs(_runtime_cache_dirs(self.paths)))
+        return result
+
+    def auto_cleanup(self, retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> AppCleanupResult:
+        items = self.scan_cleanup_items(retention_days)
+        result = self.cleanup_items(items, retention_days)
+        _emit_cleanup_log(result)
+        return result
+
+    def _log_candidates(self, cutoff: datetime) -> list[CleanupCandidate]:
+        candidates: list[CleanupCandidate] = []
+        seen: set[Path] = set()
+        allowed_dirs = _existing_dirs([self.paths.logs_dir])
+        for directory in allowed_dirs:
+            for pattern in APP_LOG_PATTERNS:
+                for file_path in directory.glob(pattern):
+                    candidate = _candidate_for_file(file_path, cutoff, allowed_dirs, is_log=True)
+                    if candidate is None or candidate.path in seen:
+                        continue
+                    seen.add(candidate.path)
+                    candidates.append(candidate)
+        return candidates
+
+    def _cache_candidates(self, cutoff: datetime, *, include_names: set[str]) -> list[CleanupCandidate]:
+        candidates: list[CleanupCandidate] = []
+        dirs = [path for path in _runtime_cache_dirs(self.paths) if path.name in include_names]
+        allowed_dirs = _existing_dirs(dirs)
+        for directory in allowed_dirs:
+            for file_path in directory.rglob("*"):
+                candidate = _candidate_for_file(file_path, cutoff, allowed_dirs, is_log=False)
+                if candidate is not None:
+                    candidates.append(candidate)
+        return candidates
+
+
 def run_app_auto_cleanup(paths: PathResolver, retention_days: int = APP_CLEANUP_RETENTION_DAYS, *, emit_log: bool = True) -> AppCleanupResult:
-    days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
-    cutoff = datetime.now() - timedelta(days=days)
-    result = AppCleanupResult(retention_days=days, cutoff=cutoff)
-    allowed_log_dirs = _existing_dirs([paths.logs_dir])
-    allowed_cache_dirs = _existing_dirs(_runtime_cache_dirs(paths))
-
-    _delete_old_logs(allowed_log_dirs, cutoff, result)
-    _delete_old_cache_files(allowed_cache_dirs, cutoff, result)
-    _remove_empty_dirs(allowed_cache_dirs)
-
+    service = AppCleanupService(paths)
+    result = service.cleanup_items(service.scan_cleanup_items(retention_days), retention_days)
     if emit_log:
         _emit_cleanup_log(result)
     return result
@@ -100,6 +216,19 @@ def _delete_old_cache_files(allowed_dirs: list[Path], cutoff: datetime, result: 
                 continue
             if _is_old_file(resolved, cutoff):
                 _delete_file(resolved, result, is_log=False)
+
+
+def _candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path], *, is_log: bool) -> CleanupCandidate | None:
+    resolved = _safe_resolve(path)
+    if resolved is None or not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
+        return None
+    if not _is_old_file(resolved, cutoff):
+        return None
+    try:
+        size = resolved.stat().st_size
+    except OSError:
+        size = 0
+    return CleanupCandidate(path=resolved, size=size, is_log=is_log)
 
 
 def _delete_file(path: Path, result: AppCleanupResult, *, is_log: bool) -> None:

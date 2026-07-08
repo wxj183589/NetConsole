@@ -797,28 +797,40 @@ class MeshMrRepository:
     def list_source_files(self) -> list[dict[str, object]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM source_files ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC").fetchall()
-        result: list[dict[str, object]] = []
-        for row in rows:
-            data = dict(row)
-            deleted = bool(str(data.get("deleted_at") or ""))
-            parsed_deleted = bool(str(data.get("parsed_deleted_at") or ""))
-            file_status = str(data.get("file_status") or "").strip()
-            exists = bool(int(data.get("file_exists") or 0)) and not deleted
-            if str(data.get("delete_error") or ""):
-                data["file_status"] = "delete_failed"
-            elif deleted and parsed_deleted:
-                data["file_status"] = "all_deleted"
-            elif parsed_deleted or file_status == "parsed_deleted":
-                data["file_status"] = "parsed_deleted"
-            elif deleted or file_status == "deleted":
-                data["file_status"] = "deleted"
-            elif exists:
-                data["file_status"] = "ok"
-            else:
-                data["file_status"] = "missing"
-            data["file_exists"] = 1 if exists else 0
-            result.append(data)
-        return result
+        return [self._source_file_row_status(dict(row)) for row in rows]
+
+    def query_source_files(self, limit: int, offset: int) -> tuple[int, list[dict[str, object]]]:
+        with self._connect() as conn:
+            total = int(conn.execute("SELECT COUNT(*) FROM source_files").fetchone()[0] or 0)
+            rows = conn.execute(
+                """
+                SELECT * FROM source_files
+                ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (int(limit), int(offset)),
+            ).fetchall()
+        return total, [self._source_file_row_status(dict(row)) for row in rows]
+
+    def _source_file_row_status(self, data: dict[str, object]) -> dict[str, object]:
+        deleted = bool(str(data.get("deleted_at") or ""))
+        parsed_deleted = bool(str(data.get("parsed_deleted_at") or ""))
+        file_status = str(data.get("file_status") or "").strip()
+        exists = bool(int(data.get("file_exists") or 0)) and not deleted
+        if str(data.get("delete_error") or ""):
+            data["file_status"] = "delete_failed"
+        elif deleted and parsed_deleted:
+            data["file_status"] = "all_deleted"
+        elif parsed_deleted or file_status == "parsed_deleted":
+            data["file_status"] = "parsed_deleted"
+        elif deleted or file_status == "deleted":
+            data["file_status"] = "deleted"
+        elif exists:
+            data["file_status"] = "ok"
+        else:
+            data["file_status"] = "missing"
+        data["file_exists"] = 1 if exists else 0
+        return data
 
     def get_source_file(self, source_file_id: int) -> dict[str, object] | None:
         with self._connect() as conn:

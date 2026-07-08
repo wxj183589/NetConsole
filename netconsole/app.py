@@ -20,10 +20,6 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.resources import icon_path
 from netconsole.core.settings import SettingsStore
 from netconsole.core import version as version_info
-from netconsole.ui.app_window_factory import create_app_window
-from netconsole.ui.app_auto_cleanup_runner import start_app_auto_cleanup
-from netconsole.ui.main_window import MainWindow
-from netconsole.ui.startup_preload import StartupPreloadManager
 from netconsole.ui.widgets.startup_splash import StartupSplash
 
 
@@ -34,8 +30,10 @@ def _elapsed_detail(started_at: float) -> str:
 def build_window(started_at: float | None = None) -> MainWindow:
     started_at = started_at or perf_counter()
     context = create_demo_context()
-    app_logger.log_info("SITE_LOADED", f"site={context.site.name} {_elapsed_detail(started_at)}")
+    app_logger.log_info("BOOT_DB_CORE_READY", f"site={context.site.name} {_elapsed_detail(started_at)}")
     i18n = I18n(SettingsStore(context.paths).language)
+    from netconsole.ui.app_window_factory import create_app_window
+
     return create_app_window(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
 
 
@@ -51,6 +49,12 @@ def open_admin_network_manager(window: MainWindow) -> None:
     tabs = getattr(page, "tabs", None)
     if tabs is not None and tabs.count() >= 3:
         tabs.setCurrentIndex(2)
+
+
+def _start_app_auto_cleanup(window: object, paths: PathResolver) -> None:
+    from netconsole.ui.app_auto_cleanup_runner import start_app_auto_cleanup
+
+    start_app_auto_cleanup(window, paths)
 
 
 def _site_database_paths(paths: PathResolver) -> list[Path]:
@@ -122,19 +126,23 @@ def run() -> int:
     i18n = I18n(settings.language)
     splash = StartupSplash(i18n)
     splash.show_centered()
-    splash.show_message(i18n.t("app.starting"))
-    splash.set_progress(15)
+    splash.show_message(i18n.t("startup.loading_config"))
+    splash.set_progress(10)
     app_logger.log_info("APP_START", _elapsed_detail(started_at))
+    app_logger.log_info("BOOT_START", _elapsed_detail(started_at))
+    app_logger.log_info("BOOT_CONFIG_LOADED", _elapsed_detail(started_at))
     startup_mode = settings.startup_mode
     app_logger.log_info("STARTUP", f"mode={startup_mode}")
     while True:
         try:
             if startup_mode == "preload_all":
+                from netconsole.ui.startup_preload import StartupPreloadManager
+
                 manager = StartupPreloadManager(i18n=i18n, splash=splash, started_at=started_at)
                 window = manager.run(startup_mode)
             else:
-                splash.show_message(i18n.t("app.initializing_site"))
-                splash.set_progress(45)
+                splash.show_message(i18n.t("startup.loading_current_site"))
+                splash.set_progress(25)
                 window = build_window(started_at)
             break
         except DatabaseSchemaMismatchError as exc:
@@ -147,19 +155,24 @@ def run() -> int:
                 continue
             return 1
     app_logger.log_info("MAIN_WINDOW_CREATED", _elapsed_detail(started_at))
+    app_logger.log_info("BOOT_MAIN_WINDOW_CREATED", _elapsed_detail(started_at))
     splash.show_message(i18n.t("startup.opening_main_window"))
     splash.set_progress(100 if startup_mode == "preload_all" else 80)
     log_geometry = getattr(window, "log_startup_geometry_checkpoint", None)
     if callable(log_geometry):
         log_geometry("before show")
+    splash.show_message(i18n.t("startup.showing_main_window"))
+    splash.set_progress(90)
     window.show()
-    QTimer.singleShot(5000, lambda: start_app_auto_cleanup(window, paths))
+    QTimer.singleShot(8000, lambda: _start_app_auto_cleanup(window, paths))
+    app_logger.log_info("BOOT_BACKGROUND_TASKS_STARTED", f"task=app_auto_cleanup delay_ms=8000 {_elapsed_detail(started_at)}")
     schedule_geometry_checks = getattr(window, "schedule_startup_geometry_checks", None)
     if callable(schedule_geometry_checks):
         QTimer.singleShot(0, schedule_geometry_checks)
     if ADMIN_NETWORK_MANAGER_ARG in sys.argv:
         open_admin_network_manager(window)
     app_logger.log_info("MAIN_WINDOW_SHOWN", _elapsed_detail(started_at))
+    app_logger.log_info("BOOT_MAIN_WINDOW_SHOWN", _elapsed_detail(started_at))
     splash.set_progress(100)
     splash.close_after_main_window_shown()
     return app.exec()

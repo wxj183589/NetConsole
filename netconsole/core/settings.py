@@ -48,7 +48,7 @@ DEFAULT_SETTINGS = {
     "external_terminal/crt_encoding": "UTF-8",
     "app/close_behavior": "ask",
     "app/tray_notice_shown": False,
-    "app/startup_mode": "preload_all",
+    "app/startup_mode": "fast_start",
 }
 VALID_THEMES = {"light", "dark", "auto"}
 VALID_LANGUAGES = {"zh_CN", "en_US"}
@@ -85,6 +85,9 @@ class SettingsStore:
             changed = True
         if self.language not in VALID_LANGUAGES:
             self.values["language"] = DEFAULT_SETTINGS["language"]
+            changed = True
+        if self.values.get("app/startup_mode") == "preload_all":
+            self.values["app/startup_mode"] = DEFAULT_SETTINGS["app/startup_mode"]
             changed = True
         terminal_type = normalize_external_terminal_type(self.values.get("external_terminal/type"))
         if self.values.get("external_terminal/type") != terminal_type:
@@ -194,7 +197,7 @@ class SettingsStore:
     @property
     def startup_mode(self) -> str:
         mode = str(self.values.get("app/startup_mode") or DEFAULT_SETTINGS["app/startup_mode"])
-        return mode if mode in VALID_STARTUP_MODES else "preload_all"
+        return mode if mode in VALID_STARTUP_MODES else "fast_start"
 
     def set_startup_mode(self, mode: str) -> None:
         if mode not in VALID_STARTUP_MODES:

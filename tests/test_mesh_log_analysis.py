@@ -209,6 +209,7 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     while page.export_worker is not None and time.time() < deadline:
         _app().processEvents()
         time.sleep(0.01)
+    _drain_qt_events()
 
     assert target.exists()
     workbook = load_workbook(target)
@@ -245,17 +246,21 @@ def test_mesh_page_state_filter_defaults_to_raw_and_filters_active_standby(tmp_p
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.current_profile = profile
 
+    page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
+    _wait_for_mesh_tab_load(page)
     assert page._current_link_filters()["state"] is None
     assert page.link_table.rowCount() == 2
 
     page.state_filter.setCurrentIndex(1)
     page.refresh_link_table()
+    _wait_for_mesh_tab_load(page)
     assert page._current_link_filters()["state"] == "ACTIVE"
     assert {page.link_table.item(row, 3).text() for row in range(page.link_table.rowCount())} == {"ACTIVE"}
 
     page.state_filter.setCurrentIndex(2)
     page.refresh_link_table()
+    _wait_for_mesh_tab_load(page)
     assert page._current_link_filters()["state"] == "STANDBY"
     assert {page.link_table.item(row, 3).text() for row in range(page.link_table.rowCount())} == {"STANDBY"}
 
@@ -725,6 +730,26 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
+def _drain_qt_events(iterations: int = 10) -> None:
+    app = _app()
+    for _ in range(iterations):
+        app.processEvents()
+        time.sleep(0.01)
+
+
+def _wait_for_mesh_tab_load(page, timeout: float = 5.0) -> None:
+    app = _app()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        current_tab = page._current_tab_name()
+        overlay = getattr(page, "tab_overlays", {}).get(current_tab)
+        if getattr(page, "tab_load_worker", None) is None and (overlay is None or not overlay.isVisible()):
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for mesh tab load")
+
+
 def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     _app()
     from PySide6.QtCore import Qt
@@ -740,8 +765,9 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.link_table.setColumnWidth(3, 260)
     page.refresh_all()
-    page.tabs.setCurrentWidget(page.link_table)
+    page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
+    _wait_for_mesh_tab_load(page)
     assert page.link_table.columnWidth(3) == 260
     assert page.link_table.rowCount() == 2
     data = page.link_table.item(0, 0).data(Qt.UserRole)
@@ -764,7 +790,9 @@ def test_mesh_link_table_auto_width_keeps_metric_headers_visible(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [source])
     page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
     page.refresh_all()
+    page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
+    _wait_for_mesh_tab_load(page)
 
     header = page.link_table.horizontalHeader()
     assert header.sectionResizeMode(13) == QHeaderView.Interactive
@@ -953,6 +981,7 @@ def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
     page.source_table.cellDoubleClicked.emit(row, 0)
     app.processEvents()
     app.processEvents()
+    _wait_for_mesh_tab_load(page)
 
     assert page.tabs.currentIndex() == 1
     assert page.current_source_file_id == target_source_id
@@ -987,7 +1016,9 @@ def test_mesh_page_peer_dialog_uses_row_source_file_id_in_all_files_mode(tmp_pat
     page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
     page.current_profile = profile
     page.current_source_file_id = None
+    page.tabs.setCurrentIndex(1)
     page.refresh_link_table()
+    _wait_for_mesh_tab_load(page)
     captured: list[tuple[str, int | None, str, int | None, int | None]] = []
     monkeypatch.setattr(page, "_open_peer_dialog", lambda peer, radio, session, link_id=None, source_file_id=None: captured.append((peer, radio, session, link_id, source_file_id)))
 
@@ -2250,14 +2281,36 @@ def test_mesh_page_tab_lazy_loads_only_current_tab(tmp_path, monkeypatch):
     page.dirty_tabs = {"source", "link", "event", "issue"}
     calls = []
     monkeypatch.setattr(page, "_ensure_current_derived_analysis", lambda repo: None)
-    monkeypatch.setattr(page, "_render_sources", lambda repo: calls.append("source"))
-    monkeypatch.setattr(page, "_render_links", lambda repo: calls.append("link"))
-    monkeypatch.setattr(page, "_render_events", lambda repo: calls.append("event"))
-    monkeypatch.setattr(page, "refresh_parse_issues", lambda repo=None: calls.append("issue"))
+    monkeypatch.setattr(page, "_start_tab_load", lambda tab: calls.append(tab))
     page.tabs.setCurrentIndex(1)
     assert calls == ["link"]
     assert "source" in page.dirty_tabs
     assert "event" in page.dirty_tabs
+
+
+def test_mesh_page_link_tab_shows_loading_overlay_until_async_load_finishes(tmp_path):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    page.dirty_tabs.add("link")
+
+    page.tabs.setCurrentIndex(1)
+
+    assert not page.tab_overlays["link"].isHidden()
+    assert page.tab_overlays["link"].spinner.timer.isActive()
+    assert "正在加载链路明细" in page.progress_label.text()
+    _wait_for_mesh_tab_load(page)
+    assert page.tab_overlays["link"].isHidden()
+    assert not page.tab_overlays["link"].spinner.timer.isActive()
+    assert page.link_table.rowCount() == 1
 
 
 def test_mesh_page_repository_cache_reuses_current_mr_repo(tmp_path):

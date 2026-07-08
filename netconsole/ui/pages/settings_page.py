@@ -69,6 +69,9 @@ class SettingsPage(QWidget):
         apply_language_callback=None,
         create_site_callback=None,
         switch_site_callback=None,
+        disk_cleanup_callback=None,
+        changelog_callback=None,
+        open_source_callback=None,
     ) -> None:
         super().__init__()
         self.settings = settings
@@ -78,6 +81,9 @@ class SettingsPage(QWidget):
         self.apply_language_callback = apply_language_callback
         self.create_site_callback = create_site_callback
         self.switch_site_callback = switch_site_callback
+        self.disk_cleanup_callback = disk_cleanup_callback
+        self.changelog_callback = changelog_callback
+        self.open_source_callback = open_source_callback
         self.dirty = False
         self.setObjectName("settingsPage")
 
@@ -228,6 +234,7 @@ class SettingsPage(QWidget):
             ("默认 Telnet 端口", "新设备外部终端默认 Telnet 端口", self.telnet_port_spin),
             ("生成 CRT 会话编码", "SecureCRT 会话配置编码", self.crt_encoding_combo),
         ]))
+        layout.addWidget(self._maintenance_section())
         layout.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -268,6 +275,53 @@ class SettingsPage(QWidget):
         button_row.setLayout(buttons)
         layout.addWidget(self._setting_row("局点操作", "新建、切换或打开当前局点目录", button_row))
         return section
+
+    def _maintenance_section(self) -> QWidget:
+        section = QWidget()
+        section.setObjectName("ncCard")
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
+        label = QLabel("维护与关于")
+        label.setObjectName("fluentPageTitle")
+        layout.addWidget(label)
+        layout.addWidget(
+            self._setting_row(
+                "磁盘清理",
+                "清理软件运行缓存、临时文件和过期运行日志，不删除采集数据",
+                self._button_row(("打开磁盘清理", self.disk_cleanup_callback)),
+            )
+        )
+        layout.addWidget(
+            self._setting_row(
+                "版本更新日志",
+                "查看 NetConsole 各版本新增、优化和修复内容",
+                self._button_row(("查看更新日志", self.changelog_callback)),
+            )
+        )
+        layout.addWidget(
+            self._setting_row(
+                "开源许可",
+                "查看第三方开源组件、版本和许可证信息",
+                self._button_row(("查看开源许可", self.open_source_callback)),
+            )
+        )
+        return section
+
+    def _button_row(self, *buttons: tuple[str, object]) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for text, callback in buttons:
+            button = QPushButton(text)
+            button.setMinimumWidth(128)
+            button.setEnabled(callable(callback))
+            if callable(callback):
+                button.clicked.connect(callback)
+            layout.addWidget(button)
+        layout.addStretch(1)
+        return row
 
     def _setting_row(self, title: str, description: str, control: QWidget) -> QWidget:
         row = QWidget()
