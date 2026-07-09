@@ -43,6 +43,7 @@ from netconsole.core.sources.switch_source import (
 from netconsole.core.state_engine import STATUS_COLORS, compute_state, display_optical_status
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
@@ -79,12 +80,15 @@ from netconsole.services.ap_online_overview import (
 )
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
+from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
+from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, AcResourceCollectThread, FitApOpticalCollectThread
 from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
+from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
@@ -289,7 +293,7 @@ def _set_button_icon(button: QPushButton, icon: object | None) -> None:
 AC_TAB_ACTION_LABELS = {
     "ac.trackside_ap_plan": ("新增行", "删除选中", "保存", "导入", "导出", "下载模板", "更新"),
     "ac.ap_online_overview": ("获取 AP 列表", "刷新", "导出", "清空结果"),
-    "ac.fit_ap_resources": ("获取 AP 列表", "获取 AP 地址", "获取 AP 射频", "更新", "批量删除", "导出 AP 信息", "清空选择", "反选"),
+    "ac.fit_ap_resources": ("获取 AP 列表", "获取 AP 地址", "获取 AP 射频", "更新", "批量删除", "导出 AP 信息", "导出 OmniPeek 名称表", "清空选择", "反选"),
     "ac.fit_ap_optical": ("更新光衰", "并发数", "导出表格", "清除筛选"),
     "ac.fit_ap_extensions": (
         "标准模板导入",
@@ -798,6 +802,7 @@ class AcManagementPage(QWidget):
         self.export_extension_template_button = QPushButton()
         self.export_extension_template_button.setObjectName("exportApExtensionTemplateButton")
         self.export_button = QPushButton()
+        self.omnipeek_export_button = QPushButton()
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
         self.selection_label = make_text_selectable(QLabel())
@@ -920,6 +925,7 @@ class AcManagementPage(QWidget):
             self.refresh_button,
             self.batch_delete_button,
             self.export_button,
+            self.omnipeek_export_button,
             self.clear_selection_button,
             self.invert_selection_button,
         ):
@@ -1025,6 +1031,7 @@ class AcManagementPage(QWidget):
         self.batch_delete_button.clicked.connect(self.batch_delete_aps)
         self.export_extension_template_button.clicked.connect(self.export_ap_extension_template)
         self.export_button.clicked.connect(self.export_aps)
+        self.omnipeek_export_button.clicked.connect(self.export_omnipeek_name_table)
         self.extension_import_standard_button.clicked.connect(lambda: self.import_ap_extensions("standard_template"))
         self.extension_import_smart_button.clicked.connect(lambda: self.import_ap_extensions("smart_design"))
         self.extension_template_button.clicked.connect(self.export_ap_extension_template)
@@ -1069,6 +1076,7 @@ class AcManagementPage(QWidget):
         self._reconcile_feature_tabs()
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.refresh_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.export_button)
+        apply_feature_to_widget(self.feature_gate, "ac.omnipeek_name_table_export", self.omnipeek_export_button)
         apply_feature_to_widget(self.feature_gate, "ac.ac_info_update", self.update_ac_info_button)
         apply_feature_to_widget(self.feature_gate, "ac.ac_actions", self.persist_auto_ap_button)
         apply_feature_to_widget(self.feature_gate, "ac.ac_actions", self.enable_ap_remote_login_button)
@@ -1193,6 +1201,7 @@ class AcManagementPage(QWidget):
         self.import_button.setText(self.i18n.t("ap.import_metadata"))
         self.export_extension_template_button.setText(self.i18n.t("ap.export_extension_template"))
         self.export_button.setText(self.i18n.t("ap.export_info"))
+        self.omnipeek_export_button.setText("导出 OmniPeek 名称表")
         self.extension_import_standard_button.setText("标准模板导入")
         self.extension_import_smart_button.setText("原始设计/布点表智能识别导入")
         self.extension_template_button.setText("下载标准模板")
@@ -1229,6 +1238,7 @@ class AcManagementPage(QWidget):
             (self.cancel_update_button, FIF.CANCEL),
             (self.batch_delete_button, FIF.DELETE),
             (self.export_button, FIF.SHARE),
+            (self.omnipeek_export_button, FIF.SHARE),
             (self.clear_selection_button, FIF.CLEAR_SELECTION),
             (self.invert_selection_button, FIF.CHECKBOX),
             (self.extension_import_standard_button, FIF.DOWNLOAD),
@@ -2129,6 +2139,39 @@ class AcManagementPage(QWidget):
         self.import_export_service.export_ap_csv(path, rows)
         remember_export_path(path)
         app_logger.log_info("FIT_AP_EXPORT", f"count={len(rows)}, file={path.name}")
+
+    def export_omnipeek_name_table(self) -> None:
+        self.feature_gate.assert_enabled("ac.omnipeek_name_table_export")
+        service = OmniPeekNameTableService(self.repository, self.device_repository)
+        ac_uuid = self.current_device_uuid()
+        items = service.collect_items(
+            include_ac_fit_ap=True,
+            include_ap_extensions=True,
+            include_device_mr=True,
+            ac_device_uuid=ac_uuid,
+            group_names=self._device_group_names(),
+        )
+        if not items:
+            MessageBox.warning(self, "导出 OmniPeek 名称表", "当前没有可导出的轨旁 AP 或车载 MR 数据。")
+            return
+        source_counts = service.source_counts(ac_device_uuid=ac_uuid)
+        source_counts[SOURCE_DEVICE_MANAGEMENT] = sum(1 for item in items if SOURCE_DEVICE_MANAGEMENT in (item.sources or [item.source]))
+        dialog = OmniPeekExportDialog(
+            items,
+            source_counts,
+            default_line_name=default_omnipeek_line_name(self.site_name, self.settings.paths),
+            settings=self.settings,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _device_group_names(self) -> dict[int, str]:
+        try:
+            groups = DeviceGroupRepository(self.device_repository.database, self.site_name).list()
+        except Exception as exc:
+            app_logger.log_error("OMNIPEEK_GROUP_LOAD_FAILED", str(exc))
+            return {}
+        return {int(group.id): group.name for group in groups if group.id is not None}
 
     def current_optical_filters(self) -> dict[str, object | None]:
         return {

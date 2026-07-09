@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -28,6 +29,8 @@ from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, 
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
+from netconsole.models.omnipeek_name_table import SOURCE_AC_FIT_AP, SOURCE_AP_EXTENSION, SOURCE_DEVICE_MANAGEMENT
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -35,6 +38,7 @@ from netconsole.services.device_import_export import DeviceImportExportService, 
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
+from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
 from netconsole.services.securecrt_session_export import export_securecrt_sessions
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
@@ -47,7 +51,9 @@ from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.dialogs.device_group_dialog import DeviceGroupDialog
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
+from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
 from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
+from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
@@ -99,6 +105,17 @@ def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResol
         return False
 
 
+def _set_button_icon(button: QPushButton, icon: object | None) -> None:
+    if icon is None:
+        return
+    icon_factory = getattr(icon, "icon", None)
+    resolved_icon = icon_factory() if callable(icon_factory) else icon
+    try:
+        button.setIcon(resolved_icon)
+    except TypeError:
+        pass
+
+
 class DeviceManagementPage(QWidget):
     groups_changed = Signal()
     devices_changed = Signal()
@@ -138,6 +155,10 @@ class DeviceManagementPage(QWidget):
         self.import_csv_button = QPushButton()
         self.export_csv_button = QPushButton()
         self.export_template_button = QPushButton()
+        self.more_button = QPushButton()
+        self.more_menu = QMenu(self)
+        self.export_omnipeek_action = self.more_menu.addAction("导出 OmniPeek 名称表")
+        self.more_button.setMenu(self.more_menu)
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
         self.selection_label = QLabel()
@@ -178,6 +199,7 @@ class DeviceManagementPage(QWidget):
             self.import_csv_button,
             self.export_csv_button,
             self.export_template_button,
+            self.more_button,
         ):
             actions.addWidget(button)
         actions.addStretch(1)
@@ -219,6 +241,7 @@ class DeviceManagementPage(QWidget):
         self.import_csv_button.clicked.connect(self.import_csv)
         self.export_csv_button.clicked.connect(self.export_csv)
         self.export_template_button.clicked.connect(self.export_template)
+        self.export_omnipeek_action.triggered.connect(self.export_omnipeek_name_table)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.invert_selection_button.clicked.connect(self.invert_selection)
         self.table.selection_changed.connect(self.update_selection_state)
@@ -239,6 +262,7 @@ class DeviceManagementPage(QWidget):
             enabled=self.feature_gate.is_enabled("devices.external_terminal"),
         )
         apply_feature_to_widget(self.feature_gate, "devices.securecrt_sessions", self.generate_crt_sessions_button)
+        self._sync_omnipeek_action_state()
         self.diagnostic_download_worker: DiagnosticDownloadWorker | None = None
 
     def retranslate(self) -> None:
@@ -257,11 +281,15 @@ class DeviceManagementPage(QWidget):
         self.import_csv_button.setText(self.i18n.t("devices.import_csv"))
         self.export_csv_button.setText(self.i18n.t("devices.export_csv"))
         self.export_template_button.setText(self.i18n.t("devices.export_template"))
+        self.more_button.setText("更多")
+        self.export_omnipeek_action.setText("导出 OmniPeek 名称表")
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.batch_delete_button.setObjectName("dangerButton")
+        _set_button_icon(self.more_button, getattr(FIF, "MORE", None) or getattr(FIF, "APPLICATION", None))
         self._populate_filters()
         self.table.retranslate()
+        self._sync_omnipeek_action_state()
         self._sync_action_scroll_width()
         self.update_selection_state()
 
@@ -901,3 +929,50 @@ class DeviceManagementPage(QWidget):
             remember_export_path(path)
             app_logger.log_info("CSV_TEMPLATE_EXPORTED", path.name)
             MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))
+
+    def export_omnipeek_name_table(self) -> None:
+        self.feature_gate.assert_enabled("devices.omnipeek_name_table_export")
+        source_devices = self.table.checked_devices() or list(self.table.devices)
+        service = OmniPeekNameTableService(AcRepository(self.repository.database), self.repository)
+        items = service.collect_items(
+            include_ac_fit_ap=False,
+            include_ap_extensions=False,
+            include_device_mr=True,
+            devices=source_devices,
+            group_names=self._device_group_names(),
+        )
+        if not items:
+            MessageBox.warning(self, "导出 OmniPeek 名称表", "当前筛选或勾选设备中没有可导出的车载 MR。")
+            return
+        source_counts = {
+            SOURCE_AC_FIT_AP: 0,
+            SOURCE_AP_EXTENSION: 0,
+            SOURCE_DEVICE_MANAGEMENT: len(items),
+        }
+        dialog = OmniPeekExportDialog(
+            items,
+            source_counts,
+            default_line_name=default_omnipeek_line_name(self.site_name, self.settings.paths),
+            settings=self.settings,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _sync_omnipeek_action_state(self) -> None:
+        visible = self.feature_gate.is_visible("devices.omnipeek_name_table_export")
+        enabled = self.feature_gate.is_enabled("devices.omnipeek_name_table_export")
+        self.export_omnipeek_action.setVisible(visible)
+        self.export_omnipeek_action.setEnabled(enabled)
+        self.more_button.setVisible(visible)
+        self.more_button.setEnabled(enabled)
+
+    def _device_group_names(self) -> dict[int, str]:
+        if self.table.group_names:
+            return dict(self.table.group_names)
+        if self.group_repository is None:
+            return {}
+        try:
+            return {int(group.id): group.name for group in self.group_repository.list() if group.id is not None}
+        except Exception as exc:
+            app_logger.log_error("OMNIPEEK_GROUP_LOAD_FAILED", str(exc))
+            return {}
