@@ -104,11 +104,13 @@ from netconsole.services.online_mr.parser.event_parser_engine import EventParser
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
 from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
+from netconsole.services.export.export_task_builders import online_mr_report_xlsx_spec
 from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
-from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrParseWorker, OnlineMrReportExportWorker
+from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrParseWorker
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
@@ -425,7 +427,6 @@ class OnlineMrCollectionPage(QWidget):
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
         self.parse_worker: OnlineMrParseWorker | None = None
         self.analysis_load_worker: OnlineMrAnalysisLoadWorker | None = None
-        self.export_report_worker: OnlineMrReportExportWorker | None = None
         self._analysis_load_task_label = ""
         self._analysis_load_profile_phase = ""
         self._analysis_load_profile_start = 0.0
@@ -2244,16 +2245,17 @@ class OnlineMrCollectionPage(QWidget):
         path_text, _filter = QFileDialog.getSaveFileName(self, self.i18n.t("online_mr.export_analysis_report"), str(default_path), "Excel (*.xlsx)")
         if not path_text:
             return
-        if self.export_report_worker is not None:
-            MessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), "离线分析报告正在导出，请稍后")
-            return
-        self._set_analysis_task_progress(True, "正在导出离线分析报告：准备导出数据 5%", 5)
-        worker = OnlineMrReportExportWorker(session_dir, Path(path_text), parent=self)
-        self.export_report_worker = worker
-        worker.progress.connect(self._export_report_progress)
-        worker.completed.connect(self._export_report_completed)
-        worker.failed.connect(self._export_report_failed)
-        worker.start()
+        submit_export_task(
+            self,
+            online_mr_report_xlsx_spec(
+                Path(path_text),
+                session_dir=session_dir,
+                title=self.i18n.t("online_mr.export_analysis_report"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("online_mr.export_analysis_report"),
+            paths=self.paths,
+        )
 
     def _parse_completed(self, session_dir: Path, summary) -> None:
         if not self._can_update_ui():
@@ -2369,21 +2371,6 @@ class OnlineMrCollectionPage(QWidget):
             self._refresh_parse_button_state()
         self.analysis_load_worker = None
         self._analysis_load_summary = None
-
-    def _export_report_progress(self, stage: str, current: int, total: int, message: str) -> None:
-        percent = int(max(0, min(100, current * 100 / max(1, total))))
-        self._set_analysis_task_progress(True, f"正在导出离线分析报告：{message or stage} {percent}%", percent)
-
-    def _export_report_completed(self, output_path: str) -> None:
-        self.export_report_worker = None
-        self._set_analysis_task_progress(False, "导出完成", 100)
-        MessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
-
-    def _export_report_failed(self, message: str) -> None:
-        self.export_report_worker = None
-        app_logger.log_error("ONLINE_MR_ANALYSIS_REPORT_EXPORT_FAILED", message)
-        self._set_analysis_task_progress(False, f"导出失败：{message}", 0)
-        MessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), message)
 
     def _load_offline_analysis(self, session_dir: Path, *, show_progress: bool = False, task_label: str = "加载已解析结果", include_charts: bool = True) -> int:
         stages = [

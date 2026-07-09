@@ -31,6 +31,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
 from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, format_trackside_display_value, trackside_row_status
 from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url
+from netconsole.services.export.export_task_builders import markdown_text_spec
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
 from netconsole.ui.collect_worker import DeviceCollectThread
@@ -45,6 +46,7 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, status_background_color
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
@@ -573,7 +575,11 @@ class CollectLogDialog(QDialog):
     def export_log(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, self.windowTitle(), "collect_log.txt", "Text Files (*.txt);;All Files (*.*)")
         if path:
-            Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
+            submit_export_task(
+                self,
+                markdown_text_spec(path, text=self.text_edit.toPlainText(), title=self.windowTitle(), open_dir_on_success=True),
+                success_title=self.windowTitle(),
+            )
 
     def focus_search(self) -> None:
         self.search_input.setFocus()

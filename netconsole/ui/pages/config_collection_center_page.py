@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
-import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt
@@ -30,12 +29,14 @@ from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, C
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
-from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, MultiDeviceCompareResult, safe_device_name, snapshot_timestamp
+from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, MultiDeviceCompareResult, safe_device_name, snapshot_timestamp, unique_export_folder_name
+from netconsole.services.export.export_task_builders import config_snapshots_zip_spec, markdown_text_spec
 from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.widgets.config_diff_viewer import ConfigDiffViewer
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_all_table_rows_checked
 
@@ -470,7 +471,6 @@ class ConfigCollectionCenterPage(QWidget):
             if not target:
                 return
             self._export_snapshots_zip(snapshots, Path(target))
-            self._show_success(self.t("config_center.status.snapshot_exported"))
             return
         if not self.current_batch_results:
             self._show_info("config_center.msg.select_snapshot")
@@ -479,10 +479,22 @@ class ConfigCollectionCenterPage(QWidget):
         target, _ = QFileDialog.getSaveFileName(self, self.export_batch_button.text(), default_name, "ZIP (*.zip)")
         if not target:
             return
-        self.service.export_batch_zip(self.current_batch_results, Path(target))
-        answer = MessageBox.question(self, self.export_batch_button.text(), self.t("config_center.msg.batch_export_done"))
-        if answer == MessageBox.Yes:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(target).parent)))
+        snapshot_entries, file_entries, failures_text = self._current_batch_zip_entries()
+        submit_export_task(
+            self,
+            config_snapshots_zip_spec(
+                target,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                snapshot_entries=snapshot_entries,
+                file_entries=file_entries,
+                failures_text=failures_text,
+                title=self.export_batch_button.text(),
+                open_dir_on_success=True,
+            ),
+            success_title=self.export_batch_button.text(),
+            paths=self.paths,
+        )
 
     def export_current_diff(self) -> None:
         snapshots = self.selected_snapshots()
@@ -505,8 +517,12 @@ class ConfigCollectionCenterPage(QWidget):
             return
         target, _ = QFileDialog.getSaveFileName(self, self.export_diff_button.text(), f"diff_{snapshot_timestamp()}.diff", "Diff (*.diff);;Text (*.txt)")
         if target:
-            Path(target).write_text(self.current_raw_diff, encoding="utf-8")
-            self._show_success(self.t("config_center.status.diff_exported"))
+            submit_export_task(
+                self,
+                markdown_text_spec(target, text=self.current_raw_diff, title=self.export_diff_button.text(), open_dir_on_success=True),
+                success_title=self.export_diff_button.text(),
+                paths=self.paths,
+            )
 
     def delete_selected_snapshot(self) -> None:
         snapshots = self.selected_snapshots()
@@ -760,16 +776,55 @@ class ConfigCollectionCenterPage(QWidget):
             InfoBar.success(title=self._title(), content=message, duration=2500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
 
     def _export_snapshots_zip(self, snapshots: list[ConfigSnapshot], target_zip_path: Path) -> None:
-        target_zip_path.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(target_zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for snapshot in snapshots:
+        submit_export_task(
+            self,
+            config_snapshots_zip_spec(
+                target_zip_path,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                snapshot_entries=self._snapshot_zip_entries(snapshots),
+                title=self.export_batch_button.text(),
+                open_dir_on_success=True,
+            ),
+            success_title=self.export_batch_button.text(),
+            paths=self.paths,
+        )
+
+    def _snapshot_zip_entries(self, snapshots: list[ConfigSnapshot]) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for snapshot in snapshots:
+            if snapshot.id is None:
+                continue
+            suffix = "diff" if snapshot.type == "diff" else "txt"
+            entries.append(
+                {
+                    "snapshot_id": int(snapshot.id),
+                    "archive_name": f"{snapshot.timestamp}/{snapshot.type}_{snapshot.id or 'snapshot'}.{suffix}",
+                }
+            )
+        return entries
+
+    def _current_batch_zip_entries(self) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+        snapshot_entries: list[dict[str, object]] = []
+        file_entries: list[dict[str, object]] = []
+        failures: list[str] = []
+        used_folders: dict[str, int] = {}
+        for item in self.current_batch_results:
+            if not item.success:
+                message = item.error_message or item.result_text or "failed"
+                failures.append(f"{item.device_name or item.device_uuid}\t{message}")
+                continue
+            folder = unique_export_folder_name(item.device_name, item.device_uuid, used_folders)
+            for snapshot in item.snapshots:
+                if snapshot.id is None:
+                    continue
                 suffix = "diff" if snapshot.type == "diff" else "txt"
-                archive_name = f"{snapshot.timestamp}/{snapshot.type}_{snapshot.id or 'snapshot'}.{suffix}"
-                if snapshot.type in {"running", "saved"}:
-                    archive.writestr(archive_name, self.service.snapshot_text(snapshot))
-                else:
-                    source = self.paths.site_dir(self.site_name) / snapshot.file_path
-                    if source.exists():
-                        archive.write(source, archive_name)
-                    else:
-                        app_logger.log_warning("CONFIG_SNAPSHOT_EXPORT_MISSING", f"snapshot_id={snapshot.id} path={source}")
+                snapshot_entries.append(
+                    {
+                        "snapshot_id": int(snapshot.id),
+                        "archive_name": f"{folder}/{snapshot.type}_{snapshot.timestamp}.{suffix}",
+                    }
+                )
+            for log_path in self.service._batch_log_paths(item):
+                file_entries.append({"path": str(log_path), "archive_name": f"{folder}/logs/{log_path.name}"})
+        return snapshot_entries, file_entries, "\n".join(failures)

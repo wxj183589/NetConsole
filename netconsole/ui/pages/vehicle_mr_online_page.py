@@ -58,10 +58,38 @@ from netconsole.services.vehicle_mr_online import (
 )
 from netconsole.ui.pages.online_mr_collection_page import connection_fields_from_device
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.services.export.common_exporters import export_table_xlsx
+from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+
+
+VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS = (
+    ("train", "车次"),
+    ("tc1", "TC1"),
+    ("tc2", "TC2"),
+    ("online_policy", "在线策略"),
+    ("remark", "备注"),
+)
+VEHICLE_MR_MAPPING_TEMPLATE_ROWS = [
+    {"train": "1车", "tc1": "0101", "tc2": "0106", "online_policy": "单端在线-尾端在线", "remark": "正式环境尾端MR在线"},
+    {"train": "2车", "tc1": "0201", "tc2": "0206", "online_policy": "双端在线", "remark": "正线双活"},
+    {"train": "3车", "tc1": "0301", "tc2": "0306", "online_policy": "单端在线-TC1固定在线", "remark": ""},
+    {"train": "4车", "tc1": "0401", "tc2": "0406", "online_policy": "单端在线-TC2固定在线", "remark": ""},
+]
+VEHICLE_MR_HISTORY_EXPORT_COLUMNS = (
+    ("event_time", "时间", 20),
+    ("car_end_label", "端别", 10),
+    ("status", "状态", 12),
+    ("station", "车站", 20),
+    ("ap_name", "轨旁AP", 24),
+    ("rssi", "RSSI", 10),
+    ("event_type", "事件类型", 14),
+    ("status_reason_label", "判断说明", 24),
+)
 
 
 class VehicleMrOnlinePage(QWidget):
@@ -717,8 +745,17 @@ class VehicleMrHistoryQueryDialog(QDialog):
         path, _filter = QFileDialog.getSaveFileName(self, "导出历史记录", str(default), "Excel (*.xlsx)")
         if not path:
             return
-        export_vehicle_mr_history_rows(Path(path), self.rows)
-        MessageBox.information(self, "导出历史记录", f"已导出：{path}")
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                Path(path),
+                columns=[{"key": key, "title": title, "width": width} for key, title, width in VEHICLE_MR_HISTORY_EXPORT_COLUMNS],
+                rows=_vehicle_mr_history_export_rows(self.rows),
+                sheet_name="历史记录",
+                title="导出历史记录",
+            ),
+            success_title="导出历史记录",
+        )
 
     def _fill_rows(self) -> None:
         self.table.setRowCount(0)
@@ -841,8 +878,17 @@ class VehicleMrMappingDialog(QDialog):
         path, _filter = QFileDialog.getSaveFileName(self, "导出映射模板", str(default_path), "Excel (*.xlsx)")
         if not path:
             return
-        export_vehicle_mr_mapping_template(Path(path))
-        MessageBox.information(self, "导出映射模板", f"已导出：{path}")
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                Path(path),
+                columns=[{"key": key, "title": title} for key, title in VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS],
+                rows=VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
+                sheet_name="车载MR映射表",
+                title="导出映射模板",
+            ),
+            success_title="导出映射模板",
+        )
 
     def _append_mapping(self, mapping: VehicleMrTrainMapping) -> None:
         row = self.table.rowCount()
@@ -926,43 +972,41 @@ def _read_mapping_file(path: Path) -> list[dict[str, object]]:
 
 
 def export_vehicle_mr_mapping_template(path: Path) -> None:
-    from openpyxl import Workbook
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "车载MR映射表"
-    sheet.append(["车次", "TC1", "TC2", "在线策略", "备注"])
-    sheet.append(["1车", "0101", "0106", "单端在线-尾端在线", "正式环境尾端MR在线"])
-    sheet.append(["2车", "0201", "0206", "双端在线", "正线双活"])
-    sheet.append(["3车", "0301", "0306", "单端在线-TC1固定在线", ""])
-    sheet.append(["4车", "0401", "0406", "单端在线-TC2固定在线", ""])
-    workbook.save(path)
+    export_table_xlsx(
+        path,
+        {
+            "sheet_name": "车载MR映射表",
+            "columns": [{"key": key, "title": title} for key, title in VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS],
+            "rows": VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
+        },
+    )
 
 
 def export_vehicle_mr_history_rows(path: Path, rows: list[dict[str, object]]) -> None:
-    from openpyxl import Workbook
+    export_table_xlsx(
+        path,
+        {
+            "sheet_name": "历史记录",
+            "columns": [{"key": key, "title": title, "width": width} for key, title, width in VEHICLE_MR_HISTORY_EXPORT_COLUMNS],
+            "rows": _vehicle_mr_history_export_rows(rows),
+        },
+    )
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "历史记录"
-    headers = ["时间", "端别", "状态", "车站", "轨旁AP", "RSSI", "事件类型", "判断说明"]
-    sheet.append(headers)
-    for row in rows:
-        sheet.append(
-            [
-                row.get("event_time") or "",
-                row.get("car_end_label") or "",
-                row.get("status") or "",
-                row.get("station") or "",
-                row.get("ap_name") or "",
-                row.get("rssi") if row.get("rssi") is not None else "",
-                row.get("event_type") or "",
-                _status_reason_label(str(row.get("status_reason") or "")),
-            ]
-        )
-    for index, width in enumerate((20, 10, 12, 20, 24, 10, 14, 24), start=1):
-        sheet.column_dimensions[chr(64 + index)].width = width
-    workbook.save(path)
+
+def _vehicle_mr_history_export_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "event_time": row.get("event_time") or "",
+            "car_end_label": row.get("car_end_label") or "",
+            "status": row.get("status") or "",
+            "station": row.get("station") or "",
+            "ap_name": row.get("ap_name") or "",
+            "rssi": row.get("rssi") if row.get("rssi") is not None else "",
+            "event_type": row.get("event_type") or "",
+            "status_reason_label": _status_reason_label(str(row.get("status_reason") or "")),
+        }
+        for row in rows
+    ]
 
 
 def _status_palette(status: str) -> tuple[str, str, str]:

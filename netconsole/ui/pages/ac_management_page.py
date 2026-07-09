@@ -73,14 +73,18 @@ from netconsole.services.ap_online_overview import (
     AP_ONLINE_OVERVIEW_COLUMNS,
     ApOnlineOverviewService,
     build_ap_online_overview_rows,
-    export_ap_online_overview_xlsx,
-    write_ap_online_overview_sheet as _write_ap_online_overview_sheet,
 )
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
 from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
 from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
-from netconsole.services.export import ExportJob
+from netconsole.services.export import ExportJob, ExportTaskSpec
+from netconsole.services.export.export_task_builders import (
+    ap_online_overview_xlsx_spec,
+    fit_ap_csv_spec,
+    fit_ap_extension_template_xlsx_spec,
+    fit_ap_extension_xlsx_spec,
+)
 from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
@@ -89,6 +93,7 @@ from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
@@ -96,7 +101,6 @@ from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_tab
 from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
 from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
-from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 from netconsole.ui.table_utils import auto_fit_table_columns, auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
@@ -476,45 +480,6 @@ def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optica
     }).switch_status
 
 
-def export_fit_ap_optical_xlsx(
-    path: Path,
-    rows: list[dict[str, object | None]],
-    columns: tuple[tuple[str, str], ...],
-    headers: list[str],
-    legend: str,
-    overview_rows: list[dict[str, object | None]] | None = None,
-    overview_headers: list[str] | None = None,
-) -> None:
-    from openpyxl import Workbook
-
-    workbook = Workbook()
-    overview_sheet = workbook.active
-    overview_sheet.title = "AP上线情况概览"
-    _write_ap_online_overview_sheet(
-        overview_sheet,
-        overview_rows or [],
-        overview_headers or [key for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-    )
-    optical_sheet = workbook.create_sheet("FIT-AP光衰")
-    _write_fit_ap_optical_sheet(optical_sheet, rows, columns, headers)
-    workbook.save(path)
-
-
-def _write_fit_ap_optical_sheet(sheet, rows: list[dict[str, object | None]], columns: tuple[tuple[str, str], ...], headers: list[str]) -> None:
-    from openpyxl.styles import PatternFill
-
-    sheet.append(headers)
-    for row in rows:
-        status = evaluate_fit_ap_row_status(row)
-        sheet.append([_fit_ap_optical_export_value(row, field) for _key, field in columns])
-        color = OPTICAL_EXPORT_COLOR_RGB.get(status)
-        fill = PatternFill(fill_type="solid", fgColor=color) if color else None
-        for cell in sheet[sheet.max_row]:
-            if fill:
-                cell.fill = fill
-    _format_export_sheet(sheet)
-
-
 def make_fit_ap_optical_export_filename(site_name: str, now: datetime | None = None) -> str:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M")
     safe_site = "".join(char if char not in '<>:"/\\|?*' else "_" for char in site_name or "site")
@@ -692,31 +657,6 @@ def _overview_row_fill(row: dict[str, object | None]):
     if total and online / total < 0.8:
         return PatternFill(fill_type="solid", fgColor="FEF9C3")
     return None
-
-
-def _auto_width_sheet(sheet) -> None:
-    apply_worksheet_autofit(sheet, maximum=60)
-
-
-def _format_export_sheet(sheet) -> None:
-    from openpyxl.styles import Alignment, Border, Font, Side
-
-    alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
-    border = Border(
-        left=Side(style="thin", color="D1D5DB"),
-        right=Side(style="thin", color="D1D5DB"),
-        top=Side(style="thin", color="D1D5DB"),
-        bottom=Side(style="thin", color="D1D5DB"),
-    )
-    sheet.freeze_panes = "A2"
-    for row in sheet.iter_rows():
-        sheet.row_dimensions[row[0].row].height = 24 if row[0].row == 1 else 22
-        for cell in row:
-            cell.alignment = alignment
-            cell.border = border
-            if cell.row == 1:
-                cell.font = Font(bold=True)
-    _auto_width_sheet(sheet)
 
 
 class AcManagementPage(QWidget):
@@ -1983,9 +1923,19 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, "导出FIT-AP扩展信息", f"{self.site_name}_FIT-AP扩展信息.xlsx", EXCEL_FILTER)
         if not path:
             return
-        self.import_export_service.export_standard_ap_extension_xlsx(Path(path), self.extension_rows)
+        submit_export_task(
+            self,
+            fit_ap_extension_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                rows=self.extension_rows,
+                title="导出FIT-AP扩展信息",
+                open_dir_on_success=True,
+            ),
+            success_title="导出FIT-AP扩展信息",
+            paths=self.settings.paths,
+        )
         remember_export_path(Path(path))
-        MessageBox.information(self, "导出FIT-AP扩展信息", f"已导出 {len(self.extension_rows)} 条。")
 
     def add_ap_extension_point(self) -> None:
         self._edit_ap_extension_point({})
@@ -2114,10 +2064,20 @@ class AcManagementPage(QWidget):
             return
         rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else []
         ap_entities = self.repository.list_ap_entities(ac_uuid) if ac_uuid else []
-        self.import_export_service.export_ap_extension_template_xlsx(path, rows, ap_entities)
+        submit_export_task(
+            self,
+            fit_ap_extension_template_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                rows=rows,
+                ap_entities=ap_entities,
+                title=self.i18n.t("ap.export_extension_template"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ap.export_extension_template"),
+            paths=self.settings.paths,
+        )
         remember_export_path(path)
-        message_key = "ap.extension_template_empty_exported" if not rows else "ap.extension_template_exported"
-        MessageBox.information(self, self.i18n.t("ap.export_extension_template"), self.i18n.t(message_key, count=len(rows)))
         app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def _current_ac_export_name(self) -> str:
@@ -2143,7 +2103,18 @@ class AcManagementPage(QWidget):
         if not path:
             return
         rows = self.checked_or_all_ap_rows()
-        self.import_export_service.export_ap_csv(path, rows)
+        submit_export_task(
+            self,
+            fit_ap_csv_spec(
+                path,
+                db_path=self.repository.database.path,
+                rows=rows,
+                title=self.i18n.t("ap.export_info"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ap.export_info"),
+            paths=self.settings.paths,
+        )
         remember_export_path(path)
         app_logger.log_info("FIT_AP_EXPORT", f"count={len(rows)}, file={path.name}")
 
@@ -2317,14 +2288,49 @@ class AcManagementPage(QWidget):
             return
         self.refresh_overview_table()
         rows = self.filtered_optical_rows()
-        export_fit_ap_optical_xlsx(
-            path,
-            rows,
-            FIT_AP_OPTICAL_COLUMNS,
-            [self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS],
-            self.i18n.t("details.optical_color_legend"),
-            self.current_overview_rows(),
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+        optical_rows = []
+        for row in rows:
+            export_row = dict(row)
+            for _key, field in FIT_AP_OPTICAL_COLUMNS:
+                export_row[field] = _fit_ap_optical_export_value(row, field)
+            export_row["_row_status"] = evaluate_fit_ap_row_status(row)
+            optical_rows.append(export_row)
+        submit_export_task(
+            self,
+            ExportTaskSpec(
+                task_type="multi_sheet_xlsx",
+                output_path=str(path),
+                title=self.i18n.t("ac.export_table"),
+                open_dir_on_success=True,
+                payload={
+                    "sheets": [
+                        {
+                            "sheet_name": "AP上线情况概览",
+                            "columns": [
+                                {"key": field, "title": self.i18n.t(key), "text": True}
+                                for key, field in AP_ONLINE_OVERVIEW_COLUMNS
+                            ],
+                            "rows": self.current_overview_rows(),
+                            "freeze_header": True,
+                            "auto_filter": True,
+                        },
+                        {
+                            "sheet_name": "FIT-AP光衰",
+                            "columns": [
+                                {"key": field, "title": self.i18n.t(key), "text": True}
+                                for key, field in FIT_AP_OPTICAL_COLUMNS
+                            ],
+                            "rows": optical_rows,
+                            "freeze_header": True,
+                            "auto_filter": True,
+                            "row_fill_field": "_row_status",
+                            "row_fill_colors": OPTICAL_EXPORT_COLOR_RGB,
+                        },
+                    ]
+                },
+            ),
+            success_title=self.i18n.t("ac.export_table"),
+            paths=self.settings.paths,
         )
         remember_export_path(path)
         app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"count={len(rows)}, file={path.name}")
@@ -2336,14 +2342,21 @@ class AcManagementPage(QWidget):
         self.refresh_overview_table()
         self.ensure_offline_ap_context_loaded(force=True)
         rows = self.current_overview_rows()
-        export_ap_online_overview_xlsx(
-            path,
-            rows,
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            self.offline_ap_stats,
-            self.offline_ap_ledger_rows,
-            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
-            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+        submit_export_task(
+            self,
+            ap_online_overview_xlsx_spec(
+                path,
+                rows=rows,
+                headers=[self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+                offline_ap_stats=self.offline_ap_stats,
+                offline_ap_ledger_rows=self.offline_ap_ledger_rows,
+                offline_ap_stats_headers=offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+                offline_ap_ledger_headers=offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+                title=self.i18n.t("ac.export_overview"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ac.export_overview"),
+            paths=self.settings.paths,
         )
         remember_export_path(path)
         app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")

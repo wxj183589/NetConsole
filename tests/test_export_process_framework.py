@@ -4,8 +4,11 @@ import subprocess
 import sys
 
 import pytest
+from openpyxl import load_workbook
 
 from netconsole.core.i18n import I18n
+from netconsole.services.export.export_handlers import run_generic_export_handler
+from netconsole.services.export.export_task_builders import INLINE_ROW_LIMIT, table_csv_spec
 from netconsole.services.export_task_models import ExportJob
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
@@ -35,6 +38,96 @@ def test_export_worker_import_does_not_load_pyside6() -> None:
     )
 
     assert result.stdout.strip() == "False"
+
+
+def test_generic_table_csv_handler_writes_utf8_sig_and_replaces_tmp(tmp_path) -> None:
+    output = tmp_path / "table.csv"
+    tmp = tmp_path / "table.csv.tmp"
+    job = ExportJob(
+        job_id="csv-job",
+        job_type="table_csv",
+        output_path=str(output),
+        tmp_path=str(tmp),
+        params={
+            "payload": {
+                "columns": [{"key": "name", "title": "名称"}, {"key": "mac", "title": "MAC"}],
+                "rows": [{"name": "宁波站", "mac": "00aa-bbcc-ddee"}],
+            }
+        },
+    )
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] == 1
+    assert output.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert "宁波站" in output.read_text(encoding="utf-8-sig")
+    assert not tmp.exists()
+
+
+def test_table_csv_spec_uses_inline_rows_source(tmp_path) -> None:
+    output = tmp_path / "source_table.csv"
+    spec = table_csv_spec(
+        output,
+        columns=[("名称", "name"), ("MAC", "mac")],
+        rows=[{"name": "宁波站", "mac": "00aa-bbcc-ddee"}],
+    )
+    job = spec.to_job("source-csv-job")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "source_table.csv.tmp")})
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] == 1
+    payload = spec.payload
+    assert payload["source"]["type"] == "inline_rows"
+    assert "rows" not in payload
+    assert "宁波站" in output.read_text(encoding="utf-8-sig")
+
+
+def test_inline_rows_builder_rejects_large_payload(tmp_path) -> None:
+    rows = ({"name": str(index)} for index in range(INLINE_ROW_LIMIT + 1))
+
+    with pytest.raises(ValueError, match="inline_rows"):
+        table_csv_spec(tmp_path / "too_many.csv", columns=[("名称", "name")], rows=rows)
+
+
+def test_generic_table_xlsx_handler_writes_header_and_rows(tmp_path) -> None:
+    output = tmp_path / "table.xlsx"
+    job = ExportJob(
+        job_id="xlsx-job",
+        job_type="table_xlsx",
+        output_path=str(output),
+        tmp_path=str(tmp_path / "table.xlsx.tmp"),
+        params={
+            "payload": {
+                "sheet_name": "测试",
+                "columns": [{"key": "name", "title": "名称"}, {"key": "status", "title": "状态"}],
+                "rows": [{"name": "AP-1", "status": "正常"}],
+            }
+        },
+    )
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] == 1
+    sheet = load_workbook(output)["测试"]
+    assert [sheet.cell(1, column).value for column in (1, 2)] == ["名称", "状态"]
+    assert [sheet.cell(2, column).value for column in (1, 2)] == ["AP-1", "正常"]
+
+
+def test_generic_markdown_text_handler_writes_utf8(tmp_path) -> None:
+    output = tmp_path / "commands.md"
+    job = ExportJob(
+        job_id="md-job",
+        job_type="markdown_text",
+        output_path=str(output),
+        tmp_path=str(tmp_path / "commands.md.tmp"),
+        params={"payload": {"text": "# 命令清单\n\n- display version"}},
+    )
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] > 0
+    assert output.read_text(encoding="utf-8").startswith("# 命令清单")
 
 
 def test_trackside_xlsx_export_reports_progress(tmp_path) -> None:

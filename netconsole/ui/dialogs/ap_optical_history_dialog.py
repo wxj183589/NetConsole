@@ -8,8 +8,11 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSplitter, QTabl
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
-from netconsole.ui.dialogs.ap_history_dialog import AP_OPTICAL_HISTORY_COLUMNS, export_ap_history_xlsx
+from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.history_export_service import OPTICAL_HISTORY_COLORS, history_display_value
+from netconsole.ui.dialogs.ap_history_dialog import AP_OPTICAL_HISTORY_COLUMNS
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
@@ -149,7 +152,24 @@ class ApOpticalHistoryDialog(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_table"), filename, EXCEL_FILTER)
         if not path:
             return
-        export_ap_history_xlsx(Path(path), self.rows, AP_OPTICAL_HISTORY_COLUMNS, [self.i18n.t(key) for key, _field in AP_OPTICAL_HISTORY_COLUMNS], "optical_alarm_status")
+        headers = [self.i18n.t(key) for key, _field in AP_OPTICAL_HISTORY_COLUMNS]
+        rows = []
+        for row in self.rows:
+            export_row = {field: history_display_value(row, field, "optical_alarm_status", self.i18n.language) for _key, field in AP_OPTICAL_HISTORY_COLUMNS}
+            export_row["__row_fill"] = OPTICAL_HISTORY_COLORS.get(str(row.get("optical_alarm_status") or ""), "")
+            rows.append(export_row)
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                Path(path),
+                columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(AP_OPTICAL_HISTORY_COLUMNS)],
+                rows=rows,
+                sheet_name="AP History",
+                title=self.i18n.t("ac.export_table"),
+                row_fill_field="__row_fill",
+            ),
+            success_title=self.i18n.t("ac.export_table"),
+        )
         remember_export_path(path)
 
     def set_always_on_top(self, enabled: bool) -> None:

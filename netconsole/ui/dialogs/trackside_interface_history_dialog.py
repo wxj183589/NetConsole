@@ -7,11 +7,14 @@ from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushB
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.history_export_service import export_interface_history_xlsx as _export_interface_history_xlsx
 
 
 INTERFACE_HISTORY_COLUMNS = (
@@ -156,7 +159,18 @@ class TracksideInterfaceHistoryDialog(QDialog):
         path = select_export_path(self, self.i18n.t("trackside_ap.export_history"), "interface_history.xlsx", EXCEL_FILTER)
         if not path:
             return
-        export_interface_history_xlsx(path, self.rows, [self.i18n.t(key) for key, _field in INTERFACE_HISTORY_COLUMNS])
+        headers = [self.i18n.t(key) for key, _field in INTERFACE_HISTORY_COLUMNS]
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                path,
+                columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(INTERFACE_HISTORY_COLUMNS)],
+                rows=self.rows,
+                sheet_name="Interface History",
+                title=self.i18n.t("trackside_ap.export_history"),
+            ),
+            success_title=self.i18n.t("trackside_ap.export_history"),
+        )
         remember_export_path(path)
 
     def set_always_on_top(self, enabled: bool) -> None:
@@ -203,15 +217,7 @@ class TracksideInterfaceHistoryDialog(QDialog):
 
 
 def export_interface_history_xlsx(path: Path, rows: list[dict[str, object | None]], headers: list[str]) -> None:
-    from openpyxl import Workbook
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Interface History"
-    sheet.append(headers)
-    for row in rows:
-        sheet.append([str(row.get(field) or "") for _key, field in INTERFACE_HISTORY_COLUMNS])
-    workbook.save(path)
+    _export_interface_history_xlsx(path, rows, INTERFACE_HISTORY_COLUMNS, headers)
 
 
 def default_widths() -> dict[str, int]:

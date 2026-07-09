@@ -5,7 +5,7 @@ from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import re
 import sqlite3
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
@@ -57,12 +57,14 @@ from netconsole.services.mib_resource_service import MibImportReport, MibResourc
 from netconsole.services.mib_translation_service import translate_mib_description
 from netconsole.services.snmp_poll_service import SnmpPollService
 from netconsole.services.snmp_query_service import SnmpQueryService
+from netconsole.services.export.export_task_builders import mib_product_compare_spec, snmp_query_result_spec
 from netconsole.services.snmp_client import SnmpClient
 from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services.snmp_trap_service import SnmpTrapService
 from netconsole.services.topology_service import TopologyService
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
 
 
@@ -847,9 +849,20 @@ class ProductReferenceComparePage(QWidget):
         target, _ = QFileDialog.getSaveFileName(self, "导出产品参考对比结果", "", "Excel (*.xlsx);;CSV (*.csv)")
         if not target:
             return
-        service = MibProductReferenceCompareService(self.center.global_repo)
-        path = service.export_results(self.last_compare.left_reference_id, self.last_compare.right_reference_id, target)
-        self.status_label.setText(f"已导出：{path}")
+        submit_export_task(
+            self,
+            mib_product_compare_spec(
+                target,
+                db_path=self.center.paths.global_mib_db_path(),
+                left_reference_id=self.last_compare.left_reference_id,
+                right_reference_id=self.last_compare.right_reference_id,
+                title="导出产品参考对比结果",
+                open_dir_on_success=True,
+            ),
+            success_title="导出产品参考对比结果",
+            paths=self.center.paths,
+        )
+        self.status_label.setText("产品参考对比结果导出任务已提交。")
 
     @staticmethod
     def _reference_label(reference: dict[str, object]) -> str:
@@ -2234,8 +2247,12 @@ class MibBrowserPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_browser_result.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
-        target = SnmpQueryService(self.center.site_repo).export_result(self.last_result, path)
-        MessageBox.information(self, "MIB 浏览器", f"已导出：{target}")
+        submit_export_task(
+            self,
+            snmp_query_result_spec(path, result=asdict(self.last_result), title="导出 SNMP 查询结果", open_dir_on_success=True),
+            success_title="MIB 浏览器",
+            paths=self.center.paths,
+        )
 
     def _open_result_menu(self, position) -> None:
         index = self.result_table.indexAt(position)
@@ -2485,8 +2502,12 @@ class SnmpQueryPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_query.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
-        target = SnmpQueryService(self.center.site_repo).export_result(self.last_result, path)
-        MessageBox.information(self, "SNMP 查询工具", f"已导出：{target}")
+        submit_export_task(
+            self,
+            snmp_query_result_spec(path, result=asdict(self.last_result), title="导出 SNMP 查询结果", open_dir_on_success=True),
+            success_title="SNMP 查询工具",
+            paths=self.center.paths,
+        )
 
 
 class OidTemplatePage(QWidget):

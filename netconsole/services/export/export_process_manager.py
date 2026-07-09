@@ -33,6 +33,7 @@ class ExportProcessManager(QObject):
     progress = Signal(dict)
     finished = Signal(dict)
     failed = Signal(dict)
+    cancelled = Signal(dict)
 
     def __init__(self, parent: QObject | None = None, *, paths: PathResolver | None = None) -> None:
         super().__init__(parent)
@@ -120,7 +121,10 @@ class ExportProcessManager(QObject):
             return
         if not isinstance(event, dict):
             return
-        event_type = str(event.get("type") or "")
+        event_type = str(event.get("type") or event.get("event") or "")
+        if event_type == "started":
+            self.progress.emit({**event, "type": "progress", "event": "progress", "current": 0, "total": 0})
+            return
         if event_type == "progress":
             app_logger.log_info(
                 "EXPORT_JOB_PROGRESS",
@@ -131,8 +135,18 @@ class ExportProcessManager(QObject):
             )
             self.progress.emit(event)
             return
-        if event_type in {"finished", "error", "result"}:
-            state.terminal_event = event
+        if event_type in {"finished", "success", "error", "failed", "cancelled", "result"}:
+            normalized = dict(event)
+            if event_type == "success":
+                normalized["type"] = "finished"
+                normalized["ok"] = True
+            elif event_type in {"failed", "cancelled"}:
+                normalized["type"] = "error"
+                normalized["ok"] = False
+                normalized["cancelled"] = event_type == "cancelled" or bool(normalized.get("cancelled"))
+                if "message" not in normalized:
+                    normalized["message"] = normalized.get("error_message") or normalized.get("error") or "导出失败"
+            state.terminal_event = normalized
             return
         if event_type == "log":
             app_logger.log_error("EXPORT_JOB_PROCESS_LOG", str(event.get("message") or line))
@@ -162,6 +176,7 @@ class ExportProcessManager(QObject):
             }
             if cancelled:
                 app_logger.log_info("EXPORT_JOB_CANCELLED", f"job_id={job_id} type={state.job.job_type}")
+                self.cancelled.emit(payload)
             else:
                 app_logger.log_error("EXPORT_JOB_FAILED", f"job_id={job_id} type={state.job.job_type} error={message}")
             self._cleanup_tmp_file(state)

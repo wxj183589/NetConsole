@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from netconsole.core.admin import is_admin
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
-from netconsole.services.network_tools.toolbox.export import export_rows_csv, export_rows_xlsx
+from netconsole.services.export.export_task_builders import table_csv_spec, table_xlsx_spec
 from netconsole.services.network_tools.toolbox.fping_runner import discover_fping, scan_targets as scan_fping_targets
 from netconsole.services.network_tools.toolbox.ip_calc import (
     TableResult,
@@ -57,6 +57,7 @@ from netconsole.services.network_tools.toolbox.route_tools import (
 )
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readable_table_columns, configure_readonly_table
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
@@ -441,11 +442,19 @@ class ToolResultPanel(QGroupBox):
         if not selected:
             return
         path = Path(selected)
+        columns = [{"key": header, "title": header, "text": True} for header in self.current_headers]
         if suffix == "xlsx":
-            export_rows_xlsx(path, self.current_headers, self.current_rows)
+            spec = table_xlsx_spec(
+                path,
+                columns=columns,
+                rows=self.current_rows,
+                sheet_name="结果",
+                title="导出结果",
+                open_dir_on_success=True,
+            )
         else:
-            export_rows_csv(path, self.current_headers, self.current_rows)
-        MessageBox.information(self, "导出", f"已导出：{path}")
+            spec = table_csv_spec(path, columns=columns, rows=self.current_rows, title="导出结果", open_dir_on_success=True)
+        submit_export_task(self, spec, success_title="导出结果", paths=self.paths)
 
     def clear_results(self) -> None:
         self.current_rows = []

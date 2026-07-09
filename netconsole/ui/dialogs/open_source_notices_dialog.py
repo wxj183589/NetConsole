@@ -9,7 +9,9 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QDialog
 
 from netconsole.core import app_logger
+from netconsole.services.export.export_task_builders import markdown_text_spec, table_xlsx_spec
 from netconsole.services.open_source_notice_service import OpenSourceComponent, OpenSourceNoticeService
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns_to_contents, setup_readable_table
 
 
@@ -109,12 +111,25 @@ class OpenSourceNoticesDialog(QDialog):
             return
         output = Path(path)
         if selected_filter.startswith("文本") or output.suffix.lower() == ".txt":
-            self._export_text(output)
+            submit_export_task(
+                self,
+                markdown_text_spec(output, text=self._export_text_content(), title="导出开源许可说明"),
+                success_title="导出开源许可说明",
+            )
         else:
             if output.suffix.lower() != ".xlsx":
                 output = output.with_suffix(".xlsx")
-            self._export_xlsx(output)
-        MessageBox.information(self, "导出完成", f"开源许可说明已导出：{output}")
+            submit_export_task(
+                self,
+                table_xlsx_spec(
+                    output,
+                    columns=[{"key": key, "title": title} for key, title in zip(("name", "version", "license", "purpose", "homepage", "note"), self.HEADERS, strict=False)],
+                    rows=self._export_rows(),
+                    sheet_name="开源许可",
+                    title="导出开源许可说明",
+                ),
+                success_title="导出开源许可说明",
+            )
 
     def copy_selected_component(self) -> None:
         row = self.table.currentRow()
@@ -162,8 +177,7 @@ class OpenSourceNoticesDialog(QDialog):
         self._set_busy(False, f"扫描失败：{message}")
         MessageBox.warning(self, "开源许可扫描失败", message)
 
-    def _export_text(self, output: Path) -> None:
-        output.parent.mkdir(parents=True, exist_ok=True)
+    def _export_text_content(self) -> str:
         lines = ["NetConsole 开源许可说明", ""]
         for component in self.components:
             lines.extend(
@@ -177,22 +191,20 @@ class OpenSourceNoticesDialog(QDialog):
                     "",
                 ]
             )
-        output.write_text("\n".join(lines), encoding="utf-8")
+        return "\n".join(lines)
 
-    def _export_xlsx(self, output: Path) -> None:
-        from openpyxl import Workbook
-
-        output.parent.mkdir(parents=True, exist_ok=True)
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "开源许可"
-        sheet.append(list(self.HEADERS))
-        for component in self.components:
-            sheet.append([component.name, component.version, component.license, component.purpose, component.homepage, component.note])
-        for column_cells in sheet.columns:
-            max_length = max(len(str(cell.value or "")) for cell in column_cells)
-            sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 48)
-        workbook.save(output)
+    def _export_rows(self) -> list[dict[str, str]]:
+        return [
+            {
+                "name": component.name,
+                "version": component.version,
+                "license": component.license,
+                "purpose": component.purpose,
+                "homepage": component.homepage,
+                "note": component.note,
+            }
+            for component in self.components
+        ]
 
     def _set_busy(self, busy: bool, status: str) -> None:
         self.status_label.setText(status)

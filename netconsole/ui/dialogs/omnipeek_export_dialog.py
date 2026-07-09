@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -43,10 +44,8 @@ from netconsole.models.omnipeek_name_table import (
     OmniPeekDeviceItem,
     OmniPeekEntryKind,
     OmniPeekExportConfig,
-    OmniPeekExportResult,
 )
 from netconsole.services.omnipeek_name_table_service import (
-    export_items_to_omnipeek_nam,
     infer_line_name_from_items,
     load_omnipeek_color_settings,
     load_omnipeek_last_export_dir,
@@ -56,6 +55,8 @@ from netconsole.services.omnipeek_name_table_service import (
     save_omnipeek_last_export_dir,
 )
 from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.services.export.export_task_builders import omnipeek_name_table_spec
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.export_path import default_export_dir, remember_export_path
 from netconsole.ui.table_utils import auto_fit_table_columns, configure_readable_table_columns
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value
@@ -129,31 +130,6 @@ PREVIEW_FILTER_LABELS = {
 }
 
 
-class OmniPeekExportThread(QThread):
-    export_finished = Signal(object)
-    export_failed = Signal(str)
-
-    def __init__(
-        self,
-        items: list[OmniPeekDeviceItem],
-        config: OmniPeekExportConfig,
-        source_counts: dict[str, int],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.items = items
-        self.config = config
-        self.source_counts = source_counts
-
-    def run(self) -> None:
-        try:
-            result = export_items_to_omnipeek_nam(self.items, self.config, source_counts=self.source_counts)
-        except Exception as exc:
-            self.export_failed.emit(str(exc))
-            return
-        self.export_finished.emit(result)
-
-
 class OmniPeekExportDialog(QDialog):
     def __init__(
         self,
@@ -172,7 +148,6 @@ class OmniPeekExportDialog(QDialog):
         self.colors = load_omnipeek_color_settings(self.settings)
         self.preview_items: list[OmniPeekDeviceItem] = []
         self.visible_preview_items: list[OmniPeekDeviceItem] = []
-        self.export_thread: OmniPeekExportThread | None = None
         self._updating_preview = False
         self.preview_filter = "all"
 
@@ -665,8 +640,6 @@ class OmniPeekExportDialog(QDialog):
         )
 
     def export(self) -> None:
-        if self.export_thread is not None:
-            return
         self._sync_item_selection_from_table()
         config = self._config()
         if not self.preview_items:
@@ -678,11 +651,24 @@ class OmniPeekExportDialog(QDialog):
         self.export_button.setEnabled(False)
         self.close_button.setEnabled(False)
         self.progress.setVisible(True)
-        self.export_thread = OmniPeekExportThread(self._filtered_items(), config, self.source_counts, self)
-        self.export_thread.export_finished.connect(self._finish_export)
-        self.export_thread.export_failed.connect(self._fail_export)
-        self.export_thread.finished.connect(self._clear_export_thread)
-        self.export_thread.start()
+        try:
+            submit_export_task(
+                self,
+                omnipeek_name_table_spec(
+                    config.output_path,
+                    items=[asdict(item) for item in self._filtered_items()],
+                    config={**asdict(config), "output_path": str(config.output_path)},
+                    source_counts=self.source_counts,
+                    title="导出 OmniPeek 名称表",
+                    open_dir_on_success=True,
+                ),
+                success_title="导出 OmniPeek 名称表",
+                paths=self.settings.paths,
+            )
+        finally:
+            self.progress.setVisible(False)
+            self.export_button.setEnabled(True)
+            self.close_button.setEnabled(True)
 
     def _sync_item_selection_from_table(self) -> None:
         states: dict[str, bool] = {}
@@ -694,38 +680,3 @@ class OmniPeekExportDialog(QDialog):
         for item in self.items:
             if item.key in states:
                 item.selected = states[item.key]
-
-    def _finish_export(self, result: object) -> None:
-        self.progress.setVisible(False)
-        self.export_button.setEnabled(True)
-        self.close_button.setEnabled(True)
-        if isinstance(result, OmniPeekExportResult):
-            self._show_export_result(result)
-        else:
-            MessageBox.information(self, "导出 OmniPeek 名称表", "导出完成。")
-
-    def _fail_export(self, message: str) -> None:
-        self.progress.setVisible(False)
-        self.export_button.setEnabled(True)
-        self.close_button.setEnabled(True)
-        MessageBox.warning(self, "导出 OmniPeek 名称表", message)
-
-    def _clear_export_thread(self) -> None:
-        self.export_thread = None
-
-    def _show_export_result(self, result: OmniPeekExportResult) -> None:
-        lines = [f"{ENTRY_KIND_LABELS[kind]}：{result.counts.get(kind, 0)} 条" for kind in OMNIPEEK_ENTRY_KIND_ORDER]
-        lines.extend([f"跳过：{result.skipped_count} 条", f"异常：{result.error_count} 条"])
-        box = MessageBox(self)
-        box.setWindowTitle("导出 OmniPeek 名称表")
-        box.setText("导出完成：")
-        box.setInformativeText("\n".join(lines))
-        open_dir_button = box.addButton("打开目录", MessageBox.ActionRole)
-        log_button = box.addButton("查看导出日志", MessageBox.ActionRole)
-        box.addButton("关闭", MessageBox.AcceptRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is open_dir_button:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(result.output_path.parent)))
-        elif clicked is log_button:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(result.log_path)))

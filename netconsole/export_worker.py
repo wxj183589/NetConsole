@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.export.common_exporters import ExportCancelled
 from netconsole.services.export import error_event, finished_event, progress_event
+from netconsole.services.export.export_handlers import GENERIC_EXPORT_TASK_TYPES, run_generic_export_handler
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.mesh_link_detail_export import MeshLinkDetailExportCancelled, export_mesh_link_details_xlsx
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
@@ -121,6 +123,14 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
 
 def run_job(job: ExportJob) -> int:
     try:
+        if job.job_type in GENERIC_EXPORT_TASK_TYPES:
+            result = run_generic_export_handler(
+                job,
+                progress_callback=lambda stage, current, total, message: _emit_progress(job, current, total, stage, message),
+                should_cancel=lambda: _should_cancel(job),
+            )
+            _emit(finished_event(job.job_id, str(result.get("path") or job.output_path), row_count=int(result.get("row_count") or 0)))
+            return 0
         if job.job_type == "trackside_ap_business":
             _run_trackside_ap_business(job)
             return 0
@@ -128,7 +138,7 @@ def run_job(job: ExportJob) -> int:
             _run_mesh_link_detail(job)
             return 0
         raise ValueError(f"不支持的导出任务类型：{job.job_type}")
-    except (MeshLinkDetailExportCancelled, TracksideApExportCancelled) as exc:
+    except (MeshLinkDetailExportCancelled, TracksideApExportCancelled, ExportCancelled) as exc:
         _cleanup_tmp(job)
         _emit(error_event(job.job_id, str(exc), output_path=job.output_path, cancelled=True))
         return 2

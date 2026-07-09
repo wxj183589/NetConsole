@@ -9,8 +9,11 @@ from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.history_export_service import export_station_online_history_xlsx as _export_station_online_history_xlsx
 
 
 STATION_ONLINE_HISTORY_COLUMNS = (
@@ -25,26 +28,7 @@ STATION_ONLINE_HISTORY_COLUMNS = (
 
 
 def export_station_online_history_xlsx(path: Path, rows: list[dict[str, object | None]], headers: list[str]) -> None:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
-
-    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "AP Online History"
-    alignment = Alignment(horizontal="center", vertical="center")
-    sheet.append(headers)
-    for cell in sheet[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = alignment
-    sheet.freeze_panes = "A2"
-    for row in rows:
-        sheet.append([str(row.get(field) or "") for _key, field in STATION_ONLINE_HISTORY_COLUMNS])
-        for cell in sheet[sheet.max_row]:
-            cell.alignment = alignment
-    apply_worksheet_autofit(sheet, maximum=60)
-    workbook.save(path)
+    _export_station_online_history_xlsx(path, rows, STATION_ONLINE_HISTORY_COLUMNS, headers)
 
 
 class StationOnlineHistoryDialog(QWidget):
@@ -147,5 +131,16 @@ class StationOnlineHistoryDialog(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_table"), "AP上线历史.xlsx", EXCEL_FILTER)
         if not path:
             return
-        export_station_online_history_xlsx(path, self.filtered_rows(), [self.i18n.t(key) for key, _field in STATION_ONLINE_HISTORY_COLUMNS])
+        headers = [self.i18n.t(key) for key, _field in STATION_ONLINE_HISTORY_COLUMNS]
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                path,
+                columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(STATION_ONLINE_HISTORY_COLUMNS)],
+                rows=self.filtered_rows(),
+                sheet_name="AP Online History",
+                title=self.i18n.t("ac.export_table"),
+            ),
+            success_title=self.i18n.t("ac.export_table"),
+        )
         remember_export_path(path)

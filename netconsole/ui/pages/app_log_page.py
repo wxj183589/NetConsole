@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
-import csv
 from datetime import datetime
 from pathlib import Path
 
@@ -27,10 +26,12 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.app_auto_cleanup import APP_CLEANUP_RETENTION_DAYS, AppCleanupResult
 from netconsole.ui.app_auto_cleanup_runner import AppAutoCleanupThread
 from netconsole.ui.export_path import remember_export_path, select_export_path
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.logs.log_display import display_log_level, display_log_row
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, format_row_for_copy
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.services.export.export_task_builders import app_logs_csv_spec, table_csv_spec
 
 
 LOG_EXPORT_FILTER = "CSV Files (*.csv);;Text Files (*.txt);;Log Files (*.log);;All Files (*.*)"
@@ -207,14 +208,18 @@ class AppLogPage(QWidget):
         )
         if path is None:
             return
-        try:
-            _write_log_rows(path, self.current_rows)
-            remember_export_path(path)
-            app_logger.log_info("LOGS_CURRENT_PAGE_EXPORTED", path.name)
-        except Exception as exc:
-            app_logger.log_error("LOGS_EXPORT_FAILED", str(exc))
-            MessageBox.warning(self, self.i18n.t("logs.title"), str(exc))
-            return
+        submit_export_task(
+            self,
+            table_csv_spec(
+                path,
+                columns=_log_export_columns(),
+                rows=self.current_rows,
+                title=self.i18n.t("logs.export_current"),
+            ),
+            success_title=self.i18n.t("logs.export_current"),
+        )
+        remember_export_path(path)
+        app_logger.log_info("LOGS_CURRENT_PAGE_EXPORT_STARTED", path.name)
         self.refresh()
 
     def export_logs(self) -> None:
@@ -226,21 +231,19 @@ class AppLogPage(QWidget):
         )
         if path is None:
             return
-        try:
-            rows = (
-                display_log_row(row)
-                for row in app_logger.iter_logs(
-                    keyword=self.search_input.text().strip() or None,
-                    level=self.level_filter.currentData(),
-                )
-            )
-            _write_log_rows(path, rows)
-            remember_export_path(path)
-            app_logger.log_info("LOGS_EXPORTED", path.name)
-        except Exception as exc:
-            app_logger.log_error("LOGS_EXPORT_FAILED", str(exc))
-            MessageBox.warning(self, self.i18n.t("logs.title"), str(exc))
-            return
+        submit_export_task(
+            self,
+            app_logs_csv_spec(
+                path,
+                log_path=self.paths.app_log_path,
+                keyword=self.search_input.text().strip() or None,
+                level=self.level_filter.currentData(),
+                title=self.i18n.t("logs.export"),
+            ),
+            success_title=self.i18n.t("logs.export"),
+        )
+        remember_export_path(path)
+        app_logger.log_info("LOGS_EXPORT_STARTED", path.name)
         self.refresh()
 
     def _set_log_item(self, row: int, column: int, source: dict[str, str], key: str) -> None:
@@ -289,22 +292,15 @@ class AppLogPage(QWidget):
                 QApplication.clipboard().setText(item.get("raw_event", ""))
 
 
-def _write_log_rows(path: Path, rows) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(["时间", "级别", "事件", "详情", "原始事件", "原始详情"])
-        for row in rows:
-            writer.writerow(
-                [
-                    row.get("time", ""),
-                    row.get("display_level", row.get("level", "")),
-                    row.get("display_event", row.get("event", "")),
-                    row.get("display_detail", row.get("detail", "")),
-                    row.get("raw_event", row.get("event", "")),
-                    row.get("raw_detail", row.get("detail", "")),
-                ]
-            )
+def _log_export_columns() -> list[dict[str, str]]:
+    return [
+        {"key": "time", "title": "时间"},
+        {"key": "display_level", "title": "级别"},
+        {"key": "display_event", "title": "事件"},
+        {"key": "display_detail", "title": "详情"},
+        {"key": "raw_event", "title": "原始事件"},
+        {"key": "raw_detail", "title": "原始详情"},
+    ]
 
 
 def _apply_level_color(item: QTableWidgetItem, level: str) -> None:

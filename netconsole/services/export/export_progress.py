@@ -13,6 +13,7 @@ def progress_event(
 ) -> dict[str, Any]:
     value = int(current or 0)
     return {
+        "event": "progress",
         "type": "progress",
         "job_id": job_id,
         "stage": stage,
@@ -25,6 +26,7 @@ def progress_event(
 
 def finished_event(job_id: str, output_path: str, *, message: str = "导出完成", row_count: int = 0) -> dict[str, Any]:
     return {
+        "event": "finished",
         "type": "finished",
         "job_id": job_id,
         "ok": True,
@@ -43,6 +45,7 @@ def error_event(
     cancelled: bool = False,
 ) -> dict[str, Any]:
     return {
+        "event": "cancelled" if cancelled else "error",
         "type": "error",
         "job_id": job_id,
         "ok": False,

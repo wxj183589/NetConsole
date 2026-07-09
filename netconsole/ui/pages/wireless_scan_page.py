@@ -30,17 +30,17 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.wireless_scan_models import WirelessAdapter
 from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
+from netconsole.services.export.export_task_builders import table_csv_spec, table_xlsx_spec
 from netconsole.services.network_tools.wireless_channel_analyzer import rssi_level
 from netconsole.services.network_tools.wireless_scan_service import (
     WIRELESS_SCAN_EXPORT_COLUMNS,
     WIRELESS_SCAN_DISPLAY_COLUMNS,
-    export_wireless_scan_csv,
-    export_wireless_scan_xlsx,
     result_to_row,
     wireless_scanner_external_path,
 )
 from netconsole.ui.dialogs.wireless_scan_detail_dialog import WirelessScanDetailDialog
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
@@ -292,11 +292,23 @@ class WirelessScanPage(QWidget):
         if not path:
             return
         headers = [self.i18n.t(key) for key, _field in WIRELESS_SCAN_EXPORT_COLUMNS]
+        columns = [
+            {"key": field, "title": headers[index], "text": True}
+            for index, (_key, field) in enumerate(WIRELESS_SCAN_EXPORT_COLUMNS)
+        ]
         if selected_filter.startswith("CSV") or path.lower().endswith(".csv"):
-            export_wireless_scan_csv(Path(path), self.current_rows, headers)
+            spec = table_csv_spec(Path(path), columns=columns, rows=self.current_rows, title=self.i18n.t("wireless_scan.export"), open_dir_on_success=True)
         else:
-            export_wireless_scan_xlsx(Path(path), self.current_rows, headers)
-        MessageBox.information(self, self.i18n.t("wireless_scan.export"), self.i18n.t("wireless_scan.export_done", path=path))
+            spec = table_xlsx_spec(
+                Path(path),
+                columns=columns,
+                rows=self.current_rows,
+                headers=headers,
+                sheet_name="Wireless Scan",
+                title=self.i18n.t("wireless_scan.export"),
+                open_dir_on_success=True,
+            )
+        submit_export_task(self, spec, success_title=self.i18n.t("wireless_scan.export"), paths=self.paths)
 
     def open_external(self) -> None:
         configured_path = str(self.settings.get_value("network_tools/wireless_scan/external_path", "") or "")

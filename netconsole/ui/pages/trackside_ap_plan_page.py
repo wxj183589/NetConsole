@@ -22,10 +22,12 @@ from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.services.export.common_exporters import export_table_xlsx
+from netconsole.services.export.export_task_builders import table_xlsx_spec
 from netconsole.services.trackside_ap_business import parse_vlan_set
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.shell.fluent_bridge import FIF
-from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 
 
 TRACKSIDE_PLAN_COLUMNS = (
@@ -192,13 +194,33 @@ class TracksideApPlanPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.trackside_plan.export"), self._default_export_name(), "Excel (*.xlsx)")
         if not path:
             return
-        export_trackside_plan_xlsx(Path(path), self.repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE))
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                Path(path),
+                columns=[{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
+                rows=self.repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE),
+                sheet_name="轨旁AP规划",
+                title=self.i18n.t("ac.trackside_plan.export"),
+            ),
+            success_title=self.i18n.t("ac.trackside_plan.export"),
+        )
 
     def download_template(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.trackside_plan.template"), self._default_export_name(template=True), "Excel (*.xlsx)")
         if not path:
             return
-        export_trackside_plan_xlsx(Path(path), [])
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                Path(path),
+                columns=[{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
+                rows=[],
+                sheet_name="轨旁AP规划",
+                title=self.i18n.t("ac.trackside_plan.template"),
+            ),
+            success_title=self.i18n.t("ac.trackside_plan.template"),
+        )
 
     def reload_plan_table(self) -> None:
         self._set_rows(self.repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE))
@@ -321,16 +343,14 @@ def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
 
 
 def export_trackside_plan_xlsx(path: Path, rows: list[dict[str, object | None]]) -> None:
-    from openpyxl import Workbook
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "轨旁AP规划"
-    sheet.append(TRACKSIDE_PLAN_HEADERS)
-    for row in rows:
-        sheet.append([row.get(field) or "" for _key, field in TRACKSIDE_PLAN_COLUMNS])
-    apply_worksheet_autofit(sheet, maximum=50)
-    workbook.save(path)
+    export_table_xlsx(
+        path,
+        {
+            "sheet_name": "轨旁AP规划",
+            "columns": [{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
+            "rows": rows,
+        },
+    )
 
 
 def _row_from_named(row: dict[object, object]) -> dict[str, object | None]:

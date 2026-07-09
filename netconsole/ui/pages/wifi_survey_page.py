@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
-import csv
 import shutil
 from pathlib import Path
 
@@ -37,7 +36,9 @@ from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
+from netconsole.services.export.export_task_builders import wifi_survey_csv_spec
 from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, generate_idw_heatmap, render_heatmap_png, rssi_to_color
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readable_table_columns
 from netconsole.services.wifi_survey.scanner import WifiObservation, scan_wifi
 from netconsole.services.wifi_survey.signal_query import SignalAtPoint, nearest_point_for_position, query_signal_at_position
@@ -828,7 +829,6 @@ class WifiSurveyPage(QWidget):
         path_text, _ = QFileDialog.getSaveFileName(self, "导出CSV", str(default), "CSV (*.csv)")
         if not path_text:
             return
-        rows = self.repository.list_observations_by_session(int(self.current_session["id"]))
         fields = [
             "session_name",
             "point_index",
@@ -846,11 +846,20 @@ class WifiSurveyPage(QWidget):
             "band",
             "security",
         ]
-        with Path(path_text).open("w", encoding="utf-8-sig", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=fields)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({field: (self.current_session["name"] if field == "session_name" else row.get(field)) for field in fields})
+        submit_export_task(
+            self,
+            wifi_survey_csv_spec(
+                path_text,
+                db_path=self.repository.database.path,
+                session_id=int(self.current_session["id"]),
+                session_name=str(self.current_session["name"]),
+                fields=fields,
+                title="导出CSV",
+                open_dir_on_success=True,
+            ),
+            success_title="导出CSV",
+            paths=self.paths,
+        )
 
     def _export_dir(self) -> Path:
         path = self.paths.wireless_scan_export_dir(self.site_name) / "wifi_survey"

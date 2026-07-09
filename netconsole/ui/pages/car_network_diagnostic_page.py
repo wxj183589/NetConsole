@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
+from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -63,9 +64,11 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     normalize_train_network_defaults,
     sort_car_network_trains,
 )
+from netconsole.services.export.export_task_builders import table_csv_spec, table_xlsx_spec
 from netconsole.services.vehicle_mr_online import normalize_train_no
 from netconsole.ui.car_network_diagnostic_worker import CarNetworkDiagnosticWorker
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.theme.qt_theme_engine import current_theme_mode, current_theme_tokens
 from netconsole.ui.window_popup_service import show_non_focus_window
@@ -523,8 +526,21 @@ class CarNetworkDiagnosticPage(QWidget):
         path, _filter = QFileDialog.getSaveFileName(self, "导出车内通信点表", str(default), "Excel (*.xlsx);;CSV (*.csv)")
         if not path:
             return
-        self.store.export_file(Path(path), self.nodes)
-        MessageBox.information(self, "导出车内通信点表", f"已导出：{path}")
+        rows = [asdict(node) for node in self.nodes]
+        columns = [{"key": field, "title": field, "text": True} for field in POINT_TABLE_FIELDS]
+        output_path = Path(path)
+        if output_path.suffix.casefold() == ".csv":
+            spec = table_csv_spec(output_path, columns=columns, rows=rows, title="导出车内通信点表", open_dir_on_success=True)
+        else:
+            spec = table_xlsx_spec(
+                output_path,
+                columns=columns,
+                rows=rows,
+                sheet_name="car_network_point_table",
+                title="导出车内通信点表",
+                open_dir_on_success=True,
+            )
+        submit_export_task(self, spec, success_title="导出车内通信点表", paths=self.paths)
 
     def generate_from_devices(self) -> None:
         generated = generate_point_table_from_devices(self.repository, self.site_name, self.store.load(), self.config_store.load())
@@ -1425,7 +1441,21 @@ class PointTableDialog(QDialog):
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
         path, _filter = QFileDialog.getSaveFileName(self, "导出车内通信点表", str(default), "Excel (*.xlsx);;CSV (*.csv)")
         if path:
-            self.store.export_file(Path(path), self._rows_to_nodes())
+            rows = [asdict(node) for node in self._rows_to_nodes()]
+            columns = [{"key": field, "title": field, "text": True} for field in POINT_TABLE_FIELDS]
+            output_path = Path(path)
+            if output_path.suffix.casefold() == ".csv":
+                spec = table_csv_spec(output_path, columns=columns, rows=rows, title="导出车内通信点表", open_dir_on_success=True)
+            else:
+                spec = table_xlsx_spec(
+                    output_path,
+                    columns=columns,
+                    rows=rows,
+                    sheet_name="car_network_point_table",
+                    title="导出车内通信点表",
+                    open_dir_on_success=True,
+                )
+            submit_export_task(self, spec, success_title="导出车内通信点表")
 
     def _save(self) -> None:
         if self._guard_locked("保存点表"):

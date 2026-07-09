@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
-import os
-import platform
 import re
-import subprocess
 import traceback
 from uuid import uuid4
 from dataclasses import dataclass
@@ -1479,13 +1476,7 @@ def resolve_local_download_path(directory: Path, remote_file: RemoteDeviceFile, 
 def open_folder(folder: Path) -> bool:
     try:
         path = Path(folder)
-        if platform.system() == "Windows":
-            os.startfile(str(path))  # type: ignore[attr-defined]
-        elif platform.system() == "Darwin":
-            subprocess.run(["open", str(path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(path)], check=False)
-        return True
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     except Exception as exc:
         app_logger.log_error("FILE_MANAGEMENT_OPEN_FOLDER_FAILED", f"folder={folder}, error={exc}")
         return False

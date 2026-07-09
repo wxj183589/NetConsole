@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
-import os
 from pathlib import Path
-import platform
-import subprocess
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -37,9 +35,9 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
+from netconsole.services.export.export_task_builders import device_csv_spec, device_template_csv_spec, securecrt_sessions_spec
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
-from netconsole.services.securecrt_session_export import export_securecrt_sessions
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
@@ -52,16 +50,13 @@ from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.dialogs.device_group_dialog import DeviceGroupDialog
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
 from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
-
-
-def choose_devices_for_export(all_devices: list, selected_devices: list) -> list:
-    return selected_devices if selected_devices else all_devices
 
 
 def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
@@ -92,13 +87,8 @@ def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResol
     latest_file = max(existing_files, key=lambda path: path.stat().st_mtime)
     folder_path = latest_file.parent
     try:
-        system = platform.system()
-        if system == "Windows":
-            os.startfile(str(folder_path))  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.run(["open", str(folder_path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(folder_path)], check=False)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder_path))):
+            raise RuntimeError("系统拒绝打开目录")
         app_logger.log_info("DIAGNOSTIC_FOLDER_OPENED", f"folder={folder_path}, latest_file={latest_file.name}")
         return True
     except Exception as exc:
@@ -446,18 +436,18 @@ class DeviceManagementPage(QWidget):
         )
         template = Path(template_path) if template_path else Path()
         group_names = {int(group.id): group.name for group in self._list_groups() if group.id is not None}
-        result = export_securecrt_sessions(
-            devices,
-            self.site_name,
-            Path(output_dir),
-            group_names=group_names,
-            template_ini=template if template.is_file() else None,
-        )
-        self._open_folder(result.output_dir)
-        MessageBox.information(
+        submit_export_task(
             self,
-            self.i18n.t("devices.generate_crt_sessions"),
-            self.i18n.t("external_terminal.export_done", generated=result.generated, skipped=result.skipped, path=result.output_dir),
+            securecrt_sessions_spec(
+                output_dir,
+                devices=[device.to_record() for device in devices],
+                site_name=self.site_name,
+                group_names=group_names,
+                template_ini=template if template.is_file() else None,
+                title=self.i18n.t("devices.generate_crt_sessions"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("devices.generate_crt_sessions"),
         )
 
     def _external_terminal_target_devices(self):
@@ -468,13 +458,16 @@ class DeviceManagementPage(QWidget):
         return [self.repository.get(current_id)] if current_id is not None else []
 
     def _filtered_devices(self):
+        return self.repository.list(**self._current_device_filters())
+
+    def _current_device_filters(self) -> dict[str, object | None]:
         selected_group_data = self.group_filter.currentData()
-        return self.repository.list(
-            search=self.search_input.text().strip() or None,
-            vendor=self.vendor_filter.currentData(),
-            device_type=self.type_filter.currentData(),
-            group_filter=self._repository_group_filter_value(selected_group_data),
-        )
+        return {
+            "search": self.search_input.text().strip() or None,
+            "vendor": self.vendor_filter.currentData(),
+            "device_type": self.type_filter.currentData(),
+            "group_filter": self._repository_group_filter_value(selected_group_data),
+        }
 
     def _repository_group_filter_value(self, value: object) -> int | str | None:
         try:
@@ -489,13 +482,8 @@ class DeviceManagementPage(QWidget):
     @staticmethod
     def _open_folder(path: Path) -> None:
         try:
-            system = platform.system()
-            if system == "Windows":
-                os.startfile(str(path))  # type: ignore[attr-defined]
-            elif system == "Darwin":
-                subprocess.run(["open", str(path)], check=False)
-            else:
-                subprocess.run(["xdg-open", str(path)], check=False)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                raise RuntimeError("系统拒绝打开目录")
         except Exception as exc:
             app_logger.log_warning("OPEN_FOLDER_FAILED", f"{path}: {exc}")
 
@@ -896,27 +884,45 @@ class DeviceManagementPage(QWidget):
         if path:
             selected_devices = self.table.checked_devices()
             try:
-                self.service.export_csv(path, choose_devices_for_export(self.repository.list(), selected_devices))
+                submit_export_task(
+                    self,
+                    device_csv_spec(
+                        path,
+                        db_path=self.repository.database.path,
+                        site_name=self.site_name,
+                        selected_devices=[device.to_record() for device in selected_devices] if selected_devices else None,
+                        filters=self._current_device_filters(),
+                        title=self.i18n.t("devices.export_csv"),
+                        open_dir_on_success=True,
+                    ),
+                    success_title=self.i18n.t("devices.export_csv"),
+                )
             except Exception as exc:
                 app_logger.log_error("CSV_EXPORT_FAILED", f"{path.name}: {exc}")
                 MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             remember_export_path(path)
             app_logger.log_info("CSV_EXPORTED", path.name)
-            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
 
     def export_template(self) -> None:
         path = select_export_path(self, self.i18n.t("devices.export_template"), self.i18n.t("devices.template_filename"), CSV_FILTER)
         if path:
             try:
-                self.service.export_template_csv(path)
+                submit_export_task(
+                    self,
+                    device_template_csv_spec(
+                        path,
+                        title=self.i18n.t("devices.export_template"),
+                        open_dir_on_success=True,
+                    ),
+                    success_title=self.i18n.t("devices.export_template"),
+                )
             except Exception as exc:
                 app_logger.log_error("CSV_TEMPLATE_EXPORT_FAILED", f"{path.name}: {exc}")
                 MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             remember_export_path(path)
             app_logger.log_info("CSV_TEMPLATE_EXPORTED", path.name)
-            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))
 
     def export_omnipeek_name_table(self) -> None:
         self.feature_gate.assert_enabled("devices.omnipeek_name_table_export")

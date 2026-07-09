@@ -10,11 +10,12 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.theme.contrast_engine import apply_item_contrast
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_popup_service import show_non_focus_window
-from netconsole.core.optical_severity_engine import display_optical_status
-from netconsole.services.fit_ap_link_info import lldp_source_label
+from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.history_export_service import OPTICAL_HISTORY_COLORS, export_ap_history_xlsx as _export_ap_history_xlsx, history_display_value
 
 
 AP_RADIO_HISTORY_COLUMNS = (
@@ -60,43 +61,8 @@ AP_OPTICAL_HISTORY_COLUMNS = (
     ("details.transmission_distance", "transmission_distance"),
     ("details.connector_type", "connector_type"),
 )
-OPTICAL_HISTORY_COLORS = {
-    "normal": "#dcfce7",
-    "warning": "#fef9c3",
-    "alarm": "#fee2e2",
-    "link_abnormal": "#ffe4e6",
-    "no_light": "#e5e7eb",
-    "skipped": "#f3f4f6",
-}
-
-
 def export_ap_history_xlsx(path: Path, rows: list[dict[str, object | None]], columns: tuple[tuple[str, str], ...], headers: list[str], color_field: str | None = None) -> None:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
-
-    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "AP History"
-    alignment = Alignment(horizontal="center", vertical="center")
-    sheet.append(headers)
-    for cell in sheet[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = alignment
-    sheet.freeze_panes = "A2"
-    for row in rows:
-        sheet.append([_history_display_value(row, field, color_field) for _key, field in columns])
-        fill = None
-        if color_field:
-            color = OPTICAL_HISTORY_COLORS.get(str(row.get(color_field) or ""))
-            fill = PatternFill(fill_type="solid", fgColor=color.lstrip("#").upper()) if color else None
-        for cell in sheet[sheet.max_row]:
-            cell.alignment = alignment
-            if fill:
-                cell.fill = fill
-    apply_worksheet_autofit(sheet, maximum=60)
-    workbook.save(path)
+    _export_ap_history_xlsx(path, rows, columns, headers, color_field)
 
 
 class ApHistoryDialog(QWidget):
@@ -198,7 +164,7 @@ class ApHistoryDialog(QWidget):
         for row_index, row in enumerate(rows):
             color = OPTICAL_HISTORY_COLORS.get(str(row.get(self.color_field or "") or ""))
             for column_index, (_key, field) in enumerate(self.columns):
-                item = QTableWidgetItem(_history_display_value(row, field, self.color_field, self.i18n.language))
+                item = QTableWidgetItem(history_display_value(row, field, self.color_field, self.i18n.language))
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if color:
@@ -254,17 +220,27 @@ class ApHistoryDialog(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_table"), f"{self.ap_name}_{self.history_type}_history.xlsx", EXCEL_FILTER)
         if not path:
             return
-        export_ap_history_xlsx(path, self.rows, self.columns, [self.i18n.t(key) for key, _field in self.columns], self.color_field)
+        headers = [self.i18n.t(key) for key, _field in self.columns]
+        rows = []
+        for row in self.rows:
+            export_row = {field: history_display_value(row, field, self.color_field, self.i18n.language) for _key, field in self.columns}
+            if self.color_field:
+                export_row["__row_fill"] = OPTICAL_HISTORY_COLORS.get(str(row.get(self.color_field) or ""), "")
+            rows.append(export_row)
+        submit_export_task(
+            self,
+            table_xlsx_spec(
+                path,
+                columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(self.columns)],
+                rows=rows,
+                sheet_name="AP History",
+                title=self.i18n.t("ac.export_table"),
+                row_fill_field="__row_fill" if self.color_field else "",
+            ),
+            success_title=self.i18n.t("ac.export_table"),
+        )
         remember_export_path(path)
 
 
 def _history_display_value(row: dict[str, object | None], field: str, color_field: str | None = None, language: str = "zh") -> str:
-    if color_field and field == color_field:
-        return display_optical_status(row.get(field), language)
-    if field == "source":
-        return lldp_source_label(row.get(field))
-    if field == "is_changed":
-        return "是" if str(row.get(field) or "") not in {"", "0"} else "否"
-    if field == "conflict_flag":
-        return "冲突" if str(row.get(field) or "") not in {"", "0"} else "正常"
-    return str(row.get(field) or "")
+    return history_display_value(row, field, color_field, language)
