@@ -1,158 +1,56 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-import os
-from pathlib import Path
 from threading import Event
-from time import perf_counter
 
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.core import app_logger
-from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.paths import PathResolver
-from netconsole.repositories.ac_repository import AcRepository
-from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.trackside_optical_collection import (
     DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
     TracksideOpticalSessionResult,
     collect_trackside_optical,
 )
-from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
-from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, ApOnlineOverviewService
-from netconsole.services.trackside_ap_business import (
-    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
-    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
-    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
-    build_ap_optical_treatment_records,
-    build_new_online_ap_overview_rows,
-    build_trackside_ap_business_rows,
-    enrich_trackside_export_rows,
-    export_trackside_ap_business_xlsx,
-    filter_station_switch_devices,
-)
-from netconsole.services.trackside_ap_business import is_trackside_ap_interface
+from netconsole.services.h3c_ac_collect_service import collect_h3c_fit_ap_optical, collect_h3c_fit_ap_resources
+from netconsole.services.trackside_ap_business import filter_station_switch_devices
+from netconsole.services.trackside_ap_export_service import TracksideApBusinessLoadResult, load_trackside_ap_business_snapshot
+from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, run_batch_collect
 
 
 @dataclass(frozen=True)
-class TracksideApBusinessLoadResult:
-    generation: int
-    site_name: str
-    rows: list[dict[str, object | None]]
-    device_count: int
-    query_ms: int
-    build_ms: int
-    interface_count: int = 0
-    optical_count: int = 0
-    lldp_count: int = 0
-    fit_ap_optical_count: int = 0
+class TracksideApFullUpdateResult:
+    station_switch_total: int = 0
+    station_switch_success: int = 0
+    station_switch_failed: int = 0
+    ac_total: int = 0
+    ac_resource_success: int = 0
+    ac_resource_failed: int = 0
     fit_ap_resource_count: int = 0
-    candidate_ap_interface_count: int = 0
-    row_count: int = 0
-    empty_reason: str = ""
+    fit_ap_optical_success: int = 0
+    fit_ap_optical_failed: int = 0
+    fit_ap_optical_rows_updated: int = 0
+    skipped_messages: tuple[str, ...] = ()
+    error_messages: tuple[str, ...] = ()
 
+    @property
+    def has_failures(self) -> bool:
+        return bool(self.station_switch_failed or self.ac_resource_failed or self.fit_ap_optical_failed or self.error_messages)
 
-def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name: str, generation: int) -> TracksideApBusinessLoadResult:
-    query_start = perf_counter()
-    fact_repository = DeviceFactRepository(repository.database)
-    ac_repository = AcRepository(repository.database)
-    devices = filter_station_switch_devices(repository.list(), repository.database, site_name)
-    interfaces_by_device = {str(device.device_uuid or ""): fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
-    optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
-    lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
-    fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
-    fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
-    historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
-    active_plan = ac_repository.get_active_trackside_pvid_plan()
-    switch_lookup = build_switch_data_lookup(devices, optical_by_device)
-    latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, fit_ap_resource_rows)
-    _offline_stats, offline_ledger_rows = build_offline_ap_ledger(
-        fit_ap_resources=fit_ap_resource_rows,
-        latest_lldp_by_ap=latest_lldp,
-        latest_optical_by_ap=latest_optical,
-        device_lookup_by_name=build_device_lookup_by_name(devices),
-    )
-    interface_count = sum(len(rows) for rows in interfaces_by_device.values())
-    optical_count = sum(len(rows) for rows in optical_by_device.values())
-    lldp_count = sum(len(rows) for rows in lldp_by_device.values())
-    candidate_ap_interface_count = sum(
-        1
-        for device in devices
-        for row in interfaces_by_device.get(str(device.device_uuid or ""), [])
-        if is_trackside_ap_interface(device, row, active_plan)[0]
-    )
-    query_ms = int((perf_counter() - query_start) * 1000)
-
-    build_start = perf_counter()
-    rows = build_trackside_ap_business_rows(
-        devices,
-        interfaces_by_device,
-        optical_by_device,
-        fit_ap_optical_rows,
-        lldp_by_device,
-        fit_ap_resource_rows,
-        switch_lookup,
-        active_plan,
-        offline_ledger_rows,
-        historical_lldp_rows,
-    )
-    build_ms = int((perf_counter() - build_start) * 1000)
-    row_count = len(rows)
-    empty_reason = ""
-    if row_count == 0:
-        empty_reason = _trackside_empty_reason(
-            len(devices),
-            interface_count,
-            candidate_ap_interface_count,
-            optical_count,
-            lldp_count,
-            len(fit_ap_optical_rows),
-            len(fit_ap_resource_rows),
-        )
-    return TracksideApBusinessLoadResult(
-        generation,
-        site_name,
-        rows,
-        len(devices),
-        query_ms,
-        build_ms,
-        interface_count,
-        optical_count,
-        lldp_count,
-        len(fit_ap_optical_rows),
-        len(fit_ap_resource_rows),
-        candidate_ap_interface_count,
-        row_count,
-        empty_reason,
-    )
-
-
-def _trackside_empty_reason(
-    device_count: int,
-    interface_count: int,
-    candidate_ap_interface_count: int,
-    optical_count: int,
-    lldp_count: int,
-    fit_ap_optical_count: int,
-    fit_ap_resource_count: int,
-) -> str:
-    if device_count == 0:
-        return "trackside.empty.no_devices"
-    if interface_count == 0:
-        return "trackside.empty.no_interfaces"
-    if candidate_ap_interface_count == 0:
-        return "trackside.empty.no_ap_interfaces"
-    if optical_count == 0 and fit_ap_optical_count == 0 and fit_ap_resource_count == 0:
-        return "trackside.empty.no_optical_or_fit"
-    if lldp_count == 0 and fit_ap_optical_count == 0:
-        return "trackside.empty.no_lldp_or_fit"
-    if fit_ap_resource_count == 0:
-        return "trackside.empty.no_fit_ap_resource"
-    if fit_ap_optical_count == 0:
-        return "trackside.empty.no_fit_ap_optical"
-    return "trackside.empty.no_rows"
-
+    def summary_text(self) -> str:
+        parts = [
+            f"交换机详情成功 {self.station_switch_success}/{self.station_switch_total}",
+            f"AC资源成功 {self.ac_resource_success}/{self.ac_total}",
+            f"FIT-AP资源 {self.fit_ap_resource_count} 条",
+            f"FIT-AP光衰成功 {self.fit_ap_optical_success}，失败 {self.fit_ap_optical_failed}",
+        ]
+        if self.skipped_messages:
+            parts.append("；".join(self.skipped_messages))
+        if self.error_messages:
+            parts.append("；".join(self.error_messages[:3]))
+        return "；".join(parts)
 
 class TracksideApBusinessLoadThread(QThread):
     load_finished = Signal(object)
@@ -173,181 +71,185 @@ class TracksideApBusinessLoadThread(QThread):
         self.load_finished.emit(result)
 
 
-class TracksideApBusinessExportThread(QThread):
+class TracksideApFullUpdateThread(QThread):
     stage_changed = Signal(str)
-    export_finished = Signal(object)
-    export_failed = Signal(str)
+    progress_changed = Signal(str)
+    full_update_finished = Signal(object)
+    full_update_failed = Signal(str)
 
     def __init__(
         self,
         repository: DeviceRepository,
         site_name: str,
-        path: Path,
-        headers: list[str],
-        overview_headers: list[str],
-        new_online_headers: list[str],
-        new_online_sheet_title: str,
-        optical_treatment_headers: list[str],
-        optical_treatment_sheet_title: str,
-        offline_stats_headers: list[str],
-        offline_ledger_headers: list[str],
+        paths: PathResolver,
+        device_concurrency: int = BATCH_CONCURRENCY,
+        fit_ap_concurrency: int = BATCH_CONCURRENCY,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.repository = repository
         self.site_name = site_name
-        self.path = Path(path)
-        self.headers = headers
-        self.overview_headers = overview_headers
-        self.new_online_headers = new_online_headers
-        self.new_online_sheet_title = new_online_sheet_title
-        self.optical_treatment_headers = optical_treatment_headers
-        self.optical_treatment_sheet_title = optical_treatment_sheet_title
-        self.offline_stats_headers = offline_stats_headers
-        self.offline_ledger_headers = offline_ledger_headers
+        self.paths = paths
+        self.device_concurrency = int(device_concurrency or BATCH_CONCURRENCY)
+        self.fit_ap_concurrency = int(fit_ap_concurrency or BATCH_CONCURRENCY)
+        self._cancel_event = Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
 
     def run(self) -> None:
-        tmp_path = self.path.with_name(f"{self.path.stem}.tmp{self.path.suffix}")
-        profile_start = perf_counter()
-
-        def log_phase(phase: str, start: float, **values: object) -> None:
-            elapsed_ms = int((perf_counter() - start) * 1000)
-            details = " ".join(f"{key}={value}" for key, value in values.items())
-            app_logger.log_info(
-                "UI_PAGE_PROFILE",
-                f"page=rail.trackside_ap_business phase=export.{phase} elapsed_ms={elapsed_ms}"
-                + (f" {details}" if details else ""),
-            )
-
+        app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_STARTED", f"site={self.site_name}")
+        self.stage_changed.emit("trackside_ap.full_stage_prepare")
         try:
-            self.stage_changed.emit("trackside.export.progress_load")
-            phase_start = perf_counter()
-            snapshot = load_trackside_ap_business_snapshot(self.repository, self.site_name, generation=0)
-            log_phase("load_trackside_rows", phase_start, rows=len(snapshot.rows))
-            ac_repository = AcRepository(self.repository.database)
-            fact_repository = DeviceFactRepository(self.repository.database)
-            phase_start = perf_counter()
-            resources = ac_repository.list_all_fit_ap_resources_with_metadata()
-            log_phase("load_fit_ap_resources", phase_start, rows=len(resources))
-            phase_start = perf_counter()
-            ac_device_names = {str(device.device_uuid or ""): device.name for device in self.repository.list() if str(device.device_uuid or "")}
-            resources = [
-                {
-                    **row,
-                    "ac_device_name": row.get("ac_device_name") or ac_device_names.get(str(row.get("ac_device_uuid") or "")),
-                }
-                for row in resources
-            ]
-            log_phase("load_ac_devices", phase_start, rows=len(ac_device_names))
-            phase_start = perf_counter()
-            optical_rows = ac_repository.list_all_fit_ap_optical()
-            log_phase("load_fit_ap_optical", phase_start, rows=len(optical_rows))
-            phase_start = perf_counter()
-            resource_history_rows = ac_repository.list_all_fit_ap_resource_history()
-            log_phase("load_fit_ap_resource_history", phase_start, rows=len(resource_history_rows))
-            phase_start = perf_counter()
-            ap_optical_history_rows = ac_repository.list_all_ap_optical_history()
-            log_phase("load_ap_optical_history", phase_start, rows=len(ap_optical_history_rows))
-            phase_start = perf_counter()
-            ap_lldp_history_rows = ac_repository.list_all_ap_lldp_history()
-            log_phase("load_ap_lldp_history", phase_start, rows=len(ap_lldp_history_rows))
-            phase_start = perf_counter()
-            capacity_details = ac_repository.list_active_trackside_plan_capacity_details()
-            if not capacity_details:
-                capacity_details = ac_repository.list_station_ap_capacity_details()
-            log_phase("load_capacity_details", phase_start, rows=len(capacity_details))
-            phase_start = perf_counter()
-            overview_rows = ApOnlineOverviewService.build_rows(
-                metadata_rows=ac_repository.list_fit_ap_metadata(),
-                fit_ap_resources=resources,
-                optical_rows=optical_rows,
-                capacity_details=capacity_details,
-            )
-            log_phase("build_ap_online_overview", phase_start, rows=len(overview_rows))
-            phase_start = perf_counter()
-            latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
-            log_phase("build_latest_ap_history_indexes", phase_start, resources=len(resources))
-            phase_start = perf_counter()
-            devices = filter_station_switch_devices(self.repository.list(), self.repository.database, self.site_name)
-            switch_optical_history_rows = fact_repository.list_all_optical_history([str(device.device_uuid or "") for device in devices])
-            log_phase("load_switch_optical_history", phase_start, devices=len(devices), rows=len(switch_optical_history_rows))
-            phase_start = perf_counter()
-            offline_stats, offline_ledger_rows = build_offline_ap_ledger(
-                fit_ap_resources=resources,
-                latest_lldp_by_ap=latest_lldp,
-                latest_optical_by_ap=latest_optical,
-                device_lookup_by_name=build_device_lookup_by_name(devices),
-                resource_history_rows=resource_history_rows,
-            )
-            log_phase("build_offline_ap_ledger", phase_start, rows=len(offline_ledger_rows))
-            phase_start = perf_counter()
-            rows = enrich_trackside_export_rows(
-                snapshot.rows,
-                fact_repository,
-                ac_repository,
-                switch_optical_history_rows=switch_optical_history_rows,
-                ap_optical_history_rows=ap_optical_history_rows,
-                ap_lldp_history_rows=ap_lldp_history_rows,
-            )
-            log_phase("build_history_compare", phase_start, rows=len(rows))
-            phase_start = perf_counter()
-            unauthenticated_rows = ac_repository.list_all_fit_ap_unauthenticated()
-            new_online_ap_rows = build_new_online_ap_overview_rows(
-                resources,
-                resource_history_rows,
-                snapshot.rows,
-                unauthenticated_rows,
-            )
-            log_phase("build_new_online_ap_overview", phase_start, rows=len(new_online_ap_rows))
-            phase_start = perf_counter()
-            optical_treatment_rows = build_ap_optical_treatment_records(
-                rows,
-                ap_optical_history_rows,
-                switch_optical_history_rows,
-                resources,
-                resource_history_rows,
-                offline_ledger_rows=offline_ledger_rows,
-            )
-            log_phase("build_optical_treatment", phase_start, rows=len(optical_treatment_rows), ap_history=len(ap_optical_history_rows), switch_history=len(switch_optical_history_rows))
-            self.stage_changed.emit("trackside.export.progress_write")
-            tmp_path.parent.mkdir(parents=True, exist_ok=True)
-            phase_start = perf_counter()
-            export_trackside_ap_business_xlsx(
-                tmp_path,
-                rows,
-                TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
-                self.headers,
-                overview_rows,
-                AP_ONLINE_OVERVIEW_COLUMNS,
-                self.overview_headers,
-                new_online_ap_rows,
-                NEW_ONLINE_AP_OVERVIEW_COLUMNS,
-                self.new_online_headers,
-                self.new_online_sheet_title,
-                optical_treatment_rows,
-                AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
-                self.optical_treatment_headers,
-                self.optical_treatment_sheet_title,
-                offline_stats,
-                offline_ledger_rows,
-                self.offline_stats_headers,
-                self.offline_ledger_headers,
-                progress_callback=self.stage_changed.emit,
-            )
-            log_phase("write_excel", phase_start, rows=len(rows), treatment_rows=len(optical_treatment_rows))
-            phase_start = perf_counter()
-            os.replace(tmp_path, self.path)
-            log_phase("save_excel", phase_start, path=self.path.name)
+            result = self._run_full_update()
         except Exception as exc:
-            try:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-            except Exception:
-                pass
-            self.export_failed.emit(str(exc))
+            app_logger.log_error("TRACKSIDE_AP_FULL_UPDATE_FAILED", f"site={self.site_name}, error={exc}")
+            self.full_update_failed.emit(str(exc))
             return
-        log_phase("total", profile_start)
-        self.export_finished.emit({"path": self.path, "row_count": len(rows)})
+        app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_PREREQUISITES_COMPLETED", f"site={self.site_name}, {result.summary_text()}")
+        self.full_update_finished.emit(result)
+
+    def _run_full_update(self) -> TracksideApFullUpdateResult:
+        station_switches = filter_station_switch_devices(self.repository.list(), self.repository.database, self.site_name)
+        ac_devices = [
+            device
+            for device in self.repository.list(vendor="H3C", device_type="AC")
+            if str(device.device_vendor or "").strip().upper() == "H3C" and str(device.device_type or "").strip().upper() == "AC"
+        ]
+        skipped: list[str] = []
+        if not station_switches:
+            skipped.append("当前局点没有分组为“车站”的交换机，已跳过交换机详情更新")
+            app_logger.log_warning("TRACKSIDE_AP_FULL_UPDATE_SWITCH_DETAIL_SKIPPED", f"site={self.site_name}, reason=no_station_switch")
+        if not ac_devices:
+            skipped.append("当前局点没有无线控制器，已跳过AC FIT-AP资源和光衰更新")
+            app_logger.log_warning("TRACKSIDE_AP_FULL_UPDATE_AC_RESOURCE_SKIPPED", f"site={self.site_name}, reason=no_ac")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {}
+            if station_switches:
+                futures[executor.submit(self._run_switch_detail_branch, station_switches)] = "switch"
+            if ac_devices:
+                futures[executor.submit(self._run_ac_branch, ac_devices)] = "ac"
+            branch_results: dict[str, dict[str, object]] = {}
+            for future in as_completed(futures):
+                branch = futures[future]
+                try:
+                    branch_results[branch] = future.result()
+                except Exception as exc:
+                    branch_results[branch] = {"errors": [str(exc)]}
+                    event = "TRACKSIDE_AP_FULL_UPDATE_SWITCH_DETAIL_FAILED" if branch == "switch" else "TRACKSIDE_AP_FULL_UPDATE_AC_RESOURCE_FAILED"
+                    app_logger.log_error(event, f"site={self.site_name}, error={exc}")
+
+        switch_result = branch_results.get("switch", {})
+        ac_result = branch_results.get("ac", {})
+        errors = [str(item) for item in switch_result.get("errors", [])] + [str(item) for item in ac_result.get("errors", [])]
+        return TracksideApFullUpdateResult(
+            station_switch_total=len(station_switches),
+            station_switch_success=int(switch_result.get("success", 0) or 0),
+            station_switch_failed=int(switch_result.get("failed", 0) or 0),
+            ac_total=len(ac_devices),
+            ac_resource_success=int(ac_result.get("resource_success", 0) or 0),
+            ac_resource_failed=int(ac_result.get("resource_failed", 0) or 0),
+            fit_ap_resource_count=int(ac_result.get("fit_ap_resource_count", 0) or 0),
+            fit_ap_optical_success=int(ac_result.get("optical_success", 0) or 0),
+            fit_ap_optical_failed=int(ac_result.get("optical_failed", 0) or 0),
+            fit_ap_optical_rows_updated=int(ac_result.get("optical_rows_updated", 0) or 0),
+            skipped_messages=tuple(skipped),
+            error_messages=tuple(errors),
+        )
+
+    def _run_switch_detail_branch(self, station_switches: list) -> dict[str, object]:
+        if self._cancel_event.is_set():
+            return {"success": 0, "failed": 0, "errors": ["用户已取消更新"]}
+        self.stage_changed.emit("trackside_ap.full_stage_switch_detail")
+        app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_SWITCH_DETAIL_STARTED", f"site={self.site_name}, count={len(station_switches)}")
+        success = 0
+        failed = 0
+
+        def on_result(item) -> None:
+            nonlocal success, failed
+            if item.success:
+                success += 1
+            else:
+                failed += 1
+            self.progress_changed.emit(f"更新车站交换机详情：成功 {success}，失败 {failed}，共 {len(station_switches)}")
+
+        run_batch_collect(
+            station_switches,
+            self.site_name,
+            max_workers=self.device_concurrency,
+            result_callback=on_result,
+        )
+        app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_SWITCH_DETAIL_COMPLETED", f"site={self.site_name}, success={success}, failed={failed}")
+        return {"success": success, "failed": failed, "errors": []}
+
+    def _run_ac_branch(self, ac_devices: list) -> dict[str, object]:
+        errors: list[str] = []
+        resource_success = 0
+        resource_failed = 0
+        fit_ap_resource_count = 0
+        optical_success = 0
+        optical_failed = 0
+        optical_rows_updated = 0
+        for ac_device in ac_devices:
+            if self._cancel_event.is_set():
+                errors.append("用户已取消更新")
+                break
+            label = str(ac_device.name or ac_device.primary_address or ac_device.device_uuid or "AC")
+            self.stage_changed.emit("trackside_ap.full_stage_ac_resource")
+            app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_AC_RESOURCE_STARTED", f"site={self.site_name}, ac={label}")
+            try:
+                resource_result = collect_h3c_fit_ap_resources(
+                    ac_device,
+                    self.site_name,
+                    progress=self.progress_changed.emit,
+                    should_cancel=self._cancel_event.is_set,
+                )
+                if resource_result.success:
+                    resource_success += 1
+                    fit_ap_resource_count += int(resource_result.fit_ap_resources_updated or 0)
+                else:
+                    resource_failed += 1
+                    if resource_result.error_message:
+                        errors.append(f"{label} FIT-AP资源失败：{resource_result.error_message}")
+            except Exception as exc:
+                resource_failed += 1
+                errors.append(f"{label} FIT-AP资源失败：{exc}")
+                app_logger.log_error("TRACKSIDE_AP_FULL_UPDATE_AC_RESOURCE_FAILED", f"site={self.site_name}, ac={label}, error={exc}")
+
+            if self._cancel_event.is_set():
+                errors.append("用户已取消更新")
+                break
+            self.stage_changed.emit("trackside_ap.full_stage_optical")
+            app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_OPTICAL_STARTED", f"site={self.site_name}, ac={label}")
+            try:
+                optical_result = collect_h3c_fit_ap_optical(
+                    ac_device,
+                    self.site_name,
+                    max_workers=self.fit_ap_concurrency,
+                    progress=self.progress_changed.emit,
+                    should_cancel=self._cancel_event.is_set,
+                )
+                if optical_result.success or optical_result.partial_success:
+                    optical_success += 1
+                if not optical_result.success:
+                    optical_failed += int(optical_result.failed_aps or 0) or 1
+                    if optical_result.error_message:
+                        errors.append(f"{label} FIT-AP光衰失败：{optical_result.error_message}")
+                optical_rows_updated += int(optical_result.optical_rows_updated or 0)
+            except Exception as exc:
+                optical_failed += 1
+                errors.append(f"{label} FIT-AP光衰失败：{exc}")
+                app_logger.log_error("TRACKSIDE_AP_FULL_UPDATE_OPTICAL_FAILED", f"site={self.site_name}, ac={label}, error={exc}")
+        return {
+            "resource_success": resource_success,
+            "resource_failed": resource_failed,
+            "fit_ap_resource_count": fit_ap_resource_count,
+            "optical_success": optical_success,
+            "optical_failed": optical_failed,
+            "optical_rows_updated": optical_rows_updated,
+            "errors": errors,
+        }
 
 
 class TracksideOpticalCollectThread(QThread):

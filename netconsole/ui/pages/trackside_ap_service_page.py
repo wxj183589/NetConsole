@@ -6,9 +6,10 @@ from datetime import datetime
 from pathlib import Path
 import re
 from time import perf_counter
+import uuid
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction, QFontMetrics
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -35,10 +36,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.trackside_optical_history import TracksideOpticalHistoryService
 from netconsole.services.rail_transit.trackside_optical_collection import DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
 from netconsole.services.trackside_ap_business import (
-    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
-    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
-    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_site_filter_items,
     filter_trackside_ap_business_rows,
@@ -51,7 +49,9 @@ from netconsole.services.offline_ap_ledger import (
     load_offline_ap_cache,
     offline_ap_headers,
 )
-from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, ApOnlineOverviewService
+from netconsole.services.ap_online_overview import ApOnlineOverviewService
+from netconsole.services.export import ExportJob
+from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
@@ -63,7 +63,12 @@ from netconsole.ui.render.table_render_engine import apply_table_style, set_tabl
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.theme.contrast_engine import apply_status_item_contrast
-from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThread, TracksideApBusinessLoadResult, TracksideApBusinessLoadThread, TracksideOpticalCollectThread
+from netconsole.ui.trackside_optical_worker import (
+    TracksideApBusinessLoadResult,
+    TracksideApBusinessLoadThread,
+    TracksideApFullUpdateThread,
+    TracksideOpticalCollectThread,
+)
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 
 
@@ -138,18 +143,23 @@ class TracksideApServicePage(QWidget):
         self.trackside_page_size = DEFAULT_PAGE_SIZE
         self.collect_thread: TracksideOpticalCollectThread | None = None
         self.load_thread: TracksideApBusinessLoadThread | None = None
-        self.export_thread: TracksideApBusinessExportThread | None = None
+        self.full_update_thread: TracksideApFullUpdateThread | None = None
+        self.export_manager = ExportProcessManager(self, paths=self.paths)
+        self.export_job_id: str | None = None
+        self.export_output_path: Path | None = None
         self.is_loading = False
         self.load_generation = 0
         self.dirty = True
         self.has_loaded = False
         self.empty_reason = ""
         self.last_loaded_at: datetime | None = None
+        self._pending_full_update_summary: str | None = None
         self._table_widths_initialized = False
         self.detail_windows: list[QWidget] = []
         self.history_windows: list[QWidget] = []
         self.history_windows_by_key: dict[str, QWidget] = {}
 
+        self.full_update_button = QPushButton()
         self.update_button = QPushButton()
         self.cancel_update_button = QPushButton()
         self.trackside_site_filter = QComboBox()
@@ -160,12 +170,21 @@ class TracksideApServicePage(QWidget):
         self.trackside_search_input.setMinimumWidth(180)
         self.trackside_search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.trackside_export_button = QPushButton()
+        self.cancel_export_button = QPushButton("取消导出")
+        self.cancel_export_button.setVisible(False)
+        self.cancel_export_button.setEnabled(False)
         self.status_label = make_text_selectable(QLabel())
         self.update_progress = QProgressBar()
         self.update_progress.setRange(0, 0)
         self.update_progress.setTextVisible(False)
         self.update_progress.setFixedHeight(6)
         self.update_progress.setVisible(False)
+        self.export_progress = QProgressBar()
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(0)
+        self.export_progress.setTextVisible(True)
+        self.export_progress.setFixedHeight(18)
+        self.export_progress.setVisible(False)
         self.trackside_table = QTableWidget()
         self.trackside_pagination = PaginationWidget(self.i18n)
         self.search_debounce_timer = QTimer(self)
@@ -181,9 +200,11 @@ class TracksideApServicePage(QWidget):
         self.trackside_table.itemDoubleClicked.connect(self.handle_trackside_double_click)
 
         actions = QHBoxLayout()
+        actions.addWidget(self.full_update_button)
         actions.addWidget(self.update_button)
         actions.addWidget(self.cancel_update_button)
         actions.addWidget(self.trackside_export_button)
+        actions.addWidget(self.cancel_export_button)
         actions.addWidget(self.trackside_site_filter)
         actions.addWidget(self.trackside_search_input)
         actions.addWidget(self.status_label, 1)
@@ -191,12 +212,18 @@ class TracksideApServicePage(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(actions)
         layout.addWidget(self.update_progress)
+        layout.addWidget(self.export_progress)
         layout.addWidget(self.trackside_table, 1)
         layout.addWidget(self.trackside_pagination)
 
-        self.update_button.clicked.connect(self.start_optical_update)
+        self.full_update_button.clicked.connect(self.start_trackside_ap_full_update)
+        self.update_button.clicked.connect(self.start_trackside_ap_light_update)
         self.cancel_update_button.clicked.connect(self.cancel_optical_update)
         self.trackside_export_button.clicked.connect(self.export_trackside_table)
+        self.cancel_export_button.clicked.connect(self.cancel_trackside_export)
+        self.export_manager.progress.connect(self._handle_export_progress)
+        self.export_manager.finished.connect(self._finish_export)
+        self.export_manager.failed.connect(self._fail_export)
         self.trackside_site_filter.currentIndexChanged.connect(self.apply_trackside_filters)
         self.trackside_search_input.textChanged.connect(self.schedule_trackside_filter)
         self.search_debounce_timer.timeout.connect(self.apply_trackside_filters)
@@ -221,11 +248,14 @@ class TracksideApServicePage(QWidget):
             self.refresh_async(force=True)
 
     def retranslate(self) -> None:
-        self.update_button.setText(self.i18n.t("trackside_ap.update"))
-        self.update_button.setToolTip(self.i18n.t("trackside_ap.update_tooltip"))
+        self.full_update_button.setText(self.i18n.t("trackside_ap.full_update"))
+        self.update_button.setText(self.i18n.t("trackside_ap.light_update"))
         self.cancel_update_button.setText(self.i18n.t("trackside_ap.cancel_update"))
         self.trackside_export_button.setText(self.i18n.t("trackside.export"))
+        self.cancel_export_button.setText("取消导出")
         self._apply_button_icons()
+        self.full_update_button.setToolTip(self.i18n.t("trackside_ap.full_update_tooltip"))
+        self.update_button.setToolTip(self.i18n.t("trackside_ap.light_update_tooltip"))
         self.trackside_search_input.setPlaceholderText(self.i18n.t("trackside.search"))
         self.trackside_table.setHorizontalHeaderLabels([self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
         self._apply_trackside_header_tooltips()
@@ -233,19 +263,23 @@ class TracksideApServicePage(QWidget):
         self.trackside_pagination.retranslate()
         if self.is_loading:
             self.status_label.setText(self.i18n.t("trackside_ap.loading"))
+        elif self.full_update_thread is not None:
+            self.full_update_button.setText(self.i18n.t("trackside_ap.full_updating"))
         elif self.collect_thread is not None:
-            self.update_button.setText(self.i18n.t("trackside_ap.updating"))
+            self.update_button.setText(self.i18n.t("trackside_ap.light_updating"))
         elif self.collect_thread is None:
             self._update_idle_status()
-        self.cancel_update_button.setEnabled(self.collect_thread is not None)
+        self.cancel_update_button.setEnabled(self.collect_thread is not None or self.full_update_thread is not None)
         apply_table_style(self.trackside_table)
         self._configure_trackside_table()
 
     def _apply_button_icons(self) -> None:
         for button, icon_name in (
+            (self.full_update_button, "SYNC"),
             (self.update_button, "SYNC"),
             (self.cancel_update_button, "CANCEL"),
             (self.trackside_export_button, "SHARE"),
+            (self.cancel_export_button, "CANCEL"),
         ):
             apply_button_icon(button, icon_name)
 
@@ -264,6 +298,7 @@ class TracksideApServicePage(QWidget):
         self.empty_reason = ""
         self.load_generation += 1
         generation = self.load_generation
+        self.full_update_button.setEnabled(False)
         self.update_button.setEnabled(False)
         self.status_label.setText(self.i18n.t("trackside_ap.loading"))
         detail = f"site={self.site_name}, generation={generation}"
@@ -319,7 +354,8 @@ class TracksideApServicePage(QWidget):
         render_start = perf_counter()
         self.apply_trackside_filters()
         render_ms = int((perf_counter() - render_start) * 1000)
-        if self.collect_thread is None:
+        if self.collect_thread is None and self.full_update_thread is None:
+            self.full_update_button.setEnabled(True)
             self.update_button.setEnabled(True)
             self._update_idle_status()
         app_logger.log_info(
@@ -362,7 +398,8 @@ class TracksideApServicePage(QWidget):
         self.dirty = True
         self.has_loaded = False
         self.empty_reason = "trackside.empty.load_failed"
-        if self.collect_thread is None:
+        if self.collect_thread is None and self.full_update_thread is None:
+            self.full_update_button.setEnabled(True)
             self.update_button.setEnabled(True)
         self.status_label.setText(f"{self.i18n.t('trackside_ap.load_failed')}: {message}" if message else self.i18n.t("trackside_ap.load_failed"))
         app_logger.log_error("TRACKSIDE_LOAD_FAILED", f"site={self.site_name}, generation={generation}, error={message}")
@@ -372,7 +409,26 @@ class TracksideApServicePage(QWidget):
             self.load_thread = None
 
     def start_optical_update(self) -> None:
+        self.start_trackside_ap_light_update()
+
+    def start_trackside_ap_light_update(self, *, after_full_update: bool = False) -> None:
+        if self.full_update_thread is not None and not after_full_update:
+            return
+        app_logger.log_info("TRACKSIDE_AP_LIGHT_UPDATE_STARTED", f"site={self.site_name}")
         self._start_scoped_optical_update()
+
+    def start_trackside_ap_full_update(self) -> None:
+        if self.full_update_thread is not None or self.collect_thread is not None or self.is_loading:
+            return
+        self._set_full_update_running(True, self.i18n.t("trackside_ap.full_stage_prepare"))
+        self.full_update_thread = TracksideApFullUpdateThread(self.device_repository, self.site_name, self.paths, parent=self)
+        self.full_update_thread.stage_changed.connect(self._update_full_stage)
+        self.full_update_thread.progress_changed.connect(self._update_full_progress)
+        self.full_update_thread.full_update_finished.connect(self._finish_full_update)
+        self.full_update_thread.full_update_failed.connect(self._fail_full_update)
+        self.full_update_thread.finished.connect(self.full_update_thread.deleteLater)
+        self.full_update_thread.finished.connect(lambda: setattr(self, "full_update_thread", None))
+        self.full_update_thread.start()
 
     def start_station_update_from_trackside(self, row: int) -> None:
         rows = self.current_trackside_page_rows()
@@ -413,7 +469,7 @@ class TracksideApServicePage(QWidget):
         target_ap_name: str | None = None,
         message: str = "",
     ) -> None:
-        if self.collect_thread is not None or self.is_loading:
+        if self.collect_thread is not None or self.is_loading or self.full_update_thread is not None:
             return
         self._set_collect_running(True, message or self.i18n.t("trackside_ap.stage_prepare"))
         scope_kwargs = {
@@ -445,6 +501,11 @@ class TracksideApServicePage(QWidget):
         self.collect_thread.start()
 
     def cancel_optical_update(self) -> None:
+        if self.full_update_thread is not None:
+            self.full_update_thread.cancel()
+            self.cancel_update_button.setEnabled(False)
+            self.status_label.setText(self.i18n.t("trackside_ap.update_cancelled"))
+            return
         if self.collect_thread is not None:
             self.collect_thread.cancel()
             self.cancel_update_button.setEnabled(False)
@@ -452,10 +513,24 @@ class TracksideApServicePage(QWidget):
 
     def _set_collect_running(self, running: bool, message: str = "") -> None:
         self.update_progress.setVisible(running)
+        self.full_update_button.setEnabled(not running)
         self.update_button.setEnabled(not running)
-        self.update_button.setText(self.i18n.t("trackside_ap.updating") if running else self.i18n.t("trackside_ap.update"))
+        self.full_update_button.setText(self.i18n.t("trackside_ap.full_update"))
+        self.update_button.setText(self.i18n.t("trackside_ap.light_updating") if running else self.i18n.t("trackside_ap.light_update"))
         self.cancel_update_button.setEnabled(running)
         self.trackside_export_button.setEnabled(not running)
+        if message:
+            self.status_label.setText(message)
+
+    def _set_full_update_running(self, running: bool, message: str = "") -> None:
+        self.update_progress.setVisible(running)
+        self.full_update_button.setEnabled(not running)
+        self.full_update_button.setText(self.i18n.t("trackside_ap.full_updating") if running else self.i18n.t("trackside_ap.full_update"))
+        self.update_button.setEnabled(not running)
+        self.cancel_update_button.setEnabled(running)
+        self.trackside_export_button.setEnabled(not running)
+        self.trackside_site_filter.setEnabled(not running)
+        self.trackside_search_input.setEnabled(not running)
         if message:
             self.status_label.setText(message)
 
@@ -479,6 +554,10 @@ class TracksideApServicePage(QWidget):
         self._show_collect_finished_dialog(result, summary_text)
         self.status_label.setText(self.i18n.t("trackside_ap.stage_refresh_page"))
         self.refresh_async(force=True)
+        app_logger.log_info("TRACKSIDE_AP_LIGHT_UPDATE_COMPLETED", f"site={self.site_name}, {summary_text}")
+        if self._pending_full_update_summary is not None:
+            app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_COMPLETED", f"site={self.site_name}, preflight={self._pending_full_update_summary}, light={summary_text}")
+            self._pending_full_update_summary = None
 
     def _show_collect_finished_dialog(self, result, summary_text: str) -> None:
         lines = [summary_text]
@@ -510,7 +589,36 @@ class TracksideApServicePage(QWidget):
     def _fail_collect(self, message: str) -> None:
         self._set_collect_running(False)
         self.status_label.setText(self.i18n.t("trackside_ap.collection_failed"))
+        if self._pending_full_update_summary is not None:
+            app_logger.log_error("TRACKSIDE_AP_FULL_UPDATE_FAILED", f"site={self.site_name}, preflight={self._pending_full_update_summary}, light_error={message}")
+            self._pending_full_update_summary = None
         MessageBox.warning(self, self.i18n.t("rail_transit.trackside_ap_service"), message)
+
+    def _update_full_stage(self, key: str) -> None:
+        self.status_label.setText(self.i18n.t(key) if key else "")
+
+    def _update_full_progress(self, message: str) -> None:
+        if message:
+            self.status_label.setText(message)
+
+    def _finish_full_update(self, result) -> None:
+        self._set_full_update_running(False)
+        self.full_update_thread = None
+        self.status_label.setText(self.i18n.t("trackside_ap.full_stage_light_update"))
+        self._pending_full_update_summary = result.summary_text()
+        app_logger.log_info("TRACKSIDE_AP_FULL_UPDATE_LIGHT_UPDATE_STARTED", f"site={self.site_name}, {self._pending_full_update_summary}")
+        if result.has_failures:
+            app_logger.log_warning("TRACKSIDE_AP_FULL_UPDATE_PARTIAL_FAILED", f"site={self.site_name}, {result.summary_text()}")
+        self.start_trackside_ap_light_update(after_full_update=True)
+
+    def _fail_full_update(self, message: str) -> None:
+        self._set_full_update_running(False)
+        self.full_update_thread = None
+        self.status_label.setText(self.i18n.t("trackside_ap.full_update_failed"))
+        app_logger.log_error("TRACKSIDE_AP_FULL_UPDATE_FAILED", f"site={self.site_name}, error={message}")
+        MessageBox.warning(self, self.i18n.t("rail_transit.trackside_ap_service"), message)
+        self.status_label.setText(self.i18n.t("trackside_ap.full_stage_light_update"))
+        self.start_trackside_ap_light_update(after_full_update=True)
 
     def current_trackside_filters(self) -> dict[str, object | None]:
         return {"site": self.trackside_site_filter.currentData(), "search": self.trackside_search_input.text()}
@@ -543,59 +651,127 @@ class TracksideApServicePage(QWidget):
         self.apply_trackside_pagination()
 
     def export_trackside_table(self) -> None:
-        if self.export_thread is not None:
-            self.status_label.setText(self.i18n.t("trackside.export.progress_write"))
+        if self.export_job_id is not None:
+            self.status_label.setText("正在导出轨旁AP业务，请等待当前任务完成。")
+            return
+        if self.collect_thread is not None or self.full_update_thread is not None:
+            MessageBox.warning(self, self.i18n.t("trackside.export"), "轨旁AP业务正在更新，请等待更新完成后再导出。")
             return
         path = select_export_path(self, self.i18n.t("trackside.export"), trackside_export_default_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        thread = TracksideApBusinessExportThread(
-            self.device_repository,
-            self.site_name,
-            path,
-            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            [self.i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
-            self.i18n.t("trackside.export.sheet_new_online_ap_overview"),
-            [self.i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
-            self.i18n.t("trackside.export.sheet_ap_optical_treatment"),
-            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
-            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
-            self,
+        job_id = uuid.uuid4().hex
+        self.export_job_id = job_id
+        self.export_output_path = Path(path)
+        self._set_export_running(True, "正在导出轨旁AP业务：准备导出")
+        job = ExportJob(
+            job_id=job_id,
+            job_type="trackside_ap_business",
+            site_name=self.site_name,
+            db_path=str(self.device_repository.database.path),
+            output_path=str(path),
+            params={"language": self.i18n.language},
         )
-        self.export_thread = thread
-        self._set_export_running(True, self.i18n.t("trackside.export.progress_load"))
-        thread.stage_changed.connect(lambda key: self.status_label.setText(self.i18n.t(key)))
-        thread.export_finished.connect(self._finish_export)
-        thread.export_failed.connect(self._fail_export)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda: self._clear_export_thread(thread))
-        thread.start()
+        try:
+            self.export_manager.start_export(job)
+        except Exception as exc:
+            self.export_job_id = None
+            self.export_output_path = None
+            self._set_export_running(False)
+            MessageBox.warning(self, self.i18n.t("trackside.export"), f"导出失败：{exc}")
 
     def _set_export_running(self, running: bool, message: str = "") -> None:
-        self.update_progress.setVisible(running or self.collect_thread is not None)
-        self.trackside_export_button.setEnabled(not running and self.collect_thread is None)
-        self.update_button.setEnabled(not running and self.collect_thread is None and not self.is_loading)
+        self.export_progress.setVisible(running)
+        if running:
+            self.export_progress.setRange(0, 0)
+            self.export_progress.setValue(0)
+        self.cancel_export_button.setVisible(running)
+        self.cancel_export_button.setEnabled(running)
+        self.trackside_export_button.setEnabled(not running and self.collect_thread is None and self.full_update_thread is None)
+        self.full_update_button.setEnabled(not running and self.collect_thread is None and self.full_update_thread is None and not self.is_loading)
+        self.update_button.setEnabled(not running and self.collect_thread is None and self.full_update_thread is None and not self.is_loading)
         if message:
             self.status_label.setText(message)
 
     def _finish_export(self, result: dict[str, object]) -> None:
+        if str(result.get("job_id") or "") != str(self.export_job_id or ""):
+            return
+        path = Path(result.get("output_path") or self.export_output_path or "")
+        self.export_job_id = None
+        self.export_output_path = None
         self._set_export_running(False)
-        path = Path(result.get("path") or "")
+        self.export_progress.setVisible(True)
+        self.export_progress.setRange(0, 1)
+        self.export_progress.setValue(1)
         if path:
             remember_export_path(path)
         count = int(result.get("row_count") or 0)
-        self.status_label.setText(self.i18n.t("trackside.loaded_count", count=count) if count else self.i18n.t("trackside.export"))
-        app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={count}, file={path.name if path else ''}")
+        self.status_label.setText(f"导出完成：{path.name if path else ''}，共 {count} 条")
+        app_logger.log_info("TRACKSIDE_AP_EXPORT_COMPLETED", f"count={count}, file={path.name if path else ''}")
+        self._show_export_finished_dialog(path)
+        QTimer.singleShot(4000, self._hide_export_progress_if_idle)
 
-    def _fail_export(self, message: str) -> None:
+    def _fail_export(self, payload: dict[str, object]) -> None:
+        if str(payload.get("job_id") or "") != str(self.export_job_id or ""):
+            return
+        cancelled = bool(payload.get("cancelled"))
+        message = str(payload.get("message") or payload.get("error") or ("已取消导出" if cancelled else "导出失败"))
+        self.export_job_id = None
+        self.export_output_path = None
         self._set_export_running(False)
-        self.status_label.setText(self.i18n.t("trackside.export"))
-        MessageBox.warning(self, self.i18n.t("trackside.export"), message)
+        self.export_progress.setVisible(True)
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(0)
+        if cancelled:
+            self.status_label.setText("已取消导出")
+            app_logger.log_info("TRACKSIDE_AP_EXPORT_CANCELLED", message)
+        else:
+            self.status_label.setText(message)
+            app_logger.log_error("TRACKSIDE_AP_EXPORT_FAILED", message)
+            MessageBox.warning(self, self.i18n.t("trackside.export"), message)
+        QTimer.singleShot(4000, self._hide_export_progress_if_idle)
 
-    def _clear_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
-        if self.export_thread is thread:
-            self.export_thread = None
+    def _handle_export_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != str(self.export_job_id or ""):
+            return
+        current = int(event.get("current", event.get("done", 0)) or 0)
+        total = int(event.get("total") or 0)
+        if total > 0:
+            self.export_progress.setRange(0, total)
+            self.export_progress.setValue(min(current, total))
+        else:
+            self.export_progress.setRange(0, 0)
+        message = str(event.get("message") or event.get("stage") or "")
+        if message:
+            self.status_label.setText(f"正在导出轨旁AP业务：{message}")
+
+    def cancel_trackside_export(self) -> None:
+        if self.export_job_id is None:
+            return
+        self.cancel_export_button.setEnabled(False)
+        self.status_label.setText("正在取消导出...")
+        self.export_manager.cancel_export(self.export_job_id)
+
+    def _hide_export_progress_if_idle(self) -> None:
+        if self.export_job_id is None:
+            self.export_progress.setVisible(False)
+
+    def _show_export_finished_dialog(self, path: Path) -> None:
+        if not path:
+            return
+        box = MessageBox(self)
+        box.setIcon(MessageBox.Information)
+        box.setWindowTitle(self.i18n.t("trackside.export"))
+        box.setText(f"轨旁AP业务导出完成：\n{path}")
+        open_file_button = box.addButton("打开文件", MessageBox.ActionRole)
+        open_dir_button = box.addButton("打开目录", MessageBox.ActionRole)
+        box.addButton("关闭", MessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is open_file_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif clicked is open_dir_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def handle_trackside_double_click(self, item: QTableWidgetItem) -> None:
         fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS]
@@ -652,7 +828,7 @@ class TracksideApServicePage(QWidget):
         current_row = rows[row] if 0 <= row < len(rows) else {}
         has_station = bool(str(current_row.get("site") or self.trackside_site_filter.currentData() or "").strip())
         has_ap = bool(str(current_row.get("ap_uuid") or current_row.get("ap_mac") or current_row.get("ap_name") or "").strip())
-        busy = self.collect_thread is not None or self.is_loading
+        busy = self.collect_thread is not None or self.full_update_thread is not None or self.is_loading
         station_update.setEnabled(has_station and not busy)
         ap_update.setEnabled(has_ap and not busy)
         device_detail.setEnabled(row >= 0)

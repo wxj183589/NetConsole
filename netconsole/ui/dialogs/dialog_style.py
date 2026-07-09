@@ -168,10 +168,13 @@ def apply_dialog_style(
     default_size: QSize | tuple[int, int] | None = None,
     scrollable: bool = False,
     center: bool = True,
+    delete_on_close: bool = False,
 ) -> QDialog:
     _ = subtitle
     if title:
         dialog.setWindowTitle(title)
+    if delete_on_close:
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
     if not dialog.objectName():
         dialog.setObjectName("ncDialog")
     dialog.setProperty("netconsoleDialog", True)

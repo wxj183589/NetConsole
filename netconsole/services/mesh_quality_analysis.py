@@ -8,7 +8,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Callable
 
-from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, format_mac_h3c
+from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, format_mac_h3c, normalize_link_state
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
 
@@ -419,14 +419,24 @@ def mark_excluded_source_files(source_files: list[dict[str, object]], rows: list
 
 def build_sample_quality(rows: list[dict[str, object]], rules: MeshQualityRules) -> list[dict[str, object]]:
     samples: list[dict[str, object]] = []
-    no_backup_since: dict[object, str] = {}
-    for (radio, sample_time), sample_rows in _group_by_radio_time(rows):
+    no_backup_since: dict[tuple[object, object], str] = {}
+    for (source_file_id, radio, sample_time), sample_rows in _group_by_radio_time(rows):
         active_rows = [row for row in sample_rows if _state(row) == LINK_STATE_ACTIVE]
-        standby_rows = [row for row in sample_rows if _state(row) == LINK_STATE_STANDBY]
         active = active_rows[0] if len(active_rows) == 1 else None
-        backups = [row for row in standby_rows if (_num(row.get("mr_rssi")) or 0) >= rules.backup_available_threshold]
-        strong = [row for row in standby_rows if (_num(row.get("mr_rssi")) or 0) >= rules.backup_strong_threshold]
-        best_backup = max(backups, key=lambda row: _num(row.get("mr_rssi")) or -1, default=None)
+        active_peer = _peer(active) if active else ""
+        standby_rows = [
+            row
+            for row in sample_rows
+            if _state(row) == LINK_STATE_STANDBY and (not active_peer or _peer(row) != active_peer)
+        ]
+        backup_rows = [(row, _backup_rssi(row)) for row in standby_rows]
+        backup_rows_with_rssi = [(row, rssi) for row, rssi in backup_rows if rssi is not None]
+        backups = [(row, rssi) for row, rssi in backup_rows_with_rssi if rssi >= rules.backup_available_threshold]
+        strong = [(row, rssi) for row, rssi in backup_rows_with_rssi if rssi >= rules.backup_strong_threshold]
+        best_backup_pair = max(backup_rows_with_rssi, key=lambda pair: pair[1], default=None)
+        best_backup = best_backup_pair[0] if best_backup_pair else None
+        best_backup_rssi = best_backup_pair[1] if best_backup_pair else None
+        backup_reason = _backup_judgment_reason(len(standby_rows), backup_rows_with_rssi, len(backups), rules)
         active_rssi = _num(active.get("mr_rssi")) if active else None
         active_tx = _num(active.get("tx_busy")) if active else None
         active_rx = _num(active.get("rx_busy")) if active else None
@@ -456,13 +466,14 @@ def build_sample_quality(rows: list[dict[str, object]], rules: MeshQualityRules)
             reasons.append("Busy 关注")
         no_backup_seconds = 0.0
         if active and not backups:
-            start = no_backup_since.setdefault(radio, sample_time)
+            scope = (source_file_id, radio)
+            start = no_backup_since.setdefault(scope, sample_time)
             no_backup_seconds = _seconds_between(start, sample_time) or 0.0
             if no_backup_seconds >= rules.no_backup_min_seconds:
                 level = _worse(level, "WARNING")
-                reasons.append("无可用备份链路")
+                reasons.append(backup_reason)
         else:
-            no_backup_since.pop(radio, None)
+            no_backup_since.pop((source_file_id, radio), None)
         score = _score_from_level(level)
         samples.append(
             {
@@ -479,7 +490,8 @@ def build_sample_quality(rows: list[dict[str, object]], rules: MeshQualityRules)
                 "strong_backup_count": len(strong),
                 "best_backup_peer_mac": best_backup.get("peer_mac_display") if best_backup else "",
                 "best_backup_peer_key": best_backup.get("peer_mac") if best_backup else "",
-                "best_backup_rssi": _num(best_backup.get("mr_rssi")) if best_backup else "",
+                "best_backup_rssi": best_backup_rssi if best_backup_rssi is not None else "",
+                "backup_judgment_reason": backup_reason,
                 "active_tx_busy": active_tx if active_tx is not None else "",
                 "active_rx_busy": active_rx if active_rx is not None else "",
                 "max_tx_busy": max_tx if max_tx is not None else "",
@@ -629,6 +641,7 @@ def analyze_anomaly_events(samples: list[dict[str, object]], rows: list[dict[str
             if duration < min_duration.get(event_type, 0):
                 continue
             active_values = [_num(row.get("active_mr_rssi")) for row in block]
+            diagnosis = _no_backup_diagnosis(block, rules) if event_type == "NO_BACKUP" else diagnosis
             event = {
                 "event_sequence": len(events) + 1,
                 "event_time_start": block[0].get("sample_time"),
@@ -642,6 +655,9 @@ def analyze_anomaly_events(samples: list[dict[str, object]], rows: list[dict[str
                 "active_rssi_min": _min(active_values),
                 "active_rssi_avg": _avg(active_values),
                 "backup_count_min": min((int(row.get("available_backup_count") or 0) for row in block), default=""),
+                "standby_peer_count_min": min((int(row.get("standby_peer_count") or 0) for row in block), default=""),
+                "best_backup_peer_mac": _best_backup_in_block(block)[0],
+                "best_backup_rssi": _best_backup_in_block(block)[1],
                 "tx_busy_max": _max([_num(row.get("active_tx_busy")) for row in block] + [_num(row.get("max_tx_busy")) for row in block]),
                 "rx_busy_max": _max([_num(row.get("active_rx_busy")) for row in block] + [_num(row.get("max_rx_busy")) for row in block]),
                 "source_file": block[0].get("source_file"),
@@ -988,10 +1004,10 @@ def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]]
 
 
 def _group_by_radio_time(rows: list[dict[str, object]]) -> list[tuple[tuple[object, str], list[dict[str, object]]]]:
-    grouped: dict[tuple[object, str], list[dict[str, object]]] = {}
+    grouped: dict[tuple[object, object, str], list[dict[str, object]]] = {}
     for row in rows:
-        grouped.setdefault((row.get("radio"), str(row.get("sample_time") or "")), []).append(row)
-    return sorted(grouped.items(), key=lambda item: (item[0][1], str(item[0][0])))
+        grouped.setdefault((row.get("source_file_id"), row.get("radio"), _sample_time_bucket(row.get("sample_time"))), []).append(row)
+    return sorted(grouped.items(), key=lambda item: (str(item[0][0]), item[0][2], str(item[0][1])))
 
 
 def _group_by_peer(rows: list[dict[str, object]]) -> dict[tuple[object, str], list[dict[str, object]]]:
@@ -1008,7 +1024,11 @@ def _merge_samples(samples: list[dict[str, object]], predicate, rules: MeshQuali
     current: list[dict[str, object]] = []
     for sample in samples:
         if predicate(sample):
-            if current and (current[-1].get("radio") != sample.get("radio") or (_seconds_between(current[-1].get("sample_time"), sample.get("sample_time")) or 0) > 2):
+            if current and (
+                current[-1].get("source_file_id") != sample.get("source_file_id")
+                or current[-1].get("radio") != sample.get("radio")
+                or (_seconds_between(current[-1].get("sample_time"), sample.get("sample_time")) or 0) > 2
+            ):
                 result.append(current)
                 current = []
             current.append(sample)
@@ -1355,7 +1375,62 @@ def _canonical(value: object) -> str:
 
 
 def _state(row: dict[str, object]) -> str:
-    return str(row.get("link_state") or row.get("state") or "").upper()
+    return normalize_link_state(row.get("link_state") or row.get("state") or row.get("link_state_raw") or "")
+
+
+def _backup_rssi(row: dict[str, object]) -> float | None:
+    return _num(row.get("mr_rssi"), row.get("peer_rssi"))
+
+
+def _backup_judgment_reason(
+    standby_count: int,
+    standby_with_rssi: list[tuple[dict[str, object], float]],
+    available_count: int,
+    rules: MeshQualityRules,
+) -> str:
+    if standby_count <= 0:
+        return "Active 存在，但没有任何 STANDBY/备链记录。"
+    if not standby_with_rssi:
+        return "Active 存在，有 STANDBY/备链记录，但备链 RSSI 缺失，无法判断可用备链。"
+    if available_count <= 0:
+        best = max((rssi for _row, rssi in standby_with_rssi), default=None)
+        return f"Active 存在，有 STANDBY/备链记录，但最佳备链 RSSI {best:g} 低于可用阈值 {rules.backup_available_threshold}。"
+    return f"Active 存在，已识别 {available_count} 条可用备链。"
+
+
+def _no_backup_diagnosis(block: list[dict[str, object]], rules: MeshQualityRules) -> str:
+    min_standby = min((int(row.get("standby_peer_count") or 0) for row in block), default=0)
+    max_standby = max((int(row.get("standby_peer_count") or 0) for row in block), default=0)
+    max_available = max((int(row.get("available_backup_count") or 0) for row in block), default=0)
+    if max_available > 0:
+        return "Active 存在，且同采样点存在可用备链；该事件不应输出为无备份风险。"
+    best_values = [_num(row.get("best_backup_rssi")) for row in block]
+    best_values = [value for value in best_values if value is not None]
+    if min_standby <= 0 and max_standby <= 0:
+        return "Active 存在，但连续采样点没有任何 STANDBY/备链记录。"
+    if min_standby <= 0 and best_values:
+        return f"Active 存在，部分采样点没有 STANDBY/备链记录，部分采样点有备链但最佳备链 RSSI {max(best_values):g} 低于可用阈值 {rules.backup_available_threshold}。"
+    if best_values:
+        return f"Active 存在，有 STANDBY/备链记录，但最佳备链 RSSI {max(best_values):g} 低于可用阈值 {rules.backup_available_threshold}。"
+    return "Active 存在，有 STANDBY/备链记录，但备链 RSSI 缺失，无法判断可用备链。"
+
+
+def _best_backup_in_block(block: list[dict[str, object]]) -> tuple[object, object]:
+    best_row = max(
+        (row for row in block if _num(row.get("best_backup_rssi")) is not None),
+        key=lambda row: _num(row.get("best_backup_rssi")) or -1,
+        default=None,
+    )
+    if not best_row:
+        return "", ""
+    return best_row.get("best_backup_peer_mac") or "", best_row.get("best_backup_rssi") or ""
+
+
+def _sample_time_bucket(value: object) -> str:
+    parsed = _dt_or_none(value)
+    if parsed is None:
+        return str(value or "")
+    return parsed.replace(microsecond=0).isoformat(sep=" ")
 
 
 def _json_dict(value: object) -> dict[str, object]:

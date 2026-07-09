@@ -47,6 +47,14 @@ def _write_runtime_smoke_log(context) -> None:
 if __name__ == "__main__":
     _enable_faulthandler()
     try:
+        if len(sys.argv) >= 2 and sys.argv[1] == "--export-worker":
+            from netconsole.export_worker import main as run_export_worker
+
+            raise SystemExit(run_export_worker(sys.argv[2:]))
+        if len(sys.argv) >= 3 and sys.argv[1] == "--export-worker-job":
+            from netconsole.export_worker import main as run_export_worker
+
+            raise SystemExit(run_export_worker(["--job", sys.argv[2]]))
         if os.environ.get("NETCONSOLE_RUNTIME_SMOKE_TEST") == "1":
             from netconsole.core.bootstrap import create_demo_context
 

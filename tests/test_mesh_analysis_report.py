@@ -77,6 +77,18 @@ def _row(
     }
 
 
+def _source_row(source_file_id: int, sample_time: str, peer: str, state: str, radio: int = 1, mr_rssi: int | None = 41, peer_rssi: int | None = 39) -> dict[str, object]:
+    row = _row(sample_time, peer, state, radio=radio, mr_rssi=mr_rssi if mr_rssi is not None else 0, peer_rssi=peer_rssi if peer_rssi is not None else 0)
+    row["source_file_id"] = source_file_id
+    row["archived_filename"] = f"source-{source_file_id}.log"
+    row["source_line_number"] = source_file_id * 100
+    if mr_rssi is None:
+        row["mr_rssi"] = None
+    if peer_rssi is None:
+        row["peer_rssi"] = None
+    return row
+
+
 def test_active_segments_preserve_aba_runs_and_switch_sequence():
     rows = [
         _row("2025-12-03 10:00:00.000", PEER_A, mr_rssi=40),
@@ -391,6 +403,52 @@ def test_quality_sample_point_and_fping_na():
     assert sample["quality_level"] == "EXCELLENT"
     assert sample["available_backup_count"] == 1
     assert rows[0]["fping_loss_rate"] is None
+
+
+def test_quality_sample_point_uses_full_link_group_for_backup_counts():
+    rules = MeshQualityRules(backup_available_threshold=32, backup_strong_threshold=42, no_backup_min_seconds=0)
+    rows = normalize_samples(
+        [
+            _source_row(1, "2025-12-03 10:00:00.100", PEER_A, "ACTIVE 主链路", mr_rssi=45),
+            _source_row(1, "2025-12-03 10:00:00.250", PEER_B, "STANDBY 备链", mr_rssi=35),
+            _source_row(1, "2025-12-03 10:00:00.300", PEER_C, "Standy", mr_rssi=None, peer_rssi=43),
+            _source_row(2, "2025-12-03 10:00:00.100", PEER_A, "ACTIVE", mr_rssi=45),
+        ]
+    )
+
+    samples = build_sample_quality(rows, rules)
+    source1 = next(sample for sample in samples if sample["source_file_id"] == 1)
+    source2 = next(sample for sample in samples if sample["source_file_id"] == 2)
+    events = analyze_anomaly_events(samples, rows, rules)
+
+    assert source1["standby_peer_count"] == 2
+    assert source1["available_backup_count"] == 2
+    assert source1["strong_backup_count"] == 1
+    assert source1["best_backup_peer_key"] == PEER_C
+    assert source1["best_backup_rssi"] == 43
+    assert source1["backup_judgment_reason"] == "Active 存在，已识别 2 条可用备链。"
+    assert source2["standby_peer_count"] == 0
+    assert source2["available_backup_count"] == 0
+    assert not any(event["event_type"] == "NO_BACKUP" and event["source_file"] == "source-1.log" for event in events)
+
+
+def test_no_backup_diagnosis_distinguishes_missing_and_weak_standby():
+    rules = MeshQualityRules(backup_available_threshold=32, no_backup_min_seconds=0)
+    missing_rows = normalize_samples([_source_row(1, "2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=45)])
+    weak_rows = normalize_samples(
+        [
+            _source_row(2, "2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=45),
+            _source_row(2, "2025-12-03 10:00:00", PEER_B, "备链", mr_rssi=25),
+        ]
+    )
+
+    missing_event = analyze_anomaly_events(build_sample_quality(missing_rows, rules), missing_rows, rules)[0]
+    weak_event = analyze_anomaly_events(build_sample_quality(weak_rows, rules), weak_rows, rules)[0]
+
+    assert "没有任何 STANDBY/备链记录" in missing_event["diagnosis"]
+    assert "最佳备链 RSSI 25" in weak_event["diagnosis"]
+    assert weak_event["standby_peer_count_min"] == 1
+    assert weak_event["best_backup_rssi"] == 25
 
 
 def test_quality_anomaly_event_merging_for_no_backup_weak_no_active_multi_active_and_busy():

@@ -33,3 +33,10 @@
 - 不使用 QFluentWidgets Pro 组件。
 - 若 `qfluentwidgets` 导入失败，主窗口必须 fallback 到普通 Qt 窗口壳，不能阻断启动。
 - 运行依赖检查应避免把 PyQt/PyQt6/PySide2 版本的 Fluent Widgets 与 PySide6 版本一同打入发布包。
+
+## Excel 导出
+
+- `openpyxl`：继续用于既有 Excel 导入、普通报表和测试读取。
+- `xlsxwriter`：用于 10 万行级别大表高速 `.xlsx` 导出，启用 `constant_memory` 以降低内存占用，并配合独立导出进程避免抢占 Qt 主 UI 进程。
+
+本地 `.xlsx` 导出只面向 WPS Office / Microsoft Office 可打开的文件格式，不引入 WPS 云、KDocs 或在线文档同步能力。

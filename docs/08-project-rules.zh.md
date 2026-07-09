@@ -138,6 +138,21 @@ NetConsole 是本地 Windows 桌面工具。默认优先本地数据、本地文
 - 项目数据默认保存在项目或发布包可控目录下。
 - 导出、导入、分析、诊断优先围绕本地文件和现场设备连接。
 
+### UI 线程和后台任务全局规则
+
+NetConsole 全局强制遵守 [UI 线程全局规范](ui_thread_policy.md)、[后台任务规范](background_task_policy.md) 和 [导出进程规范](export_process_policy.md)。
+
+要求：
+
+- UI 线程只负责创建控件、响应点击、启动任务、接收信号、显示进度、结果和错误。
+- 耗时任务、网络任务、数据库大查询、文件扫描、解析、压缩、图表生成、设备连接必须使用后台线程或独立进程。
+- 所有导出类任务必须使用独立进程；按钮回调不得直接执行 `Workbook.save()`、`df.to_excel()`、`matplotlib.savefig()` 等重型导出逻辑。
+- Worker 不得访问 QWidget、QTableWidget、QLabel、QPushButton、FigureCanvas 或 QFluentWidgets 控件。
+- UI 线程、Worker 线程、导出进程必须各自创建 SQLite 连接，不得跨线程或跨进程共享连接。
+- 大表必须分页、分批或懒加载，不得在 UI 线程一次性加载和渲染全量数据。
+
+验证时应说明是否遵守 UI 线程只做 UI、是否使用 QThread/Worker 或独立进程、是否有进度/取消/失败提示/日志。
+
 ### AP 扩展归属导入规则
 
 FIT-AP 扩展信息、轨旁 AP 布点表和信号 A/B 网布点表统一沉淀到 AP 扩展归属字段。

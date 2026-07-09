@@ -550,7 +550,7 @@ def _overview_row_fill(row: dict[str, object | None]):
 def _format_export_sheet(sheet) -> None:
     from openpyxl.styles import Alignment, Border, Font, Side
 
-    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
+    from netconsole.services.excel_autosize import apply_worksheet_autofit
 
     alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
     border = Border(

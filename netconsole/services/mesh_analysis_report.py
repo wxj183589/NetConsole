@@ -8,7 +8,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Callable
 
-from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c
+from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c, normalize_link_state
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 from netconsole.services.mesh_quality_analysis import (
@@ -800,7 +800,7 @@ def _canonical(value: object) -> str:
 
 
 def _state(row: dict[str, object]) -> str:
-    return str(row.get("link_state") or row.get("state") or "").upper()
+    return normalize_link_state(row.get("link_state") or row.get("state") or row.get("link_state_raw") or "")
 
 
 def _json_dict(value: object) -> dict[str, object]:

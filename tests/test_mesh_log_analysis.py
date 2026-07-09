@@ -213,22 +213,29 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
 
     assert target.exists()
     workbook = load_workbook(target)
-    assert set(workbook.sheetnames) >= {"链路明细", "主链路建链顺序"}
+    assert set(workbook.sheetnames) >= {"导出说明", "统计汇总", "链路明细", "主链路建链顺序", "事件明细", "分析参数"}
     sheet = workbook["链路明细"]
+    headers = [cell.value for cell in sheet[1]]
+    assert "归属来源" not in headers
+    assert "Peer Radio MAC" not in headers
+    assert headers[:8] == ["序号", "采样时间", "Radio", "链路状态", "Peer MAC", "对端AP MAC", "对端AP名称", "归属站点"]
     assert sheet["A1"].font.bold
     assert sheet["A2"].alignment.horizontal == "center"
     assert sheet["A2"].alignment.vertical == "center"
-    assert sheet["A2"].font.bold
-    assert sheet["A2"].font.color.rgb.endswith("15803D")
+    assert sheet["D2"].font.bold
+    assert sheet["D2"].font.color.rgb.endswith("15803D")
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref
+    assert sheet.column_dimensions["B"].width >= 24
+    assert sheet.column_dimensions["E"].width >= 20
     build_sheet = workbook["主链路建链顺序"]
     assert build_sheet["A1"].value == "序号"
+    assert workbook["分析参数"]["A1"].value == "统计项"
     assert build_sheet["Q1"].value == "配置切换时间(ms)"
     assert build_sheet["T1"].value == "建链结果"
     assert build_sheet["T2"].value == "短时建链"
     headers = [cell.value for cell in sheet[1]]
-    for header in ("采样时间", "Radio", "Peer MAC", "链路状态", "对端射频口", "建链时间", "链路时长", "链路数", "MR侧RSSI", "对端RSSI", "MR侧CPU", "对端CPU", "MR侧内存", "对端内存", "MR侧发送繁忙度", "对端接收繁忙度"):
+    for header in ("采样时间", "Radio", "Peer MAC", "链路状态", "对端射频口", "建链时间", "链路时长", "链路数量", "MR侧RSSI", "对端RSSI", "MR侧CPU", "对端CPU", "MR侧噪声", "对端噪声", "发送繁忙度", "接收繁忙度", "总发送繁忙度", "总接收繁忙度", "备注"):
         assert header in headers
     assert "归属来源" not in headers
     assert "Peer Radio MAC" not in headers

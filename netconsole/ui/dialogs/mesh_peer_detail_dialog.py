@@ -31,6 +31,7 @@ from netconsole.ui.mesh_time_window_controller import MeshTimeWindowController
 
 
 DEFAULT_VISIBLE_SAMPLES = 120
+DEFAULT_DETAIL_WINDOW_SECONDS = 120
 _LIVE_CHART_WORKERS: set[MeshPeerSeriesWorker] = set()
 
 
@@ -98,6 +99,8 @@ class MeshPeerDetailDialog(QDialog):
         self.window_start_index = 0
         self.visible_sample_count = DEFAULT_VISIBLE_SAMPLES
         self.user_moved_window = False
+        self.centered_view_index: int | None = None
+        self.detail_window_seconds = DEFAULT_DETAIL_WINDOW_SECONDS
         self.rendered_tabs: set[str] = set()
         self.dirty_tabs: set[str] = set()
         self.chart_artists: dict[str, dict[str, object]] = {}
@@ -280,6 +283,7 @@ class MeshPeerDetailDialog(QDialog):
         was_partial = bool((self.chart_payload or {}).get("metadata", {}).get("partial")) if isinstance(self.chart_payload, dict) else False
         preserve_center = kind == "full" and self.user_moved_window
         center_label = self._visible_center_sample_time() if preserve_center else ""
+        self.centered_view_index = None
         if isinstance(payload, dict) and "chart_payload" in payload:
             self.chart_payload = payload["chart_payload"]
             self.segment = dict(payload.get("peer_segment") or {})
@@ -484,6 +488,7 @@ class MeshPeerDetailDialog(QDialog):
             if values is not None and line is not None:
                 self._draw_short_gap_bridges(artists, field, values, base_indices, line.get_color())
         self._draw_overlays(key, artists, base_indices)
+        self._apply_centered_detail_xlim(key, axis, timestamp_numeric)
         if key not in self.hover_controllers or key not in self.canvases or self._is_closing:
             return
         self.hover_controllers[key].set_context(payload, key, [field for field, _label, _style in self._series_specs(key)], self.current_session_id)
@@ -637,6 +642,7 @@ class MeshPeerDetailDialog(QDialog):
 
     def center_on_index(self, index: int) -> None:
         self.user_moved_window = False
+        self.centered_view_index = max(int(index), 0)
         self.time_window_controller.center_on(index, self.visible_sample_count, "locked_point")
 
     def _selected_point_from_index(self, index: int, chart_key: str) -> MeshSelectedPoint:
@@ -863,6 +869,43 @@ class MeshPeerDetailDialog(QDialog):
             return
         axis.set_xlim(left, right)
 
+    def _apply_centered_detail_xlim(self, key: str, axis, timestamp_numeric: np.ndarray) -> None:
+        if self.active_only or self.user_moved_window or len(timestamp_numeric) == 0:
+            return
+        center_index = self._centered_view_anchor_index()
+        if not (0 <= center_index < len(timestamp_numeric)):
+            return
+        window_days = max(float(self.detail_window_seconds or DEFAULT_DETAIL_WINDOW_SECONDS), 1.0) / 86400.0
+        data_min = float(timestamp_numeric[0])
+        data_max = float(timestamp_numeric[-1])
+        center = float(timestamp_numeric[center_index])
+        if data_max <= data_min:
+            self._set_axis_xlim(axis, center, center)
+            visible_start = self._datetime_from_num(center)
+            configure_mesh_time_axis(axis, visible_start, visible_start, self.i18n)
+            return
+        if data_max - data_min <= window_days:
+            left, right = data_min, data_max
+        else:
+            half = window_days / 2.0
+            left = center - half
+            right = center + half
+            if left < data_min:
+                left = data_min
+                right = data_min + window_days
+            if right > data_max:
+                right = data_max
+                left = data_max - window_days
+        self._set_axis_xlim(axis, left, right)
+        configure_mesh_time_axis(axis, self._datetime_from_num(left), self._datetime_from_num(right), self.i18n)
+        app_logger.log_info(
+            "MESH_CHART_CENTERED_XLIM",
+            (
+                f"anchor_link_id={self.anchor_link_id}, tab={key}, center_index={center_index}, "
+                f"window_seconds={self.detail_window_seconds}, left={left:.8f}, right={right:.8f}"
+            ),
+        )
+
     def _clear_overlay_artists(self, artists: dict[str, object]) -> None:
         for item in artists.get("collections", []):
             try:
@@ -1027,6 +1070,8 @@ class MeshPeerDetailDialog(QDialog):
         self.visible_sample_count = visible_count
         if source not in {"payload", "center_anchor"}:
             self.user_moved_window = source != "preset"
+        if source in {"scrollbar", "drag", "wheel"}:
+            self.centered_view_index = None
         self._sync_time_controls()
         self.dirty_tabs.update(self.tab_keys)
         if source in {"scrollbar", "drag", "wheel"}:
@@ -1122,10 +1167,13 @@ class MeshPeerDetailDialog(QDialog):
         visible = value if value > 0 else 0
         effective_visible = visible or total
         start = self._center_start_index(old_center, effective_visible, total)
+        if not self.user_moved_window:
+            self.centered_view_index = None
         self.time_window_controller.set_time_window(start, visible, "preset")
 
     def center_selected_sample(self) -> None:
         self.user_moved_window = False
+        self.centered_view_index = None
         self.time_window_controller.center_on(self._anchor_index(), self.visible_sample_count, "center_anchor")
 
     def _scroll_changed(self, value: int) -> None:
@@ -1187,6 +1235,11 @@ class MeshPeerDetailDialog(QDialog):
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         return int(metadata.get("anchor_index", 0) or 0)
 
+    def _centered_view_anchor_index(self) -> int:
+        if self.centered_view_index is not None:
+            return int(self.centered_view_index)
+        return self._anchor_index()
+
     def _center_start_index(self, index: int, visible: int, total: int) -> int:
         return max(min(index - visible // 2, max(total - visible, 0)), 0)
 
@@ -1211,6 +1264,14 @@ class MeshPeerDetailDialog(QDialog):
             except ValueError:
                 return None
         return None
+
+    def _datetime_from_num(self, value: float) -> datetime | None:
+        try:
+            from matplotlib import dates as mdates
+
+            return mdates.num2date(value, tz=None).replace(tzinfo=None)
+        except (OverflowError, TypeError, ValueError):
+            return None
 
     def _save_window_geometry(self) -> None:
         self.settings.set_value("mesh_peer_detail/geometry", bytes(self.saveGeometry().toBase64()).decode("ascii"))

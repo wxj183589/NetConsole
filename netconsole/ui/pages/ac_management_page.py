@@ -80,7 +80,8 @@ from netconsole.services.fit_ap_import_export import FitApImportExportService, m
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
 from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
 from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
-from netconsole.services.export import ExportJob, ExportProcessManager
+from netconsole.services.export import ExportJob
+from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, AcResourceCollectThread, FitApOpticalCollectThread
@@ -741,7 +742,12 @@ class AcManagementPage(QWidget):
         self.ac_info_thread: AcInfoCollectThread | None = None
         self.action_thread: AcCommandActionThread | None = None
         self.optical_thread: FitApOpticalCollectThread | None = None
-        self.trackside_export_thread: TracksideApBusinessExportThread | None = None
+        self.trackside_export_manager = ExportProcessManager(self, paths=PathResolver())
+        self.trackside_export_job_id: str | None = None
+        self.trackside_export_output_path: Path | None = None
+        self.trackside_export_manager.progress.connect(self._handle_trackside_export_progress)
+        self.trackside_export_manager.finished.connect(self._finish_trackside_export)
+        self.trackside_export_manager.failed.connect(self._fail_trackside_export)
         app_events.ac_summary_changed.connect(self._handle_ac_summary_changed)
         self.detail_windows: list[FitApDetailDialog] = []
         self.optical_rows: list[dict[str, object | None]] = []
@@ -1617,7 +1623,9 @@ class AcManagementPage(QWidget):
 
     def shutdown(self) -> None:
         self.cancel_current_update()
-        for thread_name in ("offline_load_thread", "trackside_export_thread"):
+        if self.trackside_export_job_id is not None:
+            self.trackside_export_manager.cancel_export(self.trackside_export_job_id)
+        for thread_name in ("offline_load_thread",):
             thread = getattr(self, thread_name, None)
             if thread is None:
                 continue
@@ -2341,59 +2349,106 @@ class AcManagementPage(QWidget):
         app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def export_trackside_table(self) -> None:
-        if self.trackside_export_thread is not None:
+        if self.trackside_export_job_id is not None:
             self.status_label.setText(self.i18n.t("trackside.export.progress_write"))
             return
         path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_trackside_ap_business_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
         if not path:
             return
-        thread = TracksideApBusinessExportThread(
-            self.device_repository,
-            self.site_name,
-            path,
-            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            [self.i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
-            self.i18n.t("trackside.export.sheet_new_online_ap_overview"),
-            [self.i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
-            self.i18n.t("trackside.export.sheet_ap_optical_treatment"),
-            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
-            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
-            self,
-        )
-        self.trackside_export_thread = thread
+        job_id = uuid.uuid4().hex
+        self.trackside_export_job_id = job_id
+        self.trackside_export_output_path = Path(path)
         self._set_trackside_export_running(True, self.i18n.t("trackside.export.progress_load"))
-        thread.stage_changed.connect(lambda key: self.status_label.setText(self.i18n.t(key)))
-        thread.export_finished.connect(self._finish_trackside_export)
-        thread.export_failed.connect(self._fail_trackside_export)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda: self._clear_trackside_export_thread(thread))
-        thread.start()
+        job = ExportJob(
+            job_id=job_id,
+            job_type="trackside_ap_business",
+            site_name=self.site_name,
+            db_path=str(self.device_repository.database.path),
+            output_path=str(path),
+            params={"language": self.i18n.language},
+        )
+        try:
+            self.trackside_export_manager.start_export(job)
+        except Exception as exc:
+            self.trackside_export_job_id = None
+            self.trackside_export_output_path = None
+            self._set_trackside_export_running(False)
+            MessageBox.warning(self, self.i18n.t("trackside.export"), f"导出失败：{exc}")
 
     def _set_trackside_export_running(self, running: bool, message: str = "") -> None:
         self.update_progress.setVisible(running or self.resource_thread is not None or self.optical_thread is not None)
+        if running:
+            self.update_progress.setRange(0, 0)
+            self.update_progress.setValue(0)
         self.trackside_export_button.setEnabled(not running)
         self.refresh_button.setEnabled(not running and self.resource_thread is None and self.optical_thread is None)
         if message:
             self.status_label.setText(message)
 
     def _finish_trackside_export(self, result: dict[str, object]) -> None:
+        if str(result.get("job_id") or "") != str(self.trackside_export_job_id or ""):
+            return
+        path = Path(result.get("output_path") or self.trackside_export_output_path or "")
+        self.trackside_export_job_id = None
+        self.trackside_export_output_path = None
         self._set_trackside_export_running(False)
-        path = Path(result.get("path") or "")
+        self.update_progress.setVisible(True)
+        self.update_progress.setRange(0, 1)
+        self.update_progress.setValue(1)
         if path:
             remember_export_path(path)
         count = int(result.get("row_count") or 0)
         self.status_label.setText(self.i18n.t("trackside.loaded_count", count=count))
         app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={count}, file={path.name if path else ''}")
+        self._show_trackside_export_finished_dialog(path)
 
-    def _fail_trackside_export(self, message: str) -> None:
+    def _fail_trackside_export(self, payload: dict[str, object]) -> None:
+        if str(payload.get("job_id") or "") != str(self.trackside_export_job_id or ""):
+            return
+        cancelled = bool(payload.get("cancelled"))
+        message = str(payload.get("message") or payload.get("error") or ("已取消导出" if cancelled else "导出失败"))
+        self.trackside_export_job_id = None
+        self.trackside_export_output_path = None
         self._set_trackside_export_running(False)
+        self.update_progress.setVisible(False)
+        if cancelled:
+            self.status_label.setText("已取消导出")
+            app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT_CANCELLED", message)
+            return
         self.status_label.setText(self.i18n.t("trackside.export"))
+        app_logger.log_error("TRACKSIDE_AP_BUSINESS_EXPORT_FAILED", message)
         MessageBox.warning(self, self.i18n.t("trackside.export"), message)
 
-    def _clear_trackside_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
-        if self.trackside_export_thread is thread:
-            self.trackside_export_thread = None
+    def _handle_trackside_export_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != str(self.trackside_export_job_id or ""):
+            return
+        current = int(event.get("current", event.get("done", 0)) or 0)
+        total = int(event.get("total") or 0)
+        if total > 0:
+            self.update_progress.setRange(0, total)
+            self.update_progress.setValue(min(current, total))
+        else:
+            self.update_progress.setRange(0, 0)
+        message = str(event.get("message") or event.get("stage") or "")
+        if message:
+            self.status_label.setText(f"正在导出轨旁AP业务：{message}")
+
+    def _show_trackside_export_finished_dialog(self, path: Path) -> None:
+        if not path:
+            return
+        box = MessageBox(self)
+        box.setIcon(MessageBox.Information)
+        box.setWindowTitle(self.i18n.t("trackside.export"))
+        box.setText(f"轨旁AP业务导出完成：\n{path}")
+        open_file_button = box.addButton("打开文件", MessageBox.ActionRole)
+        open_dir_button = box.addButton("打开目录", MessageBox.ActionRole)
+        box.addButton("关闭", MessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is open_file_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif clicked is open_dir_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def _handle_ac_summary_changed(self, site_name: str) -> None:
         if str(site_name or "") != str(self.site_name or ""):

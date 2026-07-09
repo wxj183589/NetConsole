@@ -138,6 +138,21 @@ Requirements:
 - Keep project data under project-controlled or release-package-controlled directories by default.
 - Import, export, analysis, and diagnostics should focus on local files and field device connections.
 
+### UI Thread and Background Task Rules
+
+NetConsole must follow [UI Thread Policy](ui_thread_policy.md), [Background Task Policy](background_task_policy.md), and [Export Process Policy](export_process_policy.md) globally.
+
+Requirements:
+
+- The UI thread only creates widgets, handles clicks, starts tasks, receives signals, and displays progress, results, and errors.
+- Long-running work, network work, large database queries, file scans, parsing, compression, chart generation, and device connections must use background threads or separate processes.
+- All export tasks must use a separate process; button callbacks must not directly run `Workbook.save()`, `df.to_excel()`, `matplotlib.savefig()`, or similar heavy export logic.
+- Workers must not access QWidget, QTableWidget, QLabel, QPushButton, FigureCanvas, or QFluentWidgets controls.
+- The UI thread, worker threads, and export processes must each create their own SQLite connections. Connections must not cross thread or process boundaries.
+- Large tables must use paging, batching, or lazy loading instead of loading and rendering all rows on the UI thread.
+
+Validation should state whether the change keeps the UI thread UI-only, whether it uses QThread/Worker or a separate process, and whether progress, cancellation, failure feedback, and logs are available.
+
 ### AP Extension Belonging Import Rules
 
 FIT-AP extension metadata, trackside AP layout tables, and signal A/B network layout tables should converge on the AP extension belonging fields.

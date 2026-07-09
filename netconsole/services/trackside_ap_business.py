@@ -190,6 +190,10 @@ CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS = (
     ("异常说明", "detail"),
 )
 
+
+class TracksideApExportCancelled(RuntimeError):
+    """Raised when a trackside AP export is cancelled."""
+
 AP_SIDE_DISPLAY_FIELDS = {"ap_rx_power", "ap_tx_power"}
 AP_SIDE_MISSING_DISPLAY = "-"
 MATCH_SOURCE_LABELS = {
@@ -1462,6 +1466,20 @@ def build_trackside_site_filter_items(rows: list[dict[str, object | None]], all_
     return [(all_label, ""), *[(site, site) for site in sites]]
 
 
+def _emit_trackside_export_progress(progress_callback, stage: str, current: int = 0, total: int = 0, message: str = "") -> None:
+    if not progress_callback:
+        return
+    try:
+        progress_callback(stage, int(current or 0), int(total or 0), message or stage)
+    except TypeError:
+        progress_callback(stage)
+
+
+def _raise_if_trackside_export_cancelled(should_cancel) -> None:
+    if should_cancel and should_cancel():
+        raise TracksideApExportCancelled("导出已取消")
+
+
 def export_trackside_ap_business_xlsx(
     path: Path,
     rows: list[dict[str, object | None]],
@@ -1483,11 +1501,12 @@ def export_trackside_ap_business_xlsx(
     offline_ap_stats_headers: list[str] | None = None,
     offline_ap_ledger_headers: list[str] | None = None,
     progress_callback=None,
+    should_cancel=None,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-    from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
+    from netconsole.services.excel_autosize import apply_worksheet_autofit
 
     workbook = Workbook()
     sheet = workbook.active
@@ -1497,8 +1516,9 @@ def export_trackside_ap_business_xlsx(
         details = " ".join(f"{key}={value}" for key, value in values.items())
         app_logger.log_info("TRACKSIDE_EXPORT_PROFILE", f"phase={phase} elapsed_ms={elapsed_ms}" + (f" {details}" if details else ""))
 
-    if progress_callback:
-        progress_callback("trackside.export.progress_rows")
+    total_rows = len(rows)
+    _emit_trackside_export_progress(progress_callback, "write_trackside_rows", 0, total_rows, f"正在写入轨旁AP业务明细 0/{total_rows}")
+    _raise_if_trackside_export_cancelled(should_cancel)
     phase_start = perf_counter()
     sheet.append(headers)
     fills = {
@@ -1507,12 +1527,21 @@ def export_trackside_ap_business_xlsx(
         if color
     }
     header_fill = PatternFill(fill_type="solid", fgColor=TRACKSIDE_EXPORT_HEADER_FILL)
-    for row in rows:
+    for row_index, row in enumerate(rows, start=1):
         sheet.append([_export_value(field, row) for _key, field in columns])
         fill = fills.get(trackside_row_status(row))
         for cell in sheet[sheet.max_row]:
             if fill:
                 cell.fill = fill
+        if row_index == total_rows or row_index % 100 == 0:
+            _emit_trackside_export_progress(
+                progress_callback,
+                "write_trackside_rows",
+                row_index,
+                total_rows,
+                f"正在写入轨旁AP业务明细 {row_index}/{total_rows}",
+            )
+            _raise_if_trackside_export_cancelled(should_cancel)
     alignment = Alignment(horizontal="center", vertical="center")
     border = Border(
         left=Side(style="thin", color="D1D5DB"),
@@ -1524,11 +1553,13 @@ def export_trackside_ap_business_xlsx(
     _format_export_sheet(sheet, alignment, border, header_font, header_fill)
     sheet.auto_filter.ref = sheet.dimensions
     log_write_phase("write_trackside_sheet", phase_start, rows=len(rows))
+    _raise_if_trackside_export_cancelled(should_cancel)
     phase_start = perf_counter()
+    _emit_trackside_export_progress(progress_callback, "write_current_optical_abnormal", 0, 0, "正在写入异常光衰")
     build_current_optical_abnormal_sheet(workbook, sheet, rows)
     log_write_phase("write_current_optical_abnormal_sheet", phase_start, rows=sum(1 for row in rows if is_current_optical_abnormal_export_row(row)))
-    if progress_callback:
-        progress_callback("trackside.export.progress_overview")
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "write_ap_online_overview", 0, len(ap_online_overview_rows or []), "正在写入AP上线情况")
     phase_start = perf_counter()
     _append_ap_overview_sheet(
         workbook,
@@ -1542,8 +1573,8 @@ def export_trackside_ap_business_xlsx(
         header_fill,
     )
     log_write_phase("write_ap_online_overview_sheet", phase_start, rows=len(ap_online_overview_rows or []))
-    if progress_callback:
-        progress_callback("trackside.export.progress_new_online")
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "write_new_online_ap", 0, len(new_online_ap_rows or []), "正在写入新增上线AP概览")
     phase_start = perf_counter()
     _append_export_rows_sheet(
         workbook,
@@ -1557,8 +1588,8 @@ def export_trackside_ap_business_xlsx(
         header_fill,
     )
     log_write_phase("write_new_online_ap_sheet", phase_start, rows=len(new_online_ap_rows or []))
-    if progress_callback:
-        progress_callback("trackside.export.progress_optical_treatment")
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "write_optical_treatment", 0, len(ap_optical_treatment_rows or []), "正在写入AP光衰处理记录")
     phase_start = perf_counter()
     sorted_treatment_rows = _sort_ap_optical_treatment_rows(ap_optical_treatment_rows or [])
     _append_export_rows_sheet(
@@ -1576,27 +1607,29 @@ def export_trackside_ap_business_xlsx(
         preserve_ap_identity=True,
     )
     log_write_phase("write_optical_treatment_sheet", phase_start, rows=len(sorted_treatment_rows))
+    _raise_if_trackside_export_cancelled(should_cancel)
     if offline_ap_stats is not None and offline_ap_ledger_rows is not None:
-        if progress_callback:
-            progress_callback("trackside.export.progress_offline")
+        _emit_trackside_export_progress(progress_callback, "write_offline_ap_ledger", 0, len(offline_ap_ledger_rows or []), "正在写入离线AP台账")
         phase_start = perf_counter()
         stats_sheet = workbook.create_sheet("AP\u79bb\u7ebf\u60c5\u51b5")
         write_offline_ap_stats_sheet(stats_sheet, offline_ap_stats, offline_ap_stats_headers or [key for key, _field in OFFLINE_AP_STATS_COLUMNS])
         ledger_sheet = workbook.create_sheet("\u79bb\u7ebfAP\u53f0\u8d26")
         write_offline_ap_ledger_sheet(ledger_sheet, offline_ap_ledger_rows, offline_ap_ledger_headers or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS])
         log_write_phase("write_offline_ap_sheets", phase_start, rows=len(offline_ap_ledger_rows or []))
-    if progress_callback:
-        progress_callback("trackside.export.progress_summary")
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "write_summary", 0, len(rows), "正在写入汇总统计")
     phase_start = perf_counter()
     _append_switch_optical_summary_sheet(workbook, rows, alignment, border, header_font, header_fill)
     log_write_phase("write_switch_optical_summary_sheet", phase_start, rows=len(rows))
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "style_autofit", 0, len(workbook.worksheets), "正在设置样式和列宽")
     phase_start = perf_counter()
     for worksheet in workbook.worksheets:
         apply_worksheet_autofit(worksheet, maximum=60)
     _set_switch_optical_summary_widths(workbook)
     log_write_phase("autofit_sheets", phase_start, sheets=len(workbook.worksheets))
-    if progress_callback:
-        progress_callback("trackside.export.progress_save")
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "save_workbook", total_rows, total_rows, "正在保存Excel文件")
     phase_start = perf_counter()
     workbook.save(path)
     log_write_phase("save_workbook", phase_start, path=Path(path).name)

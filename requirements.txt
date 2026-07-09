@@ -3,6 +3,7 @@ PySide6-Fluent-Widgets==1.11.2
 pytest>=8.0
 netmiko
 openpyxl
+xlsxwriter
 matplotlib
 numpy
 PyInstaller>=6.0

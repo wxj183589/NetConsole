@@ -5198,7 +5198,8 @@ def test_trackside_ap_business_update_shows_async_stage_state(tmp_path, monkeypa
 
     page.start_optical_update()
 
-    assert page.update_button.text() == "Updating..."
+    assert page.update_button.text() == "Light Update Running..."
+    assert page.full_update_button.isEnabled() is False
     assert page.update_button.isEnabled() is False
     assert page.cancel_update_button.isEnabled() is True
     assert page.update_progress.isHidden() is False

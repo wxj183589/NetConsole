@@ -37,6 +37,12 @@
     "homepage": "https://openpyxl.readthedocs.io/"
   },
   {
+    "name": "XlsxWriter",
+    "purpose": "大数据量 Excel 文件流式导出",
+    "license": "BSD-2-Clause",
+    "homepage": "https://xlsxwriter.readthedocs.io/"
+  },
+  {
     "name": "netmiko",
     "purpose": "网络设备 SSH/Telnet 连接与命令采集",
     "license": "MIT",

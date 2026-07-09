@@ -15,6 +15,18 @@ EVENT_LINK_REESTABLISHED = "LINK_REESTABLISHED"
 EVENT_COUNTER_RESET = "COUNTER_RESET"
 
 
+def normalize_link_state(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "UNKNOWN"
+    lowered = text.lower()
+    if "active" in lowered or "主链路" in text:
+        return LINK_STATE_ACTIVE
+    if "standby" in lowered or "standy" in lowered or "backup" in lowered or "备链" in text:
+        return LINK_STATE_STANDBY
+    return "UNKNOWN"
+
+
 PAIRED_METRICS: tuple[tuple[str, str, str], ...] = (
     ("rssi", "local_rssi_db", "peer_rssi_db"),
     ("cpu", "local_cpu_percent", "peer_cpu_percent"),
