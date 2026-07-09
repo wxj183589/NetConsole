@@ -1124,6 +1124,7 @@ def car_network_root(paths: PathResolver, site_name: str) -> Path:
 
 class CarNetworkPointTableStore:
     def __init__(self, paths: PathResolver, site_name: str) -> None:
+        self.paths = paths
         self.root = car_network_root(paths, site_name)
         self.path = self.root / "point_table.json"
 
@@ -1148,6 +1149,7 @@ class CarNetworkPointTableStore:
 
 class CarNetworkGlobalConfigStore:
     def __init__(self, paths: PathResolver, site_name: str) -> None:
+        self.paths = paths
         self.root = car_network_root(paths, site_name)
         self.path = self.root / "global_config.json"
 

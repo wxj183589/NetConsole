@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.core.paths import PathResolver
@@ -26,18 +28,42 @@ class OnlineMrCollectorWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        store = OnlineMrSessionStore(paths)
-        self.collector = OnlineMrCollector(config, store, connection_factory=connection_factory, realtime_cache=realtime_cache)
+        self.config = config
+        self.paths = paths
+        self.connection_factory = connection_factory
+        self.realtime_cache = realtime_cache
         self.config_only = config_only
+        self.collector: OnlineMrCollector | None = None
+        self._cancel_requested = threading.Event()
+        self._force_stop_reason = ""
 
     def cancel(self) -> None:
-        self.collector.request_stop()
+        self._cancel_requested.set()
+        collector = self.collector
+        if collector is not None:
+            collector.request_stop()
 
     def force_stop(self, reason: str = "force_stop") -> None:
-        self.collector.force_stop(reason)
+        self._force_stop_reason = reason
+        self._cancel_requested.set()
+        collector = self.collector
+        if collector is not None:
+            collector.force_stop(reason)
 
     def run(self) -> None:
         try:
+            store = OnlineMrSessionStore(self.paths)
+            self.collector = OnlineMrCollector(
+                self.config,
+                store,
+                connection_factory=self.connection_factory,
+                realtime_cache=self.realtime_cache,
+            )
+            if self._cancel_requested.is_set():
+                if self._force_stop_reason:
+                    self.collector.force_stop(self._force_stop_reason)
+                else:
+                    self.collector.request_stop()
             meta = self.collector.collect_config_only() if self.config_only else self.collector.start()
             self.started_session.emit(meta)
             if not self.config_only:
@@ -48,3 +74,5 @@ class OnlineMrCollectorWorker(QThread):
             self.completed.emit(meta.session_id)
         except Exception as exc:
             self.failed.emit(str(exc))
+        finally:
+            self.collector = None

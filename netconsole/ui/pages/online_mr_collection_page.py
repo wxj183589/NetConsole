@@ -1372,7 +1372,7 @@ class OnlineMrCollectionPage(QWidget):
         else:
             view_layout.addWidget(self._text_label("online_mr.view_device"))
             self.view_device_combo.setMinimumWidth(260)
-            self.view_device_combo.setMaximumWidth(360)
+            self.view_device_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             view_layout.addWidget(self.view_device_combo)
         self.parse_session_button.setMinimumWidth(140)
         view_layout.addWidget(self.parse_session_button)
@@ -1385,7 +1385,7 @@ class OnlineMrCollectionPage(QWidget):
         self.parse_progress_bar.setValue(0)
         self.parse_progress_bar.setTextVisible(True)
         self.parse_progress_bar.setMinimumWidth(180)
-        self.parse_progress_bar.setMaximumWidth(260)
+        self.parse_progress_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.parse_progress_bar.setVisible(False)
         view_layout.addWidget(self.parse_progress_bar)
         self.parse_progress_label.setMinimumWidth(220)
@@ -5000,7 +5000,7 @@ class OnlineMrCollectionPage(QWidget):
             button.setMinimumHeight(34)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setMinimumWidth(72)
-        self.status_label.setMaximumWidth(140)
+        self.status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.status_label.setMinimumHeight(28)
         for label in (self.site_label, self.available_metric_label, self.selected_metric_label, self.running_metric_label):
             label.setMinimumWidth(0)
@@ -5011,25 +5011,21 @@ class OnlineMrCollectionPage(QWidget):
             label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
             combo.setMinimumWidth(220)
-            combo.setMaximumWidth(360)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for target in (self.fping_target_label_1, self.fping_target_label_2):
             target.setMinimumWidth(180)
-            target.setMaximumWidth(320)
             target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.iperf_server_edit.setMinimumWidth(220)
 
     def _configure_numeric_spin(self, spin: QAbstractSpinBox) -> None:
         spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         spin.setMinimumWidth(110)
-        spin.setMaximumWidth(140)
         spin.setMinimumHeight(28)
         spin.setKeyboardTracking(False)
         spin.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
     def _configure_numeric_line_edit(self, edit: QLineEdit) -> None:
         edit.setMinimumWidth(110)
-        edit.setMaximumWidth(140)
         edit.setMinimumHeight(28)
         edit.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -5081,7 +5077,6 @@ class OnlineMrCollectionPage(QWidget):
         grid.addWidget(self.radio_port, radio_row, 1)
         if self.advanced_box is not None:
             self.advanced_box.setMinimumWidth(260)
-            self.advanced_box.setMaximumWidth(320)
             self.advanced_box.setMinimumHeight(190)
             outer.addWidget(self.advanced_box, 0, 1, alignment=Qt.AlignTop)
         outer.addLayout(grid, 0, 0, alignment=Qt.AlignTop)
@@ -5163,11 +5158,9 @@ class OnlineMrCollectionPage(QWidget):
         layout.addStretch(1)
         for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
             combo.setMinimumWidth(220)
-            combo.setMaximumWidth(360)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for target in (self.fping_target_label_1, self.fping_target_label_2):
             target.setMinimumWidth(180)
-            target.setMaximumWidth(320)
             target.setMinimumHeight(28)
             target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return box
@@ -5418,7 +5411,6 @@ class OnlineMrCollectionPage(QWidget):
         box = QGroupBox()
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         box.setMinimumWidth(260)
-        box.setMaximumWidth(320)
         box.setMinimumHeight(190)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(8, 8, 8, 8)

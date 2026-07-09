@@ -208,11 +208,13 @@ class MeshPeerDetailDialog(QDialog):
         for value in (30, 60, 120, 300, 0):
             self.visible_samples_combo.addItem(self.i18n.t("mesh_analysis.all_samples") if value == 0 else str(value), value)
         self.visible_samples_combo.setCurrentIndex(2)
-        self.visible_samples_combo.setMaximumWidth(110)
+        self.visible_samples_combo.setMinimumWidth(110)
+        self.visible_samples_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         controls_layout.addWidget(self.visible_samples_combo)
         controls_layout.addWidget(self.show_switch_points_checkbox)
         for button in (self.unlock_point_button, self.clear_focus_button, self.center_button, self.reset_button):
-            button.setMaximumWidth(120)
+            button.setMinimumWidth(96)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             button.setMinimumHeight(24)
             button.setMaximumHeight(28)
             controls_layout.addWidget(button)

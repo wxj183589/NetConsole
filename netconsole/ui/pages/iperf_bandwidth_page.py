@@ -218,7 +218,7 @@ class IperfBandwidthPage(QWidget):
             if hasattr(spin, "setButtonSymbols"):
                 spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.client_bandwidth_unit_combo.setMinimumWidth(64)
-        self.client_bandwidth_unit_combo.setMaximumWidth(76)
+        self.client_bandwidth_unit_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
     def _connect_signals(self) -> None:
         self.server_start_button.clicked.connect(self.start_server)

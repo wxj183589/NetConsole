@@ -165,9 +165,11 @@ class DeviceManagementPage(QWidget):
 
         self.search_input.setMinimumWidth(240)
         self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.vendor_filter.setFixedWidth(130)
-        self.type_filter.setFixedWidth(130)
-        self.group_filter.setFixedWidth(170)
+        self.vendor_filter.setMinimumWidth(130)
+        self.type_filter.setMinimumWidth(130)
+        self.group_filter.setMinimumWidth(170)
+        for combo in (self.vendor_filter, self.type_filter, self.group_filter):
+            combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.selection_label.setMinimumWidth(130)
         self.selection_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
@@ -429,10 +431,8 @@ class DeviceManagementPage(QWidget):
         show_non_focus_window(self, dialog, key="external_terminal_settings", activate=False, raise_window=False)
 
     def generate_securecrt_sessions(self) -> None:
-        devices = self.table.checked_devices() or self._filtered_devices()
-        if not devices:
-            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
-            return
+        selected_devices = self.table.checked_devices()
+        selected_device_uuids = [str(device.device_uuid or "") for device in selected_devices if str(device.device_uuid or "")]
         output_dir = QFileDialog.getExistingDirectory(self, self.i18n.t("external_terminal.select_output_dir"), "")
         if not output_dir:
             return
@@ -443,14 +443,14 @@ class DeviceManagementPage(QWidget):
             "SecureCRT Session (*.ini);;All Files (*)",
         )
         template = Path(template_path) if template_path else Path()
-        group_names = {int(group.id): group.name for group in self._list_groups() if group.id is not None}
         submit_export_task(
             self,
             securecrt_sessions_spec(
                 output_dir,
-                devices=[device.to_record() for device in devices],
+                db_path=self.repository.database.path,
                 site_name=self.site_name,
-                group_names=group_names,
+                selected_device_uuids=selected_device_uuids,
+                filters=self._current_device_filters(),
                 template_ini=template if template.is_file() else None,
                 title=self.i18n.t("devices.generate_crt_sessions"),
                 open_dir_on_success=True,

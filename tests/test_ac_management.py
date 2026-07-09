@@ -5086,7 +5086,10 @@ def test_ac_overview_page_rows_match_trackside_export_overview_sheet(tmp_path):
         ],
     )
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
-    overview_rows = page.current_overview_rows()
+    overview_rows = build_ap_online_overview_rows(
+        planned_aps=repository.list_fit_ap_metadata(),
+        fit_ap_resources=repository.list_fit_ap_resources_with_metadata(ac.device_uuid),
+    )
     export_path = tmp_path / "trackside_same_overview.xlsx"
 
     export_trackside_ap_business_xlsx(

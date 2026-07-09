@@ -79,20 +79,19 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.fit_ap_optical_export import (
-    OPTICAL_EXPORT_COLOR_RGB,
     evaluate_fit_ap_ap_status,
     evaluate_fit_ap_row_status,
     evaluate_fit_ap_switch_status,
     export_fit_ap_optical_xlsx,
-    fit_ap_optical_export_value as _fit_ap_optical_export_value,
 )
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
 from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
 from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
-from netconsole.services.export import ExportJob, ExportTaskSpec
+from netconsole.services.export import ExportJob
 from netconsole.services.export.export_task_builders import (
     ap_online_overview_xlsx_spec,
     fit_ap_csv_spec,
+    fit_ap_optical_xlsx_spec,
     fit_ap_extension_template_xlsx_spec,
     fit_ap_extension_xlsx_spec,
 )
@@ -620,6 +619,7 @@ class AcManagementPage(QWidget):
         self.trackside_rows: list[dict[str, object | None]] = []
         self.offline_ap_stats: dict[str, object | None] = {}
         self.offline_ap_ledger_rows: list[dict[str, object | None]] = []
+        self.overview_rows: list[dict[str, object | None]] = []
         self._offline_ap_context_loaded = False
         self._device_list_loaded = False
         self._loaded_feature_ids: set[str] = set()
@@ -1715,14 +1715,6 @@ class AcManagementPage(QWidget):
         self._sync_visible_resource_selection()
         return sorted(self.selected_ap_keys)
 
-    def checked_or_all_ap_rows(self) -> list[dict[str, object | None]]:
-        ac_uuid = self.current_device_uuid()
-        if not ac_uuid:
-            return []
-        rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
-        selected = set(self.selected_ap_names())
-        return [row for row in rows if not selected or self._ap_selection_key(row) in selected]
-
     def update_selection_state(self, *_args) -> None:
         self._sync_visible_resource_selection()
         count = len(self.selected_ap_names())
@@ -1820,8 +1812,17 @@ class AcManagementPage(QWidget):
         )
 
     def _start_background_job(self, task_type: str, params: dict[str, object], *, title: str) -> str:
+        for context in self._background_jobs.values():
+            if str(context.get("task_type") or "") == task_type:
+                self.status_label.setText(f"{title}：后台处理中...")
+                return str(context.get("job_id") or "")
         job_id = uuid.uuid4().hex
-        self._background_jobs[job_id] = {"task_type": task_type, "title": title, **params}
+        params = {
+            **params,
+            "app_root": str(self.settings.paths.app_root),
+            "data_root": str(self.settings.paths.data_root),
+        }
+        self._background_jobs[job_id] = {"job_id": job_id, "task_type": task_type, "title": title, **params}
         self.status_label.setText(f"{title}：后台处理中...")
         self.background_manager.start_job(BackgroundJob(job_id=job_id, task_type=task_type, params=params))
         return job_id
@@ -1854,6 +1855,18 @@ class AcManagementPage(QWidget):
             self.status_label.setText(f"{title}：完成")
             self.refresh_ap_extensions()
             self.refresh_data()
+            return
+        if task_type == "ac_overview_refresh":
+            self._finish_overview_refresh(result)
+            return
+        if task_type == "ac_overview_history_snapshot":
+            count = int(result.get("count") or 0)
+            MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.history_snapshot_saved"))
+            app_logger.log_info("AP_ONLINE_OVERVIEW_HISTORY_SAVE", f"count={count}")
+            return
+        if task_type == "ac_trackside_business_refresh":
+            self._finish_trackside_refresh(result)
+            return
 
     def _background_failed(self, event: dict) -> None:
         job_id = str(event.get("job_id") or "")
@@ -2081,13 +2094,15 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("ap.export_info"), make_fit_ap_export_filename(self.site_name), CSV_FILTER)
         if not path:
             return
-        rows = self.checked_or_all_ap_rows()
+        selected_keys = self.selected_ap_names()
         submit_export_task(
             self,
             fit_ap_csv_spec(
                 path,
                 db_path=self.repository.database.path,
-                rows=rows,
+                ac_uuid=self.current_device_uuid() or "",
+                filters={} if selected_keys else self.current_resource_filters(),
+                selected_ap_keys=selected_keys,
                 title=self.i18n.t("ap.export_info"),
                 open_dir_on_success=True,
             ),
@@ -2095,7 +2110,7 @@ class AcManagementPage(QWidget):
             paths=self.settings.paths,
         )
         remember_export_path(path)
-        app_logger.log_info("FIT_AP_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("FIT_AP_EXPORT", f"selected={len(selected_keys)}, file={path.name}")
 
     def export_omnipeek_name_table(self) -> None:
         self.feature_gate.assert_enabled("ac.omnipeek_name_table_export")
@@ -2265,72 +2280,44 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_table"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        self.refresh_overview_table()
-        rows = self.filtered_optical_rows()
-        optical_rows = []
-        for row in rows:
-            export_row = dict(row)
-            for _key, field in FIT_AP_OPTICAL_COLUMNS:
-                export_row[field] = _fit_ap_optical_export_value(row, field)
-            export_row["_row_status"] = evaluate_fit_ap_row_status(row)
-            optical_rows.append(export_row)
         submit_export_task(
             self,
-            ExportTaskSpec(
-                task_type="multi_sheet_xlsx",
-                output_path=str(path),
+            fit_ap_optical_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                ac_uuid=self.current_device_uuid() or "",
+                filters=self.current_optical_filters(),
+                columns=FIT_AP_OPTICAL_COLUMNS,
+                headers=[self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS],
+                overview_headers=[self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+                app_root=self.settings.paths.app_root,
+                data_root=self.settings.paths.data_root,
                 title=self.i18n.t("ac.export_table"),
                 open_dir_on_success=True,
-                payload={
-                    "sheets": [
-                        {
-                            "sheet_name": "AP上线情况概览",
-                            "columns": [
-                                {"key": field, "title": self.i18n.t(key), "text": True}
-                                for key, field in AP_ONLINE_OVERVIEW_COLUMNS
-                            ],
-                            "rows": self.current_overview_rows(),
-                            "freeze_header": True,
-                            "auto_filter": True,
-                        },
-                        {
-                            "sheet_name": "FIT-AP光衰",
-                            "columns": [
-                                {"key": field, "title": self.i18n.t(key), "text": True}
-                                for key, field in FIT_AP_OPTICAL_COLUMNS
-                            ],
-                            "rows": optical_rows,
-                            "freeze_header": True,
-                            "auto_filter": True,
-                            "row_fill_field": "_row_status",
-                            "row_fill_colors": OPTICAL_EXPORT_COLOR_RGB,
-                        },
-                    ]
-                },
             ),
             success_title=self.i18n.t("ac.export_table"),
             paths=self.settings.paths,
         )
         remember_export_path(path)
-        app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"ac={self.current_device_uuid() or '-'}, file={path.name}")
 
     def export_overview_table(self) -> None:
         path = select_export_path(self, self.i18n.t("ac.export_overview"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        self.refresh_overview_table()
-        self.ensure_offline_ap_context_loaded(force=True)
-        rows = self.current_overview_rows()
         submit_export_task(
             self,
             ap_online_overview_xlsx_spec(
                 path,
-                rows=rows,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                ac_uuid=self.current_device_uuid() or "",
                 headers=[self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-                offline_ap_stats=self.offline_ap_stats,
-                offline_ap_ledger_rows=self.offline_ap_ledger_rows,
                 offline_ap_stats_headers=offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
                 offline_ap_ledger_headers=offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+                app_root=self.settings.paths.app_root,
+                data_root=self.settings.paths.data_root,
                 title=self.i18n.t("ac.export_overview"),
                 open_dir_on_success=True,
             ),
@@ -2338,7 +2325,7 @@ class AcManagementPage(QWidget):
             paths=self.settings.paths,
         )
         remember_export_path(path)
-        app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"ac={self.current_device_uuid() or '-'}, file={path.name}")
 
     def export_trackside_table(self) -> None:
         if self.trackside_export_job_id is not None:
@@ -2448,9 +2435,15 @@ class AcManagementPage(QWidget):
         self.refresh_devices()
 
     def save_overview_history_snapshot(self) -> None:
-        count = self.repository.save_station_online_summary_history(self.current_overview_rows())
-        MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.history_snapshot_saved"))
-        app_logger.log_info("AP_ONLINE_OVERVIEW_HISTORY_SAVE", f"count={count}")
+        ac_uuid = self.current_device_uuid()
+        if not ac_uuid:
+            MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), "请先选择 AC 设备。")
+            return
+        self._start_background_job(
+            "ac_overview_history_snapshot",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name, "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.ap_online_overview"),
+        )
 
     def open_overview_history(self) -> None:
         site_name = self.selected_overview_site()
@@ -2469,32 +2462,40 @@ class AcManagementPage(QWidget):
             return None
         return item.text()
 
-    def current_overview_rows(self) -> list[dict[str, object | None]]:
-        return [self._table_row_to_dict(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, row) for row in range(self.overview_table.rowCount())]
+    def cached_overview_rows(self) -> list[dict[str, object | None]]:
+        return [dict(row) for row in self.overview_rows]
 
     def refresh_overview_table(self, resources: list[dict[str, object | None]] | None = None) -> None:
         ac_uuid = self.current_device_uuid()
         if not ac_uuid:
+            self.overview_rows = []
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
             self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
             self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
             return
-        source_rows = resources if resources is not None else self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
-        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
-        capacity_details = self.repository.list_active_trackside_plan_capacity_details()
-        self._overview_uses_trackside_plan = bool(capacity_details)
-        if not capacity_details:
-            capacity_details = self.repository.list_station_ap_capacity_details()
-        self._set_rows(
-            self.overview_table,
-            AP_ONLINE_OVERVIEW_COLUMNS,
-            ApOnlineOverviewService.build_rows(
-                metadata_rows=self.repository.list_fit_ap_metadata(),
-                fit_ap_resources=source_rows,
-                optical_rows=current_optical_rows,
-                capacity_details=capacity_details,
-            ),
+        self._start_background_job(
+            "ac_overview_refresh",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name, "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.ap_online_overview"),
         )
+
+    def _finish_overview_refresh(self, result: dict[str, object]) -> None:
+        overview_rows = [dict(row) for row in result.get("overview_rows") or [] if isinstance(row, dict)]
+        offline_stats = dict(result.get("offline_ap_stats") or {})
+        offline_ledger = [dict(row) for row in result.get("offline_ap_ledger_rows") or [] if isinstance(row, dict)]
+        self._overview_uses_trackside_plan = bool(result.get("uses_trackside_plan"))
+        self.overview_rows = overview_rows
+        self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, overview_rows)
+        self.offline_ap_stats = offline_stats
+        self.offline_ap_ledger_rows = offline_ledger
+        self._offline_ap_context_loaded = True
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [offline_stats] if offline_stats else [])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, offline_ledger)
+        self.offline_loading_spinner.setVisible(False)
+        self.offline_loading_label.setVisible(bool(offline_ledger))
+        if offline_ledger:
+            self.offline_loading_label.setText(f"离线AP数据已更新，共 {len(offline_ledger)} 条")
+        self.status_label.setText(f"{self.i18n.t('ac.ap_online_overview')}：完成，共 {len(overview_rows)} 条")
 
     def _handle_trackside_plan_saved(self) -> None:
         self.refresh_overview_table()
@@ -2511,24 +2512,18 @@ class AcManagementPage(QWidget):
         self._device_optical_status_lookup = build_switch_data_lookup(devices, optical_by_device)
 
     def refresh_trackside_table(self) -> None:
-        devices = filter_station_switch_devices(self.device_repository.list(), self.device_repository.database, self.site_name)
-        interfaces_by_device = {str(device.device_uuid or ""): self.fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
-        optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
-        lldp_by_device = {str(device.device_uuid or ""): self.fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
-        lookup = self._device_optical_status_lookup or build_switch_data_lookup(devices, optical_by_device)
-        self.trackside_rows = build_trackside_ap_business_rows(
-            devices,
-            interfaces_by_device,
-            optical_by_device,
-            self.repository.list_all_fit_ap_optical(),
-            lldp_by_device,
-            self.repository.list_all_fit_ap_resources_with_metadata(),
-            lookup,
-            self.repository.get_active_trackside_pvid_plan(),
-            self.offline_ap_ledger_rows,
+        ac_uuid = self.current_device_uuid()
+        self._start_background_job(
+            "ac_trackside_business_refresh",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name, "ac_uuid": ac_uuid or ""},
+            title="轨旁AP业务",
         )
+
+    def _finish_trackside_refresh(self, result: dict[str, object]) -> None:
+        self.trackside_rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
         self._set_trackside_site_filter_items(self.trackside_rows)
         self.apply_trackside_filters()
+        self.status_label.setText(self.i18n.t("trackside.loaded_count", count=len(self.trackside_rows)))
 
     def _set_site_filter_items(self, rows: list[dict[str, object | None]]) -> None:
         current = self.optical_site_filter.currentData()

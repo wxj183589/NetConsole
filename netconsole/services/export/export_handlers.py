@@ -20,6 +20,7 @@ from netconsole.services.export.common_exporters import (
     export_fit_ap_csv_task,
     export_fit_ap_extension_template_xlsx_task,
     export_fit_ap_extension_xlsx_task,
+    export_fit_ap_optical_xlsx_task,
     export_multi_sheet_xlsx,
     export_securecrt_sessions_task,
     export_snmp_query_result,
@@ -55,6 +56,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "snmp_query_result",
     "mib_product_compare",
     "fit_ap_csv",
+    "fit_ap_optical_xlsx",
     "fit_ap_extension_xlsx",
     "fit_ap_extension_template_xlsx",
     "ap_online_overview_xlsx",
@@ -106,6 +108,8 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_mib_product_compare(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_csv":
         row_count = export_fit_ap_csv_task(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "fit_ap_optical_xlsx":
+        row_count = export_fit_ap_optical_xlsx_task(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_extension_xlsx":
         row_count = export_fit_ap_extension_xlsx_task(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_extension_template_xlsx":

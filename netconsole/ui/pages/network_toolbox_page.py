@@ -357,7 +357,8 @@ class ToolResultPanel(QGroupBox):
         apply_button_icon(self.clear_button, "DELETE")
 
         for button in (self.export_csv_button, self.export_xlsx_button, self.clear_button):
-            button.setFixedWidth(92)
+            button.setMinimumWidth(92)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         layout = QVBoxLayout(self)
         actions = QHBoxLayout()
@@ -625,8 +626,7 @@ class NetworkToolboxPage(QWidget):
     def _action_button(self, text: str, slot, icon_name: str | None = None) -> QPushButton:
         button = QPushButton(text)
         button.setMinimumSize(104, 32)
-        button.setMaximumWidth(150)
-        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         apply_button_icon(button, icon_name)
         button.clicked.connect(slot)
         return button
@@ -635,8 +635,7 @@ class NetworkToolboxPage(QWidget):
         button = QPushButton(text)
         button.setObjectName("networkPingActionButton")
         button.setMinimumSize(100, 34)
-        button.setMaximumWidth(140)
-        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         apply_button_icon(button, icon_name)
         button.clicked.connect(slot)
         return button
@@ -658,8 +657,7 @@ class NetworkToolboxPage(QWidget):
         if spin and isinstance(widget, QAbstractSpinBox):
             widget.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
             widget.setMinimumWidth(136)
-            widget.setMaximumWidth(170)
-            widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
     def _ipv4_tab(self) -> QWidget:
         page, grid, actions, panel = self._tool_page("ipv4_calc")
@@ -734,7 +732,8 @@ class NetworkToolboxPage(QWidget):
         quick_row = QHBoxLayout()
         for size in (32, 1024, 4096, 8192):
             quick = QPushButton(f"{size}B")
-            quick.setFixedWidth(76)
+            quick.setMinimumWidth(76)
+            quick.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             quick.clicked.connect(lambda _checked=False, value=size: self.single_ping_size.setValue(value))
             quick_row.addWidget(quick)
         quick_row.addStretch(1)
@@ -817,8 +816,7 @@ class NetworkToolboxPage(QWidget):
 
         refresh = QPushButton("刷新网卡")
         refresh.setMinimumSize(112, 34)
-        refresh.setMaximumWidth(128)
-        refresh.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        refresh.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         apply_button_icon(refresh, "SYNC")
         refresh.clicked.connect(self.refresh_network_adapters)
         self.network_adapter_combo.currentIndexChanged.connect(self._network_adapter_changed)
@@ -920,7 +918,8 @@ class NetworkToolboxPage(QWidget):
         quick_row = QHBoxLayout()
         for label, port in (("HTTP:80", 80), ("HTTPS:443", 443), ("SSH:22", 22), ("RDP:3389", 3389), ("MySQL:3306", 3306), ("Redis:6379", 6379)):
             button = QPushButton(label)
-            button.setFixedWidth(92)
+            button.setMinimumWidth(92)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             button.clicked.connect(lambda _checked=False, value=port: self.tcp_port.setValue(value))
             quick_row.addWidget(button)
         quick_row.addStretch(1)
@@ -1456,7 +1455,7 @@ class NetworkToolboxPage(QWidget):
         spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
-        spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        spin.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         return spin
 
 

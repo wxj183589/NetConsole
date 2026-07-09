@@ -341,9 +341,10 @@ def device_template_csv_spec(output_path: str | Path, *, title: str = "", open_d
 def securecrt_sessions_spec(
     output_dir: str | Path,
     *,
-    devices: Iterable[Mapping[str, Any]],
+    db_path: str | Path,
     site_name: str,
-    group_names: Mapping[int, str] | Mapping[str, str] | None = None,
+    selected_device_uuids: Iterable[str] | None = None,
+    filters: Mapping[str, Any] | None = None,
     template_ini: str | Path | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
@@ -356,13 +357,10 @@ def securecrt_sessions_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "output_dir": str(output_dir_path),
-            "devices": inline_rows_source(
-                devices,
-                allow_inline_rows=True,
-                inline_reason="SecureCRT 会话导出依赖用户当前勾选设备集合",
-            )["rows"],
+            "db_path": str(db_path),
             "site_name": site_name,
-            "group_names": {str(key): value for key, value in dict(group_names or {}).items()},
+            "selected_device_uuids": [str(value) for value in selected_device_uuids or []],
+            "filters": dict(filters or {}),
             "template_ini": str(template_ini or ""),
         },
     )
@@ -442,9 +440,9 @@ def fit_ap_csv_spec(
     output_path: str | Path,
     *,
     db_path: str | Path,
-    rows: Iterable[Mapping[str, Any]] | None = None,
     ac_uuid: str = "",
     filters: Mapping[str, Any] | None = None,
+    selected_ap_keys: Iterable[str] | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -455,13 +453,9 @@ def fit_ap_csv_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "db_path": str(db_path),
-            "rows": inline_rows_source(
-                rows,
-                allow_inline_rows=True,
-                inline_reason="FIT-AP CSV 导出保留用户当前勾选/筛选结果",
-            )["rows"] if rows is not None else [],
             "ac_uuid": ac_uuid,
             "filters": dict(filters or {}),
+            "selected_ap_keys": [str(key) for key in selected_ap_keys or []],
         },
     )
 
@@ -531,12 +525,14 @@ def fit_ap_extension_template_xlsx_spec(
 def ap_online_overview_xlsx_spec(
     output_path: str | Path,
     *,
-    rows: Iterable[Mapping[str, Any]],
+    db_path: str | Path,
+    site_name: str,
+    ac_uuid: str,
     headers: Iterable[str],
-    offline_ap_stats: Mapping[str, Any],
-    offline_ap_ledger_rows: Iterable[Mapping[str, Any]],
     offline_ap_stats_headers: Iterable[str],
     offline_ap_ledger_headers: Iterable[str],
+    app_root: str | Path | None = None,
+    data_root: str | Path | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -546,20 +542,48 @@ def ap_online_overview_xlsx_spec(
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload={
-            "rows": inline_rows_source(
-                rows,
-                allow_inline_rows=True,
-                inline_reason="AP 在线概览为当前采集结果的报表快照",
-            )["rows"],
+            "db_path": str(db_path),
+            "site_name": site_name,
+            "ac_uuid": ac_uuid,
             "headers": [str(value) for value in headers],
-            "offline_ap_stats": dict(offline_ap_stats),
-            "offline_ap_ledger_rows": inline_rows_source(
-                offline_ap_ledger_rows,
-                allow_inline_rows=True,
-                inline_reason="AP 在线概览离线台账为当前报表快照的一部分",
-            )["rows"],
             "offline_ap_stats_headers": [str(value) for value in offline_ap_stats_headers],
             "offline_ap_ledger_headers": [str(value) for value in offline_ap_ledger_headers],
+            "app_root": str(app_root) if app_root is not None else "",
+            "data_root": str(data_root) if data_root is not None else "",
+        },
+    )
+
+
+def fit_ap_optical_xlsx_spec(
+    output_path: str | Path,
+    *,
+    db_path: str | Path,
+    site_name: str,
+    ac_uuid: str,
+    columns: Iterable[tuple[str, str] | Mapping[str, Any]],
+    headers: Iterable[str],
+    overview_headers: Iterable[str],
+    filters: Mapping[str, Any] | None = None,
+    app_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="fit_ap_optical_xlsx",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        payload={
+            "db_path": str(db_path),
+            "site_name": site_name,
+            "ac_uuid": ac_uuid,
+            "filters": dict(filters or {}),
+            "columns": column_specs(columns, headers),
+            "headers": [str(value) for value in headers],
+            "overview_headers": [str(value) for value in overview_headers],
+            "app_root": str(app_root) if app_root is not None else "",
+            "data_root": str(data_root) if data_root is not None else "",
         },
     )
 

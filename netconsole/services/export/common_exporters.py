@@ -259,12 +259,29 @@ def export_device_template_csv(path: Path, payload: Mapping[str, Any], progress:
 
 
 def export_securecrt_sessions_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> dict[str, Any]:
-    from netconsole.models.device import Device
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.securecrt_session_export import export_securecrt_sessions
 
     output_parent = Path(str(payload.get("output_dir") or path))
-    devices = [Device.from_mapping(dict(row)) for row in payload.get("devices") or [] if isinstance(row, Mapping)]
-    group_names = {int(key): str(value) for key, value in dict(payload.get("group_names") or {}).items()}
+    database = Database(Path(str(payload.get("db_path") or "")))
+    repository = DeviceRepository(database)
+    filters = dict(payload.get("filters") or {})
+    selected_uuids = {str(value).strip() for value in payload.get("selected_device_uuids") or [] if str(value).strip()}
+    devices = repository.list(
+        search=filters.get("search") or None,
+        vendor=filters.get("vendor") or None,
+        device_type=filters.get("device_type") or None,
+        group_filter=filters.get("group_filter"),
+    )
+    if selected_uuids:
+        devices = [device for device in devices if str(device.device_uuid or "").strip() in selected_uuids]
+    group_names = {
+        int(group.id): str(group.name)
+        for group in DeviceGroupRepository(database, str(payload.get("site_name") or "")).list()
+        if group.id is not None
+    }
     template_value = str(payload.get("template_ini") or "")
     template_ini = Path(template_value) if template_value else None
     _emit(progress, "write_securecrt_sessions", 0, len(devices), "正在生成 SecureCRT 会话")
@@ -508,11 +525,13 @@ def _fit_ap_import_export_service(payload: Mapping[str, Any]):
 
 
 def export_fit_ap_csv_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
-    if not rows:
-        ac_uuid = str(payload.get("ac_uuid") or "").strip()
-        if ac_uuid:
-            rows = _ac_repository(payload).list_fit_ap_resources_with_metadata(ac_uuid)
+    ac_uuid = str(payload.get("ac_uuid") or "").strip()
+    rows = _ac_repository(payload).list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else []
+    selected_keys = {str(key).strip() for key in payload.get("selected_ap_keys") or [] if str(key).strip()}
+    if selected_keys:
+        rows = [row for row in rows if _fit_ap_selection_key(row) in selected_keys]
+    else:
+        rows = _filter_fit_ap_rows(rows, dict(payload.get("filters") or {}))
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_fit_ap_csv", 0, len(rows), "正在导出 FIT-AP CSV")
     _check_cancel(should_cancel)
@@ -559,7 +578,10 @@ def export_fit_ap_extension_template_xlsx_task(path: Path, payload: Mapping[str,
 def export_ap_online_overview_xlsx_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     from netconsole.services.ap_online_overview import export_ap_online_overview_xlsx
 
-    rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
+    _emit(progress, "prepare_ap_online_overview", 0, 1, "正在查询 AP 在线概览数据")
+    _check_cancel(should_cancel)
+    overview = _build_ap_online_overview_payload(payload)
+    rows = [dict(row) for row in overview.get("overview_rows") or [] if isinstance(row, Mapping)]
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_ap_online_overview", 0, len(rows), "正在导出 AP 在线概览")
     _check_cancel(should_cancel)
@@ -567,13 +589,195 @@ def export_ap_online_overview_xlsx_task(path: Path, payload: Mapping[str, Any], 
         path,
         rows,
         [str(value) for value in payload.get("headers") or []],
-        dict(payload.get("offline_ap_stats") or {}),
-        [dict(row) for row in payload.get("offline_ap_ledger_rows") or [] if isinstance(row, Mapping)],
+        dict(overview.get("offline_ap_stats") or {}),
+        [dict(row) for row in overview.get("offline_ap_ledger_rows") or [] if isinstance(row, Mapping)],
         [str(value) for value in payload.get("offline_ap_stats_headers") or []],
         [str(value) for value in payload.get("offline_ap_ledger_headers") or []],
     )
     _emit(progress, "write_ap_online_overview", len(rows), len(rows), "AP 在线概览导出完成")
     return len(rows)
+
+
+def export_fit_ap_optical_xlsx_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
+    from netconsole.services.fit_ap_optical_export import export_fit_ap_optical_xlsx
+
+    _emit(progress, "prepare_fit_ap_optical", 0, 1, "正在查询 FIT-AP 光衰数据")
+    _check_cancel(should_cancel)
+    overview = _build_ap_online_overview_payload(payload)
+    optical_rows = _build_fit_ap_optical_rows(payload)
+    columns_payload = [dict(column) for column in payload.get("columns") or [] if isinstance(column, Mapping)]
+    columns = tuple((str(column.get("title") or column.get("key") or ""), str(column.get("key") or "")) for column in columns_payload)
+    headers = [str(value) for value in payload.get("headers") or []]
+    overview_headers = [str(value) for value in payload.get("overview_headers") or []]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _emit(progress, "write_fit_ap_optical", 0, len(optical_rows), "正在导出 FIT-AP 光衰")
+    _check_cancel(should_cancel)
+    export_fit_ap_optical_xlsx(
+        path,
+        optical_rows,
+        columns,
+        headers,
+        overview_rows=[dict(row) for row in overview.get("overview_rows") or [] if isinstance(row, Mapping)],
+        overview_headers=overview_headers,
+    )
+    _emit(progress, "write_fit_ap_optical", len(optical_rows), len(optical_rows), "FIT-AP 光衰导出完成")
+    return len(optical_rows)
+
+
+def _fit_ap_selection_key(row: Mapping[str, Any]) -> str:
+    return str(row.get("ap_uuid") or row.get("ap_name") or "").strip()
+
+
+def _filter_fit_ap_rows(rows: list[dict[str, Any]], filters: Mapping[str, Any]) -> list[dict[str, Any]]:
+    search = "".join(char for char in str(filters.get("search") or "").casefold() if char.isalnum())
+    if search:
+        fields = (
+            "ap_name",
+            "ap_mac",
+            "ap_ip",
+            "serial_number",
+            "rid1_bbssid",
+            "rid2_bbssid",
+            "rid3_bbssid",
+            "lldp_neighbor_mac",
+            "lldp_neighbor_interface",
+            "mileage",
+        )
+        rows = [
+            row
+            for row in rows
+            if any(search in "".join(char for char in str(row.get(field) or "").casefold() if char.isalnum()) for field in fields)
+        ]
+    group = str(filters.get("group") or "").strip()
+    if group:
+        rows = [row for row in rows if str(row.get("group_name") or "").strip() == group]
+    state = str(filters.get("state") or "").strip()
+    if state:
+        rows = [row for row in rows if _fit_ap_state_matches(row, state)]
+    return rows
+
+
+def _fit_ap_state_matches(row: Mapping[str, Any], selected: str) -> bool:
+    from netconsole.services.offline_ap_ledger import is_fit_ap_offline
+
+    if selected == "__offline__":
+        return is_fit_ap_offline(dict(row))
+    if selected == "__online__":
+        return not is_fit_ap_offline(dict(row))
+    values = {
+        str(row.get(field) or "").strip().casefold()
+        for field in ("state", "state_raw", "state_display")
+        if str(row.get(field) or "").strip()
+    }
+    return selected.casefold() in values
+
+
+def _build_fit_ap_optical_rows(payload: Mapping[str, Any]) -> list[dict[str, object | None]]:
+    from netconsole.core.database import Database
+    from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
+    from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_fact_repository import DeviceFactRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.fit_ap_optical_export import evaluate_fit_ap_ap_status
+    from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
+    from netconsole.utils.interface_sort import interface_sort_key
+
+    ac_uuid = str(payload.get("ac_uuid") or "").strip()
+    database = Database(Path(str(payload.get("db_path") or "")))
+    ac_repository = AcRepository(database)
+    device_repository = DeviceRepository(database)
+    fact_repository = DeviceFactRepository(database)
+    resources = ac_repository.list_fit_ap_resources_with_metadata(ac_uuid)
+    optical_rows = ac_repository.list_fit_ap_optical(ac_uuid)
+    devices = device_repository.list()
+    optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
+    switch_lookup = build_switch_data_lookup(devices, optical_by_device)
+    resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
+    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
+    enriched: list[dict[str, object | None]] = []
+    for row in optical_rows:
+        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
+        neighbor_name = None if _invalid_fit_ap_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name")
+        is_offline = is_fit_ap_offline(dict(resource)) or bool(row.get("is_ap_offline"))
+        enriched.append(
+            {
+                **row,
+                "ap_mac": row.get("ap_mac") or resource.get("ap_mac"),
+                "site": row.get("site") or resource.get("site_name") or resource.get("site") or "未归属",
+                "neighbor_device_name": neighbor_name,
+                "switch_optical_status": compute_switch_status(
+                    device_name=neighbor_name,
+                    interface_name=row.get("neighbor_interface"),
+                    lookup=switch_lookup,
+                ),
+                "is_ap_offline": is_offline,
+                "optical_alarm_status": OFFLINE_AP_STATUS_TEXT if is_offline else row.get("optical_alarm_status"),
+                "ap_optical_status": "offline" if is_offline else row.get("ap_optical_status"),
+                "data_source": "historical" if is_offline else row.get("data_source"),
+            }
+        )
+    filters = dict(payload.get("filters") or {})
+    rows = _filter_fit_ap_optical_export_rows(enriched, filters, evaluate_fit_ap_ap_status)
+    return sorted(
+        rows,
+        key=lambda row: (
+            1 if str(row.get("neighbor_device_name") or "").strip() in {"", "-"} else 0,
+            str(row.get("neighbor_device_name") or "").strip().casefold(),
+            interface_sort_key(row.get("neighbor_interface")),
+            str(row.get("ap_name") or ""),
+        ),
+    )
+
+
+def _filter_fit_ap_optical_export_rows(
+    rows: list[dict[str, object | None]],
+    filters: Mapping[str, Any],
+    status_func: Callable[[dict[str, object | None]], str],
+) -> list[dict[str, object | None]]:
+    result = rows
+    for field in ("ap_name", "site"):
+        needle = str(filters.get(field) or "").strip().casefold()
+        if needle:
+            result = [row for row in result if needle in str(row.get(field) or "").casefold()]
+    status = str(filters.get("optical_alarm_status") or "").strip()
+    if status:
+        result = [row for row in result if status_func(row) == status]
+    return result
+
+
+def _invalid_fit_ap_neighbor_text(value: object) -> bool:
+    lowered = str(value or "").casefold()
+    return any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr"))
+
+
+def _build_ap_online_overview_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ap_online_overview import ApOnlineOverviewService
+    from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
+
+    ac_uuid = str(payload.get("ac_uuid") or "").strip()
+    database = Database(Path(str(payload.get("db_path") or "")))
+    repository = AcRepository(database)
+    resources = repository.list_fit_ap_resources_with_metadata(ac_uuid)
+    optical_rows = repository.list_fit_ap_optical(ac_uuid)
+    capacity_details = repository.list_active_trackside_plan_capacity_details()
+    if not capacity_details:
+        capacity_details = repository.list_station_ap_capacity_details()
+    overview_rows = ApOnlineOverviewService.build_rows(
+        metadata_rows=repository.list_fit_ap_metadata(),
+        fit_ap_resources=resources,
+        optical_rows=optical_rows,
+        capacity_details=capacity_details,
+    )
+    latest_lldp, _latest_optical = build_latest_ap_history_indexes(repository, resources)
+    stats, ledger = build_offline_ap_ledger(
+        fit_ap_resources=resources,
+        latest_lldp_by_ap=latest_lldp,
+        device_lookup_by_name=build_device_lookup_by_name(DeviceRepository(database).list()),
+    )
+    return {"overview_rows": overview_rows, "offline_ap_stats": stats, "offline_ap_ledger_rows": ledger}
 
 
 def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> dict[str, Any]:

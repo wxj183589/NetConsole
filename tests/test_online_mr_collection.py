@@ -1221,10 +1221,14 @@ def test_collector_worker_cancel_only_requests_stop(tmp_path: Path, monkeypatch:
             calls.append("stop")
 
     monkeypatch.setattr("netconsole.ui.online_mr_collector_worker.OnlineMrCollector", FakeCollector)
-    worker = OnlineMrCollectorWorker(config, OnlineMrSessionStore(paths))
+    worker = OnlineMrCollectorWorker(config, paths)
 
     worker.cancel()
 
+    assert calls == []
+    assert worker._cancel_requested.is_set()
+    worker.collector = FakeCollector()
+    worker.cancel()
     assert calls == ["request_stop"]
 
 
@@ -1930,7 +1934,8 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert not hasattr(page, "profile_combo")
     assert not hasattr(page, "device_combo")
     assert not hasattr(page, "host_edit")
-    assert page.view_device_combo.maximumWidth() <= 360
+    assert page.view_device_combo.minimumWidth() >= 260
+    assert page.view_device_combo.maximumWidth() > 10000
     assert page.device_table.columnCount() == 9
     assert page.enable_iperf_check.isChecked() is False
     assert page.iperf_tcp_threshold_edit.text() == "600"
@@ -1957,7 +1962,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.start_button.minimumWidth() >= 104
     assert page.start_button.minimumHeight() >= 34
     assert page.status_label.minimumWidth() >= 72
-    assert page.status_label.maximumWidth() <= 140
+    assert page.status_label.maximumWidth() > 10000
     assert page.fping_status_label_1.parentWidget() is None
     assert page.fping_status_label_2.parentWidget() is None
     page._refresh_collection_animation()
@@ -1966,7 +1971,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.collect_param_box.minimumHeight() >= 220
     assert page.collect_param_box.maximumHeight() > 10000
     assert page.advanced_box.minimumWidth() >= 260
-    assert page.advanced_box.maximumWidth() <= 320
+    assert page.advanced_box.maximumWidth() > 10000
     assert page.advanced_box.minimumHeight() >= 190
     assert page.advanced_box.maximumHeight() > 10000
     assert not hasattr(page, "enable_wireless_status_check")
@@ -2002,9 +2007,9 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.fping_loss_warn_edit.text() == "0.7"
     assert page.fping_loss_warn_edit.minimumWidth() >= 110
     assert page.fping_device_combo_1.minimumWidth() >= 220
-    assert page.fping_device_combo_1.maximumWidth() <= 360
+    assert page.fping_device_combo_1.maximumWidth() > 10000
     assert page.fping_target_label_1.minimumWidth() >= 160
-    assert page.fping_target_label_1.maximumWidth() <= 320
+    assert page.fping_target_label_1.maximumWidth() > 10000
     page.page_scroll.resize(1180, 760)
     page._update_realtime_responsive_layout()
     assert page.main_splitter.orientation() == Qt.Vertical
@@ -2032,7 +2037,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     for spin in numeric_spins:
         assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
         assert spin.minimumWidth() >= 100
-        assert spin.maximumWidth() <= 140
+        assert spin.maximumWidth() > 10000
     assert page.fping_packet_size.maximum() == 65535
     assert page.fping_interval_ms.minimum() == 1
     assert page.fping_loss_threshold_ms.maximum() == 60000
@@ -3700,7 +3705,7 @@ def test_online_mr_stop_all_does_not_block_on_slow_connection(tmp_path: Path) ->
     collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=lambda _: SlowConnection())
     collector.session = OnlineMrSessionStore(paths).create_session(config)
     collector.connection = SlowConnection()
-    worker = OnlineMrCollectorWorker(config, OnlineMrSessionStore(paths), connection_factory=lambda _: SlowConnection())
+    worker = OnlineMrCollectorWorker(config, paths, connection_factory=lambda _: SlowConnection())
     worker.collector = collector
     page.workers["session-1"] = worker
     page.workers_by_device_id[int(device.id)] = worker

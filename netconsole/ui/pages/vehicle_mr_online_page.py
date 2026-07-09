@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
+import uuid
 
 from PySide6.QtCore import QDateTime, Qt, QTime, Signal
 from PySide6.QtWidgets import (
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QDateTimeEdit,
+    QSizePolicy,
     QSplitter,
     QSpinBox,
     QTableWidget,
@@ -44,6 +46,7 @@ from netconsole.services.vehicle_mr_online import (
     ONLINE_POLICY_AUTO,
     VehicleMrOnlineSnapshot,
     VehicleMrOnlineStore,
+    VehicleMrEndState,
     VehicleMrTrainMapping,
     VehicleMrTrainState,
     build_mapping_lookup,
@@ -92,6 +95,39 @@ VEHICLE_MR_HISTORY_EXPORT_COLUMNS = (
 )
 
 
+def _vehicle_train_state_map(payload: object) -> dict[str, VehicleMrTrainState]:
+    result: dict[str, VehicleMrTrainState] = {}
+    if not isinstance(payload, dict):
+        return result
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            result[str(key)] = _vehicle_train_state_from_dict(value)
+    return result
+
+
+def _vehicle_train_state_from_dict(data: dict[str, object]) -> VehicleMrTrainState:
+    values = dict(data)
+    for field in ("tc1", "tc2"):
+        if isinstance(values.get(field), dict):
+            values[field] = VehicleMrEndState(**dict(values[field]))
+    return VehicleMrTrainState(**values)
+
+
+def _vehicle_ap_lookup_from_payload(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {"__resources__": []}
+    result: dict[str, object] = {}
+    for key, value in payload.items():
+        if isinstance(value, list):
+            result[str(key)] = [MatchedAp(**dict(item)) if isinstance(item, dict) else item for item in value]
+        elif isinstance(value, dict):
+            result[str(key)] = MatchedAp(**dict(value))
+        else:
+            result[str(key)] = value
+    result.setdefault("__resources__", [])
+    return result
+
+
 class VehicleMrOnlinePage(QWidget):
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str, paths: PathResolver) -> None:
         super().__init__()
@@ -100,6 +136,10 @@ class VehicleMrOnlinePage(QWidget):
         self.site_name = site_name
         self.paths = paths
         self.store = VehicleMrOnlineStore(paths, site_name)
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._refresh_background_finished)
+        self.background_manager.failed.connect(self._refresh_background_failed)
+        self._refresh_job_id: str | None = None
         self.devices: list[Device] = []
         self.group_names: dict[int, str] = {}
         self.registered_trains: dict[str, VehicleMrTrainState] = {}
@@ -118,7 +158,7 @@ class VehicleMrOnlinePage(QWidget):
         self.interval_spin.setRange(3, 300)
         self.interval_spin.setValue(10)
         self.interval_spin.setMinimumWidth(80)
-        self.interval_spin.setMaximumWidth(90)
+        self.interval_spin.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.interval_unit_label = QLabel("秒")
         self.interval_unit_label.setMinimumWidth(24)
         self.start_button = QPushButton("开始")
@@ -166,7 +206,6 @@ class VehicleMrOnlinePage(QWidget):
         self._build_ui()
         self._connect_signals()
         self._apply_button_icons()
-        self.store.cleanup_history(30)
         self.refresh_all()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
@@ -182,29 +221,68 @@ class VehicleMrOnlinePage(QWidget):
         self.refresh_all()
 
     def refresh_all(self) -> None:
-        self.devices = self.repository.list()
-        self.group_names = load_group_names(self.repository, self.site_name)
-        device_trains = build_registered_trains(self.devices, self.group_names)
-        mapping_trains = build_mapping_trains(self.store.list_mappings())
-        self.registered_trains = {**device_trains, **mapping_trains}
-        self.store.cleanup_history(30)
-        self.store.merge_duplicate_current_states_by_train_no(self.registered_trains)
-        self.store.cleanup_history(30)
-        persisted = self.store.load_current_states()
-        merged = {**self.registered_trains, **persisted}
-        for train_id, train in self.registered_trains.items():
-            if train_id in persisted:
-                persisted[train_id].is_registered = True
-                persisted[train_id].online_policy = train.online_policy
-                persisted[train_id].expected_end = train.expected_end
-                persisted[train_id].direction = train.direction
-                merged[train_id] = persisted[train_id]
-        self.current_trains = merged
-        self._refresh_ap_lookup(update_label=True)
+        if self._refresh_job_id is not None:
+            self.status_label.setText("刷新中")
+            return
+        if self.train_table.rowCount() == 0:
+            self._fill_train_table([])
+        self._refresh_job_id = uuid.uuid4().hex
+        self.refresh_button.setEnabled(False)
+        self.status_label.setText("刷新中")
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=self._refresh_job_id,
+                task_type="vehicle_mr_online_refresh_all",
+                params={
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
+
+    def _refresh_background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        result = dict(event.get("result") or {})
+        if job_id == self._refresh_job_id:
+            self._refresh_job_id = None
+            self.refresh_button.setEnabled(True)
+            self._apply_refresh_result(result)
+            return
+        for dialog in list(self.history_windows):
+            handler = getattr(dialog, "handle_background_result", None)
+            if callable(handler) and handler(job_id, result):
+                return
+
+    def _refresh_background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        message = str(event.get("message") or event.get("error") or "后台任务失败")
+        if job_id == self._refresh_job_id:
+            self._refresh_job_id = None
+            self.refresh_button.setEnabled(True)
+            self.status_label.setText("刷新失败")
+            MessageBox.warning(self, "列车在线情况", message)
+            return
+        for dialog in list(self.history_windows):
+            handler = getattr(dialog, "handle_background_error", None)
+            if callable(handler) and handler(job_id, message):
+                return
+
+    def _apply_refresh_result(self, result: dict[str, object]) -> None:
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        self.group_names = {int(key): str(value) for key, value in dict(result.get("group_names") or {}).items()}
+        self.registered_trains = _vehicle_train_state_map(result.get("registered_trains"))
+        self.current_trains = _vehicle_train_state_map(result.get("current_trains"))
+        self.ap_lookup = _vehicle_ap_lookup_from_payload(result.get("ap_lookup"))
+        resources = self.ap_lookup.get("__resources__")
+        count = len(resources) if isinstance(resources, list) else 0
+        self.ap_hint_label.setText("" if count else "请先在 AC管理 → FIT-AP资源 中更新 AP 资源")
         self._fill_ac_combo()
         self._fill_train_table(sorted(self.current_trains.values(), key=train_sort_key))
         self._update_stats()
         self._update_buttons()
+        self.status_label.setText("刷新完成")
 
     def retranslate(self) -> None:
         self.title_label.setText("列车在线情况")
@@ -229,7 +307,6 @@ class VehicleMrOnlinePage(QWidget):
         if config is None:
             MessageBox.warning(self, "列车在线情况", "AC 连接信息不完整。")
             return
-        self.store.merge_duplicate_current_states_by_train_no(self.registered_trains)
         self._set_collection_status("连接中")
         self.error_label.setText("")
         self.worker = VehicleMrOnlineWorker(
@@ -267,15 +344,6 @@ class VehicleMrOnlinePage(QWidget):
         dialog.exec()
 
     def on_mapping_saved(self) -> None:
-        self.devices = self.repository.list()
-        self.group_names = load_group_names(self.repository, self.site_name)
-        self.registered_trains = {
-            **build_registered_trains(self.devices, self.group_names),
-            **build_mapping_trains(self.store.list_mappings()),
-        }
-        if self.worker is not None:
-            self.worker.collector.registered_trains = self.registered_trains
-            self.worker.collector.mapping_lookup = build_mapping_lookup(self.store.list_mappings())
         self.refresh_all()
 
     def on_snapshot(self, snapshot: VehicleMrOnlineSnapshot) -> None:
@@ -639,6 +707,8 @@ class VehicleMrHistoryQueryDialog(QDialog):
         self.store = store
         self.train = train
         self.rows: list[dict[str, object]] = []
+        self.background_manager = getattr(parent, "background_manager", None)
+        self.query_job_id: str | None = None
         self.setWindowTitle(f"历史记录 - {train.display_name}")
         self.resize(920, 560)
         self.start_edit = QDateTimeEdit()
@@ -715,18 +785,57 @@ class VehicleMrHistoryQueryDialog(QDialog):
         self._apply_widths()
 
     def query(self) -> None:
+        if self.query_job_id is not None:
+            return
         end_label = "" if self.end_combo.currentText() == "全部" else self.end_combo.currentText()
         status = "" if self.status_combo.currentText() == "全部" else self.status_combo.currentText()
-        self.rows = self.store.query_events(
-            self.train.train_id,
-            self.start_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
-            self.end_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
-            car_end_label=end_label,
-            status=status,
-            station=self.station_edit.text().strip(),
-            ap_name=self.ap_edit.text().strip(),
+        manager = self.background_manager
+        if manager is None:
+            MessageBox.warning(self, "历史查询失败", "后台任务管理器不可用。")
+            return
+        self.query_job_id = uuid.uuid4().hex
+        self.query_button.setEnabled(False)
+        self.hint_label.setText("正在查询历史记录...")
+        manager.start_job(
+            BackgroundJob(
+                job_id=self.query_job_id,
+                task_type="vehicle_mr_history_query",
+                params={
+                    "site_name": self.store.site_name,
+                    "app_root": str(self.store.paths.app_root),
+                    "data_root": str(self.store.paths.data_root),
+                    "train_id": self.train.train_id,
+                    "start_time": self.start_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                    "end_time": self.end_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                    "car_end_label": end_label,
+                    "status": status,
+                    "station": self.station_edit.text().strip(),
+                    "ap_name": self.ap_edit.text().strip(),
+                    "limit": 1000,
+                },
+            )
         )
+
+    def handle_background_result(self, job_id: str, result: dict[str, object]) -> bool:
+        if job_id != self.query_job_id:
+            return False
+        self.query_job_id = None
+        self.query_button.setEnabled(True)
+        self.rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+        limit = int(result.get("limit") or 1000)
+        suffix = "，已按 1000 条限制显示" if len(self.rows) >= limit else ""
+        self.hint_label.setText(f"查询完成，共 {len(self.rows)} 条{suffix}")
         self._fill_rows()
+        return True
+
+    def handle_background_error(self, job_id: str, message: str) -> bool:
+        if job_id != self.query_job_id:
+            return False
+        self.query_job_id = None
+        self.query_button.setEnabled(True)
+        self.hint_label.setText("查询失败")
+        MessageBox.warning(self, "历史查询失败", message)
+        return True
 
     def reset(self) -> None:
         now = QDateTime.currentDateTime()
@@ -869,7 +978,12 @@ class VehicleMrMappingDialog(QDialog):
         self.background_manager.start_job(
             BackgroundJob(
                 task_type="vehicle_mr_mapping_import",
-                params={"path": path, "site_name": self.store.site_name},
+                params={
+                    "path": path,
+                    "site_name": self.store.site_name,
+                    "app_root": str(self.store.paths.app_root),
+                    "data_root": str(self.store.paths.data_root),
+                },
             )
         )
 

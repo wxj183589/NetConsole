@@ -41,6 +41,7 @@ from netconsole.services.trackside_ap_business import (
     build_trackside_site_filter_items,
     filter_trackside_ap_business_rows,
     format_trackside_display_value,
+    summarize_trackside_ap_online_counts,
     trackside_row_status,
 )
 from netconsole.services.offline_ap_ledger import (
@@ -49,7 +50,6 @@ from netconsole.services.offline_ap_ledger import (
     load_offline_ap_cache,
     offline_ap_headers,
 )
-from netconsole.services.ap_online_overview import ApOnlineOverviewService
 from netconsole.services.export import ExportJob
 from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
@@ -110,11 +110,6 @@ def _trackside_ap_identity_key(row: dict[str, object | None]) -> tuple[str, str]
             continue
         return (field, text.casefold())
     return None
-
-
-def _is_ac_resource_online(row: dict[str, object | None]) -> bool:
-    state = str(row.get("state") or row.get("state_raw") or row.get("state_display") or "").strip().upper()
-    return state in {"R", "R/M", "R/B", "RUN", "RUNNING", "ONLINE", "NORMAL", "UP", "CONNECTED", "1", "在线"}
 
 
 def trackside_minimum_column_widths() -> dict[str, int]:
@@ -967,7 +962,7 @@ class TracksideApServicePage(QWidget):
         if self.trackside_rows:
             filtered_rows = self.filtered_trackside_rows()
             counts = current_trackside_status_counts(filtered_rows)
-            ac_online = self.ac_online_count_from_summary_or_resources()
+            ac_online, _offline = summarize_trackside_ap_online_counts(self.trackside_rows)
             offline_stats, offline_ledger_rows, *_ = self.offline_ap_export_context()
             self.status_label.setText(
                 self.i18n.t(
@@ -1004,34 +999,6 @@ class TracksideApServicePage(QWidget):
             tooltip_key = TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS.get(field)
             label = self.i18n.t(label_key)
             item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else self.i18n.t("trackside.tooltip.default", label=label))
-
-    def ap_online_overview_rows(self) -> list[dict[str, object | None]]:
-        capacity_details = self.ac_repository.list_active_trackside_plan_capacity_details()
-        if not capacity_details:
-            capacity_details = self.ac_repository.list_station_ap_capacity_details()
-        return ApOnlineOverviewService.build_rows(
-            metadata_rows=self.ac_repository.list_fit_ap_metadata(),
-            fit_ap_resources=self.ac_repository.list_all_fit_ap_resources_with_metadata(),
-            optical_rows=self.ac_repository.list_all_fit_ap_optical(),
-            capacity_details=capacity_details,
-        )
-
-    def ap_online_overview_counts(self) -> tuple[int, int]:
-        overview_rows = self.ap_online_overview_rows()
-        total_row = next((row for row in overview_rows if str(row.get("site") or "") == "合计"), overview_rows[-1] if overview_rows else {})
-        return int(total_row.get("online") or 0), int(total_row.get("offline") or 0)
-
-    def ac_online_count_from_summary_or_resources(self) -> int:
-        summary_total = 0
-        for row in self.ac_repository.list_ac_ap_summaries():
-            value = row.get("connected_aps") or row.get("online_aps")
-            try:
-                summary_total += int(value or 0)
-            except (TypeError, ValueError):
-                continue
-        if summary_total:
-            return summary_total
-        return sum(1 for row in self.ac_repository.list_all_fit_ap_resources_with_metadata() if _is_ac_resource_online(row))
 
     def offline_ap_export_context(self):
         cached = load_offline_ap_cache(PathResolver().offline_ap_cache_path)

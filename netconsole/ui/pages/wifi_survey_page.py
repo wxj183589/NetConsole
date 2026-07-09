@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -217,7 +218,7 @@ class WifiSurveyPage(QWidget):
     def _build_layout(self) -> None:
         controls = QWidget()
         controls.setMinimumWidth(340)
-        controls.setMaximumWidth(380)
+        controls.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         left = QVBoxLayout(controls)
         left.addWidget(self.title_label)
         left.addWidget(QLabel("图纸"))
@@ -260,7 +261,7 @@ class WifiSurveyPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setMinimumWidth(360)
-        scroll.setMaximumWidth(400)
+        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         scroll.setWidget(controls)
 
         splitter = QSplitter()

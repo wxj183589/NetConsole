@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
+from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -146,6 +147,24 @@ class NoWheelSpinBox(QSpinBox):
         event.ignore()
 
 
+def _car_network_nodes_from_payload(payload: object) -> list[CarNetworkNode]:
+    return [CarNetworkNode(**dict(row)) for row in payload or [] if isinstance(row, dict)]
+
+
+def _car_network_trains_from_payload(payload: object) -> list[CarNetworkTrain]:
+    trains: list[CarNetworkTrain] = []
+    for row in payload or []:
+        if not isinstance(row, dict):
+            continue
+        data = dict(row)
+        for key in ("tc1_device", "tc2_device"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                data[key] = Device.from_mapping(value)
+        trains.append(CarNetworkTrain(**data))
+    return trains
+
+
 class CarNetworkDiagnosticPage(QWidget):
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str, paths: PathResolver) -> None:
         super().__init__()
@@ -170,6 +189,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.background_manager = BackgroundProcessManager(self, paths=paths)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
+        self._background_job_context: dict[str, str] = {}
         self.car_network_point_table_window: PointTableDialog | None = None
         self.task_rows: dict[str, tuple[QTableWidget, int]] = {}
         self.log_lines: list[str] = []
@@ -198,7 +218,8 @@ class CarNetworkDiagnosticPage(QWidget):
         self.status_label = QLabel("未检测")
         self._set_status_badge_state("pending")
         self.toggle_left_button = QPushButton("收起 «")
-        self.toggle_left_button.setFixedWidth(76)
+        self.toggle_left_button.setMinimumWidth(76)
+        self.toggle_left_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -261,18 +282,11 @@ class CarNetworkDiagnosticPage(QWidget):
         self.refresh_all()
 
     def refresh_all(self) -> None:
-        stored_nodes = self.store.load()
-        self.trains = build_car_network_trains(self.repository, self.site_name)
-        if not self.trains:
-            self.trains = self._fallback_trains_from_nodes(stored_nodes)
-        self.trains = self._sorted_trains(self.trains)
-        self.nodes = self._view_nodes(stored_nodes)
-        if self.trains and self.current_train_id not in {train.train_id for train in self.trains}:
-            self.current_train_id = self.trains[0].train_id
-        self._fill_train_table()
-        self._refresh_topology()
-        self._fill_point_rows()
-        self._update_buttons()
+        self._start_background_job(
+            "car_network_refresh_all",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name},
+            "刷新车内通信点表",
+        )
 
     def retranslate(self) -> None:
         self.title_label.setText("车内通信检测系统")
@@ -518,19 +532,61 @@ class CarNetworkDiagnosticPage(QWidget):
         self.background_manager.start_job(
             BackgroundJob(
                 task_type="car_network_point_table_import",
-                params={"path": path, "site_name": self.site_name},
+                params={
+                    "path": path,
+                    "site_name": self.site_name,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
             )
         )
 
     def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        task_type = self._background_job_context.pop(job_id, "")
         result = dict(event.get("result") or {})
+        if task_type == "car_network_refresh_all":
+            self._apply_background_point_table(result)
+            return
+        if task_type == "car_network_generate_point_table":
+            nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            if not nodes:
+                MessageBox.information(self, "从设备管理生成", "设备管理的车载分组中没有识别到可用节点。")
+                return
+            self.nodes = nodes
+            MessageBox.information(self, "从设备管理生成", f"已生成/刷新 {len({node.train_no for node in nodes if node.train_no})} 列车点表，已保留手工地址映射。")
+            self.refresh_all()
+            return
         if "count" not in result:
             return
         MessageBox.information(self, "导入车内通信点表", f"导入完成：{int(result.get('count') or 0)} 条")
         self.refresh_all()
 
     def _background_failed(self, event: dict) -> None:
-        MessageBox.warning(self, "导入车内通信点表", str(event.get("message") or event.get("error") or "导入失败"))
+        job_id = str(event.get("job_id") or "")
+        self._background_job_context.pop(job_id, None)
+        MessageBox.warning(self, "车内通信点表", str(event.get("message") or event.get("error") or "后台任务失败"))
+
+    def _start_background_job(self, task_type: str, params: dict[str, object], title: str) -> str:
+        params = {
+            **params,
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+        }
+        job_id = self.background_manager.start_job(BackgroundJob(task_type=task_type, params=params))
+        self._background_job_context[job_id] = task_type
+        self.status_label.setText(f"{title}中...")
+        return job_id
+
+    def _apply_background_point_table(self, result: dict[str, object]) -> None:
+        self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+        self.trains = _car_network_trains_from_payload(result.get("trains"))
+        if self.trains and self.current_train_id not in {train.train_id for train in self.trains}:
+            self.current_train_id = self.trains[0].train_id
+        self._fill_train_table()
+        self._refresh_topology()
+        self._fill_point_rows()
+        self._update_buttons()
 
     def export_points(self) -> None:
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
@@ -544,14 +600,17 @@ class CarNetworkDiagnosticPage(QWidget):
         submit_export_task(self, spec, success_title="导出车内通信点表", paths=self.paths)
 
     def generate_from_devices(self) -> None:
-        generated = generate_point_table_from_devices(self.repository, self.site_name, self.store.load(), self.config_store.load())
-        if not generated:
-            MessageBox.information(self, "从设备管理生成", "设备管理的车载分组中没有识别到可用节点。")
-            return
-        self.store.save(generated)
-        self.nodes = generated
-        MessageBox.information(self, "从设备管理生成", f"已生成/刷新 {len({node.train_no for node in generated if node.train_no})} 列车点表，已保留手工地址映射。")
-        self.refresh_all()
+        self._start_background_job(
+            "car_network_generate_point_table",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self.nodes],
+                "global_config": self.config_store.load(),
+                "save_result": True,
+            },
+            "从设备管理生成",
+        )
 
     def open_point_table(self) -> None:
         if self.car_network_point_table_window is not None and self.car_network_point_table_window.isVisible():
@@ -655,7 +714,6 @@ class CarNetworkDiagnosticPage(QWidget):
         left = QWidget()
         self.left_panel = left
         left.setMinimumWidth(180)
-        left.setMaximumWidth(320)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.toggle_left_button)
@@ -757,10 +815,9 @@ class CarNetworkDiagnosticPage(QWidget):
             self.left_content.setVisible(not self.left_collapsed)
         self.toggle_left_button.setText("列车列表 »" if self.left_collapsed else "收起 «")
         self._apply_button_icons()
-        self.toggle_left_button.setFixedWidth(34 if self.left_collapsed else 76)
+        self.toggle_left_button.setMinimumWidth(34 if self.left_collapsed else 76)
         if self.left_panel is not None:
             self.left_panel.setMinimumWidth(34 if self.left_collapsed else 220)
-            self.left_panel.setMaximumWidth(36 if self.left_collapsed else 320)
         if self.main_splitter is not None:
             left_width = 34 if self.left_collapsed else max(220, min(320, self.left_expanded_width))
             self.main_splitter.setSizes([left_width, max(900, self.width() - left_width)])
@@ -1068,9 +1125,10 @@ class PointTableDialog(QDialog):
         self.site_name = site_name
         self.store = store
         self.config_store = config_store
-        self.background_manager = BackgroundProcessManager(self)
+        self.background_manager = BackgroundProcessManager(self, paths=store.paths)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
+        self._background_job_context: dict[str, str] = {}
         self.global_config = merge_global_config(self.config_store.load())
         self.nodes = self.store.load()
         self.setWindowTitle("车内通信点表")
@@ -1241,8 +1299,17 @@ class PointTableDialog(QDialog):
     def _toggle_locked(self) -> None:
         self.locked = not self.locked
         self.global_config = self._read_global_rule_widgets()
-        self.config_store.save(self.global_config)
         self._update_lock_state()
+        self._start_background_job(
+            "car_network_save_point_table",
+            {
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "overwrite_custom": False,
+            },
+            context="car_network_save_lock_state",
+        )
 
     def _update_lock_state(self) -> None:
         self.lock_button.setText("解锁编辑" if self.locked else "锁定编辑")
@@ -1405,16 +1472,31 @@ class PointTableDialog(QDialog):
         if self._guard_locked("从设备管理生成"):
             return
         self.global_config = self._read_global_rule_widgets()
-        self.nodes = generate_point_table_from_devices(self.repository, self.site_name, self._rows_to_nodes(), self.global_config)
-        self._reload_filters()
-        self._fill_table()
+        self._start_background_job(
+            "car_network_generate_point_table",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "save_result": False,
+            },
+        )
 
     def _save_global_rules(self) -> None:
         if self._guard_locked("保存全局规则"):
             return
         self.global_config = self._read_global_rule_widgets()
-        self.config_store.save(self.global_config)
-        MessageBox.information(self, "车内通信点表", "全局规则已保存。")
+        self._start_background_job(
+            "car_network_save_point_table",
+            {
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "overwrite_custom": False,
+            },
+            context="car_network_save_global_rules",
+        )
 
     def _apply_global_rules(self, overwrite_custom: bool) -> None:
         if self._guard_locked("应用全局规则"):
@@ -1439,20 +1521,53 @@ class PointTableDialog(QDialog):
         self.background_manager.start_job(
             BackgroundJob(
                 task_type="car_network_point_table_import",
-                params={"path": path, "site_name": self.site_name},
+                params={
+                    "path": path,
+                    "site_name": self.site_name,
+                    "app_root": str(self.store.paths.app_root),
+                    "data_root": str(self.store.paths.data_root),
+                },
             )
         )
 
     def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        task_type = self._background_job_context.pop(job_id, "")
         result = dict(event.get("result") or {})
+        if task_type == "car_network_generate_point_table":
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            self._reload_filters()
+            self._fill_table()
+            return
+        if task_type == "car_network_save_point_table":
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            self.accept()
+            return
+        if task_type in {"car_network_save_global_rules", "car_network_save_lock_state"}:
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            if task_type == "car_network_save_global_rules":
+                MessageBox.information(self, "车内通信点表", "全局规则已保存。")
+            return
         if "count" not in result:
             return
-        self.nodes = self.store.load()
+        self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
         self._reload_filters()
         self._fill_table()
 
     def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        self._background_job_context.pop(job_id, None)
         MessageBox.warning(self, "导入车内通信点表", str(event.get("message") or event.get("error") or "导入失败"))
+
+    def _start_background_job(self, task_type: str, params: dict[str, object], *, context: str = "") -> str:
+        params = {
+            **params,
+            "app_root": str(self.store.paths.app_root),
+            "data_root": str(self.store.paths.data_root),
+        }
+        job_id = self.background_manager.start_job(BackgroundJob(task_type=task_type, params=params))
+        self._background_job_context[job_id] = context or task_type
+        return job_id
 
     def _export(self) -> None:
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
@@ -1466,10 +1581,15 @@ class PointTableDialog(QDialog):
         if self._guard_locked("保存点表"):
             return
         self.global_config = self._read_global_rule_widgets()
-        self.nodes = normalize_train_network_defaults(self._rows_to_nodes(), self.global_config, overwrite_custom=False)
-        self.config_store.save(self.global_config)
-        self.store.save(self.nodes)
-        self.accept()
+        self._start_background_job(
+            "car_network_save_point_table",
+            {
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "overwrite_custom": False,
+            },
+        )
 
 
 def _node_ip_summary(node: CarNetworkNode | None) -> str:

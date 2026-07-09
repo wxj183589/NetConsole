@@ -11,6 +11,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_tasks import run_background_task
 from netconsole.services.rail_transit import car_network_diagnostic as car_diag
 from netconsole.services.rail_transit.car_network_diagnostic import (
     AcApStatus,
@@ -88,6 +90,21 @@ def _cross_ok() -> dict[str, SshResult]:
             },
         ),
     }
+
+
+def _apply_car_network_refresh(page: car_page.CarNetworkDiagnosticPage, paths: PathResolver, database: Database) -> None:
+    result = run_background_task(
+        BackgroundJob(
+            task_type="car_network_refresh_all",
+            params={
+                "db_path": str(database.path),
+                "site_name": "demo",
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+            },
+        )
+    )
+    page._apply_background_point_table(result)
 
 
 def _point_table_with_prefix(train_id: str = "LC06", train_no: str = "06", prefix: str = "10.122.6") -> list[CarNetworkNode]:
@@ -1157,6 +1174,7 @@ def test_rail_transit_contains_car_network_tab_and_train_from_devices(tmp_path: 
     page._ensure_feature_page("rail.car_network_diagnostic")
 
     assert page.tabs.tabText(1) == "车内通信检测"
+    _apply_car_network_refresh(page.car_network_page, paths, database)
     assert page.car_network_page.train_table.item(0, 0).text() == "06车"
     assert page.car_network_page.train_table.item(0, 1).text() == "未检测"
     assert not hasattr(page.car_network_page, "generate_button")
@@ -1188,7 +1206,7 @@ def test_car_network_fixed_topology_uses_scrollable_canvas(tmp_path: Path) -> No
     assert page.log_output.minimumHeight() >= 100
     assert page.json_output.minimumHeight() >= 100
     assert page.left_panel.minimumWidth() >= (34 if page.left_collapsed else 180)
-    assert page.left_panel.maximumWidth() <= (36 if page.left_collapsed else 320)
+    assert page.left_panel.maximumWidth() > 10000
     assert page.node_buttons["TC1-MR"].minimumWidth() >= 128
     assert page.node_buttons["TC2-MR"].minimumHeight() >= 58
 
@@ -1213,6 +1231,7 @@ def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Pat
     )
 
     page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
+    _apply_car_network_refresh(page, paths, database)
 
     assert [train.train_no for train in page.trains] == [f"{index:02d}" for index in range(1, 19)]
     assert [page.train_table.item(row, 0).data(Qt.UserRole) for row in range(page.train_table.rowCount())][5] == "ZZZ-LC06"

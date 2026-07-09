@@ -51,6 +51,8 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.mib_dictionary_service import MibDictionaryService
 from netconsole.services.mib_index_service import MibIndexService
 from netconsole.services.mib_product_reference_compare_service import COMPARE_HEADERS, MibProductReferenceCompareService, ProductReferenceCompareResult
@@ -535,6 +537,12 @@ class MibResourcePage(QWidget):
         self.center = center
         self.worker: MibImportWorker | None = None
         self.recompile_worker: MibRecompileWorker | None = None
+        self.refresh_job_id: str | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.background_manager.progress.connect(self._refresh_progress)
+        self.background_manager.finished.connect(self._refresh_finished)
+        self.background_manager.failed.connect(self._refresh_failed)
+        self.background_manager.cancelled.connect(self._refresh_failed)
         self.vendor_input = QLineEdit()
         self.source_input = QLineEdit("用户手动导入")
         self.url_input = QLineEdit()
@@ -636,53 +644,46 @@ class MibResourcePage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        file_rows = [
-            ["ASN.1 MIB", row.get("file_name"), row.get("module_name"), row.get("compile_status"), row.get("file_hash"), row.get("error_message")]
-            for row in self.center.global_repo.list_files()
-        ]
-        file_rows.extend(
-            [
-                [
-                    "产品参考表",
-                    Path(str(row.get("source_file") or "")).name,
-                    row.get("reference_name"),
-                    f"对象覆盖 {row.get('object_override_count', 0)} / Trap 覆盖 {row.get('trap_override_count', 0)}",
-                    row.get("file_hash"),
-                    "",
-                ]
-                for row in self.center.global_repo.list_product_references()
-            ]
+        if self.refresh_job_id is not None:
+            self.status.setText("MIB 资源库正在后台刷新...")
+            return
+        params = {
+            "db_path": str(self.center.paths.global_mib_db_path()),
+            "only_missing": self.only_missing.isChecked(),
+            "app_root": str(self.center.paths.app_root),
+            "data_root": str(self.center.paths.data_root),
+        }
+        self.status.setText("MIB 资源库正在后台刷新...")
+        self.refresh_job_id = self.background_manager.start_job(
+            BackgroundJob(task_type="snmp_mib_resource_refresh", params=params)
         )
-        fill_table(
-            self.file_table,
-            file_rows,
-        )
-        modules = self.center.global_repo.list_modules()
-        if self.only_missing.isChecked():
-            modules = [row for row in modules if row.get("status") == "missing_dependencies"]
-        fill_table(
-            self.module_table,
-            [
-                [
-                    module_display_name(row),
-                    row.get("status"),
-                    row.get("object_count"),
-                    row.get("table_count"),
-                    row.get("trap_count"),
-                    row.get("error_message") or ("缺少依赖，未统计对象/表/Trap" if row.get("status") == "missing_dependencies" else ""),
-                ]
-                for row in modules
-            ],
-        )
-        missing = self.center.global_repo.list_missing_dependency_summary()
-        lines = [f"{row.get('dependency_module')}：影响 {row.get('affected_count')} 个 MIB" for row in missing]
-        if any(row.get("dependency_module") == "HH3C-OID-MIB" for row in missing):
-            lines.insert(0, "提示：大量 H3C 私有 MIB 依赖 HH3C-OID-MIB，请导入完整 H3C Comware MIB 包或补充 HH3C-OID-MIB。")
-        if any(str(row.get("dependency_module") or "") in {"SNMP-FRAMEWORK-MIB", "INET-ADDRESS-MIB", "Q-BRIDGE-MIB", "SNMPv2-SMI", "SNMPv2-TC", "SNMPv2-CONF"} for row in missing):
-            lines.insert(0, "提示：标准依赖缺失，请补齐内置标准 MIB 或导入标准 MIB 包。")
-        self.missing_summary.setPlainText("\n".join(lines) if lines else "当前没有缺失依赖。")
+
+    def _refresh_progress(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        message = str(event.get("message") or "")
+        if message:
+            self.status.setText(message)
+
+    def _refresh_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        result = dict(event.get("result") or {})
+        fill_table(self.file_table, [list(row) for row in result.get("file_rows") or [] if isinstance(row, list)])
+        fill_table(self.module_table, [list(row) for row in result.get("module_rows") or [] if isinstance(row, list)])
+        self.missing_summary.setPlainText(str(result.get("missing_summary") or "当前没有缺失依赖。"))
         self.file_table.setColumnWidth(3, 190)
         self.module_table.setColumnWidth(1, 190)
+        self.status.setText("MIB 资源库刷新完成。")
+
+    def _refresh_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        message = str(event.get("message") or event.get("error") or "MIB 资源库刷新失败")
+        self.status.setText(message)
+        MessageBox.warning(self, "MIB 资源库", message)
 
 
 class ProductReferenceComparePage(QWidget):
@@ -691,6 +692,13 @@ class ProductReferenceComparePage(QWidget):
         self.center = center
         self.worker: ProductReferenceCompareWorker | None = None
         self.last_compare: ProductReferenceCompareResult | None = None
+        self.references: list[dict[str, object]] = []
+        self.refresh_job_id: str | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.background_manager.progress.connect(self._refresh_progress)
+        self.background_manager.finished.connect(self._refresh_finished)
+        self.background_manager.failed.connect(self._refresh_failed)
+        self.background_manager.cancelled.connect(self._refresh_failed)
         self.page_offset = 0
         self.left_combo = QComboBox()
         self.right_combo = QComboBox()
@@ -763,7 +771,35 @@ class ProductReferenceComparePage(QWidget):
         layout.addWidget(self.result_table, 1)
 
     def refresh(self) -> None:
-        references = self.center.global_repo.list_product_references()
+        if self.refresh_job_id is not None:
+            self.status_label.setText("正在后台刷新产品 MIB 参考表...")
+            return
+        self.status_label.setText("正在后台刷新产品 MIB 参考表...")
+        self.refresh_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_product_references_refresh",
+                params={
+                    "db_path": str(self.center.paths.global_mib_db_path()),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
+
+    def _refresh_progress(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        message = str(event.get("message") or "")
+        if message:
+            self.status_label.setText(message)
+
+    def _refresh_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        result = dict(event.get("result") or {})
+        references = [dict(row) for row in result.get("references") or [] if isinstance(row, dict)]
+        self.references = references
         current_left = self.left_combo.currentData()
         current_right = self.right_combo.currentData()
         for combo, current in ((self.left_combo, current_left), (self.right_combo, current_right)):
@@ -778,6 +814,15 @@ class ProductReferenceComparePage(QWidget):
             combo.blockSignals(False)
         if self.right_combo.count() > 1 and self.right_combo.currentIndex() == self.left_combo.currentIndex():
             self.right_combo.setCurrentIndex(1)
+        self.status_label.setText(f"已加载 {len(references)} 份产品 MIB 参考表。")
+
+    def _refresh_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        message = str(event.get("message") or event.get("error") or "产品 MIB 参考表刷新失败")
+        self.status_label.setText(message)
+        MessageBox.warning(self, "产品参考对比", message)
 
     def start_compare(self) -> None:
         left_id = self.left_combo.currentData()
@@ -1049,6 +1094,14 @@ class MibBrowserPage(QWidget):
         self.product_tree_rebuild_worker: ProductReferenceTreeRebuildWorker | None = None
         self.last_result: SnmpQueryResult | None = None
         self.devices: list[Device] = []
+        self.product_references: list[dict[str, object]] = []
+        self.product_references_loaded = False
+        self.product_reference_job_id: str | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.background_manager.progress.connect(self._product_reference_progress)
+        self.background_manager.finished.connect(self._product_reference_finished)
+        self.background_manager.failed.connect(self._product_reference_failed)
+        self.background_manager.cancelled.connect(self._product_reference_failed)
         self.profile_overrides: dict[str, SnmpProfile] = {}
         self.temporary_profile: SnmpProfile | None = None
         self.temporary_name = ""
@@ -1230,6 +1283,7 @@ class MibBrowserPage(QWidget):
         self._set_view_hint_visible(False)
 
     def refresh(self) -> None:
+        self.product_references_loaded = False
         self.refresh_device_groups()
         self.refresh_devices()
         self.refresh_mib_tree()
@@ -1331,6 +1385,9 @@ class MibBrowserPage(QWidget):
         if tree_mode == TREE_MODE_H3C_PRODUCT:
             self.rebuild_product_tree_button.setVisible(True)
             self._set_view_hint_visible(False)
+            if not self.product_references_loaded:
+                self._start_product_references_refresh()
+                return
             self._build_product_reference_tree()
             return
         if not keyword:
@@ -1343,6 +1400,46 @@ class MibBrowserPage(QWidget):
         self._set_view_hint_visible(False)
         self.rebuild_product_tree_button.setVisible(False)
         self._start_tree_load("search", keyword=keyword, source_filter=source_filter, limit=500)
+
+    def _start_product_references_refresh(self) -> None:
+        if self.product_reference_job_id is not None:
+            self.path_label.setText("正在后台加载产品 MIB 参考表...")
+            return
+        self.path_label.setText("正在后台加载产品 MIB 参考表...")
+        self.product_reference_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_product_references_refresh",
+                params={
+                    "db_path": str(self.center.paths.global_mib_db_path()),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
+
+    def _product_reference_progress(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.product_reference_job_id or ""):
+            return
+        message = str(event.get("message") or "")
+        if message:
+            self.path_label.setText(message)
+
+    def _product_reference_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.product_reference_job_id or ""):
+            return
+        self.product_reference_job_id = None
+        result = dict(event.get("result") or {})
+        self.product_references = [dict(row) for row in result.get("references") or [] if isinstance(row, dict)]
+        self.product_references_loaded = True
+        self._build_product_reference_tree()
+
+    def _product_reference_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.product_reference_job_id or ""):
+            return
+        self.product_reference_job_id = None
+        message = str(event.get("message") or event.get("error") or "产品 MIB 参考表加载失败")
+        self.path_label.setText(message)
+        MessageBox.warning(self, "MIB 浏览器", message)
 
     def _enabled_dictionary_ids(self) -> list[int]:
         device = self._current_device()
@@ -1686,7 +1783,7 @@ class MibBrowserPage(QWidget):
 
     def _build_product_reference_tree(self) -> None:
         self.tree.clear()
-        references = self.center.global_repo.list_product_references()
+        references = list(self.product_references)
         if not references:
             self.tree.addTopLevelItem(QTreeWidgetItem(["尚未导入 H3C 产品 MIB 参考表", "", "product_reference"]))
             auto_resize_tree_columns(self.tree, {0: 260, 1: 220, 2: 120})
@@ -1765,7 +1862,7 @@ class MibBrowserPage(QWidget):
             if isinstance(data, dict) and data.get("reference_id"):
                 return int(data["reference_id"])
             current = current.parent()
-        references = self.center.global_repo.list_product_references()
+        references = list(self.product_references)
         return int(references[0]["id"]) if references else None
 
     def _start_rebuild_product_tree(self) -> None:
