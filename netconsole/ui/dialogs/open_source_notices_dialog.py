@@ -127,6 +127,8 @@ class OpenSourceNoticesDialog(QDialog):
                     rows=self._export_rows(),
                     sheet_name="开源许可",
                     title="导出开源许可说明",
+                    allow_inline_rows=True,
+                    inline_reason="开源许可清单为随应用固定的小型静态数据",
                 ),
                 success_title="导出开源许可说明",
             )

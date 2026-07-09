@@ -6,6 +6,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Mapping
 from uuid import uuid4
 
 from openpyxl import Workbook
@@ -199,6 +200,42 @@ def result_to_row(result: WirelessScanResult) -> dict[str, object]:
         "display_band": network.band or "Unknown",
         "display_channel_width": network.channel_width_text if network.channel_width_text and network.channel_width_text != "-" else (f"{network.channel_width_mhz} MHz" if network.channel_width_mhz else "-"),
         "display_mimo": _mimo_display(network),
+        "display_encryption_method": encryption_method,
+        "display_encryption": encryption,
+        "display_auth_method": auth_method,
+    }
+
+
+def repository_row_to_display_row(row: Mapping[str, object]) -> dict[str, object]:
+    location = row.get("matched_location")
+    encryption_method = row.get("encryption_method") or row.get("encryption") or "-"
+    encryption = row.get("security") or _security_display(str(row.get("auth") or ""))
+    auth_method = row.get("auth_method") or _auth_method(str(row.get("auth") or ""))
+    is_hidden = bool(int(row.get("is_hidden") or 0))
+    channel_width_mhz = row.get("channel_width_mhz")
+    channel_width_text = str(row.get("channel_width_text") or row.get("channel_width") or "")
+    display_channel_width = channel_width_text if channel_width_text and channel_width_text != "-" else (f"{channel_width_mhz} MHz" if channel_width_mhz else "-")
+    return {
+        **dict(row),
+        "matched_trackside_ap": int(row.get("matched_trackside_ap") or 0),
+        "matched_location": location,
+        "display_ssid": "Hidden" if is_hidden or not row.get("ssid") else row.get("ssid"),
+        "display_mac_address": format_h3c_mac(row.get("bssid")) or row.get("bssid") or "-",
+        "display_ap_mac": row.get("matched_ap_mac") or "-",
+        "display_ap_name": row.get("matched_ap_name") if row.get("matched_ap_name") and row.get("matched_ap_name") != "-" else "-",
+        "display_radio_id": row.get("matched_radio_id") or "-",
+        "display_station": row.get("matched_station") or "-",
+        "display_section": row.get("matched_section") or "-",
+        "display_belong_type": _belong_type_display(row.get("matched_belong_type")),
+        "display_belonging_source": row.get("matched_belonging_source") or row.get("match_rule") or "-",
+        "display_location_mileage": location or "-",
+        "display_rssi": row.get("rssi_dbm") if row.get("rssi_dbm") is not None else "-",
+        "display_signal_quality": row.get("quality") if row.get("quality") is not None else "-",
+        "display_channel": row.get("channel") if row.get("channel") is not None else "-",
+        "display_frequency": row.get("frequency_mhz") if row.get("frequency_mhz") is not None else "-",
+        "display_band": row.get("band") or "Unknown",
+        "display_channel_width": display_channel_width,
+        "display_mimo": row.get("mimo") or "-",
         "display_encryption_method": encryption_method,
         "display_encryption": encryption,
         "display_auth_method": auth_method,

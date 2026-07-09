@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 from dataclasses import asdict, dataclass
 from typing import Any
+import json
+from uuid import uuid4
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -49,19 +51,16 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
-from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
 from netconsole.services.mib_dictionary_service import MibDictionaryService
 from netconsole.services.mib_index_service import MibIndexService
 from netconsole.services.mib_product_reference_compare_service import COMPARE_HEADERS, MibProductReferenceCompareService, ProductReferenceCompareResult
-from netconsole.services.mib_resource_service import MibImportReport, MibResourceService
+from netconsole.services.mib_resource_service import MibImportReport
 from netconsole.services.mib_translation_service import translate_mib_description
 from netconsole.services.snmp_poll_service import SnmpPollService
-from netconsole.services.snmp_query_service import SnmpQueryService
 from netconsole.services.export.export_task_builders import mib_product_compare_spec, snmp_query_result_spec
 from netconsole.services.snmp_client import SnmpClient
 from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services.snmp_trap_service import SnmpTrapService
-from netconsole.services.topology_service import TopologyService
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
 from netconsole.ui.export_action_helper import submit_export_task
@@ -78,6 +77,14 @@ def snmp_action_button(text: str, icon_name: str | None = None) -> QPushButton:
     button = QPushButton(text)
     apply_button_icon(button, icon_name)
     return button
+
+
+def _write_snmp_result_cache(paths: PathResolver, result: SnmpQueryResult, prefix: str) -> Path:
+    cache_dir = paths.runtime_cache_dir / "snmp_query_results"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{prefix}_{uuid4().hex}.json"
+    path.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 RESULT_HEADERS = ["操作", "名称/OID", "值", "类型", "IP:端口", "状态", "耗时(ms)", "原始OID", "索引", "解码索引", "模块", "时间", "错误信息"]
 RESULT_COLUMN_WIDTHS = {
     "操作": 80,
@@ -485,8 +492,7 @@ class SnmpOverviewPage(QWidget):
         self.error_label.setText("错误：")
         for button in (self.init_button, self.rebuild_button, self.reset_button):
             button.setEnabled(False)
-        service = MibResourceService(self.center.paths, self.center.global_repo)
-        self.worker = SnmpInitWorker(service, action=action, clear_raw_files=clear_raw_files, parent=self)
+        self.worker = SnmpInitWorker(self.center.paths, action=action, clear_raw_files=clear_raw_files, parent=self)
         self.worker.progress.connect(self._append_log)
         self.worker.finished_with_result.connect(self._worker_finished)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -591,8 +597,7 @@ class MibResourcePage(QWidget):
             "source_name": self.source_input.text().strip() or "用户手动导入",
             "source_url": self.url_input.text().strip(),
         }
-        service = MibResourceService(self.center.paths, self.center.global_repo)
-        self.worker = MibImportWorker(service, paths, metadata, self)
+        self.worker = MibImportWorker(self.center.paths, paths, metadata, self)
         self.worker.progress.connect(self.status.setText)
         self.worker.finished_with_result.connect(self._import_finished)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -613,8 +618,7 @@ class MibResourcePage(QWidget):
         if self.recompile_worker is not None:
             MessageBox.information(self, "MIB 资源库", "当前已有重新编译任务正在执行。")
             return
-        service = MibResourceService(self.center.paths, self.center.global_repo)
-        self.recompile_worker = MibRecompileWorker(service, self)
+        self.recompile_worker = MibRecompileWorker(self.center.paths, self)
         self.recompile_worker.progress.connect(self.status.setText)
         self.recompile_worker.finished_with_result.connect(self._recompile_finished)
         self.recompile_worker.finished.connect(self.recompile_worker.deleteLater)
@@ -790,8 +794,7 @@ class ProductReferenceComparePage(QWidget):
         self.compare_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.status_label.setText("正在后台对比产品 MIB 参考表...")
-        service = MibProductReferenceCompareService(self.center.global_repo)
-        self.worker = ProductReferenceCompareWorker(service, int(left_id), int(right_id), self)
+        self.worker = ProductReferenceCompareWorker(self.center.paths.global_mib_db_path(), int(left_id), int(right_id), self)
         self.worker.progress.connect(self.status_label.setText)
         self.worker.finished_with_result.connect(self._compare_finished)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -975,7 +978,7 @@ class DeviceDictionaryRecommendPage(QWidget):
         device = self._current_device()
         if device is None:
             return
-        self.worker = DeviceSnmpDetectWorker(DeviceSnmpDetectService(), device, self)
+        self.worker = DeviceSnmpDetectWorker(device, self)
         self.worker.progress.connect(self.profile_text.setPlainText)
         self.worker.finished_with_result.connect(lambda result, device=device: self._detect_finished(device, result))
         self.worker.finished.connect(self.worker.deleteLater)
@@ -1987,7 +1990,7 @@ class MibBrowserPage(QWidget):
             self.set_worker.cancel()
         self._set_task_id += 1
         task_id = self._set_task_id
-        self.set_worker = SnmpSetWorker(SnmpQueryService(self.center.site_repo), request, self)
+        self.set_worker = SnmpSetWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
         self.set_worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._set_task_id else None)
         self.set_worker.finished_with_result.connect(lambda result, task_id=task_id: self._set_finished(result, task_id))
         self.set_worker.finished.connect(self.set_worker.deleteLater)
@@ -2091,7 +2094,7 @@ class MibBrowserPage(QWidget):
             self.worker.cancel()
         self._query_task_id += 1
         task_id = self._query_task_id
-        self.worker = SnmpQueryWorker(SnmpQueryService(self.center.site_repo), request, self)
+        self.worker = SnmpQueryWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
         self.worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._query_task_id else None)
         self.worker.finished_with_result.connect(lambda result, task_id=task_id: self._browser_query_finished(result, task_id))
         self.worker.finished.connect(self.worker.deleteLater)
@@ -2247,9 +2250,10 @@ class MibBrowserPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_browser_result.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
+        result_file = _write_snmp_result_cache(self.center.paths, self.last_result, "mib_browser")
         submit_export_task(
             self,
-            snmp_query_result_spec(path, result=asdict(self.last_result), title="导出 SNMP 查询结果", open_dir_on_success=True),
+            snmp_query_result_spec(path, result_file=result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
             success_title="MIB 浏览器",
             paths=self.center.paths,
         )
@@ -2398,7 +2402,7 @@ class SnmpQueryPage(QWidget):
             device_id=str(device.device_uuid or device.id),
             device_name=device.name,
         )
-        self.worker = SnmpQueryWorker(SnmpQueryService(self.center.site_repo), request, self)
+        self.worker = SnmpQueryWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
         self.worker.progress.connect(self.status.setText)
         self.worker.finished_with_result.connect(self._query_finished)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -2459,7 +2463,7 @@ class SnmpQueryPage(QWidget):
             module_name=str(data.get("module_name") or ""),
             access=str(data.get("access") or ""),
         )
-        self.set_worker = SnmpSetWorker(SnmpQueryService(self.center.site_repo), request, self)
+        self.set_worker = SnmpSetWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
         self.set_worker.progress.connect(self.status.setText)
         self.set_worker.finished_with_result.connect(self._set_finished)
         self.set_worker.finished.connect(self.set_worker.deleteLater)
@@ -2502,9 +2506,10 @@ class SnmpQueryPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_query.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
+        result_file = _write_snmp_result_cache(self.center.paths, self.last_result, "snmp_query")
         submit_export_task(
             self,
-            snmp_query_result_spec(path, result=asdict(self.last_result), title="导出 SNMP 查询结果", open_dir_on_success=True),
+            snmp_query_result_spec(path, result_file=result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
             success_title="SNMP 查询工具",
             paths=self.center.paths,
         )
@@ -2602,8 +2607,11 @@ class TopologyPage(QWidget):
         layout.addWidget(splitter, 1)
 
     def discover(self) -> None:
-        service = TopologyService(self.center.repository, self.center.site_repo)
-        self.worker = TopologyDiscoveryWorker(service, self)
+        self.worker = TopologyDiscoveryWorker(
+            self.center.paths.site_db_path(self.center.site_name),
+            self.center.paths.site_snmp_db_path(self.center.site_name),
+            self,
+        )
         self.worker.finished_with_result.connect(self._discovery_finished)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()

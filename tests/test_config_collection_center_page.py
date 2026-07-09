@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -16,6 +17,17 @@ from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_
 
 def app():
     return QApplication.instance() or QApplication([])
+
+
+def process_qt_until(predicate, *, timeout: float = 5.0) -> None:
+    qt_app = app()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("等待 Qt 异步任务超时")
 
 
 def test_snapshot_download_default_filename_includes_device_name(tmp_path):
@@ -83,6 +95,7 @@ def test_config_compare_tab_shows_running_on_left_and_saved_on_right(tmp_path):
     page.service._write_snapshot(device, "saved", "20260618_101200", "#\nsysname SAVED\n#\nreturn")
 
     page.compare_latest_snapshots()
+    process_qt_until(lambda: page.background_job_id is None)
 
     assert "运行中 ↔ 已保存" in page.diff_viewer.summary_label.text()
     rows = page.diff_viewer.table.rowCount()

@@ -28,7 +28,6 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.network_tools.iperf_runner import (
     IperfClientConfig,
-    IperfResultStore,
     IperfServerConfig,
     build_iperf_client_args,
     build_iperf_server_args,
@@ -296,8 +295,7 @@ class IperfBandwidthPage(QWidget):
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.paths.iperf_server_dir(self.site_name) / f"iperf_server_{stamp}.log"
         command = build_iperf_server_args(tool, IperfServerConfig(self.server_bind_edit.text(), self.server_port_spin.value(), self.server_interval_spin.value(), self.server_one_off.isChecked()))
-        store = IperfResultStore(self.paths.iperf_db_path(self.site_name))
-        self.server_worker = IperfProcessWorker(tool, command, log_file, store=store, mode="server", parent=self)
+        self.server_worker = IperfProcessWorker(tool, command, log_file, db_path=self.paths.iperf_db_path(self.site_name), mode="server", parent=self)
         self.server_worker.line_received.connect(self.server_output.append)
         self.server_worker.started.connect(lambda: self._set_server_state("RUNNING"))
         self.server_worker.completed.connect(self._server_completed)
@@ -331,8 +329,7 @@ class IperfBandwidthPage(QWidget):
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.paths.iperf_client_dir(self.site_name) / f"iperf_client_{stamp}.log"
         command = build_iperf_client_args(tool, config)
-        store = IperfResultStore(self.paths.iperf_db_path(self.site_name))
-        self.client_worker = IperfProcessWorker(tool, command, log_file, store=store, config=config, mode="client", parent=self)
+        self.client_worker = IperfProcessWorker(tool, command, log_file, db_path=self.paths.iperf_db_path(self.site_name), config=config, mode="client", parent=self)
         self.client_worker.line_received.connect(self.client_output.append)
         self.client_worker.interval_received.connect(self._append_interval)
         self.client_worker.failed.connect(lambda message: MessageBox.warning(self, self.i18n.t("network_tools.iperf"), message))

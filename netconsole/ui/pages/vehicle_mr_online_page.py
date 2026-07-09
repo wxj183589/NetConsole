@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
-import csv
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, Qt, QTime, Signal
@@ -32,6 +31,8 @@ from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.netmiko_connection import connection_targets
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.vehicle_mr_online import (
     TRAIN_STATUS_OFFLINE,
     TRAIN_STATUS_ONLINE,
@@ -64,7 +65,6 @@ from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
-from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
 
 VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS = (
@@ -236,7 +236,7 @@ class VehicleMrOnlinePage(QWidget):
             ac=ac,
             site_name=self.site_name,
             interval_seconds=self._interval_seconds(),
-            store=self.store,
+            paths=self.paths,
             registered_trains=self.registered_trains,
             ap_lookup=self.ap_lookup,
             mapping_lookup=build_mapping_lookup(self.store.list_mappings()),
@@ -753,6 +753,8 @@ class VehicleMrHistoryQueryDialog(QDialog):
                 rows=_vehicle_mr_history_export_rows(self.rows),
                 sheet_name="历史记录",
                 title="导出历史记录",
+                allow_inline_rows=True,
+                inline_reason="车载 MR 在线历史弹窗导出当前查询结果",
             ),
             success_title="导出历史记录",
         )
@@ -790,6 +792,9 @@ class VehicleMrMappingDialog(QDialog):
     def __init__(self, store: VehicleMrOnlineStore, parent=None) -> None:
         super().__init__(parent)
         self.store = store
+        self.background_manager = BackgroundProcessManager(self)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
         self.setWindowTitle("车载MR映射表管理")
         self.resize(860, 520)
         self.table = QTableWidget(0, 7)
@@ -861,15 +866,23 @@ class VehicleMrMappingDialog(QDialog):
         path, _filter = QFileDialog.getOpenFileName(self, "导入映射表", "", "映射表 (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            rows = _read_mapping_file(Path(path))
-            count = self.store.import_mapping_rows(rows)
-        except Exception as exc:
-            MessageBox.warning(self, "映射表导入失败", str(exc))
+        self.background_manager.start_job(
+            BackgroundJob(
+                task_type="vehicle_mr_mapping_import",
+                params={"path": path, "site_name": self.store.site_name},
+            )
+        )
+
+    def _background_finished(self, event: dict) -> None:
+        result = dict(event.get("result") or {})
+        if "count" not in result:
             return
-        MessageBox.information(self, "映射表导入", f"导入完成：{count} 条")
+        MessageBox.information(self, "映射表导入", f"导入完成：{int(result.get('count') or 0)} 条")
         self.saved.emit()
         self.load()
+
+    def _background_failed(self, event: dict) -> None:
+        MessageBox.warning(self, "映射表导入失败", str(event.get("message") or event.get("error") or "导入失败"))
 
     def export_template(self) -> None:
         default_path = Path.home() / "Desktop" / "车载MR映射模板.xlsx"
@@ -886,6 +899,8 @@ class VehicleMrMappingDialog(QDialog):
                 rows=VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
                 sheet_name="车载MR映射表",
                 title="导出映射模板",
+                allow_inline_rows=True,
+                inline_reason="车载 MR 映射模板为空白静态模板",
             ),
             success_title="导出映射模板",
         )
@@ -953,22 +968,6 @@ def _combo_data(table: QTableWidget, row: int, column: int, default: str = "") -
     if isinstance(widget, QComboBox):
         return str(widget.currentData() or default)
     return default
-
-
-def _read_mapping_file(path: Path) -> list[dict[str, object]]:
-    if path.suffix.lower() == ".csv":
-        with path.open("r", encoding="utf-8-sig", newline="") as file:
-            return [dict(row) for row in csv.DictReader(file)]
-    workbook = load_workbook_without_unsupported_image_warning(path, read_only=True, data_only=True)
-    sheet = workbook.active
-    rows = list(sheet.iter_rows(values_only=True))
-    if not rows:
-        return []
-    headers = [str(value or "").strip() for value in rows[0]]
-    result: list[dict[str, object]] = []
-    for values in rows[1:]:
-        result.append({headers[index]: value for index, value in enumerate(values) if index < len(headers)})
-    return result
 
 
 def export_vehicle_mr_mapping_template(path: Path) -> None:

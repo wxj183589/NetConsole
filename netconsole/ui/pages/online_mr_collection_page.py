@@ -104,18 +104,19 @@ from netconsole.services.online_mr.parser.event_parser_engine import EventParser
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
 from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
-from netconsole.services.export.export_task_builders import online_mr_report_xlsx_spec
 from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrParseWorker
+from netconsole.ui.online_mr_report_worker import OnlineMrReportExportWorker
 from netconsole.ui.components.button_icons import apply_button_icon
-from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
 
+
+QMessageBox = MessageBox
 
 TABLE_WIDTH_KEYS = {
     "session_summary": "online_mr/table_widths/session_summary",
@@ -427,6 +428,7 @@ class OnlineMrCollectionPage(QWidget):
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
         self.parse_worker: OnlineMrParseWorker | None = None
         self.analysis_load_worker: OnlineMrAnalysisLoadWorker | None = None
+        self.export_report_worker = None
         self._analysis_load_task_label = ""
         self._analysis_load_profile_phase = ""
         self._analysis_load_profile_start = 0.0
@@ -1746,7 +1748,7 @@ class OnlineMrCollectionPage(QWidget):
                 skipped.append(device.name)
                 self._update_device_status(device.id, self.i18n.t("online_mr.connection_incomplete"))
                 continue
-            worker = OnlineMrCollectorWorker(config, self.store, realtime_cache=self.realtime_cache, parent=self)
+            worker = OnlineMrCollectorWorker(config, self.paths, realtime_cache=self.realtime_cache, parent=self)
             if device.id is not None:
                 self.workers_by_device_id[int(device.id)] = worker
                 self.manager.register_device(int(device.id), worker)
@@ -2245,17 +2247,21 @@ class OnlineMrCollectionPage(QWidget):
         path_text, _filter = QFileDialog.getSaveFileName(self, self.i18n.t("online_mr.export_analysis_report"), str(default_path), "Excel (*.xlsx)")
         if not path_text:
             return
-        submit_export_task(
-            self,
-            online_mr_report_xlsx_spec(
-                Path(path_text),
-                session_dir=session_dir,
-                title=self.i18n.t("online_mr.export_analysis_report"),
-                open_dir_on_success=True,
-            ),
-            success_title=self.i18n.t("online_mr.export_analysis_report"),
-            paths=self.paths,
-        )
+        worker = OnlineMrReportExportWorker(session_dir, Path(path_text), self)
+        self.export_report_worker = worker
+        worker.completed.connect(self._analysis_report_export_finished)
+        worker.failed.connect(self._analysis_report_export_failed)
+        worker.completed.connect(worker.deleteLater)
+        worker.failed.connect(lambda _message: worker.deleteLater())
+        worker.start()
+
+    def _analysis_report_export_finished(self, output_path: str) -> None:
+        self.export_report_worker = None
+        QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
+
+    def _analysis_report_export_failed(self, message: str) -> None:
+        self.export_report_worker = None
+        MessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), message or "导出失败")
 
     def _parse_completed(self, session_dir: Path, summary) -> None:
         if not self._can_update_ui():
@@ -3239,7 +3245,6 @@ class OnlineMrCollectionPage(QWidget):
             tool,
             command,
             log_file,
-            store=None,
             session_id=meta.session_id,
             device_id=meta.device_id,
             config=client_config,
@@ -4950,8 +4955,8 @@ class OnlineMrCollectionPage(QWidget):
         combo = QComboBox()
         for value in (1, 2, 3):
             combo.addItem(str(value), value)
-        combo.setFixedWidth(90)
-        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        combo.setMinimumWidth(90)
+        combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         return combo
 
     def _label(self, key: str) -> QLabel:
@@ -4982,8 +4987,8 @@ class OnlineMrCollectionPage(QWidget):
             (self.iperf_direction_combo, 140),
             (self.view_device_combo, 260),
         ):
-            widget.setMaximumWidth(width)
-            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            widget.setMinimumWidth(min(width, 220))
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for button in (
             self.start_button,
             self.stop_selected_button,
@@ -4992,7 +4997,6 @@ class OnlineMrCollectionPage(QWidget):
             self.refresh_devices_button,
         ):
             button.setMinimumWidth(104)
-            button.setMaximumWidth(180)
             button.setMinimumHeight(34)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setMinimumWidth(72)
@@ -5003,9 +5007,8 @@ class OnlineMrCollectionPage(QWidget):
             label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         for label in (self.fping_status_label_1, self.fping_status_label_2):
             label.setMinimumWidth(150)
-            label.setMaximumWidth(240)
             label.setAlignment(Qt.AlignCenter)
-            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
             combo.setMinimumWidth(220)
             combo.setMaximumWidth(360)
@@ -5015,7 +5018,6 @@ class OnlineMrCollectionPage(QWidget):
             target.setMaximumWidth(320)
             target.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.iperf_server_edit.setMinimumWidth(220)
-        self.iperf_server_edit.setMaximumWidth(340)
 
     def _configure_numeric_spin(self, spin: QAbstractSpinBox) -> None:
         spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
@@ -5023,13 +5025,13 @@ class OnlineMrCollectionPage(QWidget):
         spin.setMaximumWidth(140)
         spin.setMinimumHeight(28)
         spin.setKeyboardTracking(False)
-        spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        spin.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
     def _configure_numeric_line_edit(self, edit: QLineEdit) -> None:
         edit.setMinimumWidth(110)
         edit.setMaximumWidth(140)
         edit.setMinimumHeight(28)
-        edit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        edit.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
     def _period_box(self) -> QGroupBox:
         box = QGroupBox()
@@ -5115,7 +5117,7 @@ class OnlineMrCollectionPage(QWidget):
         preset_label.setMinimumWidth(90)
         preset_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.fping_preset_combo.setMinimumWidth(220)
-        self.fping_preset_combo.setMaximumWidth(360)
+        self.fping_preset_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         preset_layout.addWidget(preset_label)
         preset_layout.addWidget(self.fping_preset_combo, 1)
         layout.addLayout(preset_layout)
@@ -5142,7 +5144,6 @@ class OnlineMrCollectionPage(QWidget):
             label = self._label(key)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             label.setMinimumWidth(110)
-            label.setMaximumWidth(130)
             if isinstance(widget, QAbstractSpinBox):
                 self._configure_numeric_spin(widget)
             elif isinstance(widget, QLineEdit):
@@ -5151,7 +5152,6 @@ class OnlineMrCollectionPage(QWidget):
             grid.addWidget(widget, row, 1)
             unit_label = self._text_label(unit)
             unit_label.setMinimumWidth(50)
-            unit_label.setMaximumWidth(60)
             grid.addWidget(unit_label, row, 2)
             grid.setRowMinimumHeight(row, 32)
         grid.setColumnMinimumWidth(0, 110)
@@ -5164,6 +5164,7 @@ class OnlineMrCollectionPage(QWidget):
         for combo in (self.fping_device_combo_1, self.fping_device_combo_2):
             combo.setMinimumWidth(220)
             combo.setMaximumWidth(360)
+            combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for target in (self.fping_target_label_1, self.fping_target_label_2):
             target.setMinimumWidth(180)
             target.setMaximumWidth(320)

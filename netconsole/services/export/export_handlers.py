@@ -6,6 +6,7 @@ from typing import Any, Callable
 from netconsole.services.export.common_exporters import (
     ExportCancelled,
     copy_file_export,
+    export_config_diff_text,
     export_config_snapshots_zip,
     export_ap_online_overview_xlsx_task,
     export_device_csv,
@@ -15,6 +16,7 @@ from netconsole.services.export.common_exporters import (
     export_omnipeek_name_table_task,
     export_online_mr_report_xlsx,
     export_app_logs_csv,
+    export_car_network_point_table,
     export_fit_ap_csv_task,
     export_fit_ap_extension_template_xlsx_task,
     export_fit_ap_extension_xlsx_task,
@@ -24,6 +26,7 @@ from netconsole.services.export.common_exporters import (
     export_table_csv,
     export_table_xlsx,
     export_wifi_survey_csv,
+    export_wifi_survey_heatmap_png,
     export_zip_files,
     replace_output,
 )
@@ -38,6 +41,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "table_csv",
     "multi_sheet_xlsx",
     "markdown_text",
+    "config_diff_text",
     "zip_files",
     "copy_logs",
     "copy_file",
@@ -47,6 +51,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "securecrt_sessions",
     "config_snapshots_zip",
     "wifi_survey_csv",
+    "wifi_survey_heatmap_png",
     "snmp_query_result",
     "mib_product_compare",
     "fit_ap_csv",
@@ -55,6 +60,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "ap_online_overview_xlsx",
     "omnipeek_name_table",
     "online_mr_report_xlsx",
+    "car_network_point_table",
 }
 
 
@@ -73,6 +79,8 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_table_csv(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "markdown_text":
         row_count = export_markdown_text(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "config_diff_text":
+        row_count = export_config_diff_text(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "zip_files":
         row_count = export_zip_files(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type in {"copy_logs", "copy_file"}:
@@ -90,6 +98,8 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_config_snapshots_zip(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "wifi_survey_csv":
         row_count = export_wifi_survey_csv(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "wifi_survey_heatmap_png":
+        row_count = export_wifi_survey_heatmap_png(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "snmp_query_result":
         row_count = export_snmp_query_result(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "mib_product_compare":
@@ -107,6 +117,8 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         return {"path": str(result.get("path") or output_path), "row_count": int(result.get("row_count") or 0)}
     elif job.job_type == "online_mr_report_xlsx":
         row_count = export_online_mr_report_xlsx(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "car_network_point_table":
+        row_count = export_car_network_point_table(tmp_path, payload, progress_callback, should_cancel)
     else:
         raise ValueError(f"不支持的通用导出任务类型：{job.job_type}")
     if should_cancel and should_cancel():

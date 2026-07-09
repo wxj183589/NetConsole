@@ -140,6 +140,8 @@ class StationOnlineHistoryDialog(QWidget):
                 rows=self.filtered_rows(),
                 sheet_name="AP Online History",
                 title=self.i18n.t("ac.export_table"),
+                allow_inline_rows=True,
+                inline_reason="车站在线历史弹窗导出当前筛选结果",
             ),
             success_title=self.i18n.t("ac.export_table"),
         )

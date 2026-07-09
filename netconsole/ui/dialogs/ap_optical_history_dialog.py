@@ -167,6 +167,8 @@ class ApOpticalHistoryDialog(QWidget):
                 sheet_name="AP History",
                 title=self.i18n.t("ac.export_table"),
                 row_fill_field="__row_fill",
+                allow_inline_rows=True,
+                inline_reason="AP 光衰历史弹窗导出当前已加载筛选视图",
             ),
             success_title=self.i18n.t("ac.export_table"),
         )

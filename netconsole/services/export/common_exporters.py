@@ -19,6 +19,14 @@ class ExportCancelled(RuntimeError):
     pass
 
 
+def _path_resolver_from_payload(payload: Mapping[str, Any]):
+    from netconsole.core.paths import PathResolver
+
+    app_root = str(payload.get("app_root") or "").strip() or None
+    data_root = str(payload.get("data_root") or "").strip() or None
+    return PathResolver(app_root=Path(app_root) if app_root else None, data_root=Path(data_root) if data_root else None)
+
+
 def export_table_xlsx(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     sheets = [
         {
@@ -121,6 +129,25 @@ def export_markdown_text(path: Path, payload: Mapping[str, Any], progress: Progr
     path.write_text(text, encoding="utf-8")
     _emit(progress, "write_text", 1, 1, "文本导出完成")
     return len(text)
+
+
+def export_config_diff_text(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
+    from netconsole.core.database import Database
+    from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
+    from netconsole.services.config_lifecycle_service import ConfigLifecycleService
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _emit(progress, "config_diff", 0, 1, "正在生成配置差异")
+    _check_cancel(should_cancel)
+    database = Database(Path(str(payload.get("db_path") or "")))
+    repository = ConfigSnapshotRepository(database)
+    service = ConfigLifecycleService(str(payload.get("site_name") or ""), database, _path_resolver_from_payload(payload), repository)
+    left = repository.get(int(payload.get("left_snapshot_id") or 0))
+    right = repository.get(int(payload.get("right_snapshot_id") or 0))
+    diff = service.compare_snapshots(left, right)
+    path.write_text(diff.raw_diff, encoding="utf-8")
+    _emit(progress, "config_diff", 1, 1, "配置差异导出完成")
+    return len(diff.raw_diff)
 
 
 def export_zip_files(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
@@ -340,8 +367,49 @@ def export_wifi_survey_csv(path: Path, payload: Mapping[str, Any], progress: Pro
     return len(rows)
 
 
+def export_wifi_survey_heatmap_png(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
+    from PySide6.QtGui import QGuiApplication, QPixmap
+
+    from netconsole.core.database import Database
+    from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
+    from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, generate_idw_heatmap, render_heatmap_png
+
+    app = QGuiApplication.instance()
+    if app is None:
+        app = QGuiApplication(["netconsole-export-worker"])
+    db_path = Path(str(payload.get("db_path") or ""))
+    floor_plan_id = int(payload.get("floor_plan_id") or 0)
+    session_id = int(payload.get("session_id") or 0)
+    mode = str(payload.get("mode") or "strongest")
+    selected_ssids = {str(value) for value in payload.get("selected_ssids") or []}
+    selected_bssids = {str(value) for value in payload.get("selected_bssids") or []}
+    repository = WifiSurveyRepository(Database(db_path))
+    floor_plan = repository.get_floor_plan(floor_plan_id)
+    base = QPixmap(str(floor_plan.get("image_path") or ""))
+    if base.isNull():
+        raise ValueError("无线勘测图纸文件无法读取")
+    _emit(progress, "wifi_survey_heatmap_prepare", 0, 1, "正在生成无线热力图")
+    _check_cancel(should_cancel)
+    points = repository.list_points(session_id)
+    observations = repository.list_observations_by_session(session_id)
+    samples = build_heatmap_samples(points, observations, mode, selected_ssids, selected_bssids)
+    overlay = None
+    if len(samples) >= 3:
+        overlay = generate_idw_heatmap(
+            base.width(),
+            base.height(),
+            [(sample.x_px, sample.y_px, sample.rssi_dbm) for sample in samples],
+        )
+    rendered = render_heatmap_png(base, overlay)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rendered.save(str(path), "PNG"):
+        raise OSError(f"保存无线热力图失败：{path}")
+    _emit(progress, "wifi_survey_heatmap_save", 1, 1, "无线热力图导出完成")
+    return len(samples)
+
+
 def export_snmp_query_result(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    result = dict(payload.get("result") or {})
+    result = _snmp_result_payload(payload)
     request = dict(result.get("request") or {})
     rows = [
         {
@@ -441,6 +509,10 @@ def _fit_ap_import_export_service(payload: Mapping[str, Any]):
 
 def export_fit_ap_csv_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
+    if not rows:
+        ac_uuid = str(payload.get("ac_uuid") or "").strip()
+        if ac_uuid:
+            rows = _ac_repository(payload).list_fit_ap_resources_with_metadata(ac_uuid)
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_fit_ap_csv", 0, len(rows), "正在导出 FIT-AP CSV")
     _check_cancel(should_cancel)
@@ -451,6 +523,15 @@ def export_fit_ap_csv_task(path: Path, payload: Mapping[str, Any], progress: Pro
 
 def export_fit_ap_extension_xlsx_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
+    if not rows:
+        filters = dict(payload.get("filters") or {})
+        rows = _ac_repository(payload).list_ap_extension_points(
+            search=str(payload.get("search") or filters.get("search") or ""),
+            station_name=str(filters.get("station_name") or ""),
+            line_side=str(filters.get("line_side") or ""),
+            direction=str(filters.get("direction") or ""),
+            match_status=str(filters.get("match_status") or ""),
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_fit_ap_extension", 0, len(rows), "正在导出 FIT-AP 扩展信息")
     _check_cancel(should_cancel)
@@ -462,6 +543,11 @@ def export_fit_ap_extension_xlsx_task(path: Path, payload: Mapping[str, Any], pr
 def export_fit_ap_extension_template_xlsx_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
     ap_entities = [dict(row) for row in payload.get("ap_entities") or [] if isinstance(row, Mapping)]
+    ac_uuid = str(payload.get("ac_uuid") or "").strip()
+    if ac_uuid and not rows:
+        rows = _ac_repository(payload).list_fit_ap_resources_with_metadata(ac_uuid)
+    if ac_uuid and not ap_entities:
+        ap_entities = _ac_repository(payload).list_ap_entities(ac_uuid)
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_fit_ap_extension_template", 0, len(rows), "正在导出 AP 扩展模板")
     _check_cancel(should_cancel)
@@ -525,6 +611,32 @@ def export_online_mr_report_xlsx(path: Path, payload: Mapping[str, Any], progres
     return 1 if output_path.exists() else 0
 
 
+def export_car_network_point_table(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
+    from netconsole.core.paths import PathResolver
+    from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkPointTableStore
+
+    site_name = str(payload.get("site_name") or "")
+    store = CarNetworkPointTableStore(PathResolver(), site_name)
+    nodes = store.load()
+    _emit(progress, "write_car_network_point_table", 0, len(nodes), "正在导出车内通信点表")
+    _check_cancel(should_cancel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = _effective_suffix(path)
+    target = path if path.suffix.casefold() == suffix else path.with_name(f"{path.stem}.netconsole{suffix or '.xlsx'}")
+    try:
+        store.export_file(target, nodes)
+        if target != path:
+            os.replace(target, path)
+    finally:
+        if target != path and target.exists():
+            try:
+                target.unlink()
+            except OSError:
+                pass
+    _emit(progress, "write_car_network_point_table", len(nodes), len(nodes), "车内通信点表导出完成")
+    return len(nodes)
+
+
 def normalize_columns(columns: Iterable[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for column in columns:
@@ -572,7 +684,37 @@ def _resolve_repository_rows(source: Mapping[str, Any]) -> list[dict[str, Any]]:
             group_filter=filters.get("group_filter"),
         )
         return [device.to_record() for device in devices]
+    if repository == "wireless_scan_repository" and method == "list_results":
+        from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
+        from netconsole.services.network_tools.wireless_scan_service import repository_row_to_display_row
+
+        scan_id = str(filters.get("scan_id") or "").strip()
+        if not scan_id:
+            raise ValueError("wireless_scan_repository.list_results 缺少 scan_id")
+        return [repository_row_to_display_row(row) for row in WirelessScanRepository(db_path).list_results(scan_id)]
+    if repository == "ac_repository" and method == "list_trackside_ap_plan":
+        from netconsole.core.database import Database
+        from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+
+        mode = str(filters.get("mode") or TRACKSIDE_AP_PLAN_MODE)
+        return AcRepository(Database(db_path)).list_trackside_ap_plan(mode)
     raise ValueError(f"不支持的 repository_query：{repository}.{method}")
+
+
+def _ac_repository(payload: Mapping[str, Any]):
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    return AcRepository(Database(Path(str(payload.get("db_path") or ""))))
+
+
+def _snmp_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    result_file = str(payload.get("result_file") or "").strip()
+    if result_file:
+        with Path(result_file).open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return dict(data or {})
+    return dict(payload.get("result") or {})
 
 
 def _value_for_row(row: Any, key: str) -> object:

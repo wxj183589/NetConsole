@@ -33,7 +33,8 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
-from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
 from netconsole.services.export.export_task_builders import device_csv_spec, device_template_csv_spec, securecrt_sessions_spec
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
@@ -62,6 +63,10 @@ from netconsole.ui.widgets.device_table import DeviceTable
 def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
     for device_id in device_ids:
         repository.delete(device_id)
+
+
+def choose_devices_for_export(all_devices: list[object], selected_devices: list[object]) -> list[object]:
+    return list(selected_devices or all_devices)
 
 
 def select_device_id_for_connection(checked_ids: list[int], current_id: int | None) -> tuple[int | None, str | None]:
@@ -122,6 +127,9 @@ class DeviceManagementPage(QWidget):
         self.service = DeviceImportExportService(repository, self.group_repository)
         self.paths = PathResolver()
         self.settings = SettingsStore(self.paths)
+        self.background_manager = BackgroundProcessManager(self, paths=self.paths)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
         self.feature_gate = feature_gate or default_feature_gate()
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
@@ -229,7 +237,7 @@ class DeviceManagementPage(QWidget):
         self.batch_refresh_details_button.clicked.connect(self.batch_refresh_details)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
         self.refresh_button.clicked.connect(self.refresh)
-        self.import_csv_button.clicked.connect(self.import_csv)
+        self.import_csv_button.clicked.connect(self.start_device_import)
         self.export_csv_button.clicked.connect(self.export_csv)
         self.export_template_button.clicked.connect(self.export_template)
         self.export_omnipeek_action.triggered.connect(self.export_omnipeek_name_table)
@@ -494,8 +502,7 @@ class DeviceManagementPage(QWidget):
             return
         self.diagnostic_download_button.setEnabled(False)
         self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_downloading"))
-        service = DiagnosticDownloadService(self.site_name)
-        self.diagnostic_download_worker = DiagnosticDownloadWorker(service, devices, self)
+        self.diagnostic_download_worker = DiagnosticDownloadWorker(self.site_name, devices, self)
         self.diagnostic_download_worker.result_ready.connect(self._handle_diagnostic_results)
         self.diagnostic_download_worker.finished.connect(self.diagnostic_download_worker.deleteLater)
         self.diagnostic_download_worker.finished.connect(lambda: setattr(self, "diagnostic_download_worker", None))
@@ -862,22 +869,40 @@ class DeviceManagementPage(QWidget):
         self.invert_selection_button.setEnabled(self.table.rowCount() > 0)
         self.assign_group_button.setEnabled(count > 0)
 
-    def import_csv(self) -> None:
+    def start_device_import(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("devices.import_csv"), "", "CSV Files (*.csv)")
         if path:
-            try:
-                result = self.service.import_csv(Path(path))
-            except Exception as exc:
-                app_logger.log_error("CSV_IMPORT_FAILED", f"{Path(path).name}: {exc}")
-                MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
-                return
-            self.refresh_groups()
-            if result.groups_created:
-                self.groups_changed.emit()
-            if result.created:
-                self.devices_changed.emit()
-            app_logger.log_info("CSV_IMPORTED", f"{Path(path).name}: created={result.created}, skipped={result.skipped}")
-            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
+            self.background_manager.start_job(
+                BackgroundJob(
+                    task_type="device_csv_import",
+                    params={
+                        "path": path,
+                        "db_path": str(self.repository.database.path),
+                        "site_name": self.site_name,
+                    },
+                )
+            )
+
+    def _background_finished(self, event: dict) -> None:
+        result = dict(event.get("result") or {})
+        if not {"created", "skipped"}.issubset(result):
+            return
+        self.refresh_groups()
+        if result.get("groups_created"):
+            self.groups_changed.emit()
+        if result.get("created"):
+            self.devices_changed.emit()
+        app_logger.log_info("CSV_IMPORTED", f"created={result.get('created')}, skipped={result.get('skipped')}")
+        MessageBox.information(
+            self,
+            self.i18n.t("devices.title"),
+            self.i18n.t("devices.import_done", created=int(result.get("created") or 0), skipped=int(result.get("skipped") or 0)),
+        )
+
+    def _background_failed(self, event: dict) -> None:
+        message = str(event.get("message") or event.get("error") or "后台任务失败")
+        app_logger.log_error("CSV_IMPORT_FAILED", message)
+        MessageBox.warning(self, self.i18n.t("devices.title"), message)
 
     def export_csv(self) -> None:
         path = select_export_path(self, self.i18n.t("devices.export_csv"), make_device_export_filename(self.site_name), CSV_FILTER)

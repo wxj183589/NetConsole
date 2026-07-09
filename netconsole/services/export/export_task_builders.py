@@ -53,11 +53,20 @@ def column_specs(columns: Iterable[tuple[str, str] | Mapping[str, Any]], headers
     return result
 
 
-def inline_rows_source(rows: Iterable[Mapping[str, Any]], *, limit: int = INLINE_ROW_LIMIT) -> dict[str, Any]:
+def inline_rows_source(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    allow_inline_rows: bool = False,
+    inline_reason: str = "",
+    limit: int = INLINE_ROW_LIMIT,
+) -> dict[str, Any]:
+    reason = str(inline_reason or "").strip()
+    if not allow_inline_rows or not reason:
+        raise ValueError("inline_rows_source 默认禁用；小型运行期数据必须显式传入 allow_inline_rows=True 和 inline_reason")
     materialized = [dict(row) for row in rows]
     if len(materialized) > limit:
         raise ValueError(f"inline_rows 导出最多支持 {limit} 行，请改用 repository_query 数据源")
-    return {"type": "inline_rows", "rows": materialized}
+    return {"type": "inline_rows", "rows": materialized, "inline_reason": reason}
 
 
 def repository_query_source(
@@ -103,6 +112,33 @@ def table_xlsx_spec(
     row_fill_field: str = "",
     row_fill_colors: Mapping[str, str] | None = None,
     open_dir_on_success: bool = True,
+    allow_inline_rows: bool = False,
+    inline_reason: str = "",
+) -> ExportTaskSpec:
+    return table_xlsx_source_spec(
+        output_path,
+        columns=columns,
+        source=inline_rows_source(rows, allow_inline_rows=allow_inline_rows, inline_reason=inline_reason),
+        headers=headers,
+        sheet_name=sheet_name,
+        title=title,
+        row_fill_field=row_fill_field,
+        row_fill_colors=row_fill_colors,
+        open_dir_on_success=open_dir_on_success,
+    )
+
+
+def table_xlsx_source_spec(
+    output_path: str | Path,
+    *,
+    columns: Iterable[tuple[str, str] | Mapping[str, Any]],
+    source: Mapping[str, Any],
+    headers: Iterable[str] | None = None,
+    sheet_name: str = "Sheet1",
+    title: str = "",
+    row_fill_field: str = "",
+    row_fill_colors: Mapping[str, str] | None = None,
+    open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
     return ExportTaskSpec(
         task_type="table_xlsx",
@@ -111,7 +147,7 @@ def table_xlsx_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "columns": column_specs(columns, headers),
-            "source": inline_rows_source(rows),
+            "source": dict(source),
             "sheet_name": sheet_name,
             "title": title,
             "auto_width": True,
@@ -131,13 +167,34 @@ def table_csv_spec(
     headers: Iterable[str] | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
+    allow_inline_rows: bool = False,
+    inline_reason: str = "",
+) -> ExportTaskSpec:
+    return table_csv_source_spec(
+        output_path,
+        columns=columns,
+        source=inline_rows_source(rows, allow_inline_rows=allow_inline_rows, inline_reason=inline_reason),
+        headers=headers,
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+    )
+
+
+def table_csv_source_spec(
+    output_path: str | Path,
+    *,
+    columns: Iterable[tuple[str, str] | Mapping[str, Any]],
+    source: Mapping[str, Any],
+    headers: Iterable[str] | None = None,
+    title: str = "",
+    open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
     return ExportTaskSpec(
         task_type="table_csv",
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
-        payload={"columns": column_specs(columns, headers), "source": inline_rows_source(rows)},
+        payload={"columns": column_specs(columns, headers), "source": dict(source)},
     )
 
 
@@ -148,6 +205,36 @@ def markdown_text_spec(output_path: str | Path, *, text: str, title: str = "", o
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload={"text": text},
+    )
+
+
+def config_diff_text_spec(
+    output_path: str | Path,
+    *,
+    db_path: str | Path,
+    site_name: str,
+    app_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+    left_snapshot_id: int,
+    right_snapshot_id: int,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="config_diff_text",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        db_path=str(db_path),
+        site_name=site_name,
+        payload={
+            "db_path": str(db_path),
+            "site_name": site_name,
+            "app_root": str(app_root) if app_root is not None else "",
+            "data_root": str(data_root) if data_root is not None else "",
+            "left_snapshot_id": int(left_snapshot_id),
+            "right_snapshot_id": int(right_snapshot_id),
+        },
     )
 
 
@@ -221,7 +308,11 @@ def device_csv_spec(
         "filters": dict(filters or {}),
     }
     if selected_devices is not None:
-        payload["devices"] = inline_rows_source(selected_devices)["rows"]
+        payload["devices"] = inline_rows_source(
+            selected_devices,
+            allow_inline_rows=True,
+            inline_reason="设备管理勾选导出为用户当前显式选择的小型集合",
+        )["rows"]
     else:
         payload["source"] = repository_query_source(
             db_path=db_path,
@@ -265,7 +356,11 @@ def securecrt_sessions_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "output_dir": str(output_dir_path),
-            "devices": inline_rows_source(devices)["rows"],
+            "devices": inline_rows_source(
+                devices,
+                allow_inline_rows=True,
+                inline_reason="SecureCRT 会话导出依赖用户当前勾选设备集合",
+            )["rows"],
             "site_name": site_name,
             "group_names": {str(key): value for key, value in dict(group_names or {}).items()},
             "template_ini": str(template_ini or ""),
@@ -300,16 +395,24 @@ def wifi_survey_csv_spec(
 def snmp_query_result_spec(
     output_path: str | Path,
     *,
-    result: Mapping[str, Any],
+    result: Mapping[str, Any] | None = None,
+    result_file: str | Path | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
+    payload: dict[str, Any] = {}
+    if result_file is not None:
+        payload["result_file"] = str(result_file)
+    elif result is not None:
+        payload["result"] = dict(result)
+    else:
+        raise ValueError("SNMP 查询结果导出缺少 result_file")
     return ExportTaskSpec(
         task_type="snmp_query_result",
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
-        payload={"result": dict(result)},
+        payload=payload,
     )
 
 
@@ -339,7 +442,9 @@ def fit_ap_csv_spec(
     output_path: str | Path,
     *,
     db_path: str | Path,
-    rows: Iterable[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, Any]] | None = None,
+    ac_uuid: str = "",
+    filters: Mapping[str, Any] | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -348,7 +453,16 @@ def fit_ap_csv_spec(
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
-        payload={"db_path": str(db_path), "rows": inline_rows_source(rows)["rows"]},
+        payload={
+            "db_path": str(db_path),
+            "rows": inline_rows_source(
+                rows,
+                allow_inline_rows=True,
+                inline_reason="FIT-AP CSV 导出保留用户当前勾选/筛选结果",
+            )["rows"] if rows is not None else [],
+            "ac_uuid": ac_uuid,
+            "filters": dict(filters or {}),
+        },
     )
 
 
@@ -356,7 +470,10 @@ def fit_ap_extension_xlsx_spec(
     output_path: str | Path,
     *,
     db_path: str | Path,
-    rows: Iterable[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, Any]] | None = None,
+    ac_uuid: str = "",
+    search: str = "",
+    filters: Mapping[str, Any] | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -365,7 +482,17 @@ def fit_ap_extension_xlsx_spec(
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
-        payload={"db_path": str(db_path), "rows": inline_rows_source(rows)["rows"]},
+        payload={
+            "db_path": str(db_path),
+            "rows": inline_rows_source(
+                rows,
+                allow_inline_rows=True,
+                inline_reason="兼容旧调用的 FIT-AP 扩展信息小型内联集合",
+            )["rows"] if rows is not None else [],
+            "ac_uuid": ac_uuid,
+            "search": search,
+            "filters": dict(filters or {}),
+        },
     )
 
 
@@ -373,8 +500,9 @@ def fit_ap_extension_template_xlsx_spec(
     output_path: str | Path,
     *,
     db_path: str | Path,
-    rows: Iterable[Mapping[str, Any]],
-    ap_entities: Iterable[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, Any]] | None = None,
+    ap_entities: Iterable[Mapping[str, Any]] | None = None,
+    ac_uuid: str = "",
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -385,8 +513,17 @@ def fit_ap_extension_template_xlsx_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "db_path": str(db_path),
-            "rows": inline_rows_source(rows)["rows"],
-            "ap_entities": inline_rows_source(ap_entities)["rows"],
+            "rows": inline_rows_source(
+                rows,
+                allow_inline_rows=True,
+                inline_reason="兼容旧调用的 AP 扩展模板资源小型内联集合",
+            )["rows"] if rows is not None else [],
+            "ap_entities": inline_rows_source(
+                ap_entities,
+                allow_inline_rows=True,
+                inline_reason="兼容旧调用的 AP 实体小型内联集合",
+            )["rows"] if ap_entities is not None else [],
+            "ac_uuid": ac_uuid,
         },
     )
 
@@ -409,10 +546,18 @@ def ap_online_overview_xlsx_spec(
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload={
-            "rows": inline_rows_source(rows)["rows"],
+            "rows": inline_rows_source(
+                rows,
+                allow_inline_rows=True,
+                inline_reason="AP 在线概览为当前采集结果的报表快照",
+            )["rows"],
             "headers": [str(value) for value in headers],
             "offline_ap_stats": dict(offline_ap_stats),
-            "offline_ap_ledger_rows": inline_rows_source(offline_ap_ledger_rows)["rows"],
+            "offline_ap_ledger_rows": inline_rows_source(
+                offline_ap_ledger_rows,
+                allow_inline_rows=True,
+                inline_reason="AP 在线概览离线台账为当前报表快照的一部分",
+            )["rows"],
             "offline_ap_stats_headers": [str(value) for value in offline_ap_stats_headers],
             "offline_ap_ledger_headers": [str(value) for value in offline_ap_ledger_headers],
         },
@@ -438,10 +583,59 @@ def omnipeek_name_table_spec(
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload={
-            "items": inline_rows_source(items)["rows"],
+            "items": inline_rows_source(
+                items,
+                allow_inline_rows=True,
+                inline_reason="OmniPeek 名称表弹窗已完成用户勾选和异常确认",
+            )["rows"],
             "config": config_payload,
             "source_counts": {str(key): int(value) for key, value in dict(source_counts).items()},
         },
+    )
+
+
+def wifi_survey_heatmap_png_spec(
+    output_path: str | Path,
+    *,
+    db_path: str | Path,
+    floor_plan_id: int,
+    session_id: int,
+    mode: str = "strongest",
+    selected_ssids: Iterable[str] | None = None,
+    selected_bssids: Iterable[str] | None = None,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="wifi_survey_heatmap_png",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        payload={
+            "db_path": str(db_path),
+            "floor_plan_id": int(floor_plan_id),
+            "session_id": int(session_id),
+            "mode": str(mode or "strongest"),
+            "selected_ssids": [str(value) for value in selected_ssids or []],
+            "selected_bssids": [str(value) for value in selected_bssids or []],
+        },
+    )
+
+
+def car_network_point_table_spec(
+    output_path: str | Path,
+    *,
+    site_name: str,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="car_network_point_table",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        payload={"site_name": site_name},
+        site_name=site_name,
     )
 
 

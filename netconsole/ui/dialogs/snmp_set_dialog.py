@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ipaddress import ip_address
 
-from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout
+from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
 
 
 SET_DATA_TYPES = [
@@ -50,6 +50,8 @@ class SnmpSetDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("SNMP SET")
+        self.resize(720, 560)
+        self.setMinimumSize(640, 480)
         self.oid_input = QLineEdit(oid)
         self.object_name_label = QLabel(object_name or "-")
         self.module_label = QLabel(module_name or "-")
@@ -77,7 +79,8 @@ class SnmpSetDialog(QDialog):
         desc_label.setWordWrap(True)
         risk = QLabel("风险提示：SNMP Set 会修改设备运行状态，请确认该 OID 和写入值正确。")
         risk.setWordWrap(True)
-        form = QFormLayout()
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
         form.addRow("OID", self.oid_input)
         form.addRow("对象名称", self.object_name_label)
         form.addRow("MIB模块", self.module_label)
@@ -88,8 +91,11 @@ class SnmpSetDialog(QDialog):
         form.addRow("Data Type", self.type_combo)
         form.addRow("Value", value_widget)
         form.addRow("说明", desc_label)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_widget)
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addWidget(scroll, 1)
         layout.addWidget(risk)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
@@ -15,9 +15,14 @@ class ExternalTerminalSettingsDialog(QDialog):
         self.i18n = i18n
         self.settings = settings
         self.setWindowTitle(self.i18n.t("external_terminal.settings"))
+        self.resize(760, 320)
+        self.setMinimumSize(680, 280)
         self.securecrt_path = QLineEdit(str(settings.get_value("external_terminal/securecrt_path", "") or ""))
         self.xshell_path = QLineEdit(str(settings.get_value("external_terminal/xshell_path", "") or ""))
         self.putty_path = QLineEdit(str(settings.get_value("external_terminal/putty_path", "") or ""))
+        for edit in (self.securecrt_path, self.xshell_path, self.putty_path):
+            edit.setMinimumWidth(420)
+            edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.pass_password = QCheckBox(self.i18n.t("external_terminal.pass_password"))
         self.pass_password.setChecked(bool(settings.get_value("external_terminal/pass_password", False)))
 
@@ -38,9 +43,11 @@ class ExternalTerminalSettingsDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(edit, 1)
         button = QPushButton(self.i18n.t("common.browse"))
+        button.setMinimumWidth(88)
         button.clicked.connect(lambda: self._browse(edit, mode))
         row.addWidget(button)
         test_button = QPushButton(self.i18n.t("external_terminal.test_path"))
+        test_button.setMinimumWidth(88)
         test_button.clicked.connect(lambda: self._test_path(edit))
         row.addWidget(test_button)
         return row

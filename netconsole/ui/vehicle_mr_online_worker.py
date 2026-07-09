@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.services.vehicle_mr_online import (
@@ -24,7 +25,7 @@ class VehicleMrOnlineWorker(QThread):
         ac: Device,
         site_name: str,
         interval_seconds: int,
-        store: VehicleMrOnlineStore,
+        paths: PathResolver,
         registered_trains: dict[str, VehicleMrTrainState],
         ap_lookup: dict[str, MatchedAp],
         mapping_lookup: dict[str, TrainIdentity] | None,
@@ -33,6 +34,7 @@ class VehicleMrOnlineWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        store = VehicleMrOnlineStore(paths, site_name)
         self.collector = VehicleMrOnlineCollector(
             ac=ac,
             site_name=site_name,

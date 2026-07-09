@@ -30,7 +30,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.wireless_scan_models import WirelessAdapter
 from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
-from netconsole.services.export.export_task_builders import table_csv_spec, table_xlsx_spec
+from netconsole.services.export.export_task_builders import repository_query_source, table_csv_source_spec, table_xlsx_source_spec
 from netconsole.services.network_tools.wireless_channel_analyzer import rssi_level
 from netconsole.services.network_tools.wireless_scan_service import (
     WIRELESS_SCAN_EXPORT_COLUMNS,
@@ -60,6 +60,7 @@ class WirelessScanPage(QWidget):
         self.adapters: list[WirelessAdapter] = []
         self.current_rows: list[dict[str, object]] = []
         self.filtered_rows: list[dict[str, object]] = []
+        self.current_scan_id = ""
         self.raw_output = ""
         self.adapter_worker: WirelessAdapterLoadWorker | None = None
         self.scan_worker: WirelessScanWorker | None = None
@@ -129,6 +130,7 @@ class WirelessScanPage(QWidget):
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
         self.current_rows = []
+        self.current_scan_id = ""
         self.apply_filters()
         self.refresh_history()
 
@@ -282,7 +284,7 @@ class WirelessScanPage(QWidget):
         self._render_results(rows)
 
     def export_current(self) -> None:
-        if not self.current_rows:
+        if not self.current_rows or not self.current_scan_id:
             MessageBox.information(self, self.i18n.t("network_tools.wireless_scan"), self.i18n.t("wireless_scan.no_results"))
             return
         export_dir = self.paths.wireless_scan_export_dir(self.site_name)
@@ -296,13 +298,19 @@ class WirelessScanPage(QWidget):
             {"key": field, "title": headers[index], "text": True}
             for index, (_key, field) in enumerate(WIRELESS_SCAN_EXPORT_COLUMNS)
         ]
+        source = repository_query_source(
+            db_path=self.paths.wireless_scan_db_path(self.site_name),
+            repository="wireless_scan_repository",
+            method="list_results",
+            filters={"scan_id": self.current_scan_id},
+        )
         if selected_filter.startswith("CSV") or path.lower().endswith(".csv"):
-            spec = table_csv_spec(Path(path), columns=columns, rows=self.current_rows, title=self.i18n.t("wireless_scan.export"), open_dir_on_success=True)
+            spec = table_csv_source_spec(Path(path), columns=columns, source=source, title=self.i18n.t("wireless_scan.export"), open_dir_on_success=True)
         else:
-            spec = table_xlsx_spec(
+            spec = table_xlsx_source_spec(
                 Path(path),
                 columns=columns,
-                rows=self.current_rows,
+                source=source,
                 headers=headers,
                 sheet_name="Wireless Scan",
                 title=self.i18n.t("wireless_scan.export"),
@@ -372,6 +380,7 @@ class WirelessScanPage(QWidget):
     def _scan_completed(self, result) -> None:
         self.start_button.setEnabled(bool(self.adapters))
         self.raw_output = result.raw_file.read_text(encoding="utf-8") if result.raw_file.exists() else ""
+        self.current_scan_id = result.scan_id
         self.current_rows = [result_to_row(item) for item in result.results]
         self.raw_text.setPlainText(self._raw_output_with_debug())
         self.apply_filters()

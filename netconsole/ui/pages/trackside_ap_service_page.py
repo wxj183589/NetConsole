@@ -303,7 +303,7 @@ class TracksideApServicePage(QWidget):
         self.status_label.setText(self.i18n.t("trackside_ap.loading"))
         detail = f"site={self.site_name}, generation={generation}"
         app_logger.log_info("TRACKSIDE_LOAD_STARTED", detail)
-        thread = TracksideApBusinessLoadThread(self.device_repository, self.site_name, generation, self)
+        thread = TracksideApBusinessLoadThread(self.device_repository.database.path, self.site_name, generation, self)
         self.load_thread = thread
         thread.load_finished.connect(self._finish_load)
         thread.load_failed.connect(self._fail_load)
@@ -421,7 +421,7 @@ class TracksideApServicePage(QWidget):
         if self.full_update_thread is not None or self.collect_thread is not None or self.is_loading:
             return
         self._set_full_update_running(True, self.i18n.t("trackside_ap.full_stage_prepare"))
-        self.full_update_thread = TracksideApFullUpdateThread(self.device_repository, self.site_name, self.paths, parent=self)
+        self.full_update_thread = TracksideApFullUpdateThread(self.device_repository.database.path, self.site_name, self.paths, parent=self)
         self.full_update_thread.stage_changed.connect(self._update_full_stage)
         self.full_update_thread.progress_changed.connect(self._update_full_progress)
         self.full_update_thread.full_update_finished.connect(self._finish_full_update)
@@ -483,7 +483,7 @@ class TracksideApServicePage(QWidget):
             if value
         }
         self.collect_thread = TracksideOpticalCollectThread(
-            self.device_repository,
+            self.device_repository.database.path,
             self.site_name,
             self.paths,
             self.trackside_rows,

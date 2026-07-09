@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -33,15 +34,14 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
-from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
+from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import (
     build_switch_data_lookup,
     compute_switch_status,
 )
-from netconsole.core.state_engine import STATUS_COLORS, compute_state, display_optical_status
+from netconsole.core.state_engine import STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -73,8 +73,19 @@ from netconsole.services.ap_online_overview import (
     AP_ONLINE_OVERVIEW_COLUMNS,
     ApOnlineOverviewService,
     build_ap_online_overview_rows,
+    export_ap_online_overview_xlsx,
 )
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
+from netconsole.services.fit_ap_optical_export import (
+    OPTICAL_EXPORT_COLOR_RGB,
+    evaluate_fit_ap_ap_status,
+    evaluate_fit_ap_row_status,
+    evaluate_fit_ap_switch_status,
+    export_fit_ap_optical_xlsx,
+    fit_ap_optical_export_value as _fit_ap_optical_export_value,
+)
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
 from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
 from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
@@ -265,16 +276,6 @@ FIT_AP_OPTICAL_DETAIL_COLUMNS = (
 )
 
 OPTICAL_STATUS_COLORS = STATUS_COLOR_MAP
-OPTICAL_EXPORT_COLOR_RGB = {
-    "normal": "DCFCE7",
-    "notice": "FEF9C3",
-    "warning": "FEF9C3",
-    "alarm": "FEE2E2",
-    "link_abnormal": "FFE4E6",
-    "link_down": "FFE4E6",
-    "no_light": "E5E7EB",
-    "skipped": "F3F4F6",
-}
 OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
 AC_FEATURE_ORDER = (
     "ac.trackside_ap_plan",
@@ -448,78 +449,10 @@ def _resource_state_label(row: dict[str, object | None]) -> str:
     return str(row.get("state_display") or row.get("state_raw") or row.get("state") or "").strip()
 
 
-def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
-    """Return the overall optical status for a FIT-AP row via state_engine."""
-    if neighbor_optical:
-        ap_status = compute_ap_status(row)
-        switch_status = _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
-        return worse_optical_severity(switch_status, ap_status)
-    result = compute_state({
-        "switch_device_name": row.get("neighbor_device_name"),
-        "switch_interface_name": row.get("neighbor_interface"),
-        "fit_ap_row": row,
-    })
-    return result.optical_status
-
-
-def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
-    """Evaluate AP side optical alarm status — delegates to ``ap_source.compute_ap_status``."""
-    if bool(row.get("is_ap_offline")):
-        return "offline"
-    return _evaluate_ap_result(row).severity
-
-
-def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
-    """Evaluate switch side optical status real-time from raw data."""
-    if neighbor_optical:
-        return _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
-    return compute_state({
-        "switch_device_name": row.get("neighbor_device_name"),
-        "switch_interface_name": row.get("neighbor_interface"),
-        "fit_ap_row": row,
-    }).switch_status
-
-
 def make_fit_ap_optical_export_filename(site_name: str, now: datetime | None = None) -> str:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M")
     safe_site = "".join(char if char not in '<>:"/\\|?*' else "_" for char in site_name or "site")
     return f"{safe_site}_FIT-AP光衰_{stamp}.xlsx"
-
-
-def _evaluate_neighbor_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
-    if neighbor_optical:
-        return compute_optical_severity({
-            "switch_rx_power": neighbor_optical.get("rx_power"),
-            "switch_port_status": neighbor_optical.get("port_status"),
-            "alarm_low": neighbor_optical.get("rx_low_alarm"),
-            "alarm_high": neighbor_optical.get("rx_high_alarm"),
-            "warning_low": neighbor_optical.get("rx_low_warning"),
-            "device_type": "switch",
-        }).severity
-    value = _to_float(rx_power)
-    return compute_optical_severity({"switch_rx_power": value, "device_type": "switch"}).severity
-
-
-def _fit_ap_optical_export_value(row: dict[str, object | None], field: str) -> str:
-    if field == "switch_optical_status":
-        return display_optical_status(evaluate_fit_ap_switch_status(row))
-    if field == "optical_alarm_status":
-        if bool(row.get("is_ap_offline")):
-            return OFFLINE_AP_STATUS_TEXT
-        return display_optical_status(evaluate_fit_ap_ap_status(row))
-    return _display_link_value(row, field)
-
-
-def _to_float(value: object) -> float | None:
-    import re
-
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value or ""))
-    if not match:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
 
 
 def _normalize_mac_text(value: object) -> str:
@@ -603,19 +536,6 @@ def _friendly_external_terminal_error(message: object) -> str:
     return text or "启动外部终端失败"
 
 
-def _evaluate_ap_result(row: dict[str, object | None]):
-    return compute_optical_severity(
-        {
-            "ap_rx_power": row.get("rx_power"),
-            "ap_port_status": row.get("ap_port_status"),
-            "alarm_low": row.get("rx_low_alarm"),
-            "alarm_high": row.get("rx_high_alarm"),
-            "warning_low": row.get("rx_low_warning"),
-            "device_type": "ap",
-        }
-    )
-
-
 def _ap_unique_key(row: dict[str, object | None]) -> str:
     for field in ("ap_uuid", "serial_number", "ap_mac"):
         value = str(row.get(field) or "").strip()
@@ -677,6 +597,12 @@ class AcManagementPage(QWidget):
         self.site_name = site_name
         self.feature_gate = feature_gate or default_feature_gate()
         self.settings = SettingsStore(PathResolver())
+        self.background_manager = BackgroundProcessManager(self, paths=self.settings.paths)
+        self.background_manager.progress.connect(self._background_progress)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self.background_manager.cancelled.connect(self._background_failed)
+        self._background_jobs: dict[str, dict[str, object]] = {}
         self.ac_devices: list[Device] = []
         self.resource_thread: AcResourceCollectThread | None = None
         self.ac_info_thread: AcInfoCollectThread | None = None
@@ -1868,13 +1794,11 @@ class AcManagementPage(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ap.import_metadata"), "", "Excel Files (*.xlsx);;CSV Files (*.csv)")
         if not path:
             return
-        try:
-            result = self.import_export_service.import_metadata_file(Path(path))
-        except ValueError:
-            MessageBox.warning(self, self.i18n.t("ap.import_metadata"), self.i18n.t("ap.metadata_template_unsupported"))
-            return
-        app_logger.log_info("FIT_AP_IMPORT", f"updated={result.updated}, skipped={result.skipped}")
-        self.refresh_data()
+        self._start_background_job(
+            "fit_ap_metadata_import",
+            {"path": path, "db_path": str(self.repository.database.path)},
+            title=self.i18n.t("ap.import_metadata"),
+        )
 
     def refresh_ap_extensions(self) -> None:
         search = self.extension_search_input.text() if hasattr(self, "extension_search_input") else ""
@@ -1889,46 +1813,98 @@ class AcManagementPage(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, title, "", "Excel/CSV Files (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            preview = self.import_export_service.preview_ap_extension_import(Path(path), import_mode)
-        except Exception as exc:
-            MessageBox.warning(self, title, str(exc))
+        self._start_background_job(
+            "fit_ap_extension_preview",
+            {"path": path, "db_path": str(self.repository.database.path), "import_mode": import_mode},
+            title=title,
+        )
+
+    def _start_background_job(self, task_type: str, params: dict[str, object], *, title: str) -> str:
+        job_id = uuid.uuid4().hex
+        self._background_jobs[job_id] = {"task_type": task_type, "title": title, **params}
+        self.status_label.setText(f"{title}：后台处理中...")
+        self.background_manager.start_job(BackgroundJob(job_id=job_id, task_type=task_type, params=params))
+        return job_id
+
+    def _background_progress(self, event: dict) -> None:
+        message = str(event.get("message") or "")
+        if message:
+            self.status_label.setText(message)
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self._background_jobs.pop(job_id, {})
+        task_type = str(context.get("task_type") or "")
+        title = str(context.get("title") or "后台任务")
+        result = dict(event.get("result") or {})
+        if task_type == "fit_ap_metadata_import":
+            app_logger.log_info("FIT_AP_IMPORT", f"updated={result.get('updated', 0)}, skipped={result.get('skipped', 0)}")
+            self.status_label.setText(f"{title}：完成，更新 {result.get('updated', 0)} 条，跳过 {result.get('skipped', 0)} 条")
+            self.refresh_data()
             return
+        if task_type == "fit_ap_extension_preview":
+            self._confirm_ap_extension_import(title, context, result)
+            return
+        if task_type == "fit_ap_extension_commit":
+            MessageBox.information(
+                self,
+                title,
+                f"新增：{result.get('success_rows', 0)}\n更新：{result.get('updated_rows', 0)}\n跳过：{result.get('skipped_rows', 0)}\n错误：{result.get('error_rows', 0)}",
+            )
+            self.status_label.setText(f"{title}：完成")
+            self.refresh_ap_extensions()
+            self.refresh_data()
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self._background_jobs.pop(job_id, {})
+        title = str(context.get("title") or "后台任务")
+        message = str(event.get("message") or event.get("error") or "后台任务失败")
+        if "Unsupported AP metadata template header" in message:
+            message = self.i18n.t("ap.metadata_template_unsupported")
+        self.status_label.setText(f"{title}：失败")
+        MessageBox.warning(self, title, message)
+
+    def _confirm_ap_extension_import(self, title: str, context: dict[str, object], preview: dict[str, object]) -> None:
+        summary = dict(preview.get("summary") or {})
         lines = [
-            f"文件名：{preview.file_name}",
-            f"模板类型：{preview.template_type}",
-            f"识别置信度：{preview.confidence_score}",
-            f"工作表数：{len(preview.sheets)}",
-            f"预览数据行：{preview.summary.get('total_rows', 0)}",
-            f"未绑定 AP MAC 数量：{preview.summary.get('unbound_rows', 0)}",
-            f"无效 MAC 数量：{preview.summary.get('invalid_mac_rows', 0)}",
+            f"文件名：{preview.get('file_name') or '-'}",
+            f"模板类型：{preview.get('template_type') or '-'}",
+            f"识别置信度：{preview.get('confidence_score') or 0}",
+            f"工作表数：{preview.get('sheet_count') or 0}",
+            f"预览数据行：{summary.get('total_rows', 0)}",
+            f"未绑定 AP MAC 数量：{summary.get('unbound_rows', 0)}",
+            f"无效 MAC 数量：{summary.get('invalid_mac_rows', 0)}",
         ]
-        if preview.low_confidence:
+        if bool(preview.get("low_confidence")):
             lines.append("识别置信度较低，请手动映射字段。")
             MessageBox.warning(self, title, "\n".join(lines))
             return
         if MessageBox.question(self, title, "\n".join(lines) + "\n\n确认导入以上预览数据？") != MessageBox.Yes:
             return
-        stats = self.import_export_service.commit_ap_extension_import(preview)
-        MessageBox.information(
-            self,
-            title,
-            f"新增：{stats.get('success_rows', 0)}\n更新：{stats.get('updated_rows', 0)}\n跳过：{stats.get('skipped_rows', 0)}\n错误：{stats.get('error_rows', 0)}",
+        self._start_background_job(
+            "fit_ap_extension_commit",
+            {
+                "path": str(context.get("path") or ""),
+                "db_path": str(self.repository.database.path),
+                "import_mode": str(context.get("import_mode") or "standard_template"),
+            },
+            title=title,
         )
-        self.refresh_ap_extensions()
-        self.refresh_data()
 
     def export_ap_extensions(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_extensions")
         path = select_export_path(self, "导出FIT-AP扩展信息", f"{self.site_name}_FIT-AP扩展信息.xlsx", EXCEL_FILTER)
         if not path:
             return
+        search = self.extension_search_input.text().strip() if hasattr(self, "extension_search_input") else ""
         submit_export_task(
             self,
             fit_ap_extension_xlsx_spec(
                 path,
                 db_path=self.repository.database.path,
-                rows=self.extension_rows,
+                ac_uuid=self.current_device_uuid(),
+                search=search,
                 title="导出FIT-AP扩展信息",
                 open_dir_on_success=True,
             ),
@@ -1948,7 +1924,10 @@ class AcManagementPage(QWidget):
     def _edit_ap_extension_point(self, row: dict[str, object | None]) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("FIT-AP扩展信息")
-        form = QFormLayout()
+        dialog.resize(720, 620)
+        dialog.setMinimumSize(640, 520)
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
         fields = (
             ("belong_type", "归属类型"),
             ("station_name", "归属站点"),
@@ -1984,7 +1963,10 @@ class AcManagementPage(QWidget):
         buttons.addWidget(save_button)
         buttons.addWidget(cancel_button)
         layout = QVBoxLayout()
-        layout.addLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_widget)
+        layout.addWidget(scroll, 1)
         layout.addLayout(buttons)
         dialog.setLayout(layout)
         save_button.clicked.connect(dialog.accept)
@@ -2062,15 +2044,12 @@ class AcManagementPage(QWidget):
         path = self._select_ap_extension_template_path(filename)
         if not path:
             return
-        rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else []
-        ap_entities = self.repository.list_ap_entities(ac_uuid) if ac_uuid else []
         submit_export_task(
             self,
             fit_ap_extension_template_xlsx_spec(
                 path,
                 db_path=self.repository.database.path,
-                rows=rows,
-                ap_entities=ap_entities,
+                ac_uuid=ac_uuid or "",
                 title=self.i18n.t("ap.export_extension_template"),
                 open_dir_on_success=True,
             ),
@@ -2078,7 +2057,7 @@ class AcManagementPage(QWidget):
             paths=self.settings.paths,
         )
         remember_export_path(path)
-        app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"ac={ac_uuid or '-'}, file={path.name}")
 
     def _current_ac_export_name(self) -> str:
         device = self.current_device()

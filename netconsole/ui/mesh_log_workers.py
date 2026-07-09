@@ -4,15 +4,15 @@ import multiprocessing
 import queue
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_analysis_report import MeshReportOptions
-from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
+from netconsole.ui.background_process_bridge import BackgroundProcessBridgeCancelled, run_background_job_process
 
 
 class MeshLogImportWorker(QThread):
@@ -37,29 +37,43 @@ class MeshLogImportWorker(QThread):
 
     def run(self) -> None:
         try:
-            service = MeshImportService(self.site_name, self.paths)
             last_emit = 0.0
 
-            def emit_progress(file_index: int, total_files: int, lines: int, parsed: int, skipped: int) -> None:
+            def handle_progress(event: dict) -> None:
                 nonlocal last_emit
+                stage = str(event.get("stage") or "")
+                parts = stage.split(":")
+                lines = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+                parsed = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+                skipped = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+                file_index = int(event.get("current") or 0)
+                total_files = int(event.get("total") or 0)
                 now = monotonic()
                 if now - last_emit >= 0.2 or file_index >= total_files:
                     last_emit = now
                     self.progress.emit(file_index, total_files, lines, parsed, skipped)
 
-            result = service.import_files(
-                self.profile,
-                self.files,
+            result = run_background_job_process(
+                task_type="mesh_log_import",
+                params={
+                    "site_name": self.site_name,
+                    "profile": _profile_payload(self.profile),
+                    "files": [str(path) for path in self.files],
+                },
+                progress_handler=handle_progress,
                 should_cancel=self.is_cancelled,
-                progress=emit_progress,
+                paths=self.paths,
             )
+        except BackgroundProcessBridgeCancelled:
+            self.cancelled.emit()
+            return
         except Exception as exc:
             self.failed.emit(str(exc))
             return
         if self._cancelled:
             self.cancelled.emit()
             return
-        self.completed.emit(result)
+        self.completed.emit(SimpleNamespace(**result))
 
 
 class MeshDerivedAnalysisRebuildWorker(QThread):
@@ -80,10 +94,14 @@ class MeshDerivedAnalysisRebuildWorker(QThread):
 
     def run(self) -> None:
         try:
-            MeshMrRepository(self.db_path).rebuild_derived_analysis(
+            run_background_job_process(
+                task_type="mesh_derived_rebuild",
+                params={"db_path": str(self.db_path)},
+                progress_handler=lambda event: self.progress.emit(int(event.get("current") or 0)),
                 should_cancel=self.is_cancelled,
-                progress=lambda processed: self.progress.emit(int(processed or 0)),
             )
+        except BackgroundProcessBridgeCancelled:
+            return
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -201,3 +219,14 @@ class MeshAnalysisReportWorker(QThread):
     def _cleanup_temp(self) -> None:
         if self.temp_path.exists():
             self.temp_path.unlink()
+
+
+def _profile_payload(profile: MeshMrProfile) -> dict[str, object]:
+    return {
+        "mr_id": profile.mr_id,
+        "display_name": profile.display_name,
+        "safe_folder_name": profile.safe_folder_name,
+        "relative_folder_path": profile.relative_folder_path,
+        "linked_device_id": profile.linked_device_id,
+        "notes": profile.notes,
+    }

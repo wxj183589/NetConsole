@@ -29,8 +29,11 @@ from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, C
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
-from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, MultiDeviceCompareResult, safe_device_name, snapshot_timestamp, unique_export_folder_name
-from netconsole.services.export.export_task_builders import config_snapshots_zip_spec, markdown_text_spec
+from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, safe_device_name, snapshot_timestamp, unique_export_folder_name
+from netconsole.services.config_snapshot_task_helpers import load_snapshot_content
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec, markdown_text_spec
 from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
@@ -58,6 +61,13 @@ class ConfigCollectionCenterPage(QWidget):
         self.group_repository = DeviceGroupRepository(repository.database, site_name)
         self.service = ConfigLifecycleService(site_name, repository.database, paths, self.snapshot_repository)
         self.worker: ConfigLifecycleWorker | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.progress.connect(self._background_progress)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self.background_manager.cancelled.connect(self._background_failed)
+        self.background_job_id: str | None = None
+        self.background_job_type = ""
         self.devices: list[Device] = []
         self.snapshots: list[ConfigSnapshot] = []
         self.checked_device_ids: set[int] = set()
@@ -328,36 +338,87 @@ class ConfigCollectionCenterPage(QWidget):
         self.compare_latest_snapshots()
 
     def compare_two_devices(self, device_a: Device, device_b: Device) -> None:
-        try:
-            result = self.service.compare_latest_running_between_devices(device_a, device_b)
-        except Exception as exc:
-            MessageBox.warning(self, self._title(), str(exc))
-            return
-        self.running_text.setPlainText(self.t("config_center.text.running_config", device=result.device_a))
-        self.saved_text.setPlainText(self.t("config_center.text.running_config", device=result.device_b))
-        self.current_raw_diff = result.diff.raw_diff
-        self.diff_viewer.set_diff(result.device_a, result.device_b, self.service.snapshot_text(self.service.list_device_snapshots(device_a, "running")[0]), self.service.snapshot_text(self.service.list_device_snapshots(device_b, "running")[0]), result.diff.raw_diff)
-        self.tabs.setCurrentWidget(self.diff_viewer)
-        self.status_label.setText(self.t("config_center.status.two_device_compare_done"))
+        self._start_background_compare(
+            "config_compare_latest_running_between_devices",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                **self._background_path_params(),
+                "device_uuid_a": str(device_a.device_uuid or ""),
+                "device_uuid_b": str(device_b.device_uuid or ""),
+            },
+        )
 
     def compare_latest_snapshots(self) -> None:
         device = self.primary_device()
         if device is None:
             return
-        running = self.service.list_device_snapshots(device, "running")
-        saved = self.service.list_device_snapshots(device, "saved")
-        if not running or not saved:
+        self._start_background_compare(
+            "config_compare_latest_snapshots",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                **self._background_path_params(),
+                "device_uuid": str(device.device_uuid or ""),
+            },
+        )
+
+    def _background_path_params(self) -> dict[str, str]:
+        return {"app_root": str(self.paths.app_root), "data_root": str(self.paths.data_root)}
+
+    def _start_background_compare(self, task_type: str, params: dict[str, object]) -> None:
+        if self.background_job_id is not None:
+            return
+        job_id = f"config_{snapshot_timestamp()}"
+        self.background_job_id = job_id
+        self.background_job_type = task_type
+        self._set_busy(True)
+        self.status_label.setText("正在后台计算配置差异...")
+        self.background_manager.start_job(BackgroundJob(job_id=job_id, task_type=task_type, params=params))
+
+    def _background_progress(self, event: dict) -> None:
+        message = str(event.get("message") or "")
+        if message:
+            self.status_label.setText(message)
+
+    def _background_finished(self, event: dict) -> None:
+        result = dict(event.get("result") or {})
+        task_type = self.background_job_type
+        self.background_job_id = None
+        self.background_job_type = ""
+        self._set_busy(False)
+        if task_type in {"config_compare_latest_running_between_devices", "config_compare_latest_snapshots", "config_compare_snapshot_pair"}:
+            self._apply_background_diff(result)
+
+    def _background_failed(self, event: dict) -> None:
+        message = str(event.get("message") or event.get("error") or "后台任务失败")
+        self.background_job_id = None
+        self.background_job_type = ""
+        self._set_busy(False)
+        if "需要先采集 running 和 saved 配置" in message:
             self._show_info("config_center.msg.need_snapshots")
             return
-        diff = self.service.compare_snapshots(running[0], saved[0])
-        running_text = self.service.snapshot_text(running[0])
-        saved_text = self.service.snapshot_text(saved[0])
-        self.running_text.setPlainText(running_text)
-        self.saved_text.setPlainText(saved_text)
-        self.current_raw_diff = diff.raw_diff
-        self.diff_viewer.set_diff(self.t("config_center.tab.running"), self.t("config_center.tab.saved"), running_text, saved_text, diff.raw_diff)
+        MessageBox.warning(self, self._title(), message)
+
+    def _apply_background_diff(self, result: dict[str, object]) -> None:
+        left_label = str(result.get("left_label") or self.t("config_center.tab.running"))
+        right_label = str(result.get("right_label") or self.t("config_center.tab.saved"))
+        if left_label in {"running", "saved", "diff"}:
+            left_label = self._snapshot_type_label(left_label)
+        if right_label in {"running", "saved", "diff"}:
+            right_label = self._snapshot_type_label(right_label)
+        left_text = str(result.get("left_text") or "")
+        right_text = str(result.get("right_text") or "")
+        raw_diff = str(result.get("raw_diff") or "")
+        self.running_text.setPlainText(left_text)
+        self.saved_text.setPlainText(right_text)
+        self.current_raw_diff = raw_diff
+        self.diff_viewer.set_diff(left_label, right_label, left_text, right_text, raw_diff)
         self.tabs.setCurrentWidget(self.diff_viewer)
-        self.status_label.setText(self.t("config_center.status.latest_compare_done"))
+        if str(result.get("kind") or "") == "two_devices":
+            self.status_label.setText(self.t("config_center.status.two_device_compare_done"))
+        else:
+            self.status_label.setText(self.t("config_center.status.latest_compare_done"))
 
     def _start_single_action(self, action: str) -> None:
         device = self.primary_device()
@@ -366,7 +427,8 @@ class ConfigCollectionCenterPage(QWidget):
             return
         self._set_busy(True)
         self.status_label.setText(self.t("config_center.status.running"))
-        self.worker = ConfigLifecycleWorker(action, self.service, device=device, parent=self)
+        db_path = self.repository.database.path
+        self.worker = ConfigLifecycleWorker(action, db_path, self.site_name, device_uuid=str(device.device_uuid or ""), parent=self)
         self.worker.result_ready.connect(self._handle_operation_result)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.finished.connect(lambda: setattr(self, "worker", None))
@@ -375,7 +437,14 @@ class ConfigCollectionCenterPage(QWidget):
     def _start_batch_fetch(self, devices: list[Device]) -> None:
         self._set_busy(True)
         self.status_label.setText(self.t("config_center.status.download_running", count=len(devices)))
-        self.worker = ConfigLifecycleWorker("batch_fetch", self.service, devices=devices, parent=self)
+        db_path = self.repository.database.path
+        self.worker = ConfigLifecycleWorker(
+            "batch_fetch",
+            db_path,
+            self.site_name,
+            device_uuids=[str(device.device_uuid or "") for device in devices],
+            parent=self,
+        )
         self.worker.result_ready.connect(self._handle_batch_result)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.finished.connect(lambda: setattr(self, "worker", None))
@@ -414,7 +483,7 @@ class ConfigCollectionCenterPage(QWidget):
         if snapshot is None:
             self._sync_buttons()
             return
-        text = self.service.snapshot_text(snapshot)
+        text = load_snapshot_content(self.service, snapshot)
         if snapshot.type == "running":
             self.running_text.setPlainText(text)
             self.tabs.setCurrentWidget(self.running_text)
@@ -502,16 +571,25 @@ class ConfigCollectionCenterPage(QWidget):
             if len(snapshots) != 2:
                 self._show_info("config_center.msg.select_two_snapshots")
                 return
-            diff = self.service.compare_snapshots(snapshots[0], snapshots[1])
-            self.current_raw_diff = diff.raw_diff
-            self.diff_viewer.set_diff(
-                self._snapshot_type_label(snapshots[0].type),
-                self._snapshot_type_label(snapshots[1].type),
-                self.service.snapshot_text(snapshots[0]),
-                self.service.snapshot_text(snapshots[1]),
-                diff.raw_diff,
-            )
-            self.tabs.setCurrentWidget(self.diff_viewer)
+            target, _ = QFileDialog.getSaveFileName(self, self.export_diff_button.text(), f"diff_{snapshot_timestamp()}.diff", "Diff (*.diff);;Text (*.txt)")
+            if target:
+                submit_export_task(
+                    self,
+                    config_diff_text_spec(
+                        target,
+                        db_path=self.repository.database.path,
+                        site_name=self.site_name,
+                        app_root=self.paths.app_root,
+                        data_root=self.paths.data_root,
+                        left_snapshot_id=int(snapshots[0].id or 0),
+                        right_snapshot_id=int(snapshots[1].id or 0),
+                        title=self.export_diff_button.text(),
+                        open_dir_on_success=True,
+                    ),
+                    success_title=self.export_diff_button.text(),
+                    paths=self.paths,
+                )
+            return
         if not self.current_raw_diff:
             self._show_info("config_center.msg.select_two_snapshots")
             return
@@ -539,7 +617,7 @@ class ConfigCollectionCenterPage(QWidget):
 
     def _show_result_snapshots(self, snapshots: list[ConfigSnapshot], diff: ConfigDiffResult | None) -> None:
         for snapshot in snapshots:
-            text = self.service.snapshot_text(snapshot)
+            text = load_snapshot_content(self.service, snapshot)
             if snapshot.type == "running":
                 self.running_text.setPlainText(text)
             elif snapshot.type == "saved":
@@ -552,7 +630,13 @@ class ConfigCollectionCenterPage(QWidget):
             saved = next((snapshot for snapshot in snapshots if snapshot.type == "saved"), None)
             self.current_raw_diff = diff.raw_diff
             if running is not None and saved is not None:
-                self.diff_viewer.set_diff(self.t("config_center.tab.running"), self.t("config_center.tab.saved"), self.service.snapshot_text(running), self.service.snapshot_text(saved), diff.raw_diff)
+                self.diff_viewer.set_diff(
+                    self.t("config_center.tab.running"),
+                    self.t("config_center.tab.saved"),
+                    load_snapshot_content(self.service, running),
+                    load_snapshot_content(self.service, saved),
+                    diff.raw_diff,
+                )
             else:
                 self.diff_viewer.set_message(diff.raw_diff)
             self.tabs.setCurrentWidget(self.diff_viewer)
@@ -694,16 +778,17 @@ class ConfigCollectionCenterPage(QWidget):
         checked_count = len(self.checked_device_ids)
         selected_snapshot_count = len(self.selected_snapshots())
         has_snapshot = selected_snapshot_count > 0
-        if self.worker is None:
+        busy = self.worker is not None or self.background_job_id is not None
+        if not busy:
             self.save_button.setEnabled(has_device and checked_count <= 1)
             self.fetch_button.setEnabled(has_device)
             self.compare_button.setEnabled(has_device or checked_count == 2)
             self.refresh_button.setEnabled(True)
             self.open_dir_button.setEnabled(has_device and checked_count <= 1)
-        self.download_button.setEnabled(has_snapshot and self.worker is None)
-        self.export_batch_button.setEnabled((has_snapshot or (bool(self.current_batch_results) and any(item.success for item in self.current_batch_results))) and self.worker is None)
-        self.export_diff_button.setEnabled(((selected_snapshot_count == 2) or bool(self.current_raw_diff)) and self.worker is None)
-        self.delete_button.setEnabled(has_snapshot and self.worker is None)
+        self.download_button.setEnabled(has_snapshot and not busy)
+        self.export_batch_button.setEnabled((has_snapshot or (bool(self.current_batch_results) and any(item.success for item in self.current_batch_results))) and not busy)
+        self.export_diff_button.setEnabled(((selected_snapshot_count == 2) or bool(self.current_raw_diff)) and not busy)
+        self.delete_button.setEnabled(has_snapshot and not busy)
         self.snapshots_label.setText(f"{self.t('config_center.snapshots')}（{self.t('config_center.status.selected_snapshots', count=selected_snapshot_count)}）")
 
     def _sync_sidebar_button_text(self) -> None:
@@ -722,22 +807,6 @@ class ConfigCollectionCenterPage(QWidget):
             "diff": self.t("config_center.tab.diff"),
         }
         return labels.get(snapshot_type, snapshot_type)
-
-    def _format_multi_device_diff(self, result: MultiDeviceCompareResult) -> str:
-        only_a = "\n".join(f"- {item}" for item in result.structure_diff["only_in_a"]) or "-"
-        only_b = "\n".join(f"- {item}" for item in result.structure_diff["only_in_b"]) or "-"
-        return "\n".join(
-            [
-                self.t("config_center.text.structure_diff", device=result.device_a),
-                only_a,
-                "",
-                self.t("config_center.text.structure_diff", device=result.device_b),
-                only_b,
-                "",
-                self.t("config_center.text.unified_diff"),
-                result.diff.raw_diff,
-            ]
-        )
 
     def _snapshot_download_filename(self, snapshot: ConfigSnapshot, suffix: str) -> str:
         device = self.selected_device()

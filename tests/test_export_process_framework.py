@@ -70,6 +70,8 @@ def test_table_csv_spec_uses_inline_rows_source(tmp_path) -> None:
         output,
         columns=[("名称", "name"), ("MAC", "mac")],
         rows=[{"name": "宁波站", "mac": "00aa-bbcc-ddee"}],
+        allow_inline_rows=True,
+        inline_reason="单元测试小型内联数据",
     )
     job = spec.to_job("source-csv-job")
     job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "source_table.csv.tmp")})
@@ -87,7 +89,13 @@ def test_inline_rows_builder_rejects_large_payload(tmp_path) -> None:
     rows = ({"name": str(index)} for index in range(INLINE_ROW_LIMIT + 1))
 
     with pytest.raises(ValueError, match="inline_rows"):
-        table_csv_spec(tmp_path / "too_many.csv", columns=[("名称", "name")], rows=rows)
+        table_csv_spec(
+            tmp_path / "too_many.csv",
+            columns=[("名称", "name")],
+            rows=rows,
+            allow_inline_rows=True,
+            inline_reason="单元测试超限内联数据",
+        )
 
 
 def test_generic_table_xlsx_handler_writes_header_and_rows(tmp_path) -> None:

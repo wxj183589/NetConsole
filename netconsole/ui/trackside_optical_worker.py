@@ -7,6 +7,7 @@ from threading import Event
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.core import app_logger
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.trackside_optical_collection import (
@@ -56,15 +57,15 @@ class TracksideApBusinessLoadThread(QThread):
     load_finished = Signal(object)
     load_failed = Signal(int, str)
 
-    def __init__(self, repository: DeviceRepository, site_name: str, generation: int, parent=None) -> None:
+    def __init__(self, db_path, site_name: str, generation: int, parent=None) -> None:
         super().__init__(parent)
-        self.repository = repository
+        self.db_path = db_path
         self.site_name = site_name
         self.generation = generation
 
     def run(self) -> None:
         try:
-            result = load_trackside_ap_business_snapshot(self.repository, self.site_name, self.generation)
+            result = load_trackside_ap_business_snapshot(DeviceRepository(Database(self.db_path)), self.site_name, self.generation)
         except Exception as exc:
             self.load_failed.emit(self.generation, str(exc))
             return
@@ -79,7 +80,7 @@ class TracksideApFullUpdateThread(QThread):
 
     def __init__(
         self,
-        repository: DeviceRepository,
+        db_path,
         site_name: str,
         paths: PathResolver,
         device_concurrency: int = BATCH_CONCURRENCY,
@@ -87,7 +88,7 @@ class TracksideApFullUpdateThread(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.repository = repository
+        self.db_path = db_path
         self.site_name = site_name
         self.paths = paths
         self.device_concurrency = int(device_concurrency or BATCH_CONCURRENCY)
@@ -110,10 +111,11 @@ class TracksideApFullUpdateThread(QThread):
         self.full_update_finished.emit(result)
 
     def _run_full_update(self) -> TracksideApFullUpdateResult:
-        station_switches = filter_station_switch_devices(self.repository.list(), self.repository.database, self.site_name)
+        repository = DeviceRepository(Database(self.db_path))
+        station_switches = filter_station_switch_devices(repository.list(), repository.database, self.site_name)
         ac_devices = [
             device
-            for device in self.repository.list(vendor="H3C", device_type="AC")
+            for device in repository.list(vendor="H3C", device_type="AC")
             if str(device.device_vendor or "").strip().upper() == "H3C" and str(device.device_type or "").strip().upper() == "AC"
         ]
         skipped: list[str] = []
@@ -260,7 +262,7 @@ class TracksideOpticalCollectThread(QThread):
 
     def __init__(
         self,
-        repository: DeviceRepository,
+        db_path,
         site_name: str,
         paths: PathResolver,
         trackside_rows: list[dict[str, object | None]],
@@ -272,7 +274,7 @@ class TracksideOpticalCollectThread(QThread):
         target_ap_name: str | None = None,
     ) -> None:
         super().__init__(parent)
-        self.repository = repository
+        self.db_path = db_path
         self.site_name = site_name
         self.paths = paths
         self.trackside_rows = trackside_rows
@@ -290,7 +292,7 @@ class TracksideOpticalCollectThread(QThread):
         try:
             self.stage_changed.emit("trackside_ap.stage_prepare")
             result: TracksideOpticalSessionResult = collect_trackside_optical(
-                self.repository,
+                DeviceRepository(Database(self.db_path)),
                 self.site_name,
                 self.paths,
                 self.trackside_rows,

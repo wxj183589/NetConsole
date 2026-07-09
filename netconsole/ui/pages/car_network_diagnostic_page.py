@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
-from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -36,6 +35,8 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.rail_transit.car_network_diagnostic import (
     NODE_ORDER,
     POINT_TABLE_FIELDS,
@@ -64,7 +65,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     normalize_train_network_defaults,
     sort_car_network_trains,
 )
-from netconsole.services.export.export_task_builders import table_csv_spec, table_xlsx_spec
+from netconsole.services.export.export_task_builders import car_network_point_table_spec
 from netconsole.services.vehicle_mr_online import normalize_train_no
 from netconsole.ui.car_network_diagnostic_worker import CarNetworkDiagnosticWorker
 from netconsole.ui.components.button_icons import apply_button_icon
@@ -166,6 +167,9 @@ class CarNetworkDiagnosticPage(QWidget):
         self.train_ac_status: TrainAcStatus | None = None
         self.last_result: CarNetworkDiagnosticResult | None = None
         self.worker: CarNetworkDiagnosticWorker | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
         self.car_network_point_table_window: PointTableDialog | None = None
         self.task_rows: dict[str, tuple[QTableWidget, int]] = {}
         self.log_lines: list[str] = []
@@ -511,13 +515,22 @@ class CarNetworkDiagnosticPage(QWidget):
         path, _filter = QFileDialog.getOpenFileName(self, "导入车内通信点表", "", "Point Table (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            count = self.store.import_file(Path(path))
-        except Exception as exc:
-            MessageBox.warning(self, "导入车内通信点表", str(exc))
+        self.background_manager.start_job(
+            BackgroundJob(
+                task_type="car_network_point_table_import",
+                params={"path": path, "site_name": self.site_name},
+            )
+        )
+
+    def _background_finished(self, event: dict) -> None:
+        result = dict(event.get("result") or {})
+        if "count" not in result:
             return
-        MessageBox.information(self, "导入车内通信点表", f"导入完成：{count} 条")
+        MessageBox.information(self, "导入车内通信点表", f"导入完成：{int(result.get('count') or 0)} 条")
         self.refresh_all()
+
+    def _background_failed(self, event: dict) -> None:
+        MessageBox.warning(self, "导入车内通信点表", str(event.get("message") or event.get("error") or "导入失败"))
 
     def export_points(self) -> None:
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
@@ -526,20 +539,8 @@ class CarNetworkDiagnosticPage(QWidget):
         path, _filter = QFileDialog.getSaveFileName(self, "导出车内通信点表", str(default), "Excel (*.xlsx);;CSV (*.csv)")
         if not path:
             return
-        rows = [asdict(node) for node in self.nodes]
-        columns = [{"key": field, "title": field, "text": True} for field in POINT_TABLE_FIELDS]
         output_path = Path(path)
-        if output_path.suffix.casefold() == ".csv":
-            spec = table_csv_spec(output_path, columns=columns, rows=rows, title="导出车内通信点表", open_dir_on_success=True)
-        else:
-            spec = table_xlsx_spec(
-                output_path,
-                columns=columns,
-                rows=rows,
-                sheet_name="car_network_point_table",
-                title="导出车内通信点表",
-                open_dir_on_success=True,
-            )
+        spec = car_network_point_table_spec(output_path, site_name=self.site_name, title="导出车内通信点表", open_dir_on_success=True)
         submit_export_task(self, spec, success_title="导出车内通信点表", paths=self.paths)
 
     def generate_from_devices(self) -> None:
@@ -1067,11 +1068,15 @@ class PointTableDialog(QDialog):
         self.site_name = site_name
         self.store = store
         self.config_store = config_store
+        self.background_manager = BackgroundProcessManager(self)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
         self.global_config = merge_global_config(self.config_store.load())
         self.nodes = self.store.load()
         self.setWindowTitle("车内通信点表")
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         self.resize(1380, 720)
+        self.setMinimumSize(1180, 680)
 
         self.train_filter = NoWheelComboBox()
         self.node_type_filter = NoWheelComboBox()
@@ -1114,8 +1119,8 @@ class PointTableDialog(QDialog):
         layout.addLayout(filters)
         layout.addWidget(self._build_global_rules_box())
         layout.addWidget(self.table, 1)
-        buttons = QHBoxLayout()
-        for button in (
+        buttons = QGridLayout()
+        action_buttons = (
             self.add_button,
             self.delete_button,
             self.apply_mapping_button,
@@ -1128,9 +1133,12 @@ class PointTableDialog(QDialog):
             self.export_button,
             self.save_button,
             self.cancel_button,
-        ):
-            buttons.addWidget(button)
-        buttons.addStretch(1)
+        )
+        for index, button in enumerate(action_buttons):
+            button.setMinimumHeight(32)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            buttons.addWidget(button, index // 6, index % 6)
+        buttons.setColumnStretch(5, 1)
         layout.addLayout(buttons)
 
         self.train_filter.currentIndexChanged.connect(self._apply_filter)
@@ -1428,33 +1436,30 @@ class PointTableDialog(QDialog):
         path, _filter = QFileDialog.getOpenFileName(self, "导入车内通信点表", "", "Point Table (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            self.store.import_file(Path(path))
-            self.nodes = self.store.load()
-        except Exception as exc:
-            MessageBox.warning(self, "导入车内通信点表", str(exc))
+        self.background_manager.start_job(
+            BackgroundJob(
+                task_type="car_network_point_table_import",
+                params={"path": path, "site_name": self.site_name},
+            )
+        )
+
+    def _background_finished(self, event: dict) -> None:
+        result = dict(event.get("result") or {})
+        if "count" not in result:
             return
+        self.nodes = self.store.load()
         self._reload_filters()
         self._fill_table()
+
+    def _background_failed(self, event: dict) -> None:
+        MessageBox.warning(self, "导入车内通信点表", str(event.get("message") or event.get("error") or "导入失败"))
 
     def _export(self) -> None:
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
         path, _filter = QFileDialog.getSaveFileName(self, "导出车内通信点表", str(default), "Excel (*.xlsx);;CSV (*.csv)")
         if path:
-            rows = [asdict(node) for node in self._rows_to_nodes()]
-            columns = [{"key": field, "title": field, "text": True} for field in POINT_TABLE_FIELDS]
             output_path = Path(path)
-            if output_path.suffix.casefold() == ".csv":
-                spec = table_csv_spec(output_path, columns=columns, rows=rows, title="导出车内通信点表", open_dir_on_success=True)
-            else:
-                spec = table_xlsx_spec(
-                    output_path,
-                    columns=columns,
-                    rows=rows,
-                    sheet_name="car_network_point_table",
-                    title="导出车内通信点表",
-                    open_dir_on_success=True,
-                )
+            spec = car_network_point_table_spec(output_path, site_name=self.site_name, title="导出车内通信点表", open_dir_on_success=True)
             submit_export_task(self, spec, success_title="导出车内通信点表")
 
     def _save(self) -> None:

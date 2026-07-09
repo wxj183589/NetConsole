@@ -48,9 +48,9 @@ from netconsole.services.file_transfer_service import (
     safe_device_name,
 )
 from netconsole.services.mesh_storage_service import MeshStorageService
-from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.path_preference_service import PathPreferenceService
+from netconsole.ui.background_process_bridge import run_background_job_process
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
@@ -214,12 +214,34 @@ class MeshAutoImportWorker(QThread):
 
     def run(self) -> None:
         try:
-            result = MeshImportService(self.site_name, self.paths).import_files(self.profile, [self.local_path])
-            self.result = (result.imported_count, result.duplicate_count, result.parsed_record_count)
-            self.completed.emit(result.imported_count, result.duplicate_count, result.parsed_record_count)
+            result = run_background_job_process(
+                task_type="mesh_log_import",
+                params={
+                    "site_name": self.site_name,
+                    "profile": _mesh_profile_payload(self.profile),
+                    "files": [str(self.local_path)],
+                },
+                paths=self.paths,
+            )
+            imported = int(result.get("imported_count") or 0)
+            duplicate = int(result.get("duplicate_count") or 0)
+            parsed = int(result.get("parsed_record_count") or 0)
+            self.result = (imported, duplicate, parsed)
+            self.completed.emit(imported, duplicate, parsed)
         except Exception as exc:
             self.error_message = str(exc)
             self.failed.emit(self.error_message)
+
+
+def _mesh_profile_payload(profile: MeshMrProfile) -> dict[str, object]:
+    return {
+        "mr_id": profile.mr_id,
+        "display_name": profile.display_name,
+        "safe_folder_name": profile.safe_folder_name,
+        "relative_folder_path": profile.relative_folder_path,
+        "linked_device_id": profile.linked_device_id,
+        "notes": profile.notes,
+    }
 
 
 class FileManagementPage(QWidget):

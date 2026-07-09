@@ -215,6 +215,8 @@ class AppLogPage(QWidget):
                 columns=_log_export_columns(),
                 rows=self.current_rows,
                 title=self.i18n.t("logs.export_current"),
+                allow_inline_rows=True,
+                inline_reason="日志当前页导出仅包含 UI 当前分页行",
             ),
             success_title=self.i18n.t("logs.export_current"),
         )

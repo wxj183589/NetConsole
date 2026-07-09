@@ -19,7 +19,7 @@ class IperfProcessWorker(QThread):
         iperf_path: Path,
         command: list[str],
         log_file: Path,
-        store: IperfResultStore | None = None,
+        db_path: Path | None = None,
         run_id: str | None = None,
         session_id: str = "",
         device_id: int | None = None,
@@ -30,6 +30,7 @@ class IperfProcessWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        store = IperfResultStore(db_path) if db_path is not None else None
         self.runner = IperfProcessRunner(
             iperf_path,
             command,

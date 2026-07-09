@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtCore import QThread, Signal
 
-from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
 from netconsole.services.vehicle_mr_offline_analysis import build_vehicle_mr_analysis_chart_payload
+from netconsole.ui.background_process_bridge import BackgroundProcessBridgeCancelled, run_background_job_process
 
 
 class OnlineMrParseWorker(QThread):
@@ -27,12 +28,20 @@ class OnlineMrParseWorker(QThread):
 
     def run(self) -> None:
         try:
-            summary = OnlineMrDiagnosisParser(self.session_dir).parse(
-                force=self.force_reparse,
-                progress=self._progress,
+            result = run_background_job_process(
+                task_type="online_mr_parse",
+                params={"session_dir": str(self.session_dir), "force_reparse": self.force_reparse},
+                progress_handler=lambda event: self._progress(
+                    str(event.get("stage") or ""),
+                    int(event.get("current") or 0),
+                    int(event.get("total") or 0),
+                    str(event.get("message") or ""),
+                ),
                 should_cancel=lambda: self._cancel_requested,
             )
-            self.completed.emit(summary)
+            self.completed.emit(SimpleNamespace(**result))
+        except BackgroundProcessBridgeCancelled as exc:
+            self.failed.emit(str(exc))
         except Exception as exc:
             self.failed.emit(str(exc))
 

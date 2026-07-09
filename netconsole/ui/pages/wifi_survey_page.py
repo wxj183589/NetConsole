@@ -36,8 +36,8 @@ from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
-from netconsole.services.export.export_task_builders import wifi_survey_csv_spec
-from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, generate_idw_heatmap, render_heatmap_png, rssi_to_color
+from netconsole.services.export.export_task_builders import wifi_survey_csv_spec, wifi_survey_heatmap_png_spec
+from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, generate_idw_heatmap, rssi_to_color
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readable_table_columns
 from netconsole.services.wifi_survey.scanner import WifiObservation, scan_wifi
@@ -812,14 +812,30 @@ class WifiSurveyPage(QWidget):
         self.update_legend()
 
     def export_image(self) -> None:
-        if self.floor_pixmap is None:
+        if self.floor_pixmap is None or self.current_floor_plan is None:
             MessageBox.information(self, "无线测试", "请先导入图纸")
             return
         default = self._export_dir() / "wifi_survey_heatmap.png"
         path_text, _ = QFileDialog.getSaveFileName(self, "导出图片", str(default), "PNG (*.png)")
         if not path_text:
             return
-        render_heatmap_png(self.floor_pixmap, self.heatmap_pixmap).save(path_text, "PNG")
+        mode, selected_ssids, selected_bssids, _mode_label = self.current_heatmap_selection()
+        submit_export_task(
+            self,
+            wifi_survey_heatmap_png_spec(
+                path_text,
+                db_path=self.repository.database.path,
+                floor_plan_id=int(self.current_floor_plan["id"]),
+                session_id=int(self.current_session["id"]) if self.current_session else 0,
+                mode=mode,
+                selected_ssids=selected_ssids,
+                selected_bssids=selected_bssids,
+                title="导出图片",
+                open_dir_on_success=True,
+            ),
+            success_title="导出图片",
+            paths=self.paths,
+        )
 
     def export_csv(self) -> None:
         if self.current_session is None:

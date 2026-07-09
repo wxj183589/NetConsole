@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
-import csv
 from datetime import datetime
 from pathlib import Path
 import re
@@ -21,35 +20,26 @@ from PySide6.QtWidgets import (
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
-from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
-from netconsole.services.export.common_exporters import export_table_xlsx
-from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec, table_xlsx_spec
 from netconsole.services.trackside_ap_business import parse_vlan_set
+from netconsole.services.trackside_ap_plan_io import (
+    MASK_ERROR_TEXT,
+    TRACKSIDE_PLAN_COLUMN_WIDTHS,
+    TRACKSIDE_PLAN_COLUMNS,
+    TRACKSIDE_PLAN_HEADERS,
+    _dedupe_station_rows,
+    _dotted_netmask_to_prefix,
+    _parse_mask_length,
+    _valid_ipv4,
+    _valid_ipv4_or_placeholder,
+    export_trackside_plan_xlsx,
+    read_trackside_plan_file,
+)
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.shell.fluent_bridge import FIF
-
-
-TRACKSIDE_PLAN_COLUMNS = (
-    ("ac.trackside_plan.station_name", "station_name"),
-    ("ac.trackside_plan.ap_count", "ap_count"),
-    ("ac.trackside_plan.ap_start_address", "ap_start_address"),
-    ("ac.trackside_plan.mask", "mask_length"),
-    ("ac.trackside_plan.ap_gateway", "ap_gateway"),
-    ("ac.trackside_plan.ap_management_vlan", "ap_management_vlans"),
-    ("field.remark", "remark"),
-)
-TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]
-TRACKSIDE_PLAN_COLUMN_WIDTHS = {
-    "station_name": 260,
-    "ap_count": 90,
-    "ap_start_address": 170,
-    "mask_length": 140,
-    "ap_gateway": 170,
-    "ap_management_vlans": 170,
-    "remark": 220,
-}
-MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
 
 
 def _set_button_icon(button: QPushButton, icon: object | None) -> None:
@@ -79,6 +69,9 @@ class TracksideApPlanPage(QWidget):
         self.export_button = QPushButton()
         self.template_button = QPushButton()
         self.refresh_button = QPushButton()
+        self.background_manager = BackgroundProcessManager(self)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
         self._dirty = False
         self._build_ui()
         self.retranslate()
@@ -174,21 +167,28 @@ class TracksideApPlanPage(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ac.trackside_plan.import"), "", "Excel/CSV (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            rows = _dedupe_station_rows(read_trackside_plan_file(Path(path)))
-            self._validate_rows(rows)
-        except ValueError as exc:
-            MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(exc))
-            return
-        self.repository.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, rows)
-        for row in rows:
-            app_logger.log_info(
-                "TRACKSIDE_AP_PLAN_SAVED",
-                f"保存轨旁AP规划：station={row.get('station_name')}, ap_count={row.get('ap_count')}, vlan={row.get('ap_management_vlans')}",
+        self.background_manager.start_job(
+            BackgroundJob(
+                task_type="trackside_ap_plan_import",
+                params={
+                    "path": path,
+                    "db_path": str(self.repository.database.path),
+                    "mode": TRACKSIDE_AP_PLAN_MODE,
+                },
             )
+        )
+
+    def _background_finished(self, event: dict) -> None:
+        result = dict(event.get("result") or {})
+        if "count" not in result:
+            return
+        app_logger.log_info("TRACKSIDE_AP_PLAN_IMPORTED", f"count={result.get('count')}")
         self._dirty = False
         self.reload_plan_table()
         self.plan_saved.emit()
+
+    def _background_failed(self, event: dict) -> None:
+        MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(event.get("message") or event.get("error") or "导入失败"))
 
     def export_plan(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.trackside_plan.export"), self._default_export_name(), "Excel (*.xlsx)")
@@ -196,10 +196,15 @@ class TracksideApPlanPage(QWidget):
             return
         submit_export_task(
             self,
-            table_xlsx_spec(
+            table_xlsx_source_spec(
                 Path(path),
                 columns=[{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
-                rows=self.repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE),
+                source=repository_query_source(
+                    db_path=self.repository.database.path,
+                    repository="ac_repository",
+                    method="list_trackside_ap_plan",
+                    filters={"mode": TRACKSIDE_AP_PLAN_MODE},
+                ),
                 sheet_name="轨旁AP规划",
                 title=self.i18n.t("ac.trackside_plan.export"),
             ),
@@ -218,6 +223,8 @@ class TracksideApPlanPage(QWidget):
                 rows=[],
                 sheet_name="轨旁AP规划",
                 title=self.i18n.t("ac.trackside_plan.template"),
+                allow_inline_rows=True,
+                inline_reason="轨旁 AP 规划下载空白静态模板",
             ),
             success_title=self.i18n.t("ac.trackside_plan.template"),
         )
@@ -326,107 +333,3 @@ class TracksideApPlanPage(QWidget):
             return False
         return result == MessageBox.StandardButton.Discard
 
-
-def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
-    if path.suffix.casefold() == ".csv":
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            return [_row_from_named(row) for row in csv.DictReader(handle)]
-    workbook = load_workbook_without_unsupported_image_warning(path, data_only=True)
-    sheet = workbook[workbook.sheetnames[0]]
-    headers = [str(cell.value or "").strip() for cell in sheet[1]]
-    rows = []
-    for values in sheet.iter_rows(min_row=2, values_only=True):
-        raw = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
-        if any(value not in (None, "") for value in raw.values()):
-            rows.append(_row_from_named(raw))
-    return rows
-
-
-def export_trackside_plan_xlsx(path: Path, rows: list[dict[str, object | None]]) -> None:
-    export_table_xlsx(
-        path,
-        {
-            "sheet_name": "轨旁AP规划",
-            "columns": [{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
-            "rows": rows,
-        },
-    )
-
-
-def _row_from_named(row: dict[object, object]) -> dict[str, object | None]:
-    mapping = dict(zip(TRACKSIDE_PLAN_HEADERS, [field for _key, field in TRACKSIDE_PLAN_COLUMNS]))
-    return {field: row.get(header, "") for header, field in mapping.items()}
-
-
-def _dedupe_station_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
-    by_station: dict[str, dict[str, object | None]] = {}
-    order: list[str] = []
-    for row in rows:
-        station = str(row.get("station_name") or "").strip()
-        key = station.casefold()
-        if not key:
-            order.append(f"__blank_{len(order)}")
-            by_station[order[-1]] = row
-            continue
-        if key not in by_station:
-            order.append(key)
-        by_station[key] = row
-    result = [by_station[key] for key in order if key in by_station]
-    for index, row in enumerate(result):
-        row["sort_order"] = index
-    return result
-
-
-def _valid_ipv4(value: str) -> bool:
-    parts = value.split(".")
-    if len(parts) != 4:
-        return False
-    try:
-        return all(0 <= int(part) <= 255 for part in parts)
-    except ValueError:
-        return False
-
-
-def _valid_ipv4_or_placeholder(value: str) -> bool:
-    parts = value.split(".")
-    if len(parts) != 4:
-        return False
-    for part in parts:
-        if part.upper() == "X":
-            continue
-        try:
-            if int(part) < 0 or int(part) > 255:
-                return False
-        except ValueError:
-            return False
-    return True
-
-
-def _parse_mask_length(value: object) -> int | None:
-    text = "" if value is None else str(value).strip()
-    if not text:
-        return None
-    if text.isdigit():
-        prefix = int(text)
-        return prefix if 0 <= prefix <= 32 else None
-    if "." in text:
-        return _dotted_netmask_to_prefix(text)
-    return None
-
-
-def _dotted_netmask_to_prefix(mask: str) -> int | None:
-    parts = mask.split(".")
-    if len(parts) != 4:
-        return None
-    octets: list[int] = []
-    for part in parts:
-        if not part.isdigit():
-            return None
-        value = int(part)
-        if value < 0 or value > 255:
-            return None
-        octets.append(value)
-    bits = "".join(f"{octet:08b}" for octet in octets)
-    if re.fullmatch(r"1*0*", bits) is None:
-        return None
-    return bits.count("1")

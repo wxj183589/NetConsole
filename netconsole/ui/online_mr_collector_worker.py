@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
+from netconsole.core.paths import PathResolver
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.services.online_mr.core.realtime_cache import OnlineMrRealtimeCache
 from netconsole.services.online_mr_collector import ConnectionFactory, OnlineMrCollector
@@ -18,13 +19,14 @@ class OnlineMrCollectorWorker(QThread):
     def __init__(
         self,
         config: OnlineMrConnectionConfig,
-        store: OnlineMrSessionStore,
+        paths: PathResolver,
         connection_factory: ConnectionFactory | None = None,
         realtime_cache: OnlineMrRealtimeCache | None = None,
         config_only: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
+        store = OnlineMrSessionStore(paths)
         self.collector = OnlineMrCollector(config, store, connection_factory=connection_factory, realtime_cache=realtime_cache)
         self.config_only = config_only
 

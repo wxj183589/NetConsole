@@ -451,9 +451,19 @@ class ToolResultPanel(QGroupBox):
                 sheet_name="结果",
                 title="导出结果",
                 open_dir_on_success=True,
+                allow_inline_rows=True,
+                inline_reason="网络工具导出当前一次运行的内存结果",
             )
         else:
-            spec = table_csv_spec(path, columns=columns, rows=self.current_rows, title="导出结果", open_dir_on_success=True)
+            spec = table_csv_spec(
+                path,
+                columns=columns,
+                rows=self.current_rows,
+                title="导出结果",
+                open_dir_on_success=True,
+                allow_inline_rows=True,
+                inline_reason="网络工具导出当前一次运行的内存结果",
+            )
         submit_export_task(self, spec, success_title="导出结果", paths=self.paths)
 
     def clear_results(self) -> None:

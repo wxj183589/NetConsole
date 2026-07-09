@@ -168,6 +168,8 @@ class TracksideInterfaceHistoryDialog(QDialog):
                 rows=self.rows,
                 sheet_name="Interface History",
                 title=self.i18n.t("trackside_ap.export_history"),
+                allow_inline_rows=True,
+                inline_reason="轨旁接口历史弹窗导出当前查询结果",
             ),
             success_title=self.i18n.t("trackside_ap.export_history"),
         )
