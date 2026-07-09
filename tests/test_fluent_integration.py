@@ -67,6 +67,7 @@ def test_build_window_starts_app_fluent_window():
         "文件管理",
         "SNMP 中心",
         "网络工具",
+        "命令说明",
         "日志中心",
         "系统设置",
         "功能开关配置",
@@ -379,7 +380,7 @@ def test_fluent_preload_does_not_create_english_placeholder_pages():
     labels = [window.navigation.item(index).text() for index in range(window.navigation.count())]
     assert "ac" not in labels
     assert "rail_transit" not in labels
-    assert window.stackedWidget.count() == 11
+    assert window.stackedWidget.count() == 12
     window.close()
 
 

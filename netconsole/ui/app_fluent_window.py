@@ -383,6 +383,7 @@ class AppFluentWindow(SplitFluentWindow):
             ("file_management", "文件管理", "本地/设备双窗格文件下载和 Mesh 快选", FIF.FOLDER, self._create_file_management_page, self._file_actions()),
             ("snmp_center", "SNMP 中心", "MIB 浏览、OID 查询、SNMP 采集和监控", FIF.SEARCH, self._create_snmp_center_page, self._snmp_actions()),
             ("network_tools", "网络工具", "Ping、fping、iperf、本机网卡和路由工具", FIF.COMMAND_PROMPT, self._create_network_tools_page, self._network_actions()),
+            ("command_reference", "命令说明", "软件使用命令、接口说明和中兴适配参考", FIF.DOCUMENT, self._create_command_reference_page, self._command_reference_actions()),
             ("logs", "日志中心", "运行日志、筛选、导出和打开日志目录", FIF.DOCUMENT, self._create_log_page, self._log_actions()),
             ("system_settings", "系统设置", "外观、局点、采集、文件和工具路径", FIF.SETTING, self._settings_page, self._settings_actions()),
             ("feature_flags", "功能开关配置", "模块显示、客户配置和内部功能开关", FIF.SETTING, self._create_feature_flags_page, []),
@@ -736,6 +737,13 @@ class AppFluentWindow(SplitFluentWindow):
     def _network_actions(self) -> list[NCCommandAction]:
         return []
 
+    def _command_reference_actions(self) -> list[NCCommandAction]:
+        return [
+            self._action(FIF.DOCUMENT, "复制命令模板", lambda: self._call_raw("command_reference", "copy_selected_command")),
+            self._action(FIF.SHARE, "导出 Markdown", lambda: self._call_raw("command_reference", "export_markdown")),
+            self._action(FIF.SYNC, "刷新", lambda: self._call_raw("command_reference", "load_references")),
+        ]
+
     def _log_actions(self) -> list[NCCommandAction]:
         return [
             self._action(FIF.SYNC, "刷新", lambda: self._call_raw("logs", "refresh")),
@@ -821,6 +829,12 @@ class AppFluentWindow(SplitFluentWindow):
 
         self.network_tools_page = NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
         return self.network_tools_page
+
+    def _create_command_reference_page(self) -> QWidget:
+        from netconsole.ui.pages.command_reference_page import CommandReferencePage
+
+        self.command_reference_page = CommandReferencePage(self.paths)
+        return self.command_reference_page
 
     def _create_log_page(self) -> QWidget:
         from netconsole.ui.pages.app_log_page import AppLogPage

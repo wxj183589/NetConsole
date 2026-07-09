@@ -22,6 +22,7 @@ class Navigation(QWidget):
         ("module.file_management", "nav.file_management", "file_management", "File", "FOLDER"),
         ("module.snmp_center", "nav.snmp_center", "snmp_center", "SNMP", "SEARCH"),
         ("module.network_tools", "nav.network_tools", "network_tools", "Net", "COMMAND_PROMPT"),
+        ("module.command_reference", "nav.command_reference", "command_reference", "Cmd", "DOCUMENT"),
         ("module.logs", "nav.logs", "logs", "Log", "DOCUMENT"),
         ("module.system_settings", "nav.system_settings", "system_settings", "Sys", "SETTING"),
         ("module.feature_switch", "system.feature_flags", "feature_flags", "Flag", "SETTING"),

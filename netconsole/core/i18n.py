@@ -85,6 +85,7 @@ TRANSLATIONS = {
         "nav.logs": "运行日志",
         "nav.rail_transit": "轨道交通",
         "nav.network_tools": "网络工具",
+        "nav.command_reference": "命令说明",
         "nav.snmp_center": "SNMP中心",
         "network_tools.title": "网络工具",
         "network_tools.iperf": "IPERF带宽测试",
@@ -1406,6 +1407,7 @@ TRANSLATIONS = {
         "nav.logs": "Run Logs",
         "nav.rail_transit": "Rail Transit",
         "nav.network_tools": "Network Tools",
+        "nav.command_reference": "Command Reference",
         "network_tools.title": "Network Tools",
         "network_tools.iperf": "IPERF Bandwidth Test",
         "network_tools.toolbox": "Toolbox",
@@ -3204,6 +3206,7 @@ TRANSLATIONS["zh_CN"].update(
     {
         "nav.system_settings": "系统设置",
         "nav.snmp_center": "SNMP中心",
+        "nav.command_reference": "命令说明",
         "system.feature_flags": "功能开关配置",
         "system.disk_cleanup": "磁盘清理",
         "system.changelog": "版本更新日志",
@@ -3249,6 +3252,7 @@ TRANSLATIONS["en_US"].update(
     {
         "nav.system_settings": "System",
         "nav.snmp_center": "SNMP Center",
+        "nav.command_reference": "Command Reference",
         "system.feature_flags": "Feature Flags",
         "system.disk_cleanup": "Disk Cleanup",
         "system.changelog": "Changelog",
