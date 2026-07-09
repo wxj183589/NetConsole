@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from datetime import datetime
 from pathlib import Path
 
@@ -14,11 +16,9 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QTabWidget,
@@ -1555,10 +1555,10 @@ class AcManagementPage(QWidget):
             return
         port, _source = effective_https_port(device.https_port)
         if not build_https_url(device.ip_address, port):
-            QMessageBox.information(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.https_port_not_collected"))
+            MessageBox.information(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.https_port_not_collected"))
             return
         if not open_https_url(device.ip_address, port):
-            QMessageBox.warning(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.open_web_failed"))
+            MessageBox.warning(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.open_web_failed"))
 
     def update_open_web_button(self) -> None:
         device = self.current_device()
@@ -1629,7 +1629,7 @@ class AcManagementPage(QWidget):
         self.feature_gate.assert_enabled("ac.fit_ap_resources")
         device = self.current_device()
         if device is None:
-            QMessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
             return
         self._set_update_running(True, self.i18n.t("ac.updating_resources"))
         self.resource_thread = AcResourceCollectThread(device, self.site_name, parent=self)
@@ -1665,7 +1665,7 @@ class AcManagementPage(QWidget):
         confirm_text = f"确认对当前AC执行以下命令？\n\n{command_text}"
         if action == "persist_auto_ap":
             confirm_text = f"该操作会将新上线 AP 固化，并执行 save force 保存配置。\n\n{confirm_text}"
-        if QMessageBox.question(self, title, confirm_text) != QMessageBox.Yes:
+        if MessageBox.question(self, title, confirm_text) != MessageBox.Yes:
             return
         self._set_update_running(True, f"正在执行：{title}...")
         self.action_thread = AcCommandActionThread(device, self.site_name, action, parent=self)
@@ -1696,7 +1696,7 @@ class AcManagementPage(QWidget):
         if not result.success and result.error_message:
             self.status_label.setText(self.i18n.t("ac.status.failed"))
             if result.error_message != "用户已取消更新":
-                QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+                MessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
             else:
                 self.status_label.setText(self.i18n.t("ac.update_cancelled"))
             self.refresh_devices()
@@ -1734,7 +1734,7 @@ class AcManagementPage(QWidget):
         if not result.success and result.error_message:
             self.status_label.setText(self.i18n.t("ac.status.failed"))
             if result.error_message != "用户已取消更新":
-                QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+                MessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
             else:
                 self.status_label.setText(self.i18n.t("ac.update_cancelled"))
             self.refresh_devices()
@@ -1764,14 +1764,14 @@ class AcManagementPage(QWidget):
             self.status_label.setText(f"{title}执行成功")
             return
         self.status_label.setText(f"{title}执行失败")
-        QMessageBox.warning(self, title, result.error_message or "命令执行失败")
+        MessageBox.warning(self, title, result.error_message or "命令执行失败")
 
     def _ensure_h3c_ac_selected(self, device: Device | None) -> bool:
         if device is None:
-            QMessageBox.information(self, self.i18n.t("ac.title"), "请先选择 AC")
+            MessageBox.information(self, self.i18n.t("ac.title"), "请先选择 AC")
             return False
         if str(device.device_vendor or "").upper() != "H3C" or str(device.device_type or "").upper() != "AC":
-            QMessageBox.warning(self, self.i18n.t("ac.title"), "该功能只支持 H3C AC 设备")
+            MessageBox.warning(self, self.i18n.t("ac.title"), "该功能只支持 H3C AC 设备")
             return False
         return True
 
@@ -1786,7 +1786,7 @@ class AcManagementPage(QWidget):
     def _fail_resource_collect(self, message: str) -> None:
         self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.failed"))
-        QMessageBox.warning(self, self.i18n.t("ac.title"), message)
+        MessageBox.warning(self, self.i18n.t("ac.title"), message)
 
     def _finish_optical_collect(self, result) -> None:
         self._set_update_progress(self.i18n.t("ac.refreshing_page"))
@@ -1799,7 +1799,7 @@ class AcManagementPage(QWidget):
     def _fail_optical_collect(self, message: str) -> None:
         self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.failed"))
-        QMessageBox.warning(self, self.i18n.t("ac.title"), message)
+        MessageBox.warning(self, self.i18n.t("ac.title"), message)
 
     def current_device_uuid(self) -> str | None:
         value = self.device_combo.currentData()
@@ -1899,8 +1899,8 @@ class AcManagementPage(QWidget):
         names = self.selected_ap_names()
         if not ac_uuid or not names:
             return
-        answer = QMessageBox.question(self, self.i18n.t("ac.title"), self.i18n.t("ap.batch_delete_confirm"))
-        if answer != QMessageBox.Yes:
+        answer = MessageBox.question(self, self.i18n.t("ac.title"), self.i18n.t("ap.batch_delete_confirm"))
+        if answer != MessageBox.Yes:
             return
         count = self.repository.delete_fit_aps(ac_uuid, names)
         app_logger.log_info("FIT_AP_BATCH_DELETE", f"ac={ac_uuid}, count={count}")
@@ -1914,7 +1914,7 @@ class AcManagementPage(QWidget):
         try:
             result = self.import_export_service.import_metadata_file(Path(path))
         except ValueError:
-            QMessageBox.warning(self, self.i18n.t("ap.import_metadata"), self.i18n.t("ap.metadata_template_unsupported"))
+            MessageBox.warning(self, self.i18n.t("ap.import_metadata"), self.i18n.t("ap.metadata_template_unsupported"))
             return
         app_logger.log_info("FIT_AP_IMPORT", f"updated={result.updated}, skipped={result.skipped}")
         self.refresh_data()
@@ -1935,7 +1935,7 @@ class AcManagementPage(QWidget):
         try:
             preview = self.import_export_service.preview_ap_extension_import(Path(path), import_mode)
         except Exception as exc:
-            QMessageBox.warning(self, title, str(exc))
+            MessageBox.warning(self, title, str(exc))
             return
         lines = [
             f"文件名：{preview.file_name}",
@@ -1948,12 +1948,12 @@ class AcManagementPage(QWidget):
         ]
         if preview.low_confidence:
             lines.append("识别置信度较低，请手动映射字段。")
-            QMessageBox.warning(self, title, "\n".join(lines))
+            MessageBox.warning(self, title, "\n".join(lines))
             return
-        if QMessageBox.question(self, title, "\n".join(lines) + "\n\n确认导入以上预览数据？") != QMessageBox.Yes:
+        if MessageBox.question(self, title, "\n".join(lines) + "\n\n确认导入以上预览数据？") != MessageBox.Yes:
             return
         stats = self.import_export_service.commit_ap_extension_import(preview)
-        QMessageBox.information(
+        MessageBox.information(
             self,
             title,
             f"新增：{stats.get('success_rows', 0)}\n更新：{stats.get('updated_rows', 0)}\n跳过：{stats.get('skipped_rows', 0)}\n错误：{stats.get('error_rows', 0)}",
@@ -1968,7 +1968,7 @@ class AcManagementPage(QWidget):
             return
         self.import_export_service.export_standard_ap_extension_xlsx(Path(path), self.extension_rows)
         remember_export_path(Path(path))
-        QMessageBox.information(self, "导出FIT-AP扩展信息", f"已导出 {len(self.extension_rows)} 条。")
+        MessageBox.information(self, "导出FIT-AP扩展信息", f"已导出 {len(self.extension_rows)} 条。")
 
     def add_ap_extension_point(self) -> None:
         self._edit_ap_extension_point({})
@@ -2036,17 +2036,17 @@ class AcManagementPage(QWidget):
         ids = [int(self.extension_rows[row].get("id") or 0) for row in selected_rows if 0 <= row < len(self.extension_rows)]
         if not ids:
             return
-        if QMessageBox.question(self, "批量删除", f"确认删除 {len(ids)} 条 FIT-AP扩展信息？") != QMessageBox.Yes:
+        if MessageBox.question(self, "批量删除", f"确认删除 {len(ids)} 条 FIT-AP扩展信息？") != MessageBox.Yes:
             return
         self.repository.delete_ap_extension_points(ids)
         self.refresh_ap_extensions()
         self.refresh_data()
 
     def clear_ap_extension_points(self) -> None:
-        if QMessageBox.question(self, "清空当前局点扩展信息", "该操作会删除当前局点全部 FIT-AP扩展信息，确认继续？") != QMessageBox.Yes:
+        if MessageBox.question(self, "清空当前局点扩展信息", "该操作会删除当前局点全部 FIT-AP扩展信息，确认继续？") != MessageBox.Yes:
             return
         count = self.repository.clear_ap_extension_points()
-        QMessageBox.information(self, "清空当前局点扩展信息", f"已删除 {count} 条。")
+        MessageBox.information(self, "清空当前局点扩展信息", f"已删除 {count} 条。")
         self.refresh_ap_extensions()
         self.refresh_data()
 
@@ -2100,7 +2100,7 @@ class AcManagementPage(QWidget):
         self.import_export_service.export_ap_extension_template_xlsx(path, rows, ap_entities)
         remember_export_path(path)
         message_key = "ap.extension_template_empty_exported" if not rows else "ap.extension_template_exported"
-        QMessageBox.information(self, self.i18n.t("ap.export_extension_template"), self.i18n.t(message_key, count=len(rows)))
+        MessageBox.information(self, self.i18n.t("ap.export_extension_template"), self.i18n.t(message_key, count=len(rows)))
         app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"count={len(rows)}, file={path.name}")
 
     def _current_ac_export_name(self) -> str:
@@ -2347,7 +2347,7 @@ class AcManagementPage(QWidget):
     def _fail_trackside_export(self, message: str) -> None:
         self._set_trackside_export_running(False)
         self.status_label.setText(self.i18n.t("trackside.export"))
-        QMessageBox.warning(self, self.i18n.t("trackside.export"), message)
+        MessageBox.warning(self, self.i18n.t("trackside.export"), message)
 
     def _clear_trackside_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
         if self.trackside_export_thread is thread:
@@ -2360,7 +2360,7 @@ class AcManagementPage(QWidget):
 
     def save_overview_history_snapshot(self) -> None:
         count = self.repository.save_station_online_summary_history(self.current_overview_rows())
-        QMessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.history_snapshot_saved"))
+        MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.history_snapshot_saved"))
         app_logger.log_info("AP_ONLINE_OVERVIEW_HISTORY_SAVE", f"count={count}")
 
     def open_overview_history(self) -> None:
@@ -2527,7 +2527,7 @@ class AcManagementPage(QWidget):
         if not ap_ip:
             message = "当前 AP 没有 IP，无法打开外部终端"
             self.status_label.setText(message)
-            QMessageBox.information(self, "打开外部终端", message)
+            MessageBox.information(self, "打开外部终端", message)
             return
         config = self._select_external_terminal_config()
         if config is None:
@@ -2554,18 +2554,18 @@ class AcManagementPage(QWidget):
             return
         reason = _friendly_external_terminal_error(result.message)
         self.status_label.setText(f"打开外部终端失败：{reason}")
-        QMessageBox.warning(self, "打开外部终端", f"打开外部终端失败：{reason}")
+        MessageBox.warning(self, "打开外部终端", f"打开外部终端失败：{reason}")
 
     def _select_external_terminal_config(self):
         configs = available_external_terminal_configs(self.settings)
         if not configs:
-            QMessageBox.information(self, "打开外部终端", self.i18n.t("external_terminal.not_configured"))
+            MessageBox.information(self, "打开外部终端", self.i18n.t("external_terminal.not_configured"))
             self.status_label.setText("打开外部终端失败：未配置外部终端路径")
             return None
         if len(configs) == 1:
             return configs[0]
         labels = [TERMINAL_LABELS.get(config.terminal_type, config.terminal_type) for config in configs]
-        label, accepted = QInputDialog.getItem(self, self.i18n.t("external_terminal.select_terminal"), self.i18n.t("external_terminal.select_terminal"), labels, 0, False)
+        label, accepted = InputDialog.getItem(self, self.i18n.t("external_terminal.select_terminal"), self.i18n.t("external_terminal.select_terminal"), labels, 0, False)
         if not accepted:
             return None
         return configs[labels.index(label)]
@@ -2728,7 +2728,7 @@ class AcManagementPage(QWidget):
         ac_uuid = str(current_row.get("ac_device_uuid") or self.current_device_uuid() or "")
         ap_uuid = str(current_row.get("ap_uuid") or "")
         if not ac_uuid or not ap_uuid:
-            QMessageBox.information(self, self.i18n.t("trackside.view_ap_detail"), self.i18n.t("trackside.ap_not_found"))
+            MessageBox.information(self, self.i18n.t("trackside.view_ap_detail"), self.i18n.t("trackside.ap_not_found"))
             return
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid)
         self.detail_windows.append(dialog)
@@ -2864,14 +2864,14 @@ class AcManagementPage(QWidget):
             if remark == "-":
                 remark = ""
             if len(remark) > 500:
-                QMessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.remark_too_long"))
+                MessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.remark_too_long"))
                 self.refresh_overview_table()
                 return
             self.repository.upsert_station_ap_remark(site_item.text(), remark)
             self.refresh_overview_table()
             return
         if self._overview_uses_trackside_plan:
-            QMessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.trackside_plan_total_locked"))
+            MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.trackside_plan_total_locked"))
             self.refresh_overview_table()
             return
         try:
@@ -2879,7 +2879,7 @@ class AcManagementPage(QWidget):
             if total < 0:
                 raise ValueError
         except ValueError:
-            QMessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.ap_total_invalid"))
+            MessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.ap_total_invalid"))
             self.refresh_overview_table()
             return
         self.repository.upsert_station_ap_capacity(site_item.text(), total)

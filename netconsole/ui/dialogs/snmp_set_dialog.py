@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import json
 from dataclasses import dataclass
 
 from ipaddress import ip_address
 
-from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout
+from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout
 
 
 SET_DATA_TYPES = [
@@ -100,26 +101,26 @@ class SnmpSetDialog(QDialog):
         data_type = self.type_combo.currentText()
         value = str(self.value_combo.currentData()) if self.value_combo is not None else self.value_input.text()
         if not oid:
-            QMessageBox.information(self, "SNMP SET", "OID 不能为空。")
+            MessageBox.information(self, "SNMP SET", "OID 不能为空。")
             return
         if value == "" and data_type not in {"OctetString"}:
-            QMessageBox.information(self, "SNMP SET", "Value 不能为空。")
+            MessageBox.information(self, "SNMP SET", "Value 不能为空。")
             return
         access = self.access_label.text().strip().lower()
         if access and access not in {"read-write", "read-create", "write-only"}:
-            QMessageBox.information(self, "SNMP SET", "当前 MIB 节点不是可写对象，不能执行 SET")
+            MessageBox.information(self, "SNMP SET", "当前 MIB 节点不是可写对象，不能执行 SET")
             return
         if self.write_community_label.text().strip() in {"", "未配置"}:
-            QMessageBox.information(self, "SNMP SET", "未配置写团体字，无法执行 SNMP SET")
+            MessageBox.information(self, "SNMP SET", "未配置写团体字，无法执行 SNMP SET")
             return
         if data_type == "IpAddress":
             try:
                 ip_address(value.strip())
             except ValueError:
-                QMessageBox.information(self, "SNMP SET", "IP 地址格式不合法。")
+                MessageBox.information(self, "SNMP SET", "IP 地址格式不合法。")
                 return
         if data_type == "DateAndTime":
-            QMessageBox.information(self, "SNMP SET", "DateAndTime 将按 SNMP DateAndTime OCTET STRING 编码")
+            MessageBox.information(self, "SNMP SET", "DateAndTime 将按 SNMP DateAndTime OCTET STRING 编码")
         super().accept()
 
     def result_data(self) -> SnmpSetDialogResult:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import csv
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -155,7 +155,7 @@ class TracksideApPlanPage(QWidget):
         try:
             rows = self._read_table_rows()
         except ValueError as exc:
-            QMessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(exc))
+            MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(exc))
             return False
         self.repository.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, rows)
         for row in rows:
@@ -176,7 +176,7 @@ class TracksideApPlanPage(QWidget):
             rows = _dedupe_station_rows(read_trackside_plan_file(Path(path)))
             self._validate_rows(rows)
         except ValueError as exc:
-            QMessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(exc))
+            MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(exc))
             return
         self.repository.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, rows)
         for row in rows:
@@ -292,17 +292,17 @@ class TracksideApPlanPage(QWidget):
     def _confirm_discard_or_save_changes(self) -> bool:
         if not self._dirty:
             return True
-        result = QMessageBox.question(
+        result = MessageBox.question(
             self,
             "轨旁AP规划",
             "当前轨旁AP规划有未保存修改，是否先保存？",
-            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            MessageBox.StandardButton.Save | MessageBox.StandardButton.Discard | MessageBox.StandardButton.Cancel,
         )
-        if result == QMessageBox.StandardButton.Save:
+        if result == MessageBox.StandardButton.Save:
             return self.save_plan()
-        if result == QMessageBox.StandardButton.Cancel:
+        if result == MessageBox.StandardButton.Cancel:
             return False
-        return result == QMessageBox.StandardButton.Discard
+        return result == MessageBox.StandardButton.Discard
 
 
 def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:

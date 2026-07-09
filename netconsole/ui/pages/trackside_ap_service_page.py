@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from datetime import datetime
 from pathlib import Path
 import re
@@ -10,11 +12,9 @@ from PySide6.QtGui import QAction, QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QComboBox,
@@ -381,7 +381,7 @@ class TracksideApServicePage(QWidget):
         else:
             station = str(rows[row].get("site") or "").strip()
         if not station:
-            QMessageBox.information(self, self.i18n.t("rail_transit.trackside_ap_service"), self.i18n.t("trackside_ap.no_station_selected"))
+            MessageBox.information(self, self.i18n.t("rail_transit.trackside_ap_service"), self.i18n.t("trackside_ap.no_station_selected"))
             return
         self._start_scoped_optical_update(target_station=station, message=self.i18n.t("trackside_ap.stage_station_update", station=station))
 
@@ -394,7 +394,7 @@ class TracksideApServicePage(QWidget):
         ap_mac = str(current_row.get("ap_mac") or "").strip()
         ap_name = str(current_row.get("ap_name") or "").strip()
         if not any((ap_uuid, ap_mac, ap_name)):
-            QMessageBox.information(self, self.i18n.t("rail_transit.trackside_ap_service"), self.i18n.t("trackside_ap.no_ap_detail"))
+            MessageBox.information(self, self.i18n.t("rail_transit.trackside_ap_service"), self.i18n.t("trackside_ap.no_ap_detail"))
             return
         label = ap_name or ap_mac or ap_uuid
         self._start_scoped_optical_update(
@@ -499,18 +499,18 @@ class TracksideApServicePage(QWidget):
         if switch_scope_reason == "historical_lldp":
             lines.append(self.i18n.t("trackside_ap.update_finished_historical_lldp"))
         message = "\n".join(line for line in lines if line)
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Information)
+        box = MessageBox(self)
+        box.setIcon(MessageBox.Information)
         box.setWindowTitle(self.i18n.t("trackside_ap.update_finished_title"))
         box.setText(message)
-        box.setStandardButtons(QMessageBox.Ok)
+        box.setStandardButtons(MessageBox.Ok)
         box.setAttribute(Qt.WA_DeleteOnClose, True)
         box.open()
 
     def _fail_collect(self, message: str) -> None:
         self._set_collect_running(False)
         self.status_label.setText(self.i18n.t("trackside_ap.collection_failed"))
-        QMessageBox.warning(self, self.i18n.t("rail_transit.trackside_ap_service"), message)
+        MessageBox.warning(self, self.i18n.t("rail_transit.trackside_ap_service"), message)
 
     def current_trackside_filters(self) -> dict[str, object | None]:
         return {"site": self.trackside_site_filter.currentData(), "search": self.trackside_search_input.text()}
@@ -591,7 +591,7 @@ class TracksideApServicePage(QWidget):
     def _fail_export(self, message: str) -> None:
         self._set_export_running(False)
         self.status_label.setText(self.i18n.t("trackside.export"))
-        QMessageBox.warning(self, self.i18n.t("trackside.export"), message)
+        MessageBox.warning(self, self.i18n.t("trackside.export"), message)
 
     def _clear_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
         if self.export_thread is thread:
@@ -616,7 +616,7 @@ class TracksideApServicePage(QWidget):
         interface_name = str(current_row.get("interface_name") or "")
         device_name = str(current_row.get("device_name") or "")
         if not device_uuid or not interface_name:
-            QMessageBox.information(self, self.i18n.t("trackside_ap.interface_history"), self.i18n.t("trackside_ap.no_interface_history"))
+            MessageBox.information(self, self.i18n.t("trackside_ap.interface_history"), self.i18n.t("trackside_ap.no_interface_history"))
             return
         window_key = self._interface_history_window_key(current_row)
         existing = self.history_windows_by_key.get(window_key)
@@ -696,7 +696,7 @@ class TracksideApServicePage(QWidget):
         current_row = rows[row]
         match = self._resolve_ap_detail_match(current_row)
         if match is None:
-            QMessageBox.information(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.no_ap_detail"))
+            MessageBox.information(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.no_ap_detail"))
             return
         dialog = FitApDetailDialog(self.i18n, self.ac_repository, str(match.get("ac_device_uuid") or ""), str(match.get("ap_uuid") or match.get("ap_name") or ""))
         self.detail_windows.append(dialog)
@@ -721,7 +721,7 @@ class TracksideApServicePage(QWidget):
         if len(matches) == 1:
             return matches[0]
         labels = [f"{item.get('ap_name') or '-'} | {item.get('ap_mac') or '-'} | {item.get('ap_ip') or '-'}" for item in matches]
-        selected, accepted = QInputDialog.getItem(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.open_ap_detail"), labels, 0, False)
+        selected, accepted = InputDialog.getItem(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.open_ap_detail"), labels, 0, False)
         if not accepted:
             return None
         return matches[labels.index(selected)]

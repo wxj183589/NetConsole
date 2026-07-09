@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl, Signal
@@ -8,7 +9,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -133,9 +133,9 @@ class DiskCleanupDialog(QDialog):
     def cleanup_selected(self) -> None:
         selected = [item for row, item in enumerate(self.cleanup_items) if is_table_row_checked(self.table, row, 0) and item.file_count]
         if not selected:
-            QMessageBox.information(self, "磁盘清理", "没有可清理的选中项。")
+            MessageBox.information(self, "磁盘清理", "没有可清理的选中项。")
             return
-        if QMessageBox.question(self, "确认清理", "将清理选中的软件缓存和运行日志，不会删除采集数据。是否继续？") != QMessageBox.StandardButton.Yes:
+        if MessageBox.question(self, "确认清理", "将清理选中的软件缓存和运行日志，不会删除采集数据。是否继续？") != MessageBox.StandardButton.Yes:
             return
         self._set_busy(True, "正在清理选中的软件缓存和运行日志...")
         worker = CleanupRunThread(self.paths, self.retention_spin.value(), selected)
@@ -157,12 +157,12 @@ class DiskCleanupDialog(QDialog):
         self._set_busy(False, f"清理完成：删除 {result.deleted_files} 个文件，释放 {_format_size(result.freed_bytes)}，失败 {result.failed_count} 个。")
         if result.failures:
             first = result.failures[0]
-            QMessageBox.warning(self, "清理部分失败", f"有 {result.failed_count} 个文件清理失败，首个失败：{first.path}\n{first.error}")
+            MessageBox.warning(self, "清理部分失败", f"有 {result.failed_count} 个文件清理失败，首个失败：{first.path}\n{first.error}")
         self.scan()
 
     def _on_failed(self, message: str) -> None:
         self._set_busy(False, f"操作失败：{message}")
-        QMessageBox.warning(self, "磁盘清理失败", message)
+        MessageBox.warning(self, "磁盘清理失败", message)
 
     def _populate_table(self, items: list[CleanupItem]) -> None:
         self.table.setUpdatesEnabled(False)

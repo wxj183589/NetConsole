@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import zipfile
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -330,7 +330,7 @@ class ConfigCollectionCenterPage(QWidget):
         try:
             result = self.service.compare_latest_running_between_devices(device_a, device_b)
         except Exception as exc:
-            QMessageBox.warning(self, self._title(), str(exc))
+            MessageBox.warning(self, self._title(), str(exc))
             return
         self.running_text.setPlainText(self.t("config_center.text.running_config", device=result.device_a))
         self.saved_text.setPlainText(self.t("config_center.text.running_config", device=result.device_b))
@@ -390,7 +390,7 @@ class ConfigCollectionCenterPage(QWidget):
         else:
             message = result.error_message or self.t("config_center.status.failed")
             self.status_label.setText(message)
-            QMessageBox.warning(self, self._title(), message)
+            MessageBox.warning(self, self._title(), message)
 
     def _handle_batch_result(self, results) -> None:
         self._set_busy(False)
@@ -480,8 +480,8 @@ class ConfigCollectionCenterPage(QWidget):
         if not target:
             return
         self.service.export_batch_zip(self.current_batch_results, Path(target))
-        answer = QMessageBox.question(self, self.export_batch_button.text(), self.t("config_center.msg.batch_export_done"))
-        if answer == QMessageBox.Yes:
+        answer = MessageBox.question(self, self.export_batch_button.text(), self.t("config_center.msg.batch_export_done"))
+        if answer == MessageBox.Yes:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(target).parent)))
 
     def export_current_diff(self) -> None:
@@ -513,8 +513,8 @@ class ConfigCollectionCenterPage(QWidget):
         if not snapshots:
             self._show_info("config_center.msg.select_snapshot")
             return
-        answer = QMessageBox.question(self, self.t("config_center.btn.delete_snapshot"), self.t("config_center.msg.confirm_delete_snapshot", count=len(snapshots)))
-        if answer == QMessageBox.Yes:
+        answer = MessageBox.question(self, self.t("config_center.btn.delete_snapshot"), self.t("config_center.msg.confirm_delete_snapshot", count=len(snapshots)))
+        if answer == MessageBox.Yes:
             for snapshot in snapshots:
                 self.service.delete_snapshot(snapshot)
             self.checked_snapshot_ids.clear()
@@ -733,7 +733,7 @@ class ConfigCollectionCenterPage(QWidget):
         return f"{safe_device_name(device_name)}_{snapshot.type}_{snapshot.timestamp}{suffix}"
 
     def _show_info(self, key: str) -> None:
-        QMessageBox.information(self, self._title(), self.t(key))
+        MessageBox.information(self, self._title(), self.t(key))
 
     def _title(self) -> str:
         return self.t("config_center.title")

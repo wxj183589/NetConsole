@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import re
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -283,7 +283,7 @@ class WirelessScanPage(QWidget):
 
     def export_current(self) -> None:
         if not self.current_rows:
-            QMessageBox.information(self, self.i18n.t("network_tools.wireless_scan"), self.i18n.t("wireless_scan.no_results"))
+            MessageBox.information(self, self.i18n.t("network_tools.wireless_scan"), self.i18n.t("wireless_scan.no_results"))
             return
         export_dir = self.paths.wireless_scan_export_dir(self.site_name)
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -296,13 +296,13 @@ class WirelessScanPage(QWidget):
             export_wireless_scan_csv(Path(path), self.current_rows, headers)
         else:
             export_wireless_scan_xlsx(Path(path), self.current_rows, headers)
-        QMessageBox.information(self, self.i18n.t("wireless_scan.export"), self.i18n.t("wireless_scan.export_done", path=path))
+        MessageBox.information(self, self.i18n.t("wireless_scan.export"), self.i18n.t("wireless_scan.export_done", path=path))
 
     def open_external(self) -> None:
         configured_path = str(self.settings.get_value("network_tools/wireless_scan/external_path", "") or "")
         path = wireless_scanner_external_path(self.paths, configured_path)
         if path is None:
-            QMessageBox.information(self, self.i18n.t("wireless_scan.open_external"), self.i18n.t("wireless_scan.external_missing"))
+            MessageBox.information(self, self.i18n.t("wireless_scan.open_external"), self.i18n.t("wireless_scan.external_missing"))
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
@@ -379,7 +379,7 @@ class WirelessScanPage(QWidget):
     def _scan_failed(self, error: str) -> None:
         self.start_button.setEnabled(bool(self.adapters))
         self.status_label.setText(error or self.i18n.t("wireless_scan.scan_failed"))
-        QMessageBox.warning(self, self.i18n.t("network_tools.wireless_scan"), self.status_label.text())
+        MessageBox.warning(self, self.i18n.t("network_tools.wireless_scan"), self.status_label.text())
 
     def _render_results(self, rows: list[dict[str, object]]) -> None:
         self.result_table.setRowCount(len(rows))

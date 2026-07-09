@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import re
 import json
 import os
@@ -29,7 +30,6 @@ from PySide6.QtWidgets import (
     QLayout,
     QLayoutItem,
     QLineEdit,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -1708,24 +1708,24 @@ class OnlineMrCollectionPage(QWidget):
             self.feature_gate.assert_enabled("online_mr.iperf_test")
         selected = self._selected_devices()
         if not selected:
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.select_mr_device"))
+            MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.select_mr_device"))
             return
         if len(selected) > 2:
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
+            MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
             return
         capacity = max(0, self.manager.max_concurrent - self.manager.running_count())
         if capacity <= 0:
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_running"))
+            MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_running"))
             return
         if self.enable_iperf_check.isChecked() and len([device for device in selected if device.id not in self.workers_by_device_id]) >= 2:
-            answer = QMessageBox.question(
+            answer = MessageBox.question(
                 self,
                 self.i18n.t("online_mr.traffic_test"),
                 self.i18n.t("online_mr.confirm_two_traffic"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+                MessageBox.StandardButton.Yes | MessageBox.StandardButton.No,
+                MessageBox.StandardButton.No,
             )
-            if answer != QMessageBox.StandardButton.Yes:
+            if answer != MessageBox.StandardButton.Yes:
                 return
         if not self._preflight_iperf_before_start():
             return
@@ -1739,7 +1739,7 @@ class OnlineMrCollectionPage(QWidget):
             try:
                 config = self._build_config_for_device(device)
             except ValueError as exc:
-                QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), str(exc))
+                MessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), str(exc))
                 return
             if config is None:
                 skipped.append(device.name)
@@ -1758,7 +1758,7 @@ class OnlineMrCollectionPage(QWidget):
             started += 1
             self._update_device_status(device.id, self.i18n.t("online_mr.status_connecting"))
         if skipped:
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), f"{self.i18n.t('online_mr.connection_incomplete')}: {', '.join(skipped)}")
+            MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), f"{self.i18n.t('online_mr.connection_incomplete')}: {', '.join(skipped)}")
         if self.enable_fping_check.isChecked() and not self._selected_fping_device_ids():
             self.log_text.append(self.i18n.t("online_mr.ping_target_empty"))
         if started:
@@ -1768,21 +1768,21 @@ class OnlineMrCollectionPage(QWidget):
     def check_iperf_server(self) -> None:
         ok, message = self._run_current_iperf_preflight()
         if ok:
-            QMessageBox.information(self, self.i18n.t("online_mr.traffic_test"), message)
+            MessageBox.information(self, self.i18n.t("online_mr.traffic_test"), message)
         else:
-            QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
+            MessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
 
     def retry_iperf_for_running_sessions(self) -> None:
         if not self.enable_iperf_check.isChecked():
             return
         sessions = set(self.workers)
         if not sessions:
-            QMessageBox.information(self, self.i18n.t("online_mr.traffic_test"), "当前没有正在采集的会话。")
+            MessageBox.information(self, self.i18n.t("online_mr.traffic_test"), "当前没有正在采集的会话。")
             return
         ok, message = self._run_current_iperf_preflight()
         self._append_runtime_log(f"IPERF preflight: {message}")
         if not ok:
-            QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
+            MessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
             return
         self._stop_iperf_workers_for_sessions(sessions, status="STOPPED_BY_RETRY")
         self._retry_iperf_for_sessions(sessions)
@@ -1794,7 +1794,7 @@ class OnlineMrCollectionPage(QWidget):
         self._append_runtime_log(f"IPERF preflight: {message}")
         if ok:
             return True
-        QMessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
+        MessageBox.warning(self, self.i18n.t("online_mr.traffic_test"), message)
         return False
 
     def _run_current_iperf_preflight(self) -> tuple[bool, str]:
@@ -2085,7 +2085,7 @@ class OnlineMrCollectionPage(QWidget):
             else:
                 subprocess.Popen(["xdg-open", str(path)])
         except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("online_mr.open_session_dir"), f"Open collection directory failed: {exc}")
+            MessageBox.warning(self, self.i18n.t("online_mr.open_session_dir"), f"Open collection directory failed: {exc}")
 
     def _selected_session_dir_for_parse(self) -> Path | None:
         if self.analysis_only:
@@ -2135,18 +2135,18 @@ class OnlineMrCollectionPage(QWidget):
     def parse_selected_session(self, *, force_reparse: bool = False) -> None:
         session_dir = self._selected_session_dir_for_parse()
         if session_dir is None:
-            QMessageBox.warning(
+            MessageBox.warning(
                 self,
                 self.i18n.t("online_mr.parse_collection_data"),
                 self.i18n.t("online_mr.no_session_selected") if self.analysis_only else "Please select a device or history session to parse.",
             )
             return
         if not session_dir.exists():
-            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Collection directory does not exist: {session_dir}")
+            MessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Collection directory does not exist: {session_dir}")
             return
         raw_dir = session_dir / "raw"
         if not raw_dir.exists():
-            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Raw directory was not found: {raw_dir}")
+            MessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"Raw directory was not found: {raw_dir}")
             return
         if not force_reparse and self._load_cached_parse_if_valid(session_dir):
             return
@@ -2200,7 +2200,7 @@ class OnlineMrCollectionPage(QWidget):
         try:
             summary = OnlineMrDiagnosisParser(session_dir).cached_summary_if_valid()
         except Exception:
-            QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), self.i18n.t("online_mr.parsed_cache_unavailable"))
+            MessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), self.i18n.t("online_mr.parsed_cache_unavailable"))
             return False
         if summary is None:
             return False
@@ -2234,18 +2234,18 @@ class OnlineMrCollectionPage(QWidget):
     def export_analysis_report(self) -> None:
         session_dir = self._selected_session_dir_for_parse()
         if session_dir is None:
-            QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), self.i18n.t("online_mr.no_session_selected"))
+            MessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), self.i18n.t("online_mr.no_session_selected"))
             return
         db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
         if not db_path.exists():
-            QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), "请先解析或加载已解析结果后再导出分析报表")
+            MessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), "请先解析或加载已解析结果后再导出分析报表")
             return
         default_path = session_dir / "exports" / f"车载MR分析报表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         path_text, _filter = QFileDialog.getSaveFileName(self, self.i18n.t("online_mr.export_analysis_report"), str(default_path), "Excel (*.xlsx)")
         if not path_text:
             return
         if self.export_report_worker is not None:
-            QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), "离线分析报告正在导出，请稍后")
+            MessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), "离线分析报告正在导出，请稍后")
             return
         self._set_analysis_task_progress(True, "正在导出离线分析报告：准备导出数据 5%", 5)
         worker = OnlineMrReportExportWorker(session_dir, Path(path_text), parent=self)
@@ -2280,7 +2280,7 @@ class OnlineMrCollectionPage(QWidget):
         self._set_parse_running(False, f"解析失败：{message}", 0)
         self.parse_cancel_button.setEnabled(True)
         self.parse_worker = None
-        QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), message)
+        MessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), message)
 
     def _start_offline_analysis_load(
         self,
@@ -2346,14 +2346,14 @@ class OnlineMrCollectionPage(QWidget):
                     "请检查 raw 文件格式。"
                 )
                 self.log_text.append(message)
-                QMessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
+                MessageBox.information(self, self.i18n.t("online_mr.parse_collection_data"), message)
             self._set_analysis_task_progress(False, f"{task_label}完成", 100)
         except Exception as exc:
             stack = traceback.format_exc()
             app_logger.log_error("ONLINE_MR_ANALYSIS_LOAD_APPLY_FAILED", f"task={task_label} error={exc}\n{stack}")
             self.log_text.append(f"{task_label}失败：{exc}")
             self._set_analysis_task_progress(False, f"{task_label}失败：{exc}", 0)
-            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"{task_label}失败：{exc}")
+            MessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"{task_label}失败：{exc}")
         finally:
             self.analysis_load_worker = None
             self._analysis_load_summary = None
@@ -2365,7 +2365,7 @@ class OnlineMrCollectionPage(QWidget):
         if self._can_update_ui():
             self.log_text.append(f"{task_label}失败：{message}")
             self._set_analysis_task_progress(False, f"{task_label}失败：{message}", 0)
-            QMessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"{task_label}失败：{message}")
+            MessageBox.warning(self, self.i18n.t("online_mr.parse_collection_data"), f"{task_label}失败：{message}")
             self._refresh_parse_button_state()
         self.analysis_load_worker = None
         self._analysis_load_summary = None
@@ -2377,13 +2377,13 @@ class OnlineMrCollectionPage(QWidget):
     def _export_report_completed(self, output_path: str) -> None:
         self.export_report_worker = None
         self._set_analysis_task_progress(False, "导出完成", 100)
-        QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
+        MessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
 
     def _export_report_failed(self, message: str) -> None:
         self.export_report_worker = None
         app_logger.log_error("ONLINE_MR_ANALYSIS_REPORT_EXPORT_FAILED", message)
         self._set_analysis_task_progress(False, f"导出失败：{message}", 0)
-        QMessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), message)
+        MessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), message)
 
     def _load_offline_analysis(self, session_dir: Path, *, show_progress: bool = False, task_label: str = "加载已解析结果", include_charts: bool = True) -> int:
         stages = [
@@ -3112,7 +3112,7 @@ class OnlineMrCollectionPage(QWidget):
         self._finalize_collection_state(device_id=device_id, session_id=session_id, final_status="FAILED", reason=message)
         if not self._can_update_ui():
             return
-        QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
+        MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
 
     def _finalize_collection_state(
         self,
@@ -4173,7 +4173,7 @@ class OnlineMrCollectionPage(QWidget):
             self._updating_device_checks = False
             if changed_device_id is not None:
                 self.selected_device_ids.discard(changed_device_id)
-            QMessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
+            MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
             changed_device_id = None
         if changed_device_id is not None:
             self._view_device_user_selected = False

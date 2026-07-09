@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QInputDialog, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from netconsole.core.i18n import I18n
 from netconsole.repositories.device_group_repository import DeviceGroupRepository, DuplicateGroupName
@@ -70,7 +72,7 @@ class DeviceGroupDialog(QDialog):
         return int(self.groups[row].id)
 
     def add_group(self) -> None:
-        name, accepted = QInputDialog.getText(self, self.windowTitle(), self.i18n.t("groups.group_name"))
+        name, accepted = InputDialog.getText(self, self.windowTitle(), self.i18n.t("groups.group_name"))
         if accepted:
             self._save(lambda: self.repository.create(name))
 
@@ -79,7 +81,7 @@ class DeviceGroupDialog(QDialog):
         if group_id is None:
             return
         current = self.groups[self.table.currentRow()].name
-        name, accepted = QInputDialog.getText(self, self.i18n.t("groups.rename_group"), self.i18n.t("groups.group_name"), text=current)
+        name, accepted = InputDialog.getText(self, self.i18n.t("groups.rename_group"), self.i18n.t("groups.group_name"), text=current)
         if accepted:
             self._save(lambda: self.repository.rename(group_id, name))
 
@@ -89,7 +91,7 @@ class DeviceGroupDialog(QDialog):
             return
         count = self.repository.count_devices(group_id)
         message = self.i18n.t("groups.delete_group_confirm_with_devices", count=count) if count else self.i18n.t("groups.delete_group_confirm")
-        if QMessageBox.question(self, self.i18n.t("groups.delete_group"), message) == QMessageBox.Yes:
+        if MessageBox.question(self, self.i18n.t("groups.delete_group"), message) == MessageBox.Yes:
             self.repository.delete(group_id)
             self.refresh()
             self.groups_changed.emit()
@@ -98,10 +100,10 @@ class DeviceGroupDialog(QDialog):
         try:
             action()
         except DuplicateGroupName:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("groups.duplicate_group_name"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("groups.duplicate_group_name"))
             return
         except ValueError:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("groups.invalid_group_name"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("groups.invalid_group_name"))
             return
         self.refresh()
         self.groups_changed.emit()

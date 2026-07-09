@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import json
 import traceback
 
@@ -8,7 +9,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -117,12 +117,12 @@ class FeatureFlagsPage(QWidget):
             self.table.blockSignals(False)
 
     def reload_defaults(self) -> None:
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("feature_flags.reload_defaults"),
             "确认恢复默认客户版功能配置？当前未保存修改会被覆盖。",
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         self._reload_table(default_profile("customer")["features"])
 
@@ -132,7 +132,7 @@ class FeatureFlagsPage(QWidget):
         if error:
             app_logger.log_warning("FEATURE_SWITCH_VALIDATION_ERROR", error)
             print(f"[FeatureSwitch] validation error: {error}")
-            QMessageBox.warning(self, self.i18n.t("feature_flags.title"), error)
+            MessageBox.warning(self, self.i18n.t("feature_flags.title"), error)
             return
         try:
             save_profile(project_root() / "profiles" / "features" / "customer.json", "customer", features)
@@ -157,7 +157,7 @@ class FeatureFlagsPage(QWidget):
         payload["features"] = self._customer_features()
         error = self._validate_customer_features(payload["features"]) or validate_feature_states(payload["features"])
         if error:
-            QMessageBox.warning(self, self.i18n.t("feature_flags.title"), error)
+            MessageBox.warning(self, self.i18n.t("feature_flags.title"), error)
             return
         self.feature_gate.enable_session_customer_preview(payload["features"])
         if callable(self.on_profile_saved):
@@ -268,10 +268,10 @@ class FeatureFlagsPage(QWidget):
         if InfoBar is not None:
             InfoBar.success(title=self.i18n.t("feature_flags.title"), content=message, duration=2500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
             return
-        QMessageBox.information(self, self.i18n.t("feature_flags.title"), message)
+        MessageBox.information(self, self.i18n.t("feature_flags.title"), message)
 
     def _show_error(self, title: str, message: str) -> None:
         if InfoBar is not None:
             InfoBar.error(title=title, content=message, duration=4000, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
             return
-        QMessageBox.critical(self, title, message)
+        MessageBox.critical(self, title, message)

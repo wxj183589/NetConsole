@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import ipaddress
 import subprocess
 
@@ -14,7 +15,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QMenu,
@@ -192,12 +192,12 @@ class NetworkAdapterRoutePage(QWidget):
     def apply_ip_config(self) -> None:
         adapter = self.selected_adapter()
         if adapter is None:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), "请先选择网卡。")
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), "请先选择网卡。")
             return
         try:
             config = self._ip_config_from_form(adapter)
         except ValueError as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             return
         if not self._confirm_write(self._ip_preview(adapter, config)):
             return
@@ -211,7 +211,7 @@ class NetworkAdapterRoutePage(QWidget):
         except PermissionError:
             self._prompt_admin()
         except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             self._append_log(f"操作失败：{exc}")
 
     def reset_adapter_defaults(self) -> None:
@@ -223,7 +223,7 @@ class NetworkAdapterRoutePage(QWidget):
             "该操作会恢复 DHCP，清理静态 IP、备用 IP、网关和 VLAN。\n"
             "本地保存的配置方案不会被删除。"
         )
-        if QMessageBox.question(self, self.i18n.t("network_manager.reset_defaults"), text) != QMessageBox.Yes:
+        if MessageBox.question(self, self.i18n.t("network_manager.reset_defaults"), text) != MessageBox.Yes:
             return
         try:
             self.manager.reset_adapter_defaults(adapter.interface_index, adapter_name=adapter.name, vlan_property=self._current_vlan_property(adapter))
@@ -232,7 +232,7 @@ class NetworkAdapterRoutePage(QWidget):
         except PermissionError:
             self._prompt_admin()
         except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             self._append_log(f"恢复默认失败：{exc}")
 
     def save_adapter_profile(self) -> None:
@@ -243,7 +243,7 @@ class NetworkAdapterRoutePage(QWidget):
         try:
             config = self._ip_config_from_form(adapter)
         except ValueError as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             return
         profile = AdapterProfile(
             profile_name=name,
@@ -306,7 +306,7 @@ class NetworkAdapterRoutePage(QWidget):
         try:
             entries = self._route_entries_from_table()
         except ValueError as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             return
         self.route_store.upsert(RouteProfile(profile_name=name, routes=entries))
         self.load_profiles()
@@ -327,7 +327,7 @@ class NetworkAdapterRoutePage(QWidget):
         except PermissionError:
             self._prompt_admin()
         except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             self._append_log(f"路由写入失败：{exc}")
 
     def remove_route_profile(self) -> None:
@@ -345,7 +345,7 @@ class NetworkAdapterRoutePage(QWidget):
         except PermissionError:
             self._prompt_admin()
         except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             self._append_log(f"路由删除失败：{exc}")
 
     def open_network_connections(self) -> None:
@@ -371,7 +371,7 @@ class NetworkAdapterRoutePage(QWidget):
         self._sync_permission_state()
         message = f"管理员权限启动失败：{result.message}"
         self._append_log(message)
-        QMessageBox.warning(self, self.i18n.t("network_manager.title"), message)
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), message)
 
     def retranslate(self) -> None:
         self.refresh_button.setText("刷新")
@@ -682,10 +682,10 @@ class NetworkAdapterRoutePage(QWidget):
         if not is_admin():
             self._prompt_admin()
             return False
-        return QMessageBox.question(self, self.i18n.t("network_manager.confirm"), preview) == QMessageBox.Yes
+        return MessageBox.question(self, self.i18n.t("network_manager.confirm"), preview) == MessageBox.Yes
 
     def _prompt_admin(self) -> None:
-        QMessageBox.information(self, self.i18n.t("network_manager.title"), "该操作需要管理员权限，请点击“以管理员权限打开网络管理”。")
+        MessageBox.information(self, self.i18n.t("network_manager.title"), "该操作需要管理员权限，请点击“以管理员权限打开网络管理”。")
 
     def _sync_permission_state(self) -> None:
         admin = is_admin()
@@ -1145,7 +1145,7 @@ def _network_page_save_route_profile(self) -> None:
     try:
         entries = self._route_entries_from_table()
     except ValueError as exc:
-        QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
         return
     self.route_store.upsert(RouteProfile(profile_name=name, routes=entries))
     self._append_log(f"已保存路由方案：{name}")
@@ -1167,7 +1167,7 @@ def _network_page_show_route_edit_context_menu(self, pos) -> None:
     if action == delete_action:
         self.delete_route_row()
     elif action == clear_action:
-        if QMessageBox.question(self, self.i18n.t("network_manager.confirm"), "确认清空路由编辑区？") == QMessageBox.Yes:
+        if MessageBox.question(self, self.i18n.t("network_manager.confirm"), "确认清空路由编辑区？") == MessageBox.Yes:
             self.route_edit_table.setRowCount(0)
 
 
@@ -1191,12 +1191,12 @@ NetworkAdapterRoutePage._show_route_edit_context_menu = _network_page_show_route
 def _network_page_apply_ip_config(self) -> None:
     adapter = self.selected_adapter()
     if adapter is None:
-        QMessageBox.warning(self, self.i18n.t("network_manager.title"), "请先选择网卡。")
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), "请先选择网卡。")
         return
     try:
         config = self._ip_config_from_form(adapter)
     except ValueError as exc:
-        QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
         return
     if not self._confirm_write(self._ip_preview(adapter, config)):
         return
@@ -1210,7 +1210,7 @@ def _network_page_apply_ip_config(self) -> None:
         self._prompt_admin()
         return
     except Exception as exc:
-        QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
         self._append_log(f"IP配置失败：{exc}")
         return
 
@@ -1223,7 +1223,7 @@ def _network_page_apply_ip_config(self) -> None:
         except Exception as exc:
             vlan_message = f"VLAN配置失败：{exc}"
             self._append_log(f"IP配置成功，但 {vlan_message}")
-            QMessageBox.warning(self, self.i18n.t("network_manager.title"), f"IP配置成功，但 {vlan_message}")
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), f"IP配置成功，但 {vlan_message}")
     if ip_success and not vlan_message:
         self._append_log("网卡配置已应用。")
     self.refresh_all()
@@ -1233,7 +1233,7 @@ def _network_page_reset_adapter_defaults(self) -> None:
     adapter = self.selected_adapter()
     if adapter is None:
         return
-    if QMessageBox.question(self, self.i18n.t("network_manager.reset_defaults"), f"确认恢复默认网卡配置：{adapter.name}？") != QMessageBox.Yes:
+    if MessageBox.question(self, self.i18n.t("network_manager.reset_defaults"), f"确认恢复默认网卡配置：{adapter.name}？") != MessageBox.Yes:
         return
     try:
         self.manager.reset_adapter_defaults(adapter.interface_index, adapter_name=adapter.name, vlan_property=None)
@@ -1242,7 +1242,7 @@ def _network_page_reset_adapter_defaults(self) -> None:
         self._prompt_admin()
         return
     except Exception as exc:
-        QMessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
         self._append_log(f"恢复默认失败：{exc}")
         return
     vlan_property = self._current_vlan_property(adapter)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import os
 from pathlib import Path
 import platform
@@ -11,10 +13,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -272,7 +272,7 @@ class DeviceManagementPage(QWidget):
     def test_selected_device_connection(self) -> None:
         checked_ids = self.table.checked_device_ids()
         if not checked_ids:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         if len(checked_ids) > 1:
             self.batch_test_connections([self.repository.get(device_id) for device_id in checked_ids])
@@ -324,9 +324,9 @@ class DeviceManagementPage(QWidget):
                 prompt=result.prompt or "-",
                 elapsed=result.elapsed_ms if result.elapsed_ms is not None else "-",
             )
-            QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
+            MessageBox.information(self, self.i18n.t("connection.success_title"), message)
         else:
-            QMessageBox.warning(
+            MessageBox.warning(
                 self,
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),
@@ -335,11 +335,11 @@ class DeviceManagementPage(QWidget):
     def launch_external_terminal_for_selection(self) -> None:
         devices = self._external_terminal_target_devices()
         if not devices:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         if len(devices) > 20:
-            answer = QMessageBox.question(self, self.i18n.t("devices.external_terminal"), self.i18n.t("external_terminal.confirm_many", count=len(devices)))
-            if answer != QMessageBox.Yes:
+            answer = MessageBox.question(self, self.i18n.t("devices.external_terminal"), self.i18n.t("external_terminal.confirm_many", count=len(devices)))
+            if answer != MessageBox.Yes:
                 return
         config = self._select_external_terminal_config()
         if config is None:
@@ -355,9 +355,9 @@ class DeviceManagementPage(QWidget):
         message = self.i18n.t("external_terminal.launch_done", success=success, failed=len(failures))
         if failures:
             message = f"{message}\n\n" + "\n".join(failures[:10])
-            QMessageBox.warning(self, self.i18n.t("devices.external_terminal"), message)
+            MessageBox.warning(self, self.i18n.t("devices.external_terminal"), message)
         else:
-            QMessageBox.information(self, self.i18n.t("devices.external_terminal"), message)
+            MessageBox.information(self, self.i18n.t("devices.external_terminal"), message)
 
     def launch_external_terminal_for_device_id(self, device_id: int) -> None:
         device = self.repository.get(device_id)
@@ -366,14 +366,14 @@ class DeviceManagementPage(QWidget):
             return
         result = launch_external_terminal(device, config)
         if result.success:
-            QMessageBox.information(self, self.i18n.t("devices.external_terminal"), result.message)
+            MessageBox.information(self, self.i18n.t("devices.external_terminal"), result.message)
         else:
-            QMessageBox.warning(self, self.i18n.t("devices.external_terminal"), result.message)
+            MessageBox.warning(self, self.i18n.t("devices.external_terminal"), result.message)
 
     def _select_external_terminal_config(self):
         configs = available_external_terminal_configs(self.settings)
         if not configs:
-            QMessageBox.information(
+            MessageBox.information(
                 self,
                 self.i18n.t("devices.external_terminal"),
                 self.i18n.t("external_terminal.not_configured"),
@@ -382,7 +382,7 @@ class DeviceManagementPage(QWidget):
         if len(configs) == 1:
             return configs[0]
         labels = [TERMINAL_LABELS.get(config.terminal_type, config.terminal_type) for config in configs]
-        label, accepted = QInputDialog.getItem(
+        label, accepted = InputDialog.getItem(
             self,
             self.i18n.t("external_terminal.select_terminal"),
             self.i18n.t("external_terminal.select_terminal"),
@@ -408,7 +408,7 @@ class DeviceManagementPage(QWidget):
     def generate_securecrt_sessions(self) -> None:
         devices = self.table.checked_devices() or self._filtered_devices()
         if not devices:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         output_dir = QFileDialog.getExistingDirectory(self, self.i18n.t("external_terminal.select_output_dir"), "")
         if not output_dir:
@@ -429,7 +429,7 @@ class DeviceManagementPage(QWidget):
             template_ini=template if template.is_file() else None,
         )
         self._open_folder(result.output_dir)
-        QMessageBox.information(
+        MessageBox.information(
             self,
             self.i18n.t("devices.generate_crt_sessions"),
             self.i18n.t("external_terminal.export_done", generated=result.generated, skipped=result.skipped, path=result.output_dir),
@@ -477,7 +477,7 @@ class DeviceManagementPage(QWidget):
     def download_diagnostics(self) -> None:
         devices = self._diagnostic_target_devices()
         if not devices:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.diagnostic_download_button.setEnabled(False)
         self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_downloading"))
@@ -514,9 +514,9 @@ class DeviceManagementPage(QWidget):
         if not folder_opened:
             message = f"{message}\n\n{self.i18n.t('devices.diagnostic_open_folder_failed')}"
         if failed:
-            QMessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
+            MessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
         else:
-            QMessageBox.information(self, self.i18n.t("devices.diagnostic_download"), message)
+            MessageBox.information(self, self.i18n.t("devices.diagnostic_download"), message)
 
     def _populate_filters(self) -> None:
         vendor = self.vendor_filter.currentData()
@@ -615,7 +615,7 @@ class DeviceManagementPage(QWidget):
             return
         groups = self._list_groups()
         labels = [self.i18n.t("groups.ungrouped")] + [group.name for group in groups]
-        label, accepted = QInputDialog.getItem(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.select_group"), labels, 0, False)
+        label, accepted = InputDialog.getItem(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.select_group"), labels, 0, False)
         if not accepted:
             return
         group_id = None
@@ -623,7 +623,7 @@ class DeviceManagementPage(QWidget):
             group = next((item for item in groups if item.name == label), None)
             group_id = int(group.id) if group and group.id is not None else None
         result = self.group_service.assign_devices(device_ids, group_id)
-        QMessageBox.information(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.assign_done", success=result.success, failed=result.failed))
+        MessageBox.information(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.assign_done", success=result.success, failed=result.failed))
         self.clear_selection()
         self.refresh_groups()
         self.groups_changed.emit()
@@ -663,11 +663,11 @@ class DeviceManagementPage(QWidget):
 
     def edit_device(self) -> None:
         if len(self.table.checked_device_ids()) > 1:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_one_for_edit"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_one_for_edit"))
             return
         device_id = self.selected_id()
         if device_id is None:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.edit_device_by_id(device_id)
 
@@ -717,7 +717,7 @@ class DeviceManagementPage(QWidget):
     def show_selected_device_detail(self) -> None:
         device_id = self.selected_id()
         if device_id is None:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.show_device_detail(device_id)
 
@@ -736,7 +736,7 @@ class DeviceManagementPage(QWidget):
             created = self.repository.create(device)
         except Exception as exc:
             app_logger.log_error("DEVICE_CREATE_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
             return
         app_logger.log_info("DEVICE_CREATED", f"设备已新增: {created.name}")
         self.refresh()
@@ -748,7 +748,7 @@ class DeviceManagementPage(QWidget):
             updated = self.repository.update(device)
         except Exception as exc:
             app_logger.log_error("DEVICE_UPDATE_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
             return
         app_logger.log_info("DEVICE_UPDATED", f"设备已编辑: {updated.name}")
         self.refresh()
@@ -763,13 +763,13 @@ class DeviceManagementPage(QWidget):
     def delete_device(self) -> None:
         device_id = self.selected_id()
         if device_id is None:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.delete_device_by_id(device_id)
 
     def delete_device_by_id(self, device_id: int) -> None:
-        answer = QMessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
-        if answer == QMessageBox.Yes:
+        answer = MessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
+        if answer == MessageBox.Yes:
             device = self.repository.get(device_id)
             self.repository.delete(device_id)
             app_logger.log_info("DEVICE_DELETED", f"设备已删除: {device.name}")
@@ -780,12 +780,12 @@ class DeviceManagementPage(QWidget):
         device_ids = self.table.checked_device_ids()
         if not device_ids:
             return
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("devices.title"),
             self.i18n.t("devices.batch_delete_confirm", count=len(device_ids)),
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         delete_device_ids(self.repository, device_ids)
         app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
@@ -795,15 +795,15 @@ class DeviceManagementPage(QWidget):
     def batch_refresh_details(self) -> None:
         device_ids = self.table.checked_device_ids()
         if not device_ids:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         devices = [self.repository.get(device_id) for device_id in device_ids]
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("devices.title"),
             self.i18n.t("devices.batch_refresh_confirm", count=len(devices)),
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         dialog = BatchCollectProgressDialog(self.i18n, len(devices), self)
         for row, device in enumerate(devices):
@@ -865,7 +865,7 @@ class DeviceManagementPage(QWidget):
                 result = self.service.import_csv(Path(path))
             except Exception as exc:
                 app_logger.log_error("CSV_IMPORT_FAILED", f"{Path(path).name}: {exc}")
-                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             self.refresh_groups()
             if result.groups_created:
@@ -873,7 +873,7 @@ class DeviceManagementPage(QWidget):
             if result.created:
                 self.devices_changed.emit()
             app_logger.log_info("CSV_IMPORTED", f"{Path(path).name}: created={result.created}, skipped={result.skipped}")
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
 
     def export_csv(self) -> None:
         path = select_export_path(self, self.i18n.t("devices.export_csv"), make_device_export_filename(self.site_name), CSV_FILTER)
@@ -883,11 +883,11 @@ class DeviceManagementPage(QWidget):
                 self.service.export_csv(path, choose_devices_for_export(self.repository.list(), selected_devices))
             except Exception as exc:
                 app_logger.log_error("CSV_EXPORT_FAILED", f"{path.name}: {exc}")
-                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             remember_export_path(path)
             app_logger.log_info("CSV_EXPORTED", path.name)
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
 
     def export_template(self) -> None:
         path = select_export_path(self, self.i18n.t("devices.export_template"), self.i18n.t("devices.template_filename"), CSV_FILTER)
@@ -896,8 +896,8 @@ class DeviceManagementPage(QWidget):
                 self.service.export_template_csv(path)
             except Exception as exc:
                 app_logger.log_error("CSV_TEMPLATE_EXPORT_FAILED", f"{path.name}: {exc}")
-                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             remember_export_path(path)
             app_logger.log_info("CSV_TEMPLATE_EXPORTED", path.name)
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))

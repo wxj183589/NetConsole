@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import getpass
 from time import perf_counter
 
@@ -13,12 +15,10 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -422,11 +422,11 @@ class MainWindow(AppFramelessMainWindow):
         try:
             page = self.create_detached_page(page_id)
         except FeatureDisabledError:
-            QMessageBox.information(self, self.i18n.t("app.title"), self.i18n.t("feature_flags.disabled_message"))
+            MessageBox.information(self, self.i18n.t("app.title"), self.i18n.t("feature_flags.disabled_message"))
             return
         except Exception as exc:
             app_logger.log_error("DETACHED_PAGE_CREATE_FAILED", f"page={page_id}, error={exc}")
-            QMessageBox.warning(self, self.i18n.t("app.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("app.title"), str(exc))
             return
         window = QMainWindow()
         window.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -640,18 +640,18 @@ class MainWindow(AppFramelessMainWindow):
             )
         except Exception as exc:
             app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("site.new"), self.i18n.t("site.invalid", error=str(exc)))
+            MessageBox.warning(self, self.i18n.t("site.new"), self.i18n.t("site.invalid", error=str(exc)))
             return
         app_logger.log_info("SITE_CREATED", site.name)
         self._switch_to_site(site)
-        QMessageBox.information(self, self.i18n.t("site.new"), self.i18n.t("site.create_success", site=site.name))
+        MessageBox.information(self, self.i18n.t("site.new"), self.i18n.t("site.create_success", site=site.name))
 
     def switch_site_dialog(self) -> None:
         sites = self.site_manager.list_sites()
         if not sites:
             return
         current_index = sites.index(self.site.name) if self.site.name in sites else 0
-        name, accepted = QInputDialog.getItem(
+        name, accepted = InputDialog.getItem(
             self,
             self.i18n.t("site.switch"),
             self.i18n.t("site.select"),
@@ -665,11 +665,11 @@ class MainWindow(AppFramelessMainWindow):
             site = self.site_manager.switch_site(name)
         except Exception as exc:
             app_logger.log_warning("SITE_SWITCH_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("site.switch"), str(exc))
+            MessageBox.warning(self, self.i18n.t("site.switch"), str(exc))
             return
         self._switch_to_site(site)
         app_logger.log_info("SITE_SWITCHED", site.name)
-        QMessageBox.information(self, self.i18n.t("site.switch"), self.i18n.t("site.switch_success", site=site.name))
+        MessageBox.information(self, self.i18n.t("site.switch"), self.i18n.t("site.switch_success", site=site.name))
 
     def _switch_to_site(self, site: Site) -> None:
         self.site = site
@@ -766,7 +766,7 @@ class MainWindow(AppFramelessMainWindow):
 
     def show_admin_unlock_dialog(self) -> None:
         if not self.feature_gate.is_admin_unlock_configured():
-            QMessageBox.information(self, "内部调试解锁", "当前版本未启用内部解锁。")
+            MessageBox.information(self, "内部调试解锁", "当前版本未启用内部解锁。")
             self.feature_gate.verify_admin_unlock_password("")
             return
         dialog = QDialog(self)
@@ -786,11 +786,11 @@ class MainWindow(AppFramelessMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         if not self.feature_gate.verify_admin_unlock_password(password_input.text()):
-            QMessageBox.warning(self, "内部调试解锁", "口令错误，未启用临时完整模式。")
+            MessageBox.warning(self, "内部调试解锁", "口令错误，未启用临时完整模式。")
             return
         self.feature_gate.enable_session_full_mode(reason="version_button_unlock", operator=getpass.getuser())
         self.refresh_feature_flags()
-        QMessageBox.information(self, "内部调试解锁", "已启用临时完整模式。本次启动有效，重启后恢复定制版。")
+        MessageBox.information(self, "内部调试解锁", "已启用临时完整模式。本次启动有效，重启后恢复定制版。")
 
     def toggle_sidebar(self) -> None:
         self.set_sidebar_collapsed(not self.sidebar_collapsed, persist=True)
@@ -1106,15 +1106,15 @@ class MainWindow(AppFramelessMainWindow):
         message = self.i18n.t("app.exit_message")
         if has_tasks:
             message = f"{message}\n\n{self.i18n.t('app.background_tasks_running')}"
-        box = QMessageBox(self)
+        box = MessageBox(self)
         box.setWindowTitle(self.i18n.t("app.exit_title"))
         box.setText(message)
-        box.setIcon(QMessageBox.Question)
+        box.setIcon(MessageBox.Question)
         minimize_button = None
         if self.tray_available:
-            minimize_button = box.addButton(self.i18n.t("app.minimize_to_tray"), QMessageBox.ActionRole)
-        exit_button = box.addButton(self.i18n.t("app.exit_app"), QMessageBox.DestructiveRole)
-        box.addButton(self.i18n.t("app.cancel"), QMessageBox.RejectRole)
+            minimize_button = box.addButton(self.i18n.t("app.minimize_to_tray"), MessageBox.ActionRole)
+        exit_button = box.addButton(self.i18n.t("app.exit_app"), MessageBox.DestructiveRole)
+        box.addButton(self.i18n.t("app.cancel"), MessageBox.RejectRole)
         remember = QCheckBox(self.i18n.t("app.remember_choice"))
         box.setCheckBox(remember)
         box.exec()
@@ -1159,8 +1159,8 @@ class MainWindow(AppFramelessMainWindow):
     def confirm_stop_all_background_tasks(self) -> None:
         if not self.has_background_tasks():
             return
-        answer = QMessageBox.question(self, self.i18n.t("tray.stop_all_tasks"), self.i18n.t("tray.stop_all_confirm"))
-        if answer == QMessageBox.Yes:
+        answer = MessageBox.question(self, self.i18n.t("tray.stop_all_tasks"), self.i18n.t("tray.stop_all_confirm"))
+        if answer == MessageBox.Yes:
             background_task_manager.stop_all()
             self._update_tray_text()
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import traceback
 import os
 from inspect import signature
@@ -16,12 +18,10 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidgetItem,
     QMenu,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -863,14 +863,14 @@ class AppFluentWindow(SplitFluentWindow):
         if self._force_close or not self.isVisible():
             event.accept()
             return
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             "退出 NetConsole",
             "确认退出 NetConsole？\n\n退出会停止后台任务并关闭已打开的子窗口。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            MessageBox.Yes | MessageBox.No,
+            MessageBox.No,
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             event.ignore()
             return
         event.accept()
@@ -1013,7 +1013,7 @@ class AppFluentWindow(SplitFluentWindow):
             )
         except Exception as exc:
             app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
-            QMessageBox.warning(self, "新建局点", str(exc))
+            MessageBox.warning(self, "新建局点", str(exc))
             return
         self._switch_to_site(site)
         self._show_info("局点已创建", f"当前局点：{site.name}")
@@ -1023,14 +1023,14 @@ class AppFluentWindow(SplitFluentWindow):
         if not sites:
             return
         current_index = sites.index(self.site.name) if self.site.name in sites else 0
-        name, accepted = QInputDialog.getItem(self, "切换局点", "请选择局点", sites, current_index, False)
+        name, accepted = InputDialog.getItem(self, "切换局点", "请选择局点", sites, current_index, False)
         if not accepted or not name or name == self.site.name:
             return
         try:
             site = self.site_manager.switch_site(name)
         except Exception as exc:
             app_logger.log_warning("SITE_SWITCH_FAILED", str(exc))
-            QMessageBox.warning(self, "切换局点", str(exc))
+            MessageBox.warning(self, "切换局点", str(exc))
             return
         self._switch_to_site(site)
         self._show_info("局点已切换", f"当前局点：{site.name}")

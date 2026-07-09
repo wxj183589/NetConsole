@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import re
 import sqlite3
 from pathlib import Path
@@ -18,10 +20,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QApplication,
     QMenu,
     QProgressBar,
@@ -491,17 +491,17 @@ class SnmpOverviewPage(QWidget):
         self.worker.start()
 
     def confirm_reset(self) -> None:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
+        box = MessageBox(self)
+        box.setIcon(MessageBox.Warning)
         box.setWindowTitle("清空并重建 SNMP 资源库")
         box.setText("该操作会清空 data/global/mibs/global_mib.db、用户导入的 MIB 索引、编译结果、字典集和产品 MIB 参考表索引。不会删除局点设备、配置备份、任务中心或 MR 数据。")
         box.setInformativeText("确认后将自动重建内置通用 MIB 字典和 H3C V5 / V7/V9 字典。")
         clear_raw = QCheckBox("同时清空用户导入的 raw_files / raw_archives / references")
         box.setCheckBox(clear_raw)
-        box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-        box.button(QMessageBox.Yes).setText("确认清空并重建")
-        box.button(QMessageBox.Cancel).setText("取消")
-        if box.exec() == QMessageBox.Yes:
+        box.setStandardButtons(MessageBox.Cancel | MessageBox.Yes)
+        box.button(MessageBox.Yes).setText("确认清空并重建")
+        box.button(MessageBox.Cancel).setText("取消")
+        if box.exec() == MessageBox.Yes:
             self.start_worker("reset", clear_raw_files=clear_raw.isChecked())
 
     def _append_log(self, text: str) -> None:
@@ -582,7 +582,7 @@ class MibResourcePage(QWidget):
 
     def _start_import(self, paths: list[str]) -> None:
         if self.worker is not None:
-            QMessageBox.information(self, "MIB 资源库", "当前已有导入任务正在执行。")
+            MessageBox.information(self, "MIB 资源库", "当前已有导入任务正在执行。")
             return
         metadata = {
             "vendor": self.vendor_input.text().strip(),
@@ -600,7 +600,7 @@ class MibResourcePage(QWidget):
         self.worker = None
         if isinstance(result, Exception):
             self.status.setText(f"导入失败：{result}")
-            QMessageBox.warning(self, "MIB 资源库", str(result))
+            MessageBox.warning(self, "MIB 资源库", str(result))
             return
         report = result if isinstance(result, MibImportReport) else None
         if report is not None:
@@ -609,7 +609,7 @@ class MibResourcePage(QWidget):
 
     def recompile_missing(self) -> None:
         if self.recompile_worker is not None:
-            QMessageBox.information(self, "MIB 资源库", "当前已有重新编译任务正在执行。")
+            MessageBox.information(self, "MIB 资源库", "当前已有重新编译任务正在执行。")
             return
         service = MibResourceService(self.center.paths, self.center.global_repo)
         self.recompile_worker = MibRecompileWorker(service, self)
@@ -622,7 +622,7 @@ class MibResourcePage(QWidget):
         self.recompile_worker = None
         if isinstance(result, Exception):
             self.status.setText(f"重新编译失败：{result}")
-            QMessageBox.warning(self, "MIB 资源库", str(result))
+            MessageBox.warning(self, "MIB 资源库", str(result))
             return
         report = result if isinstance(result, MibImportReport) else None
         if report is not None:
@@ -777,13 +777,13 @@ class ProductReferenceComparePage(QWidget):
         left_id = self.left_combo.currentData()
         right_id = self.right_combo.currentData()
         if left_id is None or right_id is None:
-            QMessageBox.information(self, "产品参考对比", "请先导入并选择两个产品 MIB 参考表。")
+            MessageBox.information(self, "产品参考对比", "请先导入并选择两个产品 MIB 参考表。")
             return
         if int(left_id) == int(right_id):
-            QMessageBox.information(self, "产品参考对比", "左右两侧不能选择同一份产品 MIB 参考表。")
+            MessageBox.information(self, "产品参考对比", "左右两侧不能选择同一份产品 MIB 参考表。")
             return
         if self.worker is not None:
-            QMessageBox.information(self, "产品参考对比", "当前已有对比任务正在执行。")
+            MessageBox.information(self, "产品参考对比", "当前已有对比任务正在执行。")
             return
         self.compare_button.setEnabled(False)
         self.export_button.setEnabled(False)
@@ -800,7 +800,7 @@ class ProductReferenceComparePage(QWidget):
         self.compare_button.setEnabled(True)
         if isinstance(result, Exception):
             self.status_label.setText(f"对比失败：{result}")
-            QMessageBox.warning(self, "产品参考对比", str(result))
+            MessageBox.warning(self, "产品参考对比", str(result))
             return
         self.last_compare = result if isinstance(result, ProductReferenceCompareResult) else None
         if self.last_compare is None:
@@ -891,7 +891,7 @@ class MibDictionaryPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def create_dictionary(self) -> None:
-        name, ok = QInputDialog.getText(self, "新建字典集", "字典集名称")
+        name, ok = InputDialog.getText(self, "新建字典集", "字典集名称")
         if not ok or not name.strip():
             return
         MibDictionaryService(self.center.global_repo).create_dictionary_set(name.strip())
@@ -1020,7 +1020,7 @@ class DeviceDictionaryRecommendPage(QWidget):
         if device is None or not self.last_recommendations:
             return
         self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), self.last_recommendations)
-        QMessageBox.information(self, "设备字典推荐", "已启用推荐字典。")
+        MessageBox.information(self, "设备字典推荐", "已启用推荐字典。")
 
 
 class MibBrowserPage(QWidget):
@@ -1365,7 +1365,7 @@ class MibBrowserPage(QWidget):
             return
         profile = dialog.profile()
         if not profile.host:
-            QMessageBox.information(self, "临时 IP", "请填写临时目标地址。")
+            MessageBox.information(self, "临时 IP", "请填写临时目标地址。")
             return
         self.temporary_profile = profile
         self.temporary_name = f"临时：{profile.host}"
@@ -1502,7 +1502,7 @@ class MibBrowserPage(QWidget):
     def generate_recommended_view(self) -> None:
         device = self._current_device()
         if device is None:
-            QMessageBox.information(self, "MIB 视图", "请先选择设备。")
+            MessageBox.information(self, "MIB 视图", "请先选择设备。")
             return
         profile_row = self.center.site_repo.latest_device_profile(str(device.device_uuid or device.id)) or {}
         profile = DeviceSnmpProfileResult(
@@ -1519,7 +1519,7 @@ class MibBrowserPage(QWidget):
         )
         recommendations = SnmpRecommendService(self.center.global_repo).recommend(device, profile)
         if not recommendations:
-            QMessageBox.information(self, "MIB 视图", "当前设备暂无可用推荐字典，请先导入或初始化 H3C MIB 包。")
+            MessageBox.information(self, "MIB 视图", "当前设备暂无可用推荐字典，请先导入或初始化 H3C MIB 包。")
             return
         self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), recommendations)
         index = self.source_filter.findData("h3c_v7v9")
@@ -1755,7 +1755,7 @@ class MibBrowserPage(QWidget):
     def _start_rebuild_product_tree(self) -> None:
         reference_id = self._selected_product_reference_id()
         if reference_id is None:
-            QMessageBox.information(self, "产品目录树", "当前没有可重建的产品 MIB 参考表。")
+            MessageBox.information(self, "产品目录树", "当前没有可重建的产品 MIB 参考表。")
             return
         if self.product_tree_rebuild_worker is not None:
             return
@@ -1775,7 +1775,7 @@ class MibBrowserPage(QWidget):
         self.rebuild_product_tree_button.setEnabled(True)
         if isinstance(result, Exception):
             self.path_label.setText(f"产品目录树重建失败：{result}")
-            QMessageBox.warning(self, "产品目录树", f"产品目录树重建失败：{result}")
+            MessageBox.warning(self, "产品目录树", f"产品目录树重建失败：{result}")
             return
         payload = dict(result) if isinstance(result, dict) else {}
         self.path_label.setText(
@@ -1889,12 +1889,12 @@ class MibBrowserPage(QWidget):
                 self.operation_combo.setCurrentIndex(index)
             self.operation_label.setText(f"已回到列 OID：{base_oid}。可使用 Walk / Bulk Walk 遍历整列。")
             return
-        QMessageBox.information(self, "MIB 浏览器", "当前 OID 未识别出可回退的实例后缀。")
+        MessageBox.information(self, "MIB 浏览器", "当前 OID 未识别出可回退的实例后缀。")
 
     def fill_query_tool(self, run_now: bool) -> None:
         data = self._selected_data()
         if not data or not self._selected_method:
-            QMessageBox.information(self, "MIB 浏览器", "Trap / Notification 不支持填入查询栏，只能加入 Trap 解析规则。")
+            MessageBox.information(self, "MIB 浏览器", "Trap / Notification 不支持填入查询栏，只能加入 Trap 解析规则。")
             return
         self.center.switch_to_query_from_mib(self._selected_query_oid, self._selected_method, str(data.get("name") or ""), str(data.get("module_name") or ""), run_now=run_now)
 
@@ -1905,17 +1905,17 @@ class MibBrowserPage(QWidget):
         oid = self._selected_query_oid or str(data.get("oid") or "")
         allowed, reason = can_set_mib_object(data, oid)
         if not allowed:
-            QMessageBox.information(self, "SNMP Set", reason)
+            MessageBox.information(self, "SNMP Set", reason)
             return
         self.open_set_dialog(data, oid=oid)
 
     def open_set_dialog(self, data: dict[str, object], *, oid: str, current_value: str = "") -> None:
         target = self._current_target_context()
         if target is None:
-            QMessageBox.information(self, "SNMP Set", "请先选择设备或临时 IP。")
+            MessageBox.information(self, "SNMP Set", "请先选择设备或临时 IP。")
             return
         if target.profile.version.lower() in {"v1", "v2", "v2c"} and not target.profile.community_rw:
-            QMessageBox.information(self, "SNMP Set", "未配置写团体字，无法执行 SNMP SET")
+            MessageBox.information(self, "SNMP Set", "未配置写团体字，无法执行 SNMP SET")
             return
         dialog = SnmpSetDialog(
             oid=oid,
@@ -1934,8 +1934,8 @@ class MibBrowserPage(QWidget):
             return
         values = dialog.result_data()
         old_value = current_value or "-"
-        confirm = QMessageBox(self)
-        confirm.setIcon(QMessageBox.Warning)
+        confirm = MessageBox(self)
+        confirm.setIcon(MessageBox.Warning)
         confirm.setWindowTitle("确认执行 SNMP Set")
         confirm.setText(
             "\n".join(
@@ -1953,10 +1953,10 @@ class MibBrowserPage(QWidget):
                 ]
             )
         )
-        confirm.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-        confirm.button(QMessageBox.Yes).setText("确认执行")
-        confirm.button(QMessageBox.Cancel).setText("取消")
-        if confirm.exec() != QMessageBox.Yes:
+        confirm.setStandardButtons(MessageBox.Cancel | MessageBox.Yes)
+        confirm.button(MessageBox.Yes).setText("确认执行")
+        confirm.button(MessageBox.Cancel).setText("取消")
+        if confirm.exec() != MessageBox.Yes:
             return
         request = SnmpSetRequest(
             profile=target.profile,
@@ -2037,13 +2037,13 @@ class MibBrowserPage(QWidget):
         menu.addAction("复制对象名", lambda: QApplication.clipboard().setText(str(data.get("name") or "")))
         menu.addAction("填入顶部查询栏", lambda: self.fill_query_tool(False))
         menu.addAction("保存为 OID 模板", self.save_selected_template)
-        menu.addAction("查看所属模块", lambda: QMessageBox.information(self, "所属模块", module_display_name(data)))
+        menu.addAction("查看所属模块", lambda: MessageBox.information(self, "所属模块", module_display_name(data)))
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def run_browser_query(self) -> None:
         target = self._current_target_context()
         if target is None:
-            QMessageBox.information(self, "MIB 浏览器", "请先选择设备或临时 IP。")
+            MessageBox.information(self, "MIB 浏览器", "请先选择设备或临时 IP。")
             return
         oid = self.oid_input.text().strip()
         if not oid:
@@ -2055,12 +2055,12 @@ class MibBrowserPage(QWidget):
             oid = f"{oid}.0"
             self.oid_input.setText(oid)
         if method == "Get" and (int(data.get("is_table") or 0) or int(data.get("is_table_entry") or 0) or int(data.get("is_column") or 0)) and oid == base_oid:
-            QMessageBox.information(self, "MIB 浏览器", "当前对象是表或表字段根 OID，Get 需要具体实例。请改用 Walk / Get Bulk / Bulk Walk。")
+            MessageBox.information(self, "MIB 浏览器", "当前对象是表或表字段根 OID，Get 需要具体实例。请改用 Walk / Get Bulk / Bulk Walk。")
             return
         if method == "Set":
             allowed, reason = can_set_mib_object(data, oid)
             if not allowed and str(data.get("name") or "") != oid:
-                QMessageBox.information(self, "SNMP Set", reason)
+                MessageBox.information(self, "SNMP Set", reason)
                 return
             self.open_set_dialog(data, oid=oid)
             return
@@ -2090,7 +2090,7 @@ class MibBrowserPage(QWidget):
     def show_advanced_parameters(self) -> None:
         target = self._current_target_context()
         if target is None:
-            QMessageBox.information(self, "高级参数", "请先选择设备或临时 IP。")
+            MessageBox.information(self, "高级参数", "请先选择设备或临时 IP。")
             return
         dialog = SnmpAdvancedParametersDialog(
             profile=target.profile,
@@ -2102,8 +2102,8 @@ class MibBrowserPage(QWidget):
         )
         if dialog.exec() == QDialog.Accepted:
             if dialog.set_enabled_checkbox.isChecked() and not self.center.site_repo.snmp_set_enabled():
-                confirm = QMessageBox.warning(self, "启用写操作", "启用 SNMP Set 后可以修改设备配置。确认启用？", QMessageBox.Yes | QMessageBox.No)
-                if confirm != QMessageBox.Yes:
+                confirm = MessageBox.warning(self, "启用写操作", "启用 SNMP Set 后可以修改设备配置。确认启用？", MessageBox.Yes | MessageBox.No)
+                if confirm != MessageBox.Yes:
                     return
             profile = dialog.profile()
             if target.source == "temporary":
@@ -2235,7 +2235,7 @@ class MibBrowserPage(QWidget):
         if not path:
             return
         target = SnmpQueryService(self.center.site_repo).export_result(self.last_result, path)
-        QMessageBox.information(self, "MIB 浏览器", f"已导出：{target}")
+        MessageBox.information(self, "MIB 浏览器", f"已导出：{target}")
 
     def _open_result_menu(self, position) -> None:
         index = self.result_table.indexAt(position)
@@ -2267,7 +2267,7 @@ class MibBrowserPage(QWidget):
         resolved = self._resolve_result_oid(raw_oid)
         allowed, reason = can_set_mib_object(resolved, raw_oid)
         if not allowed and str(resolved.get("name") or "") != raw_oid:
-            QMessageBox.information(self, "SNMP Set", reason)
+            MessageBox.information(self, "SNMP Set", reason)
             return
         self.open_set_dialog(resolved, oid=raw_oid, current_value=value)
 
@@ -2278,12 +2278,12 @@ class MibBrowserPage(QWidget):
             return
         method, query_oid = MibIndexService(self.center.global_repo).object_query_method(data)
         if not method:
-            QMessageBox.information(self, "OID 模板", "Trap / Notification 不支持保存为查询模板。")
+            MessageBox.information(self, "OID 模板", "Trap / Notification 不支持保存为查询模板。")
             return
-        name, ok = QInputDialog.getText(self, "保存为 OID 模板", "模板名称", text=str(data.get("name") or ""))
+        name, ok = InputDialog.getText(self, "保存为 OID 模板", "模板名称", text=str(data.get("name") or ""))
         if ok and name.strip():
             self.center.global_repo.create_template(name=name.strip(), oid=query_oid, method=method, module_name=str(data.get("module_name") or ""), object_name=str(data.get("name") or ""))
-            QMessageBox.information(self, "OID 模板", "已保存模板。")
+            MessageBox.information(self, "OID 模板", "已保存模板。")
 
 
 class SnmpQueryPage(QWidget):
@@ -2366,7 +2366,7 @@ class SnmpQueryPage(QWidget):
     def run_query(self) -> None:
         device = self._current_device()
         if device is None:
-            QMessageBox.information(self, "SNMP 查询工具", "请先选择设备。")
+            MessageBox.information(self, "SNMP 查询工具", "请先选择设备。")
             return
         if self.method_combo.currentText() == "Set":
             self.run_set(device)
@@ -2394,7 +2394,7 @@ class SnmpQueryPage(QWidget):
             oid = f"{oid}.0"
         allowed, reason = can_set_mib_object(data, oid)
         if not allowed and str(data.get("name") or "") != oid:
-            QMessageBox.information(self, "SNMP Set", reason)
+            MessageBox.information(self, "SNMP Set", reason)
             return
         dialog = SnmpSetDialog(
             oid=oid,
@@ -2408,8 +2408,8 @@ class SnmpQueryPage(QWidget):
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.result_data()
-        confirm = QMessageBox(self)
-        confirm.setIcon(QMessageBox.Warning)
+        confirm = MessageBox(self)
+        confirm.setIcon(MessageBox.Warning)
         confirm.setWindowTitle("确认执行 SNMP Set")
         confirm.setText(
             "\n".join(
@@ -2426,10 +2426,10 @@ class SnmpQueryPage(QWidget):
                 ]
             )
         )
-        confirm.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-        confirm.button(QMessageBox.Yes).setText("确认执行")
-        confirm.button(QMessageBox.Cancel).setText("取消")
-        if confirm.exec() != QMessageBox.Yes:
+        confirm.setStandardButtons(MessageBox.Cancel | MessageBox.Yes)
+        confirm.button(MessageBox.Yes).setText("确认执行")
+        confirm.button(MessageBox.Cancel).setText("取消")
+        if confirm.exec() != MessageBox.Yes:
             return
         request = SnmpSetRequest(
             profile=SnmpProfile.from_device(device),
@@ -2486,7 +2486,7 @@ class SnmpQueryPage(QWidget):
         if not path:
             return
         target = SnmpQueryService(self.center.site_repo).export_result(self.last_result, path)
-        QMessageBox.information(self, "SNMP 查询工具", f"已导出：{target}")
+        MessageBox.information(self, "SNMP 查询工具", f"已导出：{target}")
 
 
 class OidTemplatePage(QWidget):
@@ -2507,10 +2507,10 @@ class OidTemplatePage(QWidget):
         layout.addWidget(self.table, 1)
 
     def add_template(self) -> None:
-        name, ok = QInputDialog.getText(self, "新增模板", "模板名称")
+        name, ok = InputDialog.getText(self, "新增模板", "模板名称")
         if not ok or not name.strip():
             return
-        oid, ok = QInputDialog.getText(self, "新增模板", "数字 OID")
+        oid, ok = InputDialog.getText(self, "新增模板", "数字 OID")
         if ok and oid.strip():
             self.center.global_repo.create_template(name=name.strip(), oid=oid.strip(), method="Get")
             self.refresh()
@@ -2590,7 +2590,7 @@ class TopologyPage(QWidget):
     def _discovery_finished(self, result: object) -> None:
         self.worker = None
         if isinstance(result, Exception):
-            QMessageBox.warning(self, "拓扑发现", str(result))
+            MessageBox.warning(self, "拓扑发现", str(result))
             return
         self.refresh()
 

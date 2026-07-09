@@ -1070,6 +1070,28 @@ def test_point_table_dialog_uses_chinese_headers_and_keeps_internal_mapping_valu
     assert dialog._rows_to_nodes()[0].primary_address_role == "vehicle_ip"
 
 
+def test_car_network_table_shows_ssh_banner_failure_detail() -> None:
+    nodes = [CarNetworkNode("LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT", ssh_host="10.122.6.249")]
+    ssh_results = {
+        "TC1-MR": SshResult(
+            "10.122.6.249",
+            False,
+            "TC1-MR",
+            error="SSH握手失败：未收到SSH banner，疑似SSH未启用或端口不是SSH",
+            status="ssh_banner_failed",
+            protocol="SSH",
+            port=22,
+            suggestion="检查MR是否启用SSH，确认端口号；如设备只支持Telnet，请启用Telnet。",
+        )
+    }
+
+    rows = car_diag.build_result_tables(nodes, {}, ssh_results, AcApStatus(selected=True))
+
+    ssh_row = next(row for row in rows["TC1"] if row["layer"] == "SSH地址 / MR管理")
+    assert ssh_row["status"] == "SSH握手失败"
+    assert "未收到SSH banner" in ssh_row["note"]
+
+
 def test_point_table_role_combo_supports_all_internal_value(tmp_path: Path) -> None:
     QApplication.instance() or QApplication([])
     paths = PathResolver(tmp_path)

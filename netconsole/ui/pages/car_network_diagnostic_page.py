@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import json
 from pathlib import Path
 
@@ -16,7 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -342,7 +342,7 @@ class CarNetworkDiagnosticPage(QWidget):
         train_nodes = self._current_nodes()
         train = self._current_train()
         if not train_nodes:
-            QMessageBox.warning(self, "车内通信检测", "当前列车没有点表数据。")
+            MessageBox.warning(self, "车内通信检测", "当前列车没有点表数据。")
             return
         self.node_states = {node.node_name: "running" for node in train_nodes}
         self.ping_results = {}
@@ -510,9 +510,9 @@ class CarNetworkDiagnosticPage(QWidget):
         try:
             count = self.store.import_file(Path(path))
         except Exception as exc:
-            QMessageBox.warning(self, "导入车内通信点表", str(exc))
+            MessageBox.warning(self, "导入车内通信点表", str(exc))
             return
-        QMessageBox.information(self, "导入车内通信点表", f"导入完成：{count} 条")
+        MessageBox.information(self, "导入车内通信点表", f"导入完成：{count} 条")
         self.refresh_all()
 
     def export_points(self) -> None:
@@ -523,16 +523,16 @@ class CarNetworkDiagnosticPage(QWidget):
         if not path:
             return
         self.store.export_file(Path(path), self.nodes)
-        QMessageBox.information(self, "导出车内通信点表", f"已导出：{path}")
+        MessageBox.information(self, "导出车内通信点表", f"已导出：{path}")
 
     def generate_from_devices(self) -> None:
         generated = generate_point_table_from_devices(self.repository, self.site_name, self.store.load(), self.config_store.load())
         if not generated:
-            QMessageBox.information(self, "从设备管理生成", "设备管理的车载分组中没有识别到可用节点。")
+            MessageBox.information(self, "从设备管理生成", "设备管理的车载分组中没有识别到可用节点。")
             return
         self.store.save(generated)
         self.nodes = generated
-        QMessageBox.information(self, "从设备管理生成", f"已生成/刷新 {len({node.train_no for node in generated if node.train_no})} 列车点表，已保留手工地址映射。")
+        MessageBox.information(self, "从设备管理生成", f"已生成/刷新 {len({node.train_no for node in generated if node.train_no})} 列车点表，已保留手工地址映射。")
         self.refresh_all()
 
     def open_point_table(self) -> None:
@@ -597,7 +597,7 @@ class CarNetworkDiagnosticPage(QWidget):
                 f"诊断说明：{self.last_result.conclusion if self.last_result else '-'}",
             ]
         )
-        QMessageBox.information(self, node.node_name, message)
+        MessageBox.information(self, node.node_name, message)
 
     def _build_ui(self) -> None:
         page_layout = QVBoxLayout(self)
@@ -1254,7 +1254,7 @@ class PointTableDialog(QDialog):
     def _guard_locked(self, action: str) -> bool:
         if not self.locked:
             return False
-        QMessageBox.information(self, "车内通信点表", f"当前点表已锁定，不能{action}。")
+        MessageBox.information(self, "车内通信点表", f"当前点表已锁定，不能{action}。")
         return True
 
     def _reload_filters(self) -> None:
@@ -1390,7 +1390,7 @@ class PointTableDialog(QDialog):
             return
         self.global_config = self._read_global_rule_widgets()
         self.config_store.save(self.global_config)
-        QMessageBox.information(self, "车内通信点表", "全局规则已保存。")
+        MessageBox.information(self, "车内通信点表", "全局规则已保存。")
 
     def _apply_global_rules(self, overwrite_custom: bool) -> None:
         if self._guard_locked("应用全局规则"):
@@ -1416,7 +1416,7 @@ class PointTableDialog(QDialog):
             self.store.import_file(Path(path))
             self.nodes = self.store.load()
         except Exception as exc:
-            QMessageBox.warning(self, "导入车内通信点表", str(exc))
+            MessageBox.warning(self, "导入车内通信点表", str(exc))
             return
         self._reload_filters()
         self._fill_table()
@@ -1732,7 +1732,7 @@ def _status_cell_colors(status: str) -> tuple[str, str]:
         return "#DCFCE7", "#14532D"
     if any(word in text for word in ("检测中", "正在")):
         return "#FFFFFF", "#075985"
-    if any(word in text for word in ("丢包", "不稳定", "警告", "AC未发现")):
+    if any(word in text for word in ("丢包", "不稳定", "警告", "AC未发现", "握手失败", "认证失败")):
         return "#FEF3C7", "#713F12"
     if any(word in text for word in ("故障", "失败", "不通", "离线", "超时", "异常")):
         return "#FEE2E2", "#7F1D1D"

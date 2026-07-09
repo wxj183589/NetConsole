@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QDialog
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QDialog
 
 from netconsole.core import app_logger
 from netconsole.services.open_source_notice_service import OpenSourceComponent, OpenSourceNoticeService
@@ -96,7 +97,7 @@ class OpenSourceNoticesDialog(QDialog):
 
     def export_notices(self) -> None:
         if not self.components:
-            QMessageBox.information(self, "开源许可", "没有可导出的组件信息。")
+            MessageBox.information(self, "开源许可", "没有可导出的组件信息。")
             return
         path, selected_filter = QFileDialog.getSaveFileName(
             self,
@@ -113,7 +114,7 @@ class OpenSourceNoticesDialog(QDialog):
             if output.suffix.lower() != ".xlsx":
                 output = output.with_suffix(".xlsx")
             self._export_xlsx(output)
-        QMessageBox.information(self, "导出完成", f"开源许可说明已导出：{output}")
+        MessageBox.information(self, "导出完成", f"开源许可说明已导出：{output}")
 
     def copy_selected_component(self) -> None:
         row = self.table.currentRow()
@@ -159,7 +160,7 @@ class OpenSourceNoticesDialog(QDialog):
 
     def _on_failed(self, message: str) -> None:
         self._set_busy(False, f"扫描失败：{message}")
-        QMessageBox.warning(self, "开源许可扫描失败", message)
+        MessageBox.warning(self, "开源许可扫描失败", message)
 
     def _export_text(self, output: Path) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)

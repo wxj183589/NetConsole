@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import csv
 import shutil
 from pathlib import Path
@@ -17,10 +19,8 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -302,7 +302,7 @@ class WifiSurveyPage(QWidget):
         self.current_floor_plan = plan
         path = Path(str(plan["image_path"]))
         if not path.exists():
-            QMessageBox.warning(self, "无线测试", "图纸文件不存在，请重新导入图纸")
+            MessageBox.warning(self, "无线测试", "图纸文件不存在，请重新导入图纸")
             self.clear_scene()
             return
         self.clear_scene(keep_floor=False)
@@ -350,7 +350,7 @@ class WifiSurveyPage(QWidget):
         image_reader = QImageReader(str(source))
         size = image_reader.size()
         if not size.isValid():
-            QMessageBox.warning(self, "无线测试", "无法读取图纸文件")
+            MessageBox.warning(self, "无线测试", "无法读取图纸文件")
             return
         target_dir = self.paths.wireless_scan_projects_dir(self.site_name) / "wifi_survey" / "floorplans"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -368,9 +368,9 @@ class WifiSurveyPage(QWidget):
 
     def create_session(self) -> None:
         if self.current_floor_plan is None:
-            QMessageBox.information(self, "无线测试", "请先导入图纸")
+            MessageBox.information(self, "无线测试", "请先导入图纸")
             return
-        name, accepted = QInputDialog.getText(self, "新建测试会话", "会话名称", QLineEdit.Normal, "WiFi Survey")
+        name, accepted = InputDialog.getText(self, "新建测试会话", "会话名称", QLineEdit.Normal, "WiFi Survey")
         if not accepted or not name.strip():
             return
         session = self.repository.create_session(int(self.current_floor_plan["id"]), name.strip())
@@ -381,7 +381,7 @@ class WifiSurveyPage(QWidget):
 
     def start_scale_mode(self) -> None:
         if self.current_floor_plan is None:
-            QMessageBox.information(self, "无线测试", "请先导入图纸")
+            MessageBox.information(self, "无线测试", "请先导入图纸")
             return
         self.set_interaction_mode("scale")
         self.clear_scale_items()
@@ -397,10 +397,10 @@ class WifiSurveyPage(QWidget):
             self.set_interaction_mode("query")
             return
         if self.current_floor_plan is None:
-            QMessageBox.information(self, "无线测试", "请先导入图纸")
+            MessageBox.information(self, "无线测试", "请先导入图纸")
             return
         if self.current_session is None:
-            QMessageBox.information(self, "无线测试", "请先新建测试会话")
+            MessageBox.information(self, "无线测试", "请先新建测试会话")
             return
         self.set_interaction_mode("sample")
 
@@ -429,7 +429,7 @@ class WifiSurveyPage(QWidget):
             self.collect_scale_point(pos)
             return
         if self.current_session is None:
-            QMessageBox.information(self, "无线测试", "请先新建测试会话")
+            MessageBox.information(self, "无线测试", "请先新建测试会话")
             return
         if self.interaction_mode == "sample":
             self.sample_at(pos)
@@ -446,14 +446,14 @@ class WifiSurveyPage(QWidget):
         p1, p2 = self.scale_points[:2]
         pixel_distance = ((p1.x() - p2.x()) ** 2 + (p1.y() - p2.y()) ** 2) ** 0.5
         if pixel_distance < 5:
-            QMessageBox.information(self, "设置比例尺", "两个参考点距离太近，请重新选择")
+            MessageBox.information(self, "设置比例尺", "两个参考点距离太近，请重新选择")
             self.clear_scale_items()
             self.scale_points = []
             self.scale_status_label.setText("比例尺设置：请在图纸上点击第 1 个参考点")
             self.hint_label.setText("比例尺设置：请在图纸上点击第 1 个参考点")
             return
         line_item = self.draw_scale_line(p1, p2)
-        distance, accepted = QInputDialog.getDouble(self, "设置比例尺", "请输入两点之间的实际距离（米）", 1.0, 0.01, 100000.0, 2)
+        distance, accepted = InputDialog.getDouble(self, "设置比例尺", "请输入两点之间的实际距离（米）", 1.0, 0.01, 100000.0, 2)
         if not accepted:
             self.finish_scale_mode("比例尺设置已取消", clear_items=True)
             return
@@ -544,7 +544,7 @@ class WifiSurveyPage(QWidget):
         self.view.set_sampling_enabled(self.interaction_mode == "sample")
         self.pending_sample_pos = None
         self.scan_status_label.setText("扫描状态：失败")
-        QMessageBox.warning(self, "无线测试", f"无线扫描失败，请确认 Windows WLAN 服务和无线网卡状态\n{error}")
+        MessageBox.warning(self, "无线测试", f"无线扫描失败，请确认 Windows WLAN 服务和无线网卡状态\n{error}")
 
     def load_points(self) -> None:
         for item in self.point_items:
@@ -780,7 +780,7 @@ class WifiSurveyPage(QWidget):
                 message = "当前 BSSID 有效采样点不足 3 个，无法生成该 AP 热力图。"
             else:
                 message = "当前会话有效采样点不足 3 个，无法生成最强信号热力图。"
-            QMessageBox.information(self, "无线测试", message)
+            MessageBox.information(self, "无线测试", message)
             self.update_status()
             return
         self.heatmap_pixmap = generate_idw_heatmap(
@@ -812,7 +812,7 @@ class WifiSurveyPage(QWidget):
 
     def export_image(self) -> None:
         if self.floor_pixmap is None:
-            QMessageBox.information(self, "无线测试", "请先导入图纸")
+            MessageBox.information(self, "无线测试", "请先导入图纸")
             return
         default = self._export_dir() / "wifi_survey_heatmap.png"
         path_text, _ = QFileDialog.getSaveFileName(self, "导出图片", str(default), "PNG (*.png)")
@@ -822,7 +822,7 @@ class WifiSurveyPage(QWidget):
 
     def export_csv(self) -> None:
         if self.current_session is None:
-            QMessageBox.information(self, "无线测试", "请先新建测试会话")
+            MessageBox.information(self, "无线测试", "请先新建测试会话")
             return
         default = self._export_dir() / "wifi_survey_samples.csv"
         path_text, _ = QFileDialog.getSaveFileName(self, "导出CSV", str(default), "CSV (*.csv)")

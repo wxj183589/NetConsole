@@ -584,15 +584,20 @@ QToolTip {
 
 
 def stylesheet_for_theme(mode: str) -> str:
+    from netconsole.ui.dialogs.dialog_style import dialog_stylesheet_for_theme
+
     theme_mode = "dark" if mode == "dark" else "light"
     base = DARK_APP_STYLESHEET if theme_mode == "dark" else LIGHT_APP_STYLESHEET
-    return f"{base}\n{_fluent_shell_stylesheet(theme_mode)}"
+    return f"{base}\n{_fluent_shell_stylesheet(theme_mode)}\n{dialog_stylesheet_for_theme(theme_mode)}"
 
 
 def apply_theme(mode: str) -> None:
+    from netconsole.ui.dialogs.dialog_style import install_dialog_style_event_filter
+
     app = QApplication.instance()
     if app is None:
         return
+    install_dialog_style_event_filter(app)
     theme_mode = "dark" if mode == "dark" else "light"
     apply_fluent_theme(theme_mode)
     stylesheet = stylesheet_for_theme(theme_mode)

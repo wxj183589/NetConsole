@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import os
 import re
 import traceback
@@ -16,11 +18,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -815,13 +815,13 @@ class MeshLogAnalysisPage(QWidget):
         self.tabs.currentChanged.connect(lambda _index: self.refresh_current_tab())
 
     def create_mr(self) -> None:
-        name, ok = QInputDialog.getText(self, self.i18n.t("mesh_analysis.create_mr"), self.i18n.t("mesh_analysis.mr_name"))
+        name, ok = InputDialog.getText(self, self.i18n.t("mesh_analysis.create_mr"), self.i18n.t("mesh_analysis.mr_name"))
         if not ok:
             return
         try:
             profile = self.storage.create_mr_profile(name)
         except Exception as exc:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.create_mr"), str(exc))
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.create_mr"), str(exc))
             return
         app_logger.log_info("MESH_MR_CREATED", profile.display_name)
         self.refresh_all(select_mr_id=profile.mr_id)
@@ -943,7 +943,7 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self.progress_label.setText(f"链路明细已导出：{path}")
-        QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), f"链路明细已导出：\n{path}")
+        MessageBox.information(self, self.i18n.t("mesh_analysis.title"), f"链路明细已导出：\n{path}")
 
     def _on_link_export_failed(self, error: str) -> None:
         self.link_export_result_handled = True
@@ -951,7 +951,7 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText(f"导出链路明细失败：{error}")
-        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"导出链路明细失败：{error}")
+        MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"导出链路明细失败：{error}")
 
     def _on_link_export_cancelled(self) -> None:
         self.link_export_result_handled = True
@@ -1305,7 +1305,7 @@ class MeshLogAnalysisPage(QWidget):
         message = f"加载{self._tab_label(tab)}失败：{error}"
         self.progress_label.setText(message)
         app_logger.log_error("MESH_TAB_LOAD_FAILED", f"tab={self._tab_label(tab)} error={error}\n{traceback.format_exc()}")
-        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), message)
+        MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), message)
 
     def _apply_tab_rows(self, tab: str, total: int, rows: list[dict[str, object]], page: int, page_size: int) -> None:
         if tab == "source":
@@ -1370,13 +1370,13 @@ class MeshLogAnalysisPage(QWidget):
 
     def generate_report(self) -> None:
         if not self.feature_gate.is_enabled("mesh.generate_report"):
-            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.disabled"))
+            MessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.disabled"))
             return
         profile = self._require_profile()
         if profile is None:
             return
         if self.report_worker and self.report_worker.isRunning():
-            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.running"))
+            MessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_report.running"))
             return
         from PySide6.QtWidgets import QDialog
         from dataclasses import replace
@@ -1400,14 +1400,14 @@ class MeshLogAnalysisPage(QWidget):
         )
         source_file_ids = self._selected_source_file_ids()
         if not source_file_ids:
-            answer = QMessageBox.question(
+            answer = MessageBox.question(
                 self,
                 self.i18n.t("mesh_report.generate_report"),
                 "未选择源文件，将为当前 MR 的全部已解析源文件生成报告。是否继续？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                MessageBox.Yes | MessageBox.No,
+                MessageBox.No,
             )
-            if answer != QMessageBox.Yes:
+            if answer != MessageBox.Yes:
                 return
         self.report_open_output_dir = bool(options.open_output_dir_after_done)
         export_dir = self.paths.mesh_mr_export_dir(self.site_name, profile.safe_folder_name)
@@ -1454,11 +1454,11 @@ class MeshLogAnalysisPage(QWidget):
     def _on_report_finished(self, path: str) -> None:
         self.progress_bar.setValue(100)
         self.progress_label.setText(self.i18n.t("mesh_report.done", path=path))
-        QMessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
+        MessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
 
     def _on_report_failed(self, error: str) -> None:
         self.progress_label.setText(self.i18n.t("mesh_report.failed", error=error))
-        QMessageBox.warning(self, self.i18n.t("mesh_report.generate_report"), error)
+        MessageBox.warning(self, self.i18n.t("mesh_report.generate_report"), error)
 
     def _on_report_cancelled(self) -> None:
         self.progress_label.setText(self.i18n.t("mesh_report.cancelled"))
@@ -1481,7 +1481,7 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_label.setText(self.i18n.t("mesh_report.done", path=path))
         if self.report_open_output_dir:
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.fspath(Path(path))))
-        QMessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
+        MessageBox.information(self, self.i18n.t("mesh_report.generate_report"), self.i18n.t("mesh_report.done", path=path))
 
     def _cleanup_report_worker(self) -> None:
         self.generate_report_button.setEnabled(True)
@@ -1491,7 +1491,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def _start_import(self, profile: MeshMrProfile, files: list[Path]) -> None:
         if not files:
-            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.no_files"))
+            MessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.no_files"))
             return
         PathPreferenceService(self.paths).remember_last_mesh_import_dir(files[0].parent)
         self.progress_bar.setValue(0)
@@ -1518,7 +1518,7 @@ class MeshLogAnalysisPage(QWidget):
         app_logger.log_info("MESH_ANALYSIS_COMPLETED", self.progress_label.text())
 
     def _on_import_failed(self, error: str) -> None:
-        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), error)
+        MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), error)
         app_logger.log_error("MESH_PARSE_FAILED", error)
 
     def _on_import_cancelled(self) -> None:
@@ -1768,7 +1768,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def _on_derived_rebuild_failed(self, error: str) -> None:
         self.progress_label.setText(error)
-        QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), error)
+        MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), error)
         app_logger.log_error("MESH_DERIVED_REBUILD_FAILED", error)
 
     def _cleanup_derived_worker(self) -> None:
@@ -1866,7 +1866,7 @@ class MeshLogAnalysisPage(QWidget):
                 filters,
             )
         if position is None:
-            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), "Cannot locate the selected mesh link row.")
+            MessageBox.information(self, self.i18n.t("mesh_analysis.title"), "Cannot locate the selected mesh link row.")
             return
         self.tabs.setCurrentIndex(1)
         self.link_page = position.page_no
@@ -2054,12 +2054,12 @@ class MeshLogAnalysisPage(QWidget):
             return
         peer = self._canonical_peer_mac(data.get("peer_mac_normalized") or data.get("peer_mac_raw"))
         if len(peer) != 12:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行没有有效 AP MAC，无法打开单个 AP 分析。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行没有有效 AP MAC，无法打开单个 AP 分析。")
             return
         link_id = int(data.get("id") or 0) or None
         row_source_file_id = self._row_source_file_id(data, self.current_source_file_id)
         if link_id is not None and row_source_file_id is None:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行缺少源文件ID，无法定位单日志图表。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行缺少源文件ID，无法定位单日志图表。")
             app_logger.log_warning(
                 "MESH_OPEN_PEER_DIALOG_MISSING_SOURCE",
                 f"peer_mac={peer}, radio={data.get('radio')}, anchor_link_id={link_id}, current_source_file_id={self.current_source_file_id}",
@@ -2079,14 +2079,14 @@ class MeshLogAnalysisPage(QWidget):
             row_source_file_id = self._row_source_file_id(data if isinstance(data, dict) else {}, self.current_source_file_id)
             self._open_peer_dialog(peer, radio, "", None, row_source_file_id)
         else:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前事件没有有效 AP MAC，无法打开单个 AP 分析。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前事件没有有效 AP MAC，无法打开单个 AP 分析。")
 
     def _open_peer_dialog(self, peer_mac: str, radio: int | None, session_id: str, anchor_link_id: int | None = None, source_file_id: int | None = None) -> None:
         if self.current_profile is None:
             return
         peer_mac = self._canonical_peer_mac(peer_mac)
         if len(peer_mac) != 12:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行没有有效 AP MAC，无法打开单个 AP 分析。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "当前行没有有效 AP MAC，无法打开单个 AP 分析。")
             return
         app_logger.log_info(
             "MESH_OPEN_PEER_DIALOG",
@@ -2155,16 +2155,16 @@ class MeshLogAnalysisPage(QWidget):
             self._render_sources(self._repo())
             return
         if not path.is_file():
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "只能删除本地源文件，不能删除目录。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "只能删除本地源文件，不能删除目录。")
             return
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("mesh_analysis.title"),
             f"确定要删除本地源文件吗？\n\n路径：{path}\n\n此操作只删除磁盘上的源文件，不删除数据库中的解析结果。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            MessageBox.Yes | MessageBox.No,
+            MessageBox.No,
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         repo = self._repo()
         try:
@@ -2172,7 +2172,7 @@ class MeshLogAnalysisPage(QWidget):
             repo.mark_source_file_deleted(source_file_id)
         except OSError as exc:
             repo.mark_source_file_delete_failed(source_file_id, str(exc))
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), str(exc))
         self._render_sources(repo)
 
     def _show_source_context_menu(self, pos) -> None:
@@ -2232,16 +2232,16 @@ class MeshLogAnalysisPage(QWidget):
             self.progress_label.setText("文件不存在，已标记为文件缺失。")
             return
         if not path.is_file():
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "只能删除本地源文件，不能删除目录。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "只能删除本地源文件，不能删除目录。")
             return
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("mesh_analysis.title"),
             f"确定要删除本地源文件吗？\n\n路径：{path}\n\n此操作只删除磁盘上的源文件，不删除数据库中的解析结果。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            MessageBox.Yes | MessageBox.No,
+            MessageBox.No,
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         try:
             path.unlink()
@@ -2249,13 +2249,13 @@ class MeshLogAnalysisPage(QWidget):
             self.progress_label.setText("已删除本地源文件，解析数据仍可查看。")
         except OSError as exc:
             repo.mark_source_file_delete_failed(source_file_id, str(exc))
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"删除失败：{exc}")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"删除失败：{exc}")
         self._render_sources(repo)
 
     def _delete_parsed_data(self, data: dict[str, object], delete_local_file: bool = False) -> None:
         source_file_id = int(data.get("id") or 0)
         if source_file_id <= 0 or self.current_profile is None:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "该源文件缺少有效 source_file_id，无法安全删除对应解析数据。")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), "该源文件缺少有效 source_file_id，无法安全删除对应解析数据。")
             return
         repo = self._repo()
         counts = repo.count_parsed_data_by_source_file(source_file_id)
@@ -2282,18 +2282,18 @@ class MeshLogAnalysisPage(QWidget):
                 "此操作只删除数据库中的解析结果，不删除本地源文件。\n"
                 "删除后该文件需要重新导入才会恢复解析数据。"
             )
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("mesh_analysis.title"),
             message,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            MessageBox.Yes | MessageBox.No,
+            MessageBox.No,
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         result = repo.delete_parsed_data_by_source_file(source_file_id)
         if not result.ok:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), result.message or "删除解析数据失败")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), result.message or "删除解析数据失败")
             return
         local_delete_error = ""
         if delete_local_file:
@@ -2316,7 +2316,7 @@ class MeshLogAnalysisPage(QWidget):
         current_id = self.current_profile.mr_id
         self.refresh_all(select_mr_id=current_id)
         if local_delete_error:
-            QMessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"解析数据已删除，但本地源文件删除失败：{local_delete_error}")
+            MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"解析数据已删除，但本地源文件删除失败：{local_delete_error}")
         self.progress_label.setText(
             f"已删除解析数据：链路 {result.deleted_links} 条，事件 {result.deleted_events} 条，解析问题 {result.deleted_issues} 条。当前已切换为全部文件。"
         )
@@ -2339,7 +2339,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def _require_profile(self) -> MeshMrProfile | None:
         if self.current_profile is None:
-            QMessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.select_mr_first"))
+            MessageBox.information(self, self.i18n.t("mesh_analysis.title"), self.i18n.t("mesh_analysis.select_mr_first"))
             return None
         return self.current_profile
 

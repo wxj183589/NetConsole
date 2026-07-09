@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -291,7 +291,7 @@ class IperfBandwidthPage(QWidget):
     def start_server(self) -> None:
         tool = find_iperf_tool(self.paths)
         if tool is None:
-            QMessageBox.warning(self, self.i18n.t("network_tools.iperf"), self.i18n.t("iperf.tool_missing"))
+            MessageBox.warning(self, self.i18n.t("network_tools.iperf"), self.i18n.t("iperf.tool_missing"))
             return
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.paths.iperf_server_dir(self.site_name) / f"iperf_server_{stamp}.log"
@@ -313,7 +313,7 @@ class IperfBandwidthPage(QWidget):
     def start_client(self) -> None:
         tool = find_iperf_tool(self.paths)
         if tool is None:
-            QMessageBox.warning(self, self.i18n.t("network_tools.iperf"), self.i18n.t("iperf.tool_missing"))
+            MessageBox.warning(self, self.i18n.t("network_tools.iperf"), self.i18n.t("iperf.tool_missing"))
             return
         config = IperfClientConfig(
             self.client_host_edit.text(),
@@ -326,7 +326,7 @@ class IperfBandwidthPage(QWidget):
             normalize_bandwidth_text(self.client_bandwidth_edit.text(), self.client_bandwidth_unit_combo.currentText()),
         ).normalized()
         if not config.server_ip:
-            QMessageBox.warning(self, self.i18n.t("network_tools.iperf"), self.i18n.t("iperf.server_required"))
+            MessageBox.warning(self, self.i18n.t("network_tools.iperf"), self.i18n.t("iperf.server_required"))
             return
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.paths.iperf_client_dir(self.site_name) / f"iperf_client_{stamp}.log"
@@ -335,7 +335,7 @@ class IperfBandwidthPage(QWidget):
         self.client_worker = IperfProcessWorker(tool, command, log_file, store=store, config=config, mode="client", parent=self)
         self.client_worker.line_received.connect(self.client_output.append)
         self.client_worker.interval_received.connect(self._append_interval)
-        self.client_worker.failed.connect(lambda message: QMessageBox.warning(self, self.i18n.t("network_tools.iperf"), message))
+        self.client_worker.failed.connect(lambda message: MessageBox.warning(self, self.i18n.t("network_tools.iperf"), message))
         self.client_worker.start()
 
     def stop_client(self) -> None:
@@ -373,7 +373,7 @@ class IperfBandwidthPage(QWidget):
     def _server_failed(self, message: str) -> None:
         self._set_server_state("FAILED")
         self.server_worker = None
-        QMessageBox.warning(self, self.i18n.t("network_tools.iperf"), message)
+        MessageBox.warning(self, self.i18n.t("network_tools.iperf"), message)
 
     def _set_server_state(self, state: str) -> None:
         self.server_state = state

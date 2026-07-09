@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
@@ -19,7 +20,6 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
 )
 
 from netconsole.core.i18n import I18n
@@ -214,16 +214,16 @@ class DeviceDetailDialog(QDialog):
         self.refresh_button.setText(self.i18n.t("details.refresh"))
         self.reload_tabs()
         if result.success and result.error_message:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_partial"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_partial"))
         elif result.success:
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_done"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_done"))
         else:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=result.error_message or "unknown"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=result.error_message or "unknown"))
 
     def _collect_failed(self, error_message: str) -> None:
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=error_message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=error_message))
 
     def refresh_device_optical(self) -> None:
         if self.optical_refresh_thread is not None and self.optical_refresh_thread.isRunning():
@@ -242,16 +242,16 @@ class DeviceDetailDialog(QDialog):
         self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
         self.reload_tabs()
         if result.success and result.error_message:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_partial"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_partial"))
         elif result.success:
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_optical_done"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_optical_done"))
         else:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=result.error_message or "unknown"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=result.error_message or "unknown"))
 
     def _optical_refresh_failed(self, error_message: str) -> None:
         self.refresh_optical_button.setEnabled(True)
         self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=error_message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=error_message))
 
     def _overview_tab(self) -> QWidget:
         fact = self.repository.get_device_fact(str(self.device.device_uuid or ""))
@@ -311,10 +311,10 @@ class DeviceDetailDialog(QDialog):
     def open_device_web(self) -> None:
         port, _source = effective_https_port(self.device.https_port)
         if not build_https_url(self.device.primary_address, port):
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
             return
         if not open_https_url(self.device.primary_address, port):
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
 
     def _interfaces_tab(self) -> QWidget:
         rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))

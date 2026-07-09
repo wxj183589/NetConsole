@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import csv
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -157,8 +157,8 @@ class AppLogPage(QWidget):
         self.refresh()
 
     def clear_logs(self) -> None:
-        answer = QMessageBox.question(self, self.i18n.t("logs.title"), self.i18n.t("logs.clear_confirm"))
-        if answer != QMessageBox.Yes:
+        answer = MessageBox.question(self, self.i18n.t("logs.title"), self.i18n.t("logs.clear_confirm"))
+        if answer != MessageBox.Yes:
             return
         app_logger.clear_logs()
         app_logger.log_info("LOGS_CLEARED", self.i18n.t("logs.cleared_detail"))
@@ -213,7 +213,7 @@ class AppLogPage(QWidget):
             app_logger.log_info("LOGS_CURRENT_PAGE_EXPORTED", path.name)
         except Exception as exc:
             app_logger.log_error("LOGS_EXPORT_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("logs.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("logs.title"), str(exc))
             return
         self.refresh()
 
@@ -239,7 +239,7 @@ class AppLogPage(QWidget):
             app_logger.log_info("LOGS_EXPORTED", path.name)
         except Exception as exc:
             app_logger.log_error("LOGS_EXPORT_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("logs.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("logs.title"), str(exc))
             return
         self.refresh()
 

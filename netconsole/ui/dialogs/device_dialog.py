@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -348,14 +348,14 @@ class DeviceDialog(QDialog):
         data = self.form_data()
         error_key = validate_device_form_data(data)
         if error_key:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t(error_key))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t(error_key))
             return
         self.saved.emit(self.device())
 
     def test_connection(self) -> None:
         device = self.device()
         if not device.primary_address:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("validation.host_required"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("validation.host_required"))
             return
         self.test_button.setEnabled(False)
         self.test_button.setText(self.i18n.t("devices.testing_connection"))
@@ -379,9 +379,9 @@ class DeviceDialog(QDialog):
             )
             if sysname:
                 message = f"{message}\n{self.i18n.t('field.system_name')}: {sysname}"
-            QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
+            MessageBox.information(self, self.i18n.t("connection.success_title"), message)
         else:
-            QMessageBox.warning(
+            MessageBox.warning(
                 self,
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),

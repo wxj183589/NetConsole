@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
@@ -57,9 +58,9 @@ class ExternalTerminalSettingsDialog(QDialog):
     def _test_path(self, edit: QLineEdit) -> None:
         path = Path(edit.text().strip())
         if path.is_file():
-            QMessageBox.information(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_ok"))
+            MessageBox.information(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_ok"))
         else:
-            QMessageBox.warning(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_missing"))
+            MessageBox.warning(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_missing"))
 
     def _save(self) -> None:
         self.settings.set_value("external_terminal/securecrt_path", self.securecrt_path.text().strip())

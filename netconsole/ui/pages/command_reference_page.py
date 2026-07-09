@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -11,7 +12,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QComboBox,
     QLineEdit,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -282,10 +282,10 @@ class CommandReferencePage(QWidget):
         if InfoBar is not None and InfoBarPosition is not None:
             InfoBar.success(title, message, parent=self, position=InfoBarPosition.TOP_RIGHT)
             return
-        QMessageBox.information(self, title, message)
+        MessageBox.information(self, title, message)
 
     def _show_error(self, title: str, message: str) -> None:
         if InfoBar is not None and InfoBarPosition is not None:
             InfoBar.error(title, message, parent=self, position=InfoBarPosition.TOP_RIGHT)
             return
-        QMessageBox.warning(self, title, message)
+        MessageBox.warning(self, title, message)

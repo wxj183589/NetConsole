@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, is_dataclass
@@ -19,7 +20,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -432,7 +432,7 @@ class ToolResultPanel(QGroupBox):
 
     def export_current(self, suffix: str) -> None:
         if not self.current_headers:
-            QMessageBox.information(self, "导出", "没有可导出的结果。")
+            MessageBox.information(self, "导出", "没有可导出的结果。")
             return
         export_dir = self.paths.toolbox_outputs_dir(self.site_name)
         default = export_dir / f"{self.export_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{suffix}"
@@ -445,7 +445,7 @@ class ToolResultPanel(QGroupBox):
             export_rows_xlsx(path, self.current_headers, self.current_rows)
         else:
             export_rows_csv(path, self.current_headers, self.current_rows)
-        QMessageBox.information(self, "导出", f"已导出：{path}")
+        MessageBox.information(self, "导出", f"已导出：{path}")
 
     def clear_results(self) -> None:
         self.current_rows = []
@@ -1005,7 +1005,7 @@ class NetworkToolboxPage(QWidget):
         network = ipaddress.ip_network(self.network_ping_cidr.text(), strict=False)
         hosts = list(network.hosts()) if self.network_ping_usable_only.isChecked() else list(network)
         if len(hosts) > 4096:
-            QMessageBox.warning(self, "网段 Ping", "单次扫描最大地址数为 4096，请缩小范围。")
+            MessageBox.warning(self, "网段 Ping", "单次扫描最大地址数为 4096，请缩小范围。")
             return
         targets = [str(host) for host in hosts]
         self.network_ping_stop_requested = False
@@ -1235,9 +1235,9 @@ class NetworkToolboxPage(QWidget):
 
     def _execute_route_command(self, command: str) -> None:
         if not is_admin():
-            QMessageBox.warning(self, "本机路由", "需要以管理员身份运行才能修改路由。")
+            MessageBox.warning(self, "本机路由", "需要以管理员身份运行才能修改路由。")
             return
-        if QMessageBox.question(self, "本机路由", f"确认执行：\n{command}") != QMessageBox.Yes:
+        if MessageBox.question(self, "本机路由", f"确认执行：\n{command}") != MessageBox.Yes:
             return
         result = execute_powershell(command)
         self.routes_panel.set_status("done" if result.returncode == 0 else "failed")

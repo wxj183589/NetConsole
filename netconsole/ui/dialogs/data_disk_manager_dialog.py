@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
@@ -124,10 +125,10 @@ class DataDiskManagerDialog(QDialog):
             selected = {"legacy_debug_data", "debug_logs", "runtime_cache"}
         cleanable = selected & {"legacy_debug_data", "debug_logs", "runtime_cache"}
         if not cleanable:
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.no_cleanable_selected"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.no_cleanable_selected"))
             return
-        answer = QMessageBox.question(self, self.windowTitle(), self.i18n.t("data_disk.clean_confirm"))
-        if answer != QMessageBox.Yes:
+        answer = MessageBox.question(self, self.windowTitle(), self.i18n.t("data_disk.clean_confirm"))
+        if answer != MessageBox.Yes:
             return
         self._set_busy(True, self.i18n.t("data_disk.cleaning"))
         self.clean_thread = DataDiskCleanThread(self.paths, cleanable)
@@ -140,14 +141,14 @@ class DataDiskManagerDialog(QDialog):
 
     def _show_clean_done(self, result: object) -> None:
         removed = sum(result.values())
-        QMessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.clean_done", size=_format_bytes(removed)))
+        MessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.clean_done", size=_format_bytes(removed)))
         self.refresh()
 
     def _show_scan_failed(self, message: str) -> None:
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.scan_failed", error=message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.scan_failed", error=message))
 
     def _show_clean_failed(self, message: str) -> None:
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.clean_failed", error=message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.clean_failed", error=message))
 
     def _set_busy(self, busy: bool, message: str) -> None:
         self.refresh_button.setEnabled(not busy)

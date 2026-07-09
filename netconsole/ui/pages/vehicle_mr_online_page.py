@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import csv
 from pathlib import Path
 
@@ -15,7 +16,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QDateTimeEdit,
     QSplitter,
@@ -195,11 +195,11 @@ class VehicleMrOnlinePage(QWidget):
     def start_collection(self) -> None:
         ac = self.ac_combo.currentData()
         if not isinstance(ac, Device):
-            QMessageBox.warning(self, "列车在线情况", "请先选择无线控制器 AC。")
+            MessageBox.warning(self, "列车在线情况", "请先选择无线控制器 AC。")
             return
         config = self._build_connection_config(ac)
         if config is None:
-            QMessageBox.warning(self, "列车在线情况", "AC 连接信息不完整。")
+            MessageBox.warning(self, "列车在线情况", "AC 连接信息不完整。")
             return
         self.store.merge_duplicate_current_states_by_train_no(self.registered_trains)
         self._set_collection_status("连接中")
@@ -718,7 +718,7 @@ class VehicleMrHistoryQueryDialog(QDialog):
         if not path:
             return
         export_vehicle_mr_history_rows(Path(path), self.rows)
-        QMessageBox.information(self, "导出历史记录", f"已导出：{path}")
+        MessageBox.information(self, "导出历史记录", f"已导出：{path}")
 
     def _fill_rows(self) -> None:
         self.table.setRowCount(0)
@@ -815,7 +815,7 @@ class VehicleMrMappingDialog(QDialog):
             mappings = self._read_table()
             self.store.save_mappings(mappings)
         except ValueError as exc:
-            QMessageBox.warning(self, "映射表管理", str(exc))
+            MessageBox.warning(self, "映射表管理", str(exc))
             return
         self.saved.emit()
         self.load()
@@ -828,9 +828,9 @@ class VehicleMrMappingDialog(QDialog):
             rows = _read_mapping_file(Path(path))
             count = self.store.import_mapping_rows(rows)
         except Exception as exc:
-            QMessageBox.warning(self, "映射表导入失败", str(exc))
+            MessageBox.warning(self, "映射表导入失败", str(exc))
             return
-        QMessageBox.information(self, "映射表导入", f"导入完成：{count} 条")
+        MessageBox.information(self, "映射表导入", f"导入完成：{count} 条")
         self.saved.emit()
         self.load()
 
@@ -842,7 +842,7 @@ class VehicleMrMappingDialog(QDialog):
         if not path:
             return
         export_vehicle_mr_mapping_template(Path(path))
-        QMessageBox.information(self, "导出映射模板", f"已导出：{path}")
+        MessageBox.information(self, "导出映射模板", f"已导出：{path}")
 
     def _append_mapping(self, mapping: VehicleMrTrainMapping) -> None:
         row = self.table.rowCount()

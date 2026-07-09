@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import os
 import platform
 import re
@@ -16,10 +18,8 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -422,19 +422,19 @@ class FileManagementPage(QWidget):
         if InfoBar is not None and InfoBarPosition is not None:
             InfoBar.success(title=title, content=message, duration=2500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
             return
-        QMessageBox.information(self, title, message)
+        MessageBox.information(self, title, message)
 
     def _show_warning(self, title: str, message: str) -> None:
         if InfoBar is not None and InfoBarPosition is not None:
             InfoBar.warning(title=title, content=message, duration=3500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
             return
-        QMessageBox.warning(self, title, message)
+        MessageBox.warning(self, title, message)
 
     def _show_error(self, title: str, message: str) -> None:
         if InfoBar is not None and InfoBarPosition is not None:
             InfoBar.error(title=title, content=message, duration=4500, position=InfoBarPosition.TOP_RIGHT, parent=self.window())
             return
-        QMessageBox.warning(self, title, message)
+        MessageBox.warning(self, title, message)
 
     def _local_panel(self) -> QWidget:
         panel = QWidget()
@@ -688,14 +688,14 @@ class FileManagementPage(QWidget):
     def open_external_winscp(self) -> None:
         device = self.current_device()
         if device is None:
-            QMessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_device"))
+            MessageBox.information(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.no_device"))
             return
         result = launch_winscp(device, self.settings, self.active_winscp_sessions)
         if result.success:
             app_logger.log_info("WINSCP_LAUNCHED", f"device={device.name or device.primary_address}, command={result.safe_command}")
-            QMessageBox.information(self, self.i18n.t("file_management.external_winscp"), result.message)
+            MessageBox.information(self, self.i18n.t("file_management.external_winscp"), result.message)
         else:
-            QMessageBox.warning(self, self.i18n.t("file_management.external_winscp"), result.message)
+            MessageBox.warning(self, self.i18n.t("file_management.external_winscp"), result.message)
 
     def connect_sftp(self) -> None:
         device = self.current_device()
@@ -1165,7 +1165,7 @@ class FileManagementPage(QWidget):
         self.checked_remote_paths.update(selected_paths)
         self.populate_remote_table()
         if not selected_paths:
-            QMessageBox.information(self, self.i18n.t("file_management.mesh_logs"), self.i18n.t("file_management.no_mesh_logs_found"))
+            MessageBox.information(self, self.i18n.t("file_management.mesh_logs"), self.i18n.t("file_management.no_mesh_logs_found"))
 
     def toggle_remote_file_checked(self, remote_file: RemoteDeviceFile) -> None:
         if remote_file.remote_path in self.checked_remote_paths:
@@ -1216,7 +1216,7 @@ class FileManagementPage(QWidget):
         batch.failed_count = failed
         batch.completed_count = len(batch_tasks)
         batch.summary_shown = True
-        QMessageBox.information(
+        MessageBox.information(
             self,
             self.i18n.t("file_management.download_completed_title"),
             self.i18n.t("file_management.download_summary", success=success, failed=failed, cancelled=cancelled),
@@ -1358,7 +1358,7 @@ class FileManagementPage(QWidget):
         path = Path(str(item.data(Qt.UserRole))).resolve()
         if not path.exists():
             self.refresh_local()
-            QMessageBox.warning(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.file_not_found"))
+            MessageBox.warning(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.file_not_found"))
             return
         if path.is_dir():
             self.local_path = path
@@ -1369,11 +1369,11 @@ class FileManagementPage(QWidget):
     def open_local_file(self, path: Path) -> None:
         if not path.exists():
             self.refresh_local()
-            QMessageBox.warning(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.file_not_found"))
+            MessageBox.warning(self, self.i18n.t("file_management.title"), self.i18n.t("file_management.file_not_found"))
             return
         ok = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
         if not ok:
-            QMessageBox.warning(
+            MessageBox.warning(
                 self,
                 self.i18n.t("file_management.open_file_failed"),
                 self.i18n.t("file_management.no_associated_application"),
@@ -1392,7 +1392,7 @@ class FileManagementPage(QWidget):
         self.refresh_local()
 
     def new_local_folder(self) -> None:
-        name, accepted = QInputDialog.getText(self, self.i18n.t("file_management.new_folder"), self.i18n.t("file_management.folder_name"))
+        name, accepted = InputDialog.getText(self, self.i18n.t("file_management.new_folder"), self.i18n.t("file_management.folder_name"))
         if not accepted or not name.strip():
             return
         (self.local_path / safe_device_name(name)).mkdir(parents=True, exist_ok=True)

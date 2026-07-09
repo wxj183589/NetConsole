@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from time import monotonic
 
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QPushButton, QTextEdit, QVBoxLayout
 
 from netconsole.core.shutdown_manager import ShutdownManager, shutdown_manager
 from netconsole.ui.window_registry import window_registry
@@ -111,8 +112,8 @@ class ShutdownProgressDialog(QDialog):
         self.status_label.setText(text)
 
     def _kill_processes(self) -> None:
-        answer = QMessageBox.question(self, "强制结束外部进程", "确认强制结束仍未退出的外部进程？")
-        if answer != QMessageBox.Yes:
+        answer = MessageBox.question(self, "强制结束外部进程", "确认强制结束仍未退出的外部进程？")
+        if answer != MessageBox.Yes:
             return
         self._log("用户确认后强制结束外部进程")
         self.manager.kill_processes()
