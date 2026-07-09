@@ -30,7 +30,6 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
 from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, safe_device_name, snapshot_timestamp, unique_export_folder_name
-from netconsole.services.config_snapshot_task_helpers import load_snapshot_content
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec, markdown_text_spec
@@ -42,6 +41,8 @@ from netconsole.ui.widgets.config_diff_viewer import ConfigDiffViewer
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_all_table_rows_checked
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 
 
 DEVICE_COLUMNS = ("select", "name", "device_type", "station")
@@ -66,8 +67,16 @@ class ConfigCollectionCenterPage(QWidget):
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
         self.background_manager.cancelled.connect(self._background_failed)
+        self.device_list_manager = BackgroundProcessManager(self, paths=paths)
+        self.device_list_manager.finished.connect(self._device_list_finished)
+        self.device_list_manager.failed.connect(self._device_list_failed)
         self.background_job_id: str | None = None
         self.background_job_type = ""
+        self.background_job_context: dict[str, object] = {}
+        self.device_list_job_id: str | None = None
+        self.device_list_pending = False
+        self.device_page = 1
+        self.device_page_size = DEFAULT_PAGE_SIZE
         self.devices: list[Device] = []
         self.snapshots: list[ConfigSnapshot] = []
         self.checked_device_ids: set[int] = set()
@@ -84,6 +93,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.status_label = QLabel()
         self.snapshots_label = QLabel()
         self.device_table = QTableWidget(0, len(DEVICE_COLUMNS))
+        self.device_pagination = PaginationWidget(i18n)
         self.snapshot_table = QTableWidget(0, len(SNAPSHOT_COLUMNS))
         self.save_button = QPushButton()
         self.fetch_button = QPushButton()
@@ -123,6 +133,7 @@ class ConfigCollectionCenterPage(QWidget):
         group_row.addStretch(1)
         left_layout.addLayout(group_row)
         left_layout.addWidget(self.device_table, 3)
+        left_layout.addWidget(self.device_pagination)
         left_layout.addWidget(self.status_label)
         left_layout.addWidget(self.snapshots_label)
         left_layout.addWidget(self.snapshot_table, 2)
@@ -147,8 +158,10 @@ class ConfigCollectionCenterPage(QWidget):
         self.device_table.itemSelectionChanged.connect(self.refresh_snapshots)
         self.device_table.itemChanged.connect(self._device_item_changed)
         self.device_table.horizontalHeader().sectionClicked.connect(self._header_clicked)
-        self.search_input.textChanged.connect(self.refresh)
+        self.search_input.textChanged.connect(self._device_filters_changed)
         self.group_filter.currentIndexChanged.connect(self._group_filter_changed)
+        self.device_pagination.pageChanged.connect(self._set_device_page)
+        self.device_pagination.pageSizeChanged.connect(self._set_device_page_size)
         self.snapshot_table.itemSelectionChanged.connect(self.show_selected_snapshot)
         self.snapshot_table.itemChanged.connect(self._snapshot_item_changed)
         self.snapshot_table.horizontalHeader().sectionClicked.connect(self._snapshot_header_clicked)
@@ -225,16 +238,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.refresh()
 
     def refresh_groups(self) -> None:
-        current = self.group_filter.currentData()
-        self.group_filter.blockSignals(True)
-        self.group_filter.clear()
-        self.group_filter.addItem(self.t("groups.all_groups"), ALL_GROUPS)
-        self.group_filter.addItem(self.t("groups.ungrouped"), UNGROUPED)
-        for group in self.group_repository.list():
-            self.group_filter.addItem(group.name, group.id)
-        index = self.group_filter.findData(current if current is not None else ALL_GROUPS)
-        self.group_filter.setCurrentIndex(index if index >= 0 else 0)
-        self.group_filter.blockSignals(False)
+        self.refresh()
 
     def toggle_sidebar(self) -> None:
         sizes = self.splitter.sizes()
@@ -252,15 +256,69 @@ class ConfigCollectionCenterPage(QWidget):
         self._sync_sidebar_button_text()
 
     def _group_filter_changed(self) -> None:
+        self.device_page = 1
         self.refresh()
 
-    def refresh(self) -> None:
-        search = self.search_input.text().strip()
-        self.devices = self.repository.list(
-            search=search or None,
-            vendor="H3C",
-            group_filter=group_filter_to_repository_value(self.group_filter.currentData()),
+    def _device_filters_changed(self, *_args: object) -> None:
+        self.device_page = 1
+        self.refresh()
+
+    def _set_device_page(self, page: int) -> None:
+        self.device_page = max(1, int(page))
+        self.refresh()
+
+    def _set_device_page_size(self, page_size: int) -> None:
+        self.device_page_size = int(page_size)
+        self.device_page = 1
+        self.refresh()
+
+    def refresh(self, *_args: object) -> None:
+        if self.device_list_job_id is not None:
+            self.device_list_pending = True
+            return
+        self.refresh_button.setEnabled(False)
+        self.status_label.setText("正在后台加载设备列表...")
+        self.device_list_job_id = self.device_list_manager.start_job(
+            BackgroundJob(
+                task_type="device_list_page",
+                params={
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "filters": {
+                        "search": self.search_input.text().strip() or None,
+                        "vendor": "H3C",
+                        "group_filter": group_filter_to_repository_value(self.group_filter.currentData()),
+                    },
+                    "current_page": self.device_page,
+                    "page_size": self.device_page_size,
+                },
+            )
         )
+
+    def _device_list_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.device_list_job_id or ""):
+            return
+        result = dict(event.get("result") or {})
+        self.device_list_job_id = None
+        self.refresh_button.setEnabled(True)
+        if self.device_list_pending:
+            self.device_list_pending = False
+            self.refresh()
+            return
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        current_group = self.group_filter.currentData()
+        self.group_filter.blockSignals(True)
+        self.group_filter.clear()
+        self.group_filter.addItem(self.t("groups.all_groups"), ALL_GROUPS)
+        self.group_filter.addItem(self.t("groups.ungrouped"), UNGROUPED)
+        for row in result.get("groups") or []:
+            if isinstance(row, dict) and row.get("id") is not None:
+                self.group_filter.addItem(str(row.get("name") or ""), int(row.get("id")))
+        index = self.group_filter.findData(current_group if current_group is not None else ALL_GROUPS)
+        self.group_filter.setCurrentIndex(index if index >= 0 else 0)
+        self.group_filter.blockSignals(False)
+        visible_ids = {int(device.id) for device in self.devices if device.id is not None}
+        self.checked_device_ids.intersection_update(visible_ids)
         self._updating_checks = True
         self.device_table.setRowCount(len(self.devices))
         for row, device in enumerate(self.devices):
@@ -272,9 +330,32 @@ class ConfigCollectionCenterPage(QWidget):
         self._updating_checks = False
         self._sync_header_check_state()
         apply_table_style(self.device_table)
+        self.device_page = int(result.get("current_page") or 1)
+        self.device_page_size = int(result.get("page_size") or DEFAULT_PAGE_SIZE)
+        self.device_pagination.set_state(
+            PaginationState(
+                page_size=self.device_page_size,
+                current_page=self.device_page,
+                total_items=int(result.get("total_items") or 0),
+                total_pages=int(result.get("total_pages") or 1),
+            )
+        )
         if self.devices and self.device_table.currentRow() < 0:
             self.device_table.setCurrentCell(0, 1)
         self.refresh_snapshots()
+
+    def _device_list_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.device_list_job_id or ""):
+            return
+        message = str(event.get("message") or event.get("error") or "设备列表加载失败")
+        self.device_list_job_id = None
+        self.refresh_button.setEnabled(True)
+        self.status_label.setText(message)
+        if self.device_list_pending:
+            self.device_list_pending = False
+            self.refresh()
+            return
+        MessageBox.warning(self, self._title(), message)
 
     def refresh_snapshots(self) -> None:
         device = self.selected_device()
@@ -367,13 +448,17 @@ class ConfigCollectionCenterPage(QWidget):
         return {"app_root": str(self.paths.app_root), "data_root": str(self.paths.data_root)}
 
     def _start_background_compare(self, task_type: str, params: dict[str, object]) -> None:
+        self._start_background_io(task_type, params, "正在后台计算配置差异...")
+
+    def _start_background_io(self, task_type: str, params: dict[str, object], status: str, *, context: dict[str, object] | None = None) -> None:
         if self.background_job_id is not None:
             return
         job_id = f"config_{snapshot_timestamp()}"
         self.background_job_id = job_id
         self.background_job_type = task_type
+        self.background_job_context = dict(context or {})
         self._set_busy(True)
-        self.status_label.setText("正在后台计算配置差异...")
+        self.status_label.setText(status)
         self.background_manager.start_job(BackgroundJob(job_id=job_id, task_type=task_type, params=params))
 
     def _background_progress(self, event: dict) -> None:
@@ -386,14 +471,23 @@ class ConfigCollectionCenterPage(QWidget):
         task_type = self.background_job_type
         self.background_job_id = None
         self.background_job_type = ""
+        self.background_job_context = {}
         self._set_busy(False)
         if task_type in {"config_compare_latest_running_between_devices", "config_compare_latest_snapshots", "config_compare_snapshot_pair"}:
             self._apply_background_diff(result)
+        elif task_type == "config_snapshot_load_content":
+            self._apply_snapshot_content(result)
+        elif task_type == "config_snapshot_copy":
+            self.status_label.setText(self.t("config_center.status.snapshot_downloaded"))
+            self._show_success(self.t("config_center.status.snapshot_downloaded"))
+        elif task_type == "config_snapshot_pair_load_content":
+            self._apply_snapshot_pair_content(result)
 
     def _background_failed(self, event: dict) -> None:
         message = str(event.get("message") or event.get("error") or "后台任务失败")
         self.background_job_id = None
         self.background_job_type = ""
+        self.background_job_context = {}
         self._set_busy(False)
         if "需要先采集 running 和 saved 配置" in message:
             self._show_info("config_center.msg.need_snapshots")
@@ -483,18 +577,17 @@ class ConfigCollectionCenterPage(QWidget):
         if snapshot is None:
             self._sync_buttons()
             return
-        text = load_snapshot_content(self.service, snapshot)
-        if snapshot.type == "running":
-            self.running_text.setPlainText(text)
-            self.tabs.setCurrentWidget(self.running_text)
-        elif snapshot.type == "saved":
-            self.saved_text.setPlainText(text)
-            self.tabs.setCurrentWidget(self.saved_text)
-        else:
-            self.current_raw_diff = text
-            self.diff_viewer.set_message(text)
-            self.tabs.setCurrentWidget(self.diff_viewer)
-        self._sync_buttons()
+        self._start_background_io(
+            "config_snapshot_load_content",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                **self._background_path_params(),
+                "snapshot_id": int(snapshot.id or 0),
+                "max_chars": 2_000_000,
+            },
+            "正在后台读取配置快照...",
+        )
 
     def open_device_config_dir(self) -> None:
         device = self.primary_device()
@@ -514,19 +607,29 @@ class ConfigCollectionCenterPage(QWidget):
             if not directory:
                 return
             target_dir = Path(directory)
+            entries = []
             for snapshot in snapshots:
                 suffix = ".diff" if snapshot.type == "diff" else ".txt"
-                self.service.copy_snapshot(snapshot, target_dir / self._snapshot_download_filename(snapshot, suffix))
-            self.status_label.setText(self.t("config_center.status.snapshot_downloaded"))
-            self._show_success(self.t("config_center.status.snapshot_downloaded"))
+                entries.append({"snapshot_id": int(snapshot.id or 0), "target_path": str(target_dir / self._snapshot_download_filename(snapshot, suffix))})
+            self._start_snapshot_copy(entries)
             return
         snapshot = snapshots[0]
         suffix = ".diff" if snapshot.type == "diff" else ".txt"
         target, _ = QFileDialog.getSaveFileName(self, self.download_button.text(), self._snapshot_download_filename(snapshot, suffix))
         if target:
-            self.service.copy_snapshot(snapshot, Path(target))
-            self.status_label.setText(self.t("config_center.status.snapshot_downloaded"))
-            self._show_success(self.t("config_center.status.snapshot_downloaded"))
+            self._start_snapshot_copy([{"snapshot_id": int(snapshot.id or 0), "target_path": target}])
+
+    def _start_snapshot_copy(self, entries: list[dict[str, object]]) -> None:
+        self._start_background_io(
+            "config_snapshot_copy",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                **self._background_path_params(),
+                "entries": entries,
+            },
+            "正在后台复制配置快照...",
+        )
 
     def export_current_batch(self) -> None:
         snapshots = self.selected_snapshots()
@@ -616,30 +719,68 @@ class ConfigCollectionCenterPage(QWidget):
             self._show_success(self.t("config_center.status.snapshot_deleted", count=len(snapshots)))
 
     def _show_result_snapshots(self, snapshots: list[ConfigSnapshot], diff: ConfigDiffResult | None) -> None:
-        for snapshot in snapshots:
-            text = load_snapshot_content(self.service, snapshot)
-            if snapshot.type == "running":
-                self.running_text.setPlainText(text)
-            elif snapshot.type == "saved":
-                self.saved_text.setPlainText(text)
-            elif snapshot.type == "diff":
-                self.current_raw_diff = text
-                self.diff_viewer.set_message(text)
-        if diff is not None:
-            running = next((snapshot for snapshot in snapshots if snapshot.type == "running"), None)
-            saved = next((snapshot for snapshot in snapshots if snapshot.type == "saved"), None)
-            self.current_raw_diff = diff.raw_diff
-            if running is not None and saved is not None:
-                self.diff_viewer.set_diff(
-                    self.t("config_center.tab.running"),
-                    self.t("config_center.tab.saved"),
-                    load_snapshot_content(self.service, running),
-                    load_snapshot_content(self.service, saved),
-                    diff.raw_diff,
-                )
-            else:
+        snapshot_ids = [int(snapshot.id) for snapshot in snapshots if snapshot.id is not None]
+        if not snapshot_ids:
+            if diff is not None:
+                self.current_raw_diff = diff.raw_diff
                 self.diff_viewer.set_message(diff.raw_diff)
+                self.tabs.setCurrentWidget(self.diff_viewer)
+            return
+        self._start_background_io(
+            "config_snapshot_pair_load_content",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                **self._background_path_params(),
+                "snapshot_ids": snapshot_ids,
+                "raw_diff": diff.raw_diff if diff is not None else "",
+                "max_chars": 2_000_000,
+            },
+            "正在后台读取采集结果快照...",
+        )
+
+    def _apply_snapshot_content(self, result: dict[str, object]) -> None:
+        snapshot_type = str(result.get("snapshot_type") or "")
+        text = str(result.get("text") or "")
+        if snapshot_type == "running":
+            self.running_text.setPlainText(text)
+            self.tabs.setCurrentWidget(self.running_text)
+        elif snapshot_type == "saved":
+            self.saved_text.setPlainText(text)
+            self.tabs.setCurrentWidget(self.saved_text)
+        else:
+            self.current_raw_diff = text
+            self.diff_viewer.set_message(text)
             self.tabs.setCurrentWidget(self.diff_viewer)
+        self.status_label.setText("配置快照读取完成")
+        self._sync_buttons()
+
+    def _apply_snapshot_pair_content(self, result: dict[str, object]) -> None:
+        texts: dict[str, str] = {}
+        for row in result.get("snapshots") or []:
+            if not isinstance(row, dict):
+                continue
+            snapshot_type = str(row.get("snapshot_type") or "")
+            text = str(row.get("text") or "")
+            texts[snapshot_type] = text
+            if snapshot_type == "running":
+                self.running_text.setPlainText(text)
+            elif snapshot_type == "saved":
+                self.saved_text.setPlainText(text)
+        raw_diff = str(result.get("raw_diff") or texts.get("diff") or "")
+        self.current_raw_diff = raw_diff
+        if "running" in texts and "saved" in texts and raw_diff:
+            self.diff_viewer.set_diff(
+                self.t("config_center.tab.running"),
+                self.t("config_center.tab.saved"),
+                texts["running"],
+                texts["saved"],
+                raw_diff,
+            )
+        elif raw_diff:
+            self.diff_viewer.set_message(raw_diff)
+        self.tabs.setCurrentWidget(self.diff_viewer if raw_diff else self.running_text)
+        self.status_label.setText("采集结果快照读取完成")
 
     def _configure_tables(self) -> None:
         set_table_column_fields(self.device_table, DEVICE_COLUMNS)

@@ -4,6 +4,7 @@ import inspect
 import base64
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,16 @@ from netconsole.services.windows_network_manager import (
     parse_prefix_or_netmask,
     recommend_physical_adapters,
 )
+
+
+def _process_events_until(predicate, timeout: float = 3.0) -> None:
+    from PySide6.QtCore import QCoreApplication
+
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    assert predicate()
 
 
 SAFE_DEBUG_ADAPTER = "ASIX USB to Gigabit Ethernet Family Adapter"
@@ -512,7 +523,7 @@ def test_admin_launch_cancel_does_not_quit_normal_app(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(page_module, "is_admin", lambda: False)
     monkeypatch.setattr(page_module, "open_network_manager_as_admin", lambda **kwargs: AdminLaunchResult(False, 5, "cancelled"))
     monkeypatch.setattr(page_module.QApplication, "instance", lambda: fake_app)
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(page_module.MessageBox, "warning", lambda *args, **kwargs: None)
 
     page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
     page.request_admin_network_manager()
@@ -591,6 +602,7 @@ def test_adapter_page_uses_left_status_and_right_config_with_switch_vlan_disable
         gateways=["192.168.105.1"],
     )
     page.adapters = [adapter]
+    page._vlan_capabilities[adapter.name] = FakeManager().get_vlan_capability(adapter.name)
     page.adapter_combo.addItem("USB Ethernet", adapter)
     page._adapter_changed()
 
@@ -745,6 +757,12 @@ def test_route_profile_selection_loads_editor_and_apply_uses_latest_editor_data(
     applied: list[RouteConfig] = []
 
     class FakeManager(WindowsNetworkManager):
+        def list_adapters(self):
+            return []
+
+        def list_routes(self):
+            return []
+
         def apply_route(self, route: RouteConfig, *, require_admin: bool = True) -> None:
             applied.append(route)
 
@@ -764,6 +782,7 @@ def test_route_profile_selection_loads_editor_and_apply_uses_latest_editor_data(
     assert page.route_edit_table.item(0, 0).text() == "192.168.105.0"
     page.route_edit_table.item(0, 0).setText("192.168.106.0")
     page.apply_route_profile()
+    _process_events_until(lambda: page.write_thread is None and page.refresh_thread is None)
     assert applied[0].destination_prefix == "192.168.106.0/24"
     assert applied[0].interface_index == 12
 
@@ -825,6 +844,7 @@ def test_selecting_adapter_profile_loads_form_without_writing(monkeypatch, tmp_p
     )
     page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path), manager=FakeManager(), profile_store=profile_store)
     page.adapters = [NetworkAdapterInfo(name="ASIX", interface_index=12, description="ASIX USB", mac_address="aa-bb")]
+    page._vlan_capabilities["ASIX"] = FakeManager().get_vlan_capability("ASIX")
     page.adapter_combo.addItem("ASIX", page.adapters[0])
     page.load_adapter_profile_into_form(profile_store.load()[0])
     assert calls == []

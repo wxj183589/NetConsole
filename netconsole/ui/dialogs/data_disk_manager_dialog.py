@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableW
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.data_disk_manager import clean_data_disk, scan_data_disk
+from netconsole.ui.table_utils import auto_fit_table_columns
 
 
 class DataDiskScanThread(QThread):
@@ -111,7 +112,7 @@ class DataDiskManagerDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, category.name)
                 self.table.setItem(row_index, column, item)
-        self.table.resizeColumnsToContents()
+        auto_fit_table_columns(self.table, max_rows=100)
 
     def clean_selected(self) -> None:
         if self.clean_thread is not None and self.clean_thread.isRunning():

@@ -29,13 +29,11 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.wireless_scan_models import WirelessAdapter
-from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
 from netconsole.services.export.export_task_builders import repository_query_source, table_csv_source_spec, table_xlsx_source_spec
 from netconsole.services.network_tools.wireless_channel_analyzer import rssi_level
 from netconsole.services.network_tools.wireless_scan_service import (
     WIRELESS_SCAN_EXPORT_COLUMNS,
     WIRELESS_SCAN_DISPLAY_COLUMNS,
-    result_to_row,
     wireless_scanner_external_path,
 )
 from netconsole.ui.dialogs.wireless_scan_detail_dialog import WirelessScanDetailDialog
@@ -45,6 +43,8 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.wireless_scan_worker import WirelessAdapterLoadWorker, WirelessScanWorker
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 
 
 WIRELESS_SCAN_TAB_KEYS = ("results", "history", "raw")
@@ -64,6 +64,11 @@ class WirelessScanPage(QWidget):
         self.raw_output = ""
         self.adapter_worker: WirelessAdapterLoadWorker | None = None
         self.scan_worker: WirelessScanWorker | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self.history_job_id: str | None = None
+        self.result_load_job_id: str | None = None
         self.detail_windows: list[WirelessScanDetailDialog] = []
         self._restoring_settings = False
         self.sort_column: int | None = None
@@ -184,6 +189,7 @@ class WirelessScanPage(QWidget):
         self.export_button.clicked.connect(self.export_current)
         self.external_button.clicked.connect(self.open_external)
         self.result_table.itemDoubleClicked.connect(self.open_detail)
+        self.history_table.itemDoubleClicked.connect(self._load_history_run)
 
     def retranslate(self) -> None:
         self.description_label.setText(self.i18n.t("wireless_scan.description"))
@@ -336,22 +342,46 @@ class WirelessScanPage(QWidget):
         dialog.show()
 
     def refresh_history(self) -> None:
-        repo = WirelessScanRepository(self.paths.wireless_scan_db_path(self.site_name))
-        runs = repo.list_runs()
-        self.history_table.setRowCount(len(runs))
-        for index, run in enumerate(runs):
-            results = repo.list_results(str(run.get("scan_id") or ""))
-            strongest = max([row for row in results if row.get("matched_trackside_ap")], key=lambda row: row.get("rssi_dbm") or -999, default={})
+        if self.history_job_id is not None:
+            return
+        self.history_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="wireless_scan_history_refresh",
+                params={"db_path": str(self.paths.wireless_scan_db_path(self.site_name)), "limit": 200},
+            )
+        )
+
+    def _apply_history_rows(self, rows: list[dict[str, object]]) -> None:
+        self.history_table.setRowCount(len(rows))
+        for index, payload in enumerate(rows):
+            run = dict(payload.get("run") or {})
             values = [
                 run.get("started_at"),
                 run.get("adapter_name"),
                 run.get("network_count"),
-                len([row for row in results if row.get("band") == "2.4G"]),
-                len([row for row in results if row.get("band") == "5G"]),
-                strongest.get("matched_ap_name") or "-",
-                strongest.get("rssi_dbm") or "-",
+                payload.get("band24_count"),
+                payload.get("band5_count"),
+                payload.get("strongest_ap") or "-",
+                payload.get("strongest_rssi") or "-",
             ]
             _set_row(self.history_table, index, values, run)
+
+    def _load_history_run(self, item: QTableWidgetItem) -> None:
+        run = item.data(Qt.UserRole)
+        if not isinstance(run, dict) or self.result_load_job_id is not None:
+            return
+        self.status_label.setText("正在后台加载历史扫描结果...")
+        self.result_load_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="wireless_scan_result_load",
+                params={
+                    "db_path": str(self.paths.wireless_scan_db_path(self.site_name)),
+                    "scan_id": str(run.get("scan_id") or ""),
+                    "raw_file": str(run.get("raw_file") or ""),
+                    "limit": 500,
+                },
+            )
+        )
 
     def _adapters_loaded(self, adapters: list[WirelessAdapter]) -> None:
         self.adapters = adapters
@@ -379,9 +409,23 @@ class WirelessScanPage(QWidget):
 
     def _scan_completed(self, result) -> None:
         self.start_button.setEnabled(bool(self.adapters))
-        self.raw_output = result.raw_file.read_text(encoding="utf-8") if result.raw_file.exists() else ""
-        self.current_scan_id = result.scan_id
-        self.current_rows = [result_to_row(item) for item in result.results]
+        self.status_label.setText("扫描完成，正在后台加载结果...")
+        self.result_load_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="wireless_scan_result_load",
+                params={
+                    "db_path": str(self.paths.wireless_scan_db_path(self.site_name)),
+                    "scan_id": result.scan_id,
+                    "raw_file": str(result.raw_file),
+                    "limit": 500,
+                },
+            )
+        )
+
+    def _apply_scan_result(self, result: dict[str, object]) -> None:
+        self.raw_output = str(result.get("raw_text") or "")
+        self.current_scan_id = str(result.get("scan_id") or "")
+        self.current_rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
         self.raw_text.setPlainText(self._raw_output_with_debug())
         self.apply_filters()
         self.refresh_history()
@@ -395,6 +439,29 @@ class WirelessScanPage(QWidget):
             message = f"{message}  {self.i18n.t('wireless_scan.current_scan_source', source=source_text)}，{self.i18n.t('wireless_scan.netsh_failed_security_unavailable')}"
         elif actual_source:
             message = f"{message}  {self.i18n.t('wireless_scan.current_scan_source', source=source_text)}"
+        total_items = int(result.get("total_items") or len(self.current_rows))
+        if total_items > len(self.current_rows):
+            message = f"{message}  当前显示前 {len(self.current_rows)}/{total_items} 条。"
+        self.status_label.setText(message)
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        result = dict(event.get("result") or {})
+        if job_id == str(self.history_job_id or ""):
+            self.history_job_id = None
+            rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+            self._apply_history_rows(rows)
+        elif job_id == str(self.result_load_job_id or ""):
+            self.result_load_job_id = None
+            self._apply_scan_result(result)
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == str(self.history_job_id or ""):
+            self.history_job_id = None
+        if job_id == str(self.result_load_job_id or ""):
+            self.result_load_job_id = None
+        message = str(event.get("message") or event.get("error") or "无线扫描后台加载失败")
         self.status_label.setText(message)
 
     def _scan_failed(self, error: str) -> None:

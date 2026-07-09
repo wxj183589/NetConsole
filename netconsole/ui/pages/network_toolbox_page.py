@@ -58,7 +58,7 @@ from netconsole.services.network_tools.toolbox.route_tools import (
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.export_action_helper import submit_export_task
-from netconsole.ui.table_utils import configure_readable_table_columns, configure_readonly_table
+from netconsole.ui.table_utils import auto_fit_table_columns, configure_readable_table_columns, configure_readonly_table
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
@@ -423,8 +423,7 @@ class ToolResultPanel(QGroupBox):
         finally:
             self.result_table.setUpdatesEnabled(True)
 
-        if len(normalized) <= 200:
-            self.result_table.resizeColumnsToContents()
+        auto_fit_table_columns(self.result_table, max_rows=200)
 
         summary_lines = [summary_title] if summary_title else []
         if summary:
@@ -962,6 +961,8 @@ class NetworkToolboxPage(QWidget):
         preview_selected = self._action_button("\u9009\u4e2d\u5220\u9664\u9884\u89c8", self.preview_selected_route_delete, "DELETE")
         execute_add = self._action_button("\u6267\u884c\u6dfb\u52a0", self.execute_add_route, "ACCEPT")
         execute_delete = self._action_button("\u6267\u884c\u5220\u9664", self.execute_delete_route, "DELETE")
+        self.route_execute_buttons = (execute_add, execute_delete)
+        self._refresh_routes_after_command = False
         for button in (execute_add, execute_delete):
             button.setEnabled(is_admin())
         for button in (refresh, preview_add, preview_delete, preview_selected, execute_add, execute_delete):
@@ -1252,15 +1253,18 @@ class NetworkToolboxPage(QWidget):
         self._execute_route_command(self.routes_panel.summary_text.toPlainText())
 
     def _execute_route_command(self, command: str) -> None:
+        if self.thread is not None:
+            self.routes_panel.show_error("已有任务正在执行，请等待完成。")
+            return
         if not is_admin():
             MessageBox.warning(self, "本机路由", "需要以管理员身份运行才能修改路由。")
             return
         if MessageBox.question(self, "本机路由", f"确认执行：\n{command}") != MessageBox.Yes:
             return
-        result = execute_powershell(command)
-        self.routes_panel.set_status("done" if result.returncode == 0 else "failed")
-        self.routes_panel.summary_text.setPlainText(result.stdout or result.stderr)
-        self.refresh_routes()
+        for button in self.route_execute_buttons:
+            button.setEnabled(False)
+        self.routes_panel.summary_text.setPlainText(f"正在执行：\n{command}")
+        self._run_async(self.routes_panel, lambda: execute_powershell(command), "route_modify")
 
     def _run_async(self, panel: ToolResultPanel, fn: Callable[[], object], prefix: str) -> None:
         if self.thread is not None:
@@ -1291,6 +1295,21 @@ class NetworkToolboxPage(QWidget):
         if error:
             panel.show_error(error)
             return
+        if prefix == "route_modify":
+            return_code = int(getattr(payload, "returncode", -1))
+            stdout = str(getattr(payload, "stdout", "") or "").strip()
+            stderr = str(getattr(payload, "stderr", "") or "").strip()
+            args = list(getattr(payload, "args", []) or [])
+            command = str(args[-1] if args else "")
+            lines = [f"命令：{command}", f"退出码：{return_code}"]
+            if stdout:
+                lines.extend(("", "标准输出：", stdout))
+            if stderr:
+                lines.extend(("", "错误输出：", stderr))
+            panel.summary_text.setPlainText("\n".join(lines))
+            panel.set_status("done" if return_code == 0 else "failed", "执行完成" if return_code == 0 else "执行失败")
+            self._refresh_routes_after_command = True
+            return
         if prefix == "network_ping" and self.network_ping_stop_requested:
             panel.set_status("stopped")
             self._refresh_network_ping_stats("已停止")
@@ -1304,9 +1323,16 @@ class NetworkToolboxPage(QWidget):
 
     @Slot()
     def _thread_finished(self) -> None:
+        finished_prefix = str(getattr(self.worker, "prefix", "") or "")
         self.thread = None
         self.worker = None
         self.active_panel = None
+        if finished_prefix == "route_modify":
+            for button in self.route_execute_buttons:
+                button.setEnabled(is_admin())
+            if self._refresh_routes_after_command:
+                self._refresh_routes_after_command = False
+                self.refresh_routes()
 
     def _init_network_ping_grid(self, network: ipaddress.IPv4Network, targets: list[str]) -> None:
         target_set = set(targets)

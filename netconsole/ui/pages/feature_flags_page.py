@@ -22,6 +22,7 @@ from netconsole.core.feature_registry import list_features
 from netconsole.core.i18n import I18n
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate
+from netconsole.ui.table_utils import auto_fit_table_columns
 
 
 VISIBLE_COLUMN = 4
@@ -109,7 +110,7 @@ class FeatureFlagsPage(QWidget):
                         cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                         cell.setTextAlignment(Qt.AlignCenter)
                     self.table.setItem(row, column, cell)
-            self.table.resizeColumnsToContents()
+            auto_fit_table_columns(self.table, max_rows=200)
             for column, width in ((VISIBLE_COLUMN, 56), (ENABLED_COLUMN, 56), (CUSTOMER_COLUMN, 88), (INTERNAL_COLUMN, 88)):
                 self.table.setColumnWidth(column, width)
         finally:

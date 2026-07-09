@@ -36,6 +36,7 @@ from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.vehicle_mr_online import (
+    MatchedAp,
     TRAIN_STATUS_OFFLINE,
     TRAIN_STATUS_ONLINE,
     TRAIN_STATUS_PARTIAL,
@@ -734,10 +735,10 @@ class VehicleMrHistoryQueryDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["时间", "端别", "状态", "车站", "轨旁AP", "RSSI", "事件类型", "判断说明"])
         self.scroll_area = None
         self._build_ui()
-        self.query_button.clicked.connect(self.query)
+        self.query_button.clicked.connect(lambda: self.query())
         self.reset_button.clicked.connect(self.reset)
         self.export_button.clicked.connect(self.export)
-        self.query()
+        self.query(show_error=False)
 
     def _build_ui(self) -> None:
         content = QWidget()
@@ -784,14 +785,16 @@ class VehicleMrHistoryQueryDialog(QDialog):
         )
         self._apply_widths()
 
-    def query(self) -> None:
+    def query(self, *, show_error: bool = True) -> None:
         if self.query_job_id is not None:
             return
         end_label = "" if self.end_combo.currentText() == "全部" else self.end_combo.currentText()
         status = "" if self.status_combo.currentText() == "全部" else self.status_combo.currentText()
         manager = self.background_manager
         if manager is None:
-            MessageBox.warning(self, "历史查询失败", "后台任务管理器不可用。")
+            self.hint_label.setText("后台任务管理器不可用，暂时无法查询历史记录。")
+            if show_error:
+                MessageBox.warning(self, "历史查询失败", "后台任务管理器不可用。")
             return
         self.query_job_id = uuid.uuid4().hex
         self.query_button.setEnabled(False)

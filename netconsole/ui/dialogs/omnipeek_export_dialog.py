@@ -137,6 +137,8 @@ class OmniPeekExportDialog(QDialog):
         source_counts: dict[str, int],
         *,
         default_line_name: str,
+        source: dict[str, object] | None = None,
+        preview_stats: dict[str, int] | None = None,
         settings: SettingsStore | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -145,6 +147,9 @@ class OmniPeekExportDialog(QDialog):
         self.settings = settings or SettingsStore(PathResolver())
         self.items = items
         self.source_counts = dict(source_counts)
+        self.source = dict(source or {})
+        self.preview_stats = dict(preview_stats or {})
+        self._initial_item_selection = {item.key: bool(item.selected) for item in items}
         self.colors = load_omnipeek_color_settings(self.settings)
         self.preview_items: list[OmniPeekDeviceItem] = []
         self.visible_preview_items: list[OmniPeekDeviceItem] = []
@@ -533,23 +538,37 @@ class OmniPeekExportDialog(QDialog):
         self._update_preview_summary()
 
     def _update_preview_summary(self) -> None:
-        total_count = len(self.preview_items)
-        selected_count = sum(1 for item in self.preview_items if item.selected)
-        abnormal_count = sum(1 for item in self.preview_items if self._is_abnormal_item(item))
+        all_sources_enabled = self.ac_source_check.isChecked() and self.extension_source_check.isChecked() and self.device_source_check.isChecked()
+        use_full_stats = all_sources_enabled and "total" in self.preview_stats
+        total_count = int(self.preview_stats.get("total") or len(self.preview_items)) if use_full_stats else len(self.preview_items)
+        if use_full_stats:
+            selection_delta = sum(
+                int(bool(item.selected)) - int(self._initial_item_selection.get(item.key, bool(item.selected)))
+                for item in self.items
+            )
+            selected_count = max(0, int(self.preview_stats.get("selected") or 0) + selection_delta)
+            abnormal_count = int(self.preview_stats.get("abnormal") or 0)
+        else:
+            selected_count = sum(1 for item in self.preview_items if item.selected)
+            abnormal_count = sum(1 for item in self.preview_items if self._is_abnormal_item(item))
         exportable_count = selected_count
         text = f"共 {total_count} 条｜已选 {selected_count} 条｜异常 {abnormal_count} 条｜可导出 {exportable_count} 条"
-        if len(self.visible_preview_items) != total_count:
+        if len(self.items) < total_count:
+            text += f"｜预览 {len(self.items)} 条"
+        if len(self.visible_preview_items) != len(self.preview_items):
             text += f"｜当前显示 {len(self.visible_preview_items)} 条"
         self.preview_summary_label.setText(text)
 
     def _refresh_preview_filter_labels(self) -> None:
+        all_sources_enabled = self.ac_source_check.isChecked() and self.extension_source_check.isChecked() and self.device_source_check.isChecked()
+        use_full_stats = all_sources_enabled and "total" in self.preview_stats
         counts = {
-            "all": len(self.preview_items),
+            "all": int(self.preview_stats.get("total") or len(self.preview_items)) if use_full_stats else len(self.preview_items),
             "selected": sum(1 for item in self.preview_items if item.selected),
-            "abnormal": sum(1 for item in self.preview_items if self._is_abnormal_item(item)),
-            "mac_conflict": sum(1 for item in self.preview_items if item.status == "MAC冲突"),
-            "r2_failed": sum(1 for item in self.preview_items if item.status == "R2推导失败"),
-            "missing_mac": sum(1 for item in self.preview_items if item.status == "缺少物理MAC"),
+            "abnormal": int(self.preview_stats.get("abnormal") or 0) if use_full_stats else sum(1 for item in self.preview_items if self._is_abnormal_item(item)),
+            "mac_conflict": int(self.preview_stats.get("mac_conflict") or 0) if use_full_stats else sum(1 for item in self.preview_items if item.status == "MAC冲突"),
+            "r2_failed": int(self.preview_stats.get("r2_failed") or 0) if use_full_stats else sum(1 for item in self.preview_items if item.status == "R2推导失败"),
+            "missing_mac": int(self.preview_stats.get("missing_mac") or 0) if use_full_stats else sum(1 for item in self.preview_items if item.status == "缺少物理MAC"),
         }
         for key, button in self.preview_filter_buttons.items():
             button.setText(f"{PREVIEW_FILTER_LABELS[key]} {counts.get(key, 0)}")
@@ -656,9 +675,16 @@ class OmniPeekExportDialog(QDialog):
                 self,
                 omnipeek_name_table_spec(
                     config.output_path,
-                    items=[asdict(item) for item in self._filtered_items()],
+                    db_path=str(self.source.get("db_path") or ""),
+                    site_name=str(self.source.get("site_name") or ""),
+                    source={
+                        **self.source,
+                        "ac_uuid": str(self.source.get("ac_uuid") or ""),
+                    },
                     config={**asdict(config), "output_path": str(config.output_path)},
-                    source_counts=self.source_counts,
+                    selected_item_keys=[item.key for item in self.items if item.selected],
+                    excluded_item_keys=[item.key for item in self.items if not item.selected],
+                    force_export_keys=[item.key for item in self.items if item.force_export],
                     title="导出 OmniPeek 名称表",
                     open_dir_on_success=True,
                 ),

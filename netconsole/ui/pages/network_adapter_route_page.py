@@ -3,6 +3,8 @@ from __future__ import annotations
 from netconsole.ui.dialogs.message_service import MessageBox
 import ipaddress
 import subprocess
+from dataclasses import asdict
+from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -59,21 +61,88 @@ EDIT_ROUTE_HEADERS = ["目标网络", "下一跳", "出接口", "跃点数", "�
 
 class NetworkRefreshWorker(QObject):
     progress = Signal(str)
-    finished = Signal(object, object, str)
+    finished = Signal(object, object, object, str)
 
-    def __init__(self, manager: WindowsNetworkManager) -> None:
+    def __init__(self, manager_factory: Callable[[], WindowsNetworkManager]) -> None:
         super().__init__()
-        self.manager = manager
+        self.manager_factory = manager_factory
 
     def run(self) -> None:
         try:
+            manager = self.manager_factory()
             self.progress.emit("正在读取本地网卡...")
-            adapters = self.manager.list_adapters()
+            adapters = manager.list_adapters()
             self.progress.emit("正在读取路由表...")
-            routes = self.manager.list_routes()
-            self.finished.emit(adapters, routes, "")
+            routes = manager.list_routes()
+            capabilities = {}
+            for adapter in adapters:
+                if adapter.excluded:
+                    continue
+                try:
+                    capabilities[adapter.name] = manager.get_vlan_capability(adapter.name)
+                except Exception:
+                    continue
+            self.finished.emit(adapters, routes, capabilities, "")
         except Exception as exc:
-            self.finished.emit([], [], str(exc))
+            self.finished.emit([], [], {}, str(exc))
+
+
+class NetworkWriteWorker(QObject):
+    progress = Signal(str)
+    finished = Signal(object, str)
+
+    def __init__(
+        self,
+        action: str,
+        payload: dict[str, object],
+        manager_factory: Callable[[], WindowsNetworkManager],
+    ) -> None:
+        super().__init__()
+        self.action = action
+        self.payload = dict(payload)
+        self.manager_factory = manager_factory
+
+    def run(self) -> None:
+        try:
+            manager = self.manager_factory()
+            messages: list[str] = []
+            if self.action == "apply_ip":
+                data = dict(self.payload.get("config") or {})
+                data["secondary_ips"] = [SecondaryIpConfig(**dict(row)) for row in data.get("secondary_ips") or [] if isinstance(row, dict)]
+                manager.apply_ip_config(AdapterIpConfig(**data))
+                messages.append("IP配置成功。")
+                vlan_id = self.payload.get("vlan_id")
+                if vlan_id is not None:
+                    vlan_property = manager.get_vlan_property(str(self.payload.get("adapter_name") or ""))
+                    if vlan_property is not None:
+                        manager.set_vlan_id(str(self.payload.get("adapter_name") or ""), vlan_property, int(vlan_id))
+                        messages.append("VLAN配置成功。")
+            elif self.action == "reset_adapter":
+                adapter_name = str(self.payload.get("adapter_name") or "")
+                vlan_property = manager.get_vlan_property(adapter_name)
+                manager.reset_adapter_defaults(
+                    int(self.payload.get("interface_index") or 0),
+                    adapter_name=adapter_name,
+                    vlan_property=vlan_property,
+                )
+                messages.append("IP配置已恢复默认。")
+                if vlan_property is not None:
+                    manager.set_vlan_id(adapter_name, vlan_property, 0)
+                    messages.append("VLAN配置已恢复默认。")
+            elif self.action in {"apply_routes", "remove_routes"}:
+                routes = [RouteConfig(**dict(row)) for row in self.payload.get("routes") or [] if isinstance(row, dict)]
+                for index, route in enumerate(routes, start=1):
+                    self.progress.emit(f"正在处理路由 {index}/{len(routes)}：{route.destination_prefix}")
+                    if self.action == "apply_routes":
+                        manager.apply_route(route)
+                    else:
+                        manager.remove_route(route)
+                messages.append("静态路由已写入。" if self.action == "apply_routes" else "静态路由已删除。")
+            else:
+                raise ValueError(f"不支持的网络写入任务：{self.action}")
+            self.finished.emit({"messages": messages}, "")
+        except Exception as exc:
+            self.finished.emit({}, str(exc))
 
 
 EDIT_ROUTE_HEADERS = ["目标网络", "掩码", "下一跳", "出接口", "跃点数", "持久", "备注"]
@@ -91,7 +160,8 @@ class NetworkAdapterRoutePage(QWidget):
         super().__init__()
         self.i18n = i18n
         self.paths = paths
-        self.manager = manager or WindowsNetworkManager()
+        self._manager_factory: Callable[[], WindowsNetworkManager] = type(manager) if manager is not None else WindowsNetworkManager
+        self._vlan_capabilities: dict[str, object] = {}
         self.profile_store = profile_store or NetworkProfileStore(paths.network_profiles_path)
         self.route_store = route_store or RouteProfileStore(paths.route_profiles_path)
         self.adapters: list[NetworkAdapterInfo] = []
@@ -99,6 +169,8 @@ class NetworkAdapterRoutePage(QWidget):
         self.admin_launch_pending = False
         self.refresh_thread: QThread | None = None
         self.refresh_worker: NetworkRefreshWorker | None = None
+        self.write_thread: QThread | None = None
+        self.write_worker: NetworkWriteWorker | None = None
 
         self.permission_label = QLabel()
         self.status_label = QLabel()
@@ -168,7 +240,7 @@ class NetworkAdapterRoutePage(QWidget):
         self.progress_bar.show()
         self._append_log("正在读取本地网卡...")
         self.refresh_thread = QThread(self)
-        self.refresh_worker = NetworkRefreshWorker(self.manager)
+        self.refresh_worker = NetworkRefreshWorker(self._manager_factory)
         self.refresh_worker.moveToThread(self.refresh_thread)
         self.refresh_thread.started.connect(self.refresh_worker.run)
         self.refresh_worker.progress.connect(self._append_log)
@@ -184,6 +256,45 @@ class NetworkAdapterRoutePage(QWidget):
 
     def refresh_routes(self) -> None:
         self.refresh_all()
+
+    def _start_network_write(self, action: str, payload: dict[str, object], status: str) -> None:
+        if self.write_thread is not None:
+            MessageBox.information(self, self.i18n.t("network_manager.title"), "已有网络配置任务正在执行，请等待完成。")
+            return
+        self.status_label.setText(status)
+        self.progress_bar.show()
+        for button in (self.apply_ip_button, self.apply_profile_button, self.reset_button, self.apply_route_button, self.remove_route_button):
+            button.setEnabled(False)
+        self.write_thread = QThread(self)
+        self.write_worker = NetworkWriteWorker(action, payload, self._manager_factory)
+        self.write_worker.moveToThread(self.write_thread)
+        self.write_thread.started.connect(self.write_worker.run)
+        self.write_worker.progress.connect(self._append_log)
+        self.write_worker.finished.connect(self._network_write_finished)
+        self.write_worker.finished.connect(self.write_thread.quit)
+        self.write_worker.finished.connect(self.write_worker.deleteLater)
+        self.write_thread.finished.connect(self._network_write_thread_finished)
+        self.write_thread.finished.connect(self.write_thread.deleteLater)
+        self.write_thread.start()
+
+    def _network_write_finished(self, result: object, error: str) -> None:
+        if error:
+            self.status_label.setText("网络配置执行失败")
+            self._append_log(f"网络配置执行失败：{error}")
+            MessageBox.warning(self, self.i18n.t("network_manager.title"), error)
+            return
+        payload = dict(result or {}) if isinstance(result, dict) else {}
+        for message in payload.get("messages") or []:
+            self._append_log(str(message))
+        self.status_label.setText("网络配置执行完成，正在刷新...")
+        self.refresh_all()
+
+    def _network_write_thread_finished(self) -> None:
+        self.write_thread = None
+        self.write_worker = None
+        self._sync_permission_state()
+        if self.refresh_thread is None:
+            self.progress_bar.hide()
 
     def selected_adapter(self) -> NetworkAdapterInfo | None:
         data = self.adapter_combo.currentData()
@@ -201,18 +312,15 @@ class NetworkAdapterRoutePage(QWidget):
             return
         if not self._confirm_write(self._ip_preview(adapter, config)):
             return
-        try:
-            self.manager.apply_ip_config(config)
-            vlan_property = self._current_vlan_property(adapter)
-            if vlan_property is not None:
-                self.manager.set_vlan_id(adapter.name, vlan_property, self.vlan_spin.value())
-            self._append_log("操作完成：IP/VLAN 配置已应用。")
-            self.refresh_all()
-        except PermissionError:
-            self._prompt_admin()
-        except Exception as exc:
-            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
-            self._append_log(f"操作失败：{exc}")
+        self._start_network_write(
+            "apply_ip",
+            {
+                "config": asdict(config),
+                "adapter_name": adapter.name,
+                "vlan_id": self.vlan_spin.value() if self.vlan_spin.isEnabled() else None,
+            },
+            "正在后台应用 IP/VLAN 配置...",
+        )
 
     def reset_adapter_defaults(self) -> None:
         adapter = self.selected_adapter()
@@ -225,15 +333,11 @@ class NetworkAdapterRoutePage(QWidget):
         )
         if MessageBox.question(self, self.i18n.t("network_manager.reset_defaults"), text) != MessageBox.Yes:
             return
-        try:
-            self.manager.reset_adapter_defaults(adapter.interface_index, adapter_name=adapter.name, vlan_property=self._current_vlan_property(adapter))
-            self._append_log("操作完成：网卡已恢复默认配置。")
-            self.refresh_all()
-        except PermissionError:
-            self._prompt_admin()
-        except Exception as exc:
-            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
-            self._append_log(f"恢复默认失败：{exc}")
+        self._start_network_write(
+            "reset_adapter",
+            {"interface_index": adapter.interface_index, "adapter_name": adapter.name},
+            "正在后台恢复网卡默认配置...",
+        )
 
     def save_adapter_profile(self) -> None:
         adapter = self.selected_adapter()
@@ -319,16 +423,7 @@ class NetworkAdapterRoutePage(QWidget):
         preview = "\n".join(f"{row.destination_prefix} -> {row.next_hop} ({row.interface_alias})" for row in routes)
         if not self._confirm_write(f"即将写入静态路由：\n{preview}"):
             return
-        try:
-            for route in routes:
-                self.manager.apply_route(route)
-            self._append_log("操作完成：静态路由已写入。")
-            self.refresh_all()
-        except PermissionError:
-            self._prompt_admin()
-        except Exception as exc:
-            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
-            self._append_log(f"路由写入失败：{exc}")
+        self._start_network_write("apply_routes", {"routes": [asdict(route) for route in routes]}, "正在后台写入静态路由...")
 
     def remove_route_profile(self) -> None:
         routes = self._selected_or_edited_routes()
@@ -337,16 +432,7 @@ class NetworkAdapterRoutePage(QWidget):
         preview = "\n".join(f"{row.destination_prefix} -> {row.next_hop} ({row.interface_alias})" for row in routes)
         if not self._confirm_write(f"即将删除该方案管理的静态路由：\n{preview}"):
             return
-        try:
-            for route in routes:
-                self.manager.remove_route(route)
-            self._append_log("操作完成：静态路由已删除。")
-            self.refresh_all()
-        except PermissionError:
-            self._prompt_admin()
-        except Exception as exc:
-            MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
-            self._append_log(f"路由删除失败：{exc}")
+        self._start_network_write("remove_routes", {"routes": [asdict(route) for route in routes]}, "正在后台删除静态路由...")
 
     def open_network_connections(self) -> None:
         subprocess.Popen(build_open_network_connections_command())
@@ -528,12 +614,13 @@ class NetworkAdapterRoutePage(QWidget):
         self.route_edit_table.setColumnWidth(1, 160)
         self.route_edit_table.setColumnWidth(2, 180)
 
-    def _refresh_finished(self, adapters: object, routes: object, error: str) -> None:
+    def _refresh_finished(self, adapters: object, routes: object, capabilities: object, error: str) -> None:
         if error:
             self._append_log(f"刷新失败：{error}")
         else:
             self.adapters = list(adapters)
             self.routes = list(routes)
+            self._vlan_capabilities = dict(capabilities or {})
             self._fill_adapter_table()
             self._fill_route_table()
             self._append_log("刷新完成。")
@@ -609,13 +696,8 @@ class NetworkAdapterRoutePage(QWidget):
         if adapter.ipv4_addresses and "/" in adapter.ipv4_addresses[0]:
             self.prefix_edit.setText(adapter.ipv4_addresses[0].split("/", 1)[1])
         self.gateway_edit.setText(adapter.gateways[0] if adapter.gateways else "")
-        try:
-            vlan_property = self.manager.get_vlan_property(adapter.name)
-            self.vlan_spin.setEnabled(vlan_property is not None)
-            self._append_log("已检测到 VLAN 配置项。" if vlan_property else "该网卡驱动未检测到 VLAN ID 配置项。")
-        except Exception as exc:
-            self.vlan_spin.setEnabled(False)
-            self._append_log(f"VLAN 检测失败：{exc}")
+        capability = self._vlan_capabilities.get(adapter.name)
+        self.vlan_spin.setEnabled(bool(getattr(capability, "can_set_vlan_id", False)))
 
     def _ip_config_from_form(self, adapter: NetworkAdapterInfo) -> AdapterIpConfig:
         mode = "dhcp" if self.mode_combo.currentText().upper() == "DHCP" else "static"
@@ -663,10 +745,17 @@ class NetworkAdapterRoutePage(QWidget):
     def _current_vlan_property(self, adapter: NetworkAdapterInfo) -> VlanProperty | None:
         if not self.vlan_spin.isEnabled():
             return None
-        try:
-            return self.manager.get_vlan_property(adapter.name)
-        except Exception:
+        capability = self._vlan_capabilities.get(adapter.name)
+        if not getattr(capability, "can_set_vlan_id", False):
             return None
+        return VlanProperty(
+            str(getattr(capability, "vlan_id_property_name", "") or ""),
+            str(getattr(capability, "vlan_id_registry_keyword", "") or ""),
+            display_value=str(getattr(capability, "vlan_id_display_value", "") or ""),
+            registry_value=str(getattr(capability, "vlan_id_registry_value", "") or ""),
+            valid_display_values=list(getattr(capability, "valid_display_values", []) or []),
+            mode=str(getattr(capability, "mode", "vlan_id_numeric") or "vlan_id_numeric"),
+        )
 
     def _ip_preview(self, adapter: NetworkAdapterInfo, config: AdapterIpConfig) -> str:
         return (
@@ -881,10 +970,17 @@ def _network_page_fill_route_table(self) -> None:
 def _network_page_current_vlan_property(self, adapter: NetworkAdapterInfo) -> VlanProperty | None:
     if not self.vlan_spin.isEnabled():
         return None
-    try:
-        return self.manager.get_vlan_property(adapter.name)
-    except Exception:
+    capability = self._vlan_capabilities.get(adapter.name)
+    if not getattr(capability, "can_set_vlan_id", False):
         return None
+    return VlanProperty(
+        str(getattr(capability, "vlan_id_property_name", "") or ""),
+        str(getattr(capability, "vlan_id_registry_keyword", "") or ""),
+        display_value=str(getattr(capability, "vlan_id_display_value", "") or ""),
+        registry_value=str(getattr(capability, "vlan_id_registry_value", "") or ""),
+        valid_display_values=list(getattr(capability, "valid_display_values", []) or []),
+        mode=str(getattr(capability, "mode", "vlan_id_numeric") or "vlan_id_numeric"),
+    )
 
 
 def _network_page_adapter_changed(self) -> None:
@@ -898,13 +994,13 @@ def _network_page_adapter_changed(self) -> None:
         if adapter.ipv4_addresses and "/" in adapter.ipv4_addresses[0]:
             self.prefix_edit.setText(adapter.ipv4_addresses[0].split("/", 1)[1])
         self.gateway_edit.setText(adapter.gateways[0] if adapter.gateways else "")
-    try:
-        capability = self.manager.get_vlan_capability(adapter.name)
-        self.vlan_spin.setEnabled(capability.mode == "vlan_id_numeric")
-        self._append_log(capability.message)
-    except Exception as exc:
+    capability = self._vlan_capabilities.get(adapter.name)
+    if capability is None:
         self.vlan_spin.setEnabled(False)
-        self._append_log(f"VLAN 检测失败：{exc}")
+        self._append_log("VLAN 能力尚未加载。")
+    else:
+        self.vlan_spin.setEnabled(bool(getattr(capability, "can_set_vlan_id", False)))
+        self._append_log(str(getattr(capability, "message", "") or "VLAN 能力已加载。"))
 
 
 def _network_page_apply_table_widths(self) -> None:
@@ -1200,33 +1296,15 @@ def _network_page_apply_ip_config(self) -> None:
         return
     if not self._confirm_write(self._ip_preview(adapter, config)):
         return
-    ip_success = False
-    vlan_message = ""
-    try:
-        self.manager.apply_ip_config(config)
-        ip_success = True
-        self._append_log("IP配置成功。")
-    except PermissionError:
-        self._prompt_admin()
-        return
-    except Exception as exc:
-        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
-        self._append_log(f"IP配置失败：{exc}")
-        return
-
-    vlan_property = self._current_vlan_property(adapter)
-    if vlan_property is not None:
-        try:
-            self.manager.set_vlan_id(adapter.name, vlan_property, self.vlan_spin.value())
-            vlan_message = "VLAN配置成功。"
-            self._append_log(vlan_message)
-        except Exception as exc:
-            vlan_message = f"VLAN配置失败：{exc}"
-            self._append_log(f"IP配置成功，但 {vlan_message}")
-            MessageBox.warning(self, self.i18n.t("network_manager.title"), f"IP配置成功，但 {vlan_message}")
-    if ip_success and not vlan_message:
-        self._append_log("网卡配置已应用。")
-    self.refresh_all()
+    self._start_network_write(
+        "apply_ip",
+        {
+            "config": asdict(config),
+            "adapter_name": adapter.name,
+            "vlan_id": self.vlan_spin.value() if self.vlan_spin.isEnabled() else None,
+        },
+        "正在后台应用 IP/VLAN 配置...",
+    )
 
 
 def _network_page_reset_adapter_defaults(self) -> None:
@@ -1235,24 +1313,11 @@ def _network_page_reset_adapter_defaults(self) -> None:
         return
     if MessageBox.question(self, self.i18n.t("network_manager.reset_defaults"), f"确认恢复默认网卡配置：{adapter.name}？") != MessageBox.Yes:
         return
-    try:
-        self.manager.reset_adapter_defaults(adapter.interface_index, adapter_name=adapter.name, vlan_property=None)
-        self._append_log("IP配置已恢复默认。")
-    except PermissionError:
-        self._prompt_admin()
-        return
-    except Exception as exc:
-        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
-        self._append_log(f"恢复默认失败：{exc}")
-        return
-    vlan_property = self._current_vlan_property(adapter)
-    if vlan_property is not None:
-        try:
-            self.manager.set_vlan_id(adapter.name, vlan_property, 0)
-            self._append_log("VLAN配置已恢复默认。")
-        except Exception as exc:
-            self._append_log(f"IP配置已恢复，但 VLAN无法自动恢复：{exc}")
-    self.refresh_all()
+    self._start_network_write(
+        "reset_adapter",
+        {"interface_index": adapter.interface_index, "adapter_name": adapter.name},
+        "正在后台恢复网卡默认配置...",
+    )
 
 
 NetworkAdapterRoutePage.apply_ip_config = _network_page_apply_ip_config
@@ -1398,8 +1463,8 @@ def _network_page_adapter_changed_split(self) -> None:
             self.prefix_edit.setText(adapter.ipv4_addresses[0].split("/", 1)[1])
         self.gateway_edit.setText(adapter.gateways[0] if adapter.gateways else "")
     vlan_message = "未检测"
-    try:
-        capability = self.manager.get_vlan_capability(adapter.name)
+    capability = self._vlan_capabilities.get(adapter.name)
+    if capability is not None:
         if capability.can_set_vlan_id:
             self._vlan_can_set_id = True
             self.vlan_spin.setEnabled(True)
@@ -1416,15 +1481,14 @@ def _network_page_adapter_changed_split(self) -> None:
             vlan_message = "当前网卡不支持 VLAN 配置"
         if hasattr(self, "vlan_hint_label"):
             self.vlan_hint_label.setText(vlan_message)
-        self._append_log(vlan_message)
-    except Exception as exc:
+    else:
         self._vlan_can_set_id = False
         self.vlan_spin.setValue(0)
         self.vlan_spin.setEnabled(False)
-        vlan_message = f"VLAN 检测失败：{exc}"
+        vlan_message = "VLAN 能力尚未加载"
         if hasattr(self, "vlan_hint_label"):
             self.vlan_hint_label.setText(vlan_message)
-        self._append_log(vlan_message)
+    self._append_log(vlan_message)
     self._update_adapter_status_panel(adapter, vlan_message)
 
 

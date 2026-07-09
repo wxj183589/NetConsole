@@ -2729,10 +2729,16 @@ def test_online_mr_cached_parse_load_continues_if_channel_busy_table_fails(tmp_p
     page, _repository, _groups = _online_page_with_devices(tmp_path)
     session, _config = _prepare_parsed_channel_busy_session(tmp_path, count=3)
 
-    def fail_channel(_session_dir: Path) -> int:
-        raise RuntimeError("channel boom")
+    from netconsole.ui import online_mr_parse_worker as load_worker_module
 
-    monkeypatch.setattr(page, "_load_channel_busy_details", fail_channel)
+    original_query = load_worker_module._execute_analysis_query
+
+    def fail_channel(conn, name: str, query: str, limit: int):
+        if name == "channel_busy":
+            raise RuntimeError("channel boom")
+        return original_query(conn, name, query, limit)
+
+    monkeypatch.setattr(load_worker_module, "_execute_analysis_query", fail_channel)
 
     assert page._load_cached_parse_if_valid(session.session_dir) is True
     _process_qt_until(lambda: page.analysis_load_worker is None)
@@ -2744,10 +2750,16 @@ def test_online_mr_parse_completed_continues_if_channel_busy_table_fails(tmp_pat
     page, _repository, _groups = _online_page_with_devices(tmp_path)
     session, _config = _prepare_parsed_channel_busy_session(tmp_path, count=3)
 
-    def fail_channel(_session_dir: Path) -> int:
-        raise RuntimeError("channel boom")
+    from netconsole.ui import online_mr_parse_worker as load_worker_module
 
-    monkeypatch.setattr(page, "_load_channel_busy_details", fail_channel)
+    original_query = load_worker_module._execute_analysis_query
+
+    def fail_channel(conn, name: str, query: str, limit: int):
+        if name == "channel_busy":
+            raise RuntimeError("channel boom")
+        return original_query(conn, name, query, limit)
+
+    monkeypatch.setattr(load_worker_module, "_execute_analysis_query", fail_channel)
     summary = SimpleNamespace(
         active_segments=1,
         mesh_samples=0,
@@ -3045,6 +3057,8 @@ def test_online_mr_peer_resolver_supports_ap_name_lookup(tmp_path: Path, monkeyp
         ],
     )
 
+    assert page._resolve_peer_identity_cached(" ap-x_3111 ") is None
+    _process_qt_until(lambda: page.peer_name_cache_worker is None)
     resolved = page._resolve_peer_identity_cached(" ap-x_3111 ")
 
     assert resolved is not None
@@ -4557,6 +4571,7 @@ def test_online_mr_analysis_filters_and_selects_session_combo(tmp_path: Path) ->
 
     analysis = OnlineMrCollectionAnalysisPage(page.repository, I18n("en_US"), "demo", page.paths)
     analysis.refresh_all()
+    _process_qt_until(lambda: analysis.history_load_worker is None)
 
     assert analysis.session_select_combo.count() == 2
     analysis.session_search_input.setText("198.51.100.20")

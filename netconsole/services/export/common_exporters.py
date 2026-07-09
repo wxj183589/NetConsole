@@ -781,16 +781,53 @@ def _build_ap_online_overview_payload(payload: Mapping[str, Any]) -> dict[str, A
 
 
 def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> dict[str, Any]:
-    from netconsole.models.omnipeek_name_table import OmniPeekDeviceItem, OmniPeekExportConfig
-    from netconsole.services.omnipeek_name_table_service import export_items_to_omnipeek_nam
+    from netconsole.core.database import Database
+    from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT, OmniPeekExportConfig
+    from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, export_items_to_omnipeek_nam
 
-    items = [OmniPeekDeviceItem(**dict(row)) for row in payload.get("items") or [] if isinstance(row, Mapping)]
+    source = dict(payload.get("source") or {})
+    database = Database(Path(str(payload.get("db_path") or "")))
+    site_name = str(payload.get("site_name") or "")
+    device_repository = DeviceRepository(database)
+    filters = dict(source.get("device_filters") or {})
+    allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
+    devices = device_repository.list(**allowed_filters)
+    selected_device_uuids = {str(value) for value in source.get("selected_device_uuids") or [] if str(value)}
+    if selected_device_uuids:
+        devices = [device for device in devices if str(device.device_uuid or "") in selected_device_uuids]
+    groups = DeviceGroupRepository(database, site_name).list() if site_name else []
+    group_names = {int(group.id): group.name for group in groups if group.id is not None}
     config_data = dict(payload.get("config") or {})
     config_data["output_path"] = path
     config = OmniPeekExportConfig(**config_data)
+    service = OmniPeekNameTableService(AcRepository(database), device_repository)
+    items = service.collect_items(
+        include_ac_fit_ap=config.include_ac_fit_ap,
+        include_ap_extensions=config.include_ap_extensions,
+        include_device_mr=config.include_device_mr,
+        ac_device_uuid=str(source.get("ac_uuid") or "") or None,
+        devices=devices,
+        group_names=group_names,
+    )
+    selected_keys = {str(value) for value in payload.get("selected_item_keys") or [] if str(value)}
+    excluded_keys = {str(value) for value in payload.get("excluded_item_keys") or [] if str(value)}
+    force_keys = {str(value) for value in payload.get("force_export_keys") or [] if str(value)}
+    for item in items:
+        if item.key in excluded_keys:
+            item.selected = False
+        elif item.key in selected_keys:
+            item.selected = True
+        if item.key in force_keys:
+            item.selected = True
+            item.force_export = True
+    source_counts = service.source_counts(ac_device_uuid=str(source.get("ac_uuid") or "") or None, devices=devices)
+    source_counts[SOURCE_DEVICE_MANAGEMENT] = sum(1 for item in items if SOURCE_DEVICE_MANAGEMENT in (item.sources or [item.source]))
     _emit(progress, "write_omnipeek_name_table", 0, len(items), "正在导出 OmniPeek 名称表")
     _check_cancel(should_cancel)
-    result = export_items_to_omnipeek_nam(items, config, source_counts=dict(payload.get("source_counts") or {}))
+    result = export_items_to_omnipeek_nam(items, config, source_counts=source_counts)
     row_count = result.total_entries
     _emit(progress, "write_omnipeek_name_table", row_count, row_count, "OmniPeek 名称表导出完成")
     return {

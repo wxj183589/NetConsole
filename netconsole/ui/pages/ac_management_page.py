@@ -32,15 +32,13 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
+from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sources.switch_source import (
-    build_switch_data_lookup,
-    compute_switch_status,
-)
+from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.core.state_engine import STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
@@ -85,8 +83,8 @@ from netconsole.services.fit_ap_optical_export import (
     export_fit_ap_optical_xlsx,
 )
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
-from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
-from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
+from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name
+from netconsole.models.omnipeek_name_table import OmniPeekDeviceItem
 from netconsole.services.export import ExportJob
 from netconsole.services.export.export_task_builders import (
     ap_online_overview_xlsx_spec,
@@ -317,19 +315,21 @@ class OfflineApLedgerLoadThread(QThread):
     load_finished = Signal(object)
     load_failed = Signal(str)
 
-    def __init__(self, device_repository: DeviceRepository, ac_device_uuid: str, cache_path: Path, parent=None) -> None:
+    def __init__(self, db_path: Path, ac_device_uuid: str, cache_path: Path, parent=None) -> None:
         super().__init__(parent)
-        self.device_repository = device_repository
+        self.db_path = Path(db_path)
         self.ac_device_uuid = ac_device_uuid
         self.cache_path = cache_path
 
     def run(self) -> None:
         try:
-            ac_repository = AcRepository(self.device_repository.database)
+            database = Database(self.db_path)
+            device_repository = DeviceRepository(database)
+            ac_repository = AcRepository(database)
             resources = ac_repository.list_ap_entities(self.ac_device_uuid)
             if not resources:
                 resources = ac_repository.list_fit_ap_resources_with_metadata(self.ac_device_uuid)
-            devices = self.device_repository.list()
+            devices = device_repository.list()
             latest_lldp, _latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
             stats, ledger = build_offline_ap_ledger(
                 fit_ap_resources=resources,
@@ -602,6 +602,7 @@ class AcManagementPage(QWidget):
         self.background_manager.failed.connect(self._background_failed)
         self.background_manager.cancelled.connect(self._background_failed)
         self._background_jobs: dict[str, dict[str, object]] = {}
+        self._status_after_resource_refresh = ""
         self.ac_devices: list[Device] = []
         self.resource_thread: AcResourceCollectThread | None = None
         self.ac_info_thread: AcInfoCollectThread | None = None
@@ -1285,24 +1286,28 @@ class AcManagementPage(QWidget):
         if not ac_uuid:
             self.refresh_data()
             return
-        self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
         if feature_id == "ac.trackside_ap_plan":
             self.trackside_plan_page.refresh()
         elif feature_id == "ac.ap_online_overview":
-            resources = self._load_resource_rows(ac_uuid)
-            self.refresh_overview_table(resources)
+            self.refresh_overview_table()
         elif feature_id == "ac.fit_ap_resources":
             self._load_resource_rows(ac_uuid)
         elif feature_id == "ac.fit_ap_optical":
-            resources = self._load_resource_rows(ac_uuid)
-            self._load_optical_rows(ac_uuid, resources)
+            self._load_optical_rows(ac_uuid)
         elif feature_id == "ac.fit_ap_extensions":
             self.refresh_ap_extensions()
         if feature_id:
             self._loaded_feature_ids.add(feature_id)
 
     def _load_resource_rows(self, ac_uuid: str) -> list[dict[str, object | None]]:
-        resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        self._start_background_job(
+            "ac_fit_ap_resources_refresh",
+            {"db_path": str(self.repository.database.path), "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.fit_ap_resources"),
+        )
+        return list(self.resource_rows)
+
+    def _apply_resource_rows(self, resources: list[dict[str, object | None]]) -> None:
         self.resource_rows = resources
         valid_keys = {self._ap_selection_key(row) for row in resources}
         self.selected_ap_keys.intersection_update({key for key in valid_keys if key})
@@ -1310,12 +1315,16 @@ class AcManagementPage(QWidget):
         self.apply_resource_pagination()
         self.update_selection_state()
         self.update_open_web_button()
-        return resources
 
-    def _load_optical_rows(self, ac_uuid: str, resources: list[dict[str, object | None]]) -> None:
-        self._rebuild_device_optical_status_lookup()
-        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
-        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(current_optical_rows, resources, self._device_optical_status_lookup))
+    def _load_optical_rows(self, ac_uuid: str, resources: list[dict[str, object | None]] | None = None) -> None:
+        self._start_background_job(
+            "ac_fit_ap_optical_refresh",
+            {"db_path": str(self.repository.database.path), "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.fit_ap_optical"),
+        )
+
+    def _apply_optical_rows(self, rows: list[dict[str, object | None]]) -> None:
+        self.optical_rows = rows
         self._set_site_filter_items(self.optical_rows)
         self.apply_optical_filters()
 
@@ -1339,27 +1348,20 @@ class AcManagementPage(QWidget):
             self.refresh_ap_extensions()
             self.update_open_web_button()
             return
-        self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
-        resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
-        self.resource_rows = resources
-        valid_keys = {self._ap_selection_key(row) for row in resources}
-        self.selected_ap_keys.intersection_update({key for key in valid_keys if key})
-        self._set_resource_filter_items(resources)
-        self.apply_resource_pagination()
-        self._rebuild_device_optical_status_lookup()
-        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
         self.offline_ap_stats = {}
         self.offline_ap_ledger_rows = []
         self._offline_ap_context_loaded = False
         self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
         self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
-        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(current_optical_rows, resources, self._device_optical_status_lookup))
-        self._set_site_filter_items(self.optical_rows)
-        self.apply_optical_filters()
-        self.refresh_overview_table(resources)
-        self.refresh_ap_extensions()
-        self.update_selection_state()
-        self.update_open_web_button()
+        feature_id = self._current_feature_id()
+        if feature_id == "ac.ap_online_overview":
+            self.refresh_overview_table()
+        elif feature_id == "ac.fit_ap_optical":
+            self._load_optical_rows(ac_uuid)
+        elif feature_id == "ac.fit_ap_extensions":
+            self.refresh_ap_extensions()
+        else:
+            self._load_resource_rows(ac_uuid)
 
     def handle_overview_inner_tab_changed(self, index: int) -> None:
         if index in {1, 2}:
@@ -1398,7 +1400,7 @@ class AcManagementPage(QWidget):
         self.offline_loading_label.setText("正在加载离线AP数据...")
         self.offline_loading_spinner.setVisible(True)
         self.offline_loading_label.setVisible(True)
-        thread = OfflineApLedgerLoadThread(self.device_repository, ac_uuid, self.offline_cache_path, self)
+        thread = OfflineApLedgerLoadThread(self.device_repository.database.path, ac_uuid, self.offline_cache_path, self)
         self.offline_load_thread = thread
         thread.load_finished.connect(self._finish_offline_ap_load)
         thread.load_failed.connect(self._fail_offline_ap_load)
@@ -1610,6 +1612,7 @@ class AcManagementPage(QWidget):
             self.status_label.setText(f"{self.status_label.text()}；{extra}")
         device = self.current_device()
         app_logger.log_info("AC_HTTPS_PORT_UI_REFRESHED", f"device={device.name if device else ''}, ui_port={device.https_port if device else None}")
+        self._status_after_resource_refresh = self.status_label.text()
 
     def _finish_ac_info_collect(self, result) -> None:
         self._set_update_progress(self.i18n.t("ac.refreshing_page"))
@@ -1663,7 +1666,7 @@ class AcManagementPage(QWidget):
         if device is None:
             return
         device.https_port = port
-        self._set_summary(self.repository.get_ac_ap_summary(str(device.device_uuid or "")))
+        self._load_resource_rows(str(device.device_uuid or ""))
         self.update_open_web_button()
 
     def _fail_resource_collect(self, message: str) -> None:
@@ -1794,7 +1797,14 @@ class AcManagementPage(QWidget):
 
     def refresh_ap_extensions(self) -> None:
         search = self.extension_search_input.text() if hasattr(self, "extension_search_input") else ""
-        self.extension_rows = self.repository.list_ap_extension_points(search=search)
+        self._start_background_job(
+            "ac_ap_extensions_refresh",
+            {"db_path": str(self.repository.database.path), "search": search},
+            title=self.i18n.t("ac.fit_ap_extensions"),
+        )
+
+    def _apply_ap_extension_rows(self, rows: list[dict[str, object | None]]) -> None:
+        self.extension_rows = rows
         self._set_rows(self.extension_table, AP_EXTENSION_COLUMNS, self.extension_rows)
         self._set_rows(self.extension_summary_table, AP_EXTENSION_SUMMARY_COLUMNS, self._extension_summary_rows(self.extension_rows))
         self._set_rows(self.extension_issue_table, AP_EXTENSION_ISSUE_COLUMNS, self._extension_issue_rows(self.extension_rows))
@@ -1858,6 +1868,41 @@ class AcManagementPage(QWidget):
             return
         if task_type == "ac_overview_refresh":
             self._finish_overview_refresh(result)
+            return
+        if task_type == "ac_fit_ap_resources_refresh":
+            if str(result.get("ac_uuid") or "") != self.current_device_uuid():
+                return
+            self._set_summary(dict(result.get("summary") or {}) or None)
+            self._apply_resource_rows([dict(row) for row in result.get("resources") or [] if isinstance(row, dict)])
+            self.status_label.setText(f"{title}：完成，共 {len(self.resource_rows)} 条")
+            if self._status_after_resource_refresh:
+                self.status_label.setText(self._status_after_resource_refresh)
+                self._status_after_resource_refresh = ""
+            return
+        if task_type == "ac_fit_ap_optical_refresh":
+            if str(result.get("ac_uuid") or "") != self.current_device_uuid():
+                return
+            self._set_summary(dict(result.get("summary") or {}) or None)
+            self._apply_resource_rows([dict(row) for row in result.get("resources") or [] if isinstance(row, dict)])
+            self._apply_optical_rows([dict(row) for row in result.get("optical_rows") or [] if isinstance(row, dict)])
+            self.status_label.setText(f"{title}：完成，共 {len(self.optical_rows)} 条")
+            return
+        if task_type == "ac_ap_extensions_refresh":
+            rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+            self._apply_ap_extension_rows(rows)
+            self.status_label.setText(f"{title}：完成，共 {len(rows)} 条")
+            return
+        if task_type == "omnipeek_name_table_preview":
+            self._show_omnipeek_preview(
+                result,
+                {
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "ac_uuid": str(context.get("ac_uuid") or ""),
+                    "device_filters": dict(context.get("device_filters") or {}),
+                    "selected_device_uuids": list(context.get("selected_device_uuids") or []),
+                },
+            )
             return
         if task_type == "ac_overview_history_snapshot":
             count = int(result.get("count") or 0)
@@ -2114,23 +2159,32 @@ class AcManagementPage(QWidget):
 
     def export_omnipeek_name_table(self) -> None:
         self.feature_gate.assert_enabled("ac.omnipeek_name_table_export")
-        service = OmniPeekNameTableService(self.repository, self.device_repository)
         ac_uuid = self.current_device_uuid()
-        items = service.collect_items(
-            include_ac_fit_ap=True,
-            include_ap_extensions=True,
-            include_device_mr=True,
-            ac_device_uuid=ac_uuid,
-            group_names=self._device_group_names(),
+        self._start_background_job(
+            "omnipeek_name_table_preview",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                "ac_uuid": ac_uuid or "",
+                "include_ac_fit_ap": True,
+                "include_ap_extensions": True,
+                "include_device_mr": True,
+                "device_filters": {},
+                "preview_limit": 500,
+            },
+            title="导出 OmniPeek 名称表",
         )
+
+    def _show_omnipeek_preview(self, result: dict[str, object], source: dict[str, object]) -> None:
+        items = [OmniPeekDeviceItem(**dict(row)) for row in result.get("items") or [] if isinstance(row, dict)]
         if not items:
             MessageBox.warning(self, "导出 OmniPeek 名称表", "当前没有可导出的轨旁 AP 或车载 MR 数据。")
             return
-        source_counts = service.source_counts(ac_device_uuid=ac_uuid)
-        source_counts[SOURCE_DEVICE_MANAGEMENT] = sum(1 for item in items if SOURCE_DEVICE_MANAGEMENT in (item.sources or [item.source]))
         dialog = OmniPeekExportDialog(
             items,
-            source_counts,
+            {str(key): int(value) for key, value in dict(result.get("source_counts") or {}).items()},
+            source=source,
+            preview_stats={str(key): int(value) for key, value in dict(result.get("stats") or {}).items()},
             default_line_name=default_omnipeek_line_name(self.site_name, self.settings.paths),
             settings=self.settings,
             parent=self,
@@ -2501,16 +2555,6 @@ class AcManagementPage(QWidget):
         self.refresh_overview_table()
         self.refresh_trackside_table()
 
-    def _rebuild_device_optical_status_lookup(self) -> None:
-        """Rebuild the device optical status lookup from all devices and their optical modules.
-
-        This lookup maps (device_name, interface_name) -> optical module status,
-        which is the single source of truth from device detail.
-        """
-        devices = self.device_repository.list()
-        optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
-        self._device_optical_status_lookup = build_switch_data_lookup(devices, optical_by_device)
-
     def refresh_trackside_table(self) -> None:
         ac_uuid = self.current_device_uuid()
         self._start_background_job(
@@ -2741,7 +2785,7 @@ class AcManagementPage(QWidget):
         page_rows = self.current_optical_page_rows()
         current_row = page_rows[row] if 0 <= row < len(page_rows) else {}
         ap_uuid = str(current_row.get("ap_uuid") or "")
-        resource_rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        resource_rows = self.resource_rows
         resource_index = next((index for index, resource in enumerate(resource_rows) if resource.get("ap_uuid") == ap_uuid), -1)
         if resource_index >= 0:
             self.open_ap_detail(resource_index)
@@ -2787,7 +2831,7 @@ class AcManagementPage(QWidget):
         uuid_text = str(ap_uuid or "").strip()
         mac_text = _normalize_mac_text(ap_mac)
         name_text = str(ap_name or "").strip()
-        for resource in self.repository.list_fit_ap_resources_with_metadata(ac_uuid):
+        for resource in self.resource_rows:
             if uuid_text and str(resource.get("ap_uuid") or "") == uuid_text:
                 return uuid_text
             if mac_text and _normalize_mac_text(resource.get("ap_mac")) == mac_text:

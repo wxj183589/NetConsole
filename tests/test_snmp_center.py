@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -32,6 +33,17 @@ from netconsole.ui.pages.snmp_center_page import SnmpCenterPage, method_to_opera
 
 def _qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _process_events_until(predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    app = _qt_app()
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for Qt event condition")
 
 
 def test_snmp_center_initializes_global_and_site_databases(tmp_path: Path):
@@ -418,13 +430,16 @@ def test_mib_browser_group_change_does_not_keep_stale_device(tmp_path: Path):
     page = SnmpCenterPage(repository, I18n(), "demo", paths)
     browser = page.browser_page
     browser.refresh_device_groups()
+    _process_events_until(lambda: not browser._refreshing_devices)
     browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_a.id))
     browser.refresh_devices()
+    _process_events_until(lambda: not browser._refreshing_devices)
     assert browser.device_combo.findData(device_a.id) >= 0
     assert browser.device_combo.findData(device_b.id) < 0
 
     browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_b.id))
     browser.refresh_devices()
+    _process_events_until(lambda: not browser._refreshing_devices)
 
     assert browser.device_combo.findData(device_a.id) < 0
     assert browser.device_combo.findData(device_b.id) >= 0
@@ -432,6 +447,7 @@ def test_mib_browser_group_change_does_not_keep_stale_device(tmp_path: Path):
 
     browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_empty.id))
     browser.refresh_devices()
+    _process_events_until(lambda: not browser._refreshing_devices)
 
     assert browser.device_combo.count() == 1
     assert browser.device_combo.currentData() is None

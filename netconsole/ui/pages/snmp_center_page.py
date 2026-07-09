@@ -6,7 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Callable
 import json
 from uuid import uuid4
 
@@ -67,6 +67,7 @@ from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
+from netconsole.ui.table_utils import auto_fit_table_columns
 
 
 SNMP_SERVICE_STATE: dict[str, dict[str, object]] = {}
@@ -267,6 +268,10 @@ class SnmpCenterPage(QWidget):
         self.feature_gate = feature_gate
         self.global_repo = GlobalMibRepository(paths.global_mib_db_path())
         self.site_repo = SiteSnmpRepository(paths.site_snmp_db_path(site_name))
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._background_refresh_finished)
+        self.background_manager.failed.connect(self._background_refresh_failed)
+        self._background_refresh_callbacks: dict[str, tuple[str, Callable[[dict[str, object]], None]]] = {}
         self.startup_worker: SnmpStartupWorker | None = None
         self._snmp_ready = False
         self._startup_running = False
@@ -299,6 +304,41 @@ class SnmpCenterPage(QWidget):
         self._set_tabs_enabled(False)
         self.overview_page.show_startup_message("正在启动 SNMP 服务...", 0)
         QTimer.singleShot(0, self.start_snmp_service_async)
+
+    def start_data_refresh(self, view: str, callback: Callable[[dict[str, object]], None], *, limit: int = 500, params: dict[str, object] | None = None) -> str | None:
+        job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_center_data_refresh",
+                params={
+                    "view": view,
+                    "global_db_path": str(self.paths.global_mib_db_path()),
+                    "site_snmp_db_path": str(self.paths.site_snmp_db_path(self.site_name)),
+                    "site_db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "limit": limit,
+                    **dict(params or {}),
+                },
+            )
+        )
+        self._background_refresh_callbacks[job_id] = (view, callback)
+        return job_id
+
+    def _background_refresh_finished(self, event: dict) -> None:
+        context = self._background_refresh_callbacks.pop(str(event.get("job_id") or ""), None)
+        if context is None:
+            return
+        _view, callback = context
+        callback(dict(event.get("result") or {}))
+
+    def _background_refresh_failed(self, event: dict) -> None:
+        context = self._background_refresh_callbacks.pop(str(event.get("job_id") or ""), None)
+        if context is None:
+            return
+        view, _callback = context
+        message = str(event.get("message") or event.get("error") or "后台刷新失败")
+        if view == "devices" and hasattr(self.browser_page, "_refreshing_devices"):
+            self.browser_page._refreshing_devices = False
+        MessageBox.warning(self, "SNMP Center", f"{view} 刷新失败：{message}")
 
     def _initialize_light_storage(self) -> None:
         self.paths.ensure_global_mib_dirs()
@@ -424,12 +464,8 @@ class SnmpOverviewPage(QWidget):
         if not self.center._snmp_ready:
             self.show_startup_message("SNMP 服务启动中，请稍候...", self.progress_bar.value())
             return
-        try:
-            summary = {**self.center.global_repo.startup_summary(), **self.center.site_repo.startup_summary(), "device_count": len(self.center.repository.list())}
-        except Exception as exc:
-            self.error_label.setText(f"错误：{exc}")
-            return
-        self.apply_startup_summary(summary)
+        self.status_label.setText("SNMP 服务状态：正在后台刷新")
+        self.center.start_data_refresh("overview", lambda result: self.apply_startup_summary(dict(result.get("summary") or {})))
 
     def show_startup_message(self, message: str, percent: int) -> None:
         self.status_label.setText("SNMP 服务状态：启动中")
@@ -877,7 +913,7 @@ class ProductReferenceComparePage(QWidget):
             offset=self.page_offset,
         )
         self.result_model.set_rows(COMPARE_HEADERS, [_compare_table_row(row) for row in rows])
-        self.result_table.resizeColumnsToContents()
+        auto_resize_table_view_columns(self.result_table)
         page = self.page_offset // max(1, self.page_size.value()) + 1
         self.page_label.setText(f"第 {page} 页")
         self.prev_button.setEnabled(self.page_offset > 0)
@@ -959,11 +995,15 @@ class MibDictionaryPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("dictionary_sets", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
         fill_table(
             self.table,
             [
                 [row.get("id"), row.get("name"), row.get("vendor"), row.get("device_type"), yes_no(row.get("is_builtin")), yes_no(row.get("enabled_by_default")), row.get("description")]
-                for row in self.center.global_repo.list_dictionary_sets()
+                for row in result.get("rows") or []
+                if isinstance(row, dict)
             ],
         )
 
@@ -1004,8 +1044,11 @@ class DeviceDictionaryRecommendPage(QWidget):
         layout.addWidget(splitter, 1)
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("devices", self._apply_devices)
+
+    def _apply_devices(self, result: dict[str, object]) -> None:
         current = self.device_combo.currentData()
-        self.devices = self.center.repository.list()
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for device in self.devices:
@@ -1091,6 +1134,7 @@ class MibBrowserPage(QWidget):
         self.worker: SnmpQueryWorker | None = None
         self.set_worker: SnmpSetWorker | None = None
         self.tree_worker: MibBrowserTreeLoadWorker | None = None
+        self.child_tree_workers: dict[int, tuple[MibBrowserTreeLoadWorker, QTreeWidgetItem]] = {}
         self.product_tree_rebuild_worker: ProductReferenceTreeRebuildWorker | None = None
         self.last_result: SnmpQueryResult | None = None
         self.devices: list[Device] = []
@@ -1284,7 +1328,6 @@ class MibBrowserPage(QWidget):
 
     def refresh(self) -> None:
         self.product_references_loaded = False
-        self.refresh_device_groups()
         self.refresh_devices()
         self.refresh_mib_tree()
 
@@ -1301,21 +1344,32 @@ class MibBrowserPage(QWidget):
         if self._refreshing_devices:
             return
         self._refreshing_devices = True
-        try:
-            self._refresh_devices_impl()
-            self._device_refresh_retry_count = 0
-        except sqlite3.OperationalError as exc:
-            if not is_sqlite_locked_error(exc):
-                raise
-            self._handle_database_locked("device list", self.refresh_devices, "_device_refresh_retry_count", exc)
-        finally:
-            self._refreshing_devices = False
-
-    def _refresh_devices_impl(self) -> None:
-        current_device = self.device_combo.currentData()
         group_filter = self.device_group_filter.currentData()
-        search = self.device_search_input.text().strip()
-        self.devices = self.center.repository.list(search=search or None, group_filter=group_filter if group_filter not in {"", None} else None)
+        self.center.start_data_refresh(
+            "devices",
+            self._refresh_devices_impl,
+            params={
+                "filters": {
+                    "search": self.device_search_input.text().strip() or None,
+                    "group_filter": group_filter if group_filter not in {"", None} else None,
+                }
+            },
+        )
+
+    def _refresh_devices_impl(self, result: dict[str, object]) -> None:
+        self._refreshing_devices = False
+        current_device = self.device_combo.currentData()
+        current_group = self.device_group_filter.currentData()
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        self.device_group_filter.blockSignals(True)
+        self.device_group_filter.clear()
+        self.device_group_filter.addItem("全部分组", "")
+        for row in result.get("groups") or []:
+            if isinstance(row, dict) and row.get("id") is not None:
+                self.device_group_filter.addItem(str(row.get("name") or ""), int(row.get("id")))
+        group_index = self.device_group_filter.findData(current_group)
+        self.device_group_filter.setCurrentIndex(group_index if group_index >= 0 else 0)
+        self.device_group_filter.blockSignals(False)
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         if self.temporary_profile is not None:
@@ -1337,18 +1391,7 @@ class MibBrowserPage(QWidget):
             self._handle_device_changed()
 
     def refresh_device_groups(self) -> None:
-        if self._refreshing_device_groups:
-            return
-        self._refreshing_device_groups = True
-        try:
-            self._refresh_device_groups()
-            self._device_group_refresh_retry_count = 0
-        except sqlite3.OperationalError as exc:
-            if not is_sqlite_locked_error(exc):
-                raise
-            self._handle_database_locked("device groups", self.refresh_device_groups, "_device_group_refresh_retry_count", exc)
-        finally:
-            self._refreshing_device_groups = False
+        self.refresh_devices()
 
     def _refresh_device_groups(self) -> None:
         current = self.device_group_filter.currentData()
@@ -1760,9 +1803,36 @@ class MibBrowserPage(QWidget):
         if not parent_oid:
             return
         item.takeChildren()
-        source_filter = self._source_filter_key()
+        item.addChild(QTreeWidgetItem(["正在后台加载...", "", ""]))
+        task_id = id(item)
+        worker = MibBrowserTreeLoadWorker(
+            self.center.paths.global_mib_db_path(),
+            mode="children",
+            parent_oid=parent_oid,
+            source_filter=self._source_filter_key(),
+            limit=500,
+            task_id=task_id,
+            parent=self,
+        )
+        self.child_tree_workers[task_id] = (worker, item)
+        worker.finished_with_result.connect(lambda result, task_id=task_id: self._tree_children_loaded(task_id, result))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _tree_children_loaded(self, task_id: int, result: object) -> None:
+        context = self.child_tree_workers.pop(task_id, None)
+        if context is None:
+            return
+        _worker, item = context
+        payload = dict(result) if isinstance(result, dict) else {}
+        item.takeChildren()
+        if payload.get("error"):
+            item.addChild(QTreeWidgetItem([f"加载失败：{payload.get('error')}", "", ""]))
+            return
         seen: set[tuple[str, str, str]] = set()
-        for child_data in self.center.global_repo.list_oid_children(parent_oid, source_filter=source_filter, limit=500):
+        for child_data in payload.get("rows") or []:
+            if not isinstance(child_data, dict):
+                continue
             child_oid = normalize_tree_oid(child_data.get("oid"))
             if not child_oid:
                 continue
@@ -2455,8 +2525,11 @@ class SnmpQueryPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("devices", self._apply_devices)
+
+    def _apply_devices(self, result: dict[str, object]) -> None:
         current = self.device_combo.currentData()
-        self.devices = self.center.repository.list()
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for device in self.devices:
@@ -2639,10 +2712,17 @@ class OidTemplatePage(QWidget):
             self.refresh()
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("templates", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
         rows = []
-        for item in self.center.global_repo.list_templates():
+        for item in result.get("global_rows") or []:
+            if not isinstance(item, dict):
+                continue
             rows.append(["全局", item.get("template_name"), item.get("module_name"), item.get("object_name"), item.get("numeric_oid"), item.get("query_method")])
-        for item in self.center.site_repo.list_site_templates():
+        for item in result.get("site_rows") or []:
+            if not isinstance(item, dict):
+                continue
             rows.append(["局点", item.get("template_name"), item.get("module_name"), item.get("object_name"), item.get("numeric_oid"), item.get("query_method")])
         fill_table(self.table, rows)
 
@@ -2661,7 +2741,10 @@ class SnmpMonitorPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def refresh(self) -> None:
-        fill_table(self.table, [[row.get("job_name"), row.get("device_id"), row.get("template_id"), row.get("interval_seconds"), yes_no(row.get("enabled")), row.get("status")] for row in SnmpPollService(self.center.site_repo).list_jobs()])
+        self.center.start_data_refresh("monitor_jobs", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
+        fill_table(self.table, [[row.get("job_name"), row.get("device_id"), row.get("template_id"), row.get("interval_seconds"), yes_no(row.get("enabled")), row.get("status")] for row in result.get("rows") or [] if isinstance(row, dict)])
 
 
 class SnmpTrapPage(QWidget):
@@ -2678,7 +2761,10 @@ class SnmpTrapPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def refresh(self) -> None:
-        fill_table(self.table, [[row.get("trap_time"), row.get("source_ip"), row.get("source_device"), row.get("trap_oid"), row.get("trap_name"), row.get("severity"), row.get("content")] for row in SnmpTrapService(self.center.site_repo).list_traps()])
+        self.center.start_data_refresh("traps", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
+        fill_table(self.table, [[row.get("trap_time"), row.get("source_ip"), row.get("source_device"), row.get("trap_oid"), row.get("trap_name"), row.get("severity"), row.get("content")] for row in result.get("rows") or [] if isinstance(row, dict)])
 
 
 class TopologyPage(QWidget):
@@ -2721,8 +2807,11 @@ class TopologyPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        fill_table(self.node_table, [[row.get("name"), row.get("node_type"), row.get("address"), row.get("device_uuid")] for row in self.center.site_repo.list_topology_nodes()])
-        fill_table(self.edge_table, [[row.get("source_id"), row.get("target_id"), row.get("edge_type"), row.get("local_interface"), row.get("remote_interface"), row.get("discovery_source"), row.get("confidence")] for row in self.center.site_repo.list_topology_edges()])
+        self.center.start_data_refresh("topology", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
+        fill_table(self.node_table, [[row.get("name"), row.get("node_type"), row.get("address"), row.get("device_uuid")] for row in result.get("nodes") or [] if isinstance(row, dict)])
+        fill_table(self.edge_table, [[row.get("source_id"), row.get("target_id"), row.get("edge_type"), row.get("local_interface"), row.get("remote_interface"), row.get("discovery_source"), row.get("confidence")] for row in result.get("edges") or [] if isinstance(row, dict)])
 
 
 def make_table(headers: list[str]) -> QTableWidget:
@@ -2747,9 +2836,7 @@ def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
             item = QTableWidgetItem("" if value is None else str(value))
             item.setToolTip(item.text())
             table.setItem(row_index, column, item)
-    table.resizeColumnsToContents()
-    for column in range(table.columnCount()):
-        table.setColumnWidth(column, max(90, min(table.columnWidth(column), 520)))
+    auto_fit_table_columns(table, max_rows=200, default_min_width=90, default_max_width=520)
 
 
 def _compare_table_row(row: dict[str, object]) -> list[Any]:
@@ -2798,13 +2885,13 @@ def configure_table_view(table: QTableView, width_by_header: dict[str, int] | No
 
 def auto_resize_table_view_columns(table: QTableView, width_by_header: dict[str, int] | None = None) -> None:
     configure_table_view(table, width_by_header)
-    table.resizeColumnsToContents()
-    if not width_by_header or table.model() is None:
+    if table.model() is None:
         return
     for column in range(table.model().columnCount()):
         header = str(table.model().headerData(column, Qt.Horizontal) or "")
-        minimum = int(width_by_header.get(header, 90))
-        table.setColumnWidth(column, max(minimum, min(table.columnWidth(column), 520)))
+        minimum = int((width_by_header or {}).get(header, 90))
+        header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header) + 32
+        table.setColumnWidth(column, min(max(minimum, header_width), 520))
 
 
 def configure_tree_widget(tree: QTreeWidget, width_by_column: dict[int, int] | None = None) -> None:

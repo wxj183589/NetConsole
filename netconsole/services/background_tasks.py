@@ -20,6 +20,8 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
     params = dict(job.params or {})
     if job.task_type == "device_csv_import":
         return _device_csv_import(params, progress_callback, should_cancel)
+    if job.task_type == "device_list_page":
+        return _device_list_page(params, progress_callback, should_cancel)
     if job.task_type == "car_network_point_table_import":
         return _car_network_point_table_import(params, progress_callback, should_cancel)
     if job.task_type == "car_network_refresh_all":
@@ -44,6 +46,14 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _fit_ap_extension_commit(params, progress_callback, should_cancel)
     if job.task_type == "ac_overview_refresh":
         return _ac_overview_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "ac_fit_ap_resources_refresh":
+        return _ac_fit_ap_resources_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "ac_fit_ap_optical_refresh":
+        return _ac_fit_ap_optical_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "ac_ap_extensions_refresh":
+        return _ac_ap_extensions_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "omnipeek_name_table_preview":
+        return _omnipeek_name_table_preview(params, progress_callback, should_cancel)
     if job.task_type == "ac_overview_history_snapshot":
         return _ac_overview_history_snapshot(params, progress_callback, should_cancel)
     if job.task_type == "ac_trackside_business_refresh":
@@ -54,6 +64,12 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _config_compare_latest_snapshots(params, progress_callback, should_cancel)
     if job.task_type == "config_compare_snapshot_pair":
         return _config_compare_snapshot_pair(params, progress_callback, should_cancel)
+    if job.task_type == "config_snapshot_load_content":
+        return _config_snapshot_load_content(params, progress_callback, should_cancel)
+    if job.task_type == "config_snapshot_copy":
+        return _config_snapshot_copy(params, progress_callback, should_cancel)
+    if job.task_type == "config_snapshot_pair_load_content":
+        return _config_snapshot_pair_load_content(params, progress_callback, should_cancel)
     if job.task_type == "online_mr_parse":
         return _online_mr_parse(params, progress_callback, should_cancel)
     if job.task_type == "mesh_log_import":
@@ -66,6 +82,12 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _snmp_mib_resource_refresh(params, progress_callback, should_cancel)
     if job.task_type == "snmp_product_references_refresh":
         return _snmp_product_references_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "snmp_center_data_refresh":
+        return _snmp_center_data_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "wireless_scan_history_refresh":
+        return _wireless_scan_history_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "wireless_scan_result_load":
+        return _wireless_scan_result_load(params, progress_callback, should_cancel)
     raise ValueError(f"不支持的后台任务类型：{job.task_type}")
 
 
@@ -138,6 +160,51 @@ def _snmp_product_references_refresh(params: dict[str, Any], progress: ProgressC
     return {"references": references}
 
 
+def _snmp_center_data_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.repositories.global_mib_repository import GlobalMibRepository
+    from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
+    from netconsole.services.snmp_poll_service import SnmpPollService
+    from netconsole.services.snmp_trap_service import SnmpTrapService
+
+    view = str(params.get("view") or "")
+    _emit(progress, "snmp_center_data_refresh", 0, 1, f"正在后台刷新 SNMP {view}")
+    _check_cancel(should_cancel)
+    global_repo = GlobalMibRepository(Path(str(params.get("global_db_path") or "")))
+    site_repo = SiteSnmpRepository(Path(str(params.get("site_snmp_db_path") or "")))
+    limit = max(1, min(int(params.get("limit") or 500), 2000))
+    result: dict[str, Any] = {"view": view}
+    if view == "overview":
+        device_count = len(DeviceRepository(Database(Path(str(params.get("site_db_path") or "")))).list())
+        result["summary"] = {**global_repo.startup_summary(), **site_repo.startup_summary(), "device_count": device_count}
+    elif view == "dictionary_sets":
+        result["rows"] = global_repo.list_dictionary_sets()[:limit]
+    elif view == "devices":
+        from netconsole.repositories.device_group_repository import DeviceGroupRepository
+
+        database = Database(Path(str(params.get("site_db_path") or "")))
+        filters = dict(params.get("filters") or {})
+        allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
+        result["devices"] = [device.to_record() for device in DeviceRepository(database).list(**allowed_filters)[:limit]]
+        groups = DeviceGroupRepository(database, str(params.get("site_name") or "")).list()
+        result["groups"] = [{"id": group.id, "name": group.name} for group in groups if group.id is not None]
+    elif view == "templates":
+        result["global_rows"] = global_repo.list_templates()[:limit]
+        result["site_rows"] = site_repo.list_site_templates()[:limit]
+    elif view == "monitor_jobs":
+        result["rows"] = SnmpPollService(site_repo).list_jobs()[:limit]
+    elif view == "traps":
+        result["rows"] = SnmpTrapService(site_repo).list_traps()[:limit]
+    elif view == "topology":
+        result["nodes"] = site_repo.list_topology_nodes()[:limit]
+        result["edges"] = site_repo.list_topology_edges()[:limit]
+    else:
+        raise ValueError(f"不支持的 SNMP 后台刷新视图：{view}")
+    _emit(progress, "snmp_center_data_refresh", 1, 1, f"SNMP {view} 刷新完成")
+    return result
+
+
 def _snmp_module_display_name(row: dict[str, object]) -> str:
     module = str(row.get("module_name") or "未归属")
     version = str(row.get("version_line") or "")
@@ -147,6 +214,48 @@ def _snmp_module_display_name(row: dict[str, object]) -> str:
     if row.get("file_id") is None:
         return f"{module} [内置通用]"
     return module
+
+
+def _wireless_scan_history_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
+
+    repository = WirelessScanRepository(Path(str(params.get("db_path") or "")))
+    runs = repository.list_runs(limit=max(1, min(int(params.get("limit") or 200), 500)))
+    rows: list[dict[str, Any]] = []
+    total = max(len(runs), 1)
+    for index, run in enumerate(runs, start=1):
+        _check_cancel(should_cancel)
+        results = repository.list_results(str(run.get("scan_id") or ""))
+        matched = [row for row in results if row.get("matched_trackside_ap")]
+        strongest = max(matched, key=lambda row: row.get("rssi_dbm") or -999, default={})
+        rows.append(
+            {
+                "run": run,
+                "band24_count": sum(1 for row in results if row.get("band") == "2.4G"),
+                "band5_count": sum(1 for row in results if row.get("band") == "5G"),
+                "strongest_ap": strongest.get("matched_ap_name") or "-",
+                "strongest_rssi": strongest.get("rssi_dbm") or "-",
+            }
+        )
+        if index == len(runs) or index % 20 == 0:
+            _emit(progress, "wireless_scan_history_refresh", index, total, f"正在加载扫描历史 {index}/{len(runs)}")
+    return {"rows": rows}
+
+
+def _wireless_scan_result_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
+    from netconsole.services.network_tools.wireless_scan_service import repository_row_to_display_row
+
+    _emit(progress, "wireless_scan_result_load", 0, 2, "正在后台读取无线扫描结果")
+    _check_cancel(should_cancel)
+    repository = WirelessScanRepository(Path(str(params.get("db_path") or "")))
+    all_rows = repository.list_results(str(params.get("scan_id") or ""))
+    limit = max(1, min(int(params.get("limit") or 500), 2000))
+    rows = [repository_row_to_display_row(row) for row in all_rows[:limit]]
+    raw_file = Path(str(params.get("raw_file") or ""))
+    raw_text = raw_file.read_text(encoding="utf-8", errors="replace") if raw_file.is_file() else ""
+    _emit(progress, "wireless_scan_result_load", 2, 2, "无线扫描结果加载完成")
+    return {"rows": rows, "total_items": len(all_rows), "raw_text": raw_text, "scan_id": str(params.get("scan_id") or "")}
 
 
 def _device_csv_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -168,6 +277,38 @@ def _device_csv_import(params: dict[str, Any], progress: ProgressCallback | None
         "skipped": result.skipped,
         "groups_created": result.groups_created,
         "errors": list(result.errors),
+    }
+
+
+def _device_list_page(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from math import ceil
+
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+
+    _emit(progress, "device_list_page", 0, 2, "正在后台查询设备列表")
+    _check_cancel(should_cancel)
+    database = Database(Path(str(params.get("db_path") or "")))
+    filters = dict(params.get("filters") or {})
+    allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
+    devices = DeviceRepository(database).list(**allowed_filters)
+    total = len(devices)
+    page_size = max(1, min(int(params.get("page_size") or 200), 1000))
+    total_pages = max(ceil(total / page_size), 1)
+    current_page = max(1, min(int(params.get("current_page") or 1), total_pages))
+    start = (current_page - 1) * page_size
+    page_devices = devices[start : start + page_size]
+    site_name = str(params.get("site_name") or "")
+    groups = DeviceGroupRepository(database, site_name).list() if site_name else []
+    _emit(progress, "device_list_page", 2, 2, "设备列表加载完成")
+    return {
+        "devices": [device.to_record() for device in page_devices],
+        "total_items": total,
+        "total_pages": total_pages,
+        "current_page": current_page,
+        "page_size": page_size,
+        "groups": [{"id": group.id, "name": group.name} for group in groups],
     }
 
 
@@ -474,6 +615,154 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
     }
 
 
+def _ac_fit_ap_resources_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    _emit(progress, "ac_fit_ap_resources_refresh", 0, 1, "正在读取 FIT-AP 资源")
+    _check_cancel(should_cancel)
+    ac_uuid = str(params.get("ac_uuid") or "").strip()
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    result = {
+        "ac_uuid": ac_uuid,
+        "summary": repository.get_ac_ap_summary(ac_uuid),
+        "resources": repository.list_fit_ap_resources_with_metadata(ac_uuid),
+    }
+    _emit(progress, "ac_fit_ap_resources_refresh", 1, 1, "FIT-AP 资源刷新完成")
+    return result
+
+
+def _ac_fit_ap_optical_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
+    from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_fact_repository import DeviceFactRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
+    from netconsole.utils.interface_sort import interface_sort_key
+
+    _emit(progress, "ac_fit_ap_optical_refresh", 0, 3, "正在读取 FIT-AP 资源和光衰")
+    _check_cancel(should_cancel)
+    ac_uuid = str(params.get("ac_uuid") or "").strip()
+    database = Database(Path(str(params.get("db_path") or "")))
+    ac_repository = AcRepository(database)
+    resources = ac_repository.list_fit_ap_resources_with_metadata(ac_uuid)
+    optical_rows = ac_repository.list_fit_ap_optical(ac_uuid)
+    _emit(progress, "ac_fit_ap_optical_refresh", 1, 3, "正在读取交换机光模块状态")
+    _check_cancel(should_cancel)
+    devices = DeviceRepository(database).list()
+    fact_repository = DeviceFactRepository(database)
+    optical_by_device = {
+        str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or ""))
+        for device in devices
+    }
+    lookup = build_switch_data_lookup(devices, optical_by_device)
+    resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
+    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
+    enriched: list[dict[str, object | None]] = []
+    for row in optical_rows:
+        _check_cancel(should_cancel)
+        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
+        neighbor_name = row.get("neighbor_device_name")
+        lowered = str(neighbor_name or "").casefold()
+        if any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr")):
+            neighbor_name = None
+        switch_status = compute_switch_status(device_name=neighbor_name, interface_name=row.get("neighbor_interface"), lookup=lookup)
+        is_offline = is_fit_ap_offline(resource) or bool(row.get("is_ap_offline"))
+        enriched.append(
+            {
+                **row,
+                "ap_mac": row.get("ap_mac") or resource.get("ap_mac"),
+                "site": row.get("site") or resource.get("site_name") or resource.get("site") or "未归属",
+                "neighbor_device_name": neighbor_name,
+                "switch_optical_status": switch_status,
+                "is_ap_offline": is_offline,
+                "optical_alarm_status": OFFLINE_AP_STATUS_TEXT if is_offline else row.get("optical_alarm_status"),
+                "ap_optical_status": "offline" if is_offline else row.get("ap_optical_status"),
+                "data_source": "historical" if is_offline else row.get("data_source"),
+            }
+        )
+    enriched.sort(
+        key=lambda row: (
+            1 if str(row.get("neighbor_device_name") or "").strip() in {"", "-"} else 0,
+            str(row.get("neighbor_device_name") or "").casefold(),
+            interface_sort_key(row.get("neighbor_interface")),
+            str(row.get("ap_name") or ""),
+        )
+    )
+    _emit(progress, "ac_fit_ap_optical_refresh", 3, 3, "FIT-AP 光衰刷新完成")
+    return {
+        "ac_uuid": ac_uuid,
+        "summary": ac_repository.get_ac_ap_summary(ac_uuid),
+        "resources": resources,
+        "optical_rows": enriched,
+    }
+
+
+def _ac_ap_extensions_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    _emit(progress, "ac_ap_extensions_refresh", 0, 1, "正在读取 AP 扩展信息")
+    _check_cancel(should_cancel)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    rows = repository.list_ap_extension_points(search=str(params.get("search") or ""))
+    _emit(progress, "ac_ap_extensions_refresh", 1, 1, "AP 扩展信息刷新完成")
+    return {"rows": rows}
+
+
+def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
+    from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService
+
+    _emit(progress, "omnipeek_name_table_preview", 0, 3, "正在后台收集 OmniPeek 名称数据")
+    _check_cancel(should_cancel)
+    database = Database(Path(str(params.get("db_path") or "")))
+    site_name = str(params.get("site_name") or "")
+    device_repository = DeviceRepository(database)
+    ac_repository = AcRepository(database)
+    filters = dict(params.get("device_filters") or {})
+    allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
+    devices = device_repository.list(**allowed_filters)
+    selected_device_uuids = {str(value) for value in params.get("selected_device_uuids") or [] if str(value)}
+    if selected_device_uuids:
+        devices = [device for device in devices if str(device.device_uuid or "") in selected_device_uuids]
+    groups = DeviceGroupRepository(database, site_name).list() if site_name else []
+    group_names = {int(group.id): group.name for group in groups if group.id is not None}
+    service = OmniPeekNameTableService(ac_repository, device_repository)
+    items = service.collect_items(
+        include_ac_fit_ap=bool(params.get("include_ac_fit_ap", True)),
+        include_ap_extensions=bool(params.get("include_ap_extensions", True)),
+        include_device_mr=bool(params.get("include_device_mr", True)),
+        ac_device_uuid=str(params.get("ac_uuid") or "") or None,
+        devices=devices,
+        group_names=group_names,
+    )
+    _emit(progress, "omnipeek_name_table_preview", 2, 3, "正在整理预览和异常统计")
+    _check_cancel(should_cancel)
+    abnormal = [item for item in items if item.status != "正常"]
+    normal = [item for item in items if item.status == "正常"]
+    preview_limit = max(1, min(int(params.get("preview_limit") or 500), 2000))
+    preview_items = (abnormal + normal)[:preview_limit]
+    source_counts = service.source_counts(ac_device_uuid=str(params.get("ac_uuid") or "") or None, devices=devices)
+    source_counts[SOURCE_DEVICE_MANAGEMENT] = sum(1 for item in items if SOURCE_DEVICE_MANAGEMENT in (item.sources or [item.source]))
+    stats = {
+        "total": len(items),
+        "selected": sum(1 for item in items if item.selected),
+        "abnormal": len(abnormal),
+        "mac_conflict": sum(1 for item in items if item.status == "MAC冲突"),
+        "r2_failed": sum(1 for item in items if item.status == "R2推导失败"),
+        "missing_mac": sum(1 for item in items if item.status == "缺少物理MAC"),
+        "preview_count": len(preview_items),
+    }
+    _emit(progress, "omnipeek_name_table_preview", 3, 3, "OmniPeek 名称表预览已就绪")
+    return {"items": [asdict(item) for item in preview_items], "source_counts": source_counts, "stats": stats}
+
+
 def _ac_overview_history_snapshot(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.repositories.ac_repository import AcRepository
@@ -612,6 +901,80 @@ def _config_compare_snapshot_pair(params: dict[str, Any], progress: ProgressCall
     result["kind"] = "snapshot_pair"
     _emit(progress, "config_compare", 1, 1, "配置比较完成")
     return result
+
+
+def _config_snapshot_service(params: dict[str, Any]) -> tuple[Any, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
+    from netconsole.services.config_lifecycle_service import ConfigLifecycleService
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    repository = ConfigSnapshotRepository(database)
+    service = ConfigLifecycleService(str(params.get("site_name") or ""), database, _path_resolver_from_params(params), repository)
+    return repository, service
+
+
+def _limited_snapshot_text(text: str, max_chars: int) -> tuple[str, bool, int]:
+    original_length = len(text)
+    if max_chars > 0 and original_length > max_chars:
+        notice = f"\n\n[内容过长，仅显示前 {max_chars} 个字符；完整内容请下载快照查看。]"
+        return text[:max_chars] + notice, True, original_length
+    return text, False, original_length
+
+
+def _config_snapshot_load_content(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    _emit(progress, "config_snapshot_load_content", 0, 1, "正在后台读取配置快照")
+    _check_cancel(should_cancel)
+    repository, service = _config_snapshot_service(params)
+    snapshot = repository.get(int(params.get("snapshot_id") or 0))
+    text, truncated, original_length = _limited_snapshot_text(service.snapshot_text(snapshot), int(params.get("max_chars") or 2_000_000))
+    _emit(progress, "config_snapshot_load_content", 1, 1, "配置快照读取完成")
+    return {
+        "snapshot_id": snapshot.id,
+        "snapshot_type": snapshot.type,
+        "text": text,
+        "truncated": truncated,
+        "original_length": original_length,
+    }
+
+
+def _config_snapshot_copy(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository, service = _config_snapshot_service(params)
+    entries = [entry for entry in params.get("entries") or [] if isinstance(entry, dict)]
+    total = max(len(entries), 1)
+    copied: list[str] = []
+    for index, entry in enumerate(entries, start=1):
+        _check_cancel(should_cancel)
+        snapshot = repository.get(int(entry.get("snapshot_id") or 0))
+        target = Path(str(entry.get("target_path") or ""))
+        _emit(progress, "config_snapshot_copy", index - 1, total, f"正在复制配置快照 {index}/{len(entries)}")
+        service.copy_snapshot(snapshot, target)
+        copied.append(str(target))
+    _emit(progress, "config_snapshot_copy", total, total, "配置快照复制完成")
+    return {"copied_paths": copied}
+
+
+def _config_snapshot_pair_load_content(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    _emit(progress, "config_snapshot_pair_load_content", 0, 2, "正在后台读取配置快照")
+    _check_cancel(should_cancel)
+    repository, service = _config_snapshot_service(params)
+    snapshot_ids = [int(value) for value in params.get("snapshot_ids") or [] if int(value or 0) > 0]
+    snapshots = [repository.get(snapshot_id) for snapshot_id in snapshot_ids]
+    max_chars = int(params.get("max_chars") or 2_000_000)
+    rows: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        text, truncated, original_length = _limited_snapshot_text(service.snapshot_text(snapshot), max_chars)
+        rows.append(
+            {
+                "snapshot_id": snapshot.id,
+                "snapshot_type": snapshot.type,
+                "text": text,
+                "truncated": truncated,
+                "original_length": original_length,
+            }
+        )
+    _emit(progress, "config_snapshot_pair_load_content", 2, 2, "配置快照读取完成")
+    return {"snapshots": rows, "raw_diff": str(params.get("raw_diff") or "")}
 
 
 def _compare_snapshot_texts(service: Any, left: Any, right: Any) -> dict[str, Any]:

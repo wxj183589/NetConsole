@@ -591,9 +591,13 @@ def fit_ap_optical_xlsx_spec(
 def omnipeek_name_table_spec(
     output_path: str | Path,
     *,
-    items: Iterable[Mapping[str, Any]],
+    db_path: str | Path,
+    site_name: str,
+    source: Mapping[str, Any],
     config: Mapping[str, Any],
-    source_counts: Mapping[str, int],
+    selected_item_keys: Iterable[str] | None = None,
+    excluded_item_keys: Iterable[str] | None = None,
+    force_export_keys: Iterable[str] | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -607,13 +611,13 @@ def omnipeek_name_table_spec(
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload={
-            "items": inline_rows_source(
-                items,
-                allow_inline_rows=True,
-                inline_reason="OmniPeek 名称表弹窗已完成用户勾选和异常确认",
-            )["rows"],
+            "db_path": str(db_path),
+            "site_name": site_name,
+            "source": dict(source),
             "config": config_payload,
-            "source_counts": {str(key): int(value) for key, value in dict(source_counts).items()},
+            "selected_item_keys": [str(value) for value in selected_item_keys or [] if str(value)],
+            "excluded_item_keys": [str(value) for value in excluded_item_keys or [] if str(value)],
+            "force_export_keys": [str(value) for value in force_export_keys or [] if str(value)],
         },
     )
 

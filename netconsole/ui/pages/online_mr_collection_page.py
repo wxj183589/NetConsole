@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QDoubleValidator, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -69,6 +69,7 @@ from netconsole.models.online_mr_models import (
 )
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.core.database import Database
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_runner import (
@@ -107,7 +108,7 @@ from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
 from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
-from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrParseWorker
+from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrHistoryLoadWorker, OnlineMrParseWorker
 from netconsole.ui.online_mr_report_worker import OnlineMrReportExportWorker
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
@@ -367,6 +368,32 @@ def natural_device_sort_key(device: Device) -> tuple[list[object], str, int]:
     return parts, str(device.primary_address or ""), int(device.id or 0)
 
 
+class PeerNameCacheLoadWorker(QThread):
+    completed = Signal(object)
+
+    def __init__(self, db_path: Path, parent=None) -> None:
+        super().__init__(parent)
+        self.db_path = Path(db_path)
+
+    def run(self) -> None:
+        try:
+            repository = AcRepository(Database(self.db_path))
+            fit_rows = repository.list_all_fit_ap_resources_with_metadata()
+            known_names = {str(row.get("ap_name") or "").strip().casefold() for row in fit_rows if str(row.get("ap_name") or "").strip()}
+            rows = list(fit_rows)
+            for extension in repository.list_ap_extension_points():
+                name = str(extension.get("ap_name") or "").strip()
+                if not name or name.casefold() in known_names:
+                    continue
+                row = dict(extension)
+                row["ap_mac"] = extension.get("ap_mac_display") or extension.get("ap_mac_norm") or ""
+                row["_identity_source"] = "ap_metadata"
+                rows.append(row)
+            self.completed.emit(rows)
+        except Exception:
+            self.completed.emit([])
+
+
 class OnlineMrCollectionPage(QWidget):
     session_history_changed = Signal()
 
@@ -425,9 +452,11 @@ class OnlineMrCollectionPage(QWidget):
         self.peer_station_cache: dict[str, dict[str, object]] = {}
         self.peer_name_cache: dict[str, dict[str, object]] = {}
         self._peer_name_cache_loaded = False
+        self.peer_name_cache_worker: PeerNameCacheLoadWorker | None = None
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
         self.parse_worker: OnlineMrParseWorker | None = None
         self.analysis_load_worker: OnlineMrAnalysisLoadWorker | None = None
+        self.history_load_worker: OnlineMrHistoryLoadWorker | None = None
         self.export_report_worker = None
         self._analysis_load_task_label = ""
         self._analysis_load_profile_phase = ""
@@ -2127,7 +2156,7 @@ class OnlineMrCollectionPage(QWidget):
         return None
 
     def _latest_session_dir_for_device(self, device_id: int) -> Path | None:
-        for row in self.store.list_sessions(self.site_name, None):
+        for row in self.session_history_rows:
             if int(row.get("device_id") or -1) != int(device_id):
                 continue
             session_dir = row.get("session_dir")
@@ -2334,7 +2363,9 @@ class OnlineMrCollectionPage(QWidget):
                 raise RuntimeError("后台分析结果格式异常")
             session_dir = Path(payload.get("session_dir") or "")
             self._set_analysis_task_progress(True, f"正在{task_label}：刷新表格显示 90%", 90)
-            rows = self._load_offline_analysis(session_dir, include_charts=False)
+            rows = self._apply_analysis_table_payload(payload)
+            for table_name, error in dict(payload.get("table_errors") or {}).items():
+                self.log_text.append(f"分析表加载失败 [{table_name}]：{error}")
             self._apply_analysis_chart_payload(session_dir, payload)
             if self._analysis_load_profile_phase:
                 self._log_page_profile(self._analysis_load_profile_phase, self._analysis_load_profile_start, rows=rows)
@@ -2366,6 +2397,94 @@ class OnlineMrCollectionPage(QWidget):
             self.analysis_load_worker = None
             self._analysis_load_summary = None
             self._refresh_parse_button_state()
+
+    def _apply_analysis_table_payload(self, payload: dict[str, object]) -> int:
+        tables = dict(payload.get("table_rows") or {})
+
+        def fill(table: QTableWidget, name: str, *, indexed: bool = False, active_column: int | None = None) -> list[list[object]]:
+            rows = [list(row) for row in tables.get(name) or [] if isinstance(row, (list, tuple))]
+            table.setUpdatesEnabled(False)
+            try:
+                table.setRowCount(len(rows))
+                for row_index, row_data in enumerate(rows):
+                    values = [row_index + 1, *row_data] if indexed else row_data
+                    active = active_column is not None and active_column < len(row_data) and str(row_data[active_column] or "").upper().startswith("ACTIVE")
+                    for column, value in enumerate(values):
+                        self._set_table_item(table, row_index, column, value, active=active)
+            finally:
+                table.setUpdatesEnabled(True)
+            self._auto_fit_online_table(table, name)
+            return rows
+
+        fill(self.mesh_table, "mesh_link", indexed=True, active_column=3)
+        fill(self.mesh_detail_table, "mesh_link_detail", indexed=True, active_column=3)
+        fill(self.channel_table, "channel_busy", indexed=True)
+        fill(self.interface_rate_table, "interface_rate", indexed=True)
+
+        fping_rows = [list(row) for row in tables.get("fping_1s") or [] if isinstance(row, (list, tuple))]
+        self.fping_1s_table.setRowCount(len(fping_rows))
+        for row_index, row_data in enumerate(fping_rows):
+            values = [row_index + 1, *row_data[:-1], self._fping_status_label(row_data[-1] if row_data else "")]
+            for column, value in enumerate(values):
+                self._set_table_item(self.fping_1s_table, row_index, column, value)
+        self._auto_fit_online_table(self.fping_1s_table, "fping_1s")
+
+        iperf_rows = [list(row) for row in tables.get("iperf") or [] if isinstance(row, (list, tuple))]
+        self.iperf_table.setRowCount(len(iperf_rows))
+        for row_index, row_data in enumerate(iperf_rows):
+            bitrate = row_data[1] if len(row_data) > 1 else None
+            values = [row_data[0], None if bitrate is None else f"{float(bitrate):.2f}", *row_data[2:]]
+            for column, value in enumerate(values):
+                self._set_table_item(self.iperf_table, row_index, column, value)
+        self._auto_fit_online_table(self.iperf_table, "iperf")
+
+        radio_rows = [list(row) for row in tables.get("radio_statistics") or [] if isinstance(row, (list, tuple))]
+        grouped: dict[str, list[str]] = {}
+        for collector_time, metric_name, metric_value, metric_unit in radio_rows:
+            value_text = self._summary_text(metric_value)
+            grouped.setdefault(str(collector_time or "-"), []).append(f"{metric_name}={value_text}{metric_unit or ''}")
+        self.statistics_text.setPlainText("\n".join(f"{timestamp}  {'  '.join(metrics)}" for timestamp, metrics in grouped.items()) or "无 AP 射频统计解析结果")
+
+        diagnosis_rows = [list(row) for row in tables.get("diagnosis") or [] if isinstance(row, (list, tuple))]
+        self.diagnosis_table.setRowCount(len(diagnosis_rows))
+        for row_index, row_data in enumerate(diagnosis_rows):
+            in_pps, out_pps = self._interface_pps_from_details(row_data[13] if len(row_data) > 13 else "")
+            values = list(row_data[:2]) + [row_data[2], row_data[3], row_data[4], row_data[5], row_data[6], row_data[8], row_data[9], row_data[10], row_data[11], in_pps, out_pps, row_data[12]]
+            for column, value in enumerate(values):
+                self._set_table_item(self.diagnosis_table, row_index, column, value)
+        self._auto_fit_online_table(self.diagnosis_table, "diagnosis")
+
+        switch_rows = [list(row) for row in tables.get("active_link_switch_logs") or [] if isinstance(row, (list, tuple))]
+        self.active_link_switch_table.setRowCount(len(switch_rows))
+        for row_index, row_data in enumerate(switch_rows):
+            from_empty = str(row_data[9] or "") == "empty_link"
+            to_empty = str(row_data[16] or "") == "empty_link"
+            values = [
+                row_index + 1,
+                row_data[1],
+                row_data[2],
+                self.i18n.t("online_mr.empty_link") if from_empty else row_data[3],
+                "-" if from_empty else row_data[4],
+                "-" if from_empty else row_data[5],
+                row_data[6] or "-",
+                row_data[7] or "-",
+                self.i18n.t("online_mr.empty_link") if to_empty else row_data[10],
+                "-" if to_empty else row_data[11],
+                "-" if to_empty else row_data[12],
+                row_data[13] or "-",
+                row_data[14] or "-",
+                row_data[17],
+                row_data[18],
+                row_data[19],
+                row_data[20],
+            ]
+            warning = row_data[19] == 4 or to_empty
+            for column, value in enumerate(values):
+                self._set_table_item(self.active_link_switch_table, row_index, column, value, active=from_empty and not to_empty, warning=warning)
+        self._auto_fit_online_table(self.active_link_switch_table, "active_link_switch_logs")
+        self.switch_history_table.setRowCount(0)
+        self.switch_history_text.setPlainText("主链路切换历史请通过切换日志首屏查看；更多记录按需加载。")
+        return len(diagnosis_rows)
 
     def _analysis_load_failed(self, message: str) -> None:
         task_label = self._analysis_load_task_label or "加载已解析结果"
@@ -3881,15 +4000,17 @@ class OnlineMrCollectionPage(QWidget):
         return self.peer_name_cache.get(_normalize_peer_name_key(text))
 
     def _ensure_peer_name_cache(self) -> None:
-        if self._peer_name_cache_loaded:
+        if self._peer_name_cache_loaded or self.peer_name_cache_worker is not None:
             return
+        self.peer_name_cache_worker = PeerNameCacheLoadWorker(self.repository.database.path, self)
+        self.peer_name_cache_worker.completed.connect(self._apply_peer_name_cache_rows)
+        self.peer_name_cache_worker.finished.connect(self.peer_name_cache_worker.deleteLater)
+        self.peer_name_cache_worker.start()
+
+    def _apply_peer_name_cache_rows(self, payload: object) -> None:
+        self.peer_name_cache_worker = None
         self._peer_name_cache_loaded = True
-        try:
-            repository = AcRepository(self.repository.database)
-            rows = repository.list_all_fit_ap_resources_with_metadata()
-            rows.extend(self._extension_peer_identity_rows(repository, rows))
-        except Exception:
-            rows = []
+        rows = [dict(row) for row in payload or [] if isinstance(row, dict)]
         for row in rows:
             name = str(row.get("ap_name") or "").strip()
             key = _normalize_peer_name_key(name)
@@ -3908,24 +4029,6 @@ class OnlineMrCollectionPage(QWidget):
                 "serial_number": row.get("serial_number") or row.get("serial") or row.get("sn") or row.get("device_sn") or "",
                 "match_rule": "ap_name",
             }
-
-    @staticmethod
-    def _extension_peer_identity_rows(repository: AcRepository, fit_rows: list[dict[str, object | None]]) -> list[dict[str, object]]:
-        try:
-            extensions = repository.list_ap_extension_points()
-        except Exception:
-            return []
-        known_names = {str(row.get("ap_name") or "").strip().casefold() for row in fit_rows if str(row.get("ap_name") or "").strip()}
-        rows: list[dict[str, object]] = []
-        for extension in extensions:
-            name = str(extension.get("ap_name") or "").strip()
-            if not name or name.casefold() in known_names:
-                continue
-            row = dict(extension)
-            row["ap_mac"] = extension.get("ap_mac_display") or extension.get("ap_mac_norm") or ""
-            row["_identity_source"] = "ap_metadata"
-            rows.append(row)
-        return rows
 
     @staticmethod
     def _latest_module_event(events: list[OnlineMrEvent], module: str) -> OnlineMrEvent | None:
@@ -4602,7 +4705,7 @@ class OnlineMrCollectionPage(QWidget):
                 self.view_device_combo.addItem(self.i18n.t("online_mr.unknown_or_deleted_device", device_id=device_id), device_id)
                 seen.add(device_id)
         if self.analysis_only:
-            for row in self.store.list_sessions(self.site_name, None):
+            for row in self.session_history_rows:
                 raw_device_id = row.get("device_id")
                 try:
                     device_id = int(raw_device_id)
@@ -4617,9 +4720,19 @@ class OnlineMrCollectionPage(QWidget):
         self.view_device_combo.blockSignals(False)
 
     def _fill_history(self) -> None:
-        profile_start = time.perf_counter()
         self._history_refresh_pending = False
-        rows = self.store.list_sessions(self.site_name, None)
+        if self.history_load_worker is not None:
+            return
+        self.history_load_worker = OnlineMrHistoryLoadWorker(self.paths, self.site_name, limit=500, parent=self)
+        self.history_load_worker.completed.connect(self._history_loaded)
+        self.history_load_worker.failed.connect(self._history_load_failed)
+        self.history_load_worker.finished.connect(self.history_load_worker.deleteLater)
+        self.history_load_worker.start()
+
+    def _history_loaded(self, payload: object) -> None:
+        profile_start = time.perf_counter()
+        self.history_load_worker = None
+        rows = [dict(row) for row in payload or [] if isinstance(row, dict)]
         self.session_history_rows = list(rows)
         self.history_table.setUpdatesEnabled(False)
         try:
@@ -4652,6 +4765,10 @@ class OnlineMrCollectionPage(QWidget):
             self._refresh_session_select_combo()
         self._auto_fit_online_table(self.history_table, "history_sessions")
         self._log_page_profile("load.history", profile_start, rows=len(rows))
+
+    def _history_load_failed(self, message: str) -> None:
+        self.history_load_worker = None
+        self.log_text.append(f"历史会话加载失败：{message}")
 
     def _refresh_session_select_combo(self) -> None:
         if not self.analysis_only:

@@ -26,9 +26,8 @@ from netconsole.core import app_logger
 from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
-from netconsole.models.omnipeek_name_table import SOURCE_AC_FIT_AP, SOURCE_AP_EXTENSION, SOURCE_DEVICE_MANAGEMENT
-from netconsole.repositories.ac_repository import AcRepository
+from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.omnipeek_name_table import OmniPeekDeviceItem
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -38,7 +37,7 @@ from netconsole.services.background_process_manager import BackgroundProcessMana
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
 from netconsole.services.export.export_task_builders import device_csv_spec, device_template_csv_spec, securecrt_sessions_spec
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
-from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
+from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
@@ -58,6 +57,8 @@ from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 
 
 def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
@@ -130,6 +131,12 @@ class DeviceManagementPage(QWidget):
         self.background_manager = BackgroundProcessManager(self, paths=self.paths)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
+        self._omnipeek_preview_job_id: str | None = None
+        self._omnipeek_preview_source: dict[str, object] = {}
+        self._device_refresh_job_id: str | None = None
+        self._device_refresh_pending = False
+        self.device_page = 1
+        self.device_page_size = DEFAULT_PAGE_SIZE
         self.feature_gate = feature_gate or default_feature_gate()
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
@@ -162,6 +169,7 @@ class DeviceManagementPage(QWidget):
         self.invert_selection_button = QPushButton()
         self.selection_label = QLabel()
         self.table = DeviceTable(i18n)
+        self.device_pagination = PaginationWidget(i18n)
 
         self.search_input.setMinimumWidth(240)
         self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -222,12 +230,15 @@ class DeviceManagementPage(QWidget):
         layout.addLayout(filters)
         layout.addLayout(action_row)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.device_pagination)
         self.setLayout(layout)
 
-        self.search_input.textChanged.connect(self.refresh)
-        self.vendor_filter.currentIndexChanged.connect(self.refresh)
-        self.type_filter.currentIndexChanged.connect(self.refresh)
-        self.group_filter.currentIndexChanged.connect(self.refresh)
+        self.search_input.textChanged.connect(self._device_filters_changed)
+        self.vendor_filter.currentIndexChanged.connect(self._device_filters_changed)
+        self.type_filter.currentIndexChanged.connect(self._device_filters_changed)
+        self.group_filter.currentIndexChanged.connect(self._device_filters_changed)
+        self.device_pagination.pageChanged.connect(self._set_device_page)
+        self.device_pagination.pageSizeChanged.connect(self._set_device_page_size)
         self.add_button.clicked.connect(self.add_device)
         self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.test_connection_button.clicked.connect(self.test_selected_device_connection)
@@ -552,8 +563,8 @@ class DeviceManagementPage(QWidget):
         self.type_filter.addItem(self.i18n.t("devices.type.all"), None)
         self.group_filter.addItem(self.i18n.t("groups.all_groups"), ALL_GROUPS)
         self.group_filter.addItem(self.i18n.t("groups.ungrouped"), UNGROUPED)
-        for item in self._list_groups():
-            self.group_filter.addItem(item.name, item.id)
+        for group_id, group_name in sorted(self.table.group_names.items(), key=lambda item: item[1].casefold()):
+            self.group_filter.addItem(group_name, group_id)
         for item in DEVICE_VENDORS:
             self.vendor_filter.addItem(item, item)
         for item in DEVICE_TYPES:
@@ -584,33 +595,81 @@ class DeviceManagementPage(QWidget):
             app_logger.log_warning("DEVICE_GROUP_LIST_FAILED", str(exc))
             return []
 
-    def refresh(self) -> None:
+    def _device_filters_changed(self, *_args: object) -> None:
+        self.device_page = 1
+        self.refresh()
+
+    def _set_device_page(self, page: int) -> None:
+        self.device_page = max(1, int(page))
+        self.refresh()
+
+    def _set_device_page_size(self, page_size: int) -> None:
+        self.device_page_size = int(page_size)
+        self.device_page = 1
+        self.refresh()
+
+    def refresh(self, *_args: object) -> None:
+        if self._device_refresh_job_id is not None:
+            self._device_refresh_pending = True
+            return
         selected_group_data = self.group_filter.currentData()
         repository_group_filter = self._repository_group_filter_value(selected_group_data)
-        devices = self.repository.list(
-            search=self.search_input.text().strip() or None,
-            vendor=self.vendor_filter.currentData(),
-            device_type=self.type_filter.currentData(),
-            group_filter=repository_group_filter,
+        self.refresh_button.setEnabled(False)
+        self._device_refresh_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="device_list_page",
+                params={
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "filters": {
+                        "search": self.search_input.text().strip() or None,
+                        "vendor": self.vendor_filter.currentData(),
+                        "device_type": self.type_filter.currentData(),
+                        "group_filter": repository_group_filter,
+                    },
+                    "current_page": self.device_page,
+                    "page_size": self.device_page_size,
+                },
+            )
         )
+
+    def _apply_device_list_result(self, result: dict[str, object], selected_group_data: object = None) -> None:
+        devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        group_names = {
+            int(row.get("id")): str(row.get("name") or "")
+            for row in result.get("groups") or []
+            if isinstance(row, dict) and row.get("id") is not None
+        }
         app_logger.log_info(
             "DEVICE_GROUP_FILTER_APPLIED",
             (
                 f"site_name={self.site_name}, selected_text={self.group_filter.currentText()}, "
                 f"selected_data={selected_group_data}, selected_data_type={type(selected_group_data).__name__}, "
-                f"repository_filter_value={repository_group_filter}, result_count={len(devices)}"
+                f"repository_filter_value={self._repository_group_filter_value(self.group_filter.currentData())}, result_count={len(devices)}"
             ),
         )
-        self.table.set_group_names({int(group.id): group.name for group in self._list_groups() if group.id is not None})
+        current_group = self.group_filter.currentData() if selected_group_data is None else selected_group_data
+        self.table.set_group_names(group_names)
+        self._populate_filters()
+        self._restore_combo_value(self.group_filter, current_group if current_group is not None else ALL_GROUPS)
         self.table.set_external_terminal_action_state(
             visible=self.feature_gate.is_visible("devices.external_terminal"),
             enabled=self.feature_gate.is_enabled("devices.external_terminal"),
         )
         self.table.set_devices(devices)
+        self.device_page = int(result.get("current_page") or 1)
+        self.device_page_size = int(result.get("page_size") or DEFAULT_PAGE_SIZE)
+        self.device_pagination.set_state(
+            PaginationState(
+                page_size=self.device_page_size,
+                current_page=self.device_page,
+                total_items=int(result.get("total_items") or 0),
+                total_pages=int(result.get("total_pages") or 1),
+            )
+        )
         self.update_selection_state()
 
     def refresh_groups(self) -> None:
-        self._populate_filters()
         self.refresh()
 
     def manage_groups(self) -> None:
@@ -885,6 +944,20 @@ class DeviceManagementPage(QWidget):
 
     def _background_finished(self, event: dict) -> None:
         result = dict(event.get("result") or {})
+        if str(event.get("job_id") or "") == str(self._device_refresh_job_id or ""):
+            self._device_refresh_job_id = None
+            self.refresh_button.setEnabled(True)
+            if self._device_refresh_pending:
+                self._device_refresh_pending = False
+                self.refresh()
+                return
+            self._apply_device_list_result(result)
+            return
+        if str(event.get("job_id") or "") == str(self._omnipeek_preview_job_id or ""):
+            self._omnipeek_preview_job_id = None
+            self.export_omnipeek_action.setEnabled(True)
+            self._show_omnipeek_preview(result)
+            return
         if not {"created", "skipped"}.issubset(result):
             return
         self.refresh_groups()
@@ -901,6 +974,16 @@ class DeviceManagementPage(QWidget):
 
     def _background_failed(self, event: dict) -> None:
         message = str(event.get("message") or event.get("error") or "后台任务失败")
+        if str(event.get("job_id") or "") == str(self._device_refresh_job_id or ""):
+            self._device_refresh_job_id = None
+            self.refresh_button.setEnabled(True)
+            if self._device_refresh_pending:
+                self._device_refresh_pending = False
+                self.refresh()
+                return
+        if str(event.get("job_id") or "") == str(self._omnipeek_preview_job_id or ""):
+            self._omnipeek_preview_job_id = None
+            self.export_omnipeek_action.setEnabled(True)
         app_logger.log_error("CSV_IMPORT_FAILED", message)
         MessageBox.warning(self, self.i18n.t("devices.title"), message)
 
@@ -951,26 +1034,41 @@ class DeviceManagementPage(QWidget):
 
     def export_omnipeek_name_table(self) -> None:
         self.feature_gate.assert_enabled("devices.omnipeek_name_table_export")
-        source_devices = self.table.checked_devices() or list(self.table.devices)
-        service = OmniPeekNameTableService(AcRepository(self.repository.database), self.repository)
-        items = service.collect_items(
-            include_ac_fit_ap=False,
-            include_ap_extensions=False,
-            include_device_mr=True,
-            devices=source_devices,
-            group_names=self._device_group_names(),
+        if self._omnipeek_preview_job_id is not None:
+            return
+        checked_devices = self.table.checked_devices()
+        selected_device_uuids = [str(device.device_uuid or "") for device in checked_devices if str(device.device_uuid or "")]
+        self._omnipeek_preview_source = {
+            "db_path": str(self.repository.database.path),
+            "site_name": self.site_name,
+            "ac_uuid": "",
+            "device_filters": self._current_device_filters(),
+            "selected_device_uuids": selected_device_uuids,
+        }
+        self.export_omnipeek_action.setEnabled(False)
+        self._omnipeek_preview_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="omnipeek_name_table_preview",
+                params={
+                    **self._omnipeek_preview_source,
+                    "include_ac_fit_ap": False,
+                    "include_ap_extensions": False,
+                    "include_device_mr": True,
+                    "preview_limit": 500,
+                },
+            )
         )
+
+    def _show_omnipeek_preview(self, result: dict[str, object]) -> None:
+        items = [OmniPeekDeviceItem(**dict(row)) for row in result.get("items") or [] if isinstance(row, dict)]
         if not items:
             MessageBox.warning(self, "导出 OmniPeek 名称表", "当前筛选或勾选设备中没有可导出的车载 MR。")
             return
-        source_counts = {
-            SOURCE_AC_FIT_AP: 0,
-            SOURCE_AP_EXTENSION: 0,
-            SOURCE_DEVICE_MANAGEMENT: len(items),
-        }
         dialog = OmniPeekExportDialog(
             items,
-            source_counts,
+            {str(key): int(value) for key, value in dict(result.get("source_counts") or {}).items()},
+            source=dict(self._omnipeek_preview_source),
+            preview_stats={str(key): int(value) for key, value in dict(result.get("stats") or {}).items()},
             default_line_name=default_omnipeek_line_name(self.site_name, self.settings.paths),
             settings=self.settings,
             parent=self,

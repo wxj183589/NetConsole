@@ -45,6 +45,7 @@ from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.vehicle_mr_online_page import (
     VehicleMrHistoryQueryDialog,
     VehicleMrMappingDialog,
+    _vehicle_ap_lookup_from_payload,
     export_vehicle_mr_history_rows,
     export_vehicle_mr_mapping_template,
 )
@@ -532,6 +533,47 @@ def test_h3c_radio_mac_tolerant_match_returns_station() -> None:
     assert matched.station == "鼓楼站"
     assert matched.match_method == "h3c_radio_mac"
     assert matched.match_score == 80
+
+
+def test_vehicle_ap_lookup_from_background_payload_restores_matched_ap() -> None:
+    payload = {
+        "__resources__": [
+            {
+                "ap_name": "Y01-02",
+                "station": "鼓楼站",
+                "match_method": "resource",
+                "match_score": 0,
+                "ap_mac": "bc5a3457a740",
+                "station_source": "optical",
+            }
+        ],
+        "name:y01-02": {
+            "ap_name": "Y01-02",
+            "station": "鼓楼站",
+            "match_method": "ap_name_exact",
+            "match_score": 100,
+            "ap_mac": "bc5a3457a740",
+            "station_source": "optical",
+        },
+        "mac:bc5a3457a740": {
+            "ap_name": "Y01-02",
+            "station": "鼓楼站",
+            "match_method": "mac_exact",
+            "match_score": 95,
+            "ap_mac": "bc5a3457a740",
+            "station_source": "optical",
+        },
+        "compat": "keep",
+    }
+
+    lookup = _vehicle_ap_lookup_from_payload(payload)
+
+    assert isinstance(lookup["__resources__"][0], MatchedAp)
+    assert isinstance(lookup["name:y01-02"], MatchedAp)
+    assert isinstance(lookup["mac:bc5a3457a740"], MatchedAp)
+    assert lookup["name:y01-02"].match_score == 100
+    assert lookup["mac:bc5a3457a740"].station == "鼓楼站"
+    assert lookup["compat"] == "keep"
 
 
 def test_pass_events_are_persisted_for_online_ap_station_and_offline_changes(tmp_path: Path) -> None:
