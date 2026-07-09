@@ -47,6 +47,7 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.utils.text_encoding import read_text_with_fallback
 
 
@@ -491,9 +492,7 @@ class DeviceDetailDialog(QDialog):
         dialog = HistoryDataDialog(self.i18n, self.device.name, object_name, columns, rows, self)
         self.history_dialogs.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._remove_history_dialog(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"history:{object_name}", activate=False, raise_window=False)
         return dialog
 
     def _remove_history_dialog(self, dialog: HistoryDataDialog) -> None:

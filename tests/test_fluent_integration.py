@@ -140,6 +140,33 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     window.close()
 
 
+def test_fluent_detach_current_page_opens_non_focus_window(monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMainWindow, QWidget
+
+    from netconsole.app import build_window
+
+    app()
+    window = build_window()
+    monkeypatch.setattr(window, "_create_detached_page", lambda page_id: QWidget())
+    monkeypatch.setattr(window, "_activate_detached_page", lambda page_id, page: None)
+    monkeypatch.setattr(window, "_show_info", lambda title, content: pytest.fail("detach should open a real window"))
+
+    window.detach_current_page()
+
+    detached = window.detached_windows.get("devices")
+    assert isinstance(detached, QMainWindow)
+    assert detached.isVisible()
+    assert detached.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    assert detached.windowModality() == Qt.WindowModality.NonModal
+
+    window.detach_current_page()
+    assert window.detached_windows.get("devices") is detached
+
+    detached.close()
+    window.close()
+
+
 def test_ac_global_command_bar_keeps_tab_specific_actions_out():
     from PySide6.QtWidgets import QApplication, QPushButton
 

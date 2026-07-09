@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidgetItem,
+    QMainWindow,
     QMenu,
     QPlainTextEdit,
     QPushButton,
@@ -49,6 +50,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
 from netconsole.ui.pages.settings_page import SettingsPage
 from netconsole.ui.dialogs.mesh_analysis_params_dialog import MeshAnalysisParamsEditor
+from netconsole.ui.dialogs.dialog_style import apply_dialog_style
 from netconsole.ui.components.nc_command_bar import NCCommandAction, NCCommandBar
 from netconsole.ui.shell.fluent_bridge import (
     FIF,
@@ -70,6 +72,8 @@ from netconsole.ui.windowing import (
     main_window_geometry_issue,
     should_save_main_window_geometry,
 )
+from netconsole.ui.window_manager import window_manager
+from netconsole.ui.window_popup_service import show_non_focus_window
 
 
 WINDOW_CONTROL_SAFE_RIGHT = 180
@@ -101,7 +105,9 @@ class AppFluentWindow(SplitFluentWindow):
         self.pages: dict[str, QWidget] = {}
         self.raw_pages: dict[str, QWidget] = {}
         self._page_factories: dict[str, Callable[[], QWidget]] = {}
+        self._page_titles: dict[str, str] = {}
         self._page_content_widgets: dict[str, QWidget] = {}
+        self.detached_windows: dict[str, QMainWindow] = {}
         self._nav_items: list[QListWidgetItem] = []
         self._site_labels: list[QLabel] = []
         self._status_labels: list[QLabel] = []
@@ -393,6 +399,7 @@ class AppFluentWindow(SplitFluentWindow):
             if feature_id is not None and not self.feature_gate.is_enabled(feature_id):
                 continue
             self._page_factories[page_id] = factory
+            self._page_titles[page_id] = title
             if page_id == "devices":
                 content = factory()
                 self.raw_pages[page_id] = content
@@ -966,8 +973,14 @@ class AppFluentWindow(SplitFluentWindow):
         self.activate_page(page_id, force_if_empty=(page_id == "rail_transit"))
 
     def create_site(self) -> None:
+        existing = getattr(self, "create_site_dialog", None)
+        if isinstance(existing, QDialog) and existing.isVisible():
+            show_non_focus_window(self, existing, key="create_site_dialog", activate=False, raise_window=False)
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle("新建局点")
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         form = QFormLayout()
         name_input = QLineEdit()
         line_input = QLineEdit()
@@ -990,50 +1003,80 @@ class AppFluentWindow(SplitFluentWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("确定")
         buttons.button(QDialogButtonBox.Cancel).setText("取消")
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
         layout = QVBoxLayout(dialog)
         layout.addWidget(tabs)
         layout.addWidget(buttons)
         dialog.setMinimumWidth(560)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        name = name_input.text().strip()
-        if not name:
-            return
-        try:
-            site = self.site_manager.create_site(
-                name,
-                display_name=name,
-                line_name=line_input.text().strip(),
-                system_type=str(system_combo.currentText() or "").strip(),
-                network_domain=str(network_combo.currentText() or "default").strip(),
-                remark=remark_input.text().strip(),
-                mesh_analysis_params=mesh_params_editor.params().to_dict(),
-            )
-        except Exception as exc:
-            app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
-            MessageBox.warning(self, "新建局点", str(exc))
-            return
-        self._switch_to_site(site)
-        self._show_info("局点已创建", f"当前局点：{site.name}")
+        self.create_site_dialog = dialog
+
+        def cleanup() -> None:
+            if getattr(self, "create_site_dialog", None) is dialog:
+                self.create_site_dialog = None
+            dialog.deleteLater()
+
+        def on_accept() -> None:
+            name = name_input.text().strip()
+            if not name:
+                MessageBox.warning(dialog, "新建局点", "请输入局点名称")
+                return
+            try:
+                site = self.site_manager.create_site(
+                    name,
+                    display_name=name,
+                    line_name=line_input.text().strip(),
+                    system_type=str(system_combo.currentText() or "").strip(),
+                    network_domain=str(network_combo.currentText() or "default").strip(),
+                    remark=remark_input.text().strip(),
+                    mesh_analysis_params=mesh_params_editor.params().to_dict(),
+                )
+            except Exception as exc:
+                app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
+                MessageBox.warning(dialog, "新建局点", str(exc))
+                return
+            dialog.accept()
+            self._switch_to_site(site)
+            self._show_info("局点已创建", f"当前局点：{site.name}")
+
+        buttons.accepted.connect(on_accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog.finished.connect(lambda _=0: cleanup())
+        apply_dialog_style(dialog, title="新建局点", minimum_size=(560, 360), center=False, delete_on_close=False)
+        show_non_focus_window(self, dialog, key="create_site_dialog", activate=False, raise_window=False)
 
     def switch_site_dialog(self) -> None:
         sites = self.site_manager.list_sites()
         if not sites:
+            MessageBox.warning(self, "切换局点", "当前没有可切换的局点")
+            return
+        existing = getattr(self, "site_switch_dialog", None)
+        if isinstance(existing, QDialog) and existing.isVisible():
+            show_non_focus_window(self, existing, key="site_switch_dialog", activate=False, raise_window=False)
             return
         current_index = sites.index(self.site.name) if self.site.name in sites else 0
-        name, accepted = InputDialog.getItem(self, "切换局点", "请选择局点", sites, current_index, False)
-        if not accepted or not name or name == self.site.name:
-            return
-        try:
-            site = self.site_manager.switch_site(name)
-        except Exception as exc:
-            app_logger.log_warning("SITE_SWITCH_FAILED", str(exc))
-            MessageBox.warning(self, "切换局点", str(exc))
-            return
-        self._switch_to_site(site)
-        self._show_info("局点已切换", f"当前局点：{site.name}")
+
+        def on_selected(name: str) -> None:
+            if not name or name == self.site.name:
+                return
+            try:
+                site = self.site_manager.switch_site(name)
+            except Exception as exc:
+                app_logger.log_warning("SITE_SWITCH_FAILED", str(exc))
+                MessageBox.warning(self, "切换局点", str(exc))
+                return
+            self._switch_to_site(site)
+            self._show_info("局点已切换", f"当前局点：{site.name}")
+
+        dialog = InputDialog.getItemAsync(
+            self,
+            "切换局点",
+            "请选择局点",
+            sites,
+            current_index,
+            False,
+            on_accepted=on_selected,
+        )
+        self.site_switch_dialog = dialog
+        dialog.destroyed.connect(lambda _=None: setattr(self, "site_switch_dialog", None))
 
     def _switch_to_site(self, site: Site) -> None:
         self.site = site
@@ -1095,12 +1138,134 @@ class AppFluentWindow(SplitFluentWindow):
         self._show_info("语言设置已保存", "部分界面将在重启后生效。")
 
     def detach_current_page(self) -> None:
-        self._show_info("弹出模块", "Fluent 主窗口将在后续步骤接入独立窗口弹出。")
+        page_id = self._current_page_id()
+        if page_id is None:
+            return
+        existing = self.detached_windows.get(page_id)
+        if existing is not None:
+            show_non_focus_window(self, existing, key=f"detached:{page_id}", activate=False, raise_window=False)
+            return
+        try:
+            page = self._create_detached_page(page_id)
+        except Exception as exc:
+            app_logger.log_error("FLUENT_DETACHED_PAGE_CREATE_FAILED", f"page={page_id}, error={exc}")
+            MessageBox.warning(self, "弹出模块", str(exc))
+            return
+        title = self._page_titles.get(page_id, page_id)
+        window = QMainWindow()
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window.setWindowTitle(f"NetConsole - {title}")
+        window.resize(1600, 900)
+        window.setMinimumSize(1100, 720)
+        window.setCentralWidget(page)
+        self.detached_windows[page_id] = window
+        window.destroyed.connect(lambda _=None, detached_page_id=page_id: self._remove_detached_window(detached_page_id))
+        window_manager.register_child_window(window, always_on_top=False)
+        show_non_focus_window(self, window, key=f"detached:{page_id}", activate=False, raise_window=False)
+        QTimer.singleShot(0, lambda page_id=page_id, page=page: self._activate_detached_page(page_id, page))
+
+    def _current_page_id(self) -> str | None:
+        if not 0 <= self._current_row < len(self._nav_items):
+            return None
+        return str(self._nav_items[self._current_row].data(256) or "devices")
+
+    def _create_detached_page(self, page_id: str) -> QWidget:
+        feature_id = PAGE_FEATURE_BY_PAGE_ID.get(page_id)
+        if feature_id is not None:
+            self.feature_gate.assert_enabled(feature_id)
+        if page_id == "devices":
+            page = DeviceManagementPage(self.repository, self.i18n, self.site.name)
+            page.groups_changed.connect(self.refresh_group_filters)
+            page.devices_changed.connect(self.refresh_device_dependents)
+            return page
+        if page_id == "ac":
+            from netconsole.ui.pages.ac_management_page import AcManagementPage
+
+            return AcManagementPage(self.repository, self.i18n, self.site.name, self.feature_gate, eager_load=True)
+        if page_id == "rail_transit":
+            from netconsole.ui.pages.rail_transit_page import RailTransitPage
+
+            return RailTransitPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
+        if page_id == "wifi_survey":
+            from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
+
+            return WifiSurveyPage(self.i18n, self.site.name, self.paths)
+        if page_id == "config_collection":
+            from netconsole.ui.pages.config_collection_center_page import ConfigCollectionCenterPage
+
+            return ConfigCollectionCenterPage(self.repository, self.i18n, self.site.name, self.paths)
+        if page_id == "file_management":
+            from netconsole.ui.pages.file_management_page import FileManagementPage
+
+            return FileManagementPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
+        if page_id == "snmp_center":
+            from netconsole.ui.pages.snmp_center_page import SnmpCenterPage
+
+            return SnmpCenterPage(self.repository, self.i18n, self.site.name, self.paths, self.feature_gate)
+        if page_id == "network_tools":
+            from netconsole.ui.pages.network_tools_page import NetworkToolsPage
+
+            return NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
+        if page_id == "command_reference":
+            from netconsole.ui.pages.command_reference_page import CommandReferencePage
+
+            return CommandReferencePage(self.paths)
+        if page_id == "logs":
+            from netconsole.ui.pages.app_log_page import AppLogPage
+
+            return AppLogPage(self.i18n, auto_refresh=False, paths=self.paths)
+        if page_id == "system_settings":
+            return SettingsPage(
+                self.settings,
+                self.site,
+                self.paths,
+                apply_theme_callback=self.set_theme,
+                apply_language_callback=self.apply_language_setting,
+                create_site_callback=self.create_site,
+                switch_site_callback=self.switch_site_dialog,
+                disk_cleanup_callback=self.show_disk_cleanup if self.feature_gate.is_enabled("system.disk_cleanup") else None,
+                changelog_callback=self.show_changelog if self.feature_gate.is_enabled("system.changelog") else None,
+                open_source_callback=self.show_open_source_notices if self.feature_gate.is_enabled("system.open_source") else None,
+            )
+        if page_id == "feature_flags":
+            from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
+
+            return FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
+        raise ValueError(f"未知模块：{page_id}")
+
+    def _activate_detached_page(self, page_id: str, page: QWidget) -> None:
+        try:
+            if page_id == "logs" and hasattr(page, "refresh"):
+                page.refresh()
+            elif page_id == "ac" and hasattr(page, "refresh_current_async_or_lazy"):
+                page.refresh_current_async_or_lazy(force_if_empty=True)
+            elif page_id == "config_collection" and hasattr(page, "refresh"):
+                page.refresh()
+            elif page_id == "file_management" and hasattr(page, "refresh_devices"):
+                page.refresh_devices()
+            elif page_id == "rail_transit":
+                enter = getattr(page, "on_enter", None)
+                if callable(enter):
+                    enter(force_if_empty=True)
+            elif page_id == "snmp_center" and hasattr(page, "start_snmp_service_async"):
+                page.start_snmp_service_async()
+            elif page_id == "network_tools" and hasattr(page, "refresh_all"):
+                page.refresh_all()
+            elif page_id == "system_settings" and hasattr(page, "reload_settings"):
+                page.reload_settings()
+        except Exception as exc:
+            app_logger.log_warning("FLUENT_DETACHED_PAGE_ACTIVATE_FAILED", f"page={page_id}, error={exc}")
+
+    def _remove_detached_window(self, page_id: str) -> None:
+        window = self.detached_windows.pop(page_id, None)
+        if window is not None:
+            window_manager.unregister_child_window(window)
 
     def _show_info(self, title: str, content: str) -> None:
         if InfoBar is None:
             return
         InfoBar.success(title=title, content=content, duration=2500, position=InfoBarPosition.TOP_RIGHT, parent=self)
+        QTimer.singleShot(0, lambda: self.setFocus(Qt.FocusReason.OtherFocusReason))
 
     def open_current_site_dir(self) -> None:
         path = self.paths.site_dir(self.site.name)
@@ -1115,9 +1280,7 @@ class AppFluentWindow(SplitFluentWindow):
             dialog = AboutRepositoryDialog(self.i18n, self)
             dialog.destroyed.connect(lambda _=None: setattr(self, "about_dialog", None))
             self.about_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self._show_non_focus_dialog(dialog, "about_dialog")
 
     def show_changelog(self) -> None:
         self.feature_gate.assert_enabled("system.changelog")
@@ -1128,9 +1291,7 @@ class AppFluentWindow(SplitFluentWindow):
             dialog = ChangelogDialog(self.i18n, self)
             dialog.destroyed.connect(lambda _=None: setattr(self, "changelog_dialog", None))
             self.changelog_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self._show_non_focus_dialog(dialog, "changelog_dialog")
 
     def show_disk_cleanup(self) -> None:
         self.feature_gate.assert_enabled("system.disk_cleanup")
@@ -1141,9 +1302,7 @@ class AppFluentWindow(SplitFluentWindow):
             dialog = DiskCleanupDialog(self.paths, self)
             dialog.destroyed.connect(lambda _=None: setattr(self, "disk_cleanup_dialog", None))
             self.disk_cleanup_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self._show_non_focus_dialog(dialog, "disk_cleanup_dialog")
 
     def show_open_source_notices(self) -> None:
         self.feature_gate.assert_enabled("system.open_source")
@@ -1154,9 +1313,10 @@ class AppFluentWindow(SplitFluentWindow):
             dialog = OpenSourceNoticesDialog(self)
             dialog.destroyed.connect(lambda _=None: setattr(self, "open_source_notices_dialog", None))
             self.open_source_notices_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self._show_non_focus_dialog(dialog, "open_source_notices_dialog")
+
+    def _show_non_focus_dialog(self, dialog: QWidget, key: str) -> None:
+        show_non_focus_window(self, dialog, key=key, activate=False, raise_window=False)
 
     def _click_raw(self, page_id: str, attribute_name: str) -> None:
         button = getattr(self._ensure_real_page(page_id), attribute_name, None)

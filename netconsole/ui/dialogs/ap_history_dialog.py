@@ -12,6 +12,7 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.services.fit_ap_link_info import lldp_source_label
 
@@ -247,9 +248,7 @@ class ApHistoryDialog(QWidget):
     def return_to_parent(self) -> None:
         self.close()
         if self.owner is not None:
-            self.owner.show()
-            self.owner.raise_()
-            self.owner.activateWindow()
+            show_non_focus_window(self, self.owner, key="ap_history_owner", activate=False, raise_window=False)
 
     def export_history(self) -> None:
         path = select_export_path(self, self.i18n.t("ac.export_table"), f"{self.ap_name}_{self.history_type}_history.xlsx", EXCEL_FILTER)

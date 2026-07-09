@@ -15,6 +15,7 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.window_popup_service import show_non_focus_window
 
 
 class ApOpticalHistoryDialog(QWidget):
@@ -159,9 +160,7 @@ class ApOpticalHistoryDialog(QWidget):
     def return_to_parent(self) -> None:
         self.close()
         if self.owner is not None:
-            self.owner.show()
-            self.owner.raise_()
-            self.owner.activateWindow()
+            show_non_focus_window(self, self.owner, key="ap_optical_history_owner", activate=False, raise_window=False)
 
     def closeEvent(self, event) -> None:
         self.settings.set_value("ac/ap_history/window_geometry", {"width": self.width(), "height": self.height()})

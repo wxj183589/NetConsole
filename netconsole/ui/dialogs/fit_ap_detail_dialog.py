@@ -31,6 +31,7 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.state_engine import display_optical_status
 from netconsole.utils.mileage import format_track_mileage, mileage_storage_text
@@ -451,26 +452,20 @@ class FitApDetailDialog(QWidget):
         dialog = ApHistoryDialog(self.i18n, self.ap_name, title, rows, columns, color_field, owner=self)
         self.history_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_history_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"ap_history:{title}", activate=False, raise_window=False)
 
     def _forget_history_window(self, window: ApHistoryDialog) -> None:
         self.history_windows = [item for item in self.history_windows if item is not window]
 
     def open_optical_history(self) -> None:
         if self.optical_history_window is not None:
-            self.optical_history_window.show()
-            self.optical_history_window.raise_()
-            self.optical_history_window.activateWindow()
+            show_non_focus_window(self, self.optical_history_window, key="ap_optical_history", activate=False, raise_window=False)
             return
         rows = self.optical_history_service.query_ap_optical_history_all(self.ap_uuid)
         dialog = ApOpticalHistoryDialog(self.i18n, self.ap_name, rows, self.settings, owner=self)
         self.optical_history_window = dialog
         dialog.destroyed.connect(lambda _=None: setattr(self, "optical_history_window", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="ap_optical_history", activate=False, raise_window=False)
 
     def closeEvent(self, event) -> None:
         self.settings.set_value("ac/ap_detail/window_geometry", {"width": self.width(), "height": self.height()})

@@ -4,9 +4,10 @@ from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from datetime import datetime
 from pathlib import Path
+import uuid
 
-from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -48,10 +49,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
 from netconsole.services.trackside_ap_business import (
-    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
-    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
-    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_ap_business_rows,
     build_trackside_site_filter_items,
@@ -82,6 +80,7 @@ from netconsole.services.fit_ap_import_export import FitApImportExportService, m
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
 from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, default_omnipeek_line_name
 from netconsole.models.omnipeek_name_table import SOURCE_DEVICE_MANAGEMENT
+from netconsole.services.export import ExportJob, ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, AcResourceCollectThread, FitApOpticalCollectThread
@@ -98,9 +97,9 @@ from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_statu
 from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 from netconsole.ui.table_utils import auto_fit_table_columns, auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
-from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThread
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.utils.interface_sort import interface_sort_key
 from netconsole.utils.mileage import format_track_mileage, mileage_search_tokens, parse_mileage_to_meters
 
@@ -2412,9 +2411,7 @@ class AcManagementPage(QWidget):
         dialog = StationOnlineHistoryDialog(self.i18n, rows, site_name)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"station_online_history:{site_name}", activate=False, raise_window=False)
 
     def selected_overview_site(self) -> str | None:
         selected = self.overview_table.selectionModel().selectedRows() if self.overview_table.selectionModel() else []
@@ -2691,9 +2688,7 @@ class AcManagementPage(QWidget):
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"fit_ap_detail:{ap_uuid}", activate=False, raise_window=False)
 
     def open_ap_detail_from_optical(self, row: int) -> None:
         ac_uuid = self.current_device_uuid()
@@ -2712,7 +2707,7 @@ class AcManagementPage(QWidget):
             dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid or ap_name)
             self.detail_windows.append(dialog)
             dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-            dialog.show()
+            show_non_focus_window(self, dialog, key=f"fit_ap_detail:{ap_uuid or ap_name}", activate=False, raise_window=False)
 
     def open_device_detail_from_trackside(self, row: int) -> None:
         rows = self.current_trackside_page_rows()
@@ -2725,9 +2720,7 @@ class AcManagementPage(QWidget):
         dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"device_detail:{device.device_uuid or device.id}", activate=False, raise_window=False)
 
     def open_ap_detail_from_offline_ledger(self, row: int) -> None:
         ac_uuid = self.current_device_uuid()
@@ -2746,9 +2739,7 @@ class AcManagementPage(QWidget):
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, target)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"fit_ap_detail:{target}", activate=False, raise_window=False)
 
     def _resolve_fit_ap_uuid(self, ac_uuid: str, *, ap_uuid: object = None, ap_mac: object = None, ap_name: object = None) -> str:
         uuid_text = str(ap_uuid or "").strip()
@@ -2776,9 +2767,7 @@ class AcManagementPage(QWidget):
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"fit_ap_detail:{ap_uuid}", activate=False, raise_window=False)
 
     def _forget_detail_window(self, window: FitApDetailDialog) -> None:
         self.detail_windows = [item for item in self.detail_windows if item is not window]

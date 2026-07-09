@@ -68,6 +68,7 @@ from netconsole.ui.car_network_diagnostic_worker import CarNetworkDiagnosticWork
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.theme.qt_theme_engine import current_theme_mode, current_theme_tokens
+from netconsole.ui.window_popup_service import show_non_focus_window
 
 
 STATE_LABELS = {
@@ -537,14 +538,13 @@ class CarNetworkDiagnosticPage(QWidget):
 
     def open_point_table(self) -> None:
         if self.car_network_point_table_window is not None and self.car_network_point_table_window.isVisible():
-            self.car_network_point_table_window.raise_()
-            self.car_network_point_table_window.activateWindow()
+            show_non_focus_window(self, self.car_network_point_table_window, key="car_network_point_table", activate=False, raise_window=False)
             return
         dialog = PointTableDialog(self.repository, self.site_name, self.store, self.config_store, self)
         dialog.accepted.connect(self.refresh_all)
         dialog.destroyed.connect(lambda _obj=None: setattr(self, "car_network_point_table_window", None))
         self.car_network_point_table_window = dialog
-        dialog.show()
+        show_non_focus_window(self, dialog, key="car_network_point_table", activate=False, raise_window=False)
 
     def on_train_selected(self, row: int, _column: int) -> None:
         item = self.train_table.item(row, 0)

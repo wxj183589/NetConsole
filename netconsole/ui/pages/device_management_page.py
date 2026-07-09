@@ -55,6 +55,7 @@ from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
 from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
 from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.window_manager import window_manager
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
 
@@ -336,9 +337,7 @@ class DeviceManagementPage(QWidget):
         self.batch_connection_test_worker.device_finished.connect(on_device_finished)
         self.batch_connection_test_worker.finished.connect(self.batch_connection_test_worker.deleteLater)
         self.batch_connection_test_worker.finished.connect(lambda: setattr(self, "batch_connection_test_worker", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="batch_connection_test_progress", activate=False, raise_window=False)
         self.batch_connection_test_worker.start()
 
     def _show_connection_result(self, result: ConnectionTestResult) -> None:
@@ -429,9 +428,7 @@ class DeviceManagementPage(QWidget):
         dialog = ExternalTerminalSettingsDialog(self.i18n, self.settings, self)
         self.external_terminal_settings_dialog = dialog
         dialog.destroyed.connect(lambda _=None: setattr(self, "external_terminal_settings_dialog", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="external_terminal_settings", activate=False, raise_window=False)
 
     def generate_securecrt_sessions(self) -> None:
         devices = self.table.checked_devices() or self._filtered_devices()
@@ -718,9 +715,7 @@ class DeviceManagementPage(QWidget):
         detail_key = str(device.device_uuid or device.id)
         existing = self.detail_dialogs.get(detail_key)
         if isinstance(existing, DeviceDetailDialog):
-            existing.show()
-            existing.raise_()
-            existing.activateWindow()
+            show_non_focus_window(self, existing, key=f"device_detail:{detail_key}", activate=False, raise_window=False)
             return
         dialog = DeviceDetailDialog(
             self.i18n,
@@ -733,9 +728,7 @@ class DeviceManagementPage(QWidget):
         self.detail_dialogs[detail_key] = dialog
         window_manager.register_child_window(dialog)
         dialog.destroyed.connect(lambda _=None, key=detail_key, window=dialog: self._remove_detail_dialog(key, window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"device_detail:{detail_key}", activate=False, raise_window=False)
 
     def _remove_detail_dialog(self, detail_key: str, dialog: DeviceDetailDialog) -> None:
         if self.detail_dialogs.get(detail_key) is dialog:
@@ -750,14 +743,11 @@ class DeviceManagementPage(QWidget):
         self.show_device_detail(device_id)
 
     def _show_window(self, dialog: DeviceDialog) -> None:
-        dialog.show()
         self._activate_window(dialog)
 
     @staticmethod
     def _activate_window(dialog: DeviceDialog) -> None:
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(dialog.parentWidget(), dialog, key="device_dialog", activate=False, raise_window=False)
 
     def _create_device_from_dialog(self, device) -> None:
         try:
@@ -862,9 +852,7 @@ class DeviceManagementPage(QWidget):
         self.batch_collect_worker.finished.connect(lambda: dialog.set_running(False))
         self.batch_collect_worker.finished.connect(self.batch_collect_worker.deleteLater)
         self.batch_collect_worker.finished.connect(lambda: setattr(self, "batch_collect_worker", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="batch_collect_progress", activate=False, raise_window=False)
         self.batch_collect_worker.start()
 
     def clear_selection(self) -> None:

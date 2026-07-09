@@ -51,6 +51,7 @@ from netconsole.ui.shell import AppFramelessMainWindow
 from netconsole.ui.theme import apply_global_theme
 from netconsole.ui.widgets.loading_overlay import LoadingOverlay
 from netconsole.ui.window_manager import window_manager
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.ui.windowing import fit_default_window_size
 
 
@@ -437,7 +438,7 @@ class MainWindow(AppFramelessMainWindow):
         self.detached_windows.append(window)
         window.destroyed.connect(lambda _=None, detached=window: self._remove_detached_window(detached))
         window_manager.register_child_window(window)
-        window.show()
+        show_non_focus_window(self, window, key=f"detached:{page_id}", activate=False, raise_window=False)
         QTimer.singleShot(0, lambda page_id=page_id, page=page: self.activate_detached_page(page_id, page))
 
     def activate_detached_page(self, page_id: str, page: QWidget) -> None:
@@ -649,6 +650,7 @@ class MainWindow(AppFramelessMainWindow):
     def switch_site_dialog(self) -> None:
         sites = self.site_manager.list_sites()
         if not sites:
+            MessageBox.warning(self, self.i18n.t("site.switch"), "当前没有可切换的局点")
             return
         current_index = sites.index(self.site.name) if self.site.name in sites else 0
         name, accepted = InputDialog.getItem(
@@ -742,17 +744,13 @@ class MainWindow(AppFramelessMainWindow):
         if self.about_dialog is None:
             self.about_dialog = AboutRepositoryDialog(self.i18n, self)
             self.about_dialog.destroyed.connect(lambda _=None: setattr(self, "about_dialog", None))
-        self.about_dialog.show()
-        self.about_dialog.raise_()
-        self.about_dialog.activateWindow()
+        show_non_focus_window(self, self.about_dialog, key="about_dialog", activate=False, raise_window=False)
 
     def show_changelog_dialog(self) -> None:
         if self.changelog_dialog is None:
             self.changelog_dialog = ChangelogDialog(self.i18n, self)
             self.changelog_dialog.destroyed.connect(lambda _=None: setattr(self, "changelog_dialog", None))
-        self.changelog_dialog.show()
-        self.changelog_dialog.raise_()
-        self.changelog_dialog.activateWindow()
+        show_non_focus_window(self, self.changelog_dialog, key="changelog_dialog", activate=False, raise_window=False)
 
     def show_data_disk_manager(self) -> None:
         if self.data_disk_dialog is None:
@@ -760,9 +758,7 @@ class MainWindow(AppFramelessMainWindow):
 
             self.data_disk_dialog = DataDiskManagerDialog(self.i18n, self.paths, self)
             self.data_disk_dialog.destroyed.connect(lambda _=None: setattr(self, "data_disk_dialog", None))
-        self.data_disk_dialog.show()
-        self.data_disk_dialog.raise_()
-        self.data_disk_dialog.activateWindow()
+        show_non_focus_window(self, self.data_disk_dialog, key="data_disk_dialog", activate=False, raise_window=False)
 
     def show_admin_unlock_dialog(self) -> None:
         if not self.feature_gate.is_admin_unlock_configured():
