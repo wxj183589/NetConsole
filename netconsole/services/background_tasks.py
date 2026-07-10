@@ -29,6 +29,8 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _trackside_interface_history_page(params, progress_callback, should_cancel)
     if job.task_type == "car_network_point_table_import":
         return _car_network_point_table_import(params, progress_callback, should_cancel)
+    if job.task_type == "car_network_point_table_load":
+        return _car_network_point_table_load(params, progress_callback, should_cancel)
     if job.task_type == "car_network_refresh_all":
         return _car_network_refresh_all(params, progress_callback, should_cancel)
     if job.task_type == "car_network_generate_point_table":
@@ -43,8 +45,16 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _trackside_ap_plan_save(params, progress_callback, should_cancel)
     if job.task_type == "vehicle_mr_mapping_import":
         return _vehicle_mr_mapping_import(params, progress_callback, should_cancel)
+    if job.task_type == "vehicle_mr_mapping_load":
+        return _vehicle_mr_mapping_load(params, progress_callback, should_cancel)
+    if job.task_type == "vehicle_mr_mapping_save":
+        return _vehicle_mr_mapping_save(params, progress_callback, should_cancel)
     if job.task_type == "vehicle_mr_online_refresh_all":
         return _vehicle_mr_online_refresh_all(params, progress_callback, should_cancel)
+    if job.task_type == "vehicle_mr_ap_mapping_refresh":
+        return _vehicle_mr_ap_mapping_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "vehicle_mr_event_page":
+        return _vehicle_mr_event_page(params, progress_callback, should_cancel)
     if job.task_type == "vehicle_mr_history_query":
         return _vehicle_mr_history_query(params, progress_callback, should_cancel)
     if job.task_type == "fit_ap_metadata_import":
@@ -603,6 +613,19 @@ def _car_network_point_table_import(params: dict[str, Any], progress: ProgressCa
     return {"count": count, "nodes": [asdict(node) for node in nodes]}
 
 
+def _car_network_point_table_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkGlobalConfigStore, CarNetworkPointTableStore, merge_global_config
+
+    _emit(progress, "car_network_point_table_load", 0, 1, "正在加载车内通信点表")
+    _check_cancel(should_cancel)
+    site_name = str(params.get("site_name") or "")
+    paths = _path_resolver_from_params(params)
+    global_config = merge_global_config(CarNetworkGlobalConfigStore(paths, site_name).load())
+    nodes = CarNetworkPointTableStore(paths, site_name).load()
+    _emit(progress, "car_network_point_table_load", 1, 1, "车内通信点表加载完成")
+    return {"global_config": global_config, "nodes": [asdict(node) for node in nodes], "count": len(nodes)}
+
+
 def _car_network_refresh_all(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.repositories.device_repository import DeviceRepository
@@ -654,6 +677,7 @@ def _car_network_generate_point_table(params: dict[str, Any], progress: Progress
         CarNetworkGlobalConfigStore,
         CarNetworkPointTableStore,
         generate_point_table_from_devices,
+        merge_global_config,
     )
 
     _emit(progress, "car_network_generate_point_table", 0, 1, "正在从设备管理生成点表")
@@ -662,6 +686,9 @@ def _car_network_generate_point_table(params: dict[str, Any], progress: Progress
     paths = _path_resolver_from_params(params)
     existing_nodes = [CarNetworkNode(**dict(row)) for row in params.get("nodes") or [] if isinstance(row, dict)]
     global_config = dict(params.get("global_config") or {})
+    if not global_config:
+        global_config = CarNetworkGlobalConfigStore(paths, site_name).load()
+    global_config = merge_global_config(global_config)
     nodes = generate_point_table_from_devices(DeviceRepository(Database(Path(str(params.get("db_path") or "")))), site_name, existing_nodes, global_config)
     if bool(params.get("save_result")):
         CarNetworkGlobalConfigStore(paths, site_name).save(global_config)
@@ -737,9 +764,35 @@ def _vehicle_mr_mapping_import(params: dict[str, Any], progress: ProgressCallbac
     _check_cancel(should_cancel)
     site_name = str(params.get("site_name") or "")
     rows = _read_named_table_file(Path(str(params.get("path") or "")))
-    count = VehicleMrOnlineStore(_path_resolver_from_params(params), site_name).import_mapping_rows(rows)
+    store = VehicleMrOnlineStore(_path_resolver_from_params(params), site_name)
+    count = store.import_mapping_rows(rows)
+    mappings = store.list_mappings()
     _emit(progress, "vehicle_mr_mapping_import", 1, 1, "车载 MR 映射表导入完成")
-    return {"count": count}
+    return {"count": count, "mappings": [asdict(mapping) for mapping in mappings]}
+
+
+def _vehicle_mr_mapping_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
+
+    _emit(progress, "vehicle_mr_mapping_load", 0, 1, "正在读取车载 MR 映射表")
+    _check_cancel(should_cancel)
+    store = VehicleMrOnlineStore(_path_resolver_from_params(params), str(params.get("site_name") or ""))
+    mappings = store.list_mappings()
+    _emit(progress, "vehicle_mr_mapping_load", 1, 1, "车载 MR 映射表读取完成")
+    return {"mappings": [asdict(mapping) for mapping in mappings], "count": len(mappings)}
+
+
+def _vehicle_mr_mapping_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore, VehicleMrTrainMapping
+
+    rows = [VehicleMrTrainMapping(**dict(row)) for row in params.get("mappings") or [] if isinstance(row, dict)]
+    _emit(progress, "vehicle_mr_mapping_save", 0, max(len(rows), 1), "正在保存车载 MR 映射表")
+    _check_cancel(should_cancel)
+    store = VehicleMrOnlineStore(_path_resolver_from_params(params), str(params.get("site_name") or ""))
+    store.save_mappings(rows)
+    mappings = store.list_mappings()
+    _emit(progress, "vehicle_mr_mapping_save", max(len(rows), 1), max(len(rows), 1), "车载 MR 映射表保存完成")
+    return {"mappings": [asdict(mapping) for mapping in mappings], "count": len(mappings)}
 
 
 def _vehicle_mr_online_refresh_all(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -747,6 +800,7 @@ def _vehicle_mr_online_refresh_all(params: dict[str, Any], progress: ProgressCal
     from netconsole.models.device import Device
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.vehicle_mr_online import (
+        build_mapping_lookup,
         build_mapping_trains,
         build_registered_trains,
         load_group_names,
@@ -763,7 +817,9 @@ def _vehicle_mr_online_refresh_all(params: dict[str, Any], progress: ProgressCal
     devices = repository.list()
     group_names = load_group_names(repository, site_name)
     device_trains = build_registered_trains(devices, group_names)
-    mapping_trains = build_mapping_trains(store.list_mappings())
+    mappings = store.list_mappings()
+    mapping_trains = build_mapping_trains(mappings)
+    mapping_lookup = build_mapping_lookup(mappings)
     registered_trains = {**device_trains, **mapping_trains}
     _emit(progress, "vehicle_mr_online_refresh_all", 2, 5, "正在整理当前列车状态")
     _check_cancel(should_cancel)
@@ -789,7 +845,46 @@ def _vehicle_mr_online_refresh_all(params: dict[str, Any], progress: ProgressCal
         "registered_trains": {key: asdict(value) for key, value in registered_trains.items()},
         "current_trains": {key: asdict(value) for key, value in merged.items()},
         "ap_lookup": ap_lookup,
+        "mapping_lookup": {key: asdict(value) for key, value in mapping_lookup.items()},
     }
+
+
+def _vehicle_mr_ap_mapping_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore, load_trackside_ap_lookup
+
+    _emit(progress, "vehicle_mr_ap_mapping_refresh", 0, 2, "正在读取轨旁 AP 映射")
+    _check_cancel(should_cancel)
+    repository = DeviceRepository(Database(Path(str(params.get("db_path") or ""))))
+    site_name = str(params.get("site_name") or "")
+    store = VehicleMrOnlineStore(_path_resolver_from_params(params), site_name)
+    ap_lookup = load_trackside_ap_lookup(repository)
+    _emit(progress, "vehicle_mr_ap_mapping_refresh", 1, 2, "正在回填历史车站")
+    _check_cancel(should_cancel)
+    backfilled = store.backfill_event_stations(ap_lookup)
+    train_id = str(params.get("train_id") or "")
+    events = store.list_events(train_id, int(params.get("limit") or 200)) if train_id else []
+    _emit(progress, "vehicle_mr_ap_mapping_refresh", 2, 2, "AP 映射刷新完成")
+    return {
+        "ap_lookup": _jsonable_vehicle_ap_lookup(ap_lookup),
+        "backfilled": backfilled,
+        "train_id": train_id,
+        "events": events,
+    }
+
+
+def _vehicle_mr_event_page(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
+
+    _emit(progress, "vehicle_mr_event_page", 0, 1, "正在读取车载 MR 历史经过")
+    _check_cancel(should_cancel)
+    train_id = str(params.get("train_id") or "")
+    limit = int(params.get("limit") or 200)
+    store = VehicleMrOnlineStore(_path_resolver_from_params(params), str(params.get("site_name") or ""))
+    rows = store.list_events(train_id, limit)
+    _emit(progress, "vehicle_mr_event_page", 1, 1, "车载 MR 历史经过读取完成")
+    return {"train_id": train_id, "rows": rows, "limit": limit}
 
 
 def _vehicle_mr_history_query(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

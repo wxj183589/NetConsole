@@ -43,6 +43,14 @@ def test_ipv4_calculate_normalizes_host_address_and_special_prefixes() -> None:
     assert "/32" in ipv4_calculate("192.0.2.1/32")["note"]
 
 
+def test_ipv4_calculate_large_network_uses_math_without_expanding_hosts() -> None:
+    result = ipv4_calculate("0.0.0.0/0")
+
+    assert result["usable_hosts"] == 4294967294
+    assert result["first_usable"] == "0.0.0.1"
+    assert result["last_usable"] == "255.255.255.254"
+
+
 def test_wildcard_calculate_supports_default_values() -> None:
     result = wildcard_calculate("/24\n255.255.0.0\n192.168.0.0 255.255.0.0")
 
@@ -50,6 +58,13 @@ def test_wildcard_calculate_supports_default_values() -> None:
     assert result.rows[0]["wildcard"] == "0.0.0.255"
     assert result.rows[1]["wildcard"] == "0.0.255.255"
     assert result.rows[2]["wildcard"] == "0.0.255.255"
+
+
+def test_wildcard_calculate_large_network_uses_math_without_expanding_hosts() -> None:
+    result = wildcard_calculate("/0")
+
+    assert result.errors == []
+    assert result.rows[0]["usable_hosts"] == 4294967294
 
 
 def test_vlsm_allocates_by_host_requirement_and_reports_capacity_error() -> None:
@@ -86,6 +101,15 @@ def test_subnet_split_returns_expected_page() -> None:
         "192.168.2.0/24",
         "192.168.3.0/24",
     ]
+
+
+def test_subnet_split_large_network_returns_only_requested_page() -> None:
+    result = split_subnets("0.0.0.0/0", 32, page_size=3)
+
+    assert result.errors == []
+    assert result.summary["total"] == 4294967296
+    assert result.summary["pages"] == 1431655766
+    assert [row["cidr"] for row in result.rows] == ["0.0.0.0/32", "0.0.0.1/32", "0.0.0.2/32"]
 
 
 def test_route_summary_collapses_default_networks() -> None:

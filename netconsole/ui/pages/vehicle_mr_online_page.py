@@ -37,6 +37,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.vehicle_mr_online import (
     MatchedAp,
+    TrainIdentity,
     TRAIN_STATUS_OFFLINE,
     TRAIN_STATUS_ONLINE,
     TRAIN_STATUS_PARTIAL,
@@ -50,12 +51,7 @@ from netconsole.services.vehicle_mr_online import (
     VehicleMrEndState,
     VehicleMrTrainMapping,
     VehicleMrTrainState,
-    build_mapping_lookup,
-    build_mapping_trains,
-    build_registered_trains,
     is_ac_device,
-    load_group_names,
-    load_trackside_ap_lookup,
     normalize_train_no,
     normalize_online_policy,
     online_policy_label,
@@ -129,6 +125,16 @@ def _vehicle_ap_lookup_from_payload(payload: object) -> dict[str, object]:
     return result
 
 
+def _vehicle_mapping_lookup_from_payload(payload: object) -> dict[str, TrainIdentity]:
+    result: dict[str, TrainIdentity] = {}
+    if not isinstance(payload, dict):
+        return result
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            result[str(key)] = TrainIdentity(**dict(value))
+    return result
+
+
 class VehicleMrOnlinePage(QWidget):
     def __init__(self, repository: DeviceRepository, i18n: I18n, site_name: str, paths: PathResolver) -> None:
         super().__init__()
@@ -148,7 +154,11 @@ class VehicleMrOnlinePage(QWidget):
         self.worker: VehicleMrOnlineWorker | None = None
         self.selected_train_id = ""
         self.ap_lookup: dict[str, object] = {}
+        self.mapping_lookup: dict[str, TrainIdentity] = {}
         self.history_windows: list[VehicleMrHistoryQueryDialog] = []
+        self._ap_refresh_job_id: str | None = None
+        self._event_job_id: str | None = None
+        self._event_job_train_id = ""
         self._event_widths_initialized = False
         self._last_valid_interval = 10
 
@@ -251,6 +261,15 @@ class VehicleMrOnlinePage(QWidget):
             self.refresh_button.setEnabled(True)
             self._apply_refresh_result(result)
             return
+        if job_id == self._ap_refresh_job_id:
+            self._ap_refresh_job_id = None
+            self._apply_ap_refresh_result(result)
+            self._update_buttons()
+            return
+        if job_id == self._event_job_id:
+            self._event_job_id = None
+            self._apply_event_result(result)
+            return
         for dialog in list(self.history_windows):
             handler = getattr(dialog, "handle_background_result", None)
             if callable(handler) and handler(job_id, result):
@@ -265,6 +284,17 @@ class VehicleMrOnlinePage(QWidget):
             self.status_label.setText("刷新失败")
             MessageBox.warning(self, "列车在线情况", message)
             return
+        if job_id == self._ap_refresh_job_id:
+            self._ap_refresh_job_id = None
+            self._update_buttons()
+            self.status_label.setText("AP映射刷新失败")
+            MessageBox.warning(self, "列车在线情况", message)
+            return
+        if job_id == self._event_job_id:
+            self._event_job_id = None
+            self._event_job_train_id = ""
+            self._set_event_placeholder("历史经过加载失败")
+            return
         for dialog in list(self.history_windows):
             handler = getattr(dialog, "handle_background_error", None)
             if callable(handler) and handler(job_id, message):
@@ -276,6 +306,7 @@ class VehicleMrOnlinePage(QWidget):
         self.registered_trains = _vehicle_train_state_map(result.get("registered_trains"))
         self.current_trains = _vehicle_train_state_map(result.get("current_trains"))
         self.ap_lookup = _vehicle_ap_lookup_from_payload(result.get("ap_lookup"))
+        self.mapping_lookup = _vehicle_mapping_lookup_from_payload(result.get("mapping_lookup"))
         resources = self.ap_lookup.get("__resources__")
         count = len(resources) if isinstance(resources, list) else 0
         self.ap_hint_label.setText("" if count else "请先在 AC管理 → FIT-AP资源 中更新 AP 资源")
@@ -317,7 +348,7 @@ class VehicleMrOnlinePage(QWidget):
             paths=self.paths,
             registered_trains=self.registered_trains,
             ap_lookup=self.ap_lookup,
-            mapping_lookup=build_mapping_lookup(self.store.list_mappings()),
+            mapping_lookup=self.mapping_lookup,
             connection_config=config,
             parent=self,
         )
@@ -334,10 +365,26 @@ class VehicleMrOnlinePage(QWidget):
         self._update_buttons()
 
     def refresh_ap_mapping(self) -> None:
-        self._refresh_ap_lookup(update_label=True)
-        self.store.backfill_event_stations(self.ap_lookup)
-        if self.selected_train_id:
-            self._fill_events(self.selected_train_id)
+        if self._ap_refresh_job_id is not None:
+            self.status_label.setText("AP映射刷新中")
+            return
+        self._ap_refresh_job_id = uuid.uuid4().hex
+        self.refresh_ap_button.setEnabled(False)
+        self.status_label.setText("AP映射刷新中")
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=self._ap_refresh_job_id,
+                task_type="vehicle_mr_ap_mapping_refresh",
+                params={
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "train_id": self.selected_train_id,
+                    "limit": 200,
+                },
+            )
+        )
 
     def open_mapping_dialog(self) -> None:
         dialog = VehicleMrMappingDialog(self.store, self)
@@ -526,8 +573,59 @@ class VehicleMrOnlinePage(QWidget):
         self._fill_events(train.train_id)
 
     def _fill_events(self, train_id: str) -> None:
+        self._request_events(train_id)
+
+    def _request_events(self, train_id: str) -> None:
+        if self._event_job_id is not None and self._event_job_train_id == train_id:
+            return
+        self._event_job_id = uuid.uuid4().hex
+        self._event_job_train_id = train_id
+        self._set_event_placeholder("正在加载历史经过...")
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=self._event_job_id,
+                task_type="vehicle_mr_event_page",
+                params={
+                    "site_name": self.site_name,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "train_id": train_id,
+                    "limit": 200,
+                },
+            )
+        )
+
+    def _apply_event_result(self, result: dict[str, object]) -> None:
+        train_id = str(result.get("train_id") or "")
+        self._event_job_train_id = ""
+        if train_id != self.selected_train_id:
+            return
+        self._fill_event_rows([dict(row) for row in result.get("rows") or [] if isinstance(row, dict)])
+
+    def _apply_ap_refresh_result(self, result: dict[str, object]) -> None:
+        self.ap_lookup = _vehicle_ap_lookup_from_payload(result.get("ap_lookup"))
+        resources = self.ap_lookup.get("__resources__")
+        count = len(resources) if isinstance(resources, list) else 0
+        self.ap_hint_label.setText("" if count else "请先在 AC管理 → FIT-AP资源 中更新 AP 资源")
+        backfilled = int(result.get("backfilled") or 0)
+        self.status_label.setText(f"AP映射刷新完成，回填 {backfilled} 条")
+        train_id = str(result.get("train_id") or "")
+        if train_id and train_id == self.selected_train_id:
+            self._fill_event_rows([dict(row) for row in result.get("events") or [] if isinstance(row, dict)])
+
+    def _set_event_placeholder(self, text: str) -> None:
+        self.event_table.clearSpans()
         self.event_table.setRowCount(0)
-        for event in self.store.list_events(train_id, 200):
+        self.event_table.insertRow(0)
+        self.event_table.setSpan(0, 0, 1, self.event_table.columnCount())
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignCenter)
+        self.event_table.setItem(0, 0, item)
+
+    def _fill_event_rows(self, events: list[dict[str, object]]) -> None:
+        self.event_table.clearSpans()
+        self.event_table.setRowCount(0)
+        for event in events:
             row = self.event_table.rowCount()
             self.event_table.insertRow(row)
             values = [
@@ -565,6 +663,9 @@ class VehicleMrOnlinePage(QWidget):
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.ac_combo.setEnabled(not running)
+        self.refresh_button.setEnabled(not running and self._refresh_job_id is None)
+        self.refresh_ap_button.setEnabled(not running and self._ap_refresh_job_id is None)
+        self.mapping_button.setEnabled(not running)
         self.interval_spin.setEnabled(True)
 
     def _set_collection_status(self, status: str) -> None:
@@ -607,13 +708,6 @@ class VehicleMrOnlinePage(QWidget):
 
     def _forget_history_window(self, dialog: QDialog) -> None:
         self.history_windows = [window for window in self.history_windows if window is not dialog]
-
-    def _refresh_ap_lookup(self, update_label: bool = False) -> None:
-        self.ap_lookup = load_trackside_ap_lookup(self.repository)
-        resources = self.ap_lookup.get("__resources__")
-        count = len(resources) if isinstance(resources, list) else 0
-        if update_label:
-            self.ap_hint_label.setText("" if count else "请先在 AC管理 → FIT-AP资源 中更新 AP 资源")
 
     def _configure_tables(self) -> None:
         self.train_table.verticalHeader().setDefaultSectionSize(32)
@@ -911,9 +1005,11 @@ class VehicleMrMappingDialog(QDialog):
     def __init__(self, store: VehicleMrOnlineStore, parent=None) -> None:
         super().__init__(parent)
         self.store = store
-        self.background_manager = BackgroundProcessManager(self)
+        self.background_manager = BackgroundProcessManager(self, paths=store.paths)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
+        self._mapping_job_id: str | None = None
+        self._mapping_job_action = ""
         self.setWindowTitle("车载MR映射表管理")
         self.resize(860, 520)
         self.table = QTableWidget(0, 7)
@@ -959,10 +1055,7 @@ class VehicleMrMappingDialog(QDialog):
         )
 
     def load(self) -> None:
-        self.table.setRowCount(0)
-        for mapping in self.store.list_mappings():
-            self._append_mapping(mapping)
-        self._apply_widths()
+        self._start_mapping_job("vehicle_mr_mapping_load", "load")
 
     def add_row(self) -> None:
         self._append_mapping(VehicleMrTrainMapping(enabled=True))
@@ -974,22 +1067,55 @@ class VehicleMrMappingDialog(QDialog):
     def save(self) -> None:
         try:
             mappings = self._read_table()
-            self.store.save_mappings(mappings)
         except ValueError as exc:
             MessageBox.warning(self, "映射表管理", str(exc))
             return
-        self.saved.emit()
-        self.load()
+        self._start_mapping_job(
+            "vehicle_mr_mapping_save",
+            "save",
+            {"mappings": [asdict(mapping) for mapping in mappings]},
+        )
 
     def import_file(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(self, "导入映射表", "", "映射表 (*.xlsx *.csv)")
         if not path:
             return
-        self.background_manager.start_job(
+        self._start_mapping_job("vehicle_mr_mapping_import", "import", {"path": path})
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id != self._mapping_job_id:
+            return
+        action = self._mapping_job_action
+        self._mapping_job_id = None
+        self._mapping_job_action = ""
+        self._set_busy(False)
+        result = dict(event.get("result") or {})
+        self._apply_mapping_rows(result.get("mappings"))
+        if action == "import":
+            MessageBox.information(self, "映射表导入", f"导入完成：{int(result.get('count') or 0)} 条")
+            self.saved.emit()
+        elif action == "save":
+            self.saved.emit()
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == self._mapping_job_id:
+            self._mapping_job_id = None
+            self._mapping_job_action = ""
+            self._set_busy(False)
+        MessageBox.warning(self, "映射表管理失败", str(event.get("message") or event.get("error") or "操作失败"))
+
+    def _start_mapping_job(self, task_type: str, action: str, params: dict[str, object] | None = None) -> None:
+        if self._mapping_job_id is not None:
+            return
+        self._mapping_job_action = action
+        self._set_busy(True)
+        self._mapping_job_id = self.background_manager.start_job(
             BackgroundJob(
-                task_type="vehicle_mr_mapping_import",
+                task_type=task_type,
                 params={
-                    "path": path,
+                    **(params or {}),
                     "site_name": self.store.site_name,
                     "app_root": str(self.store.paths.app_root),
                     "data_root": str(self.store.paths.data_root),
@@ -997,16 +1123,16 @@ class VehicleMrMappingDialog(QDialog):
             )
         )
 
-    def _background_finished(self, event: dict) -> None:
-        result = dict(event.get("result") or {})
-        if "count" not in result:
-            return
-        MessageBox.information(self, "映射表导入", f"导入完成：{int(result.get('count') or 0)} 条")
-        self.saved.emit()
-        self.load()
+    def _set_busy(self, busy: bool) -> None:
+        for button in (self.add_button, self.delete_button, self.save_button, self.import_button, self.refresh_button):
+            button.setEnabled(not busy)
 
-    def _background_failed(self, event: dict) -> None:
-        MessageBox.warning(self, "映射表导入失败", str(event.get("message") or event.get("error") or "导入失败"))
+    def _apply_mapping_rows(self, payload: object) -> None:
+        self.table.setRowCount(0)
+        for item in payload or []:
+            if isinstance(item, dict):
+                self._append_mapping(VehicleMrTrainMapping(**dict(item)))
+        self._apply_widths()
 
     def export_template(self) -> None:
         default_path = Path.home() / "Desktop" / "车载MR映射模板.xlsx"

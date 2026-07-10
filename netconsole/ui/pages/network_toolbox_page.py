@@ -981,17 +981,23 @@ class NetworkToolboxPage(QWidget):
         self.ipv6_panel.show_rows([ipv6_calculate(self.ipv6_edit.text())], "ipv6_calc", summary_title="IPv6 计算")
 
     def calculate_vlsm(self) -> None:
-        self.vlsm_panel.show_table_result(plan_vlsm(self.vlsm_parent_edit.text(), self.vlsm_requests_edit.toPlainText()), "vlsm")
+        parent_text = self.vlsm_parent_edit.text()
+        requests_text = self.vlsm_requests_edit.toPlainText()
+        self._run_async(self.vlsm_panel, lambda: plan_vlsm(parent_text, requests_text), "vlsm")
 
     def calculate_subnets(self) -> None:
-        result = split_subnets(self.subnet_parent_edit.text(), self.subnet_prefix_spin.value(), page_size=self.subnet_page_size_spin.value())
-        self.subnet_panel.show_table_result(result, "subnet_split")
+        parent_text = self.subnet_parent_edit.text()
+        target_prefix = self.subnet_prefix_spin.value()
+        page_size = self.subnet_page_size_spin.value()
+        self._run_async(self.subnet_panel, lambda: split_subnets(parent_text, target_prefix, page_size=page_size), "subnet_split")
 
     def calculate_route_summary(self) -> None:
-        self.route_summary_panel.show_table_result(summarize_routes(self.summary_input.toPlainText()), "route_summary")
+        text = self.summary_input.toPlainText()
+        self._run_async(self.route_summary_panel, lambda: summarize_routes(text), "route_summary")
 
     def calculate_wildcard(self) -> None:
-        self.wildcard_panel.show_table_result(wildcard_calculate(self.wildcard_input.toPlainText()), "wildcard")
+        text = self.wildcard_input.toPlainText()
+        self._run_async(self.wildcard_panel, lambda: wildcard_calculate(text), "wildcard")
 
     def run_single_ping(self) -> None:
         self._run_async(
@@ -1316,6 +1322,9 @@ class NetworkToolboxPage(QWidget):
         if prefix == "network_ping" and self.network_ping_stop_requested:
             panel.set_status("stopped")
             self._refresh_network_ping_stats("已停止")
+            return
+        if isinstance(payload, TableResult):
+            panel.show_table_result(payload, prefix)
             return
         rows = list(payload or [])
         if prefix == "local_routes":

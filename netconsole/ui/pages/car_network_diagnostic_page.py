@@ -606,7 +606,6 @@ class CarNetworkDiagnosticPage(QWidget):
                 "db_path": str(self.repository.database.path),
                 "site_name": self.site_name,
                 "nodes": [asdict(node) for node in self.nodes],
-                "global_config": self.config_store.load(),
                 "save_result": True,
             },
             "从设备管理生成",
@@ -1129,8 +1128,8 @@ class PointTableDialog(QDialog):
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
         self._background_job_context: dict[str, str] = {}
-        self.global_config = merge_global_config(self.config_store.load())
-        self.nodes = self.store.load()
+        self.global_config = merge_global_config(DEFAULT_GLOBAL_CONFIG)
+        self.nodes: list[CarNetworkNode] = []
         self.setWindowTitle("车内通信点表")
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         self.resize(1280, 760)
@@ -1230,6 +1229,8 @@ class PointTableDialog(QDialog):
         self._load_global_rule_widgets()
         self._fill_table()
         self._update_lock_state()
+        self.lock_hint_label.setText("正在加载点表...")
+        self._start_background_job("car_network_point_table_load", {"site_name": self.site_name})
 
     def _build_global_rules_box(self) -> QGroupBox:
         box = QGroupBox("全局规则")
@@ -1545,6 +1546,15 @@ class PointTableDialog(QDialog):
         job_id = str(event.get("job_id") or "")
         task_type = self._background_job_context.pop(job_id, "")
         result = dict(event.get("result") or {})
+        if task_type == "car_network_point_table_load":
+            self.global_config = merge_global_config(dict(result.get("global_config") or {}))
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            self.locked = bool(self.global_config.get("point_table_locked", False))
+            self._reload_filters()
+            self._load_global_rule_widgets()
+            self._fill_table()
+            self._update_lock_state()
+            return
         if task_type == "car_network_generate_point_table":
             self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
             self._reload_filters()
@@ -1568,7 +1578,7 @@ class PointTableDialog(QDialog):
     def _background_failed(self, event: dict) -> None:
         job_id = str(event.get("job_id") or "")
         self._background_job_context.pop(job_id, None)
-        MessageBox.warning(self, "导入车内通信点表", str(event.get("message") or event.get("error") or "导入失败"))
+        MessageBox.warning(self, "车内通信点表", str(event.get("message") or event.get("error") or "后台任务失败"))
 
     def _start_background_job(self, task_type: str, params: dict[str, object], *, context: str = "") -> str:
         params = {

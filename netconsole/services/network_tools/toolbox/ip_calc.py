@@ -15,9 +15,7 @@ class TableResult:
 
 def ipv4_calculate(text: str) -> dict[str, object]:
     network = _parse_ipv4_network(text)
-    hosts = list(network.hosts())
-    first = hosts[0] if hosts else None
-    last = hosts[-1] if hosts else None
+    usable_hosts, first, last = _ipv4_usable_bounds(network)
     note = ""
     if network.prefixlen == 31:
         note = "/31 是点到点特殊网段，两个地址在 P2P 场景都可用。"
@@ -32,7 +30,7 @@ def ipv4_calculate(text: str) -> dict[str, object]:
         "prefix_length": network.prefixlen,
         "wildcard": str(ipaddress.IPv4Address(int(network.hostmask))),
         "total_addresses": network.num_addresses,
-        "usable_hosts": len(hosts),
+        "usable_hosts": usable_hosts,
         "first_usable": str(first) if first is not None else "-",
         "last_usable": str(last) if last is not None else "-",
         "ip_type": _ipv4_type(network.network_address),
@@ -89,12 +87,16 @@ def split_subnets(parent_text: str, target_prefix: int, *, page: int = 1, page_s
     parent = _parse_ipv4_network(parent_text)
     if target_prefix <= parent.prefixlen or target_prefix > 32:
         return TableResult([], {}, ["目标子网前缀必须大于主网络前缀，且不超过 32。"])
-    subnets = list(parent.subnets(new_prefix=target_prefix))
-    total = len(subnets)
+    total = 1 << (target_prefix - parent.prefixlen)
     page_size = max(1, min(int(page_size), 500))
     page = max(1, int(page))
     start = (page - 1) * page_size
-    selected = subnets[start : start + page_size]
+    subnet_size = 1 << (32 - target_prefix)
+    selected_count = max(0, min(page_size, total - start))
+    selected = [
+        ipaddress.IPv4Network((int(parent.network_address) + (start + offset) * subnet_size, target_prefix))
+        for offset in range(selected_count)
+    ]
     rows = [_ipv4_split_row(index + start + 1, subnet) for index, subnet in enumerate(selected)]
     return TableResult(rows, {"total": total, "page": page, "page_size": page_size, "pages": math.ceil(total / page_size)}, [])
 
@@ -159,7 +161,7 @@ def wildcard_calculate(text: str) -> TableResult:
                     "prefix": network.prefixlen,
                     "netmask": str(network.netmask),
                     "wildcard": str(network.hostmask),
-                    "usable_hosts": len(list(network.hosts())),
+                    "usable_hosts": _ipv4_usable_bounds(network)[0],
                 }
             )
         except ValueError as exc:
@@ -221,8 +223,7 @@ def _looks_like_netmask(text: str) -> bool:
 
 
 def _ipv4_subnet_row(name: str, requested_hosts: int, subnet: ipaddress.IPv4Network) -> dict[str, object]:
-    hosts = list(subnet.hosts())
-    usable = len(hosts)
+    usable, first, last = _ipv4_usable_bounds(subnet)
     return {
         "name": name,
         "requested_hosts": requested_hosts,
@@ -231,8 +232,8 @@ def _ipv4_subnet_row(name: str, requested_hosts: int, subnet: ipaddress.IPv4Netw
         "cidr": str(subnet),
         "netmask": str(subnet.netmask),
         "wildcard": str(subnet.hostmask),
-        "first_usable": str(hosts[0]) if hosts else "-",
-        "last_usable": str(hosts[-1]) if hosts else "-",
+        "first_usable": str(first) if first is not None else "-",
+        "last_usable": str(last) if last is not None else "-",
         "broadcast": str(subnet.broadcast_address),
         "usable_hosts": usable,
         "wasted_hosts": max(usable - requested_hosts, 0),
@@ -240,7 +241,7 @@ def _ipv4_subnet_row(name: str, requested_hosts: int, subnet: ipaddress.IPv4Netw
 
 
 def _ipv4_split_row(index: int, subnet: ipaddress.IPv4Network) -> dict[str, object]:
-    hosts = list(subnet.hosts())
+    usable, first, last = _ipv4_usable_bounds(subnet)
     return {
         "index": index,
         "network": str(subnet.network_address),
@@ -248,11 +249,21 @@ def _ipv4_split_row(index: int, subnet: ipaddress.IPv4Network) -> dict[str, obje
         "prefix": subnet.prefixlen,
         "netmask": str(subnet.netmask),
         "wildcard": str(subnet.hostmask),
-        "first_usable": str(hosts[0]) if hosts else "-",
-        "last_usable": str(hosts[-1]) if hosts else "-",
+        "first_usable": str(first) if first is not None else "-",
+        "last_usable": str(last) if last is not None else "-",
         "broadcast": str(subnet.broadcast_address),
-        "usable_hosts": len(hosts),
+        "usable_hosts": usable,
     }
+
+
+def _ipv4_usable_bounds(network: ipaddress.IPv4Network) -> tuple[int, ipaddress.IPv4Address | None, ipaddress.IPv4Address | None]:
+    if network.prefixlen >= 31:
+        return network.num_addresses, network.network_address, network.broadcast_address
+    if network.num_addresses <= 2:
+        return 0, None, None
+    first = ipaddress.IPv4Address(int(network.network_address) + 1)
+    last = ipaddress.IPv4Address(int(network.broadcast_address) - 1)
+    return network.num_addresses - 2, first, last
 
 
 def _ipv4_type(address: ipaddress.IPv4Address) -> str:

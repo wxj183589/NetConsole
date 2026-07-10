@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -63,6 +64,15 @@ Peer Name              Peer Mac       Local Mac      Status     RSSI Packets(Rx/
 NBL12-LC06-MR-CT       74ad-cb9d-3321 bc5a-3457-8cdf Forwarding 35   49/104
 NBL12-LC06-MR-CT       74ad-cb9d-3321 bc5a-3457-8ccf Forwarding 40   0/25
 """
+
+
+def _process_events_until(predicate, timeout: float = 8.0) -> None:
+    app = QApplication.instance() or QApplication([])
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert predicate()
 
 
 def _ok_ping(nodes: list[CarNetworkNode]) -> dict[str, PingResult]:
@@ -1076,6 +1086,7 @@ def test_point_table_dialog_uses_chinese_headers_and_keeps_internal_mapping_valu
     store.save([CarNetworkNode("LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT", primary_address_role="vehicle_ip")])
 
     dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
+    _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
     header_labels = [dialog.table.horizontalHeaderItem(column).text() for column in range(dialog.table.columnCount())]
     role_column = header_labels.index("主用地址映射")
     combo = dialog.table.cellWidget(0, role_column)
@@ -1131,6 +1142,7 @@ def test_point_table_role_combo_supports_all_internal_value(tmp_path: Path) -> N
     ])
 
     dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
+    _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
     role_column = car_diag.POINT_TABLE_FIELDS.index("primary_address_role")
     combo = dialog.table.cellWidget(0, role_column)
     assert combo is not None
@@ -1152,6 +1164,7 @@ def test_point_table_lock_persists_and_blocks_edit_actions(tmp_path: Path) -> No
     config_store.save({"point_table_locked": True})
 
     dialog = PointTableDialog(repository, "demo", store, config_store)
+    _process_events_until(lambda: not dialog._background_job_context)
 
     assert dialog.locked is True
     assert dialog.add_button.isEnabled() is False

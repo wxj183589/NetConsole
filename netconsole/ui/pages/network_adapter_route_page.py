@@ -492,9 +492,8 @@ class NetworkAdapterRoutePage(QWidget):
         except ValueError as exc:
             MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
             return
-        self.route_store.upsert(RouteProfile(profile_name=name, routes=entries))
-        self.load_profiles()
-        self._append_log(f"已保存路由方案：{name}")
+        profile = RouteProfile(profile_name=name, routes=entries)
+        self._start_profile_store_job("save_route", profile=asdict(profile), selected_name=name)
 
     def apply_route_profile(self) -> None:
         routes = self._selected_or_edited_routes()

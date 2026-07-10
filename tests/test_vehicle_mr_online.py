@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -49,6 +50,15 @@ from netconsole.ui.pages.vehicle_mr_online_page import (
     export_vehicle_mr_history_rows,
     export_vehicle_mr_mapping_template,
 )
+
+
+def _process_events_until(predicate, timeout: float = 8.0) -> None:
+    app = QApplication.instance() or QApplication([])
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert predicate()
 
 
 SAMPLE = """<NBDT12HX-WX3540X-AC1>display clock
@@ -665,8 +675,10 @@ def test_vehicle_mr_event_table_keeps_user_widths_and_centers_cells(tmp_path: Pa
     )
     store.persist_snapshot("s1", 1, VehicleMrMeshParseResult(state.last_ac_time, []), [state], {}, 10)
     page.event_table.setColumnWidth(0, 222)
+    page.selected_train_id = train_id
 
     page._fill_events(train_id)
+    _process_events_until(lambda: page._event_job_id is None)
 
     assert page.event_table.columnWidth(0) == 222
     assert page.event_table.item(0, 0).textAlignment() == Qt.AlignCenter
