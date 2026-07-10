@@ -40,7 +40,8 @@ class OpenSourceNoticesDialog(QDialog):
         self.worker: OpenSourceNoticeThread | None = None
         self.setModal(False)
         self.setWindowTitle("开源许可")
-        self.setMinimumSize(920, 560)
+        self.setMinimumSize(640, 420)
+        self.resize(920, 560)
 
         layout = QVBoxLayout(self)
         title = QLabel("开源许可")

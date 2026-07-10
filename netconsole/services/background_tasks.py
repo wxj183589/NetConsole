@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
@@ -104,6 +105,48 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _wireless_scan_history_refresh(params, progress_callback, should_cancel)
     if job.task_type == "wireless_scan_result_load":
         return _wireless_scan_result_load(params, progress_callback, should_cancel)
+    if job.task_type == "wifi_survey_refresh":
+        return _wifi_survey_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "wifi_survey_floor_import":
+        return _wifi_survey_floor_import(params, progress_callback, should_cancel)
+    if job.task_type == "wifi_survey_create_session":
+        return _wifi_survey_create_session(params, progress_callback, should_cancel)
+    if job.task_type == "wifi_survey_update_scale":
+        return _wifi_survey_update_scale(params, progress_callback, should_cancel)
+    if job.task_type == "wifi_survey_save_sample":
+        return _wifi_survey_save_sample(params, progress_callback, should_cancel)
+    if job.task_type == "wifi_survey_heatmap_render":
+        return _wifi_survey_heatmap_render(params, progress_callback, should_cancel)
+    if job.task_type == "ac_devices_refresh":
+        return _ac_devices_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "ac_fit_ap_delete_many":
+        return _ac_fit_ap_delete_many(params, progress_callback, should_cancel)
+    if job.task_type == "ac_ap_extension_save":
+        return _ac_ap_extension_save(params, progress_callback, should_cancel)
+    if job.task_type == "ac_ap_extension_delete":
+        return _ac_ap_extension_delete(params, progress_callback, should_cancel)
+    if job.task_type == "ac_ap_extension_clear":
+        return _ac_ap_extension_clear(params, progress_callback, should_cancel)
+    if job.task_type == "ac_station_overview_value_save":
+        return _ac_station_overview_value_save(params, progress_callback, should_cancel)
+    if job.task_type == "device_detail_load_all":
+        return _device_detail_load_all(params, progress_callback, should_cancel)
+    if job.task_type == "fit_ap_detail_load":
+        return _fit_ap_detail_load(params, progress_callback, should_cancel)
+    if job.task_type == "fit_ap_metadata_save":
+        return _fit_ap_metadata_save(params, progress_callback, should_cancel)
+    if job.task_type == "online_mr_collection_devices_refresh":
+        return _online_mr_collection_devices_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "mesh_mr_profiles_refresh":
+        return _mesh_mr_profiles_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "file_management_navigation_refresh":
+        return _file_management_navigation_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "device_mutation":
+        return _device_mutation(params, progress_callback, should_cancel)
+    if job.task_type == "device_lookup":
+        return _device_lookup(params, progress_callback, should_cancel)
+    if job.task_type == "network_profile_store":
+        return _network_profile_store(params, progress_callback, should_cancel)
     raise ValueError(f"不支持的后台任务类型：{job.task_type}")
 
 
@@ -1337,7 +1380,6 @@ def _online_mr_parse(params: dict[str, Any], progress: ProgressCallback | None, 
 
 
 def _mesh_log_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    from netconsole.core.paths import PathResolver
     from netconsole.models.mesh_log_models import MeshMrProfile
     from netconsole.services.mesh_import_service import MeshImportService
 
@@ -1356,7 +1398,7 @@ def _mesh_log_import(params: dict[str, Any], progress: ProgressCallback | None, 
     def emit_mesh_progress(file_index: int, total_files: int, lines: int, parsed: int, skipped: int) -> None:
         _emit(progress, f"mesh_log_import:{int(lines)}:{int(parsed)}:{int(skipped)}", int(file_index), int(total_files), "正在导入 MESH 日志")
 
-    result = MeshImportService(site_name, PathResolver()).import_files(
+    result = MeshImportService(site_name, _path_resolver_from_params(params)).import_files(
         profile,
         files,
         should_cancel=should_cancel,
@@ -1398,6 +1440,356 @@ def _online_mr_report_export(params: dict[str, Any], progress: ProgressCallback 
     result = VehicleMrOfflineExcelReportExporter().export(session_dir, output_path)
     _emit(progress, "online_mr_report_done", 3, 3, "离线分析报告导出完成")
     return {"path": str(result), "row_count": 1 if result.exists() else 0}
+
+
+def _wifi_survey_repository(db_path: object):
+    from netconsole.core.database import Database
+    from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
+
+    return WifiSurveyRepository(Database(Path(str(db_path or ""))))
+
+
+def _wifi_survey_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository = _wifi_survey_repository(params.get("db_path"))
+    _emit(progress, "wifi_survey_read", 1, 3, "正在读取 WiFi 勘测数据")
+    floors = repository.list_floor_plans()
+    requested_floor_id = int(params.get("floor_plan_id") or 0)
+    floor = next((row for row in floors if int(row.get("id") or 0) == requested_floor_id), floors[0] if floors else None)
+    sessions = repository.list_sessions(int(floor["id"])) if floor else []
+    requested_session_id = int(params.get("session_id") or 0)
+    session = next((row for row in sessions if int(row.get("id") or 0) == requested_session_id), sessions[0] if sessions else None)
+    _check_cancel(should_cancel)
+    points = repository.list_points(int(session["id"])) if session else []
+    observations = repository.list_observations_by_session(int(session["id"])) if session else []
+    network_rows = repository.list_network_tree(int(session["id"])) if session else []
+    _emit(progress, "wifi_survey_done", 3, 3, "WiFi 勘测数据加载完成")
+    return {
+        "floors": floors,
+        "floor": floor,
+        "sessions": sessions,
+        "session": session,
+        "points": points,
+        "observations": observations,
+        "network_rows": network_rows,
+    }
+
+
+def _wifi_survey_floor_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from PySide6.QtGui import QImageReader
+
+    source = Path(str(params.get("source_path") or ""))
+    target_dir = Path(str(params.get("target_dir") or ""))
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    reader = QImageReader(str(source))
+    size = reader.size()
+    if not size.isValid():
+        raise ValueError("无法读取图纸文件")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / source.name
+    counter = 1
+    while target.exists():
+        target = target_dir / f"{source.stem}_{counter}{source.suffix}"
+        counter += 1
+    _check_cancel(should_cancel)
+    shutil.copy2(source, target)
+    repository = _wifi_survey_repository(params.get("db_path"))
+    plan = repository.create_floor_plan(source.stem, str(target), size.width(), size.height())
+    return {"floor": plan}
+
+
+def _wifi_survey_create_session(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository = _wifi_survey_repository(params.get("db_path"))
+    session = repository.create_session(int(params.get("floor_plan_id") or 0), str(params.get("name") or "").strip())
+    return {"session": session}
+
+
+def _wifi_survey_update_scale(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository = _wifi_survey_repository(params.get("db_path"))
+    floor_plan_id = int(params.get("floor_plan_id") or 0)
+    repository.update_floor_plan_scale(floor_plan_id, float(params.get("meter_per_px") or 0.0))
+    return {"floor": repository.get_floor_plan(floor_plan_id)}
+
+
+def _wifi_survey_save_sample(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.wifi_survey.scanner import WifiObservation
+
+    repository = _wifi_survey_repository(params.get("db_path"))
+    session_id = int(params.get("session_id") or 0)
+    points = repository.list_points(session_id)
+    point = repository.create_point(
+        session_id,
+        len(points) + 1,
+        float(params.get("x_px") or 0.0),
+        float(params.get("y_px") or 0.0),
+        float(params["meter_per_px"]) if params.get("meter_per_px") not in (None, "") else None,
+    )
+    observations = [WifiObservation(**dict(row)) for row in params.get("observations") or [] if isinstance(row, dict)]
+    repository.save_observations(int(point["id"]), observations)
+    return {"point": point, "observation_count": len(observations)}
+
+
+def _wifi_survey_heatmap_render(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, generate_idw_heatmap_image
+
+    repository = _wifi_survey_repository(params.get("db_path"))
+    session_id = int(params.get("session_id") or 0)
+    points = repository.list_points(session_id)
+    observations = repository.list_observations_by_session(session_id)
+    mode = str(params.get("mode") or "strongest")
+    samples = build_heatmap_samples(
+        points,
+        observations,
+        mode,
+        {str(value) for value in params.get("selected_ssids") or []},
+        {str(value) for value in params.get("selected_bssids") or []},
+    )
+    if len(samples) < 3:
+        return {"path": "", "valid_count": len(samples), "point_count": len(points), "mode": mode}
+    _emit(progress, "wifi_survey_heatmap", 1, 2, "正在计算 WiFi 热力图")
+    image = generate_idw_heatmap_image(
+        int(params.get("width") or 0),
+        int(params.get("height") or 0),
+        [(sample.x_px, sample.y_px, sample.rssi_dbm) for sample in samples],
+    )
+    _check_cancel(should_cancel)
+    output_path = Path(str(params.get("output_path") or ""))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if image is None or not image.save(str(output_path), "PNG"):
+        raise RuntimeError("WiFi 热力图生成失败")
+    return {"path": str(output_path), "valid_count": len(samples), "point_count": len(points), "mode": mode}
+
+
+def _ac_devices_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+
+    devices = DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list(vendor="H3C", device_type="AC")
+    return {"devices": [device.to_record() for device in devices]}
+
+
+def _ac_repository(params: dict[str, Any]):
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    return AcRepository(Database(Path(str(params.get("db_path") or ""))))
+
+
+def _ac_fit_ap_delete_many(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    count = _ac_repository(params).delete_fit_aps(str(params.get("ac_uuid") or ""), [str(value) for value in params.get("names") or []])
+    return {"count": count}
+
+
+def _ac_ap_extension_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    return {"row": _ac_repository(params).upsert_ap_extension_point(dict(params.get("row") or {}))}
+
+
+def _ac_ap_extension_delete(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    count = _ac_repository(params).delete_ap_extension_points([int(value) for value in params.get("ids") or []])
+    return {"count": count}
+
+
+def _ac_ap_extension_clear(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    return {"count": _ac_repository(params).clear_ap_extension_points()}
+
+
+def _ac_station_overview_value_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository = _ac_repository(params)
+    station = str(params.get("station") or "")
+    kind = str(params.get("kind") or "")
+    if kind == "remark":
+        repository.upsert_station_ap_remark(station, str(params.get("value") or ""))
+    elif kind == "capacity":
+        repository.upsert_station_ap_capacity(station, int(params.get("value") or 0))
+    else:
+        raise ValueError("不支持的在线概览保存类型")
+    return {"station": station, "kind": kind}
+
+
+def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.core.sources.switch_source import build_switch_data_lookup
+    from netconsole.models.device import Device
+    from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_fact_repository import DeviceFactRepository
+    from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    repository = DeviceFactRepository(database)
+    device = Device.from_mapping(dict(params.get("device") or {}))
+    device_uuid = str(device.device_uuid or "")
+    fact = repository.get_device_fact(device_uuid)
+    interfaces = repository.list_device_interfaces(device_uuid)
+    optical_modules = repository.list_optical_modules(device_uuid)
+    lldp = repository.list_lldp_neighbors(device_uuid)
+    _check_cancel(should_cancel)
+    ac_repository = AcRepository(database)
+    lookup = build_switch_data_lookup([device], {device_uuid: optical_modules})
+    trackside = build_trackside_ap_business_rows(
+        [device],
+        {device_uuid: interfaces},
+        {device_uuid: optical_modules},
+        ac_repository.list_all_fit_ap_optical(),
+        {device_uuid: lldp},
+        ac_repository.list_all_fit_ap_resources_with_metadata(),
+        lookup,
+    )
+    return {"fact": fact, "interfaces": interfaces, "optical_modules": optical_modules, "lldp": lldp, "trackside": trackside}
+
+
+def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
+
+    repository = _ac_repository(params)
+    ac_uuid = str(params.get("ac_uuid") or "")
+    ap_key = str(params.get("ap_key") or "")
+    resource = repository.get_fit_ap_resource_by_uuid(ac_uuid, ap_key) or repository.get_fit_ap_resource(ac_uuid, ap_key) or {}
+    ap_uuid = str(resource.get("ap_uuid") or ap_key)
+    optical = repository.get_fit_ap_optical_by_uuid(ac_uuid, ap_uuid) or {}
+    metadata = repository.get_fit_ap_metadata_by_uuid(ap_uuid) or {}
+    summary = ApOpticalHistoryService(repository).get_latest_optical_summary(ac_uuid, ap_uuid) or {}
+    return {"resource": resource, "optical": optical, "metadata": metadata, "optical_summary": summary, "ap_uuid": ap_uuid}
+
+
+def _fit_ap_metadata_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    return {"metadata": _ac_repository(params).upsert_fit_ap_metadata(dict(params.get("metadata") or {}))}
+
+
+def _online_mr_collection_devices_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    devices = DeviceRepository(database).list()
+    groups = DeviceGroupRepository(database, str(params.get("site_name") or "")).list()
+    return {
+        "devices": [device.to_record() for device in devices],
+        "groups": [{"id": group.id, "name": group.name} for group in groups],
+    }
+
+
+def _mesh_mr_profiles_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.models.mesh_log_models import dataclass_to_json_dict
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+    from netconsole.services.mesh_storage_service import MeshStorageService
+    from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(
+        app_root=Path(str(params.get("app_root") or Path.cwd())),
+        data_root=Path(str(params.get("data_root") or params.get("app_root") or Path.cwd())),
+    )
+    site_name = str(params.get("site_name") or "")
+    db_path = str(params.get("db_path") or "")
+    if db_path:
+        database = Database(Path(db_path))
+        group = DeviceGroupRepository(database, site_name).find_by_name(VEHICLE_MR_GROUP_NAME)
+        devices = DeviceRepository(database).list(group_filter=int(group.id)) if group and group.id is not None else []
+        profiles = MeshStorageService(site_name, paths).sync_mr_profiles_from_devices(devices)
+    else:
+        profiles = MeshCatalogRepository(paths.mesh_catalog_path(site_name)).list_profiles()
+    return {"profiles": [dataclass_to_json_dict(profile) for profile in profiles]}
+
+
+def _file_management_navigation_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.device_group_service import group_filter_to_repository_value
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    site_name = str(params.get("site_name") or "")
+    groups = DeviceGroupRepository(database, site_name).list()
+    repository = DeviceRepository(database)
+    try:
+        devices = repository.list(
+            search=str(params.get("search") or "").strip() or None,
+            group_filter=group_filter_to_repository_value(params.get("group_filter")),
+        )
+    except TypeError:
+        devices = repository.list()
+    return {
+        "groups": [{"id": group.id, "name": group.name} for group in groups],
+        "devices": [device.to_record() for device in devices],
+    }
+
+
+def _device_mutation(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.models.device import Device
+    from netconsole.repositories.device_repository import DeviceRepository
+
+    repository = DeviceRepository(Database(Path(str(params.get("db_path") or ""))))
+    action = str(params.get("action") or "")
+    if action == "create":
+        device = repository.create(Device.from_mapping(dict(params.get("device") or {})))
+        return {"action": action, "device": device.to_record()}
+    if action == "update":
+        device = repository.update(Device.from_mapping(dict(params.get("device") or {})))
+        return {"action": action, "device": device.to_record()}
+    if action == "delete":
+        deleted: list[dict[str, object | None]] = []
+        failed_items: list[dict[str, object]] = []
+        for value in params.get("device_ids") or []:
+            try:
+                device = repository.get(int(value))
+                repository.delete(int(value))
+                deleted.append(device.to_record())
+            except Exception as exc:
+                failed_items.append({"device_id": int(value), "error": str(exc)})
+        return {
+            "action": action,
+            "devices": deleted,
+            "total": len(deleted) + len(failed_items),
+            "deleted": len(deleted),
+            "failed": len(failed_items),
+            "failed_items": failed_items,
+            "count": len(deleted),
+        }
+    raise ValueError("不支持的设备写入操作")
+
+
+def _device_lookup(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+
+    device_uuid = str(params.get("device_uuid") or "")
+    device = next(
+        (item for item in DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list() if str(item.device_uuid or "") == device_uuid),
+        None,
+    )
+    return {"device": device.to_record() if device is not None else None}
+
+
+def _network_profile_store(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from dataclasses import asdict
+    from netconsole.services.network_profile_store import AdapterMatch, AdapterProfile, NetworkProfileStore, SecondaryIp
+    from netconsole.services.route_profile_store import RouteProfile, RouteProfileEntry, RouteProfileStore
+
+    adapter_store = NetworkProfileStore(Path(str(params.get("adapter_path") or "")))
+    route_store = RouteProfileStore(Path(str(params.get("route_path") or "")))
+    action = str(params.get("action") or "load")
+    if action == "save_adapter":
+        row = dict(params.get("profile") or {})
+        match = dict(row.get("adapter_match") or {})
+        row["adapter_match"] = AdapterMatch(**match)
+        row["secondary_ips"] = [SecondaryIp(**dict(item)) for item in row.get("secondary_ips") or [] if isinstance(item, dict)]
+        adapter_store.upsert(AdapterProfile(**row))
+    elif action == "save_route":
+        row = dict(params.get("profile") or {})
+        row["routes"] = [RouteProfileEntry(**dict(item)) for item in row.get("routes") or [] if isinstance(item, dict)]
+        route_store.upsert(RouteProfile(**row))
+    elif action != "load":
+        raise ValueError("不支持的网络 Profile 操作")
+    return {
+        "action": action,
+        "adapter_profiles": [asdict(profile) for profile in adapter_store.load()],
+        "route_profiles": [asdict(profile) for profile in route_store.load()],
+    }
 
 
 TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]

@@ -199,7 +199,15 @@ def _online_page_with_devices(tmp_path: Path) -> tuple[OnlineMrCollectionPage, D
     database.initialize()
     device_repo = DeviceRepository(database)
     group_repo = DeviceGroupRepository(database, "demo")
-    return OnlineMrCollectionPage(device_repo, I18n("en_US"), "demo", paths), device_repo, group_repo
+    page = OnlineMrCollectionPage(device_repo, I18n("en_US"), "demo", paths)
+    refresh_all = page.refresh_all
+
+    def refresh_all_and_wait(*args, **kwargs):
+        refresh_all(*args, **kwargs)
+        _process_qt_until(lambda: not page._device_refresh_job_id)
+
+    page.refresh_all = refresh_all_and_wait
+    return page, device_repo, group_repo
 
 
 def test_online_mr_fping_parameter_layout_has_stable_widths(tmp_path: Path) -> None:
@@ -4571,6 +4579,7 @@ def test_online_mr_analysis_filters_and_selects_session_combo(tmp_path: Path) ->
 
     analysis = OnlineMrCollectionAnalysisPage(page.repository, I18n("en_US"), "demo", page.paths)
     analysis.refresh_all()
+    _process_qt_until(lambda: not analysis._device_refresh_job_id)
     _process_qt_until(lambda: analysis.history_load_worker is None)
 
     assert analysis.session_select_combo.count() == 2

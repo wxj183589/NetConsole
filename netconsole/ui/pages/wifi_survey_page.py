@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
-import shutil
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QPointF, Qt, QThread, Signal
-from PySide6.QtGui import QBrush, QColor, QCursor, QImageReader, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QCursor, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -32,13 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from netconsole.core import app_logger
-from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
-from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import wifi_survey_csv_spec, wifi_survey_heatmap_png_spec
-from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, generate_idw_heatmap, rssi_to_color
+from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, rssi_to_color
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readable_table_columns
 from netconsole.services.wifi_survey.scanner import WifiObservation, scan_wifi
@@ -113,9 +112,18 @@ class WifiSurveyPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths
-        self.repository = WifiSurveyRepository(Database(paths.site_db_path(site_name)))
+        self.db_path = paths.site_db_path(site_name)
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.progress.connect(self._background_progress)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self.background_manager.cancelled.connect(self._background_failed)
+        self._background_jobs: dict[str, str] = {}
         self.current_floor_plan: dict[str, object] | None = None
         self.current_session: dict[str, object] | None = None
+        self.current_points: list[dict[str, object]] = []
+        self.current_observations: list[dict[str, object]] = []
+        self.current_network_rows: list[dict[str, object]] = []
         self.current_filter: tuple[str, str] | None = None
         self.floor_pixmap: QPixmap | None = None
         self.floor_item: QGraphicsPixmapItem | None = None
@@ -205,7 +213,7 @@ class WifiSurveyPage(QWidget):
 
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
-        self.repository = WifiSurveyRepository(Database(self.paths.site_db_path(site_name)))
+        self.db_path = self.paths.site_db_path(site_name)
         self.current_floor_plan = None
         self.current_session = None
         self.current_filter = None
@@ -284,21 +292,125 @@ class WifiSurveyPage(QWidget):
         self.session_combo.currentIndexChanged.connect(self.on_session_combo_changed)
         self.network_tree.itemChanged.connect(self.on_network_tree_changed)
 
-    def reload_floor_plans(self) -> None:
+    def _start_background_job(self, task_type: str, params: dict[str, object]) -> str:
+        job_id = uuid4().hex
+        self._background_jobs[job_id] = task_type
+        self.import_button.setEnabled(False)
+        self.session_button.setEnabled(False)
+        self.background_manager.start_job(BackgroundJob(job_id=job_id, task_type=task_type, params=params))
+        return job_id
+
+    def _start_refresh(self, *, floor_plan_id: int = 0, session_id: int = 0) -> None:
+        if "wifi_survey_refresh" in self._background_jobs.values():
+            return
+        self.scan_status_label.setText("扫描状态：正在加载勘测数据")
+        self._start_background_job(
+            "wifi_survey_refresh",
+            {
+                "db_path": str(self.db_path),
+                "floor_plan_id": floor_plan_id,
+                "session_id": session_id,
+            },
+        )
+
+    def _background_progress(self, event: dict) -> None:
+        message = str(event.get("message") or "")
+        if message:
+            self.scan_status_label.setText(f"扫描状态：{message}")
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        task_type = self._background_jobs.pop(job_id, "")
+        result = dict(event.get("result") or {})
+        self.import_button.setEnabled(True)
+        self.session_button.setEnabled(True)
+        if task_type == "wifi_survey_refresh":
+            self._apply_refresh_result(result)
+            self.scan_status_label.setText("扫描状态：空闲")
+        elif task_type == "wifi_survey_floor_import":
+            floor = dict(result.get("floor") or {})
+            self._start_refresh(floor_plan_id=int(floor.get("id") or 0))
+        elif task_type == "wifi_survey_create_session":
+            session = dict(result.get("session") or {})
+            self._start_refresh(
+                floor_plan_id=int(session.get("floor_plan_id") or 0),
+                session_id=int(session.get("id") or 0),
+            )
+        elif task_type == "wifi_survey_update_scale":
+            self.scale_button.setEnabled(True)
+            self.current_floor_plan = dict(result.get("floor") or {}) or self.current_floor_plan
+            self.finish_scale_mode("比例尺设置完成", clear_items=False)
+            self.update_status()
+        elif task_type == "wifi_survey_save_sample":
+            self.pending_sample_pos = None
+            self.scan_status_label.setText("扫描状态：完成")
+            self._start_refresh(
+                floor_plan_id=int(self.current_floor_plan.get("id") or 0) if self.current_floor_plan else 0,
+                session_id=int(self.current_session.get("id") or 0) if self.current_session else 0,
+            )
+        elif task_type == "wifi_survey_heatmap_render":
+            self._apply_heatmap_result(result)
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        task_type = self._background_jobs.pop(job_id, "")
+        self.import_button.setEnabled(True)
+        self.session_button.setEnabled(True)
+        self.sample_button.setEnabled(True)
+        self.heatmap_button.setEnabled(True)
+        self.scale_button.setEnabled(True)
+        self.scan_status_label.setText("扫描状态：后台任务失败")
+        MessageBox.warning(self, "无线测试", str(event.get("message") or f"{task_type} 执行失败"))
+
+    def _apply_refresh_result(self, result: dict[str, object]) -> None:
+        floors = [dict(row) for row in result.get("floors") or [] if isinstance(row, dict)]
+        floor = dict(result.get("floor") or {}) or None
+        sessions = [dict(row) for row in result.get("sessions") or [] if isinstance(row, dict)]
+        session = dict(result.get("session") or {}) or None
+        self.current_points = [dict(row) for row in result.get("points") or [] if isinstance(row, dict)]
+        self.current_observations = [dict(row) for row in result.get("observations") or [] if isinstance(row, dict)]
+        self.current_network_rows = [dict(row) for row in result.get("network_rows") or [] if isinstance(row, dict)]
+
         self.floor_combo.blockSignals(True)
         self.floor_combo.clear()
-        for plan in self.repository.list_floor_plans():
-            self.floor_combo.addItem(str(plan["name"]), plan)
+        for row in floors:
+            self.floor_combo.addItem(str(row.get("name") or ""), row)
+        floor_index = self.floor_combo.findData(floor)
+        self.floor_combo.setCurrentIndex(floor_index if floor_index >= 0 else (-1 if floor is None else 0))
         self.floor_combo.blockSignals(False)
-        if self.floor_combo.count():
-            self.floor_combo.setCurrentIndex(0)
-            self.load_floor_plan(self.floor_combo.currentData())
-        else:
+
+        self.session_combo.blockSignals(True)
+        self.session_combo.clear()
+        for row in sessions:
+            self.session_combo.addItem(str(row.get("name") or ""), row)
+        session_index = self.session_combo.findData(session)
+        self.session_combo.setCurrentIndex(session_index if session_index >= 0 else (-1 if session is None else 0))
+        self.session_combo.blockSignals(False)
+
+        if floor is None:
+            self.current_floor_plan = None
+            self.current_session = None
+            self.clear_scene()
+            self.load_points()
+            self.load_network_tree()
             self.update_status()
+            return
+        self.load_floor_plan(floor)
+        if session is not None:
+            self.load_session(session)
+        else:
+            self.current_session = None
+            self.load_points()
+            self.load_network_tree()
+            self.update_status()
+
+    def reload_floor_plans(self) -> None:
+        self._start_refresh()
 
     def on_floor_combo_changed(self, index: int) -> None:
         if index >= 0:
-            self.load_floor_plan(self.floor_combo.itemData(index))
+            plan = self.floor_combo.itemData(index)
+            self._start_refresh(floor_plan_id=int(plan.get("id") or 0) if isinstance(plan, dict) else 0)
 
     def load_floor_plan(self, plan: dict[str, object]) -> None:
         self.current_floor_plan = plan
@@ -313,28 +425,20 @@ class WifiSurveyPage(QWidget):
         self.floor_item.setZValue(0)
         self.scene.setSceneRect(self.floor_pixmap.rect())
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
-        self.hint_label.setText("请先新建测试会话" if not self.repository.list_sessions(int(plan["id"])) else "")
-        self.load_sessions()
+        self.hint_label.setText("请先新建测试会话" if not self.session_combo.count() else "")
         self.update_status()
 
     def load_sessions(self) -> None:
-        self.session_combo.blockSignals(True)
-        self.session_combo.clear()
-        self.current_session = None
-        if self.current_floor_plan is not None:
-            for session in self.repository.list_sessions(int(self.current_floor_plan["id"])):
-                self.session_combo.addItem(str(session["name"]), session)
-        self.session_combo.blockSignals(False)
-        if self.session_combo.count():
-            self.session_combo.setCurrentIndex(0)
-            self.load_session(self.session_combo.currentData())
-        else:
-            self.load_points()
-            self.update_status()
+        floor_id = int(self.current_floor_plan.get("id") or 0) if self.current_floor_plan else 0
+        self._start_refresh(floor_plan_id=floor_id)
 
     def on_session_combo_changed(self, index: int) -> None:
         if index >= 0:
-            self.load_session(self.session_combo.itemData(index))
+            session = self.session_combo.itemData(index)
+            self._start_refresh(
+                floor_plan_id=int(self.current_floor_plan.get("id") or 0) if self.current_floor_plan else 0,
+                session_id=int(session.get("id") or 0) if isinstance(session, dict) else 0,
+            )
 
     def load_session(self, session: dict[str, object]) -> None:
         self.current_session = session
@@ -349,24 +453,11 @@ class WifiSurveyPage(QWidget):
         if not path_text:
             return
         source = Path(path_text)
-        image_reader = QImageReader(str(source))
-        size = image_reader.size()
-        if not size.isValid():
-            MessageBox.warning(self, "无线测试", "无法读取图纸文件")
-            return
         target_dir = self.paths.wireless_scan_projects_dir(self.site_name) / "wifi_survey" / "floorplans"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / source.name
-        counter = 1
-        while target.exists():
-            target = target_dir / f"{source.stem}_{counter}{source.suffix}"
-            counter += 1
-        shutil.copy2(source, target)
-        plan = self.repository.create_floor_plan(source.stem, str(target), size.width(), size.height())
-        self.reload_floor_plans()
-        index = self.floor_combo.findData(plan)
-        if index >= 0:
-            self.floor_combo.setCurrentIndex(index)
+        self._start_background_job(
+            "wifi_survey_floor_import",
+            {"db_path": str(self.db_path), "source_path": str(source), "target_dir": str(target_dir)},
+        )
 
     def create_session(self) -> None:
         if self.current_floor_plan is None:
@@ -375,11 +466,10 @@ class WifiSurveyPage(QWidget):
         name, accepted = InputDialog.getText(self, "新建测试会话", "会话名称", QLineEdit.Normal, "WiFi Survey")
         if not accepted or not name.strip():
             return
-        session = self.repository.create_session(int(self.current_floor_plan["id"]), name.strip())
-        self.load_sessions()
-        index = self.session_combo.findData(session)
-        if index >= 0:
-            self.session_combo.setCurrentIndex(index)
+        self._start_background_job(
+            "wifi_survey_create_session",
+            {"db_path": str(self.db_path), "floor_plan_id": int(self.current_floor_plan["id"]), "name": name.strip()},
+        )
 
     def start_scale_mode(self) -> None:
         if self.current_floor_plan is None:
@@ -463,10 +553,15 @@ class WifiSurveyPage(QWidget):
         self.draw_scale_distance_label(p1, p2, distance)
         if line_item is not None:
             line_item.setToolTip(f"{distance:.2f} m / {pixel_distance:.1f} px")
-        self.repository.update_floor_plan_scale(int(self.current_floor_plan["id"]), meter_per_px)
-        self.current_floor_plan = self.repository.get_floor_plan(int(self.current_floor_plan["id"]))
-        self.finish_scale_mode("比例尺设置完成", clear_items=False)
-        self.update_status()
+        self.scale_button.setEnabled(False)
+        self._start_background_job(
+            "wifi_survey_update_scale",
+            {
+                "db_path": str(self.db_path),
+                "floor_plan_id": int(self.current_floor_plan["id"]),
+                "meter_per_px": meter_per_px,
+            },
+        )
 
     def finish_scale_mode(self, status: str, *, clear_items: bool) -> None:
         self.scale_points = []
@@ -508,8 +603,7 @@ class WifiSurveyPage(QWidget):
     def sample_at(self, pos: QPointF) -> None:
         if self.scan_thread is not None and self.scan_thread.isRunning():
             return
-        points = self.repository.list_points(int(self.current_session["id"]))
-        next_index = len(points) + 1
+        next_index = len(self.current_points) + 1
         self.pending_sample_pos = pos
         self.hint_label.setText(f"正在采集第 {next_index} 个点...")
         self.scan_status_label.setText("扫描状态：扫描中")
@@ -520,26 +614,23 @@ class WifiSurveyPage(QWidget):
         self.scan_thread.start()
 
     def on_scan_finished(self, observations: list[WifiObservation]) -> None:
-        self.sample_button.setEnabled(True)
         self.view.set_sampling_enabled(self.interaction_mode == "sample")
         if self.pending_sample_pos is None or self.current_session is None:
+            self.sample_button.setEnabled(True)
             return
-        points = self.repository.list_points(int(self.current_session["id"]))
         plan_scale = self.current_floor_plan.get("meter_per_px") if self.current_floor_plan else None
-        point = self.repository.create_point(
-            int(self.current_session["id"]),
-            len(points) + 1,
-            float(self.pending_sample_pos.x()),
-            float(self.pending_sample_pos.y()),
-            float(plan_scale) if plan_scale else None,
+        self.scan_status_label.setText("扫描状态：正在保存采样结果")
+        self._start_background_job(
+            "wifi_survey_save_sample",
+            {
+                "db_path": str(self.db_path),
+                "session_id": int(self.current_session["id"]),
+                "x_px": float(self.pending_sample_pos.x()),
+                "y_px": float(self.pending_sample_pos.y()),
+                "meter_per_px": float(plan_scale) if plan_scale else None,
+                "observations": [item.to_dict() for item in observations],
+            },
         )
-        self.repository.save_observations(int(point["id"]), observations)
-        self.pending_sample_pos = None
-        self.scan_status_label.setText("扫描状态：完成" if observations else "扫描状态：完成，未扫描到无线网络")
-        self.load_points()
-        self.load_network_tree()
-        self.show_point_detail(point)
-        self.update_status()
 
     def on_scan_failed(self, error: str) -> None:
         self.sample_button.setEnabled(True)
@@ -555,8 +646,7 @@ class WifiSurveyPage(QWidget):
         if self.current_session is None:
             self.update_status()
             return
-        points = self.repository.list_points(int(self.current_session["id"]))
-        for point in points:
+        for point in self.current_points:
             color = self.point_color(point)
             item = SurveyPointItem(point, color)
             item.setToolTip(self.point_tooltip(point))
@@ -577,7 +667,7 @@ class WifiSurveyPage(QWidget):
         return rssi_to_color(rssi, 220)
 
     def point_tooltip(self, point: dict[str, object]) -> str:
-        observations = self.repository.list_observations_by_point(int(point["id"]))
+        observations = self._observations_for_point(int(point["id"]))
         rssi = self.rssi_for_point(int(point["id"]))
         strongest = self.strongest_rssi_for_point(int(point["id"]))
         scan_time = max((str(obs.get("scan_time") or "") for obs in observations), default="-") or "-"
@@ -593,7 +683,7 @@ class WifiSurveyPage(QWidget):
     def strongest_rssi_for_point(self, point_id: int) -> float | None:
         values = [
             clean_rssi(obs.get("rssi_dbm"), obs.get("signal_quality"))
-            for obs in self.repository.list_observations_by_point(point_id)
+            for obs in self._observations_for_point(point_id)
         ]
         numeric = [float(value) for value in values if value is not None]
         return max(numeric) if numeric else None
@@ -603,7 +693,7 @@ class WifiSurveyPage(QWidget):
         self.show_signal_popup(QPointF(float(point["x_px"]), float(point["y_px"])))
 
     def show_point_detail(self, point: dict[str, object]) -> None:
-        observations = self.repository.list_observations_by_point(int(point["id"]))
+        observations = self._observations_for_point(int(point["id"]))
         self.detail_table.setRowCount(0)
         for obs in observations:
             row = self.detail_table.rowCount()
@@ -624,8 +714,8 @@ class WifiSurveyPage(QWidget):
     def show_signal_popup(self, pos: QPointF) -> None:
         if self.current_session is None:
             return
-        points = self.repository.list_points(int(self.current_session["id"]))
-        observations = self.repository.list_observations_by_session(int(self.current_session["id"]))
+        points = self.current_points
+        observations = self.current_observations
         _, selected_ssids, selected_bssids, _ = self.current_heatmap_selection()
         if self.current_filter is None:
             selected_ssids = set()
@@ -691,7 +781,7 @@ class WifiSurveyPage(QWidget):
             self.network_tree.blockSignals(False)
             return
         by_ssid: dict[str, list[dict[str, object]]] = {}
-        for row in self.repository.list_network_tree(int(self.current_session["id"])):
+        for row in self.current_network_rows:
             by_ssid.setdefault(str(row["ssid"]), []).append(row)
         for ssid, rows in by_ssid.items():
             parent = QTreeWidgetItem([ssid, "", ""])
@@ -730,7 +820,7 @@ class WifiSurveyPage(QWidget):
         self.update_status()
 
     def rssi_for_point(self, point_id: int) -> float | None:
-        observations = self.repository.list_observations_by_point(point_id)
+        observations = self._observations_for_point(point_id)
         if not observations:
             return None
         mode, selected_ssids, selected_bssids, _ = self.current_heatmap_selection()
@@ -758,23 +848,30 @@ class WifiSurveyPage(QWidget):
     def generate_heatmap(self) -> None:
         if self.floor_pixmap is None or self.current_session is None:
             return
-        points = self.repository.list_points(int(self.current_session["id"]))
-        observations = self.repository.list_observations_by_session(int(self.current_session["id"]))
         mode, selected_ssids, selected_bssids, mode_label = self.current_heatmap_selection()
-        samples = build_heatmap_samples(points, observations, mode, selected_ssids, selected_bssids)
-        app_logger.log_info(
-            "WIFI_SURVEY_HEATMAP_SAMPLES",
-            (
-                f"session_id={self.current_session['id']} "
-                f"floor_plan_id={self.current_floor_plan['id'] if self.current_floor_plan else '-'} "
-                f"total_points={len(points)} selected_mode={mode} "
-                f"selected_ssid={','.join(sorted(selected_ssids)) or '-'} "
-                f"selected_bssid={','.join(sorted(selected_bssids)) or '-'} "
-                f"valid_heatmap_points={len(samples)} "
-                f"samples={[{'point_id': sample.point_id, 'rssi': sample.rssi_dbm} for sample in samples]}"
-            ),
+        output_path = self.paths.runtime_cache_dir / "wifi_survey" / f"heatmap_{uuid4().hex}.png"
+        self.heatmap_button.setEnabled(False)
+        self._start_background_job(
+            "wifi_survey_heatmap_render",
+            {
+                "db_path": str(self.db_path),
+                "session_id": int(self.current_session["id"]),
+                "mode": mode,
+                "selected_ssids": sorted(selected_ssids),
+                "selected_bssids": sorted(selected_bssids),
+                "width": self.floor_pixmap.width(),
+                "height": self.floor_pixmap.height(),
+                "output_path": str(output_path),
+                "mode_label": mode_label,
+            },
         )
-        if len(samples) < 3:
+
+    def _apply_heatmap_result(self, result: dict[str, object]) -> None:
+        self.heatmap_button.setEnabled(True)
+        valid_count = int(result.get("valid_count") or 0)
+        path = Path(str(result.get("path") or ""))
+        mode, _ssids, _bssids, mode_label = self.current_heatmap_selection()
+        if valid_count < 3 or not path.is_file():
             self.load_points()
             if mode == "ssid":
                 message = "当前 SSID 有效采样点不足 3 个，无法生成该 SSID 热力图。可取消筛选生成最强信号热力图。"
@@ -785,23 +882,24 @@ class WifiSurveyPage(QWidget):
             MessageBox.information(self, "无线测试", message)
             self.update_status()
             return
-        self.heatmap_pixmap = generate_idw_heatmap(
-            self.floor_pixmap.width(),
-            self.floor_pixmap.height(),
-            [(sample.x_px, sample.y_px, sample.rssi_dbm) for sample in samples],
-        )
-        if self.heatmap_pixmap is None:
+        self.heatmap_pixmap = QPixmap(str(path))
+        path.unlink(missing_ok=True)
+        if self.heatmap_pixmap.isNull():
+            MessageBox.warning(self, "无线测试", "热力图预览加载失败")
             return
         if self.heatmap_item is not None:
             self.scene.removeItem(self.heatmap_item)
         self.heatmap_item = self.scene.addPixmap(self.heatmap_pixmap)
         self.heatmap_item.setOpacity(0.72)
         self.heatmap_item.setZValue(10)
-        self.last_heatmap_valid_count = len(samples)
+        self.last_heatmap_valid_count = valid_count
         self.load_points()
         self.heatmap_mode_label.setText(f"当前模式：{mode_label}")
-        self.heatmap_count_label.setText(f"当前热力图有效点：{len(samples)}")
+        self.heatmap_count_label.setText(f"当前热力图有效点：{valid_count}")
         self.update_legend()
+
+    def _observations_for_point(self, point_id: int) -> list[dict[str, object]]:
+        return [row for row in self.current_observations if int(row.get("point_id") or 0) == point_id and row.get("id") is not None]
 
     def clear_heatmap(self) -> None:
         if self.heatmap_item is not None:
@@ -825,7 +923,7 @@ class WifiSurveyPage(QWidget):
             self,
             wifi_survey_heatmap_png_spec(
                 path_text,
-                db_path=self.repository.database.path,
+                db_path=self.db_path,
                 floor_plan_id=int(self.current_floor_plan["id"]),
                 session_id=int(self.current_session["id"]) if self.current_session else 0,
                 mode=mode,
@@ -867,7 +965,7 @@ class WifiSurveyPage(QWidget):
             self,
             wifi_survey_csv_spec(
                 path_text,
-                db_path=self.repository.database.path,
+                db_path=self.db_path,
                 session_id=int(self.current_session["id"]),
                 session_name=str(self.current_session["name"]),
                 fields=fields,
@@ -934,10 +1032,10 @@ class WifiSurveyPage(QWidget):
     def update_status(self) -> None:
         floor_name = self.current_floor_plan["name"] if self.current_floor_plan else "-"
         session_name = self.current_session["name"] if self.current_session else "-"
-        points = self.repository.list_points(int(self.current_session["id"])) if self.current_session else []
+        points = self.current_points if self.current_session else []
         point_count = len(points)
         mode, selected_ssids, selected_bssids, mode_label = self.current_heatmap_selection()
-        observations = self.repository.list_observations_by_session(int(self.current_session["id"])) if self.current_session else []
+        observations = self.current_observations if self.current_session else []
         valid_count = len(build_heatmap_samples(points, observations, mode, selected_ssids, selected_bssids))
         filter_text = f"{self.current_filter[0].upper()} {self.current_filter[1]}" if self.current_filter else "最强信号"
         scale = self.current_floor_plan.get("meter_per_px") if self.current_floor_plan else None

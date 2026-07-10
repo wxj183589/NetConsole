@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -29,13 +30,27 @@ from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
-from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, open_diagnostic_folder_for_results, select_device_id_for_connection
+from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, open_diagnostic_folder_for_results, select_device_id_for_connection
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 
 
 def app():
     return QApplication.instance() or QApplication([])
+
+
+_BaseDeviceDetailDialog = DeviceDetailDialog
+
+
+def DeviceDetailDialog(*args, **kwargs):
+    dialog = _BaseDeviceDetailDialog(*args, **kwargs)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        app().processEvents()
+        if not dialog.detail_load_job_id:
+            break
+        time.sleep(0.01)
+    return dialog
 
 
 def test_protocol_display_rules():
@@ -290,21 +305,6 @@ def test_device_table_header_tooltips_are_readable():
         assert actual == tooltip
         assert "???" not in actual
         assert "�" not in actual
-
-
-def test_delete_device_ids_deletes_multiple_devices():
-    class Repository:
-        def __init__(self):
-            self.deleted = []
-
-        def delete(self, device_id):
-            self.deleted.append(device_id)
-
-    repository = Repository()
-
-    delete_device_ids(repository, [1, 3, 5])
-
-    assert repository.deleted == [1, 3, 5]
 
 
 def test_choose_devices_for_export_uses_all_when_selection_is_empty():

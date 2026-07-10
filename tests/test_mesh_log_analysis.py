@@ -153,6 +153,7 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
     assert page.has_loaded is False
     assert page.mr_table.rowCount() == 0
     page.refresh_all()
+    _wait_mesh_refresh(page)
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR2", "MR10"]
     assert page.create_mr_button.parent() is None
     assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2" / "raw").exists()
@@ -161,6 +162,7 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
 
     repository.update_group(int(mr2.id), station.id)
     page.refresh_all()
+    _wait_mesh_refresh(page)
 
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR10"]
     assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2").exists()
@@ -741,6 +743,17 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
+def _wait_mesh_refresh(page) -> None:
+    qt_app = _app()
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if not page._profiles_refresh_job_id:
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for Mesh Profile refresh")
+
+
 def _drain_qt_events(iterations: int = 10) -> None:
     app = _app()
     for _ in range(iterations):
@@ -776,6 +789,7 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.link_table.setColumnWidth(3, 260)
     page.refresh_all()
+    _wait_mesh_refresh(page)
     page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
     _wait_for_mesh_tab_load(page)
@@ -801,6 +815,7 @@ def test_mesh_link_table_auto_width_keeps_metric_headers_visible(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [source])
     page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
     page.refresh_all()
+    _wait_mesh_refresh(page)
     page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
     _wait_for_mesh_tab_load(page)
@@ -2294,6 +2309,7 @@ def test_mesh_page_refresh_all_does_not_double_load_selected_mr(tmp_path, monkey
 
     monkeypatch.setattr(page, "_load_profile_by_id", load_profile)
     page.refresh_all(select_mr_id=profile.mr_id)
+    _wait_mesh_refresh(page)
     assert calls == [profile.mr_id]
 
 

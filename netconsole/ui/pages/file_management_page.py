@@ -34,8 +34,9 @@ from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
-from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
+from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.external_terminal import launch_winscp
 from netconsole.services.file_transfer_service import (
     FILE_TRANSFER_MAX_CONCURRENCY,
@@ -56,6 +57,9 @@ from netconsole.ui.render.table_render_engine import apply_table_style, set_tabl
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
+
+
+QMessageBox = MessageBox
 
 
 LOCAL_COLUMNS = (("name", "file_management.name"), ("size", "file_management.size"), ("modified", "file_management.modified"), ("type", "file_management.type"))
@@ -259,7 +263,12 @@ class FileManagementPage(QWidget):
         self.site_name = site_name
         self.paths = paths or PathResolver()
         self.feature_gate = feature_gate or default_feature_gate()
-        self.group_repository = self._make_group_repository(repository, site_name)
+        self.background_manager = BackgroundProcessManager(self, paths=self.paths)
+        self.background_manager.finished.connect(self._navigation_finished)
+        self.background_manager.failed.connect(self._navigation_failed)
+        self.background_manager.cancelled.connect(self._navigation_failed)
+        self._navigation_job_id = ""
+        self._navigation_devices: dict[int, Device] = {}
         self.settings = SettingsStore(self.paths)
         self._initializing_columns = True
         self._restoring_column_widths = False
@@ -535,60 +544,94 @@ class FileManagementPage(QWidget):
         self.disconnect_sftp()
         self.repository = repository
         self.site_name = site_name
-        self.group_repository = self._make_group_repository(repository, site_name)
         self.local_path = self.paths.file_downloads_root(site_name)
         self.refresh_groups()
         self.refresh_devices()
         self.retranslate()
 
     def refresh_groups(self) -> None:
-        current = self.group_combo.currentData()
+        self._start_navigation_refresh()
+
+    def refresh_devices(self, trigger_device_change: bool = True) -> None:
+        self._start_navigation_refresh(trigger_device_change=trigger_device_change)
+
+    def _start_navigation_refresh(self, *, trigger_device_change: bool = True) -> None:
+        database = getattr(self.repository, "database", None)
+        if database is None:
+            self.group_combo.blockSignals(True)
+            self.group_combo.clear()
+            self.group_combo.addItem(self.i18n.t("groups.all_groups"), ALL_GROUPS)
+            self.group_combo.addItem(self.i18n.t("groups.ungrouped"), UNGROUPED)
+            self.group_combo.blockSignals(False)
+            fallback_device = getattr(self.repository, "device", None)
+            devices = [fallback_device] if isinstance(fallback_device, Device) else []
+            self._navigation_devices = {int(device.id): device for device in devices if device.id is not None}
+            self.device_combo.clear()
+            if not devices:
+                self.device_combo.addItem("未找到匹配设备", None)
+            for device in devices:
+                if device.id is not None:
+                    self.device_combo.addItem(str(device.name or device.system_name or device.primary_address), int(device.id))
+            return
+        job_id = uuid4().hex
+        self._navigation_job_id = job_id
+        self.group_combo.setEnabled(False)
+        self.device_combo.setEnabled(False)
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="file_management_navigation_refresh",
+                params={
+                    "db_path": str(database.path),
+                    "site_name": self.site_name,
+                    "search": self.device_search_edit.text().strip(),
+                    "group_filter": self.group_combo.currentData() if self.group_combo.count() else ALL_GROUPS,
+                    "trigger_device_change": trigger_device_change,
+                },
+            )
+        )
+
+    def _navigation_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._navigation_job_id:
+            return
+        self._navigation_job_id = ""
+        result = dict(event.get("result") or {})
+        current_group = self.group_combo.currentData() if self.group_combo.count() else ALL_GROUPS
+        current_device_id = self.device_combo.currentData()
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
         self.group_combo.addItem(self.i18n.t("groups.all_groups"), ALL_GROUPS)
         self.group_combo.addItem(self.i18n.t("groups.ungrouped"), UNGROUPED)
-        for group in self._list_groups():
-            self.group_combo.addItem(group.name, group.id)
-        index = self.group_combo.findData(current if current is not None else ALL_GROUPS)
-        self.group_combo.setCurrentIndex(index if index >= 0 else 0)
+        for row in result.get("groups") or []:
+            if isinstance(row, dict):
+                self.group_combo.addItem(str(row.get("name") or ""), row.get("id"))
+        group_index = self.group_combo.findData(current_group)
+        self.group_combo.setCurrentIndex(group_index if group_index >= 0 else 0)
         self.group_combo.blockSignals(False)
 
-    @staticmethod
-    def _make_group_repository(repository: DeviceRepository, site_name: str) -> DeviceGroupRepository | None:
-        database = getattr(repository, "database", None)
-        return DeviceGroupRepository(database, site_name) if database is not None else None
-
-    def _list_groups(self):
-        if self.group_repository is None:
-            return []
-        try:
-            return self.group_repository.list()
-        except Exception as exc:
-            app_logger.log_warning("FILE_MANAGER_GROUP_LIST_FAILED", str(exc))
-            return []
-
-    def refresh_devices(self, trigger_device_change: bool = True) -> None:
-        current_id = self.device_combo.currentData()
+        devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        self._navigation_devices = {int(device.id): device for device in devices if device.id is not None}
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
-        search_text = self.device_search_edit.text().strip()
-        try:
-            devices = self.repository.list(search=search_text or None, group_filter=group_filter_to_repository_value(self.group_combo.currentData()))
-        except TypeError:
-            devices = self.repository.list()
         if not devices:
             self.device_combo.addItem("未找到匹配设备", None)
         for device in devices:
             if device.id is not None:
                 self.device_combo.addItem(str(device.name or device.system_name or device.primary_address), int(device.id))
-        index = self.device_combo.findData(current_id)
-        self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.device_combo.count() else -1))
-        new_id = self.device_combo.currentData()
+        device_index = self.device_combo.findData(current_device_id)
+        self.device_combo.setCurrentIndex(device_index if device_index >= 0 else (0 if self.device_combo.count() else -1))
         self.device_combo.blockSignals(False)
-        if trigger_device_change and new_id != current_id:
-            self.on_device_changed()
-        elif trigger_device_change:
-            self.update_device_labels()
+        self.group_combo.setEnabled(True)
+        self.device_combo.setEnabled(True)
+        self.on_device_changed()
+
+    def _navigation_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._navigation_job_id:
+            return
+        self._navigation_job_id = ""
+        self.group_combo.setEnabled(True)
+        self.device_combo.setEnabled(True)
+        self._show_error(self.i18n.t("file_management.title"), str(event.get("message") or "设备导航加载失败"))
 
     def on_group_filter_changed(self) -> None:
         current_device_id = self.device_combo.currentData()
@@ -603,7 +646,8 @@ class FileManagementPage(QWidget):
         device_id = self.device_combo.currentData()
         if device_id is None:
             return None
-        return self.repository.get(int(device_id))
+        device = self._navigation_devices.get(int(device_id))
+        return device
 
     def on_device_changed(self) -> None:
         self.disconnect_sftp()

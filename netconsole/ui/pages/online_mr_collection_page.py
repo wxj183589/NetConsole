@@ -8,6 +8,7 @@ import subprocess
 import time
 import traceback
 import weakref
+from uuid import uuid4
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -70,7 +71,6 @@ from netconsole.models.online_mr_models import (
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.core.database import Database
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_runner import (
     FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
@@ -80,6 +80,8 @@ from netconsole.services.network_tools.iperf_runner import (
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.netmiko_connection import connection_targets
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text, summarize_active
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
@@ -415,6 +417,12 @@ class OnlineMrCollectionPage(QWidget):
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._device_refresh_finished)
+        self.background_manager.failed.connect(self._device_refresh_failed)
+        self.background_manager.cancelled.connect(self._device_refresh_failed)
+        self._device_refresh_job_id = ""
+        self._device_refresh_context: dict[str, object] = {}
         self.analysis_only = analysis_only
         self.feature_gate = feature_gate or default_feature_gate()
         self.settings = SettingsStore(paths)
@@ -974,31 +982,63 @@ class OnlineMrCollectionPage(QWidget):
     def refresh_all(self, defer_heavy: bool = False, refresh_tools: bool = False) -> None:
         if not self._can_update_ui():
             return
-        profile_start = time.perf_counter()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self._clear_peer_identity_cache()
+        if self._device_refresh_job_id:
+            return
+        job_id = uuid4().hex
+        self._device_refresh_job_id = job_id
+        self._device_refresh_context = {"defer_heavy": defer_heavy, "refresh_tools": refresh_tools, "started_at": time.perf_counter()}
+        self.refresh_devices_button.setEnabled(False)
+        self.filter_hint_label.setText(self.i18n.t("app.loading"))
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="online_mr_collection_devices_refresh",
+                params={"db_path": str(self.repository.database.path), "site_name": self.site_name},
+            )
+        )
+
+    def _device_refresh_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._device_refresh_job_id:
+            return
+        self._device_refresh_job_id = ""
+        self.refresh_devices_button.setEnabled(True)
+        context = self._device_refresh_context
+        self._device_refresh_context = {}
+        result = dict(event.get("result") or {})
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        self.device_groups = {
+            int(row.get("id")): str(row.get("name") or "")
+            for row in result.get("groups") or []
+            if isinstance(row, dict) and row.get("id") is not None
+        }
         if self.analysis_only:
-            self.devices = self.repository.list()
-            self._load_device_groups()
             self.available_devices = self.devices
             self.filtered_devices = self.devices
             self._fill_view_devices()
             self._fill_history()
             self._update_action_state()
-            self._log_page_profile("refresh", profile_start, rows=len(self.session_history_rows))
+            self._log_page_profile("refresh", float(context.get("started_at") or time.perf_counter()), rows=len(self.session_history_rows))
             return
-        self.devices = self.repository.list()
-        self._load_device_groups()
         self._fill_devices()
         self._fill_view_devices()
-        if defer_heavy:
-            self._schedule_history_refresh(refresh_tools=refresh_tools)
+        if bool(context.get("defer_heavy")):
+            self._schedule_history_refresh(refresh_tools=bool(context.get("refresh_tools")))
         else:
             self._fill_history()
-            self._refresh_tool_status_once(force=refresh_tools)
+            self._refresh_tool_status_once(force=bool(context.get("refresh_tools")))
         self.attach_to_running_collections()
         self._update_action_state()
-        self._log_page_profile("refresh", profile_start, rows=len(self.filtered_devices))
+        self._log_page_profile("refresh", float(context.get("started_at") or time.perf_counter()), rows=len(self.filtered_devices))
+
+    def _device_refresh_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._device_refresh_job_id:
+            return
+        self._device_refresh_job_id = ""
+        self._device_refresh_context = {}
+        self.refresh_devices_button.setEnabled(True)
+        self.filter_hint_label.setText(str(event.get("message") or "设备列表加载失败"))
 
     def _clear_peer_identity_cache(self) -> None:
         self.peer_station_cache.clear()
@@ -4235,8 +4275,7 @@ class OnlineMrCollectionPage(QWidget):
         self._refresh_top_metrics()
 
     def _load_device_groups(self) -> None:
-        groups = DeviceGroupRepository(self.repository.database, self.site_name).list()
-        self.device_groups = {int(group.id): group.name for group in groups if group.id is not None}
+        return
 
     def _is_vehicle_fat_ap(self, device: Device) -> bool:
         group_name = self.device_groups.get(int(device.group_id or 0), "")
@@ -4482,10 +4521,14 @@ class OnlineMrCollectionPage(QWidget):
         return PingConfig(source_device_id=source_device_id, target_ip=target_ip)
 
     def _device_by_id(self, device_id: int) -> Device | None:
-        try:
-            return self.repository.get(device_id)
-        except Exception:
-            return next((device for device in self.filtered_devices if device.id == device_id), None)
+        return next(
+            (
+                device
+                for device in [*self.filtered_devices, *self.available_devices, *self.devices]
+                if device.id == device_id
+            ),
+            None,
+        )
 
     def _fping_target_for_device(self, device: Device) -> str:
         config = self._ping_config_for_device(device)

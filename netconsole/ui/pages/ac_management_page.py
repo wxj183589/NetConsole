@@ -602,6 +602,7 @@ class AcManagementPage(QWidget):
         self.background_manager.failed.connect(self._background_failed)
         self.background_manager.cancelled.connect(self._background_failed)
         self._background_jobs: dict[str, dict[str, object]] = {}
+        self._transient_https_ports: dict[str, int] = {}
         self._status_after_resource_refresh = ""
         self.ac_devices: list[Device] = []
         self.resource_thread: AcResourceCollectThread | None = None
@@ -1211,20 +1212,11 @@ class AcManagementPage(QWidget):
             item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else self.i18n.t("trackside.tooltip.default", label=label))
 
     def refresh_devices(self, *, load_current_only: bool = False) -> None:
-        current_uuid = self.current_device_uuid()
-        self.ac_devices = self.device_repository.list(vendor="H3C", device_type="AC")
-        self._device_list_loaded = True
-        self.device_combo.blockSignals(True)
-        self.device_combo.clear()
-        for device in self.ac_devices:
-            self.device_combo.addItem(f"{device.name} ({device.ip_address})", device.device_uuid)
-        index = self.device_combo.findData(current_uuid)
-        self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.ac_devices else -1))
-        self.device_combo.blockSignals(False)
-        if load_current_only:
-            self.refresh_current_tab_data()
-        else:
-            self.refresh_data()
+        self._start_background_job(
+            "ac_devices_refresh",
+            {"db_path": str(self.device_repository.database.path), "current_uuid": self.current_device_uuid(), "load_current_only": load_current_only},
+            title="加载 AC 设备",
+        )
 
     def clear_results(self) -> None:
         self._set_summary(None)
@@ -1666,6 +1658,7 @@ class AcManagementPage(QWidget):
         if device is None:
             return
         device.https_port = port
+        self._transient_https_ports[str(device.device_uuid or "")] = port
         self._load_resource_rows(str(device.device_uuid or ""))
         self.update_open_web_button()
 
@@ -1780,9 +1773,11 @@ class AcManagementPage(QWidget):
         answer = MessageBox.question(self, self.i18n.t("ac.title"), self.i18n.t("ap.batch_delete_confirm"))
         if answer != MessageBox.Yes:
             return
-        count = self.repository.delete_fit_aps(ac_uuid, names)
-        app_logger.log_info("FIT_AP_BATCH_DELETE", f"ac={ac_uuid}, count={count}")
-        self.refresh_data()
+        self._start_background_job(
+            "ac_fit_ap_delete_many",
+            {"db_path": str(self.repository.database.path), "ac_uuid": ac_uuid, "names": names},
+            title="批量删除 FIT-AP",
+        )
 
     def import_metadata(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_resources")
@@ -1822,10 +1817,18 @@ class AcManagementPage(QWidget):
         )
 
     def _start_background_job(self, task_type: str, params: dict[str, object], *, title: str) -> str:
-        for context in self._background_jobs.values():
-            if str(context.get("task_type") or "") == task_type:
-                self.status_label.setText(f"{title}：后台处理中...")
-                return str(context.get("job_id") or "")
+        write_tasks = {
+            "ac_fit_ap_delete_many",
+            "ac_ap_extension_save",
+            "ac_ap_extension_delete",
+            "ac_ap_extension_clear",
+            "ac_station_overview_value_save",
+        }
+        if task_type not in write_tasks:
+            for context in self._background_jobs.values():
+                if str(context.get("task_type") or "") == task_type:
+                    self.status_label.setText(f"{title}：后台处理中...")
+                    return str(context.get("job_id") or "")
         job_id = uuid.uuid4().hex
         params = {
             **params,
@@ -1848,6 +1851,46 @@ class AcManagementPage(QWidget):
         task_type = str(context.get("task_type") or "")
         title = str(context.get("title") or "后台任务")
         result = dict(event.get("result") or {})
+        if task_type == "ac_devices_refresh":
+            current_uuid = str(context.get("current_uuid") or "")
+            self.ac_devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+            for device in self.ac_devices:
+                device_uuid = str(device.device_uuid or "")
+                if device_uuid in self._transient_https_ports:
+                    device.https_port = self._transient_https_ports[device_uuid]
+            self._device_list_loaded = True
+            self.device_combo.blockSignals(True)
+            self.device_combo.clear()
+            for device in self.ac_devices:
+                self.device_combo.addItem(f"{device.name} ({device.ip_address})", device.device_uuid)
+            index = self.device_combo.findData(current_uuid)
+            self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.ac_devices else -1))
+            self.device_combo.blockSignals(False)
+            if bool(context.get("load_current_only")):
+                self.refresh_current_tab_data()
+            else:
+                self.refresh_data()
+            return
+        if task_type == "ac_fit_ap_delete_many":
+            count = int(result.get("count") or 0)
+            app_logger.log_info("FIT_AP_BATCH_DELETE", f"ac={context.get('ac_uuid')}, count={count}")
+            self.status_label.setText(f"{title}：完成，删除 {count} 条")
+            self.refresh_data()
+            return
+        if task_type in {"ac_ap_extension_save", "ac_ap_extension_delete", "ac_ap_extension_clear"}:
+            if task_type == "ac_ap_extension_clear":
+                MessageBox.information(self, title, f"已删除 {int(result.get('count') or 0)} 条。")
+            self.refresh_ap_extensions()
+            self.refresh_data()
+            return
+        if task_type == "ac_station_overview_value_save":
+            self.refresh_overview_table()
+            return
+        if task_type == "device_lookup":
+            payload = result.get("device")
+            if isinstance(payload, dict):
+                self._show_trackside_device_detail(Device.from_mapping(payload))
+            return
         if task_type == "fit_ap_metadata_import":
             app_logger.log_info("FIT_AP_IMPORT", f"updated={result.get('updated', 0)}, skipped={result.get('skipped', 0)}")
             self.status_label.setText(f"{title}：完成，更新 {result.get('updated', 0)} 条，跳过 {result.get('skipped', 0)} 条")
@@ -2034,9 +2077,11 @@ class AcManagementPage(QWidget):
         payload = {field: editor.text().strip() for field, editor in editors.items()}
         if row.get("id"):
             payload["id"] = row.get("id")
-        self.repository.upsert_ap_extension_point(payload)
-        self.refresh_ap_extensions()
-        self.refresh_data()
+        self._start_background_job(
+            "ac_ap_extension_save",
+            {"db_path": str(self.repository.database.path), "row": payload},
+            title="保存 FIT-AP 扩展信息",
+        )
 
     def delete_selected_ap_extension_points(self) -> None:
         selected_rows = sorted({index.row() for index in self.extension_table.selectionModel().selectedRows()})
@@ -2045,17 +2090,20 @@ class AcManagementPage(QWidget):
             return
         if MessageBox.question(self, "批量删除", f"确认删除 {len(ids)} 条 FIT-AP扩展信息？") != MessageBox.Yes:
             return
-        self.repository.delete_ap_extension_points(ids)
-        self.refresh_ap_extensions()
-        self.refresh_data()
+        self._start_background_job(
+            "ac_ap_extension_delete",
+            {"db_path": str(self.repository.database.path), "ids": ids},
+            title="删除 FIT-AP 扩展信息",
+        )
 
     def clear_ap_extension_points(self) -> None:
         if MessageBox.question(self, "清空当前局点扩展信息", "该操作会删除当前局点全部 FIT-AP扩展信息，确认继续？") != MessageBox.Yes:
             return
-        count = self.repository.clear_ap_extension_points()
-        MessageBox.information(self, "清空当前局点扩展信息", f"已删除 {count} 条。")
-        self.refresh_ap_extensions()
-        self.refresh_data()
+        self._start_background_job(
+            "ac_ap_extension_clear",
+            {"db_path": str(self.repository.database.path)},
+            title="清空当前局点扩展信息",
+        )
 
     @staticmethod
     def _extension_summary_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
@@ -2799,9 +2847,15 @@ class AcManagementPage(QWidget):
         if row < 0 or row >= len(rows):
             return
         device_uuid = str(rows[row].get("device_uuid") or "")
-        device = next((item for item in self.device_repository.list() if item.device_uuid == device_uuid), None)
-        if device is None:
+        if not device_uuid:
             return
+        self._start_background_job(
+            "device_lookup",
+            {"db_path": str(self.device_repository.database.path), "device_uuid": device_uuid},
+            title="加载设备详情",
+        )
+
+    def _show_trackside_device_detail(self, device: Device) -> None:
         dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
@@ -2984,8 +3038,11 @@ class AcManagementPage(QWidget):
                 MessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.remark_too_long"))
                 self.refresh_overview_table()
                 return
-            self.repository.upsert_station_ap_remark(site_item.text(), remark)
-            self.refresh_overview_table()
+            self._start_background_job(
+                "ac_station_overview_value_save",
+                {"db_path": str(self.repository.database.path), "station": site_item.text(), "kind": "remark", "value": remark},
+                title="保存站点备注",
+            )
             return
         if self._overview_uses_trackside_plan:
             MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.trackside_plan_total_locked"))
@@ -2999,5 +3056,8 @@ class AcManagementPage(QWidget):
             MessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.ap_total_invalid"))
             self.refresh_overview_table()
             return
-        self.repository.upsert_station_ap_capacity(site_item.text(), total)
-        self.refresh_overview_table()
+        self._start_background_job(
+            "ac_station_overview_value_save",
+            {"db_path": str(self.repository.database.path), "station": site_item.text(), "kind": "capacity", "value": total},
+            title="保存站点 AP 总数",
+        )

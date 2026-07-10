@@ -46,16 +46,16 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams
 from netconsole.models.mesh_log_models import MeshMrProfile, format_mac_h3c
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.export_task_models import ExportJob
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params, save_site_mesh_analysis_params
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.path_preference_service import PathPreferenceService
-from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 from netconsole.ui.mesh_log_workers import MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
 from netconsole.ui.components.button_icons import apply_button_icon
@@ -556,7 +556,12 @@ class MeshLogAnalysisPage(QWidget):
         self.i18n = i18n if isinstance(i18n, I18n) else I18n()
         self.site_name = str(site_name)
         self.paths = paths or PathResolver()
-        self.group_repository = self._make_group_repository(self.repository, self.site_name)
+        self.background_manager = BackgroundProcessManager(self, paths=self.paths)
+        self.background_manager.finished.connect(self._profiles_refresh_finished)
+        self.background_manager.failed.connect(self._profiles_refresh_failed)
+        self.background_manager.cancelled.connect(self._profiles_refresh_failed)
+        self._profiles_refresh_job_id = ""
+        self._profiles_refresh_selection: str | None = None
         self.storage = MeshStorageService(site_name, self.paths)
         self.settings = SettingsStore(self.paths)
         self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
@@ -671,7 +676,6 @@ class MeshLogAnalysisPage(QWidget):
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
-        self.group_repository = self._make_group_repository(repository, site_name)
         self.set_site(site_name)
 
     def set_site(self, site_name: str) -> None:
@@ -683,8 +687,6 @@ class MeshLogAnalysisPage(QWidget):
         self.catalog_repo = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
         self.feature_gate = default_feature_gate()
         self.analysis_params_override = None
-        if self.repository is not None:
-            self.group_repository = self._make_group_repository(self.repository, self.site_name)
         self.repo_cache.clear()
         self.profile_by_id.clear()
         self.current_profile = None
@@ -692,11 +694,6 @@ class MeshLogAnalysisPage(QWidget):
         self.current_source_file_name = None
         self.has_loaded = False
         self.first_show_refresh(force=True)
-
-    @staticmethod
-    def _make_group_repository(repository: DeviceRepository | None, site_name: str) -> DeviceGroupRepository | None:
-        database = getattr(repository, "database", None)
-        return DeviceGroupRepository(database, site_name) if database is not None else None
 
     def retranslate(self) -> None:
         self.title_label.setText(self.i18n.t("mesh_analysis.title"))
@@ -1199,28 +1196,73 @@ class MeshLogAnalysisPage(QWidget):
             return
         try:
             self.refresh_all()
-            self.has_loaded = True
-            if self.profiles:
-                self._set_page_state("ready", f"已加载 {len(self.profiles)} 台 MR 原始 MESH 日志对象")
-            else:
-                self._set_page_state("empty", "当前局点暂无 MR 原始 MESH 日志，请先导入日志或配置车载 MR 设备。")
         except Exception as exc:
             self._set_page_state("error", str(exc))
             app_logger.log_error("MESH_PAGE_FIRST_SHOW_FAILED", str(exc))
-        finally:
-            self.is_loading = False
-            self.refresh_button.setEnabled(True)
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-            elapsed_ms = (perf_counter() - start) * 1000
-            app_logger.log_info("UI_PAGE_PROFILE", f"page=rail.raw_mesh_log_analysis phase=first_show.end elapsed_ms={elapsed_ms:.1f} rows={len(self.profiles)}")
 
     def refresh_all(self, select_mr_id: str | None = None) -> None:
+        if self._profiles_refresh_job_id:
+            return
+        self._profiles_refresh_selection = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
+        job_id = uuid.uuid4().hex
+        self._profiles_refresh_job_id = job_id
+        self.is_loading = True
+        self.refresh_button.setEnabled(False)
+        self._set_page_state("loading", "正在同步车载 MR Profile，请稍候……")
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="mesh_mr_profiles_refresh",
+                params={
+                    "db_path": str(self.repository.database.path) if self.repository is not None else "",
+                    "site_name": self.site_name,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
+
+    def _profiles_refresh_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._profiles_refresh_job_id:
+            return
+        self._profiles_refresh_job_id = ""
+        result = dict(event.get("result") or {})
+        datetime_fields = {"earliest_sample_time", "latest_sample_time", "last_import_at", "created_at", "updated_at"}
+        profiles: list[MeshMrProfile] = []
+        for row in result.get("profiles") or []:
+            if not isinstance(row, dict):
+                continue
+            values = dict(row)
+            for field in datetime_fields:
+                value = values.get(field)
+                if isinstance(value, str) and value:
+                    values[field] = datetime.fromisoformat(value)
+            profiles.append(MeshMrProfile(**values))
+        self.profiles = profiles
+        self._apply_profiles(self._profiles_refresh_selection)
+        self._profiles_refresh_selection = None
+        self.has_loaded = True
+        self.is_loading = False
+        self.refresh_button.setEnabled(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        if self.profiles:
+            self._set_page_state("ready", f"已加载 {len(self.profiles)} 台 MR 原始 MESH 日志对象")
+        else:
+            self._set_page_state("empty", "当前局点暂无 MR 原始 MESH 日志，请先导入日志或配置车载 MR 设备。")
+
+    def _profiles_refresh_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._profiles_refresh_job_id:
+            return
+        self._profiles_refresh_job_id = ""
+        self._profiles_refresh_selection = None
+        self.is_loading = False
+        self.refresh_button.setEnabled(True)
+        self._set_page_state("error", str(event.get("message") or "MR Profile 加载失败"))
+
+    def _apply_profiles(self, current_id: str | None) -> None:
         profile_start = perf_counter()
-        current_id = select_mr_id or (self.current_profile.mr_id if self.current_profile else None)
-        sync_start = perf_counter()
-        self.profiles = self._vehicle_mr_profiles()
-        app_logger.log_info("MESH_PROFILE_SYNC", f"elapsed_ms={(perf_counter() - sync_start) * 1000:.1f} rows={len(self.profiles)}")
+        app_logger.log_info("MESH_PROFILE_SYNC", f"rows={len(self.profiles)}")
         self.profile_by_id = {profile.mr_id: profile for profile in self.profiles}
         sorting = self.mr_table.isSortingEnabled()
         sort_column = self.mr_table.horizontalHeader().sortIndicatorSection()
@@ -1255,15 +1297,6 @@ class MeshLogAnalysisPage(QWidget):
             self.refresh_current_mr_data(current_tab_only=True)
         self._log_page_profile("refresh", profile_start, rows=len(self.profiles))
 
-    def _vehicle_mr_profiles(self) -> list[MeshMrProfile]:
-        if self.repository is None or self.group_repository is None:
-            return self.catalog_repo.list_profiles()
-        group = self.group_repository.find_by_name(VEHICLE_MR_GROUP_NAME)
-        if group is None or group.id is None:
-            return []
-        devices = self.repository.list(group_filter=int(group.id))
-        return self.storage.sync_mr_profiles_from_devices(devices)
-
     def refresh_profiles(self, select_mr_id: str | None = None) -> None:
         self.refresh_all(select_mr_id)
 
@@ -1284,7 +1317,7 @@ class MeshLogAnalysisPage(QWidget):
 
     def _load_profile_by_id(self, mr_id: str) -> None:
         profile_start = perf_counter()
-        self.current_profile = self.profile_by_id.get(mr_id) or self.catalog_repo.get_profile(mr_id)
+        self.current_profile = self.profile_by_id.get(mr_id)
         if self.current_profile is None:
             return
         self.current_source_file_id = None

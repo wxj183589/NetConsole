@@ -3,6 +3,7 @@ from __future__ import annotations
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -59,11 +60,6 @@ from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
-
-
-def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
-    for device_id in device_ids:
-        repository.delete(device_id)
 
 
 def choose_devices_for_export(all_devices: list[object], selected_devices: list[object]) -> list[object]:
@@ -135,6 +131,7 @@ class DeviceManagementPage(QWidget):
         self._omnipeek_preview_source: dict[str, object] = {}
         self._device_refresh_job_id: str | None = None
         self._device_refresh_pending = False
+        self._device_mutation_jobs: dict[str, dict[str, object]] = {}
         self.device_page = 1
         self.device_page_size = DEFAULT_PAGE_SIZE
         self.feature_gate = feature_gate or default_feature_gate()
@@ -315,10 +312,13 @@ class DeviceManagementPage(QWidget):
             MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         if len(checked_ids) > 1:
-            self.batch_test_connections([self.repository.get(device_id) for device_id in checked_ids])
+            self.batch_test_connections(self.table.checked_devices())
             return
         device_id = checked_ids[0]
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         self.test_connection_button.setEnabled(False)
         self.test_connection_button.setText(self.i18n.t("devices.testing_connection"))
         self.connection_test_thread = DeviceConnectionTestThread(device, self)
@@ -398,7 +398,10 @@ class DeviceManagementPage(QWidget):
             MessageBox.information(self, self.i18n.t("devices.external_terminal"), message)
 
     def launch_external_terminal_for_device_id(self, device_id: int) -> None:
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         config = self._select_external_terminal_config()
         if config is None:
             return
@@ -474,10 +477,10 @@ class DeviceManagementPage(QWidget):
         if checked:
             return checked
         current_id = self.selected_id()
-        return [self.repository.get(current_id)] if current_id is not None else []
-
-    def _filtered_devices(self):
-        return self.repository.list(**self._current_device_filters())
+        if current_id is None:
+            return []
+        device = self._loaded_device(current_id)
+        return [device] if device is not None else []
 
     def _current_device_filters(self) -> dict[str, object | None]:
         selected_group_data = self.group_filter.currentData()
@@ -520,13 +523,14 @@ class DeviceManagementPage(QWidget):
         self.diagnostic_download_worker.start()
 
     def _diagnostic_target_devices(self):
-        checked_ids = self.table.checked_device_ids()
-        if checked_ids:
-            return [self.repository.get(device_id) for device_id in checked_ids]
+        checked = self.table.checked_devices()
+        if checked:
+            return checked
         current_id = self.selected_id()
         if current_id is None:
             return []
-        return [self.repository.get(current_id)]
+        device = self._loaded_device(current_id)
+        return [device] if device is not None else []
 
     def _handle_diagnostic_results(self, results) -> None:
         self.diagnostic_download_button.setEnabled(True)
@@ -587,13 +591,10 @@ class DeviceManagementPage(QWidget):
         return DeviceGroupRepository(database, site_name) if database is not None else None
 
     def _list_groups(self):
-        if self.group_repository is None:
-            return []
-        try:
-            return self.group_repository.list()
-        except Exception as exc:
-            app_logger.log_warning("DEVICE_GROUP_LIST_FAILED", str(exc))
-            return []
+        return [
+            SimpleNamespace(id=int(group_id), name=group_name)
+            for group_id, group_name in sorted(self.table.group_names.items(), key=lambda item: item[1].casefold())
+        ]
 
     def _device_filters_changed(self, *_args: object) -> None:
         self.device_page = 1
@@ -751,7 +752,10 @@ class DeviceManagementPage(QWidget):
         self.edit_device_by_id(device_id)
 
     def edit_device_by_id(self, device_id: int) -> None:
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         device_uuid = device.device_uuid or str(device.id)
         existing = self.dialog_registry.get_edit_window(device_uuid)
         if isinstance(existing, DeviceDialog):
@@ -764,7 +768,10 @@ class DeviceManagementPage(QWidget):
         self._show_window(dialog)
 
     def show_device_detail(self, device_id: int) -> None:
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         device.ensure_device_uuid()
         detail_key = str(device.device_uuid or device.id)
         existing = self.detail_dialogs.get(detail_key)
@@ -804,28 +811,10 @@ class DeviceManagementPage(QWidget):
         show_non_focus_window(dialog.parentWidget(), dialog, key="device_dialog", activate=False, raise_window=False)
 
     def _create_device_from_dialog(self, device) -> None:
-        try:
-            created = self.repository.create(device)
-        except Exception as exc:
-            app_logger.log_error("DEVICE_CREATE_FAILED", str(exc))
-            MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
-            return
-        app_logger.log_info("DEVICE_CREATED", f"设备已新增: {created.name}")
-        self.refresh()
-        self.devices_changed.emit()
-        self._close_sender_dialog()
+        self._start_device_mutation("create", device=device, dialog=self.sender())
 
     def _update_device_from_dialog(self, device) -> None:
-        try:
-            updated = self.repository.update(device)
-        except Exception as exc:
-            app_logger.log_error("DEVICE_UPDATE_FAILED", str(exc))
-            MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
-            return
-        app_logger.log_info("DEVICE_UPDATED", f"设备已编辑: {updated.name}")
-        self.refresh()
-        self.devices_changed.emit()
-        self._close_sender_dialog()
+        self._start_device_mutation("update", device=device, dialog=self.sender())
 
     def _close_sender_dialog(self) -> None:
         sender = self.sender()
@@ -842,11 +831,7 @@ class DeviceManagementPage(QWidget):
     def delete_device_by_id(self, device_id: int) -> None:
         answer = MessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
         if answer == MessageBox.Yes:
-            device = self.repository.get(device_id)
-            self.repository.delete(device_id)
-            app_logger.log_info("DEVICE_DELETED", f"设备已删除: {device.name}")
-            self.refresh()
-            self.devices_changed.emit()
+            self._start_device_mutation("delete", device_ids=[device_id])
 
     def batch_delete_devices(self) -> None:
         device_ids = self.table.checked_device_ids()
@@ -859,17 +844,35 @@ class DeviceManagementPage(QWidget):
         )
         if answer != MessageBox.Yes:
             return
-        delete_device_ids(self.repository, device_ids)
-        app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
-        self.refresh()
-        self.devices_changed.emit()
+        self._start_device_mutation("delete", device_ids=device_ids)
+
+    def _loaded_device(self, device_id: int) -> Device | None:
+        return next((device for device in self.table.devices if int(device.id or 0) == int(device_id)), None)
+
+    def _start_device_mutation(
+        self,
+        action: str,
+        *,
+        device: Device | None = None,
+        device_ids: list[int] | None = None,
+        dialog: object | None = None,
+    ) -> None:
+        params: dict[str, object] = {
+            "db_path": str(self.repository.database.path),
+            "action": action,
+            "device_ids": list(device_ids or []),
+        }
+        if device is not None:
+            params["device"] = device.to_record()
+        job_id = self.background_manager.start_job(BackgroundJob(task_type="device_mutation", params=params))
+        self._device_mutation_jobs[job_id] = {"action": action, "dialog": dialog}
 
     def batch_refresh_details(self) -> None:
         device_ids = self.table.checked_device_ids()
         if not device_ids:
             MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
-        devices = [self.repository.get(device_id) for device_id in device_ids]
+        devices = self.table.checked_devices()
         answer = MessageBox.question(
             self,
             self.i18n.t("devices.title"),
@@ -943,8 +946,23 @@ class DeviceManagementPage(QWidget):
             )
 
     def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
         result = dict(event.get("result") or {})
-        if str(event.get("job_id") or "") == str(self._device_refresh_job_id or ""):
+        mutation = self._device_mutation_jobs.pop(job_id, None)
+        if mutation is not None:
+            action = str(mutation.get("action") or result.get("action") or "")
+            if action in {"create", "update"}:
+                device = Device.from_mapping(dict(result.get("device") or {}))
+                app_logger.log_info("DEVICE_CREATED" if action == "create" else "DEVICE_UPDATED", f"设备已{'新增' if action == 'create' else '编辑'}: {device.name}")
+                dialog = mutation.get("dialog")
+                if isinstance(dialog, DeviceDialog):
+                    dialog.close()
+            else:
+                app_logger.log_info("DEVICE_DELETED", f"已删除设备: {int(result.get('count') or 0)}")
+            self.refresh()
+            self.devices_changed.emit()
+            return
+        if job_id == str(self._device_refresh_job_id or ""):
             self._device_refresh_job_id = None
             self.refresh_button.setEnabled(True)
             if self._device_refresh_pending:
@@ -974,7 +992,12 @@ class DeviceManagementPage(QWidget):
 
     def _background_failed(self, event: dict) -> None:
         message = str(event.get("message") or event.get("error") or "后台任务失败")
-        if str(event.get("job_id") or "") == str(self._device_refresh_job_id or ""):
+        job_id = str(event.get("job_id") or "")
+        if self._device_mutation_jobs.pop(job_id, None) is not None:
+            app_logger.log_error("DEVICE_MUTATION_FAILED", message)
+            MessageBox.warning(self, self.i18n.t("devices.title"), message)
+            return
+        if job_id == str(self._device_refresh_job_id or ""):
             self._device_refresh_job_id = None
             self.refresh_button.setEnabled(True)
             if self._device_refresh_pending:
@@ -1073,7 +1096,7 @@ class DeviceManagementPage(QWidget):
             settings=self.settings,
             parent=self,
         )
-        dialog.exec()
+        show_non_focus_window(self, dialog, key="omnipeek_export_dialog", activate=True, raise_window=True)
 
     def _sync_omnipeek_action_state(self) -> None:
         visible = self.feature_gate.is_visible("devices.omnipeek_name_table_export")
@@ -1086,10 +1109,4 @@ class DeviceManagementPage(QWidget):
     def _device_group_names(self) -> dict[int, str]:
         if self.table.group_names:
             return dict(self.table.group_names)
-        if self.group_repository is None:
-            return {}
-        try:
-            return {int(group.id): group.name for group in self.group_repository.list() if group.id is not None}
-        except Exception as exc:
-            app_logger.log_error("OMNIPEEK_GROUP_LOAD_FAILED", str(exc))
-            return {}
+        return {}

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS, PaginationState
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 PAGE_SIZE = DEFAULT_PAGE_SIZE
@@ -91,9 +92,9 @@ def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024) -> Iterator[st
             buffer = parts[0]
             for raw_line in reversed(parts[1:]):
                 if raw_line:
-                    yield raw_line.decode("utf-8", errors="replace").rstrip("\r")
+                    yield decode_bytes_with_fallback(raw_line).text.rstrip("\r\n")
         if buffer:
-            yield buffer.decode("utf-8", errors="replace").rstrip("\r")
+            yield decode_bytes_with_fallback(buffer).text.rstrip("\r\n")
 
 
 def _default_parse_line(line: str) -> dict[str, str] | None:

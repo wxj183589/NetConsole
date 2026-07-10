@@ -41,6 +41,19 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+_BaseFileManagementPage = FileManagementPage
+
+
+def FileManagementPage(*args, **kwargs):
+    page = _BaseFileManagementPage(*args, **kwargs)
+    for _ in range(500):
+        app().processEvents()
+        if not page._navigation_job_id:
+            break
+        QTest.qWait(10)
+    return page
+
+
 def test_navigation_includes_file_management_page():
     app()
     navigation = Navigation(I18n("en_US"))
@@ -57,6 +70,7 @@ def test_navigation_includes_file_management_page():
         "file_management",
         "snmp_center",
         "network_tools",
+        "command_reference",
         "logs",
         "system_settings",
         "feature_flags",
@@ -366,6 +380,11 @@ def test_file_management_device_search_combines_with_group_filter(tmp_path):
 
     page.group_combo.setCurrentIndex(page.group_combo.findData(onboard.id))
     page.device_search_edit.setText("192.0.2.10")
+    for _ in range(500):
+        app().processEvents()
+        if not page._navigation_job_id:
+            break
+        QTest.qWait(10)
 
     assert page.device_combo.count() == 1
     assert page.device_combo.currentData() == first.id

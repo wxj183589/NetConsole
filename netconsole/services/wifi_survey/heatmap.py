@@ -31,7 +31,7 @@ def rssi_to_color(rssi_dbm: float | None, alpha: int = 130) -> QColor:
     return QColor(120, 45, 45, alpha)
 
 
-def generate_idw_heatmap(width: int, height: int, samples: list[tuple[float, float, float]], step: int = 10) -> QPixmap | None:
+def generate_idw_heatmap_image(width: int, height: int, samples: list[tuple[float, float, float]], step: int = 10) -> QImage | None:
     if width <= 0 or height <= 0 or len(samples) < 3:
         return None
     step = max(6, min(20, int(step)))
@@ -45,8 +45,12 @@ def generate_idw_heatmap(width: int, height: int, samples: list[tuple[float, flo
             py = y * step
             rssi = _idw_value(px, py, samples)
             image.setPixelColor(x, y, rssi_to_color(rssi, 120))
-    scaled = image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    return QPixmap.fromImage(scaled)
+    return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+
+def generate_idw_heatmap(width: int, height: int, samples: list[tuple[float, float, float]], step: int = 10) -> QPixmap | None:
+    image = generate_idw_heatmap_image(width, height, samples, step)
+    return QPixmap.fromImage(image) if image is not None else None
 
 
 def render_heatmap_png(base: QPixmap, overlay: QPixmap | None) -> QPixmap:

@@ -442,27 +442,30 @@ class ToolResultPanel(QGroupBox):
         if not selected:
             return
         path = Path(selected)
+        export_rows = self.current_rows[:5000]
+        if len(self.current_rows) > len(export_rows):
+            MessageBox.information(self, "导出", "当前运行结果超过 5000 条，本次仅导出前 5000 条。")
         columns = [{"key": header, "title": header, "text": True} for header in self.current_headers]
         if suffix == "xlsx":
             spec = table_xlsx_spec(
                 path,
                 columns=columns,
-                rows=self.current_rows,
+                rows=export_rows,
                 sheet_name="结果",
                 title="导出结果",
                 open_dir_on_success=True,
                 allow_inline_rows=True,
-                inline_reason="网络工具导出当前一次运行的内存结果",
+                inline_reason="small_runtime_result_not_persisted",
             )
         else:
             spec = table_csv_spec(
                 path,
                 columns=columns,
-                rows=self.current_rows,
+                rows=export_rows,
                 title="导出结果",
                 open_dir_on_success=True,
                 allow_inline_rows=True,
-                inline_reason="网络工具导出当前一次运行的内存结果",
+                inline_reason="small_runtime_result_not_persisted",
             )
         submit_export_task(self, spec, success_title="导出结果", paths=self.paths)
 

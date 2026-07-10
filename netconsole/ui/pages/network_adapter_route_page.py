@@ -36,6 +36,8 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.network_profile_store import AdapterMatch, AdapterProfile, NetworkProfileStore, SecondaryIp
 from netconsole.services.route_profile_store import RouteProfile, RouteProfileEntry, RouteProfileStore
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.windows_network_manager import (
     AdapterIpConfig,
     NetworkAdapterInfo,
@@ -164,6 +166,12 @@ class NetworkAdapterRoutePage(QWidget):
         self._vlan_capabilities: dict[str, object] = {}
         self.profile_store = profile_store or NetworkProfileStore(paths.network_profiles_path)
         self.route_store = route_store or RouteProfileStore(paths.route_profiles_path)
+        self.profile_background_manager = BackgroundProcessManager(self, paths=paths)
+        self.profile_background_manager.finished.connect(self._profile_store_finished)
+        self.profile_background_manager.failed.connect(self._profile_store_failed)
+        self.profile_background_manager.cancelled.connect(self._profile_store_failed)
+        self._profile_store_job_id = ""
+        self._profile_store_selected_name = ""
         self.adapters: list[NetworkAdapterInfo] = []
         self.routes: list[RouteInfo] = []
         self.admin_launch_pending = False
@@ -360,9 +368,7 @@ class NetworkAdapterRoutePage(QWidget):
             secondary_ips=[SecondaryIp(item.ip_address, item.prefix_length) for item in config.secondary_ips],
             vlan_id=self.vlan_spin.value(),
         )
-        self.profile_store.upsert(profile)
-        self.load_profiles()
-        self._append_log(f"已保存网卡配置方案：{name}")
+        self._start_profile_store_job("save_adapter", profile=asdict(profile), selected_name=name)
 
     def apply_adapter_profile(self) -> None:
         profile = self.profile_combo.currentData()
@@ -378,18 +384,92 @@ class NetworkAdapterRoutePage(QWidget):
         self.apply_ip_config()
 
     def load_profiles(self) -> None:
+        self._start_profile_store_job("load")
+
+    def _start_profile_store_job(self, action: str, *, profile: dict[str, object] | None = None, selected_name: str = "") -> None:
+        if self._profile_store_job_id:
+            return
+        self._profile_store_selected_name = selected_name
+        self.save_profile_button.setEnabled(False)
+        self.save_route_profile_button.setEnabled(False)
+        self._profile_store_job_id = self.profile_background_manager.start_job(
+            BackgroundJob(
+                task_type="network_profile_store",
+                params={
+                    "action": action,
+                    "profile": profile or {},
+                    "adapter_path": str(self.profile_store.path),
+                    "route_path": str(self.route_store.path),
+                },
+            )
+        )
+
+    def _profile_store_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._profile_store_job_id:
+            return
+        self._profile_store_job_id = ""
+        result = dict(event.get("result") or {})
+        adapters: list[AdapterProfile] = []
+        for item in result.get("adapter_profiles") or []:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row["adapter_match"] = AdapterMatch(**dict(row.get("adapter_match") or {}))
+            row["secondary_ips"] = [SecondaryIp(**dict(value)) for value in row.get("secondary_ips") or [] if isinstance(value, dict)]
+            adapters.append(AdapterProfile(**row))
+        routes: list[RouteProfile] = []
+        for item in result.get("route_profiles") or []:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row["routes"] = [RouteProfileEntry(**dict(value)) for value in row.get("routes") or [] if isinstance(value, dict)]
+            routes.append(RouteProfile(**row))
+        self._apply_profile_lists(adapters, routes)
+        self.save_profile_button.setEnabled(True)
+        self.save_route_profile_button.setEnabled(True)
+        selected_name = self._profile_store_selected_name
+        self._profile_store_selected_name = ""
+        if selected_name:
+            adapter_index = self.profile_combo.findText(selected_name)
+            route_index = self.route_profile_combo.findText(selected_name)
+            if adapter_index >= 0:
+                self.profile_combo.setCurrentIndex(adapter_index)
+            if route_index >= 0:
+                self.route_profile_combo.setCurrentIndex(route_index)
+                self.route_profile_table.selectRow(route_index)
+            self._append_log(f"已保存配置方案：{selected_name}")
+
+    def _apply_profile_lists(self, adapters: list[AdapterProfile], routes: list[RouteProfile]) -> None:
+        current_adapter_profile = self.profile_combo.currentText().strip()
+        current_route_profile = self.route_profile_combo.currentText().strip()
+        self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
-        for profile in self.profile_store.load():
+        for profile in adapters:
             self.profile_combo.addItem(profile.profile_name, profile)
+        self.profile_combo.blockSignals(False)
+        self.route_profile_combo.blockSignals(True)
         self.route_profile_combo.clear()
         self.route_profile_table.setRowCount(0)
-        for profile in self.route_store.load():
+        for profile in routes:
             self.route_profile_combo.addItem(profile.profile_name, profile)
             row = self.route_profile_table.rowCount()
             self.route_profile_table.insertRow(row)
-            values = [profile.profile_name, str(len(profile.routes)), "否", ""]
-            for column, value in enumerate(values):
+            for column, value in enumerate((profile.profile_name, str(len(profile.routes)), "是", "")):
                 self._set_table_item(self.route_profile_table, row, column, value)
+        self.route_profile_combo.blockSignals(False)
+        for combo, text in ((self.profile_combo, current_adapter_profile), (self.route_profile_combo, current_route_profile)):
+            index = combo.findText(text)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+
+    def _profile_store_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self._profile_store_job_id:
+            return
+        self._profile_store_job_id = ""
+        self._profile_store_selected_name = ""
+        self.save_profile_button.setEnabled(True)
+        self.save_route_profile_button.setEnabled(True)
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), str(event.get("message") or "配置方案读写失败"))
 
     def add_route_row(self) -> None:
         row = self.route_edit_table.rowCount()
@@ -1071,34 +1151,7 @@ def _network_page_connect_signals(self) -> None:
 
 
 def _network_page_load_profiles(self) -> None:
-    current_adapter_profile = self.profile_combo.currentText().strip()
-    current_route_profile = self.route_profile_combo.currentText().strip()
-    self.profile_combo.blockSignals(True)
-    self.profile_combo.clear()
-    for profile in self.profile_store.load():
-        self.profile_combo.addItem(profile.profile_name, profile)
-    if current_adapter_profile:
-        index = self.profile_combo.findText(current_adapter_profile)
-        if index >= 0:
-            self.profile_combo.setCurrentIndex(index)
-    self.profile_combo.blockSignals(False)
-
-    self.route_profile_combo.blockSignals(True)
-    self.route_profile_combo.clear()
-    self.route_profile_table.setRowCount(0)
-    for profile in self.route_store.load():
-        self.route_profile_combo.addItem(profile.profile_name, profile)
-        row = self.route_profile_table.rowCount()
-        self.route_profile_table.insertRow(row)
-        values = [profile.profile_name, str(len(profile.routes)), "是", ""]
-        for column, value in enumerate(values):
-            self._set_table_item(self.route_profile_table, row, column, value)
-    if current_route_profile:
-        index = self.route_profile_combo.findText(current_route_profile)
-        if index >= 0:
-            self.route_profile_combo.setCurrentIndex(index)
-            self.route_profile_table.selectRow(index)
-    self.route_profile_combo.blockSignals(False)
+    self._start_profile_store_job("load")
 
 
 def _network_page_adapter_profile_combo_changed(self) -> None:
@@ -1243,13 +1296,7 @@ def _network_page_save_route_profile(self) -> None:
     except ValueError as exc:
         MessageBox.warning(self, self.i18n.t("network_manager.title"), str(exc))
         return
-    self.route_store.upsert(RouteProfile(profile_name=name, routes=entries))
-    self._append_log(f"已保存路由方案：{name}")
-    self.load_profiles()
-    index = self.route_profile_combo.findText(name)
-    if index >= 0:
-        self.route_profile_combo.setCurrentIndex(index)
-        self.route_profile_table.selectRow(index)
+    self._start_profile_store_job("save_route", profile=asdict(RouteProfile(profile_name=name, routes=entries)), selected_name=name)
 
 
 def _network_page_show_route_edit_context_menu(self, pos) -> None:

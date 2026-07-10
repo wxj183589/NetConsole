@@ -282,6 +282,22 @@ class AcManagementPage(_BaseAcManagementPage):
         process_events_until(lambda: not self._background_jobs)
 
 
+_BaseDeviceDetailDialog = DeviceDetailDialog
+_BaseFitApDetailDialog = FitApDetailDialog
+
+
+def DeviceDetailDialog(*args, **kwargs):
+    dialog = _BaseDeviceDetailDialog(*args, **kwargs)
+    process_events_until(lambda: not dialog.detail_load_job_id)
+    return dialog
+
+
+def FitApDetailDialog(*args, **kwargs):
+    dialog = _BaseFitApDetailDialog(*args, **kwargs)
+    process_events_until(lambda: not dialog.background_job_id)
+    return dialog
+
+
 class FakeTracksideLoadThread(QObject):
     load_finished = Signal(object)
     load_failed = Signal(int, str)
@@ -1081,6 +1097,7 @@ def test_ap_online_overview_with_trackside_plan_locks_total_but_allows_remark(tm
     assert remark_item.flags() & Qt.ItemFlag.ItemIsEditable
 
     remark_item.setText("Keep field note")
+    process_events_until(lambda: not page._background_jobs)
     details = repository.list_active_trackside_plan_capacity_details()
     assert details["Station A"]["ap_total"] == 34
     assert details["Station A"]["remark"] == "Keep field note"
@@ -6437,6 +6454,7 @@ def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):
     dialog = FitApDetailDialog(I18n("en_US"), repository, "ac-1", "ap-a")
     dialog.site_input.setText("Station A")
     dialog.save_metadata()
+    process_events_until(lambda: not dialog.background_job_id)
 
     assert dialog.windowTitle() == "AP Details - ap-a"
     assert dialog.minimumWidth() == 760
@@ -6522,6 +6540,7 @@ def test_ap_detail_direction_combo_uses_uplink_downlink_and_saves_chinese(tmp_pa
     assert dialog.direction_combo.currentData() == "上行"
     dialog.direction_combo.setCurrentIndex(dialog.direction_combo.findData("下行"))
     dialog.save_metadata()
+    process_events_until(lambda: not dialog.background_job_id)
     assert repository.get_fit_ap_metadata_by_uuid(ap_uuid)["direction"] == "下行"
 
 
@@ -6816,7 +6835,7 @@ def test_ap_detail_dialog_uses_global_theme_without_local_light_style(tmp_path):
 
 
 def test_legacy_ap_detail_import_aliases_fit_ap_detail():
-    assert ApDetailDialog is FitApDetailDialog
+    assert ApDetailDialog is _BaseFitApDetailDialog
 
 
 def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):

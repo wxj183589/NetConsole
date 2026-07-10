@@ -29,12 +29,17 @@ def run_background_job_process(
     paths: PathResolver | None = None,
 ) -> dict[str, Any]:
     resolver = paths or PathResolver()
+    if not (resolver.app_root / "netconsole").is_dir():
+        resolver = PathResolver(data_root=resolver.data_root)
     job_id = uuid.uuid4().hex
     job_dir = resolver.runtime_cache_dir / "background_jobs"
     job_dir.mkdir(parents=True, exist_ok=True)
     cancel_path = job_dir / f"{job_id}.cancel"
     job_path = job_dir / f"{job_id}.json"
-    job = BackgroundJob(job_id=job_id, task_type=task_type, params=params).with_runtime_paths(cancel_path=str(cancel_path))
+    job_params = dict(params)
+    job_params.setdefault("app_root", str(resolver.app_root))
+    job_params.setdefault("data_root", str(resolver.data_root))
+    job = BackgroundJob(job_id=job_id, task_type=task_type, params=job_params).with_runtime_paths(cancel_path=str(cancel_path))
     job_path.write_text(json.dumps(job.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
     process = QProcess()

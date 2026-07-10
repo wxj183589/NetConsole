@@ -2925,9 +2925,14 @@ def make_table(headers: list[str]) -> QTableWidget:
     return table
 
 
+SNMP_UI_ROW_LIMIT = 2000
+
+
 def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
-    table.setRowCount(len(rows))
-    for row_index, row in enumerate(rows):
+    # 后台查询同样限制为 2000 条，避免子页一次填充无限数据。
+    visible_rows = rows[:SNMP_UI_ROW_LIMIT]
+    table.setRowCount(len(visible_rows))
+    for row_index, row in enumerate(visible_rows):
         for column, value in enumerate(row):
             item = QTableWidgetItem("" if value is None else str(value))
             item.setToolTip(item.text())

@@ -9,6 +9,7 @@ from random import randint
 from typing import Any
 
 from netconsole.models.snmp_models import SnmpProfile, SnmpQueryRequest, SnmpQueryResult, SnmpSetRequest, SnmpSetResult, SnmpVarBind
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 SYS_OIDS = {
@@ -555,12 +556,10 @@ def _decode_oid(value: bytes) -> str:
 
 
 def _decode_octets(value: bytes) -> str:
-    for encoding in ("utf-8", "gb18030", "latin-1"):
-        try:
-            return value.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return value.hex()
+    try:
+        return decode_bytes_with_fallback(value, replace_on_failure=False).text
+    except ValueError:
+        return value.hex()
 
 
 def _error_status(error_status: int, error_index: int) -> tuple[str, str]:

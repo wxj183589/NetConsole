@@ -85,7 +85,7 @@ class HistoryDataDialog(QDialog):
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
         self.setModal(False)
-        self.setMinimumSize(900, 560)
+        self.setMinimumSize(640, 420)
         self.resize(900, 560)
 
         self.title_label = QLabel()

@@ -4,11 +4,12 @@ import webbrowser
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.resources import icon_path
 from netconsole.core import version as version_info
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class AboutRepositoryDialog(QDialog):
@@ -18,9 +19,10 @@ class AboutRepositoryDialog(QDialog):
         self.setModal(False)
         self.setWindowIcon(QIcon(str(icon_path("love.ico"))))
         self.setWindowTitle(self.i18n.t("about.title"))
-        self.setMinimumWidth(620)
+        self.resize(680, 360)
 
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         title = QLabel(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
@@ -47,6 +49,7 @@ class AboutRepositoryDialog(QDialog):
         close_button.clicked.connect(self.close)
         actions.addWidget(close_button)
         layout.addLayout(actions)
+        install_scrollable_dialog_content(self, content, minimum_width=420, minimum_height=280, content_minimum_width=560)
 
     def copy_link(self, url: str) -> None:
         clipboard = QApplication.clipboard()

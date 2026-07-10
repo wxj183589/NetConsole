@@ -260,7 +260,7 @@ class OmniPeekExportDialog(QDialog):
         config_scroll.setMaximumHeight(300)
         config_scroll.setMinimumHeight(110)
         config_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        config_content.setMinimumWidth(760)
+        config_content.setMinimumWidth(680)
         config_scroll.setWidget(config_content)
 
         root.addWidget(config_scroll, 0)
