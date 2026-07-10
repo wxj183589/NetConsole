@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device_group import DeviceGroup
@@ -11,6 +11,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 GROUP_COLUMNS = ("name", "count")
@@ -33,6 +34,8 @@ class DeviceGroupDialog(QDialog):
         self.table = QTableWidget(0, len(GROUP_COLUMNS))
         set_table_column_fields(self.table, list(GROUP_COLUMNS))
         configure_readonly_table(self.table)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.add_button = QPushButton()
         self.rename_button = QPushButton()
         self.delete_button = QPushButton()
@@ -42,9 +45,11 @@ class DeviceGroupDialog(QDialog):
         for button in (self.add_button, self.rename_button, self.delete_button, self.close_button):
             actions.addWidget(button)
         actions.addStretch(1)
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addWidget(self.table)
         layout.addLayout(actions)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=420, minimum_height=300, content_minimum_width=560)
 
         self.add_button.clicked.connect(self.add_group)
         self.rename_button.clicked.connect(self.rename_group)

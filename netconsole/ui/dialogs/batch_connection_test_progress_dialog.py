@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.batch_connection_worker import (
@@ -11,6 +11,7 @@ from netconsole.ui.batch_connection_worker import (
 )
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 BATCH_CONNECTION_COLUMN_MIN_WIDTHS = {
@@ -47,7 +48,6 @@ class BatchConnectionTestProgressDialog(QDialog):
         for value in BATCH_CONNECTION_CONCURRENCY_OPTIONS:
             self.concurrency_combo.addItem(str(value), value)
         self.concurrency_combo.setCurrentText(str(BATCH_CONNECTION_DEFAULT_CONCURRENCY))
-        self.setMinimumSize(820, 500)
         self.resize(900, 540)
 
         self.summary_label = make_text_selectable(QLabel())
@@ -56,6 +56,8 @@ class BatchConnectionTestProgressDialog(QDialog):
         self.table = QTableWidget(total, 8)
         set_table_column_fields(self.table, ["device_name", "primary_address", "protocol", "method", "status", "prompt", "elapsed", "error_message"])
         configure_readonly_table(self.table)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         attach_table_context_menu(self.table, self.i18n.language, include_history=False)
         self.copy_button = QPushButton()
         self.close_button = QPushButton()
@@ -69,12 +71,13 @@ class BatchConnectionTestProgressDialog(QDialog):
         buttons.addStretch(1)
         buttons.addWidget(self.close_button)
 
-        layout = QVBoxLayout()
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.progress)
         layout.addWidget(self.table, 1)
         layout.addLayout(buttons)
-        self.setLayout(layout)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=440, content_minimum_width=900)
         self.retranslate()
         self.update_summary()
 

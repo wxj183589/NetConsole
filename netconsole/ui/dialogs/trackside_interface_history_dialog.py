@@ -12,6 +12,7 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginat
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
@@ -71,7 +72,6 @@ class TracksideInterfaceHistoryDialog(QDialog):
         self.setSizeGripEnabled(True)
         self.setWindowTitle(title)
         self.resize(1100, 640)
-        self.setMinimumSize(860, 520)
 
         self.close_button = QPushButton()
         self.export_button = QPushButton()
@@ -109,9 +109,11 @@ class TracksideInterfaceHistoryDialog(QDialog):
         self.splitter.addWidget(left)
         self.splitter.addWidget(self.detail_table)
         self.splitter.setSizes([770, 330])
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addLayout(actions)
         layout.addWidget(self.splitter, 1)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=760, minimum_height=460, content_minimum_width=920)
 
         self.table_state = TableColumnState(settings, self.table, "rail_transit/trackside_interface_history/table_column_widths", default_widths())
         self.detail_state = TableColumnState(settings, self.detail_table, "rail_transit/trackside_interface_history/detail_column_widths", {"name": 180, "value": 360})

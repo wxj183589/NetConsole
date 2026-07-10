@@ -27,9 +27,11 @@ from netconsole.services.file_transfer_service import (
 )
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.file_management_page import (
+    FILE_TABLE_PAGE_SIZE,
     FileManagementPage,
     format_speed,
     is_mesh_log_file,
+    list_local_directory_page,
     local_file_type,
     resolve_local_download_name,
     resolve_local_download_path,
@@ -44,13 +46,27 @@ def app():
 _BaseFileManagementPage = FileManagementPage
 
 
-def FileManagementPage(*args, **kwargs):
-    page = _BaseFileManagementPage(*args, **kwargs)
+def _wait_file_page_idle(page):
     for _ in range(500):
         app().processEvents()
-        if not page._navigation_job_id:
-            break
+        worker = page.local_list_worker
+        if worker is not None:
+            try:
+                running = worker.isRunning()
+            except RuntimeError:
+                page.local_list_worker = None
+                running = False
+            if not running and page.local_refresh_button.isEnabled():
+                page.local_list_worker = None
+        if not page._navigation_job_id and page.local_list_worker is None:
+            return
         QTest.qWait(10)
+    raise AssertionError("Timed out waiting for file management page workers")
+
+
+def FileManagementPage(*args, **kwargs):
+    page = _BaseFileManagementPage(*args, **kwargs)
+    _wait_file_page_idle(page)
     return page
 
 
@@ -122,6 +138,62 @@ def test_remote_table_checkboxes_only_select_files(tmp_path):
     assert not is_checked_value(page.remote_table.item(2, 0).checkState())
     assert not page.download_button.isEnabled()
     assert page.download_button.text() == "Download Files"
+
+
+def test_remote_file_table_uses_current_page_only(tmp_path):
+    app()
+    page = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.remote_files = [
+        RemoteDeviceFile(f"{index:04}.bin", f"flash:/{index:04}.bin", index, "", "bin")
+        for index in range(FILE_TABLE_PAGE_SIZE + 1)
+    ]
+
+    page.populate_remote_table()
+
+    assert page.remote_table.rowCount() == FILE_TABLE_PAGE_SIZE
+    assert page.remote_next_page_button.isEnabled()
+    assert page.remote_file_for_table_row(0).name == "0000.bin"
+
+    page.set_remote_page(2)
+
+    assert page.remote_table.rowCount() == 1
+    assert page.remote_file_for_table_row(0).name == f"{FILE_TABLE_PAGE_SIZE:04}.bin"
+    assert page.remote_prev_page_button.isEnabled()
+
+
+def test_local_directory_page_helper_reports_total_and_pages(tmp_path):
+    for index in range(FILE_TABLE_PAGE_SIZE + 1):
+        (tmp_path / f"{index:04}.txt").write_text(str(index), encoding="utf-8")
+    (tmp_path / "folder").mkdir()
+
+    first_page = list_local_directory_page(tmp_path, page=1, limit=FILE_TABLE_PAGE_SIZE)
+    second_page = list_local_directory_page(tmp_path, page=2, limit=FILE_TABLE_PAGE_SIZE)
+
+    assert first_page["total"] == FILE_TABLE_PAGE_SIZE + 2
+    assert len(first_page["rows"]) == FILE_TABLE_PAGE_SIZE
+    assert first_page["has_more"] is True
+    assert second_page["page"] == 2
+    assert len(second_page["rows"]) == 2
+
+
+def test_local_file_table_refresh_runs_in_worker_and_pages(tmp_path):
+    app()
+    page = FileManagementPage(FakeRepository(), I18n("en_US"), "demo", PathResolver(tmp_path))
+    for index in range(FILE_TABLE_PAGE_SIZE + 1):
+        (page.local_path / f"{index:04}.txt").write_text(str(index), encoding="utf-8")
+
+    page.refresh_local()
+    _wait_file_page_idle(page)
+
+    assert page.local_table.rowCount() == FILE_TABLE_PAGE_SIZE
+    assert page.local_total_count == FILE_TABLE_PAGE_SIZE + 1
+    assert page.local_next_page_button.isEnabled()
+
+    page.set_local_page(2)
+    _wait_file_page_idle(page)
+
+    assert page.local_table.rowCount() == 1
+    assert page.local_prev_page_button.isEnabled()
 
 
 def test_file_management_panel_actions_are_contextual_and_textual(tmp_path):
@@ -271,6 +343,7 @@ def test_local_double_click_file_uses_default_application(tmp_path, monkeypatch)
     monkeypatch.setattr(page_module.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
 
     page.refresh_local()
+    _wait_file_page_idle(page)
     page.local_double_clicked(0, 0)
 
     assert [Path(value) for value in opened] == [local_file.resolve()]

@@ -2300,6 +2300,21 @@ def test_online_mr_analysis_headers_are_chinese_in_zh(tmp_path: Path) -> None:
     assert "链路明细" in [page.tabs.tabText(index) for index in range(page.tabs.count())]
 
 
+def test_online_mr_analysis_table_fill_batches_large_results(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    rows = [
+        [f"2026-07-10 12:00:{index % 60:02d}", f"MR-{index}", "1", "ACTIVE", f"AP-{index}"]
+        for index in range(250)
+    ]
+
+    page._apply_analysis_table_payload({"table_rows": {"mesh_link": rows}})
+    _process_qt_until(lambda: page.mesh_table.item(249, 0) is not None)
+
+    assert page.mesh_table.rowCount() == 250
+    assert page.mesh_table.item(249, 0).text() == "250"
+    assert page.mesh_table.item(249, 4).text() == "ACTIVE"
+
+
 def test_analysis_table_style_centers_headers_and_cells() -> None:
     _qt_app()
     table = QTableWidget(1, 2)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.dialogs.input_dialog_service import InputDialog
+import os
 import re
 import traceback
 from uuid import uuid4
@@ -9,8 +10,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from time import monotonic
+from typing import Any
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -63,6 +65,7 @@ QMessageBox = MessageBox
 
 
 LOCAL_COLUMNS = (("name", "file_management.name"), ("size", "file_management.size"), ("modified", "file_management.modified"), ("type", "file_management.type"))
+FILE_TABLE_PAGE_SIZE = 500
 REMOTE_CHECK_COLUMN = 0
 REMOTE_COLUMNS = (
     ("select", "file_management.select_column"),
@@ -160,6 +163,27 @@ class SftpListWorker(QThread):
             self.listed.emit(self.service.current_path, files)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class LocalDirListWorker(QThread):
+    listed = Signal(object)
+    failed = Signal(int, str)
+
+    def __init__(self, generation: int, path: Path, page: int, limit: int, select_path: Path | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.generation = generation
+        self.path = Path(path)
+        self.page = int(page)
+        self.limit = int(limit)
+        self.select_path = Path(select_path) if select_path is not None else None
+
+    def run(self) -> None:
+        try:
+            payload = list_local_directory_page(self.path, page=self.page, limit=self.limit, select_path=self.select_path)
+            payload["generation"] = self.generation
+            self.listed.emit(payload)
+        except Exception as exc:
+            self.failed.emit(self.generation, str(exc))
 
 
 class SftpDownloadWorker(QThread):
@@ -280,9 +304,16 @@ class FileManagementPage(QWidget):
         self.connected_device: Device | None = None
         self.connection_status_key = "file_management.status.disconnected"
         self.remote_files: list[RemoteDeviceFile] = []
+        self.remote_page = 1
+        self.remote_page_size = FILE_TABLE_PAGE_SIZE
         self.checked_remote_paths: set[str] = set()
         self._updating_remote_checks = False
         self.local_path = self.paths.file_downloads_root(site_name)
+        self.local_page = 1
+        self.local_page_size = FILE_TABLE_PAGE_SIZE
+        self.local_total_count = 0
+        self._local_list_generation = 0
+        self.local_list_worker: LocalDirListWorker | None = None
         self.tasks: list[TransferTask] = []
         self.batches: dict[str, DownloadBatch] = {}
         self.next_task_id = 1
@@ -310,6 +341,9 @@ class FileManagementPage(QWidget):
         self.local_path_label = QLabel()
         self.local_up_button = QPushButton()
         self.local_refresh_button = QPushButton()
+        self.local_prev_page_button = QPushButton("上一页")
+        self.local_next_page_button = QPushButton("下一页")
+        self.local_page_label = QLabel()
         self.new_folder_button = QPushButton()
         self.open_local_button = QPushButton()
         self.local_table = QTableWidget(0, len(LOCAL_COLUMNS))
@@ -320,6 +354,9 @@ class FileManagementPage(QWidget):
         self.remote_path_label = QLabel()
         self.remote_up_button = QPushButton()
         self.remote_refresh_button = QPushButton()
+        self.remote_prev_page_button = QPushButton("上一页")
+        self.remote_next_page_button = QPushButton("下一页")
+        self.remote_page_label = QLabel()
         self.remote_select_all_button = QPushButton()
         self.remote_clear_selection_button = QPushButton()
         self.remote_mesh_logs_button = QPushButton()
@@ -391,10 +428,14 @@ class FileManagementPage(QWidget):
         self.disconnect_button.clicked.connect(self.disconnect_sftp)
         self.local_up_button.clicked.connect(self.local_up)
         self.local_refresh_button.clicked.connect(self.refresh_local)
+        self.local_prev_page_button.clicked.connect(lambda: self.set_local_page(self.local_page - 1))
+        self.local_next_page_button.clicked.connect(lambda: self.set_local_page(self.local_page + 1))
         self.new_folder_button.clicked.connect(self.new_local_folder)
         self.open_local_button.clicked.connect(lambda: open_folder(self.local_path))
         self.remote_up_button.clicked.connect(self.remote_up)
         self.remote_refresh_button.clicked.connect(self.refresh_remote)
+        self.remote_prev_page_button.clicked.connect(lambda: self.set_remote_page(self.remote_page - 1))
+        self.remote_next_page_button.clicked.connect(lambda: self.set_remote_page(self.remote_page + 1))
         self.remote_select_all_button.clicked.connect(self.select_all_remote_files)
         self.remote_clear_selection_button.clicked.connect(self.clear_remote_selection)
         self.remote_mesh_logs_button.clicked.connect(self.select_mesh_logs)
@@ -470,12 +511,15 @@ class FileManagementPage(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self.local_up_button)
         controls.addWidget(self.local_refresh_button)
+        controls.addWidget(self.local_prev_page_button)
+        controls.addWidget(self.local_next_page_button)
         controls.addWidget(self.new_folder_button)
         controls.addWidget(self.open_local_button)
         controls.addStretch(1)
         layout = QVBoxLayout(panel)
         layout.addWidget(self.local_title)
         layout.addWidget(self.local_path_label)
+        layout.addWidget(self.local_page_label)
         layout.addLayout(controls)
         layout.addWidget(self.local_table, 1)
         return panel
@@ -486,6 +530,8 @@ class FileManagementPage(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self.remote_up_button)
         controls.addWidget(self.remote_refresh_button)
+        controls.addWidget(self.remote_prev_page_button)
+        controls.addWidget(self.remote_next_page_button)
         controls.addWidget(self.remote_select_all_button)
         controls.addWidget(self.remote_clear_selection_button)
         controls.addWidget(self.remote_mesh_logs_button)
@@ -494,6 +540,7 @@ class FileManagementPage(QWidget):
         layout = QVBoxLayout(panel)
         layout.addWidget(self.remote_title)
         layout.addWidget(self.remote_path_label)
+        layout.addWidget(self.remote_page_label)
         layout.addWidget(self.remote_read_only_label)
         layout.addLayout(controls)
         layout.addWidget(self.remote_table, 1)
@@ -512,6 +559,10 @@ class FileManagementPage(QWidget):
         self.remote_up_button.setText(self.i18n.t("file_management.up"))
         self.local_refresh_button.setText(self.i18n.t("file_management.refresh"))
         self.remote_refresh_button.setText(self.i18n.t("file_management.refresh"))
+        self.local_prev_page_button.setText("上一页")
+        self.local_next_page_button.setText("下一页")
+        self.remote_prev_page_button.setText("上一页")
+        self.remote_next_page_button.setText("下一页")
         self.remote_select_all_button.setText(self.i18n.t("file_management.select_all"))
         self.remote_clear_selection_button.setText(self.i18n.t("file_management.clear_selection"))
         self.remote_mesh_logs_button.setText(self.i18n.t("file_management.mesh_logs"))
@@ -536,6 +587,8 @@ class FileManagementPage(QWidget):
         self.update_connection_status(self.connection_status_key)
         self.refresh_groups()
         self.refresh_local()
+        self._update_local_page_controls()
+        self._update_remote_page_controls()
         self.refresh_queue()
         self._apply_button_icons()
         self.update_download_button()
@@ -845,6 +898,7 @@ class FileManagementPage(QWidget):
         existing = {item.remote_path for item in files if not item.is_dir}
         self.checked_remote_paths.intersection_update(existing)
         self.remote_files = files
+        self.remote_page = 1
         self.populate_remote_table()
         self._sync_file_operation_buttons()
 
@@ -862,6 +916,7 @@ class FileManagementPage(QWidget):
         if self.sftp_service is None:
             return
         self.checked_remote_paths.clear()
+        self.remote_page = 1
         self.update_download_button()
         self.remote_refresh_button.setEnabled(False)
         self.list_worker = SftpListWorker(self.sftp_service, path, self)
@@ -874,8 +929,14 @@ class FileManagementPage(QWidget):
 
     def populate_remote_table(self) -> None:
         self._updating_remote_checks = True
-        self.remote_table.setRowCount(len(self.remote_files))
-        for row, item in enumerate(self.remote_files):
+        total = len(self.remote_files)
+        max_page = max(1, (total + self.remote_page_size - 1) // self.remote_page_size)
+        self.remote_page = max(1, min(self.remote_page, max_page))
+        start = (self.remote_page - 1) * self.remote_page_size
+        visible_files = self.remote_files[start : start + self.remote_page_size]
+        self.remote_table.setRowCount(len(visible_files))
+        for row, item in enumerate(visible_files):
+            source_index = start + row
             values = {
                 "select": "",
                 "name": item.name,
@@ -885,11 +946,11 @@ class FileManagementPage(QWidget):
             }
             for column, (field, _key) in enumerate(REMOTE_COLUMNS):
                 table_item = QTableWidgetItem(values.get(field, ""))
-                table_item.setData(Qt.UserRole, row)
+                table_item.setData(Qt.UserRole, source_index)
                 table_item.setToolTip(values.get(field, ""))
                 if field == "select":
                     if not item.is_dir:
-                        table_item = create_checkable_table_item(item.remote_path in self.checked_remote_paths, user_data=row)
+                        table_item = create_checkable_table_item(item.remote_path in self.checked_remote_paths, user_data=source_index)
                         table_item.setToolTip(values.get(field, ""))
                     else:
                         table_item.setFlags(Qt.ItemIsEnabled)
@@ -899,7 +960,27 @@ class FileManagementPage(QWidget):
         self._updating_remote_checks = False
         self.apply_table_style_without_saving(self.remote_table)
         self.apply_remote_column_layout()
+        self._update_remote_page_controls()
         self.update_download_button()
+
+    def set_remote_page(self, page: int) -> None:
+        total = len(self.remote_files)
+        max_page = max(1, (total + self.remote_page_size - 1) // self.remote_page_size)
+        normalized = max(1, min(int(page), max_page))
+        if normalized == self.remote_page:
+            return
+        self.remote_page = normalized
+        self.populate_remote_table()
+
+    def _update_remote_page_controls(self) -> None:
+        total = len(self.remote_files)
+        max_page = max(1, (total + self.remote_page_size - 1) // self.remote_page_size)
+        start = 0 if total == 0 else (self.remote_page - 1) * self.remote_page_size + 1
+        end = min(total, self.remote_page * self.remote_page_size)
+        self.remote_page_label.setText(f"远端目录：显示 {start}-{end} / {total} 项；每页 {self.remote_page_size} 项，请分页查看更多。")
+        self.remote_page_label.setToolTip("远端目录列表已分页渲染，避免大目录一次性填充表格。")
+        self.remote_prev_page_button.setEnabled(self.remote_page > 1)
+        self.remote_next_page_button.setEnabled(self.remote_page < max_page)
 
     def remote_double_clicked(self, row: int, _column: int) -> None:
         item = self.remote_file_for_table_row(row)
@@ -1386,16 +1467,36 @@ class FileManagementPage(QWidget):
     def refresh_local(self, select_path: Path | None = None) -> None:
         self.local_path.mkdir(parents=True, exist_ok=True)
         self.local_path_label.setText(f"{self.i18n.t('file_management.current_path')}: {self.local_path}")
-        entries = sorted(self.local_path.iterdir(), key=lambda path: (not path.is_dir(), path.name.casefold()))
-        self.local_table.setRowCount(len(entries))
+        self._local_list_generation += 1
+        generation = self._local_list_generation
+        self.local_refresh_button.setEnabled(False)
+        self.local_page_label.setText(f"正在后台读取本地目录：{self.local_path}")
+        worker = LocalDirListWorker(generation, self.local_path, self.local_page, self.local_page_size, select_path, self)
+        self.local_list_worker = worker
+        worker.listed.connect(self._local_directory_listed, Qt.QueuedConnection)
+        worker.failed.connect(self._local_directory_failed, Qt.QueuedConnection)
+        worker.finished.connect(lambda worker=worker: self._local_list_worker_finished(worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _local_directory_listed(self, payload: object) -> None:
+        data = dict(payload or {}) if isinstance(payload, dict) else {}
+        if int(data.get("generation") or 0) != self._local_list_generation:
+            return
+        self.local_refresh_button.setEnabled(True)
+        self.local_total_count = int(data.get("total") or 0)
+        self.local_page = int(data.get("page") or 1)
+        rows = [dict(row) for row in data.get("rows") or [] if isinstance(row, dict)]
+        self.local_table.setRowCount(len(rows))
         selected_row = -1
-        for row, path in enumerate(entries):
-            stat_result = path.stat()
+        selected_path = str(data.get("selected_path") or "")
+        for row, entry in enumerate(rows):
+            path = Path(str(entry.get("path") or ""))
             values = {
-                "name": path.name,
-                "size": "" if path.is_dir() else str(stat_result.st_size),
-                "modified": format_local_mtime(stat_result.st_mtime),
-                "type": self.i18n.t("file_management.type.directory") if path.is_dir() else local_file_type(path),
+                "name": str(entry.get("name") or path.name),
+                "size": "" if bool(entry.get("is_dir")) else str(entry.get("size") or 0),
+                "modified": str(entry.get("modified") or ""),
+                "type": self.i18n.t("file_management.type.directory") if bool(entry.get("is_dir")) else str(entry.get("type") or local_file_type(path)),
             }
             for column, (field, _key) in enumerate(LOCAL_COLUMNS):
                 item = QTableWidgetItem(values.get(field, ""))
@@ -1404,12 +1505,59 @@ class FileManagementPage(QWidget):
                 if field == "size":
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.local_table.setItem(row, column, item)
-            if select_path is not None and path.resolve() == select_path.resolve():
+            if selected_path and str(path.resolve()) == selected_path:
                 selected_row = row
         self.apply_table_style_without_saving(self.local_table)
         self.apply_local_column_layout()
+        self._update_local_page_controls()
         if selected_row >= 0:
             self.local_table.selectRow(selected_row)
+        self._clear_finished_local_worker()
+        QTimer.singleShot(0, self._clear_finished_local_worker)
+
+    def _local_directory_failed(self, generation: int, message: str) -> None:
+        if generation != self._local_list_generation:
+            return
+        self.local_refresh_button.setEnabled(True)
+        self.local_page_label.setText(f"本地目录读取失败：{message}")
+        self._clear_finished_local_worker()
+        QTimer.singleShot(0, self._clear_finished_local_worker)
+        MessageBox.warning(self, self.i18n.t("file_management.title"), message)
+
+    def _local_list_worker_finished(self, worker: LocalDirListWorker) -> None:
+        if self.local_list_worker is worker:
+            self.local_list_worker = None
+
+    def _clear_finished_local_worker(self) -> None:
+        worker = self.local_list_worker
+        if worker is None:
+            return
+        try:
+            running = worker.isRunning()
+        except RuntimeError:
+            self.local_list_worker = None
+            return
+        if not running:
+            self.local_list_worker = None
+
+    def set_local_page(self, page: int) -> None:
+        max_page = max(1, (self.local_total_count + self.local_page_size - 1) // self.local_page_size)
+        normalized = max(1, min(int(page), max_page))
+        if normalized == self.local_page:
+            return
+        self.local_page = normalized
+        self.refresh_local()
+
+    def _update_local_page_controls(self) -> None:
+        total = self.local_total_count
+        max_page = max(1, (total + self.local_page_size - 1) // self.local_page_size)
+        self.local_page = max(1, min(self.local_page, max_page))
+        start = 0 if total == 0 else (self.local_page - 1) * self.local_page_size + 1
+        end = min(total, self.local_page * self.local_page_size)
+        self.local_page_label.setText(f"本地目录：显示 {start}-{end} / {total} 项；每页 {self.local_page_size} 项，请分页查看更多。")
+        self.local_page_label.setToolTip("本地目录扫描已放入后台线程，当前表格只渲染当前页。")
+        self.local_prev_page_button.setEnabled(self.local_page > 1)
+        self.local_next_page_button.setEnabled(self.local_page < max_page)
 
     def local_double_clicked(self, row: int, _column: int) -> None:
         item = self.local_table.item(row, 0)
@@ -1425,6 +1573,7 @@ class FileManagementPage(QWidget):
             return
         if path.is_dir():
             self.local_path = path
+            self.local_page = 1
             self.refresh_local()
             return
         self.open_local_file(path)
@@ -1452,6 +1601,7 @@ class FileManagementPage(QWidget):
             self.local_path = root
         else:
             self.local_path = self.local_path.parent
+        self.local_page = 1
         self.refresh_local()
 
     def new_local_folder(self) -> None:
@@ -1459,10 +1609,13 @@ class FileManagementPage(QWidget):
         if not accepted or not name.strip():
             return
         (self.local_path / safe_device_name(name)).mkdir(parents=True, exist_ok=True)
+        self.local_page = 1
         self.refresh_local()
 
     def closeEvent(self, event) -> None:
         self.disconnect_sftp()
+        if self.local_list_worker is not None and self.local_list_worker.isRunning():
+            self.local_list_worker.wait(2000)
         if self.active_worker is not None and self.active_worker.isRunning():
             self.active_worker.cancel()
             self.active_worker.wait(2000)
@@ -1473,6 +1626,53 @@ def format_local_mtime(value: float) -> str:
     from datetime import datetime
 
     return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def list_local_directory_page(directory: Path, *, page: int = 1, limit: int = FILE_TABLE_PAGE_SIZE, select_path: Path | None = None) -> dict[str, Any]:
+    root = Path(directory)
+    root_resolved = root.resolve()
+    entries: list[dict[str, Any]] = []
+    with os.scandir(root) as iterator:
+        scanned_entries = list(iterator)
+    for entry in scanned_entries:
+        try:
+            stat_result = entry.stat(follow_symlinks=False)
+            is_dir = entry.is_dir(follow_symlinks=False)
+        except OSError:
+            continue
+        path = root_resolved / entry.name
+        entries.append(
+            {
+                "path": str(path),
+                "name": entry.name,
+                "is_dir": is_dir,
+                "size": 0 if is_dir else int(stat_result.st_size),
+                "modified": format_local_mtime(stat_result.st_mtime),
+                "type": "directory" if is_dir else local_file_type(Path(entry.name)),
+            }
+        )
+    entries.sort(key=lambda row: (not bool(row.get("is_dir")), str(row.get("name") or "").casefold()))
+    total = len(entries)
+    limit = max(1, int(limit))
+    selected_resolved = str(Path(select_path).resolve()) if select_path is not None else ""
+    page = max(1, int(page))
+    if selected_resolved:
+        for index, row in enumerate(entries):
+            if str(row.get("path") or "").casefold() == selected_resolved.casefold():
+                page = index // limit + 1
+                break
+    max_page = max(1, (total + limit - 1) // limit)
+    page = max(1, min(page, max_page))
+    start = (page - 1) * limit
+    return {
+        "path": str(root_resolved),
+        "rows": entries[start : start + limit],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "has_more": start + limit < total,
+        "selected_path": selected_resolved,
+    }
 
 
 def local_file_type(path: Path) -> str:

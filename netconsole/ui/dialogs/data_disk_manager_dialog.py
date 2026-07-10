@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.data_disk_manager import clean_data_disk, scan_data_disk
 from netconsole.ui.table_utils import auto_fit_table_columns
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class DataDiskScanThread(QThread):
@@ -49,12 +50,14 @@ class DataDiskManagerDialog(QDialog):
         self.categories: list[str] = []
         self.scan_thread: DataDiskScanThread | None = None
         self.clean_thread: DataDiskCleanThread | None = None
-        self.setMinimumSize(680, 420)
 
-        root = QVBoxLayout(self)
+        content = QWidget(self)
+        root = QVBoxLayout(content)
         self.table = QTableWidget(0, 4)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("data_disk.category"),
@@ -79,6 +82,7 @@ class DataDiskManagerDialog(QDialog):
         buttons.addWidget(self.clean_button)
         buttons.addWidget(self.close_button)
         root.addLayout(buttons)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=560, minimum_height=360, content_minimum_width=720)
 
         self.retranslate()
         self.refresh()

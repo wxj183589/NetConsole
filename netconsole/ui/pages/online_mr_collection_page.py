@@ -140,6 +140,9 @@ ONLINE_MR_PAGE_MIN_WIDTH = 820
 ONLINE_MR_WORK_PANEL_MIN_WIDTH = 780
 ONLINE_MR_LEFT_PANEL_MIN_WIDTH = 420
 ONLINE_MR_RIGHT_PANEL_MIN_WIDTH = 320
+ONLINE_MR_DIRECT_FILL_LIMIT = 200
+ONLINE_MR_FILL_BATCH_SIZE = 200
+ONLINE_MR_TABLE_DISPLAY_LIMIT = 5000
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
 PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
 FORCE_STOP_DELAY_SECONDS = 5
@@ -2443,17 +2446,17 @@ class OnlineMrCollectionPage(QWidget):
 
         def fill(table: QTableWidget, name: str, *, indexed: bool = False, active_column: int | None = None) -> list[list[object]]:
             rows = [list(row) for row in tables.get(name) or [] if isinstance(row, (list, tuple))]
-            table.setUpdatesEnabled(False)
-            try:
-                table.setRowCount(len(rows))
-                for row_index, row_data in enumerate(rows):
-                    values = [row_index + 1, *row_data] if indexed else row_data
-                    active = active_column is not None and active_column < len(row_data) and str(row_data[active_column] or "").upper().startswith("ACTIVE")
-                    for column, value in enumerate(values):
-                        self._set_table_item(table, row_index, column, value, active=active)
-            finally:
-                table.setUpdatesEnabled(True)
-            self._auto_fit_online_table(table, name)
+            self._fill_online_table_batched(
+                table,
+                name,
+                rows,
+                lambda row_index, row_data: [row_index + 1, *row_data] if indexed else row_data,
+                active_for_row=(
+                    lambda _row_index, row_data: active_column is not None
+                    and active_column < len(row_data)
+                    and str(row_data[active_column] or "").upper().startswith("ACTIVE")
+                ),
+            )
             return rows
 
         fill(self.mesh_table, "mesh_link", indexed=True, active_column=3)
@@ -2462,21 +2465,15 @@ class OnlineMrCollectionPage(QWidget):
         fill(self.interface_rate_table, "interface_rate", indexed=True)
 
         fping_rows = [list(row) for row in tables.get("fping_1s") or [] if isinstance(row, (list, tuple))]
-        self.fping_1s_table.setRowCount(len(fping_rows))
-        for row_index, row_data in enumerate(fping_rows):
-            values = [row_index + 1, *row_data[:-1], self._fping_status_label(row_data[-1] if row_data else "")]
-            for column, value in enumerate(values):
-                self._set_table_item(self.fping_1s_table, row_index, column, value)
-        self._auto_fit_online_table(self.fping_1s_table, "fping_1s")
+        self._fill_online_table_batched(
+            self.fping_1s_table,
+            "fping_1s",
+            fping_rows,
+            lambda row_index, row_data: [row_index + 1, *row_data[:-1], self._fping_status_label(row_data[-1] if row_data else "")],
+        )
 
         iperf_rows = [list(row) for row in tables.get("iperf") or [] if isinstance(row, (list, tuple))]
-        self.iperf_table.setRowCount(len(iperf_rows))
-        for row_index, row_data in enumerate(iperf_rows):
-            bitrate = row_data[1] if len(row_data) > 1 else None
-            values = [row_data[0], None if bitrate is None else f"{float(bitrate):.2f}", *row_data[2:]]
-            for column, value in enumerate(values):
-                self._set_table_item(self.iperf_table, row_index, column, value)
-        self._auto_fit_online_table(self.iperf_table, "iperf")
+        self._fill_online_table_batched(self.iperf_table, "iperf", iperf_rows, self._iperf_table_values)
 
         radio_rows = [list(row) for row in tables.get("radio_statistics") or [] if isinstance(row, (list, tuple))]
         grouped: dict[str, list[str]] = {}
@@ -2486,45 +2483,133 @@ class OnlineMrCollectionPage(QWidget):
         self.statistics_text.setPlainText("\n".join(f"{timestamp}  {'  '.join(metrics)}" for timestamp, metrics in grouped.items()) or "无 AP 射频统计解析结果")
 
         diagnosis_rows = [list(row) for row in tables.get("diagnosis") or [] if isinstance(row, (list, tuple))]
-        self.diagnosis_table.setRowCount(len(diagnosis_rows))
-        for row_index, row_data in enumerate(diagnosis_rows):
-            in_pps, out_pps = self._interface_pps_from_details(row_data[13] if len(row_data) > 13 else "")
-            values = list(row_data[:2]) + [row_data[2], row_data[3], row_data[4], row_data[5], row_data[6], row_data[8], row_data[9], row_data[10], row_data[11], in_pps, out_pps, row_data[12]]
-            for column, value in enumerate(values):
-                self._set_table_item(self.diagnosis_table, row_index, column, value)
-        self._auto_fit_online_table(self.diagnosis_table, "diagnosis")
+        self._fill_online_table_batched(self.diagnosis_table, "diagnosis", diagnosis_rows, self._diagnosis_table_values)
 
         switch_rows = [list(row) for row in tables.get("active_link_switch_logs") or [] if isinstance(row, (list, tuple))]
-        self.active_link_switch_table.setRowCount(len(switch_rows))
-        for row_index, row_data in enumerate(switch_rows):
-            from_empty = str(row_data[9] or "") == "empty_link"
-            to_empty = str(row_data[16] or "") == "empty_link"
-            values = [
-                row_index + 1,
-                row_data[1],
-                row_data[2],
-                self.i18n.t("online_mr.empty_link") if from_empty else row_data[3],
-                "-" if from_empty else row_data[4],
-                "-" if from_empty else row_data[5],
-                row_data[6] or "-",
-                row_data[7] or "-",
-                self.i18n.t("online_mr.empty_link") if to_empty else row_data[10],
-                "-" if to_empty else row_data[11],
-                "-" if to_empty else row_data[12],
-                row_data[13] or "-",
-                row_data[14] or "-",
-                row_data[17],
-                row_data[18],
-                row_data[19],
-                row_data[20],
-            ]
-            warning = row_data[19] == 4 or to_empty
-            for column, value in enumerate(values):
-                self._set_table_item(self.active_link_switch_table, row_index, column, value, active=from_empty and not to_empty, warning=warning)
-        self._auto_fit_online_table(self.active_link_switch_table, "active_link_switch_logs")
+        self._fill_online_table_batched(
+            self.active_link_switch_table,
+            "active_link_switch_logs",
+            switch_rows,
+            self._active_link_switch_values,
+            active_for_row=lambda _row_index, row_data: str(row_data[9] or "") == "empty_link" and str(row_data[16] or "") != "empty_link",
+            warning_for_row=lambda _row_index, row_data: row_data[19] == 4 or str(row_data[16] or "") == "empty_link",
+        )
         self.switch_history_table.setRowCount(0)
         self.switch_history_text.setPlainText("主链路切换历史请通过切换日志首屏查看；更多记录按需加载。")
         return len(diagnosis_rows)
+
+    def _fill_online_table_batched(
+        self,
+        table: QTableWidget,
+        name: str,
+        rows: list[list[object]],
+        values_for_row,
+        *,
+        active_for_row=None,
+        warning_for_row=None,
+    ) -> None:
+        total = len(rows)
+        visible_rows = rows[:ONLINE_MR_TABLE_DISPLAY_LIMIT]
+        hidden = total - len(visible_rows)
+        generation = int(table.property("online_mr_fill_generation") or 0) + 1
+        table.setProperty("online_mr_fill_generation", generation)
+        table.setUpdatesEnabled(False)
+        try:
+            # visible_rows 已按 UI 上限裁剪；后续 setItem 通过 QTimer 分批执行，避免大结果一次性填表。
+            table.clearContents()
+            table.setRowCount(len(visible_rows))
+        finally:
+            table.setUpdatesEnabled(True)
+        if hidden:
+            table.setToolTip(f"仅显示前 {len(visible_rows)} / {total} 行；完整数据请通过导出或源文件查看。")
+        else:
+            table.setToolTip("")
+
+        def fill_range(start: int, end: int) -> None:
+            table.setUpdatesEnabled(False)
+            try:
+                for row_index in range(start, end):
+                    row_data = visible_rows[row_index]
+                    values = values_for_row(row_index, row_data)
+                    active = bool(active_for_row(row_index, row_data)) if active_for_row else False
+                    warning = bool(warning_for_row(row_index, row_data)) if warning_for_row else False
+                    for column, value in enumerate(values):
+                        self._set_table_item(table, row_index, column, value, active=active, warning=warning)
+            finally:
+                table.setUpdatesEnabled(True)
+
+        if len(visible_rows) <= ONLINE_MR_DIRECT_FILL_LIMIT:
+            fill_range(0, len(visible_rows))
+            self._auto_fit_online_table(table, name)
+            return
+
+        table.setToolTip((table.toolTip() + "\n" if table.toolTip() else "") + f"正在分批显示 0/{len(visible_rows)} 行")
+
+        def fill_next(start: int = 0) -> None:
+            try:
+                if int(table.property("online_mr_fill_generation") or 0) != generation:
+                    return
+                end = min(start + ONLINE_MR_FILL_BATCH_SIZE, len(visible_rows))
+                fill_range(start, end)
+                table.setToolTip((f"仅显示前 {len(visible_rows)} / {total} 行；" if hidden else "") + f"正在分批显示 {end}/{len(visible_rows)} 行")
+                if end < len(visible_rows):
+                    QTimer.singleShot(0, lambda: fill_next(end))
+                    return
+                table.setToolTip(f"仅显示前 {len(visible_rows)} / {total} 行；完整数据请通过导出或源文件查看。" if hidden else "")
+                self._auto_fit_online_table(table, name)
+            except RuntimeError:
+                return
+
+        QTimer.singleShot(0, fill_next)
+
+    def _iperf_table_values(self, _row_index: int, row_data: list[object]) -> list[object]:
+        bitrate = row_data[1] if len(row_data) > 1 else None
+        return [row_data[0], None if bitrate is None else f"{float(bitrate):.2f}", *row_data[2:]]
+
+    def _diagnosis_table_values(self, _row_index: int, row_data: list[object]) -> list[object]:
+        in_pps, out_pps = self._interface_pps_from_details(row_data[13] if len(row_data) > 13 else "")
+        return list(row_data[:2]) + [row_data[2], row_data[3], row_data[4], row_data[5], row_data[6], row_data[8], row_data[9], row_data[10], row_data[11], in_pps, out_pps, row_data[12]]
+
+    def _active_link_switch_values(self, row_index: int, row_data: list[object]) -> list[object]:
+        from_empty = str(row_data[9] or "") == "empty_link"
+        to_empty = str(row_data[16] or "") == "empty_link"
+        return [
+            row_index + 1,
+            row_data[1],
+            row_data[2],
+            self.i18n.t("online_mr.empty_link") if from_empty else row_data[3],
+            "-" if from_empty else row_data[4],
+            "-" if from_empty else row_data[5],
+            row_data[6] or "-",
+            row_data[7] or "-",
+            self.i18n.t("online_mr.empty_link") if to_empty else row_data[10],
+            "-" if to_empty else row_data[11],
+            "-" if to_empty else row_data[12],
+            row_data[13] or "-",
+            row_data[14] or "-",
+            row_data[17],
+            row_data[18],
+            row_data[19],
+            row_data[20],
+        ]
+
+    def _history_table_values(self, _row_index: int, row_data: dict[str, object]) -> list[object]:
+        stats = row_data.get("stats") if isinstance(row_data.get("stats"), dict) else {}
+        session_type = str(row_data.get("session_type") or "realtime")
+        status_text = str(row_data.get("status", ""))
+        if session_type == "config_only":
+            status_text = f"{status_text} / {self.i18n.t('online_mr.config_only_session')}"
+        return [
+            row_data.get("session_id", ""),
+            row_data.get("started_at", ""),
+            row_data.get("ended_at", ""),
+            status_text,
+            f"{stats.get('mesh_link_success', 0)}/{stats.get('mesh_link_failed', 0)}",
+            f"{stats.get('channel_busy_success', 0)}/{stats.get('channel_busy_failed', 0)}",
+            stats.get("reconnect_count", 0),
+            row_data.get("mr_name", ""),
+            row_data.get("session_dir", ""),
+        ]
 
     def _analysis_load_failed(self, message: str) -> None:
         task_label = self._analysis_load_task_label or "加载已解析结果"
@@ -4777,36 +4862,9 @@ class OnlineMrCollectionPage(QWidget):
         self.history_load_worker = None
         rows = [dict(row) for row in payload or [] if isinstance(row, dict)]
         self.session_history_rows = list(rows)
-        self.history_table.setUpdatesEnabled(False)
-        try:
-            self.history_table.setRowCount(len(rows))
-            for row, row_data in enumerate(rows):
-                stats = row_data.get("stats") if isinstance(row_data.get("stats"), dict) else {}
-                session_type = str(row_data.get("session_type") or "realtime")
-                status_text = str(row_data.get("status", ""))
-                if session_type == "config_only":
-                    status_text = f"{status_text} / {self.i18n.t('online_mr.config_only_session')}"
-                values = [
-                    row_data.get("session_id", ""),
-                    row_data.get("started_at", ""),
-                    row_data.get("ended_at", ""),
-                    status_text,
-                    f"{stats.get('mesh_link_success', 0)}/{stats.get('mesh_link_failed', 0)}",
-                    f"{stats.get('channel_busy_success', 0)}/{stats.get('channel_busy_failed', 0)}",
-                    stats.get("reconnect_count", 0),
-                    row_data.get("mr_name", ""),
-                    row_data.get("session_dir", ""),
-                ]
-                for column, value in enumerate(values):
-                    item = make_table_item(value)
-                    if column == 8 and row_data.get("config_file_path"):
-                        item.setToolTip(f"{self.i18n.t('online_mr.config_file_path')}: {row_data.get('config_file_path')}")
-                    self.history_table.setItem(row, column, item)
-        finally:
-            self.history_table.setUpdatesEnabled(True)
+        self._fill_online_table_batched(self.history_table, "history_sessions", rows, self._history_table_values)
         if self.analysis_only:
             self._refresh_session_select_combo()
-        self._auto_fit_online_table(self.history_table, "history_sessions")
         self._log_page_profile("load.history", profile_start, rows=len(rows))
 
     def _history_load_failed(self, message: str) -> None:

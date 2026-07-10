@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import shutil
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -180,6 +181,14 @@ def _path_resolver_from_params(params: dict[str, Any]):
     app_root = str(params.get("app_root") or "").strip() or None
     data_root = str(params.get("data_root") or "").strip() or None
     return PathResolver(app_root=Path(app_root) if app_root else None, data_root=Path(data_root) if data_root else None)
+
+
+def _write_background_text_artifact(params: dict[str, Any], subdir: str, prefix: str, text: str) -> Path:
+    cache_dir = _path_resolver_from_params(params).runtime_cache_dir / subdir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _snmp_mib_resource_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1306,6 +1315,7 @@ def _config_compare_latest_running_between_devices(params: dict[str, Any], progr
     name_a = str(device_a.name or device_a.system_name or device_a.device_uuid or "device_a")
     name_b = str(device_b.name or device_b.system_name or device_b.device_uuid or "device_b")
     diff = compare_named_config_text(text_a, text_b, name_a, name_b)
+    diff_file = _write_background_text_artifact(params, "config_diff", "two_devices_diff", diff.raw_diff)
     _emit(progress, "config_compare", 1, 1, "配置比较完成")
     return {
         "kind": "two_devices",
@@ -1314,6 +1324,7 @@ def _config_compare_latest_running_between_devices(params: dict[str, Any], progr
         "left_text": text_a,
         "right_text": text_b,
         "raw_diff": diff.raw_diff,
+        "diff_file": str(diff_file),
         "structure_diff": structure_diff(text_a, text_b),
     }
 
@@ -1335,6 +1346,7 @@ def _config_compare_latest_snapshots(params: dict[str, Any], progress: ProgressC
         raise ValueError("需要先采集 running 和 saved 配置。")
     result = _compare_snapshot_texts(service, running[0], saved[0])
     result["kind"] = "latest_snapshots"
+    result["diff_file"] = str(_write_background_text_artifact(params, "config_diff", "latest_snapshots_diff", str(result.get("raw_diff") or "")))
     _emit(progress, "config_compare", 1, 1, "配置比较完成")
     return result
 
@@ -1353,6 +1365,7 @@ def _config_compare_snapshot_pair(params: dict[str, Any], progress: ProgressCall
     right = repository.get(int(params.get("right_snapshot_id") or 0))
     result = _compare_snapshot_texts(service, left, right)
     result["kind"] = "snapshot_pair"
+    result["diff_file"] = str(_write_background_text_artifact(params, "config_diff", "snapshot_pair_diff", str(result.get("raw_diff") or "")))
     _emit(progress, "config_compare", 1, 1, "配置比较完成")
     return result
 
@@ -1383,13 +1396,16 @@ def _config_snapshot_load_content(params: dict[str, Any], progress: ProgressCall
     snapshot = repository.get(int(params.get("snapshot_id") or 0))
     text, truncated, original_length = _limited_snapshot_text(service.snapshot_text(snapshot), int(params.get("max_chars") or 2_000_000))
     _emit(progress, "config_snapshot_load_content", 1, 1, "配置快照读取完成")
-    return {
+    result = {
         "snapshot_id": snapshot.id,
         "snapshot_type": snapshot.type,
         "text": text,
         "truncated": truncated,
         "original_length": original_length,
     }
+    if snapshot.type == "diff":
+        result["diff_file"] = str(_write_background_text_artifact(params, "config_diff", "snapshot_diff", text))
+    return result
 
 
 def _config_snapshot_copy(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1427,8 +1443,12 @@ def _config_snapshot_pair_load_content(params: dict[str, Any], progress: Progres
                 "original_length": original_length,
             }
         )
+    raw_diff = str(params.get("raw_diff") or "")
+    result: dict[str, Any] = {"snapshots": rows, "raw_diff": raw_diff}
+    if raw_diff:
+        result["diff_file"] = str(_write_background_text_artifact(params, "config_diff", "snapshot_pair_content_diff", raw_diff))
     _emit(progress, "config_snapshot_pair_load_content", 2, 2, "配置快照读取完成")
-    return {"snapshots": rows, "raw_diff": str(params.get("raw_diff") or "")}
+    return result
 
 
 def _config_snapshot_delete_many(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

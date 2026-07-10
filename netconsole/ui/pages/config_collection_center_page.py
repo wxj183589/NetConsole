@@ -32,7 +32,7 @@ from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, grou
 from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, safe_device_name, snapshot_timestamp, unique_export_folder_name
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
-from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec, markdown_text_spec
+from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec, markdown_text_file_spec
 from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
@@ -83,6 +83,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.checked_snapshot_ids: set[int] = set()
         self.current_batch_results: list[BatchConfigItemResult] = []
         self.current_raw_diff = ""
+        self.current_diff_file: Path | None = None
         self._updating_checks = False
         self._updating_snapshot_checks = False
 
@@ -233,6 +234,7 @@ class ConfigCollectionCenterPage(QWidget):
         self.checked_device_ids.clear()
         self.current_batch_results = []
         self.current_raw_diff = ""
+        self.current_diff_file = None
         self.search_input.clear()
         self.refresh_groups()
         self.refresh()
@@ -516,7 +518,7 @@ class ConfigCollectionCenterPage(QWidget):
         raw_diff = str(result.get("raw_diff") or "")
         self.running_text.setPlainText(left_text)
         self.saved_text.setPlainText(right_text)
-        self.current_raw_diff = raw_diff
+        self._set_current_diff(raw_diff, result.get("diff_file"))
         self.diff_viewer.set_diff(left_label, right_label, left_text, right_text, raw_diff)
         self.tabs.setCurrentWidget(self.diff_viewer)
         if str(result.get("kind") or "") == "two_devices":
@@ -573,6 +575,7 @@ class ConfigCollectionCenterPage(QWidget):
         failed = len(results) - success
         self.current_batch_results = list(results)
         self.current_raw_diff = ""
+        self.current_diff_file = None
         lines = [self.t("config_center.status.download_done", success=success, failed=failed), ""]
         for item in results:
             status = self.t("config_center.result.success") if item.success else self.t("config_center.result.failed")
@@ -708,9 +711,10 @@ class ConfigCollectionCenterPage(QWidget):
             return
         target, _ = QFileDialog.getSaveFileName(self, self.export_diff_button.text(), f"diff_{snapshot_timestamp()}.diff", "Diff (*.diff);;Text (*.txt)")
         if target:
+            diff_file = self._current_diff_export_file()
             submit_export_task(
                 self,
-                markdown_text_spec(target, text=self.current_raw_diff, title=self.export_diff_button.text(), open_dir_on_success=True),
+                markdown_text_file_spec(target, text_file=diff_file, title=self.export_diff_button.text(), open_dir_on_success=True),
                 success_title=self.export_diff_button.text(),
                 paths=self.paths,
             )
@@ -735,7 +739,7 @@ class ConfigCollectionCenterPage(QWidget):
         snapshot_ids = [int(snapshot.id) for snapshot in snapshots if snapshot.id is not None]
         if not snapshot_ids:
             if diff is not None:
-                self.current_raw_diff = diff.raw_diff
+                self._set_current_diff(diff.raw_diff)
                 self.diff_viewer.set_message(diff.raw_diff)
                 self.tabs.setCurrentWidget(self.diff_viewer)
             return
@@ -762,7 +766,7 @@ class ConfigCollectionCenterPage(QWidget):
             self.saved_text.setPlainText(text)
             self.tabs.setCurrentWidget(self.saved_text)
         else:
-            self.current_raw_diff = text
+            self._set_current_diff(text, result.get("diff_file"))
             self.diff_viewer.set_message(text)
             self.tabs.setCurrentWidget(self.diff_viewer)
         self.status_label.setText("配置快照读取完成")
@@ -781,7 +785,7 @@ class ConfigCollectionCenterPage(QWidget):
             elif snapshot_type == "saved":
                 self.saved_text.setPlainText(text)
         raw_diff = str(result.get("raw_diff") or texts.get("diff") or "")
-        self.current_raw_diff = raw_diff
+        self._set_current_diff(raw_diff, result.get("diff_file"))
         if "running" in texts and "saved" in texts and raw_diff:
             self.diff_viewer.set_diff(
                 self.t("config_center.tab.running"),
@@ -1051,3 +1055,22 @@ class ConfigCollectionCenterPage(QWidget):
             for log_path in self.service._batch_log_paths(item):
                 file_entries.append({"path": str(log_path), "archive_name": f"{folder}/logs/{log_path.name}"})
         return snapshot_entries, file_entries, "\n".join(failures)
+
+    def _set_current_diff(self, raw_diff: str, diff_file: object | None = None) -> None:
+        self.current_raw_diff = raw_diff
+        if not raw_diff:
+            self.current_diff_file = None
+            return
+        path_text = str(diff_file or "").strip()
+        path = Path(path_text) if path_text else None
+        self.current_diff_file = path if path is not None and path.is_file() else None
+
+    def _current_diff_export_file(self) -> Path:
+        if self.current_diff_file is not None and self.current_diff_file.is_file():
+            return self.current_diff_file
+        cache_dir = self.paths.runtime_cache_dir / "config_diff"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"ui_diff_{snapshot_timestamp()}.txt"
+        path.write_text(self.current_raw_diff, encoding="utf-8")
+        self.current_diff_file = path
+        return path

@@ -1005,3 +1005,44 @@ def test_collect_log_dialog_export_uses_text_file_source(tmp_path, monkeypatch):
     dialog.export_log()
 
     assert captured["spec"].payload == {"text_file": str(raw_log)}
+
+
+def test_remaining_dialogs_install_scroll_area(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    from netconsole.ui.dialogs.ap_history_dialog import AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
+    from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
+    from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
+    import netconsole.ui.dialogs.data_disk_manager_dialog as data_disk_module
+    from netconsole.ui.dialogs.disk_cleanup_dialog import DiskCleanupDialog
+    import netconsole.ui.dialogs.device_group_dialog as device_group_module
+    from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
+
+    class FakeBackgroundManager:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.finished = FakeSignal()
+            self.failed = FakeSignal()
+
+        def start_job(self, _job) -> str:
+            return "job-1"
+
+    monkeypatch.setattr(data_disk_module.DataDiskManagerDialog, "refresh", lambda self: None)
+    monkeypatch.setattr(device_group_module, "BackgroundProcessManager", FakeBackgroundManager)
+
+    paths = PathResolver(tmp_path)
+    fake_repository = type("Repo", (), {"database": type("Db", (), {"path": tmp_path / "devices.db"})(), "site_id": "demo"})()
+    dialogs = [
+        ApHistoryDialog(I18n("en_US"), "ap-a", "Radio", [], AP_RADIO_HISTORY_COLUMNS),
+        TracksideInterfaceHistoryDialog(I18n("en_US"), [], "Interface History", SettingsStore(paths)),
+        DiskCleanupDialog(paths),
+        data_disk_module.DataDiskManagerDialog(I18n("en_US"), paths),
+        device_group_module.DeviceGroupDialog(I18n("en_US"), fake_repository),
+        BatchCollectProgressDialog(I18n("en_US"), 1),
+        BatchConnectionTestProgressDialog(I18n("en_US"), 1),
+    ]
+
+    try:
+        for dialog in dialogs:
+            assert dialog.findChild(QScrollArea) is not None
+    finally:
+        for dialog in dialogs:
+            dialog.close()

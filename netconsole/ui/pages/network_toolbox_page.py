@@ -120,6 +120,7 @@ DISPLAY_HEADERS = {
 TOOLBOX_DIRECT_FILL_LIMIT = 200
 TOOLBOX_FILL_BATCH_SIZE = 200
 TOOLBOX_RESULT_DISPLAY_LIMIT = 5000
+TOOLBOX_SYNC_CACHE_ROW_LIMIT = 200
 
 STATUS_LABELS = {
     "ready": "就绪",
@@ -339,6 +340,35 @@ class _Worker(QObject):
             self.finished.emit(None, str(exc), self.prefix)
 
 
+class ResultCacheWriteWorker(QThread):
+    completed = Signal(int, object, int)
+    failed = Signal(int, str)
+
+    def __init__(self, generation: int, cache_dir: Path, prefix: str, rows: list[dict[str, object]], parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.generation = generation
+        self.cache_dir = Path(cache_dir)
+        self.prefix = prefix
+        self.rows = rows
+
+    def run(self) -> None:
+        try:
+            path = write_result_cache_file(self.cache_dir, self.prefix, self.rows)
+            self.completed.emit(self.generation, path, len(self.rows))
+        except Exception as exc:
+            self.failed.emit(self.generation, str(exc))
+
+
+def write_result_cache_file(cache_dir: Path, prefix: str, rows: list[dict[str, object]]) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, default=str))
+            handle.write("\n")
+    return path
+
+
 class ToolResultPanel(QGroupBox):
     def __init__(self, paths: PathResolver, site_name: str, export_prefix: str, parent: QWidget | None = None) -> None:
         super().__init__("结果", parent)
@@ -349,6 +379,14 @@ class ToolResultPanel(QGroupBox):
         self.current_headers: list[str] = []
         self.current_result_file: Path | None = None
         self._fill_generation = 0
+        self._cache_generation = 0
+        self._cache_worker: ResultCacheWriteWorker | None = None
+        self._cache_pending = False
+        self._cache_error = ""
+        self._summary_base_lines: list[str] = []
+        self._result_total_count = 0
+        self._result_display_count = 0
+        self._table_fill_pending = False
 
         self.status_label = QLabel()
         self.result_table = QTableWidget()
@@ -381,6 +419,7 @@ class ToolResultPanel(QGroupBox):
         self.export_xlsx_button.clicked.connect(lambda: self.export_current("xlsx"))
         self.clear_button.clicked.connect(self.clear_results)
         self.set_status("ready")
+        self._sync_export_buttons()
 
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
@@ -407,14 +446,17 @@ class ToolResultPanel(QGroupBox):
         self.export_prefix = prefix
         normalized = [_display_row(row) for row in rows]
         self.current_rows = normalized
+        self._result_total_count = len(normalized)
         headers: list[str] = []
         for row in normalized:
             for key in row:
                 if key not in headers:
                     headers.append(key)
         self.current_headers = headers
-        self.current_result_file = self._write_result_cache(prefix, normalized) if headers else None
+        self.current_result_file = None
+        self._prepare_result_cache(prefix, normalized) if headers else self._reset_result_cache_state()
         display_rows = normalized[:TOOLBOX_RESULT_DISPLAY_LIMIT]
+        self._result_display_count = len(display_rows)
         hidden_count = max(0, len(normalized) - len(display_rows))
         self._fill_generation += 1
         generation = self._fill_generation
@@ -434,7 +476,8 @@ class ToolResultPanel(QGroupBox):
             summary_lines.extend(f"{key}: {_stringify(value)}" for key, value in summary.items())
         if hidden_count:
             summary_lines.append(f"表格仅显示前 {len(display_rows)} 条，导出将读取缓存文件中的 {len(normalized)} 条完整结果。")
-        self.summary_text.setPlainText("\n".join(summary_lines))
+        self._summary_base_lines = summary_lines
+        self._update_summary_cache_status()
         self.result_table.setToolTip(
             f"当前表格仅显示前 {len(display_rows)} 条；如需完整数据，请直接导出。"
             if hidden_count
@@ -443,9 +486,11 @@ class ToolResultPanel(QGroupBox):
         if len(display_rows) <= TOOLBOX_DIRECT_FILL_LIMIT:
             self._fill_table_rows(display_rows, headers, 0, len(display_rows))
             auto_fit_table_columns(self.result_table, max_rows=200)
-            self.set_status("done", self._result_status_text(len(normalized), len(display_rows)))
+            self._table_fill_pending = False
+            self._sync_result_status()
             return
 
+        self._table_fill_pending = True
         self.set_status("loading", f"正在填充 0/{len(display_rows)} 行")
 
         def fill_next(start: int = 0) -> None:
@@ -458,7 +503,8 @@ class ToolResultPanel(QGroupBox):
                 QTimer.singleShot(0, lambda: fill_next(end))
                 return
             auto_fit_table_columns(self.result_table, max_rows=200)
-            self.set_status("done", self._result_status_text(len(normalized), len(display_rows)))
+            self._table_fill_pending = False
+            self._sync_result_status()
 
         QTimer.singleShot(0, fill_next)
 
@@ -476,15 +522,86 @@ class ToolResultPanel(QGroupBox):
         finally:
             self.result_table.setUpdatesEnabled(True)
 
-    def _write_result_cache(self, prefix: str, rows: list[dict[str, object]]) -> Path:
-        cache_dir = self.paths.runtime_cache_dir / "toolbox_results"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        path = cache_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
-        with path.open("w", encoding="utf-8", newline="\n") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False, default=str))
-                handle.write("\n")
-        return path
+    def _prepare_result_cache(self, prefix: str, rows: list[dict[str, object]]) -> None:
+        self._cache_generation += 1
+        generation = self._cache_generation
+        self._cache_pending = False
+        self._cache_error = ""
+        self.current_result_file = None
+        self._sync_export_buttons()
+        if len(rows) <= TOOLBOX_SYNC_CACHE_ROW_LIMIT:
+            try:
+                self.current_result_file = write_result_cache_file(self.paths.runtime_cache_dir / "toolbox_results", prefix, rows)
+            except Exception as exc:
+                self._cache_error = str(exc)
+            self._sync_export_buttons()
+            return
+        self._cache_pending = True
+        worker = ResultCacheWriteWorker(generation, self.paths.runtime_cache_dir / "toolbox_results", prefix, rows, self)
+        self._cache_worker = worker
+        worker.completed.connect(self._result_cache_written)
+        worker.failed.connect(self._result_cache_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda worker=worker: self._cache_worker_finished(worker))
+        worker.start()
+        self._sync_export_buttons()
+
+    def _reset_result_cache_state(self) -> None:
+        self._cache_generation += 1
+        self._cache_pending = False
+        self._cache_error = ""
+        self.current_result_file = None
+        self._sync_export_buttons()
+
+    def _result_cache_written(self, generation: int, path: object, _row_count: int) -> None:
+        if generation != self._cache_generation:
+            return
+        self.current_result_file = Path(path)
+        self._cache_pending = False
+        self._cache_error = ""
+        self._sync_export_buttons()
+        self._update_summary_cache_status()
+        self._sync_result_status()
+
+    def _result_cache_failed(self, generation: int, message: str) -> None:
+        if generation != self._cache_generation:
+            return
+        self.current_result_file = None
+        self._cache_pending = False
+        self._cache_error = message or "未知错误"
+        self._sync_export_buttons()
+        self._update_summary_cache_status()
+        self._sync_result_status()
+
+    def _cache_worker_finished(self, worker: ResultCacheWriteWorker) -> None:
+        if self._cache_worker is worker:
+            self._cache_worker = None
+
+    def _sync_export_buttons(self) -> None:
+        enabled = bool(self.current_headers) and not self._cache_pending and self.current_result_file is not None and self.current_result_file.is_file()
+        self.export_csv_button.setEnabled(enabled)
+        self.export_xlsx_button.setEnabled(enabled)
+
+    def _update_summary_cache_status(self) -> None:
+        lines = list(self._summary_base_lines)
+        if self._cache_pending:
+            lines.append("导出缓存正在后台写入，完成前导出按钮不可用。")
+        elif self._cache_error:
+            lines.append(f"缓存写入失败，无法导出完整结果：{self._cache_error}")
+        elif self.current_headers and self.current_result_file is not None:
+            lines.append(f"导出缓存已就绪：{len(self.current_rows)} 条。")
+        self.summary_text.setPlainText("\n".join(lines))
+
+    def _sync_result_status(self) -> None:
+        if self._table_fill_pending:
+            return
+        message = self._result_status_text(self._result_total_count, self._result_display_count)
+        if self._cache_pending:
+            self.set_status("loading", f"{message}，正在写入导出缓存")
+        elif self._cache_error:
+            self.set_status("failed", "缓存写入失败，无法导出完整结果")
+        else:
+            self.set_status("done", message)
 
     @staticmethod
     def _result_status_text(total_count: int, display_count: int) -> str:
@@ -495,6 +612,12 @@ class ToolResultPanel(QGroupBox):
     def export_current(self, suffix: str) -> None:
         if not self.current_headers:
             MessageBox.information(self, "导出", "没有可导出的结果。")
+            return
+        if self._cache_pending:
+            MessageBox.warning(self, "导出", "结果缓存仍在写入，请稍后导出。")
+            return
+        if self._cache_error:
+            MessageBox.warning(self, "导出", "缓存写入失败，无法导出完整结果。")
             return
         if self.current_result_file is None or not self.current_result_file.is_file():
             MessageBox.warning(self, "导出", "未找到运行结果缓存文件，请重新生成结果后再导出。")
@@ -532,6 +655,11 @@ class ToolResultPanel(QGroupBox):
         self.current_headers = []
         self.current_result_file = None
         self._fill_generation += 1
+        self._reset_result_cache_state()
+        self._summary_base_lines = []
+        self._result_total_count = 0
+        self._result_display_count = 0
+        self._table_fill_pending = False
         self.result_table.setUpdatesEnabled(False)
         try:
             self.result_table.clearContents()

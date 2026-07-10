@@ -14,12 +14,14 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.services.app_auto_cleanup import APP_CLEANUP_RETENTION_DAYS, AppCleanupResult, AppCleanupService, CleanupItem
 from netconsole.ui.table_utils import auto_resize_table_columns_to_contents, setup_readable_table
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_table_row_checked
 
 
@@ -68,9 +70,9 @@ class DiskCleanupDialog(QDialog):
         self.worker: QThread | None = None
         self.setModal(False)
         self.setWindowTitle("磁盘清理")
-        self.setMinimumSize(860, 520)
 
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         title = QLabel("磁盘清理")
         title.setObjectName("fluentPageTitle")
         subtitle = QLabel("清理软件运行缓存、临时文件和过期运行日志，不会删除采集数据。")
@@ -110,6 +112,7 @@ class DiskCleanupDialog(QDialog):
         self.close_button = QPushButton("关闭")
         close_row.addWidget(self.close_button)
         layout.addLayout(close_row)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=460, content_minimum_width=900)
 
         self.scan_button.clicked.connect(self.scan)
         self.refresh_button.clicked.connect(self.scan)

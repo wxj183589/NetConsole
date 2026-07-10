@@ -12,6 +12,7 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.services.background_job import BackgroundJob
@@ -140,7 +141,9 @@ class ApHistoryDialog(QWidget):
         actions.addStretch(1)
         actions.addWidget(self.export_button)
         actions.addWidget(self.always_on_top_button)
-        layout = QVBoxLayout()
+        content = QWidget(self)
+        content.setMinimumWidth(840)
+        layout = QVBoxLayout(content)
         layout.addLayout(actions)
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -150,7 +153,7 @@ class ApHistoryDialog(QWidget):
         self.splitter.addWidget(self.detail_table)
         self.splitter.setSizes([540, 360])
         layout.addWidget(self.splitter, 1)
-        self.setLayout(layout)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=460, content_minimum_width=840)
 
         self.back_button.clicked.connect(self.return_to_parent)
         self.close_button.clicked.connect(self.close)

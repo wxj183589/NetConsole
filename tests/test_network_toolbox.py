@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import subprocess
+import time
+from threading import Event
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -27,6 +29,17 @@ from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, Network
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _process_qt_until(predicate, *, timeout: float = 5.0) -> None:
+    app = _app()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Timed out waiting for Qt task")
 
 
 def test_feature_registry_includes_network_toolbox() -> None:
@@ -278,12 +291,47 @@ def test_tool_result_panel_limits_visible_rows_and_caches_full_result(tmp_path) 
     rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(5001)]
 
     panel.show_rows(rows, "large")
+    _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
 
     assert panel.result_table.rowCount() == 5000
     assert panel.current_result_file is not None
     assert panel.current_result_file.is_file()
     assert len(panel.current_result_file.read_text(encoding="utf-8").splitlines()) == 5001
     assert "导出将读取缓存文件" in panel.summary_text.toPlainText()
+
+
+def test_tool_result_panel_large_cache_write_is_backgrounded(tmp_path, monkeypatch) -> None:
+    import netconsole.ui.pages.network_toolbox_page as toolbox_page_module
+
+    _app()
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    panel = ToolResultPanel(paths, "demo", "large")
+    rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(250)]
+    original_writer = toolbox_page_module.write_result_cache_file
+    started: list[int] = []
+    release = Event()
+
+    def delayed_writer(cache_dir, prefix, payload):
+        started.append(len(payload))
+        release.wait(2)
+        return original_writer(cache_dir, prefix, payload)
+
+    monkeypatch.setattr(toolbox_page_module, "write_result_cache_file", delayed_writer)
+
+    panel.show_rows(rows, "large")
+    try:
+        _process_qt_until(lambda: bool(started))
+        assert started == [250]
+        assert panel._cache_pending is True
+        assert panel.current_result_file is None
+        assert not panel.export_csv_button.isEnabled()
+    finally:
+        release.set()
+
+    _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
+
+    assert panel._cache_pending is False
+    assert panel.export_csv_button.isEnabled()
 
 
 def test_tool_result_panel_export_uses_result_file_source(tmp_path, monkeypatch) -> None:

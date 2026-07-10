@@ -105,6 +105,31 @@ def test_config_compare_tab_shows_running_on_left_and_saved_on_right(tmp_path):
     assert "sysname SAVED" in right_values
 
 
+def test_config_diff_export_uses_text_file_source(tmp_path, monkeypatch):
+    app()
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = DeviceRepository(db)
+    page = ConfigCollectionCenterPage(repository, I18n("zh_CN"), "demo", paths)
+    diff_file = paths.runtime_cache_dir / "config_diff" / "diff.txt"
+    diff_file.parent.mkdir(parents=True, exist_ok=True)
+    diff_file.write_text("--- saved\n+++ running\n", encoding="utf-8")
+    selected = tmp_path / "diff.diff"
+    captured = {}
+
+    page._set_current_diff(diff_file.read_text(encoding="utf-8"), diff_file)
+    monkeypatch.setattr("netconsole.ui.pages.config_collection_center_page.QFileDialog.getSaveFileName", lambda *_args, **_kwargs: (str(selected), "Diff (*.diff)"))
+    monkeypatch.setattr("netconsole.ui.pages.config_collection_center_page.submit_export_task", lambda _parent, spec, **_kwargs: captured.setdefault("spec", spec))
+
+    page.export_current_diff()
+
+    spec = captured["spec"]
+    assert spec.task_type == "markdown_text"
+    assert spec.payload["text_file"] == str(diff_file)
+    assert "text" not in spec.payload
+
+
 def test_snapshot_table_supports_checkbox_multi_select_without_device_selection_side_effects(tmp_path):
     app()
     paths = PathResolver(tmp_path)

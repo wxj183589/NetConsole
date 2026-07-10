@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectItemResult
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class BatchCollectProgressDialog(QDialog):
@@ -24,7 +25,6 @@ class BatchCollectProgressDialog(QDialog):
             self.concurrency_combo.addItem(str(value), value)
         self.concurrency_combo.setCurrentText(str(BATCH_CONCURRENCY))
         self.setModal(False)
-        self.setMinimumSize(820, 520)
         self.resize(900, 560)
 
         self.summary_label = make_text_selectable(QLabel())
@@ -34,6 +34,8 @@ class BatchCollectProgressDialog(QDialog):
         self.table = QTableWidget(total, 5)
         set_table_column_fields(self.table, ["device_name", "primary_address", "status", "elapsed", "error_message"])
         configure_readonly_table(self.table)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         attach_table_context_menu(self.table, self.i18n.language, include_history=False)
         self.copy_button = QPushButton()
         self.close_button = QPushButton()
@@ -47,13 +49,14 @@ class BatchCollectProgressDialog(QDialog):
         buttons.addStretch(1)
         buttons.addWidget(self.close_button)
 
-        layout = QVBoxLayout()
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.current_label)
         layout.addWidget(self.progress)
         layout.addWidget(self.table, 1)
         layout.addLayout(buttons)
-        self.setLayout(layout)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=460, content_minimum_width=900)
         self.retranslate()
         self.update_summary()
 
