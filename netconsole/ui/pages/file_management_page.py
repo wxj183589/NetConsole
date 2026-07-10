@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -319,6 +320,7 @@ class FileManagementPage(QWidget):
         self.next_task_id = 1
         self.active_worker: SftpDownloadWorker | None = None
         self.mesh_import_workers: dict[int, MeshAutoImportWorker] = {}
+        self._active_queue_action_menu: QMenu | None = None
         self.connect_worker: SftpConnectWorker | None = None
         self.list_worker: SftpListWorker | None = None
         self.active_winscp_sessions: list[object] = []
@@ -449,6 +451,7 @@ class FileManagementPage(QWidget):
         self.remote_table.itemChanged.connect(self.remote_item_changed)
         self.remote_table.itemSelectionChanged.connect(self._sync_file_operation_buttons)
         self.queue_table.itemSelectionChanged.connect(self._sync_file_operation_buttons)
+        self.queue_table.cellClicked.connect(self._queue_cell_clicked)
         self.remote_table.horizontalHeader().sectionClicked.connect(self.remote_header_clicked)
         self.local_table.horizontalHeader().sectionResized.connect(lambda _section, _old, _new: self.save_table_column_widths(self.local_table, "file_manager/local_table/column_widths"))
         self.remote_table.horizontalHeader().sectionResized.connect(lambda _section, _old, _new: self.save_table_column_widths(self.remote_table, "file_manager/remote_table/column_widths"))
@@ -1148,7 +1151,10 @@ class FileManagementPage(QWidget):
             }
             for column, (field, _key) in enumerate(QUEUE_COLUMNS):
                 if field == "action":
-                    self.queue_table.setCellWidget(row, column, self.queue_action_widget(task))
+                    item = QTableWidgetItem(self.i18n.t("file_management.action"))
+                    item.setData(Qt.UserRole, task.id)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.queue_table.setItem(row, column, item)
                     continue
                 item = QTableWidgetItem(values.get(field, ""))
                 item.setData(Qt.UserRole, task.id)
@@ -1163,26 +1169,40 @@ class FileManagementPage(QWidget):
         self.apply_queue_column_layout()
         self._sync_file_operation_buttons()
 
-    def queue_action_widget(self, task: TransferTask) -> QWidget:
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        cancel_button = QPushButton(self.i18n.t("file_management.cancel"))
-        retry_button = QPushButton(self.i18n.t("file_management.retry"))
-        open_button = QPushButton(self.i18n.t("file_management.open_containing_folder"))
-        cancel_button.setEnabled(task.status_key in {"file_management.status.queued", "file_management.status.downloading"})
-        retry_button.setEnabled(task.status_key in {"file_management.status.cancelled", "file_management.status.failed", "file_management.status.verification_failed"})
-        open_button.setEnabled(task.local_path.exists())
-        apply_button_icon(cancel_button, "CANCEL")
-        apply_button_icon(retry_button, "SYNC")
-        apply_button_icon(open_button, "FOLDER")
-        cancel_button.clicked.connect(lambda _=False, value=task: self.cancel_task(value))
-        retry_button.clicked.connect(lambda _=False, value=task: self.retry_task(value))
-        open_button.clicked.connect(lambda _=False, value=task: open_folder(value.local_path.parent))
-        layout.addWidget(cancel_button)
-        layout.addWidget(retry_button)
-        layout.addWidget(open_button)
-        return widget
+    def queue_action_menu_for_task(self, task: TransferTask) -> QMenu:
+        menu = QMenu(self.queue_table)
+        cancel_action = menu.addAction(self.i18n.t("file_management.cancel"), lambda: self.cancel_task(task))
+        retry_action = menu.addAction(self.i18n.t("file_management.retry"), lambda: self.retry_task(task))
+        open_action = menu.addAction(
+            self.i18n.t("file_management.open_containing_folder"),
+            lambda: open_folder(task.local_path.parent),
+        )
+        cancel_action.setEnabled(task.status_key in {"file_management.status.queued", "file_management.status.downloading"})
+        retry_action.setEnabled(task.status_key in {"file_management.status.cancelled", "file_management.status.failed", "file_management.status.verification_failed"})
+        open_action.setEnabled(task.local_path.exists())
+        return menu
+
+    def _queue_cell_clicked(self, row: int, column: int) -> None:
+        if column < 0 or column >= len(QUEUE_COLUMNS) or QUEUE_COLUMNS[column][0] != "action":
+            return
+        item = self.queue_table.item(row, column)
+        if item is None:
+            return
+        task_id = item.data(Qt.UserRole)
+        task = next((candidate for candidate in self.tasks if candidate.id == task_id), None)
+        if task is None:
+            return
+        if self._active_queue_action_menu is not None:
+            self._active_queue_action_menu.close()
+        menu = self.queue_action_menu_for_task(task)
+        self._active_queue_action_menu = menu
+        menu.aboutToHide.connect(lambda current=menu: self._release_queue_action_menu(current))
+        menu.popup(self.queue_table.viewport().mapToGlobal(self.queue_table.visualItemRect(item).bottomLeft()))
+
+    def _release_queue_action_menu(self, menu: QMenu) -> None:
+        if self._active_queue_action_menu is menu:
+            self._active_queue_action_menu = None
+        menu.deleteLater()
 
     def cancel_task(self, task: TransferTask) -> None:
         if task.status_key == "file_management.status.queued":

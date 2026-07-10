@@ -709,6 +709,7 @@ def test_vehicle_mr_mapping_dialog_scrolls_buttons_and_table(tmp_path: Path) -> 
     dialog = VehicleMrMappingDialog(store)
 
     try:
+        _process_events_until(lambda: dialog._mapping_job_id is None)
         assert dialog.minimumWidth() >= 820
         assert dialog.minimumHeight() >= 500
         assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
@@ -726,6 +727,11 @@ def test_vehicle_mr_mapping_dialog_scrolls_buttons_and_table(tmp_path: Path) -> 
             dialog.refresh_button,
         ):
             assert button.minimumWidth() >= 86
+        dialog._append_mapping(VehicleMrTrainMapping(train_display_name="06车", tc1_peer_name="0601", tc2_peer_name="0606", online_policy=ONLINE_POLICY_DUAL_ACTIVE))
+        policy_item = dialog.table.item(0, 4)
+        assert dialog.table.cellWidget(0, 4) is None
+        assert policy_item.data(Qt.UserRole) == ONLINE_POLICY_DUAL_ACTIVE
+        assert dialog._read_table()[0].online_policy == ONLINE_POLICY_DUAL_ACTIVE
     finally:
         dialog.close()
 

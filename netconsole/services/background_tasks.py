@@ -148,6 +148,8 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _fit_ap_metadata_save(params, progress_callback, should_cancel)
     if job.task_type == "online_mr_collection_devices_refresh":
         return _online_mr_collection_devices_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "online_mr_mark_stale_sessions":
+        return _online_mr_mark_stale_sessions(params, progress_callback, should_cancel)
     if job.task_type == "mesh_mr_profiles_refresh":
         return _mesh_mr_profiles_refresh(params, progress_callback, should_cancel)
     if job.task_type == "file_management_navigation_refresh":
@@ -181,6 +183,15 @@ def _path_resolver_from_params(params: dict[str, Any]):
     app_root = str(params.get("app_root") or "").strip() or None
     data_root = str(params.get("data_root") or "").strip() or None
     return PathResolver(app_root=Path(app_root) if app_root else None, data_root=Path(data_root) if data_root else None)
+
+
+def _online_mr_mark_stale_sessions(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+
+    _check_cancel(should_cancel)
+    site_name = str(params.get("site_name") or "")
+    changed = OnlineMrSessionStore(_path_resolver_from_params(params)).mark_stale_sessions_aborted(site_name)
+    return {"changed_count": len(changed)}
 
 
 def _write_background_text_artifact(params: dict[str, Any], subdir: str, prefix: str, text: str) -> Path:

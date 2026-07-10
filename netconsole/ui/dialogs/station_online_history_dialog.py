@@ -13,6 +13,7 @@ from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_widget_content
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
@@ -70,11 +71,18 @@ class StationOnlineHistoryDialog(QWidget):
         actions.addWidget(self.station_filter)
         actions.addWidget(self.export_button)
         actions.addStretch(1)
-        layout = QVBoxLayout()
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.addLayout(actions)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.pagination)
-        self.setLayout(layout)
+        self.scroll_area = install_scrollable_widget_content(
+            self,
+            content,
+            minimum_width=720,
+            minimum_height=420,
+            content_minimum_width=860,
+        )
 
         self.station_filter.currentIndexChanged.connect(self.filter_changed)
         self.export_button.clicked.connect(self.export_history)

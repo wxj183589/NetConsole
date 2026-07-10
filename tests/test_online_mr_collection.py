@@ -51,6 +51,8 @@ from netconsole.services.fping_legacy_parser import (
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.network_tools.iperf_runner import FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_tasks import run_background_task
 from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
@@ -66,6 +68,7 @@ from netconsole.services.online_mr.parser.event_parser_engine import EventParser
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.ui.pages.online_mr_collection_page import (
     ONLINE_MR_LEFT_PANEL_MIN_WIDTH,
+    ONLINE_MR_DEVICE_DISPLAY_LIMIT,
     ONLINE_MR_PAGE_MIN_WIDTH,
     ONLINE_MR_RIGHT_PANEL_MIN_WIDTH,
     ONLINE_MR_WORK_PANEL_MIN_WIDTH,
@@ -208,6 +211,29 @@ def _online_page_with_devices(tmp_path: Path) -> tuple[OnlineMrCollectionPage, D
 
     page.refresh_all = refresh_all_and_wait
     return page, device_repo, group_repo
+
+
+def test_online_mr_device_table_caps_and_batches_large_filtered_list(tmp_path: Path) -> None:
+    page, _device_repo, _group_repo = _online_page_with_devices(tmp_path)
+    page.device_groups = {1: "车载-MR"}
+    page.devices = [
+        Device(id=index + 1, name=f"MR-{index:04d}", group_id=1, device_type="FAT-AP", primary_address=f"192.0.2.{index % 250 + 1}")
+        for index in range(ONLINE_MR_DEVICE_DISPLAY_LIMIT + 5)
+    ]
+    page.selected_device_ids = {1}
+
+    page._fill_devices()
+    _process_qt_until(lambda: page.device_table.item(ONLINE_MR_DEVICE_DISPLAY_LIMIT - 1, 1) is not None)
+
+    assert page.device_table.rowCount() == ONLINE_MR_DEVICE_DISPLAY_LIMIT
+    assert "仅显示前" in page.device_table.toolTip()
+    assert page.device_table.item(0, 0).checkState() == Qt.Checked
+    page.device_search_input.blockSignals(True)
+    page.device_search_input.setText("MR-0000")
+    page.device_search_input.blockSignals(False)
+    page._fill_devices()
+    assert page.device_table.rowCount() == 1
+    assert page.device_table.item(0, 0).checkState() == Qt.Checked
 
 
 def test_online_mr_fping_parameter_layout_has_stable_widths(tmp_path: Path) -> None:
@@ -1149,6 +1175,22 @@ def test_recovery_marks_stale_collecting_meta_aborted(tmp_path: Path) -> None:
     assert changed
     meta = json.loads((session.session_dir / "session_meta.json").read_text(encoding="utf-8"))
     assert meta["status"] == STATE_ABORTED
+
+
+def test_recovery_marks_stale_sessions_through_background_task(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    session.update_status(STATE_COLLECTING)
+
+    result = run_background_task(
+        BackgroundJob(
+            task_type="online_mr_mark_stale_sessions",
+            params={"site_name": "demo", "app_root": str(paths.app_root), "data_root": str(paths.data_root)},
+        )
+    )
+
+    assert result == {"changed_count": 1}
+    assert json.loads((session.session_dir / "session_meta.json").read_text(encoding="utf-8"))["status"] == STATE_ABORTED
 
 
 def test_ui_throttle_coalesces_many_snapshots() -> None:

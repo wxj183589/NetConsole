@@ -240,6 +240,9 @@ def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
     window.show_changelog_dialog()
     assert isinstance(window.changelog_dialog, ChangelogDialog)
     assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
+    assert window.changelog_dialog.scroll_area.widgetResizable() is True
+    assert window.changelog_dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert window.changelog_dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     window._force_close = True
     window.close()
 

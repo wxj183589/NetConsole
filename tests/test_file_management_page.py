@@ -436,6 +436,9 @@ def test_meshlog_queue_displays_final_local_filename(tmp_path, monkeypatch):
 
     assert page.tasks[0].local_path.name == "AC-1-2026_02_03-meshlog.log"
     assert page.queue_table.item(0, 0).text() == "AC-1-2026_02_03-meshlog.log"
+    action_column = page.queue_table.columnCount() - 1
+    assert page.queue_table.cellWidget(0, action_column) is None
+    assert [action.text() for action in page.queue_action_menu_for_task(page.tasks[0]).actions()] == ["Cancel", "Retry", "Open Containing Folder"]
 
 
 def test_file_management_device_search_combines_with_group_filter(tmp_path):

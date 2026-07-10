@@ -2,17 +2,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QHeaderView,
-    QPushButton,
+    QMenu,
     QTableWidget,
     QTableWidgetItem,
-    QWidget,
 )
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
-from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ROW_HEIGHT, apply_action_column, apply_table_style, set_table_column_fields
+from netconsole.ui.render.table_render_engine import apply_action_column, apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 
@@ -28,7 +26,7 @@ DEVICE_COLUMN_WIDTHS = {
     "backup_address": 130,
     "protocols": 80,
     "updated_at": 170,
-    "actions": 320,
+    "actions": 100,
 }
 
 COLUMNS = (
@@ -79,6 +77,7 @@ class DeviceTable(QTableWidget):
         self.selected_device_ids: set[int] = set()
         self.external_terminal_visible = True
         self.external_terminal_enabled = True
+        self._active_action_menu: QMenu | None = None
         self._updating_checks = False
         set_table_column_fields(self, [field for field, _key in COLUMNS])
         configure_readonly_table(self)
@@ -96,7 +95,7 @@ class DeviceTable(QTableWidget):
         apply_table_style(self)
         apply_action_column(self)
         self._apply_column_layout()
-        self._refresh_action_buttons()
+        self._refresh_action_items()
 
     def _apply_header_tooltips(self) -> None:
         for column, (field, key) in enumerate(COLUMNS):
@@ -129,7 +128,10 @@ class DeviceTable(QTableWidget):
                 item = QTableWidgetItem("" if values.get(field) is None else str(values[field]))
                 item.setData(Qt.UserRole, device.id)
                 self.setItem(row, column, item)
-            self.setCellWidget(row, self._column_index("actions"), self._action_widget(device))
+            action_item = QTableWidgetItem(self.i18n.t("field.actions"))
+            action_item.setData(Qt.UserRole, device.id)
+            action_item.setTextAlignment(Qt.AlignCenter)
+            self.setItem(row, self._column_index("actions"), action_item)
         self._updating_checks = False
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
@@ -143,7 +145,7 @@ class DeviceTable(QTableWidget):
     def set_external_terminal_action_state(self, *, visible: bool, enabled: bool) -> None:
         self.external_terminal_visible = visible
         self.external_terminal_enabled = enabled
-        self._refresh_action_buttons()
+        self._refresh_action_items()
 
     def selected_device_id(self) -> int | None:
         row = self.currentRow()
@@ -181,24 +183,45 @@ class DeviceTable(QTableWidget):
         item = create_checkable_table_item(False, user_data=device.id)
         self.setItem(row, CHECK_COLUMN, item)
 
-    def _action_widget(self, device: Device) -> QWidget:
-        return ActionCellWidget(
-            detail_text=self.i18n.t("details.button"),
-            edit_text=self.i18n.t("devices.edit"),
-            delete_text=self.i18n.t("devices.delete"),
-            device_id=int(device.id) if device.id is not None else None,
-            detail_requested=self.detail_requested.emit,
-            edit_requested=self.edit_requested.emit,
-            delete_requested=self.delete_requested.emit,
-            external_terminal_text=self.i18n.t("devices.external_terminal"),
-            external_terminal_requested=self.external_terminal_requested.emit,
-            external_terminal_visible=self.external_terminal_visible,
-            external_terminal_enabled=self.external_terminal_enabled,
-        )
-
-    def _refresh_action_buttons(self) -> None:
+    def _refresh_action_items(self) -> None:
+        action_column = self._column_index("actions")
         for row, device in enumerate(self.devices):
-            self.setCellWidget(row, self._column_index("actions"), self._action_widget(device))
+            item = self.item(row, action_column)
+            if item is None:
+                item = QTableWidgetItem()
+                self.setItem(row, action_column, item)
+            item.setText(self.i18n.t("field.actions"))
+            item.setData(Qt.UserRole, device.id)
+            item.setTextAlignment(Qt.AlignCenter)
+
+    def action_menu_for_device(self, device_id: int) -> QMenu:
+        menu = QMenu(self)
+        menu.addAction(self.i18n.t("details.button"), lambda: self.detail_requested.emit(device_id))
+        if self.external_terminal_visible:
+            terminal_action = menu.addAction(
+                self.i18n.t("devices.external_terminal"),
+                lambda: self.external_terminal_requested.emit(device_id),
+            )
+            terminal_action.setEnabled(self.external_terminal_enabled)
+        menu.addAction(self.i18n.t("devices.edit"), lambda: self.edit_requested.emit(device_id))
+        menu.addAction(self.i18n.t("devices.delete"), lambda: self.delete_requested.emit(device_id))
+        return menu
+
+    def _show_action_menu(self, row: int) -> None:
+        item = self.item(row, self._column_index("actions"))
+        if item is None or item.data(Qt.UserRole) is None:
+            return
+        if self._active_action_menu is not None:
+            self._active_action_menu.close()
+        menu = self.action_menu_for_device(int(item.data(Qt.UserRole)))
+        self._active_action_menu = menu
+        menu.aboutToHide.connect(lambda current=menu: self._release_action_menu(current))
+        menu.popup(self.viewport().mapToGlobal(self.visualItemRect(item).bottomLeft()))
+
+    def _release_action_menu(self, menu: QMenu) -> None:
+        if self._active_action_menu is menu:
+            self._active_action_menu = None
+        menu.deleteLater()
 
     def _header_clicked(self, section: int) -> None:
         if section != CHECK_COLUMN:
@@ -234,6 +257,9 @@ class DeviceTable(QTableWidget):
         self.selection_changed.emit()
 
     def _cell_clicked(self, row: int, column: int) -> None:
+        if column == self._column_index("actions"):
+            self._show_action_menu(row)
+            return
         if column != CHECK_COLUMN:
             return
         item = self.item(row, CHECK_COLUMN)
@@ -290,46 +316,3 @@ class DeviceTable(QTableWidget):
             if column_field == field:
                 return index
         raise KeyError(field)
-
-
-class ActionCellWidget(QWidget):
-    def __init__(
-        self,
-        detail_text: str,
-        edit_text: str,
-        delete_text: str,
-        device_id: int | None,
-        detail_requested,
-        edit_requested,
-        delete_requested,
-        external_terminal_text: str = "",
-        external_terminal_requested=None,
-        external_terminal_visible: bool = False,
-        external_terminal_enabled: bool = False,
-    ) -> None:
-        super().__init__()
-        self.setMinimumHeight(ROW_HEIGHT)
-        self.setMaximumHeight(ROW_HEIGHT)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        layout.setAlignment(Qt.AlignCenter)
-        buttons = [
-            (QPushButton(detail_text), detail_requested),
-        ]
-        if external_terminal_visible and external_terminal_requested is not None:
-            terminal_button = QPushButton(external_terminal_text)
-            terminal_button.setEnabled(external_terminal_enabled)
-            buttons.append((terminal_button, external_terminal_requested))
-        buttons.extend((
-            (QPushButton(edit_text), edit_requested),
-            (QPushButton(delete_text), delete_requested),
-        ))
-        for button, callback in buttons:
-            button.setObjectName("tableActionButton")
-            button.setMinimumHeight(ACTION_BUTTON_HEIGHT)
-            button.setMaximumHeight(ACTION_BUTTON_HEIGHT)
-            button.setMinimumWidth(56)
-            if device_id is not None:
-                button.clicked.connect(lambda _=False, value=device_id, handler=callback: handler(value))
-            layout.addWidget(button)

@@ -142,7 +142,8 @@ ONLINE_MR_LEFT_PANEL_MIN_WIDTH = 420
 ONLINE_MR_RIGHT_PANEL_MIN_WIDTH = 320
 ONLINE_MR_DIRECT_FILL_LIMIT = 200
 ONLINE_MR_FILL_BATCH_SIZE = 200
-ONLINE_MR_TABLE_DISPLAY_LIMIT = 5000
+ONLINE_MR_TABLE_DISPLAY_LIMIT = 2000
+ONLINE_MR_DEVICE_DISPLAY_LIMIT = 1000
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
 PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
 FORCE_STOP_DELAY_SECONDS = 5
@@ -437,6 +438,7 @@ class OnlineMrCollectionPage(QWidget):
         self._attached_worker_sessions: set[str] = set()
         self.devices: list[Device] = []
         self.filtered_devices: list[Device] = []
+        self.displayed_devices: list[Device] = []
         self.available_devices: list[Device] = []
         self.device_groups: dict[int, str] = {}
         self.selected_device_ids: set[int] = set()
@@ -920,7 +922,16 @@ class OnlineMrCollectionPage(QWidget):
             return
         if self.site_name not in self._stale_sessions_checked_sites:
             self._stale_sessions_checked_sites.add(self.site_name)
-            QTimer.singleShot(0, lambda site_name=self.site_name: None if self._shutdown_requested else self.store.mark_stale_sessions_aborted(site_name))
+            self.background_manager.start_job(
+                BackgroundJob(
+                    task_type="online_mr_mark_stale_sessions",
+                    params={
+                        "site_name": self.site_name,
+                        "app_root": str(self.paths.app_root),
+                        "data_root": str(self.paths.data_root),
+                    },
+                )
+            )
         self._first_show_refreshed = True
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site_name}")
         self.filter_hint_label.setText(self.i18n.t("app.loading"))
@@ -4319,32 +4330,65 @@ class OnlineMrCollectionPage(QWidget):
         self.available_devices = sorted([device for device in self.devices if self._is_vehicle_fat_ap(device)], key=natural_device_sort_key)
         keyword = self.device_search_input.text().strip().lower()
         self.filtered_devices = [device for device in self.available_devices if self._matches_device_search(device, keyword)]
-        self._updating_device_checks = True
+        self.displayed_devices = self.filtered_devices[:ONLINE_MR_DEVICE_DISPLAY_LIMIT]
+        hidden_count = len(self.filtered_devices) - len(self.displayed_devices)
+        generation = int(self.device_table.property("online_mr_device_fill_generation") or 0) + 1
+        self.device_table.setProperty("online_mr_device_fill_generation", generation)
         self.device_table.setUpdatesEnabled(False)
         try:
-            self.device_table.setRowCount(len(self.filtered_devices))
-            for row, device in enumerate(self.filtered_devices):
-                check_item = create_checkable_table_item(device.id in self.selected_device_ids)
-                self.device_table.setItem(row, 0, check_item)
-                protocol, port, username, _password = connection_fields_from_device(device)
-                values = [
-                    device.name,
-                    device.primary_address,
-                    protocol,
-                    port,
-                    username,
-                    self.device_groups.get(int(device.group_id or 0), ""),
-                    device.device_type or "",
-                    self._device_runtime_status(device.id),
-                ]
-                for offset, value in enumerate(values, start=1):
-                    item = QTableWidgetItem("" if value is None else str(value))
-                    if offset in {3, 4, 8}:
-                        item.setTextAlignment(Qt.AlignCenter)
-                    self.device_table.setItem(row, offset, item)
+            self.device_table.clearContents()
+            self.device_table.setRowCount(len(self.displayed_devices))
         finally:
             self.device_table.setUpdatesEnabled(True)
-            self._updating_device_checks = False
+
+        def fill_range(start: int, end: int) -> None:
+            self._updating_device_checks = True
+            self.device_table.setUpdatesEnabled(False)
+            try:
+                for row in range(start, end):
+                    device = self.displayed_devices[row]
+                    check_item = create_checkable_table_item(device.id in self.selected_device_ids, user_data=device.id)
+                    self.device_table.setItem(row, 0, check_item)
+                    protocol, port, username, _password = connection_fields_from_device(device)
+                    values = [
+                        device.name,
+                        device.primary_address,
+                        protocol,
+                        port,
+                        username,
+                        self.device_groups.get(int(device.group_id or 0), ""),
+                        device.device_type or "",
+                        self._device_runtime_status(device.id),
+                    ]
+                    for offset, value in enumerate(values, start=1):
+                        item = QTableWidgetItem("" if value is None else str(value))
+                        if offset in {3, 4, 8}:
+                            item.setTextAlignment(Qt.AlignCenter)
+                        self.device_table.setItem(row, offset, item)
+            finally:
+                self.device_table.setUpdatesEnabled(True)
+                self._updating_device_checks = False
+
+        if len(self.displayed_devices) <= ONLINE_MR_DIRECT_FILL_LIMIT:
+            fill_range(0, len(self.displayed_devices))
+        else:
+            def fill_next(start: int = 0) -> None:
+                try:
+                    if int(self.device_table.property("online_mr_device_fill_generation") or 0) != generation:
+                        return
+                    end = min(start + ONLINE_MR_FILL_BATCH_SIZE, len(self.displayed_devices))
+                    fill_range(start, end)
+                    if end < len(self.displayed_devices):
+                        QTimer.singleShot(0, lambda: fill_next(end))
+                except RuntimeError:
+                    return
+
+            QTimer.singleShot(0, fill_next)
+        self.device_table.setToolTip(
+            f"仅显示前 {len(self.displayed_devices)} / {len(self.filtered_devices)} 台设备，请使用搜索缩小范围。"
+            if hidden_count
+            else ""
+        )
         self._available_device_count = len(self.available_devices)
         if not self._can_update_ui():
             return
@@ -4354,7 +4398,8 @@ class OnlineMrCollectionPage(QWidget):
         elif not self.filtered_devices:
             self.filter_hint_label.setText(self.i18n.t("online_mr.no_device_search_results"))
         else:
-            self.filter_hint_label.setText(self.i18n.t("online_mr.filtered_device_count", total=len(self.available_devices), shown=len(self.filtered_devices), selected=len(self.selected_device_ids)))
+            hint = self.i18n.t("online_mr.filtered_device_count", total=len(self.available_devices), shown=len(self.displayed_devices), selected=len(self.selected_device_ids))
+            self.filter_hint_label.setText(hint + (f"；匹配 {len(self.filtered_devices)} 台，仅显示前 {ONLINE_MR_DEVICE_DISPLAY_LIMIT} 台，请继续筛选" if hidden_count else ""))
         self._update_selected_count()
         self._refresh_fping_device_choices()
         self._refresh_top_metrics()
@@ -4377,8 +4422,9 @@ class OnlineMrCollectionPage(QWidget):
         if self._updating_device_checks or item.column() != 0:
             return
         changed_device_id: int | None = None
-        if 0 <= item.row() < len(self.filtered_devices):
-            device = self.filtered_devices[item.row()]
+        device_id = item.data(Qt.UserRole)
+        device = next((candidate for candidate in self.displayed_devices if candidate.id == device_id), None)
+        if device is not None:
             if device.id is not None:
                 changed_device_id = int(device.id)
                 if is_checked_value(item.checkState()):
@@ -4404,9 +4450,9 @@ class OnlineMrCollectionPage(QWidget):
     def _on_device_current_row_changed(self, current_row: int, _current_column: int, _previous_row: int, _previous_column: int) -> None:
         if self._updating_device_checks or self._view_device_user_selected:
             return
-        if current_row < 0 or current_row >= len(self.filtered_devices):
+        if current_row < 0 or current_row >= len(self.displayed_devices):
             return
-        device = self.filtered_devices[current_row]
+        device = self.displayed_devices[current_row]
         if device.id is not None:
             self._fill_view_devices(prefer_device_id=int(device.id))
             self._focus_output_device(int(device.id))
@@ -4793,7 +4839,7 @@ class OnlineMrCollectionPage(QWidget):
     def _update_device_status(self, device_id: int | None, status: str) -> None:
         if device_id is None:
             return
-        for row, device in enumerate(self.filtered_devices):
+        for row, device in enumerate(self.displayed_devices):
             if device.id == device_id:
                 self.device_table.setItem(row, 8, QTableWidgetItem(status))
                 break
@@ -4803,8 +4849,8 @@ class OnlineMrCollectionPage(QWidget):
         if selected and selected[0].id is not None:
             return int(selected[0].id)
         row = self.device_table.currentRow()
-        if 0 <= row < len(self.filtered_devices):
-            device = self.filtered_devices[row]
+        if 0 <= row < len(self.displayed_devices):
+            device = self.displayed_devices[row]
             if device.id is not None:
                 return int(device.id)
         if self.workers_by_device_id:

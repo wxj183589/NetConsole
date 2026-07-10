@@ -65,6 +65,7 @@ from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
+from netconsole.ui.widgets.table_combo_delegate import ComboBoxItemDelegate, combo_item_value
 
 
 VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS = (
@@ -1016,6 +1017,10 @@ class VehicleMrMappingDialog(QDialog):
         configure_readonly_table(self.table)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         self.table.setHorizontalHeaderLabels(["启用", "车次", "TC1", "TC2", "在线策略", "备注", "更新时间"])
+        self.table.setItemDelegateForColumn(
+            4,
+            ComboBoxItemDelegate([(label, value) for value, label in ONLINE_POLICY_LABELS.items()], self.table),
+        )
         self.add_button = QPushButton("新增")
         self.delete_button = QPushButton("删除")
         self.save_button = QPushButton("保存")
@@ -1164,12 +1169,10 @@ class VehicleMrMappingDialog(QDialog):
         values = [mapping.display_name, mapping.tc1_peer_name, mapping.tc2_peer_name]
         for column, value in enumerate(values, start=1):
             self.table.setItem(row, column, QTableWidgetItem(str(value or "")))
-        policy_combo = QComboBox()
-        for value, label in ONLINE_POLICY_LABELS.items():
-            policy_combo.addItem(label, value)
         policy = normalize_online_policy(mapping.online_policy)
-        policy_combo.setCurrentIndex(max(0, policy_combo.findData(policy)))
-        self.table.setCellWidget(row, 4, policy_combo)
+        policy_item = QTableWidgetItem(ONLINE_POLICY_LABELS.get(policy, policy))
+        policy_item.setData(Qt.UserRole, policy)
+        self.table.setItem(row, 4, policy_item)
         self.table.setItem(row, 5, QTableWidgetItem(str(mapping.remark or "")))
         self.table.setItem(row, 6, QTableWidgetItem(str(mapping.updated_at or "")))
 
@@ -1214,6 +1217,9 @@ def _item_text(table: QTableWidget, row: int, column: int) -> str:
 
 
 def _combo_data(table: QTableWidget, row: int, column: int, default: str = "") -> str:
+    item = table.item(row, column)
+    if item is not None:
+        return str(combo_item_value(item, default) or default)
     widget = table.cellWidget(row, column)
     if isinstance(widget, QComboBox):
         return str(widget.currentData() or default)

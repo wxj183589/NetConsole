@@ -59,6 +59,7 @@ ROUTE_HEADERS = ["序号", "目标网络", "下一跳", "接口", "跃点数", "
 ROUTE_WIDTHS = [60, 180, 160, 180, 80, 140, 70, 100]
 PROFILE_HEADERS = ["方案名称", "路由数量", "是否启用", "备注"]
 EDIT_ROUTE_HEADERS = ["目标网络", "下一跳", "出接口", "跃点数", "持久", "备注"]
+ROUTE_EDIT_WIDGET_ROW_LIMIT = 200
 
 
 class NetworkRefreshWorker(QObject):
@@ -959,11 +960,15 @@ def _network_page_new_persistent_checkbox(self, checked: bool = True) -> QCheckB
 
 def _network_page_add_route_row(self) -> None:
     row = self.route_edit_table.rowCount()
+    if row >= ROUTE_EDIT_WIDGET_ROW_LIMIT:
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), f"路由编辑区最多保留 {ROUTE_EDIT_WIDGET_ROW_LIMIT} 行，请拆分路由方案。")
+        return
     self.route_edit_table.insertRow(row)
     self.route_edit_table.setRowHeight(row, 38)
     defaults = ["192.168.105.0", "255.255.255.0", "192.168.105.1", "", "10", "", ""]
     for column, value in enumerate(defaults):
         self._set_table_item(self.route_edit_table, row, column, value)
+    # 人工维护的路由编辑表有 200 行硬上限；嵌入控件不会进入大结果表路径。
     self.route_edit_table.setCellWidget(row, 3, self._new_interface_combo())
     self.route_edit_table.setCellWidget(row, 5, self._new_persistent_checkbox(True))
 
@@ -1233,6 +1238,13 @@ def _network_page_route_profile_table_selection_changed(self) -> None:
 
 
 def _network_page_load_route_profile_into_editor(self, profile: RouteProfile) -> None:
+    if len(profile.routes) > ROUTE_EDIT_WIDGET_ROW_LIMIT:
+        MessageBox.warning(
+            self,
+            self.i18n.t("network_manager.title"),
+            f"路由方案包含 {len(profile.routes)} 行，超过编辑区 {ROUTE_EDIT_WIDGET_ROW_LIMIT} 行上限，请先拆分方案。",
+        )
+        return
     self._loading_route_profile = True
     try:
         self.route_profile_name_edit.setText(profile.profile_name)
@@ -1248,12 +1260,15 @@ def _network_page_load_route_profile_into_editor(self, profile: RouteProfile) ->
 
 def _network_page_append_route_entry_to_editor(self, entry: RouteProfileEntry) -> None:
     row = self.route_edit_table.rowCount()
+    if row >= ROUTE_EDIT_WIDGET_ROW_LIMIT:
+        return
     self.route_edit_table.insertRow(row)
     self.route_edit_table.setRowHeight(row, 38)
     destination, netmask = self._split_destination_prefix(entry.destination_prefix, entry.netmask)
     values = [destination, netmask, entry.next_hop, "", str(entry.metric), "", entry.remark]
     for column, value in enumerate(values):
         self._set_table_item(self.route_edit_table, row, column, value)
+    # 人工维护的路由编辑表有 200 行硬上限；嵌入控件不会进入大结果表路径。
     self.route_edit_table.setCellWidget(row, 3, self._new_interface_combo(entry.interface_alias, entry.interface_index))
     self.route_edit_table.setCellWidget(row, 5, self._new_persistent_checkbox(entry.persistent))
 
@@ -1268,6 +1283,9 @@ def _network_page_split_destination_prefix(self, destination_prefix: str, netmas
 
 def _network_page_add_route_row_inheriting_previous(self) -> None:
     row = self.route_edit_table.rowCount()
+    if row >= ROUTE_EDIT_WIDGET_ROW_LIMIT:
+        MessageBox.warning(self, self.i18n.t("network_manager.title"), f"路由编辑区最多保留 {ROUTE_EDIT_WIDGET_ROW_LIMIT} 行，请拆分路由方案。")
+        return
     previous = row - 1
     next_hop = self._table_text(self.route_edit_table, previous, 2) if previous >= 0 else ""
     metric = self._table_text(self.route_edit_table, previous, 4) if previous >= 0 else "10"
@@ -1278,6 +1296,7 @@ def _network_page_add_route_row_inheriting_previous(self) -> None:
     values = ["", "255.255.255.0", next_hop, "", metric or "10", "", ""]
     for column, value in enumerate(values):
         self._set_table_item(self.route_edit_table, row, column, value)
+    # 人工维护的路由编辑表有 200 行硬上限；嵌入控件不会进入大结果表路径。
     self.route_edit_table.setCellWidget(row, 3, self._new_interface_combo(selected_alias, selected_index))
     self.route_edit_table.setCellWidget(row, 5, self._new_persistent_checkbox(persistent))
 

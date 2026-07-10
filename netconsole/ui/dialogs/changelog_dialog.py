@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.resources import changelog_path, icon_path
 from netconsole.core import version as version_info
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class ChangelogDialog(QDialog):
@@ -19,7 +20,8 @@ class ChangelogDialog(QDialog):
         title_text = self.i18n.t("app.changelog_title", version=version_info.APP_VERSION_DISPLAY)
         self.setWindowTitle(title_text)
 
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         title = QLabel(title_text)
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
@@ -36,6 +38,13 @@ class ChangelogDialog(QDialog):
         close_button.clicked.connect(self.close)
         actions.addWidget(close_button)
         layout.addLayout(actions)
+        self.scroll_area = install_scrollable_dialog_content(
+            self,
+            content,
+            minimum_width=720,
+            minimum_height=520,
+            content_minimum_width=760,
+        )
 
     def _read_changelog(self) -> str:
         path = changelog_path()

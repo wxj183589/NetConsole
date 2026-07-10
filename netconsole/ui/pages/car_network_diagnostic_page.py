@@ -73,6 +73,7 @@ from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.theme.qt_theme_engine import current_theme_mode, current_theme_tokens
+from netconsole.ui.widgets.table_combo_delegate import ComboBoxItemDelegate, combo_item_value
 from netconsole.ui.window_popup_service import show_non_focus_window
 
 
@@ -1150,6 +1151,16 @@ class PointTableDialog(QDialog):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.horizontalHeader().setFixedHeight(36)
+        for field, values in (
+            ("primary_address_role", MAPPING_ROLE_OPTIONS),
+            ("backup_address_role", MAPPING_ROLE_OPTIONS),
+            ("address_mapping_mode", MAPPING_MODE_OPTIONS),
+        ):
+            options = [(MAPPING_VALUE_LABELS[value], value) for value in values]
+            self.table.setItemDelegateForColumn(
+                POINT_TABLE_FIELDS.index(field),
+                ComboBoxItemDelegate(options, self.table),
+            )
 
         self.add_button = QPushButton("新增行")
         self.delete_button = QPushButton("删除行")
@@ -1211,6 +1222,7 @@ class PointTableDialog(QDialog):
 
         self.train_filter.currentIndexChanged.connect(self._apply_filter)
         self.node_type_filter.currentIndexChanged.connect(self._apply_filter)
+        self.table.itemChanged.connect(self._point_table_item_changed)
         self.lock_button.clicked.connect(self._toggle_locked)
         self.add_button.clicked.connect(self._add_row)
         self.delete_button.clicked.connect(self._delete_rows)
@@ -1348,11 +1360,6 @@ class PointTableDialog(QDialog):
         for combo in self.global_mapping_combos.values():
             combo.setEnabled(not self.locked)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers if self.locked else QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
-        for row in range(self.table.rowCount()):
-            for column in range(self.table.columnCount()):
-                widget = self.table.cellWidget(row, column)
-                if widget is not None:
-                    widget.setEnabled(not self.locked)
 
     def _guard_locked(self, action: str) -> bool:
         if not self.locked:
@@ -1392,18 +1399,14 @@ class PointTableDialog(QDialog):
                 values["address_mapping_mode"] = "custom" if values["address_mapping_mode"] in {"custom", "manual"} else "global"
                 for column, field in enumerate(POINT_TABLE_FIELDS):
                     if field in combo_options:
-                        combo = NoWheelComboBox()
-                        combo.setMinimumHeight(30)
-                        for value in combo_options[field]:
-                            combo.addItem(MAPPING_VALUE_LABELS[value], value)
+                        value = values[field]
+                        item = QTableWidgetItem(MAPPING_VALUE_LABELS.get(value, value))
+                        item.setData(Qt.UserRole, value)
                         if field == "primary_address_role":
-                            combo.setToolTip("主用地址映射 = 全部：将主用地址同时作为车内IP、落地IP和SSH地址。")
+                            item.setToolTip("主用地址映射 = 全部：将主用地址同时作为车内IP、落地IP和SSH地址。")
                         elif field == "backup_address_role":
-                            combo.setToolTip("备用地址映射 = 全部：将备用地址同时作为车内IP、落地IP和SSH地址，一般仅用于特殊站点。")
-                        combo.setCurrentIndex(max(0, combo.findData(values[field])))
-                        if field in {"primary_address_role", "backup_address_role"}:
-                            combo.currentIndexChanged.connect(lambda _index, row=row: self._mark_row_custom(row))
-                        self.table.setCellWidget(row, column, combo)
+                            item.setToolTip("备用地址映射 = 全部：将备用地址同时作为车内IP、落地IP和SSH地址，一般仅用于特殊站点。")
+                        self.table.setItem(row, column, item)
                     else:
                         item = QTableWidgetItem(values[field])
                         item.setToolTip(values[field])
@@ -1420,24 +1423,27 @@ class PointTableDialog(QDialog):
         for row in range(self.table.rowCount()):
             data: dict[str, object] = {}
             for column, field in enumerate(POINT_TABLE_FIELDS):
-                widget = self.table.cellWidget(row, column)
-                if isinstance(widget, QComboBox):
-                    data[field] = widget.currentData() or ""
-                else:
-                    item = self.table.item(row, column)
-                    data[field] = item.text() if item is not None else ""
+                item = self.table.item(row, column)
+                data[field] = combo_item_value(item) if field in {"primary_address_role", "backup_address_role", "address_mapping_mode"} else item.text() if item is not None else ""
             nodes.append(node_from_mapping(data))
         return nodes
 
+    def _point_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() in {
+            POINT_TABLE_FIELDS.index("primary_address_role"),
+            POINT_TABLE_FIELDS.index("backup_address_role"),
+        }:
+            self._mark_row_custom(item.row())
+
     def _mark_row_custom(self, row: int) -> None:
         mode_column = POINT_TABLE_FIELDS.index("address_mapping_mode")
-        widget = self.table.cellWidget(row, mode_column)
-        if isinstance(widget, QComboBox):
-            index = widget.findData("custom")
-            if index >= 0 and widget.currentData() != "custom":
-                widget.blockSignals(True)
-                widget.setCurrentIndex(index)
-                widget.blockSignals(False)
+        item = self.table.item(row, mode_column)
+        if item is None or combo_item_value(item) == "custom":
+            return
+        blocked = self.table.blockSignals(True)
+        item.setText(MAPPING_VALUE_LABELS["custom"])
+        item.setData(Qt.UserRole, "custom")
+        self.table.blockSignals(blocked)
 
     def _apply_filter(self) -> None:
         train_no = str(self.train_filter.currentData() or "")

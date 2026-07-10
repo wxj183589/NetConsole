@@ -2930,13 +2930,13 @@ SNMP_UI_FILL_BATCH_SIZE = 100
 
 
 def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
-    # 先按 UI 硬上限截断，再 setRowCount；完整查询/导出仍在后台或数据源侧完成，避免子页一次物化大表格。
+    # visible_rows 已硬限制且通过 QTimer 分批填充；完整查询结果由后台缓存供导出读取。
     visible_rows = rows[:SNMP_UI_ROW_LIMIT]
     table.setRowCount(len(visible_rows))
     generation = int(table.property("snmp_fill_generation") or 0) + 1
     table.setProperty("snmp_fill_generation", generation)
     table.clearContents()
-    limit_tip = f"仅显示前 {SNMP_UI_ROW_LIMIT} 条 SNMP 数据，请通过筛选或导出查看更大结果。" if len(rows) > len(visible_rows) else ""
+    limit_tip = f"当前仅显示前 {SNMP_UI_ROW_LIMIT} 条，请使用筛选缩小范围或导出完整结果。" if len(rows) > len(visible_rows) else ""
     if len(visible_rows) <= SNMP_UI_FILL_BATCH_SIZE:
         _fill_table_rows(table, visible_rows, 0, len(visible_rows))
         auto_fit_table_columns(table, max_rows=200, default_min_width=90, default_max_width=520)

@@ -23,8 +23,8 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output, _ping_args, parse_ping_output, run_single_ping, run_tcp_ping
 from netconsole.services.network_tools.toolbox.route_tools import normalize_routes, parse_powershell_routes_json
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, RouteInfo
-from netconsole.ui.pages.network_adapter_route_page import NetworkAdapterRoutePage
-from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, NetworkPingHostResult, NetworkToolboxPage, ToolResultPanel
+from netconsole.ui.pages.network_adapter_route_page import NetworkAdapterRoutePage, ROUTE_EDIT_WIDGET_ROW_LIMIT
+from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, NetworkPingHostResult, NetworkToolboxPage, TOOLBOX_RESULT_DISPLAY_LIMIT, ToolResultPanel
 
 
 def _app() -> QApplication:
@@ -293,7 +293,7 @@ def test_tool_result_panel_limits_visible_rows_and_caches_full_result(tmp_path) 
     panel.show_rows(rows, "large")
     _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
 
-    assert panel.result_table.rowCount() == 5000
+    assert panel.result_table.rowCount() == TOOLBOX_RESULT_DISPLAY_LIMIT
     assert panel.current_result_file is not None
     assert panel.current_result_file.is_file()
     assert len(panel.current_result_file.read_text(encoding="utf-8").splitlines()) == 5001
@@ -431,6 +431,30 @@ def test_ping_output_decode_uses_local_codepage_without_replacement() -> None:
 
     assert decoded == text
     assert "\ufffd" not in decoded
+
+
+def test_ping_output_decode_prefers_utf8_and_marks_final_replacement() -> None:
+    text = "网络连通"
+
+    assert _decode_output(text.encode("utf-8")) == text
+    assert "\ufffd" in _decode_output(b"\x81")
+
+
+def test_route_edit_cell_widgets_have_explicit_row_limit(tmp_path, monkeypatch) -> None:
+    _app()
+    page = NetworkAdapterRoutePage(
+        I18n(),
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+        manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})(),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr("netconsole.ui.pages.network_adapter_route_page.MessageBox.warning", lambda _parent, _title, message: warnings.append(message))
+    page.route_edit_table.setRowCount(ROUTE_EDIT_WIDGET_ROW_LIMIT)
+
+    page.add_route_row()
+
+    assert page.route_edit_table.rowCount() == ROUTE_EDIT_WIDGET_ROW_LIMIT
+    assert warnings and str(ROUTE_EDIT_WIDGET_ROW_LIMIT) in warnings[0]
 
 
 def test_fping_discovery_prefers_environment_path(tmp_path, monkeypatch) -> None:

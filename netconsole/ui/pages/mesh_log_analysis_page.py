@@ -1264,38 +1264,77 @@ class MeshLogAnalysisPage(QWidget):
         profile_start = perf_counter()
         app_logger.log_info("MESH_PROFILE_SYNC", f"rows={len(self.profiles)}")
         self.profile_by_id = {profile.mr_id: profile for profile in self.profiles}
-        sorting = self.mr_table.isSortingEnabled()
+        profiles = list(self.profiles)
+        generation = int(self.mr_table.property("mesh_profile_fill_generation") or 0) + 1
+        self.mr_table.setProperty("mesh_profile_fill_generation", generation)
+        restore_sorting = self.mr_table.property("mesh_profile_restore_sorting")
+        if restore_sorting is None:
+            restore_sorting = self.mr_table.isSortingEnabled()
+            self.mr_table.setProperty("mesh_profile_restore_sorting", bool(restore_sorting))
         sort_column = self.mr_table.horizontalHeader().sortIndicatorSection()
         sort_order = self.mr_table.horizontalHeader().sortIndicatorOrder()
         self.mr_table.setSortingEnabled(False)
         self._suppress_mr_selection = True
         blocker = QSignalBlocker(self.mr_table)
-        self.mr_table.setRowCount(len(self.profiles))
-        selected_row = -1
-        for row, profile in enumerate(self.profiles):
-            if current_id and profile.mr_id == current_id:
-                selected_row = row
-            values = [profile.display_name]
-            _set_row(self.mr_table, row, values, profile.mr_id)
+        self.mr_table.clearContents()
+        self.mr_table.setRowCount(len(profiles))
         del blocker
-        self.mr_table.setSortingEnabled(sorting)
-        if sorting and sort_column >= 0:
-            self.mr_table.sortItems(sort_column, sort_order)
-        if self.profiles:
-            target_id = current_id or self.profiles[0].mr_id
-            selected_row = self._find_mr_row(str(target_id))
-        if selected_row >= 0:
-            self.mr_table.selectRow(selected_row)
-            mr_id = self.mr_table.item(selected_row, 0).data(Qt.UserRole)
-            self._suppress_mr_selection = False
-            self._load_profile_by_id(str(mr_id))
-        else:
-            self._suppress_mr_selection = False
-            self.current_profile = None
-            self.current_source_file_id = None
-            self.current_source_file_name = None
-            self.refresh_current_mr_data(current_tab_only=True)
-        self._log_page_profile("refresh", profile_start, rows=len(self.profiles))
+
+        def fill_range(start: int, end: int) -> None:
+            self.mr_table.setUpdatesEnabled(False)
+            blocker = QSignalBlocker(self.mr_table)
+            try:
+                for row in range(start, end):
+                    profile = profiles[row]
+                    _set_row(self.mr_table, row, [profile.display_name], profile.mr_id)
+            finally:
+                del blocker
+                self.mr_table.setUpdatesEnabled(True)
+
+        def finish() -> None:
+            self.mr_table.setToolTip("")
+            sorting = bool(self.mr_table.property("mesh_profile_restore_sorting"))
+            self.mr_table.setProperty("mesh_profile_restore_sorting", None)
+            self.mr_table.setSortingEnabled(sorting)
+            if sorting and sort_column >= 0:
+                self.mr_table.sortItems(sort_column, sort_order)
+            selected_row = -1
+            if profiles:
+                target_id = current_id or profiles[0].mr_id
+                selected_row = self._find_mr_row(str(target_id))
+            if selected_row >= 0:
+                self.mr_table.selectRow(selected_row)
+                mr_id = self.mr_table.item(selected_row, 0).data(Qt.UserRole)
+                self._suppress_mr_selection = False
+                self._load_profile_by_id(str(mr_id))
+            else:
+                self._suppress_mr_selection = False
+                self.current_profile = None
+                self.current_source_file_id = None
+                self.current_source_file_name = None
+                self.refresh_current_mr_data(current_tab_only=True)
+            self._log_page_profile("refresh", profile_start, rows=len(profiles))
+
+        if len(profiles) <= 200:
+            fill_range(0, len(profiles))
+            finish()
+            return
+
+        def fill_next(start: int = 0) -> None:
+            try:
+                if int(self.mr_table.property("mesh_profile_fill_generation") or 0) != generation:
+                    return
+                end = min(start + 100, len(profiles))
+                fill_range(start, end)
+                if end < len(profiles):
+                    QTimer.singleShot(0, lambda: fill_next(end))
+                    return
+                finish()
+            except RuntimeError:
+                return
+
+        self.mr_table.setToolTip(f"正在分批显示 {len(profiles)} 个 MR 对象")
+        QTimer.singleShot(0, fill_next)
 
     def refresh_profiles(self, select_mr_id: str | None = None) -> None:
         self.refresh_all(select_mr_id)

@@ -35,6 +35,7 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_widget_content
 from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.state_engine import display_optical_status
@@ -208,10 +209,17 @@ class FitApDetailDialog(QWidget):
         self.tabs.addTab(self.optical_tab, "")
         self.tabs.addTab(self.raw_fields_tab, "")
 
-        layout = QVBoxLayout()
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.addLayout(top)
         layout.addWidget(self.tabs, 1)
-        self.setLayout(layout)
+        self.scroll_area = install_scrollable_widget_content(
+            self,
+            content,
+            minimum_width=760,
+            minimum_height=520,
+            content_minimum_width=840,
+        )
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.save_button.clicked.connect(self.save_metadata)
         self.radio_history_button.clicked.connect(lambda: self.open_history("radio"))

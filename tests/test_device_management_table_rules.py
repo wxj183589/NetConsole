@@ -27,7 +27,6 @@ from netconsole.services.external_terminal import (
 from netconsole.services.netmiko_connection import ConnectionTarget, choose_connection_target
 from netconsole.services.securecrt_session_export import export_securecrt_sessions, sanitize_path_part
 from netconsole.ui.theme.qt_theme_engine import apply_theme
-from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, open_diagnostic_folder_for_results, select_device_id_for_connection
@@ -331,8 +330,10 @@ def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monk
     second.write_text("second", encoding="utf-8")
     opened = []
 
-    monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.setattr("os.startfile", lambda path: opened.append(path), raising=False)
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toLocalFile()) or True,
+    )
 
     result = open_diagnostic_folder_for_results(
         [
@@ -356,7 +357,7 @@ def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monk
     )
 
     assert result is True
-    assert opened == [str(diagnostic_dir)]
+    assert [Path(path) for path in opened] == [diagnostic_dir]
 
 
 def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
@@ -368,12 +369,10 @@ def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
     diagnostic_file = diagnostic_dir / "SW01_diag_20260618_101200.txt"
     diagnostic_file.write_text("first", encoding="utf-8")
 
-    monkeypatch.setattr("platform.system", lambda: "Windows")
-
-    def fail_open(_path):
+    def fail_open(_url):
         raise OSError("cannot open")
 
-    monkeypatch.setattr("os.startfile", fail_open, raising=False)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.QDesktopServices.openUrl", fail_open)
 
     result = open_diagnostic_folder_for_results(
         [
@@ -423,56 +422,51 @@ def test_double_click_row_does_not_call_edit_callback():
     assert edited == []
 
 
-def test_row_edit_button_calls_edit_callback():
+def test_row_edit_menu_action_calls_edit_callback():
     table = make_table()
     edited = []
     table.edit_requested.connect(lambda device_id: edited.append(device_id))
 
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
-    buttons[2].click()
+    menu = table.action_menu_for_device(1)
+    menu.actions()[2].trigger()
 
     assert edited == [1]
 
 
-def test_row_action_buttons_include_connection_edit_and_delete():
+def test_row_action_menu_includes_connection_edit_and_delete():
     table = make_table()
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
+    menu = table.action_menu_for_device(1)
 
-    assert [button.text() for button in buttons] == ["Details", "External Terminal", "Edit", "Delete"]
+    assert [action.text() for action in menu.actions()] == ["Details", "External Terminal", "Edit", "Delete"]
+    assert table.cellWidget(0, table._column_index("actions")) is None
 
 
-def test_row_external_terminal_button_calls_single_device_callback():
+def test_row_external_terminal_menu_action_calls_single_device_callback():
     table = make_table()
     requested = []
     table.external_terminal_requested.connect(lambda device_id: requested.append(device_id))
 
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
-    buttons[1].click()
+    menu = table.action_menu_for_device(1)
+    menu.actions()[1].trigger()
 
     assert requested == [1]
 
 
-def test_row_action_buttons_include_chinese_connection_text():
+def test_row_action_menu_includes_chinese_detail_text():
     app()
     table = DeviceTable(I18n("zh_CN"))
     table.set_devices([Device(id=1, name="A")])
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
+    menu = table.action_menu_for_device(1)
 
-    assert buttons[0].text() == "\u8be6\u60c5"
-
+    assert menu.actions()[0].text() == "\u8be6\u60c5"
 
 
-def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
+
+def test_device_table_columns_keep_readable_widths_without_cell_widgets():
     table = make_table()
     action_column = table._column_index("actions")
-    action_widget = table.cellWidget(0, action_column)
-    buttons = action_widget.findChildren(QPushButton)
 
-    assert table.columnWidth(action_column) == ACTION_COLUMN_WIDTH
+    assert table.columnWidth(action_column) == DEVICE_COLUMN_WIDTHS["actions"]
     assert table.horizontalHeader().sectionResizeMode(action_column) == QHeaderView.Interactive
     assert table.horizontalHeader().stretchLastSection() is False
     assert table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
@@ -480,18 +474,10 @@ def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
     assert table.columnWidth(table._column_index("name")) == DEVICE_COLUMN_WIDTHS["name"]
     assert table.columnWidth(table._column_index("primary_address")) == DEVICE_COLUMN_WIDTHS["primary_address"]
     assert isinstance(table.itemDelegateForColumn(CHECK_COLUMN), CheckBoxOnlyDelegate)
-    assert action_widget.layout().spacing() == 6
-    assert action_widget.layout().contentsMargins().left() == 0
-    assert action_widget.layout().contentsMargins().top() == 0
-    assert action_widget.layout().alignment() == Qt.AlignCenter
-    assert [button.objectName() for button in buttons] == ["tableActionButton", "tableActionButton", "tableActionButton", "tableActionButton"]
-    assert all(button.minimumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
-    assert all(button.maximumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
-    assert ACTION_BUTTON_HEIGHT == 28
+    assert table.cellWidget(0, action_column) is None
+    assert table.item(0, action_column).data(Qt.UserRole) == 1
     assert table.verticalHeader().defaultSectionSize() == 36
     assert table.rowHeight(0) == 36
-    assert action_widget.minimumHeight() == 36
-    assert action_widget.maximumHeight() == 36
 
 
 def test_checkbox_click_adds_and_removes_selected_device_id():
@@ -536,9 +522,15 @@ class PageRepository:
         self.devices = [device for device in self.devices if device.id != device_id]
 
 
-def test_batch_delete_button_tracks_selected_device_ids():
+def test_batch_delete_button_tracks_selected_device_ids(monkeypatch):
     app()
-    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.BackgroundProcessManager.start_job",
+        lambda _manager, _job: "test-device-refresh",
+    )
+    repository = PageRepository()
+    page = DeviceManagementPage(repository, I18n("en_US"))
+    page.table.set_devices(repository.devices)
 
     assert page.batch_delete_button.isEnabled() is False
 

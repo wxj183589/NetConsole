@@ -21,6 +21,7 @@ from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.state_engine import compute_state, STATUS_COLORS
 from netconsole.models.device import Device
+from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import parse_fit_ap_lldp_neighbor
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver, parse_fit_ap_transceiver_diagnosis_snapshots
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
@@ -2031,6 +2032,25 @@ def test_mesh_report_generation_button_is_available(tmp_path, monkeypatch):
     assert page.feature_gate.is_enabled("mesh.generate_report")
     assert messages == []
     assert page.report_worker is None
+
+
+def test_mesh_profile_table_fills_large_profile_list_in_batches(tmp_path, monkeypatch):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = MeshLogAnalysisPage(context.repository, I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.profiles = [
+        MeshMrProfile(str(index), f"MR-{index:03d}", f"mr-{index:03d}", f"mr-{index:03d}")
+        for index in range(250)
+    ]
+    loaded: list[str] = []
+    monkeypatch.setattr(page, "_load_profile_by_id", loaded.append)
+
+    page._apply_profiles(None)
+    process_events_until(lambda: page.mr_table.item(249, 0) is not None)
+
+    assert page.mr_table.rowCount() == 250
+    assert page.mr_table.item(249, 0).text() == "MR-249"
+    assert loaded == ["0"]
 
 
 def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_resource_history():
@@ -6137,6 +6157,9 @@ def test_station_online_history_dialog_columns_and_filter(tmp_path):
     dialog = StationOnlineHistoryDialog(I18n("en_US"), rows, "Station A")
 
     assert STATION_ONLINE_HISTORY_COLUMNS[-1] == ("field.remark", "remark")
+    assert dialog.scroll_area.widgetResizable() is True
+    assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert dialog.table.columnCount() == 7
     assert [dialog.table.horizontalHeaderItem(column).text() for column in range(dialog.table.columnCount())] == [
         "Collected At",
@@ -6459,6 +6482,9 @@ def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):
     assert dialog.windowTitle() == "AP Details - ap-a"
     assert dialog.minimumWidth() == 760
     assert dialog.minimumHeight() == 520
+    assert dialog.scroll_area.widgetResizable() is True
+    assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert dialog.tabs.count() == 6
     assert FIT_AP_DETAIL_TABS == ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
     assert dialog.tabs.currentWidget() is dialog.basic_tab

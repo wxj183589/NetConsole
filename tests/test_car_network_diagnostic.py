@@ -1089,12 +1089,14 @@ def test_point_table_dialog_uses_chinese_headers_and_keeps_internal_mapping_valu
     _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
     header_labels = [dialog.table.horizontalHeaderItem(column).text() for column in range(dialog.table.columnCount())]
     role_column = header_labels.index("主用地址映射")
-    combo = dialog.table.cellWidget(0, role_column)
+    role_item = dialog.table.item(0, role_column)
 
     assert "station" not in header_labels
     assert "primary_address" not in header_labels
     assert "归属站点" in header_labels
-    assert combo.currentText() == "车内IP"
+    assert dialog.table.cellWidget(0, role_column) is None
+    assert role_item.text() == "车内IP"
+    assert role_item.data(Qt.UserRole) == "vehicle_ip"
     assert dialog._rows_to_nodes()[0].primary_address_role == "vehicle_ip"
 
 
@@ -1144,12 +1146,11 @@ def test_point_table_role_combo_supports_all_internal_value(tmp_path: Path) -> N
     dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
     _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
     role_column = car_diag.POINT_TABLE_FIELDS.index("primary_address_role")
-    combo = dialog.table.cellWidget(0, role_column)
-    assert combo is not None
+    role_item = dialog.table.item(0, role_column)
 
-    labels = [combo.itemText(index) for index in range(combo.count())]
-    assert "全部" in labels
-    assert combo.currentText() == "全部"
+    assert dialog.table.cellWidget(0, role_column) is None
+    assert role_item.text() == "全部"
+    assert role_item.data(Qt.UserRole) == "all"
     assert dialog._rows_to_nodes()[0].primary_address_role == "all"
 
 
