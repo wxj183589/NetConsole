@@ -39,6 +39,11 @@ from netconsole.models.online_mr_models import (
     OnlineMrStats,
 )
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text, summarize_active
+from netconsole.services.online_mr.collection_commands import (
+    NORMAL_DISPLAY_PREPARE_COMMANDS,
+    PROBE_STREAM_PREPARE_COMMANDS,
+    stream_prepare_commands,
+)
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
 from netconsole.services.netmiko_connection import (
     ConnectionTarget,
@@ -68,8 +73,6 @@ class OnlineMrConnectionError(RuntimeError):
     pass
 
 
-NORMAL_DISPLAY_PREPARE_COMMANDS: tuple[str, ...] = ("screen-length disable",)
-PROBE_STREAM_PREPARE_COMMANDS: tuple[str, ...] = ("screen-length disable", "system-view", "probe")
 STREAM_PREPARE_COMMANDS: tuple[str, ...] = NORMAL_DISPLAY_PREPARE_COMMANDS
 PREPARE_FAILURE_MARKERS: tuple[str, ...] = (
     "% unrecognized command",
@@ -77,12 +80,6 @@ PREPARE_FAILURE_MARKERS: tuple[str, ...] = (
     "permission denied",
     "error:",
 )
-
-
-def stream_prepare_commands(task_type: str) -> tuple[str, ...]:
-    if task_type in {TASK_CHANNEL_BUSY, TASK_AP_RADIO_STATISTICS, TASK_WIRELESS_STATUS}:
-        return PROBE_STREAM_PREPARE_COMMANDS
-    return NORMAL_DISPLAY_PREPARE_COMMANDS
 
 
 class NetmikoShellConnection(OnlineMrConnection):
@@ -478,15 +475,19 @@ class OnlineMrCollector:
         self,
         snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
         stream_event_callback: Callable[[OnlineMrEvent], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         try:
             if self.session is None:
                 self.start()
             self._stream_event_callback = stream_event_callback
             if self._uses_default_connection_factory:
-                self._run_streaming_collectors(snapshot_callback)
+                self._run_streaming_collectors(snapshot_callback, should_cancel)
                 return
             while not self.cancelled:
+                if should_cancel is not None and should_cancel():
+                    self.request_stop()
+                    break
                 self.run_due_tasks()
                 if snapshot_callback and self.latest_snapshot is not None:
                     snapshot_callback(self.latest_snapshot)
@@ -699,7 +700,11 @@ class OnlineMrCollector:
             return repeat_command_group(task_type, interval=intervals.mesh_link)
         return repeat_command_group(task_type, interval=intervals.switch_history)
 
-    def _run_streaming_collectors(self, snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None) -> None:
+    def _run_streaming_collectors(
+        self,
+        snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> None:
         if self.cancelled or self._stream_stop.is_set():
             return
         self._streaming_mode = True
@@ -722,6 +727,9 @@ class OnlineMrCollector:
             if task_type in enabled:
                 self._start_repeat_thread(task_type)
         while not self.cancelled:
+            if should_cancel is not None and should_cancel():
+                self.request_stop()
+                break
             if TASK_SWITCH_HISTORY in enabled:
                 for task in self.scheduler.due_tasks(self.clock()):
                     if task == TASK_SWITCH_HISTORY:

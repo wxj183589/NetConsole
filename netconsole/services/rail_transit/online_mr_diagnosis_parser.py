@@ -29,7 +29,7 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_sampling_model_v7_time_alignment"
+PARSER_VERSION = "online_mr_sampling_model_v8_iperf_time_alignment"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -1349,7 +1349,16 @@ class OnlineMrDiagnosisParser:
         run_id = f"parsed_{self.meta.session_id}"
         command = ["iperf3", "parsed"]
         store.start_run(run_id, mode="client", command=command, log_file=path, started_at=self.meta.started_at, session_id=self.meta.session_id, device_id=self.meta.device_id)
+        sync_samples = self._load_time_sync_samples()
         for row in rows:
+            local_time = self._parse_iso_datetime(row.get("interval_center_time") or row.get("collector_time")) or self.meta.started_at
+            device_dt, clock_offset_ms, offset_source = estimate_device_time_from_local(local_time, sync_samples)
+            device_time = device_dt.isoformat(sep=" ", timespec="milliseconds") if device_dt is not None else None
+            row["device_interval_center_time"] = device_time
+            row["device_aligned_time"] = device_time
+            row["clock_offset_ms"] = clock_offset_ms
+            row["offset_source"] = offset_source
+            row["time_source"] = "mr_device_clock_aligned" if device_dt is not None else "local_tool"
             row["raw_line"] = self._iperf_interval_summary(row)
             store.append_interval(run_id, row, self.meta.session_id)
         store.finish_run(run_id, "PARSED")
@@ -1540,6 +1549,11 @@ class OnlineMrDiagnosisParser:
                     interval_start_sec REAL,
                     interval_end_sec REAL,
                     interval_center_time TEXT,
+                    device_aligned_time TEXT,
+                    device_interval_center_time TEXT,
+                    clock_offset_ms REAL,
+                    offset_source TEXT,
+                    time_source TEXT,
                     transfer_bytes REAL,
                     bitrate_mbps REAL,
                     retransmits INTEGER,
@@ -2045,7 +2059,9 @@ class OnlineMrTimelineFusionService:
         iperf = conn.execute(
             """
             SELECT COUNT(*) sample_count, AVG(bitrate_mbps), MIN(bitrate_mbps), MAX(bitrate_mbps), SUM(retransmits)
-            FROM iperf_intervals WHERE interval_center_time >= ? AND interval_center_time < ?
+            FROM iperf_intervals
+            WHERE COALESCE(NULLIF(device_interval_center_time, ''), NULLIF(device_aligned_time, ''), interval_center_time, collector_time) >= ?
+              AND COALESCE(NULLIF(device_interval_center_time, ''), NULLIF(device_aligned_time, ''), interval_center_time, collector_time) < ?
             """,
             (start_time, end_time),
         ).fetchone()

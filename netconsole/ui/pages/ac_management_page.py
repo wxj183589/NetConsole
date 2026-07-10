@@ -95,7 +95,7 @@ from netconsole.services.export.export_task_builders import (
 from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
-from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, AcResourceCollectThread, FitApOpticalCollectThread
+from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, FitApOpticalCollectThread
 from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
@@ -599,12 +599,12 @@ class AcManagementPage(QWidget):
         self.background_manager.progress.connect(self._background_progress)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
-        self.background_manager.cancelled.connect(self._background_failed)
+        self.background_manager.cancelled.connect(self._background_cancelled)
         self._background_jobs: dict[str, dict[str, object]] = {}
         self._transient_https_ports: dict[str, int] = {}
         self._status_after_resource_refresh = ""
         self.ac_devices: list[Device] = []
-        self.resource_thread: AcResourceCollectThread | None = None
+        self.resource_job_id: str | None = None
         self.ac_info_thread: AcInfoCollectThread | None = None
         self.action_thread: AcCommandActionThread | None = None
         self.optical_thread: FitApOpticalCollectThread | None = None
@@ -614,6 +614,7 @@ class AcManagementPage(QWidget):
         self.trackside_export_manager.progress.connect(self._handle_trackside_export_progress)
         self.trackside_export_manager.finished.connect(self._finish_trackside_export)
         self.trackside_export_manager.failed.connect(self._fail_trackside_export)
+        self.trackside_export_manager.cancelled.connect(self._fail_trackside_export)
         app_events.ac_summary_changed.connect(self._handle_ac_summary_changed)
         self.detail_windows: list[FitApDetailDialog] = []
         self.optical_rows: list[dict[str, object | None]] = []
@@ -1469,8 +1470,8 @@ class AcManagementPage(QWidget):
         self.status_label.setText(message)
 
     def cancel_current_update(self) -> None:
-        if self.resource_thread is not None and self.resource_thread.isRunning():
-            self.resource_thread.cancel()
+        if self.resource_job_id is not None:
+            self.background_manager.cancel_job(self.resource_job_id)
         if self.ac_info_thread is not None and self.ac_info_thread.isRunning():
             self.ac_info_thread.cancel()
         if self.action_thread is not None and self.action_thread.isRunning():
@@ -1508,13 +1509,18 @@ class AcManagementPage(QWidget):
             MessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
             return
         self._set_update_running(True, self.i18n.t("ac.updating_resources"))
-        self.resource_thread = AcResourceCollectThread(device, self.site_name, parent=self)
-        self.resource_thread.progress.connect(self._set_update_progress)
-        self.resource_thread.collect_finished.connect(self._finish_resource_collect)
-        self.resource_thread.collect_failed.connect(self._fail_resource_collect)
-        self.resource_thread.finished.connect(self.resource_thread.deleteLater)
-        self.resource_thread.finished.connect(lambda: setattr(self, "resource_thread", None))
-        self.resource_thread.start()
+        self.resource_job_id = self._start_background_job(
+            "ac_fit_ap_resources_refresh",
+            {
+                "mode": "collect",
+                "source": "auto",
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "_cancel_grace_ms": 15000,
+            },
+            title=self.i18n.t("ac.fit_ap_resources"),
+        )
 
     def refresh_ac_info(self) -> None:
         self.feature_gate.assert_enabled("ac.ac_info_update")
@@ -1825,7 +1831,8 @@ class AcManagementPage(QWidget):
         }
         if task_type not in write_tasks:
             for context in self._background_jobs.values():
-                if str(context.get("task_type") or "") == task_type:
+                same_mode = task_type != "ac_fit_ap_resources_refresh" or str(context.get("mode") or "load") == str(params.get("mode") or "load")
+                if str(context.get("task_type") or "") == task_type and same_mode:
                     self.status_label.setText(f"{title}：后台处理中...")
                     return str(context.get("job_id") or "")
         job_id = uuid.uuid4().hex
@@ -1912,10 +1919,23 @@ class AcManagementPage(QWidget):
             self._finish_overview_refresh(result)
             return
         if task_type == "ac_fit_ap_resources_refresh":
+            is_collect = str(context.get("mode") or "load") == "collect"
+            if is_collect:
+                self.resource_job_id = None
+                self._set_update_running(False)
             if str(result.get("ac_uuid") or "") != self.current_device_uuid():
                 return
             self._set_summary(dict(result.get("summary") or {}) or None)
             self._apply_resource_rows([dict(row) for row in result.get("resources") or [] if isinstance(row, dict)])
+            if is_collect:
+                collection = dict(result.get("collection") or {})
+                resource_count = int(collection.get("fit_ap_resources_updated") or 0)
+                unauth_count = int(collection.get("unauthenticated_rows_updated") or 0)
+                source = "SNMP" if str(collection.get("source") or "") == "snmp" else "CLI"
+                self._status_after_resource_refresh = f"FIT-AP资源更新完成（{source}）：资源 {resource_count} 条；新上线AP {unauth_count} 条"
+                self.status_label.setText(self._status_after_resource_refresh)
+                self.refresh_devices()
+                return
             self.status_label.setText(f"{title}：完成，共 {len(self.resource_rows)} 条")
             if self._status_after_resource_refresh:
                 self.status_label.setText(self._status_after_resource_refresh)
@@ -1958,12 +1978,23 @@ class AcManagementPage(QWidget):
     def _background_failed(self, event: dict) -> None:
         job_id = str(event.get("job_id") or "")
         context = self._background_jobs.pop(job_id, {})
+        if str(context.get("task_type") or "") == "ac_fit_ap_resources_refresh" and str(context.get("mode") or "load") == "collect":
+            self.resource_job_id = None
+            self._set_update_running(False)
         title = str(context.get("title") or "后台任务")
         message = str(event.get("message") or event.get("error") or "后台任务失败")
         if "Unsupported AP metadata template header" in message:
             message = self.i18n.t("ap.metadata_template_unsupported")
         self.status_label.setText(f"{title}：失败")
         MessageBox.warning(self, title, message)
+
+    def _background_cancelled(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self._background_jobs.pop(job_id, {})
+        if str(context.get("task_type") or "") == "ac_fit_ap_resources_refresh" and str(context.get("mode") or "load") == "collect":
+            self.resource_job_id = None
+            self._set_update_running(False)
+        self.status_label.setText(self.i18n.t("ac.update_cancelled"))
 
     def _confirm_ap_extension_import(self, title: str, context: dict[str, object], preview: dict[str, object]) -> None:
         summary = dict(preview.get("summary") or {})
@@ -2448,12 +2479,12 @@ class AcManagementPage(QWidget):
             MessageBox.warning(self, self.i18n.t("trackside.export"), f"导出失败：{exc}")
 
     def _set_trackside_export_running(self, running: bool, message: str = "") -> None:
-        self.update_progress.setVisible(running or self.resource_thread is not None or self.optical_thread is not None)
+        self.update_progress.setVisible(running or self.resource_job_id is not None or self.optical_thread is not None)
         if running:
             self.update_progress.setRange(0, 0)
             self.update_progress.setValue(0)
         self.trackside_export_button.setEnabled(not running)
-        self.refresh_button.setEnabled(not running and self.resource_thread is None and self.optical_thread is None)
+        self.refresh_button.setEnabled(not running and self.resource_job_id is None and self.optical_thread is None)
         if message:
             self.status_label.setText(message)
 
@@ -2673,7 +2704,7 @@ class AcManagementPage(QWidget):
             menu.addAction(refresh_ap)
             menu.addAction(open_terminal)
             menu.addAction(detail)
-        refresh_ap.setEnabled(row >= 0 and self.optical_thread is None and self.resource_thread is None)
+        refresh_ap.setEnabled(row >= 0 and self.optical_thread is None and self.resource_job_id is None)
         open_terminal.setEnabled(row >= 0)
         detail.setEnabled(row >= 0)
         refresh_ap.triggered.connect(lambda: self.refresh_resource_ap_optical(row))

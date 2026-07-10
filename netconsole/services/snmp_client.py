@@ -30,18 +30,18 @@ class SnmpClient:
         request = SnmpQueryRequest(profile=profile, method="GetNext", oid=normalize_oid(oid), save_history=False)
         return self._single(request, pdu_type=0xA1)
 
-    def get_bulk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10) -> SnmpQueryResult:
+    def get_bulk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10, non_repeaters: int = 0) -> SnmpQueryResult:
         if profile.version.lower() == "v1":
-            request = SnmpQueryRequest(profile=profile, method="GetBulk", oid=normalize_oid(oid), max_repetitions=max_repetitions, save_history=False)
+            request = SnmpQueryRequest(profile=profile, method="GetBulk", oid=normalize_oid(oid), max_repetitions=max_repetitions, non_repeaters=non_repeaters, save_history=False)
             return SnmpQueryResult(request=request, status="unsupported", error_message="SNMPv1 不支持 GetBulk，请使用 GetNext 或 Walk。")
-        request = SnmpQueryRequest(profile=profile, method="GetBulk", oid=normalize_oid(oid), max_repetitions=max_repetitions, save_history=False)
-        return self._bulk(request, request.oid, max_repetitions=max_repetitions)
+        request = SnmpQueryRequest(profile=profile, method="GetBulk", oid=normalize_oid(oid), max_repetitions=max_repetitions, non_repeaters=non_repeaters, save_history=False)
+        return self._bulk(request, request.oid, max_repetitions=max_repetitions, non_repeaters=non_repeaters)
 
-    def get_subtree(self, profile: SnmpProfile, oid: str, *, max_rows: int = 200, cancel_checker=None) -> SnmpQueryResult:
-        result = self.walk(profile, oid, max_rows=max_rows, cancel_checker=cancel_checker)
+    def get_subtree(self, profile: SnmpProfile, oid: str, *, max_rows: int = 200, cancel_checker=None, progress_callback=None) -> SnmpQueryResult:
+        result = self.walk(profile, oid, max_rows=max_rows, cancel_checker=cancel_checker, progress_callback=progress_callback)
         return SnmpQueryResult(request=SnmpQueryRequest(profile=profile, method="GetSubtree", oid=normalize_oid(oid), max_rows=max_rows, save_history=False), rows=result.rows, status=result.status, error_message=result.error_message, elapsed_ms=result.elapsed_ms)
 
-    def walk(self, profile: SnmpProfile, oid: str, *, max_rows: int = 200, cancel_checker=None) -> SnmpQueryResult:
+    def walk(self, profile: SnmpProfile, oid: str, *, max_rows: int = 200, cancel_checker=None, progress_callback=None) -> SnmpQueryResult:
         root = normalize_oid(oid)
         request = SnmpQueryRequest(profile=profile, method="Walk", oid=root, max_rows=max_rows, save_history=False)
         started = time.perf_counter()
@@ -71,6 +71,8 @@ class SnmpClient:
                     error = empty_walk_message(root)
                 break
             rows.append(row)
+            if progress_callback is not None:
+                progress_callback(len(rows), limit)
             current = row.oid
         else:
             if rows:
@@ -78,11 +80,11 @@ class SnmpClient:
         elapsed = int((time.perf_counter() - started) * 1000)
         return SnmpQueryResult(request=request, rows=rows, status=status, error_message=error, elapsed_ms=elapsed)
 
-    def bulk_walk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10, max_rows: int = 200, cancel_checker=None) -> SnmpQueryResult:
+    def bulk_walk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10, non_repeaters: int = 0, max_rows: int = 200, cancel_checker=None, progress_callback=None) -> SnmpQueryResult:
         if profile.version.lower() == "v1":
-            return self.walk(profile, oid, max_rows=max_rows, cancel_checker=cancel_checker)
+            return self.walk(profile, oid, max_rows=max_rows, cancel_checker=cancel_checker, progress_callback=progress_callback)
         root = normalize_oid(oid)
-        request = SnmpQueryRequest(profile=profile, method="BulkWalk", oid=root, max_repetitions=max_repetitions, max_rows=max_rows, save_history=False)
+        request = SnmpQueryRequest(profile=profile, method="BulkWalk", oid=root, max_repetitions=max_repetitions, non_repeaters=non_repeaters, max_rows=max_rows, save_history=False)
         started = time.perf_counter()
         rows: list[SnmpVarBind] = []
         current = root
@@ -94,7 +96,7 @@ class SnmpClient:
                 status = "cancelled"
                 error = "查询已取消。"
                 break
-            result = self._bulk(request, current, max_repetitions=max_repetitions)
+            result = self._bulk(request, current, max_repetitions=max_repetitions, non_repeaters=non_repeaters)
             if result.status != "success" and not result.rows:
                 status = result.status
                 error = result.error_message
@@ -111,6 +113,8 @@ class SnmpClient:
                     advanced = False
                     break
                 rows.append(row)
+                if progress_callback is not None:
+                    progress_callback(len(rows), limit)
                 current = row.oid
                 advanced = True
                 if len(rows) >= limit:
@@ -125,9 +129,9 @@ class SnmpClient:
         elapsed = int((time.perf_counter() - started) * 1000)
         return SnmpQueryResult(request=request, rows=rows, status=status, error_message=error, elapsed_ms=elapsed)
 
-    def table_walk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10, max_rows: int = 500, cancel_checker=None) -> SnmpQueryResult:
-        result = self.bulk_walk(profile, oid, max_repetitions=max_repetitions, max_rows=max_rows, cancel_checker=cancel_checker)
-        return SnmpQueryResult(request=SnmpQueryRequest(profile=profile, method="Table Walk", oid=normalize_oid(oid), max_repetitions=max_repetitions, max_rows=max_rows, save_history=False), rows=result.rows, status=result.status, error_message=result.error_message, elapsed_ms=result.elapsed_ms)
+    def table_walk(self, profile: SnmpProfile, oid: str, *, max_repetitions: int = 10, non_repeaters: int = 0, max_rows: int = 500, cancel_checker=None, progress_callback=None) -> SnmpQueryResult:
+        result = self.bulk_walk(profile, oid, max_repetitions=max_repetitions, non_repeaters=non_repeaters, max_rows=max_rows, cancel_checker=cancel_checker, progress_callback=progress_callback)
+        return SnmpQueryResult(request=SnmpQueryRequest(profile=profile, method="Table Walk", oid=normalize_oid(oid), max_repetitions=max_repetitions, non_repeaters=non_repeaters, max_rows=max_rows, save_history=False), rows=result.rows, status=result.status, error_message=result.error_message, elapsed_ms=result.elapsed_ms)
 
     def set_value(self, request: SnmpSetRequest) -> SnmpSetResult:
         started = time.perf_counter()
@@ -193,10 +197,13 @@ class SnmpClient:
         rows = [SnmpVarBind(oid=row.oid, value=row.value, value_type=row.value_type, decoded_value=str(row.value), latency_ms=elapsed, status=row.status, error_message=row.error_message) for row in response.varbinds]
         return SnmpQueryResult(request=request, rows=rows, status=status, error_message=error, elapsed_ms=elapsed)
 
-    def _bulk(self, request: SnmpQueryRequest, oid: str, *, max_repetitions: int) -> SnmpQueryResult:
+    def _bulk(self, request: SnmpQueryRequest, oid: str, *, max_repetitions: int, non_repeaters: int = 0) -> SnmpQueryResult:
         started = time.perf_counter()
         try:
-            response = _SnmpWireClient(request.profile).request([oid], pdu_type=0xA5, max_repetitions=max_repetitions)
+            options = {"pdu_type": 0xA5, "max_repetitions": max_repetitions}
+            if non_repeaters:
+                options["non_repeaters"] = non_repeaters
+            response = _SnmpWireClient(request.profile).request([oid], **options)
         except TimeoutError:
             return SnmpQueryResult(request=request, status="timeout", error_message="SNMP BulkWalk 请求超时。", elapsed_ms=int((time.perf_counter() - started) * 1000))
         except Exception as exc:
@@ -233,9 +240,9 @@ class _SnmpWireClient:
         self.profile = profile
         self.version_number = 0 if profile.version.lower() == "v1" else 1
 
-    def request(self, oids: list[str], *, pdu_type: int, max_repetitions: int = 10) -> _WireResponse:
+    def request(self, oids: list[str], *, pdu_type: int, max_repetitions: int = 10, non_repeaters: int = 0) -> _WireResponse:
         request_id = randint(1, 2**31 - 1)
-        packet = self._build_packet(oids, request_id, pdu_type=pdu_type, max_repetitions=max_repetitions)
+        packet = self._build_packet(oids, request_id, pdu_type=pdu_type, max_repetitions=max_repetitions, non_repeaters=non_repeaters)
         timeout = max(0.1, self.profile.timeout_ms / 1000)
         attempts = max(1, int(self.profile.retries) + 1)
         last_timeout = False
@@ -274,12 +281,12 @@ class _SnmpWireClient:
             raise TimeoutError("SNMP timeout")
         raise RuntimeError("SNMP Set request failed")
 
-    def _build_packet(self, oids: list[str], request_id: int, *, pdu_type: int, max_repetitions: int, encoded_values: list[bytes] | None = None, community: str | None = None) -> bytes:
+    def _build_packet(self, oids: list[str], request_id: int, *, pdu_type: int, max_repetitions: int, non_repeaters: int = 0, encoded_values: list[bytes] | None = None, community: str | None = None) -> bytes:
         values = encoded_values or [_null() for _ in oids]
         varbinds = b"".join(_seq(_oid(oid) + value) for oid, value in zip(oids, values))
         varbind_list = _seq(varbinds)
         if pdu_type == 0xA5:
-            pdu_body = _int(request_id) + _int(0) + _int(max(1, int(max_repetitions))) + varbind_list
+            pdu_body = _int(request_id) + _int(max(0, int(non_repeaters))) + _int(max(1, int(max_repetitions))) + varbind_list
         else:
             pdu_body = _int(request_id) + _int(0) + _int(0) + varbind_list
         pdu = bytes([pdu_type]) + _len(len(pdu_body)) + pdu_body

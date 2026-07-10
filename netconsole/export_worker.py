@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
 import traceback
+from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,12 +17,14 @@ from netconsole.services.export import error_event, finished_event, progress_eve
 from netconsole.services.export.export_handlers import GENERIC_EXPORT_TASK_TYPES, run_generic_export_handler
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.mesh_link_detail_export import MeshLinkDetailExportCancelled, export_mesh_link_details_xlsx
+from netconsole.services.job_center.job_events import log_event
+from netconsole.services.job_center.worker_protocol import write_event
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
 from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_database
 
 
 def _emit(event: dict[str, Any]) -> None:
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    write_event(event)
 
 
 def _emit_progress(job: ExportJob, current: int, total: int, stage: str, message: str | None = None) -> None:
@@ -122,6 +126,12 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
 
 
 def run_job(job: ExportJob) -> int:
+    diagnostics = sys.stderr or getattr(sys, "__stderr__", None) or io.StringIO()
+    with redirect_stdout(diagnostics):
+        return _run_job(job)
+
+
+def _run_job(job: ExportJob) -> int:
     try:
         if job.job_type in GENERIC_EXPORT_TASK_TYPES:
             result = run_generic_export_handler(
@@ -146,7 +156,7 @@ def run_job(job: ExportJob) -> int:
         _cleanup_tmp(job)
         stack = traceback.format_exc()
         message = _friendly_error_message(exc)
-        _emit({"type": "log", "level": "error", "job_id": job.job_id, "message": stack})
+        _emit(log_event(job.job_id, stack, level="error"))
         _emit(error_event(job.job_id, message, traceback_text=stack, output_path=job.output_path, cancelled=False))
         return 1
 

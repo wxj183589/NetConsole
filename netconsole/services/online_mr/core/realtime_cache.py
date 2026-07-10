@@ -85,7 +85,7 @@ class OnlineMrRealtimeCache:
             else:
                 session_id = self._device_latest_session.get(int(device_id))
             session = self._sessions.get(session_id or "")
-            return session.latest_snapshot if session else None
+            return session.latest_snapshot if session is not None and session.closed_at is None else None
 
     def list_running_sessions(self, site_id: str | None = None) -> list[OnlineMrRealtimeSession]:
         with self._lock:
@@ -155,6 +155,19 @@ class OnlineMrRealtimeCache:
             session = self._sessions.get(session_id)
             if session is not None:
                 session.closed_at = datetime.now()
+            for device_id, latest_session_id in list(self._device_latest_session.items()):
+                if latest_session_id == session_id:
+                    self._device_latest_session.pop(device_id, None)
+            for key, latest_session_id in list(self._site_device_latest_session.items()):
+                if latest_session_id == session_id:
+                    self._site_device_latest_session.pop(key, None)
+
+    def clear_device_latest(self, *, site_id: str, device_id: int) -> None:
+        with self._lock:
+            normalized_device_id = int(device_id)
+            old_session_id = self._site_device_latest_session.pop((site_id, normalized_device_id), None)
+            if old_session_id is not None and self._device_latest_session.get(normalized_device_id) == old_session_id:
+                self._device_latest_session.pop(normalized_device_id, None)
 
     @staticmethod
     def _coerce_raw_event(event: OnlineMrRawEvent | OnlineMrEvent) -> OnlineMrRawEvent:

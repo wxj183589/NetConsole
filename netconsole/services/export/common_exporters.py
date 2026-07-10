@@ -189,13 +189,23 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
     level = str(payload.get("level") or "").strip() or None
     offset = max(0, int(payload.get("offset") or 0))
     limit = max(0, int(payload.get("limit") or 0))
+    snapshot_value = payload.get("snapshot_size")
+    snapshot_size = None if snapshot_value in (None, "") else max(0, int(snapshot_value))
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     _emit(progress, "write_logs", 0, 0, "正在导出日志")
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["时间", "级别", "事件", "详情", "原始事件", "原始详情"])
-        for matched_index, row in enumerate(iter_logs(log_path, keyword=keyword, level=level, parser=_parse_log_line)):
+        for matched_index, row in enumerate(
+            iter_logs(
+                log_path,
+                keyword=keyword,
+                level=level,
+                parser=_parse_log_line,
+                max_bytes=snapshot_size,
+            )
+        ):
             if matched_index < offset:
                 continue
             if limit and count >= limit:

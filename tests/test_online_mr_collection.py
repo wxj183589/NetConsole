@@ -66,6 +66,7 @@ from netconsole.services.online_mr.core.realtime_cache import OnlineMrRawEvent, 
 from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
+from netconsole.services.online_mr.collection_models import collection_config_from_payload, collection_config_to_payload
 from netconsole.ui.pages.online_mr_collection_page import (
     ONLINE_MR_LEFT_PANEL_MIN_WIDTH,
     ONLINE_MR_DEVICE_DISPLAY_LIMIT,
@@ -867,6 +868,22 @@ def test_realtime_cache_tracks_latest_snapshot_without_file_polling(tmp_path: Pa
     assert snapshot.active_peer == "30f5-277a-5a2f"
     assert cache.get_session_realtime_table(snapshot.session_id) is snapshot
 
+    cache.close_session(snapshot.session_id)
+
+    assert cache.get_latest_snapshot(1) is None
+    assert cache.get_latest_snapshot(1, site_id="demo") is None
+
+
+def test_realtime_cache_clear_device_latest_removes_old_snapshot() -> None:
+    cache = OnlineMrRealtimeCache()
+    snapshot = OnlineMrSnapshot(session_id="old-session", status=STATE_STOPPED, device_id=7)
+    cache.register_session(site_id="demo", session_id=snapshot.session_id, device_id=7, snapshot=snapshot)
+
+    cache.clear_device_latest(site_id="demo", device_id=7)
+
+    assert cache.get_latest_snapshot(7, site_id="demo") is None
+    assert cache.get_latest_snapshot(7) is None
+
 
 def test_realtime_parser_parses_raw_cache_event_without_file_polling() -> None:
     parser = OnlineMrRealtimeParser()
@@ -885,6 +902,30 @@ def test_realtime_parser_parses_raw_cache_event_without_file_polling() -> None:
     assert parsed.module == "mesh"
     assert parsed.payload["peer_mac"] == "30f5-277a-5a2f"
     assert parsed.payload["link_state"] == "ACTIVE"
+
+
+def test_collector_raw_tail_uses_prefix_time_and_parser_line() -> None:
+    raw_line = f"2026-07-07 03:05:11.465 [collector=repeat] RX {LINE_A}"
+
+    timestamp, parser_line = OnlineMrCollectorWorker._split_collector_raw_line(raw_line)
+    parsed = OnlineMrRealtimeParser().parse_raw_event(
+        OnlineMrEvent(
+            timestamp=timestamp,
+            session_id="session-1",
+            device_id=1,
+            source="ssh_raw_tail",
+            module="mesh",
+            event_type=EVENT_MESH_SAMPLE,
+            payload={"task_type": TASK_MESH_LINK, "line": parser_line, "raw_line": raw_line},
+            raw=raw_line,
+        )
+    )
+
+    assert timestamp == datetime(2026, 7, 7, 3, 5, 11, 465000)
+    assert parser_line == LINE_A
+    assert parsed is not None
+    assert parsed.payload["peer_mac"] == "30f5-277a-5a2f"
+    assert parsed.raw == raw_line
 
 
 def test_repeat_stream_invokes_callback_before_archival(tmp_path: Path) -> None:
@@ -1256,30 +1297,82 @@ def test_collector_snapshot_overrides_stale_latest_status(tmp_path: Path) -> Non
     assert snapshot.active_peer == "30f5-277a-5a2f"
 
 
-def test_collector_worker_cancel_only_requests_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_collector_job_handle_cancel_only_requests_job_center_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _qt_app()
     paths, config = _config(tmp_path)
-    calls: list[str] = []
-
-    class FakeCollector:
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
-
-        def request_stop(self) -> None:
-            calls.append("request_stop")
-
-        def stop(self) -> None:
-            calls.append("stop")
-
-    monkeypatch.setattr("netconsole.ui.online_mr_collector_worker.OnlineMrCollector", FakeCollector)
     worker = OnlineMrCollectorWorker(config, paths)
+    calls: list[str] = []
+    monkeypatch.setattr(worker._manager, "cancel_job", calls.append)
 
     worker.cancel()
 
-    assert calls == []
-    assert worker._cancel_requested.is_set()
-    worker.collector = FakeCollector()
-    worker.cancel()
-    assert calls == ["request_stop"]
+    assert calls == [worker.job_id]
+    assert worker.collector.cancelled is True
+    assert worker.collector.status == STATE_STOPPING
+
+
+def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Job")
+    paths, config = _config(tmp_path)
+    config.device_id = int(device.id)
+    config.device_name = device.name
+    config.mr_id = str(device.id)
+    config.mr_name = device.name
+    page.selected_device_ids = {int(device.id)}
+    page.enable_fping_check.setChecked(False)
+    page.enable_iperf_check.setChecked(False)
+    monkeypatch.setattr(page, "_selected_devices", lambda: [device])
+    monkeypatch.setattr(page, "_build_config_for_device", lambda _device: config)
+    started: list[OnlineMrCollectorWorker] = []
+    monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.QMessageBox.warning", lambda *_args: None)
+
+    page.start_collection()
+
+    assert len(started) == 1
+    assert not page.start_button.isEnabled()
+    assert page.stop_selected_button.isEnabled()
+
+    page.stop_selected()
+
+    assert page.status_value == "STOPPING"
+    assert not page.start_button.isEnabled()
+    assert not page.stop_selected_button.isEnabled()
+
+    page._worker_failed("连接失败", int(device.id))
+
+    assert int(device.id) not in page.workers_by_device_id
+    assert page.start_button.isEnabled()
+    assert not page.stop_selected_button.isEnabled()
+
+    page.start_collection()
+    cancelled_worker = started[-1]
+    cancelled_session = OnlineMrSessionStore(page.paths).create_session(config)
+    cancelled_worker.collector.session = cancelled_session
+    page._worker_started(cancelled_session.meta, cancelled_worker)
+    cancelled_worker._handle_cancelled({"job_id": cancelled_worker.job_id})
+
+    assert int(device.id) not in page.workers_by_device_id
+    assert page.start_button.isEnabled()
+    assert not page.stop_selected_button.isEnabled()
+
+    page.start_collection()
+    finished_worker = started[-1]
+    finished_session = OnlineMrSessionStore(page.paths).create_session(config)
+    finished_worker.collector.session = finished_session
+    page._worker_started(finished_session.meta, finished_worker)
+    finished_worker._handle_finished(
+        {
+            "job_id": finished_worker.job_id,
+            "result": {"session_id": finished_session.meta.session_id, "status": "STOPPED"},
+        }
+    )
+
+    assert int(device.id) not in page.workers_by_device_id
+    assert page.start_button.isEnabled()
+    assert not page.stop_selected_button.isEnabled()
 
 
 def test_parse_failure_saves_raw_marks_failed_and_loop_continues(tmp_path: Path) -> None:
@@ -2851,20 +2944,19 @@ def test_online_mr_export_analysis_report_uses_qfiledialog(tmp_path: Path, monke
     session = OnlineMrSessionStore(paths).create_session(config)
     OnlineMrDiagnosisParser(session.session_dir)._ensure_tables()
     output_path = tmp_path / "report.xlsx"
-    messages: list[str] = []
-
     monkeypatch.setattr(page, "_selected_session_dir_for_parse", lambda: session.session_dir)
     monkeypatch.setattr(
         "netconsole.ui.pages.online_mr_collection_page.QFileDialog.getSaveFileName",
         lambda *_args: (str(output_path), "Excel (*.xlsx)"),
     )
-    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.QMessageBox.information", lambda _parent, _title, message: messages.append(str(message)))
-
     page.export_analysis_report()
-    _process_qt_until(lambda: page.export_report_worker is None, timeout=10.0)
+    _process_qt_until(
+        lambda: page.export_report_worker is None and not getattr(page, "_netconsole_export_controllers", []),
+        timeout=10.0,
+    )
 
     assert output_path.exists()
-    assert messages and str(output_path) in messages[-1]
+    assert not output_path.with_name(f"{output_path.name}.tmp").exists()
 
 
 def test_online_mr_parse_metadata_cache_valid_and_invalidates_on_raw_change(tmp_path: Path) -> None:
@@ -3421,7 +3513,9 @@ def test_online_mr_builds_config_from_device_management_and_device_session_dir(t
     assert config.host == device.ip_address
     assert config.username == "admin"
     assert config.password == "secret"
-    assert [target.method for target in config.connection_targets] == ["primary_direct"]
+    assert config.connection_targets == ()
+    worker_config = collection_config_from_payload(collection_config_to_payload(config), page.paths)
+    assert [target.method for target in worker_config.connection_targets] == ["primary_direct"]
     assert config.iperf.enabled is True
     assert config.iperf.target_bandwidth is None
     assert config.iperf.tcp_report_threshold_mbps == 100.0
@@ -3442,7 +3536,7 @@ def test_online_mr_builds_config_from_device_management_and_device_session_dir(t
     assert "MR_01" in str(session.session_dir)
 
 
-def test_online_mr_config_includes_tunnel_targets_for_enabled_vehicle_device(tmp_path: Path) -> None:
+def test_online_mr_worker_rebuilds_tunnel_targets_for_enabled_vehicle_device(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
     onboard = groups.create("\u8f66\u8f7d")
     device = repository.create(
@@ -3469,7 +3563,9 @@ def test_online_mr_config_includes_tunnel_targets_for_enabled_vehicle_device(tmp
     config = page._build_config_for_device(device)
 
     assert config is not None
-    assert [target.method for target in config.connection_targets] == ["primary_direct", "backup_direct", "tunnel1", "tunnel2"]
+    assert config.connection_targets == ()
+    worker_config = collection_config_from_payload(collection_config_to_payload(config), page.paths)
+    assert [target.method for target in worker_config.connection_targets] == ["primary_direct", "backup_direct", "tunnel1", "tunnel2"]
 
 
 def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3764,7 +3860,7 @@ def test_online_mr_discards_failed_iperf_batch_worker(tmp_path: Path, monkeypatc
     assert page.iperf_workers["s-a"] is FakeIperfWorker.instances[0]
 
 
-def test_online_mr_stop_all_does_not_block_on_slow_connection(tmp_path: Path) -> None:
+def test_online_mr_stop_all_does_not_wait_for_worker_process_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
     onboard = groups.create("\u8f66\u8f7d")
     device = _create_onboard_device(repository, onboard.id, "MR-01")
@@ -3772,20 +3868,9 @@ def test_online_mr_stop_all_does_not_block_on_slow_connection(tmp_path: Path) ->
     paths, config = _config(tmp_path)
     config.device_id = int(device.id)
 
-    class SlowConnection(FakeConnection):
-        def send_command(self, command: str, timeout: int) -> str:
-            time.sleep(3)
-            return super().send_command(command, timeout)
-
-        def close(self) -> None:
-            time.sleep(3)
-            super().close()
-
-    collector = OnlineMrCollector(config, OnlineMrSessionStore(paths), connection_factory=lambda _: SlowConnection())
-    collector.session = OnlineMrSessionStore(paths).create_session(config)
-    collector.connection = SlowConnection()
-    worker = OnlineMrCollectorWorker(config, paths, connection_factory=lambda _: SlowConnection())
-    worker.collector = collector
+    worker = OnlineMrCollectorWorker(config, paths)
+    cancelled: list[str] = []
+    monkeypatch.setattr(worker._manager, "cancel_job", cancelled.append)
     page.workers["session-1"] = worker
     page.workers_by_device_id[int(device.id)] = worker
     page.session_to_device_id["session-1"] = int(device.id)
@@ -3796,7 +3881,8 @@ def test_online_mr_stop_all_does_not_block_on_slow_connection(tmp_path: Path) ->
     elapsed = time.perf_counter() - started
 
     assert elapsed < 0.3
-    assert collector.status == STATE_STOPPING
+    assert cancelled == [worker.job_id]
+    assert worker.collector.status == STATE_STOPPING
     assert page.status_value == "STOPPING"
     assert page.stop_animation_timer.isActive()
 
@@ -3814,7 +3900,7 @@ def test_online_mr_prepare_shutdown_stops_timers_and_workers(tmp_path: Path) -> 
     page.iperf_workers_by_device_id[1] = iperf
     page.iperf_workers["session-1"] = iperf
 
-    page.prepare_shutdown("test")
+    page.prepare_shutdown("app_exit")
 
     assert page._shutdown_requested is True
     assert all(not timer.isActive() for timer in page._runtime_timers())
@@ -3823,9 +3909,87 @@ def test_online_mr_prepare_shutdown_stops_timers_and_workers(tmp_path: Path) -> 
     assert iperf.stopped is True
 
 
+def test_online_mr_normal_page_close_detaches_without_stopping_workers(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    worker = _ShutdownWorker()
+    probe = _ShutdownWorker()
+    iperf = _ShutdownWorker()
+    page.workers["session-1"] = worker
+    page.workers_by_device_id[1] = worker
+    page._attached_worker_sessions.add("session-1")
+    page.fping_workers["session-1"] = probe
+    page.fping_workers_by_device_id[1] = probe
+    page.iperf_workers["session-1"] = iperf
+    page.iperf_workers_by_device_id[1] = iperf
+
+    page.prepare_shutdown("window_close")
+
+    assert page._shutdown_requested is False
+    assert all(not timer.isActive() for timer in page._runtime_timers())
+    assert worker.cancelled is False
+    assert probe.stopped is False
+    assert iperf.stopped is False
+
+    page.on_enter()
+
+    assert page._ui_updates_enabled is True
+    assert page.refresh_timer.isActive()
+    assert page.output_render_timer.isActive()
+    assert page.reconcile_timer.isActive()
+    assert worker.cancelled is False
+
+
+def test_online_mr_new_session_clears_device_realtime_view(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    page.output_buffers_by_device_id[1] = deque(["old raw"], maxlen=2000)
+    page.latest_iperf_by_device_id[1] = {"bitrate_mbps": 88.1}
+    page.realtime_states_by_device_id[1] = SimpleNamespace()
+    page._last_active_peer_by_device_id[1] = "old-peer"
+    page._stream_sample_count_by_device_id[1] = 99
+    page._ensure_output_widget(1, "old-session").setPlainText("old raw")
+    for table in (page.mesh_table, page.channel_table, page.interface_rate_table, page.iperf_table, page.events_table):
+        table.setRowCount(1)
+
+    page._reset_device_realtime_view_for_new_session(1)
+
+    assert list(page.output_buffers_by_device_id[1]) == []
+    assert 1 not in page.latest_iperf_by_device_id
+    assert 1 not in page.realtime_states_by_device_id
+    assert 1 not in page._last_active_peer_by_device_id
+    assert 1 not in page._stream_sample_count_by_device_id
+    assert page.output_widgets_by_device_id[1].toPlainText() == ""
+    assert all(table.rowCount() == 0 for table in (page.mesh_table, page.channel_table, page.interface_rate_table, page.iperf_table, page.events_table))
+
+
+def test_online_mr_finalize_stops_session_probe_and_nonbatch_iperf(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    collector = _ShutdownWorker()
+    probe = _ShutdownWorker()
+    iperf = _ShutdownWorker()
+    page.workers["session-1"] = collector
+    page.workers_by_device_id[1] = collector
+    page.session_to_device_id["session-1"] = 1
+    page.fping_workers["session-1"] = probe
+    page.fping_workers_by_device_id[1] = probe
+    page.iperf_workers["session-1"] = iperf
+    page.iperf_workers_by_device_id[1] = iperf
+
+    page._finalize_collection_state(
+        device_id=1,
+        session_id="session-1",
+        final_status="STOPPED",
+        reason="completed",
+    )
+
+    assert probe.stopped is True
+    assert iperf.stopped is True
+    assert "session-1" not in page.workers
+    assert 1 not in page.workers_by_device_id
+
+
 def test_online_mr_callbacks_do_not_touch_ui_after_prepare_shutdown(tmp_path: Path) -> None:
     page, _repository, _groups = _online_page_with_devices(tmp_path)
-    page.prepare_shutdown("test")
+    page.prepare_shutdown("app_exit")
     page.available_metric_label = None
     page.running_count_label = None
     page.fping_status_label_1 = None
@@ -4400,6 +4564,44 @@ def test_online_mr_diagnosis_parser_aligns_fping_raw_with_mesh_clock(tmp_path: P
         ).fetchone()
     assert sync_row == ("2026-07-07 01:29:17.532", "2026-07-07 01:29:19.000", 1468.0, "mesh_link_display_clock")
     assert fping_row == ("2026-07-07 01:29:19.341", "2026-07-07 01:29:20.809", 1468.0, "last_sample")
+
+
+def test_online_mr_diagnosis_parser_aligns_iperf_with_mesh_clock(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    session.meta.started_at = datetime(2026, 7, 7, 1, 29, 19)
+    session.write_meta()
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2026-07-07 01:29:17.532 [collector=repeat] RX <MR>display clock\n"
+        "2026-07-07 01:29:17.532 [collector=repeat] RX 01:29:19 BeiJing Tue 07/07/2026\n",
+        encoding="utf-8",
+    )
+    (session.session_dir / "raw" / "iperf_client_raw.log").write_text(
+        "[  5]   0.00-1.00   sec  10.5 MBytes  88.1 Mbits/sec  0   256 KBytes\n",
+        encoding="utf-8",
+    )
+
+    summary = OnlineMrDiagnosisParser(session.session_dir).parse()
+
+    assert summary.iperf_samples == 1
+    with sqlite3.connect(session.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT collector_time, interval_center_time, device_aligned_time,
+                   device_interval_center_time, clock_offset_ms, offset_source, time_source
+            FROM iperf_intervals
+            """
+        ).fetchone()
+    assert row is not None
+    assert row[0]
+    assert row[1:] == (
+        "2026-07-07 01:29:19.500",
+        "2026-07-07 01:29:20.968",
+        "2026-07-07 01:29:20.968",
+        1468.0,
+        "last_sample",
+        "mr_device_clock_aligned",
+    )
 
 
 def test_online_mr_diagnosis_parser_keeps_fping_local_time_without_offset(tmp_path: Path) -> None:

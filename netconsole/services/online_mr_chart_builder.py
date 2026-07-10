@@ -490,13 +490,14 @@ class OnlineMrChartBuilder:
     def build_traffic_rate_series(self) -> ChartData:
         rows = self._query(
             """
-            SELECT i.interval_center_time, i.collector_time, i.bitrate_mbps, i.retransmits, i.jitter_ms,
+            SELECT COALESCE(NULLIF(i.device_interval_center_time, ''), NULLIF(i.device_aligned_time, ''), i.interval_center_time, i.collector_time),
+                   i.collector_time, i.bitrate_mbps, i.retransmits, i.jitter_ms,
                    i.loss_percent, i.transfer_bytes, i.role, i.raw_line, r.protocol, r.direction,
                    r.server_ip, r.port
             FROM iperf_intervals i
             LEFT JOIN iperf_runs r ON r.run_id = i.run_id
             WHERE i.bitrate_mbps IS NOT NULL
-            ORDER BY COALESCE(i.interval_center_time, i.collector_time) ASC, i.id ASC
+            ORDER BY COALESCE(NULLIF(i.device_interval_center_time, ''), NULLIF(i.device_aligned_time, ''), i.interval_center_time, i.collector_time) ASC, i.id ASC
             LIMIT 20000
             """
         )

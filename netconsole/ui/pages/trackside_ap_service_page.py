@@ -222,6 +222,7 @@ class TracksideApServicePage(QWidget):
         self.export_manager.progress.connect(self._handle_export_progress)
         self.export_manager.finished.connect(self._finish_export)
         self.export_manager.failed.connect(self._fail_export)
+        self.export_manager.cancelled.connect(self._fail_export)
         self.detail_resolve_manager.finished.connect(self._finish_detail_resolve)
         self.detail_resolve_manager.failed.connect(self._fail_detail_resolve)
         self.trackside_site_filter.currentIndexChanged.connect(self.apply_trackside_filters)

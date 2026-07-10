@@ -13,6 +13,7 @@ class OnlineMrRealtimeParser:
         self._interface_direction_by_session: dict[str, str] = {}
 
     def parse_raw_event(self, event: OnlineMrEvent | OnlineMrRawEvent) -> OnlineMrParsedEvent | None:
+        original_raw = event.raw
         parsed_event = self._coerce_event(event)
         payload = self._parse_payload(parsed_event)
         if payload is None:
@@ -23,7 +24,7 @@ class OnlineMrRealtimeParser:
             device_id=parsed_event.device_id,
             module=parsed_event.module,
             payload=payload,
-            raw=parsed_event.raw,
+            raw=original_raw,
         )
 
     def parse_events(self, events: Iterable[OnlineMrEvent | OnlineMrRawEvent]) -> list[OnlineMrParsedEvent]:
@@ -87,7 +88,19 @@ class OnlineMrRealtimeParser:
     @staticmethod
     def _coerce_event(event: OnlineMrEvent | OnlineMrRawEvent) -> OnlineMrEvent:
         if isinstance(event, OnlineMrEvent):
-            return event
+            parser_line = event.payload.get("line")
+            if parser_line is None or str(parser_line) == str(event.raw or ""):
+                return event
+            return OnlineMrEvent(
+                timestamp=event.timestamp,
+                session_id=event.session_id,
+                device_id=event.device_id,
+                source=event.source,
+                module=event.module,
+                event_type=event.event_type,
+                payload=event.payload,
+                raw=str(parser_line),
+            )
         task_type = str(event.task_type or "")
         module = {
             "mesh_link": "mesh",

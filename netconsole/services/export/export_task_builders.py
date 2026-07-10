@@ -703,20 +703,28 @@ def app_logs_csv_spec(
     level: str | None = None,
     offset: int = 0,
     limit: int = 0,
+    snapshot_size: int | None = None,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
+    source_path = Path(log_path)
+    if snapshot_size is None:
+        try:
+            snapshot_size = source_path.stat().st_size
+        except OSError:
+            snapshot_size = 0
     return ExportTaskSpec(
         task_type="app_logs_csv",
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload={
-            "log_path": str(log_path),
+            "log_path": str(source_path),
             "keyword": keyword or "",
             "level": level or "",
             "offset": max(0, int(offset)),
             "limit": max(0, int(limit)),
+            "snapshot_size": max(0, int(snapshot_size)),
         },
     )
 

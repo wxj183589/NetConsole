@@ -8,6 +8,7 @@ import subprocess
 import time
 import traceback
 import weakref
+from types import SimpleNamespace
 from uuid import uuid4
 from collections import deque
 from dataclasses import dataclass, field
@@ -78,9 +79,9 @@ from netconsole.services.network_tools.iperf_runner import (
     run_iperf_client_preflight,
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
-from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.export.export_task_builders import online_mr_report_xlsx_spec
 from netconsole.services.online_mr_collector import OnlineMrCollectionManager
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text, summarize_active
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
@@ -109,8 +110,8 @@ from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
 from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
-from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrHistoryLoadWorker, OnlineMrParseWorker
-from netconsole.ui.online_mr_report_worker import OnlineMrReportExportWorker
+from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrHistoryLoadWorker
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
@@ -424,6 +425,11 @@ class OnlineMrCollectionPage(QWidget):
         self.background_manager.finished.connect(self._device_refresh_finished)
         self.background_manager.failed.connect(self._device_refresh_failed)
         self.background_manager.cancelled.connect(self._device_refresh_failed)
+        self.parse_manager = BackgroundProcessManager(self, paths=paths)
+        self.parse_manager.progress.connect(self._parse_job_progress)
+        self.parse_manager.finished.connect(self._parse_job_finished)
+        self.parse_manager.failed.connect(self._parse_job_failed)
+        self.parse_manager.cancelled.connect(self._parse_job_cancelled)
         self._device_refresh_job_id = ""
         self._device_refresh_context: dict[str, object] = {}
         self.analysis_only = analysis_only
@@ -466,10 +472,12 @@ class OnlineMrCollectionPage(QWidget):
         self._peer_name_cache_loaded = False
         self.peer_name_cache_worker: PeerNameCacheLoadWorker | None = None
         self.peer_mapping_service = ApRadioMappingService(site_name, paths)
-        self.parse_worker: OnlineMrParseWorker | None = None
+        self.parse_worker: str | None = None
+        self._parse_job_id = ""
+        self._parse_session_dir: Path | None = None
         self.analysis_load_worker: OnlineMrAnalysisLoadWorker | None = None
         self.history_load_worker: OnlineMrHistoryLoadWorker | None = None
-        self.export_report_worker = None
+        self.export_report_worker: str | None = None
         self._analysis_load_task_label = ""
         self._analysis_load_profile_phase = ""
         self._analysis_load_profile_start = 0.0
@@ -482,7 +490,9 @@ class OnlineMrCollectionPage(QWidget):
         self._tool_status_loaded = False
         self._device_refresh_pending = False
         self._last_realtime_parse_at: dict[str, float] = {}
-        self.realtime_parse_worker: OnlineMrParseWorker | None = None
+        self.realtime_parse_worker: str | None = None
+        self._realtime_parse_job_id = ""
+        self._realtime_parse_session_dir: Path | None = None
         self._stale_sessions_checked_sites: set[str] = set()
         self._view_device_user_selected = False
         self._fping_target_user_edited: dict[int, bool] = {1: False, 2: False}
@@ -724,13 +734,24 @@ class OnlineMrCollectionPage(QWidget):
     def prepare_shutdown(self, reason: str = "app_exit") -> None:
         if self._shutdown_requested:
             return
+        real_app_exit = shutdown_manager.is_shutting_down() or reason in {
+            "app_exit",
+            "application_exit",
+            "force_close",
+        }
         self._closing = True
-        self._shutdown_requested = True
         self._ui_updates_enabled = False
-        app_logger.log_info("ONLINE_MR_PAGE_PREPARE_SHUTDOWN", f"site={self.site_name} reason={reason}")
-        self.stop_runtime_activity()
+        app_logger.log_info(
+            "ONLINE_MR_PAGE_PREPARE_SHUTDOWN",
+            f"site={self.site_name} reason={reason} real_app_exit={real_app_exit}",
+        )
+        if real_app_exit:
+            self._shutdown_requested = True
+            self.stop_runtime_activity(stop_workers=True)
+        else:
+            self.detach_runtime_activity()
 
-    def stop_runtime_activity(self) -> None:
+    def detach_runtime_activity(self) -> None:
         for timer in self._runtime_timers():
             timer.stop()
         self.throttle.pending_snapshot = None
@@ -738,7 +759,11 @@ class OnlineMrCollectionPage(QWidget):
         self._device_refresh_pending = False
         self._history_refresh_pending = False
         self._detach_from_runtime_site()
-        self._request_workers_stop_for_shutdown()
+
+    def stop_runtime_activity(self, *, stop_workers: bool = False) -> None:
+        self.detach_runtime_activity()
+        if stop_workers:
+            self._request_workers_stop_for_shutdown()
 
     def _runtime_timers(self) -> tuple[QTimer, ...]:
         return (
@@ -750,6 +775,9 @@ class OnlineMrCollectionPage(QWidget):
         )
 
     def _request_workers_stop_for_shutdown(self) -> None:
+        for job_id in (self._parse_job_id, self._realtime_parse_job_id):
+            if job_id:
+                self.parse_manager.cancel_job(job_id)
         self._stop_all_iperf_workers(status="STOPPED_BY_COLLECTION_END")
         for worker in list(self.fping_workers_by_device_id.values()) + list(self.fping_workers.values()):
             worker.stop()
@@ -813,7 +841,6 @@ class OnlineMrCollectionPage(QWidget):
 
     def _detach_from_runtime_site(self) -> None:
         self.runtime.unobserve(self.site_name, self)
-        self._attached_worker_sessions.clear()
         app_logger.log_info("ONLINE_MR_UI_DETACH_RUNTIME", f"site={self.site_name}")
 
     def _clear_runtime_view(self) -> None:
@@ -855,6 +882,41 @@ class OnlineMrCollectionPage(QWidget):
         self.realtime_states_by_device_id.clear()
         self._set_status("STOPPED" if not self.workers_by_device_id else "COLLECTING")
         app_logger.log_info("ONLINE_MR_CROSS_SITE_STATE_FILTERED", f"site={self.site_name} source=site_switch")
+
+    def _reset_device_realtime_view_for_new_session(self, device_id: int) -> None:
+        self.output_buffers_by_device_id[device_id] = deque(maxlen=2000)
+        self.latest_iperf_by_device_id.pop(device_id, None)
+        self.realtime_states_by_device_id.pop(device_id, None)
+        self._last_active_peer_by_device_id.pop(device_id, None)
+        self._stream_sample_count_by_device_id.pop(device_id, None)
+        widget = self.output_widgets_by_device_id.get(device_id)
+        if widget is not None:
+            widget.clear()
+        for session_id, mapped_device_id in list(self.session_to_device_id.items()):
+            if mapped_device_id == device_id and session_id not in self.workers:
+                self._reset_session_event_pipeline(session_id)
+        current_device_id = self.view_device_combo.currentData()
+        if current_device_id is not None and int(current_device_id) != device_id:
+            return
+        for table in (
+            self.mesh_table,
+            self.mesh_detail_table,
+            self.channel_table,
+            self.interface_rate_table,
+            self.fping_1s_table,
+            self.iperf_table,
+            self.events_table,
+            self.switch_history_table,
+            self.active_link_switch_table,
+            self.diagnosis_table,
+        ):
+            table.setRowCount(0)
+        self.statistics_text.clear()
+        self.switch_history_text.clear()
+        summary_row = self._find_row(self.summary_table, str(device_id), column=SUMMARY_COL_DEVICE_ID)
+        if summary_row >= 0:
+            self._set_table_item(self.summary_table, summary_row, SUMMARY_COL_IPERF_MBPS, "-")
+            self._set_table_item(self.summary_table, summary_row, SUMMARY_COL_IPERF_RETRANS, "-")
 
     def _append_runtime_log(self, message: str) -> None:
         if not self._can_update_ui():
@@ -940,6 +1002,15 @@ class OnlineMrCollectionPage(QWidget):
             self._schedule_device_refresh(refresh_tools=False)
 
     def on_enter(self) -> None:
+        if self._destroyed or self._shutdown_requested:
+            return
+        self._closing = False
+        self._ui_updates_enabled = True
+        for timer in (self.refresh_timer, self.output_render_timer, self.reconcile_timer):
+            if not timer.isActive():
+                timer.start()
+        if not self.analysis_only:
+            self.attach_to_running_collections()
         if not self._first_show_refreshed and not self.analysis_only:
             self.first_show_refresh()
         self._update_realtime_responsive_layout()
@@ -1830,7 +1901,10 @@ class OnlineMrCollectionPage(QWidget):
                 skipped.append(device.name)
                 self._update_device_status(device.id, self.i18n.t("online_mr.connection_incomplete"))
                 continue
-            worker = OnlineMrCollectorWorker(config, self.paths, realtime_cache=self.realtime_cache, parent=self)
+            device_id = int(device.id)
+            self._reset_device_realtime_view_for_new_session(device_id)
+            self.realtime_cache.clear_device_latest(site_id=self.site_name, device_id=device_id)
+            worker = OnlineMrCollectorWorker(config, self.paths, realtime_cache=self.realtime_cache)
             if device.id is not None:
                 self.workers_by_device_id[int(device.id)] = worker
                 self.manager.register_device(int(device.id), worker)
@@ -2238,11 +2312,22 @@ class OnlineMrCollectionPage(QWidget):
         self._log_page_profile("parse.start", time.perf_counter(), rows=1)
         self._set_parse_running(True, "准备解析", 0)
         self.log_text.append(f"Start parsing collection data: {session_dir}")
-        self.parse_worker = OnlineMrParseWorker(session_dir, parent=self, force_reparse=True)
-        self.parse_worker.progress.connect(self._parse_progress)
-        self.parse_worker.completed.connect(lambda summary, d=session_dir: self._parse_completed(d, summary))
-        self.parse_worker.failed.connect(self._parse_failed)
-        self.parse_worker.start()
+        job_id = uuid4().hex
+        self._parse_job_id = job_id
+        self._parse_session_dir = session_dir
+        self.parse_worker = job_id
+        self.parse_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="online_mr_parse",
+                params={
+                    "session_dir": str(session_dir),
+                    "force_reparse": True,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
 
     def _set_parse_running(self, running: bool, message: str = "", percent: int = 0) -> None:
         self.parse_session_button.setEnabled(not running)
@@ -2273,11 +2358,61 @@ class OnlineMrCollectionPage(QWidget):
             self.log_text.append(text)
 
     def _cancel_parse_worker(self) -> None:
-        if self.parse_worker is None:
+        if not self._parse_job_id:
             return
         self.parse_cancel_button.setEnabled(False)
         self.parse_progress_label.setText("正在取消解析...")
-        self.parse_worker.cancel()
+        self.parse_manager.cancel_job(self._parse_job_id)
+
+    def _parse_job_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self._parse_job_id:
+            return
+        self._parse_progress(
+            str(event.get("stage") or ""),
+            int(event.get("current") or 0),
+            int(event.get("total") or 0),
+            str(event.get("message") or ""),
+        )
+
+    def _parse_job_finished(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        summary = SimpleNamespace(**dict(event.get("result") or {}))
+        if job_id == self._parse_job_id and self._parse_session_dir is not None:
+            session_dir = self._parse_session_dir
+            self._parse_job_id = ""
+            self._parse_session_dir = None
+            self._parse_completed(session_dir, summary)
+        elif job_id == self._realtime_parse_job_id and self._realtime_parse_session_dir is not None:
+            session_dir = self._realtime_parse_session_dir
+            self._realtime_parse_job_id = ""
+            self._realtime_parse_session_dir = None
+            self._realtime_parse_completed(session_dir, summary)
+
+    def _parse_job_failed(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        message = str(event.get("message") or event.get("error") or "解析失败")
+        if job_id == self._parse_job_id:
+            self._parse_job_id = ""
+            self._parse_session_dir = None
+            self._parse_failed(message)
+        elif job_id == self._realtime_parse_job_id:
+            self._realtime_parse_job_id = ""
+            self._realtime_parse_session_dir = None
+            self._realtime_parse_failed(message)
+
+    def _parse_job_cancelled(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == self._parse_job_id:
+            self._parse_job_id = ""
+            self._parse_session_dir = None
+            self.parse_worker = None
+            self._set_parse_running(False, "解析已取消", 0)
+            self.parse_cancel_button.setEnabled(True)
+        elif job_id == self._realtime_parse_job_id:
+            self._realtime_parse_job_id = ""
+            self._realtime_parse_session_dir = None
+            self.realtime_parse_worker = None
+            self.log_text.append("Realtime parse cancelled")
 
     def _load_cached_parse_if_valid(self, session_dir: Path) -> bool:
         from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
@@ -2329,21 +2464,27 @@ class OnlineMrCollectionPage(QWidget):
         path_text, _filter = QFileDialog.getSaveFileName(self, self.i18n.t("online_mr.export_analysis_report"), str(default_path), "Excel (*.xlsx)")
         if not path_text:
             return
-        worker = OnlineMrReportExportWorker(session_dir, Path(path_text), self)
-        self.export_report_worker = worker
-        worker.completed.connect(self._analysis_report_export_finished)
-        worker.failed.connect(self._analysis_report_export_failed)
-        worker.completed.connect(worker.deleteLater)
-        worker.failed.connect(lambda _message: worker.deleteLater())
-        worker.start()
+        self.export_report_worker = submit_export_task(
+            self,
+            online_mr_report_xlsx_spec(
+                Path(path_text),
+                session_dir=session_dir,
+                title=self.i18n.t("online_mr.export_analysis_report"),
+                open_dir_on_success=False,
+            ),
+            success_title=self.i18n.t("online_mr.export_analysis_report"),
+            progress_title="正在导出车载 MR 分析报表",
+            paths=self.paths,
+            on_finished=self._analysis_report_export_finished,
+            on_failed=self._analysis_report_export_failed,
+            on_cancelled=self._analysis_report_export_failed,
+        )
 
-    def _analysis_report_export_finished(self, output_path: str) -> None:
+    def _analysis_report_export_finished(self, _payload: object) -> None:
         self.export_report_worker = None
-        QMessageBox.information(self, self.i18n.t("online_mr.export_analysis_report"), f"已导出：{output_path}")
 
-    def _analysis_report_export_failed(self, message: str) -> None:
+    def _analysis_report_export_failed(self, _payload: object) -> None:
         self.export_report_worker = None
-        MessageBox.warning(self, self.i18n.t("online_mr.export_analysis_report"), message or "导出失败")
 
     def _parse_completed(self, session_dir: Path, summary) -> None:
         if not self._can_update_ui():
@@ -3160,9 +3301,10 @@ class OnlineMrCollectionPage(QWidget):
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT COALESCE(interval_center_time, collector_time), bitrate_mbps, retransmits, transfer_bytes, raw_line
+                SELECT COALESCE(NULLIF(device_interval_center_time, ''), NULLIF(device_aligned_time, ''), interval_center_time, collector_time),
+                       bitrate_mbps, retransmits, transfer_bytes, raw_line
                 FROM iperf_intervals
-                ORDER BY COALESCE(interval_center_time, collector_time) ASC
+                ORDER BY COALESCE(NULLIF(device_interval_center_time, ''), NULLIF(device_aligned_time, ''), interval_center_time, collector_time) ASC
                 LIMIT 5000
                 """
             ).fetchall()
@@ -3333,17 +3475,20 @@ class OnlineMrCollectionPage(QWidget):
         if meta.device_id is not None:
             self.session_to_device_id[meta.session_id] = int(meta.device_id)
             self.workers_by_device_id[int(meta.device_id)] = worker
-            if not self.analysis_only:
+            if not self.analysis_only and self._can_update_ui():
                 self._ensure_output_widget(int(meta.device_id), meta.session_id)
         self.workers[meta.session_id] = worker
         if meta.session_dir:
             self.session_dirs[meta.session_id] = Path(meta.session_dir)
+            self._reset_session_event_pipeline(meta.session_id)
             self._ensure_event_pipeline(meta.session_id, Path(meta.session_dir))
             if meta.device_id is not None:
                 self.last_session_dir_by_device_id[int(meta.device_id)] = Path(meta.session_dir)
         if not getattr(worker.collector, "cancelled", False) and meta.status != STATE_STOPPING:
             self._start_fping_worker(meta, worker)
             self._start_iperf_worker(meta, worker)
+        if not self._can_update_ui():
+            return
         self._set_status(meta.status)
         if meta.device_id is not None:
             self._update_device_status(int(meta.device_id), self._status_text(meta.status))
@@ -3369,11 +3514,20 @@ class OnlineMrCollectionPage(QWidget):
         final_status: str,
         reason: str | None = None,
     ) -> None:
+        completed_session_dir: Path | None = None
         if session_id and device_id is None:
             device_id = self.session_to_device_id.get(session_id)
         if device_id is not None and not session_id:
             session_id = self._session_id_for_device(device_id)
         if session_id:
+            completed_session_dir = self.session_dirs.get(session_id)
+            fping_worker = self.fping_workers.get(session_id)
+            if fping_worker is not None:
+                fping_worker.stop()
+            iperf_worker = self.iperf_workers.get(session_id)
+            is_batched = any(session_id in sessions for sessions in self.iperf_batch_sessions.values())
+            if iperf_worker is not None and not is_batched:
+                self._stop_iperf_worker(iperf_worker, status="STOPPED_BY_COLLECTION_END")
             self.manager.unregister(session_id)
             self.workers.pop(session_id, None)
             self.session_to_device_id.pop(session_id, None)
@@ -3401,6 +3555,8 @@ class OnlineMrCollectionPage(QWidget):
             self.fping_workers_by_device_id.pop(device_id, None)
             self._last_active_peer_by_device_id.pop(device_id, None)
             self._stream_sample_count_by_device_id.pop(device_id, None)
+        if completed_session_dir is not None and not self._shutdown_requested:
+            self._parse_stopped_session_once(completed_session_dir)
         app_logger.log_info(
             "ONLINE_MR_COLLECTION_FINALIZED",
             f"device_id={device_id} session_id={session_id} new_status={final_status} reason={reason or ''} workers_count={len(self.workers)} manager_running_count={self.manager.running_count()}",
@@ -3661,7 +3817,10 @@ class OnlineMrCollectionPage(QWidget):
         table_row = self.iperf_table.rowCount()
         self.iperf_table.insertRow(table_row)
         values = [
-            row.get("interval_center_time") or row.get("collector_time"),
+            row.get("device_interval_center_time")
+            or row.get("device_aligned_time")
+            or row.get("interval_center_time")
+            or row.get("collector_time"),
             f"{float(row.get('bitrate_mbps') or 0):.2f}",
             row.get("retransmits", 0),
             int(float(row.get("transfer_bytes") or 0)),
@@ -3718,7 +3877,12 @@ class OnlineMrCollectionPage(QWidget):
 
     @staticmethod
     def _iperf_event_time(payload: dict[str, object]) -> datetime:
-        value = payload.get("collector_time")
+        value = (
+            payload.get("device_interval_center_time")
+            or payload.get("device_aligned_time")
+            or payload.get("interval_center_time")
+            or payload.get("collector_time")
+        )
         if value:
             try:
                 return datetime.fromisoformat(str(value).replace("T", " "))
@@ -3758,6 +3922,14 @@ class OnlineMrCollectionPage(QWidget):
         self.event_parsers[session_id] = parser
         self.diagnosis_engines[session_id] = diagnosis
         return bus
+
+    def _reset_session_event_pipeline(self, session_id: str) -> None:
+        self.event_buses.pop(session_id, None)
+        self.realtime_buffers.pop(session_id, None)
+        self.diagnosis_engines.pop(session_id, None)
+        self.event_parsers.pop(session_id, None)
+        self.realtime_stream_parsers.pop(session_id, None)
+        self._stream_interface_direction.pop(session_id, None)
 
     def _handle_raw_stream_event(self, event: OnlineMrEvent) -> None:
         if self._shutdown_requested:
@@ -3805,6 +3977,8 @@ class OnlineMrCollectionPage(QWidget):
         device_id = int(event.device_id) if event.device_id is not None else -1
         line = f"{event.timestamp.isoformat(sep=' ', timespec='milliseconds')} [{event.module}] {text}"
         self.output_buffers_by_device_id.setdefault(device_id, deque(maxlen=2000)).append(line)
+        if not self._can_update_ui():
+            return
         self._ensure_output_widget(device_id, event.session_id)
         if self.output_render_enabled:
             self.output_dirty_devices.add(device_id)
@@ -3898,20 +4072,21 @@ class OnlineMrCollectionPage(QWidget):
             return
         previous = self._last_active_peer_by_device_id.get(int(event.device_id))
         if previous and previous != peer:
-            self._append_switch_history_table_row(
-                {
-                    "switch_time": event.timestamp.isoformat(sep=" ", timespec="milliseconds"),
-                    "radio": event.payload.get("radio") or 1,
-                    "from_peer_name": "",
-                    "to_peer_name": event.payload.get("peer_name") or "",
-                    "from_peer_mac": previous,
-                    "to_peer_mac": peer,
-                    "from_peer_site": "",
-                    "to_peer_site": event.payload.get("peer_station") or event.payload.get("peer_site") or "",
-                    "reason": "ACTIVE peer changed",
-                    "raw_line": event.raw or "",
-                }
-            )
+            if self._can_update_ui():
+                self._append_switch_history_table_row(
+                    {
+                        "switch_time": event.timestamp.isoformat(sep=" ", timespec="milliseconds"),
+                        "radio": event.payload.get("radio") or 1,
+                        "from_peer_name": "",
+                        "to_peer_name": event.payload.get("peer_name") or "",
+                        "from_peer_mac": previous,
+                        "to_peer_mac": peer,
+                        "from_peer_site": "",
+                        "to_peer_site": event.payload.get("peer_station") or event.payload.get("peer_site") or "",
+                        "reason": "ACTIVE peer changed",
+                        "raw_line": event.raw or "",
+                    }
+                )
             switch_event = OnlineMrEvent(
                 timestamp=event.timestamp,
                 session_id=event.session_id,
@@ -3923,9 +4098,10 @@ class OnlineMrCollectionPage(QWidget):
                 raw=None,
             )
             bus.publish(switch_event)
-            self.switch_history_text.append(
-                f"{event.timestamp.isoformat(sep=' ', timespec='milliseconds')}  {previous} -> {peer}"
-            )
+            if self._can_update_ui():
+                self.switch_history_text.append(
+                    f"{event.timestamp.isoformat(sep=' ', timespec='milliseconds')}  {previous} -> {peer}"
+                )
         self._last_active_peer_by_device_id[int(event.device_id)] = peer
 
     def _publish_snapshot_event(self, snapshot: OnlineMrSnapshot) -> None:
@@ -4265,7 +4441,6 @@ class OnlineMrCollectionPage(QWidget):
             port=int(port),
             username=username,
             password=password,
-            connection_targets=tuple(connection_targets(device)),
             intervals=OnlineMrIntervals(
                 self.mesh_interval.value(),
                 self.channel_interval.value(),
@@ -4477,7 +4652,12 @@ class OnlineMrCollectionPage(QWidget):
         selected = self._selected_devices()
         selected_ids = {device.id for device in selected if device.id is not None}
         running_selected = any(device_id in self.workers_by_device_id for device_id in selected_ids)
-        can_start = bool(selected) and len(selected) <= 2 and self.manager.running_count() < self.manager.max_concurrent
+        can_start = (
+            bool(selected)
+            and len(selected) <= 2
+            and any(device_id not in self.workers_by_device_id for device_id in selected_ids)
+            and self.manager.running_count() < self.manager.max_concurrent
+        )
         stopping = self.status_value == "STOPPING"
         self.start_button.setEnabled(can_start and not stopping)
         self.stop_selected_button.setEnabled(running_selected and not stopping)
@@ -4788,6 +4968,15 @@ class OnlineMrCollectionPage(QWidget):
     def _maybe_parse_realtime(self, snapshot: OnlineMrSnapshot) -> None:
         if self.realtime_parse_worker is not None or self.parse_worker is not None:
             return
+        current = self.tabs.currentWidget()
+        heavy_tabs = {
+            self.diagnosis_table,
+            self.analysis_charts,
+            self.switch_history_panel,
+            self.active_link_switch_table,
+        }
+        if current not in heavy_tabs:
+            return
         session_dir = self.session_dirs.get(snapshot.session_id)
         if session_dir is None or not session_dir.exists():
             return
@@ -4795,14 +4984,39 @@ class OnlineMrCollectionPage(QWidget):
         if not raw_dir.exists():
             return
         now = time.monotonic()
-        if now - self._last_realtime_parse_at.get(snapshot.session_id, 0.0) < 30.0:
+        if now - self._last_realtime_parse_at.get(snapshot.session_id, 0.0) < 120.0:
             return
         self._last_realtime_parse_at[snapshot.session_id] = now
-        worker = OnlineMrParseWorker(session_dir, parent=self)
-        self.realtime_parse_worker = worker
-        worker.completed.connect(lambda summary, d=session_dir: self._realtime_parse_completed(d, summary))
-        worker.failed.connect(self._realtime_parse_failed)
-        worker.start()
+        self._start_realtime_parse_job(session_dir)
+
+    def _parse_stopped_session_once(self, session_dir: Path) -> None:
+        raw_dir = session_dir / "raw"
+        try:
+            has_raw_data = raw_dir.is_dir() and any(path.is_file() and path.stat().st_size > 0 for path in raw_dir.iterdir())
+        except OSError:
+            has_raw_data = False
+        if has_raw_data:
+            self._start_realtime_parse_job(session_dir)
+
+    def _start_realtime_parse_job(self, session_dir: Path) -> None:
+        if self.realtime_parse_worker is not None or self.parse_worker is not None:
+            return
+        job_id = uuid4().hex
+        self._realtime_parse_job_id = job_id
+        self._realtime_parse_session_dir = session_dir
+        self.realtime_parse_worker = job_id
+        self.parse_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="online_mr_parse",
+                params={
+                    "session_dir": str(session_dir),
+                    "force_reparse": False,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
 
     def _realtime_parse_completed(self, session_dir: Path, summary) -> None:
         if not self._can_update_ui():

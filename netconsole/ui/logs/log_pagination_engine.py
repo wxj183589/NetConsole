@@ -61,13 +61,14 @@ def iter_logs(
     keyword: str | None = None,
     level: str | None = None,
     parser: Callable[[str], dict[str, str] | None] | None = None,
+    max_bytes: int | None = None,
 ) -> Iterator[dict[str, str]]:
     keyword_text = keyword.strip().casefold() if keyword else None
     level_text = level.strip().upper() if level else None
     parse = parser or _default_parse_line
     if not log_path.exists():
         return
-    for line in _read_lines_reversed(log_path):
+    for line in _read_lines_reversed(log_path, max_bytes=max_bytes):
         parsed = parse(line)
         if parsed is None:
             continue
@@ -78,10 +79,12 @@ def iter_logs(
         yield parsed
 
 
-def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024) -> Iterator[str]:
+def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024, max_bytes: int | None = None) -> Iterator[str]:
     with path.open("rb") as file:
         file.seek(0, 2)
         position = file.tell()
+        if max_bytes is not None:
+            position = min(position, max(0, int(max_bytes)))
         buffer = b""
         while position > 0:
             read_size = min(chunk_size, position)

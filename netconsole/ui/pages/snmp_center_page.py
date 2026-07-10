@@ -7,7 +7,6 @@ import sqlite3
 from pathlib import Path
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
-import json
 from uuid import uuid4
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
@@ -59,12 +58,17 @@ from netconsole.services.mib_resource_service import MibImportReport
 from netconsole.services.mib_translation_service import translate_mib_description
 from netconsole.services.snmp_poll_service import SnmpPollService
 from netconsole.services.export.export_task_builders import mib_product_compare_spec, snmp_query_result_spec
-from netconsole.services.snmp_client import SnmpClient
+from netconsole.services.snmp.request_builder import query_request_to_payload, set_request_to_payload, snmp_cancel_grace_ms
+from netconsole.services.snmp.result_formatter import (
+    format_browser_rows,
+    query_result_from_payload,
+    set_result_from_payload,
+)
 from netconsole.services.snmp_trap_service import SnmpTrapService
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
 from netconsole.ui.export_action_helper import submit_export_task
-from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
+from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpStartupWorker, TopologyDiscoveryWorker
 from netconsole.ui.table_utils import auto_fit_table_columns
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
@@ -81,12 +85,6 @@ def snmp_action_button(text: str, icon_name: str | None = None) -> QPushButton:
     return button
 
 
-def _write_snmp_result_cache(paths: PathResolver, result: SnmpQueryResult, prefix: str) -> Path:
-    cache_dir = paths.runtime_cache_dir / "snmp_query_results"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / f"{prefix}_{uuid4().hex}.json"
-    path.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
 RESULT_HEADERS = ["操作", "名称/OID", "值", "类型", "IP:端口", "状态", "耗时(ms)", "原始OID", "索引", "解码索引", "模块", "时间", "错误信息"]
 RESULT_COLUMN_WIDTHS = {
     "操作": 80,
@@ -149,6 +147,15 @@ class SnmpTargetContext:
 class SnmpAdvancedParametersDialog(QDialog):
     def __init__(self, *, profile: SnmpProfile, target_name: str, temporary: bool = False, max_repetitions: int = 10, max_rows: int = 200, parent=None) -> None:
         super().__init__(parent)
+        center = getattr(parent, "center", None)
+        self.paths = getattr(center, "paths", None) or PathResolver()
+        self.site_name = str(getattr(center, "site_name", "demo") or "demo")
+        self.test_job_id = ""
+        self.test_manager = BackgroundProcessManager(self, paths=self.paths)
+        self.test_manager.progress.connect(self._test_progress)
+        self.test_manager.finished.connect(self._test_finished)
+        self.test_manager.failed.connect(self._test_failed)
+        self.test_manager.cancelled.connect(self._test_cancelled)
         self.setWindowTitle("高级参数")
         self.host_input = QLineEdit(profile.host)
         self.port_input = NoWheelSpinBox()
@@ -204,6 +211,7 @@ class SnmpAdvancedParametersDialog(QDialog):
         layout.addWidget(self.set_enabled_checkbox)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         test_button = button_box.addButton("测试连通性", QDialogButtonBox.ActionRole)
+        self.test_button = test_button
         copy_button = button_box.addButton("复制参数", QDialogButtonBox.ActionRole)
         test_button.clicked.connect(self.test_connectivity)
         copy_button.clicked.connect(self.copy_parameters)
@@ -233,11 +241,69 @@ class SnmpAdvancedParametersDialog(QDialog):
         if not profile.host:
             self.status_label.setText("请先填写地址。")
             return
-        result = SnmpClient().test_device(profile)
-        if result.get("status") == "success":
-            self.status_label.setText(f"测试成功：{profile.host}:{profile.port}，耗时 {result.get('latency_ms')} ms")
+        if self.test_job_id:
+            return
+        request = SnmpQueryRequest(
+            profile=profile,
+            method="Get",
+            oid="1.3.6.1.2.1.1.1.0",
+            save_history=False,
+            device_name="临时参数测试",
+            source="temporary",
+        )
+        self.test_job_id = uuid4().hex
+        self.test_button.setEnabled(False)
+        self.status_label.setText(f"正在测试：{profile.host}:{profile.port}...")
+        self.test_manager.start_job(
+            BackgroundJob(
+                job_id=self.test_job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.site_name,
+                    "operation": "GET",
+                    "request": query_request_to_payload(request),
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
+
+    def _test_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") == self.test_job_id:
+            self.status_label.setText(str(event.get("message") or "正在测试 SNMP 连通性..."))
+
+    def _test_finished(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self.test_job_id:
+            return
+        payload = dict(event.get("result") or {})
+        result = query_result_from_payload(dict(payload.get("query_result") or {}))
+        self.test_job_id = ""
+        self.test_button.setEnabled(True)
+        if result.status == "success":
+            self.status_label.setText(f"测试成功：{result.request.profile.host}:{result.request.profile.port}，耗时 {result.elapsed_ms} ms")
         else:
-            self.status_label.setText(f"测试失败：{status_label(result.get('status'))}；{result.get('error_message') or ''}")
+            self.status_label.setText(f"测试失败：{status_label(result.status)}；{result.error_message}")
+
+    def _test_failed(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self.test_job_id:
+            return
+        self.test_job_id = ""
+        self.test_button.setEnabled(True)
+        self.status_label.setText(f"测试失败：{event.get('message') or event.get('error') or '未知错误'}")
+
+    def _test_cancelled(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self.test_job_id:
+            return
+        self.test_job_id = ""
+        self.test_button.setEnabled(True)
+        self.status_label.setText("测试已取消。")
+
+    def done(self, result: int) -> None:
+        if self.test_job_id:
+            self.test_manager.cancel_job(self.test_job_id)
+            self.test_job_id = ""
+        super().done(result)
 
     def copy_parameters(self) -> None:
         profile = self.profile()
@@ -1181,12 +1247,13 @@ class MibBrowserPage(QWidget):
     def __init__(self, center: SnmpCenterPage) -> None:
         super().__init__()
         self.center = center
-        self.worker: SnmpQueryWorker | None = None
-        self.set_worker: SnmpSetWorker | None = None
+        self.worker: str | None = None
+        self.set_worker: str | None = None
         self.tree_worker: MibBrowserTreeLoadWorker | None = None
         self.child_tree_workers: dict[int, tuple[MibBrowserTreeLoadWorker, QTreeWidgetItem]] = {}
         self.product_tree_rebuild_worker: ProductReferenceTreeRebuildWorker | None = None
         self.last_result: SnmpQueryResult | None = None
+        self.last_result_file = ""
         self.devices: list[Device] = []
         self.product_references: list[dict[str, object]] = []
         self.product_reference_tree_nodes: list[dict[str, object]] = []
@@ -1198,6 +1265,11 @@ class MibBrowserPage(QWidget):
         self.background_manager.finished.connect(self._product_reference_finished)
         self.background_manager.failed.connect(self._product_reference_failed)
         self.background_manager.cancelled.connect(self._product_reference_failed)
+        self.query_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.query_manager.progress.connect(self._query_job_progress)
+        self.query_manager.finished.connect(self._query_job_finished)
+        self.query_manager.failed.connect(self._query_job_failed)
+        self.query_manager.cancelled.connect(self._query_job_cancelled)
         self.profile_overrides: dict[str, SnmpProfile] = {}
         self.temporary_profile: SnmpProfile | None = None
         self.temporary_name = ""
@@ -2219,15 +2291,31 @@ class MibBrowserPage(QWidget):
             access=str(data.get("access") or ""),
             old_value=old_value,
         )
+        self._submit_set_request(request)
+
+    def _submit_set_request(self, request: SnmpSetRequest) -> None:
         if self.set_worker is not None:
-            self.set_worker.cancel()
+            self.query_manager.cancel_job(self.set_worker)
         self._set_task_id += 1
-        task_id = self._set_task_id
-        self.set_worker = SnmpSetWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
-        self.set_worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._set_task_id else None)
-        self.set_worker.finished_with_result.connect(lambda result, task_id=task_id: self._set_finished(result, task_id))
-        self.set_worker.finished.connect(self.set_worker.deleteLater)
-        self.set_worker.start()
+        job_id = uuid4().hex
+        self.set_worker = job_id
+        self.go_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.operation_label.setText("正在执行 SNMP Set...")
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": "SET",
+                    "request": set_request_to_payload(request),
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def _set_finished(self, result: object, task_id: int | None = None) -> None:
         if task_id is not None and task_id != self._set_task_id:
@@ -2334,19 +2422,34 @@ class MibBrowserPage(QWidget):
             save_history=True,
             device_id=target.device_id,
             device_name=target.device_name,
+            object_name=str(data.get("name") or ""),
+            module_name=str(data.get("module_name") or ""),
+            base_oid=base_oid or oid,
+            source=target.source,
         )
         if self.worker is not None:
-            self.worker.cancel()
+            self.query_manager.cancel_job(self.worker)
         self._query_task_id += 1
-        task_id = self._query_task_id
-        self.worker = SnmpQueryWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
-        self.worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._query_task_id else None)
-        self.worker.finished_with_result.connect(lambda result, task_id=task_id: self._browser_query_finished(result, task_id))
-        self.worker.finished.connect(self.worker.deleteLater)
+        job_id = uuid4().hex
+        self.worker = job_id
         self.go_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.operation_label.setText(f"正在执行 {self.operation_combo.currentText()}...")
-        self.worker.start()
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": method,
+                    "request": query_request_to_payload(request),
+                    "cache_result": True,
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def show_advanced_parameters(self) -> None:
         target = self._current_target_context()
@@ -2382,9 +2485,9 @@ class MibBrowserPage(QWidget):
 
     def cancel_query(self) -> None:
         cancelled = False
+        query_job_pending = self.worker is not None or self.set_worker is not None
         if self.worker is not None:
-            self.worker.cancel()
-            self._query_task_id += 1
+            self.query_manager.cancel_job(self.worker)
             cancelled = True
         if self.tree_worker is not None:
             self.tree_worker.cancel()
@@ -2398,17 +2501,60 @@ class MibBrowserPage(QWidget):
             self.rebuild_product_tree_button.setEnabled(True)
             cancelled = True
         if self.set_worker is not None:
-            self.set_worker.cancel()
-            self._set_task_id += 1
+            self.query_manager.cancel_job(self.set_worker)
             cancelled = True
         if cancelled:
+            self.go_button.setEnabled(not query_job_pending and self.device_combo.currentData() is not None)
+            self.cancel_button.setEnabled(False)
+        self.operation_label.setText("正在取消当前任务..." if query_job_pending else "已取消" if cancelled else "没有正在执行的任务")
+        if cancelled:
+            self.path_label.setText("正在取消当前后台任务" if query_job_pending else "已取消当前后台任务")
+
+    def _query_job_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") in {self.worker, self.set_worker}:
+            self.operation_label.setText(str(event.get("message") or "正在执行 SNMP 查询..."))
+
+    def _query_job_finished(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        payload = dict(event.get("result") or {})
+        if job_id == self.worker:
+            self.worker = None
+            result = query_result_from_payload(dict(payload.get("query_result") or {}))
+            self.last_result_file = str(payload.get("result_file") or "")
+            self._browser_query_finished(result, display_rows=list(payload.get("browser_rows") or []))
+            return
+        if job_id == self.set_worker:
+            self.set_worker = None
+            self._set_finished(set_result_from_payload(dict(payload.get("set_result") or {})))
+
+    def _query_job_failed(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        message = str(event.get("message") or event.get("error") or "SNMP 查询失败")
+        if job_id == self.worker:
+            self.worker = None
             self.go_button.setEnabled(self.device_combo.currentData() is not None)
             self.cancel_button.setEnabled(False)
-        self.operation_label.setText("已取消" if cancelled else "没有正在执行的任务")
-        if cancelled:
-            self.path_label.setText("已取消当前后台任务")
+            self.operation_label.setText(f"查询失败：{message}")
+        elif job_id == self.set_worker:
+            self.set_worker = None
+            self.go_button.setEnabled(self.device_combo.currentData() is not None)
+            self.cancel_button.setEnabled(False)
+            self.operation_label.setText(f"Set 执行失败：{message}")
 
-    def _browser_query_finished(self, result: object, task_id: int | None = None) -> None:
+    def _query_job_cancelled(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == self.worker:
+            self.worker = None
+        elif job_id == self.set_worker:
+            self.set_worker = None
+        else:
+            return
+        self.go_button.setEnabled(self.device_combo.currentData() is not None)
+        self.cancel_button.setEnabled(False)
+        self.operation_label.setText("SNMP 查询已取消。")
+        self.path_label.setText("已取消当前后台任务")
+
+    def _browser_query_finished(self, result: object, task_id: int | None = None, display_rows: list[list[object]] | None = None) -> None:
         if task_id is not None and task_id != self._query_task_id:
             return
         self.worker = None
@@ -2431,29 +2577,7 @@ class MibBrowserPage(QWidget):
             if base_oid and base_oid != result.request.oid and result.request.oid.startswith(base_oid + "."):
                 message += " 当前 OID 看起来是表字段实例；若要遍历整列，请点击“回到列 OID”。"
         self.operation_label.setText(message)
-        rows = []
-        for row in result.rows:
-            resolved = self._resolve_result_oid(row.oid)
-            instance_raw = instance_suffix(row.oid, str(resolved.get("oid") or ""))
-            decoded_instance = decode_octet_string_instance(instance_raw)
-            name_oid = f"{resolved.get('name')}.{instance_raw}" if resolved.get("name") and instance_raw else str(resolved.get("name") or row.oid)
-            rows.append(
-                [
-                    result.request.method,
-                    name_oid,
-                    row.decoded_value or row.value,
-                    row.value_type,
-                    f"{result.request.profile.host}:{result.request.profile.port}",
-                    status_label(row.status),
-                    row.latency_ms,
-                    row.oid,
-                    instance_raw,
-                    decoded_instance,
-                    resolved.get("module_name") or "",
-                    result.request.started_at,
-                    compact_error_message(row.error_message),
-                ]
-            )
+        rows = display_rows if display_rows is not None else format_browser_rows(result)
         self.result_model.set_rows(RESULT_HEADERS, rows)
         auto_resize_table_view_columns(self.result_table, RESULT_COLUMN_WIDTHS)
 
@@ -2501,10 +2625,12 @@ class MibBrowserPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_browser_result.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
-        result_file = _write_snmp_result_cache(self.center.paths, self.last_result, "mib_browser")
+        if not self.last_result_file:
+            MessageBox.information(self, "MIB 浏览器", "当前查询结果缓存不可用，请重新执行查询后再导出。")
+            return
         submit_export_task(
             self,
-            snmp_query_result_spec(path, result_file=result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
+            snmp_query_result_spec(path, result_file=self.last_result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
             success_title="MIB 浏览器",
             paths=self.center.paths,
         )
@@ -2571,9 +2697,10 @@ class SnmpQueryPage(QWidget):
     def __init__(self, center: SnmpCenterPage) -> None:
         super().__init__()
         self.center = center
-        self.worker: SnmpQueryWorker | None = None
-        self.set_worker: SnmpSetWorker | None = None
+        self.worker: str | None = None
+        self.set_worker: str | None = None
         self.last_result: SnmpQueryResult | None = None
+        self.last_result_file = ""
         self.devices: list[Device] = []
         self.device_combo = QComboBox()
         self.method_combo = QComboBox()
@@ -2594,6 +2721,9 @@ class SnmpQueryPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         run_button = snmp_action_button("执行查询", "PLAY")
         cancel_button = snmp_action_button("取消", "CANCEL")
+        self.run_button = run_button
+        self.cancel_button = cancel_button
+        self.cancel_button.setEnabled(False)
         export_button = snmp_action_button("导出结果", "SHARE")
         refresh_button = snmp_action_button("刷新设备", "SYNC")
         choose_mib_button = snmp_action_button("从 MIB 选择", "SEARCH")
@@ -2616,6 +2746,11 @@ class SnmpQueryPage(QWidget):
         layout.addLayout(form)
         layout.addWidget(self.status)
         layout.addWidget(self.table, 1)
+        self.query_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.query_manager.progress.connect(self._job_progress)
+        self.query_manager.finished.connect(self._job_finished)
+        self.query_manager.failed.connect(self._job_failed)
+        self.query_manager.cancelled.connect(self._job_cancelled)
 
     def refresh(self) -> None:
         self.center.start_data_refresh("devices", self._apply_devices)
@@ -2655,21 +2790,46 @@ class SnmpQueryPage(QWidget):
         if self.method_combo.currentText() == "Set":
             self.run_set(device)
             return
+        oid = self.oid_input.text().strip()
+        data = self.center.browser_page._resolve_result_oid(oid) if oid else {}
         request = SnmpQueryRequest(
             profile=SnmpProfile.from_device(device),
             method=self.method_combo.currentText(),
-            oid=self.oid_input.text().strip(),
+            oid=oid,
             max_repetitions=self.max_repetitions.value(),
             max_rows=self.max_rows.value(),
             save_history=self.save_history.isChecked(),
             device_id=str(device.device_uuid or device.id),
             device_name=device.name,
+            object_name=str(data.get("name") or ""),
+            module_name=str(data.get("module_name") or ""),
+            base_oid=str(data.get("oid") or oid),
         )
-        self.worker = SnmpQueryWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
-        self.worker.progress.connect(self.status.setText)
-        self.worker.finished_with_result.connect(self._query_finished)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()
+        self._submit_query_request(request)
+
+    def _submit_query_request(self, request: SnmpQueryRequest) -> None:
+        if self.worker is not None:
+            self.query_manager.cancel_job(self.worker)
+        job_id = uuid4().hex
+        self.worker = job_id
+        self.run_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.status.setText(f"正在执行 {request.method}...")
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": request.method,
+                    "request": query_request_to_payload(request),
+                    "cache_result": True,
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def run_set(self, device: Device) -> None:
         oid = self.oid_input.text().strip()
@@ -2726,14 +2886,35 @@ class SnmpQueryPage(QWidget):
             module_name=str(data.get("module_name") or ""),
             access=str(data.get("access") or ""),
         )
-        self.set_worker = SnmpSetWorker(self.center.paths.site_snmp_db_path(self.center.site_name), request, self)
-        self.set_worker.progress.connect(self.status.setText)
-        self.set_worker.finished_with_result.connect(self._set_finished)
-        self.set_worker.finished.connect(self.set_worker.deleteLater)
-        self.set_worker.start()
+        self._submit_set_request(request)
+
+    def _submit_set_request(self, request: SnmpSetRequest) -> None:
+        if self.set_worker is not None:
+            self.query_manager.cancel_job(self.set_worker)
+        job_id = uuid4().hex
+        self.set_worker = job_id
+        self.run_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.status.setText("正在执行 SNMP Set...")
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": "SET",
+                    "request": set_request_to_payload(request),
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def _set_finished(self, result: object) -> None:
         self.set_worker = None
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         if isinstance(result, Exception):
             self.status.setText(f"Set 执行失败：{result}")
             return
@@ -2744,11 +2925,18 @@ class SnmpQueryPage(QWidget):
 
     def cancel_query(self) -> None:
         if self.worker is not None:
-            self.worker.cancel()
+            self.query_manager.cancel_job(self.worker)
+            self.cancel_button.setEnabled(False)
             self.status.setText("正在取消查询...")
+        if self.set_worker is not None:
+            self.query_manager.cancel_job(self.set_worker)
+            self.cancel_button.setEnabled(False)
+            self.status.setText("正在取消 SNMP Set...")
 
-    def _query_finished(self, result: object) -> None:
+    def _query_finished(self, result: object, display_rows: list[list[object]] | None = None) -> None:
         self.worker = None
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         if isinstance(result, Exception):
             self.status.setText(f"查询失败：{result}")
             return
@@ -2757,11 +2945,50 @@ class SnmpQueryPage(QWidget):
             return
         self.last_result = result
         self.status.setText(f"查询完成：状态 {result.status}，返回 {len(result.rows)} 条，耗时 {result.elapsed_ms} ms。{result.error_message}")
-        rows = [
-            [result.request.started_at, result.request.device_name, row.oid, row.name, row.instance, row.value_type, row.value, row.decoded_value, row.latency_ms, row.status, row.error_message]
-            for row in result.rows
-        ]
+        rows = display_rows or []
         self.model.set_rows(self.model.headers, rows)
+
+    def _job_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") in {self.worker, self.set_worker}:
+            self.status.setText(str(event.get("message") or "正在执行 SNMP 查询..."))
+
+    def _job_finished(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        payload = dict(event.get("result") or {})
+        if job_id == self.worker:
+            self.last_result_file = str(payload.get("result_file") or "")
+            self._query_finished(
+                query_result_from_payload(dict(payload.get("query_result") or {})),
+                display_rows=list(payload.get("query_rows") or []),
+            )
+        elif job_id == self.set_worker:
+            self._set_finished(set_result_from_payload(dict(payload.get("set_result") or {})))
+
+    def _job_failed(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        message = str(event.get("message") or event.get("error") or "SNMP 查询失败")
+        if job_id == self.worker:
+            self.worker = None
+            self.status.setText(f"查询失败：{message}")
+        elif job_id == self.set_worker:
+            self.set_worker = None
+            self.status.setText(f"Set 执行失败：{message}")
+        else:
+            return
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+
+    def _job_cancelled(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == self.worker:
+            self.worker = None
+        elif job_id == self.set_worker:
+            self.set_worker = None
+        else:
+            return
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.status.setText("SNMP 查询已取消。")
 
     def export_result(self) -> None:
         if self.last_result is None:
@@ -2769,10 +2996,12 @@ class SnmpQueryPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_query.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
-        result_file = _write_snmp_result_cache(self.center.paths, self.last_result, "snmp_query")
+        if not self.last_result_file:
+            MessageBox.information(self, "SNMP 查询工具", "当前查询结果缓存不可用，请重新执行查询后再导出。")
+            return
         submit_export_task(
             self,
-            snmp_query_result_spec(path, result_file=result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
+            snmp_query_result_spec(path, result_file=self.last_result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
             success_title="SNMP 查询工具",
             paths=self.center.paths,
         )

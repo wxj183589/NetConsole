@@ -38,6 +38,7 @@ def test_snapshot_download_default_filename_includes_device_name(tmp_path):
     repository = DeviceRepository(db)
     device = repository.create(Device(name="SW/01", system_name="SYS01", primary_address="192.0.2.10", device_vendor="H3C"))
     page = ConfigCollectionCenterPage(repository, I18n("en_US"), "demo", paths)
+    process_qt_until(lambda: page.device_list_job_id is None)
     snapshot = ConfigSnapshot(
         None,
         device.id,
@@ -91,6 +92,7 @@ def test_config_compare_tab_shows_running_on_left_and_saved_on_right(tmp_path):
     repository = DeviceRepository(db)
     device = repository.create(Device(name="SW01", primary_address="192.0.2.10", device_vendor="H3C"))
     page = ConfigCollectionCenterPage(repository, I18n("zh_CN"), "demo", paths)
+    process_qt_until(lambda: page.device_list_job_id is None)
     page.service._write_snapshot(device, "running", "20260618_101200", "#\nsysname RUNNING\n#\nreturn")
     page.service._write_snapshot(device, "saved", "20260618_101200", "#\nsysname SAVED\n#\nreturn")
 
@@ -138,11 +140,13 @@ def test_snapshot_table_supports_checkbox_multi_select_without_device_selection_
     repository = DeviceRepository(db)
     device = repository.create(Device(name="SW01", primary_address="192.0.2.10", device_vendor="H3C"))
     page = ConfigCollectionCenterPage(repository, I18n("zh_CN"), "demo", paths)
+    process_qt_until(lambda: page.device_list_job_id is None)
     page.service._write_snapshot(device, "running", "20260618_101200", "#\nsysname RUNNING\n#\nreturn")
     page.service._write_snapshot(device, "saved", "20260618_101200", "#\nsysname SAVED\n#\nreturn")
     page.service._write_snapshot(device, "diff", "20260618_101200", "--- saved\n+++ running\n")
 
     page.refresh()
+    process_qt_until(lambda: page.device_list_job_id is None)
 
     assert page.snapshot_table.columnCount() == 4
     assert isinstance(page.snapshot_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)

@@ -4,6 +4,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractItemView, QApplication
 
@@ -53,6 +54,9 @@ from netconsole.ui.pages.vehicle_mr_online_page import (
     VehicleMrMappingDialog,
     _vehicle_ap_lookup_from_payload,
 )
+
+
+pytestmark = pytest.mark.usefixtures("qt_page_lifecycle")
 
 
 def _process_events_until(predicate, timeout: float = 8.0) -> None:

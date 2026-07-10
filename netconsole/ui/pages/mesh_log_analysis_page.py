@@ -5,10 +5,6 @@ from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import json
 import os
 import re
-import subprocess
-import sys
-import tempfile
-import threading
 import traceback
 import uuid
 from datetime import datetime
@@ -49,7 +45,7 @@ from netconsole.models.mesh_log_models import MeshMrProfile, format_mac_h3c
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
-from netconsole.services.export_task_models import ExportJob
+from netconsole.services.export.export_job import ExportJob
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.mesh_import_service import MeshImportService
@@ -57,6 +53,7 @@ from netconsole.services.mesh_analysis_params_service import load_site_mesh_anal
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.path_preference_service import PathPreferenceService
 from netconsole.ui.mesh_log_workers import MeshDerivedAnalysisRebuildWorker, MeshLogImportWorker
+from netconsole.ui.export_action_helper import cancel_export_task, submit_export_task
 from netconsole.ui.mesh_table_column_state import MeshTableColumnState
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
@@ -261,213 +258,6 @@ def _rail_mesh_diag(message: str) -> None:
     app_logger.log_info("RAIL_MESH_UI", message)
 
 
-class MeshLinkDetailExportWorker(QThread):
-    stageChanged = Signal(str)
-    progressChanged = Signal(int, int, str)
-    completed = Signal(str)
-    failed = Signal(str)
-    cancelled = Signal()
-
-    def __init__(
-        self,
-        db_path: Path,
-        output_path: Path,
-        filters: dict[str, object | None],
-        source_file_id: int | None,
-        radio: int | None,
-        analysis_params: dict[str, object] | None = None,
-        fallback_analysis_params: dict[str, object] | None = None,
-        site_name: str = "",
-        mr_name: str = "",
-        parent=None,
-    ) -> None:
-        _ = parent
-        super().__init__(None)
-        self.db_path = Path(db_path)
-        self.output_path = Path(output_path)
-        self.filters = dict(filters)
-        self.source_file_id = source_file_id
-        self.radio = radio
-        self.analysis_params = analysis_params
-        self.fallback_analysis_params = fallback_analysis_params
-        self.site_name = site_name
-        self.mr_name = mr_name
-        self.completed_path = ""
-        self.failed_error = ""
-        self.cancelled_by_user = False
-        self._process: subprocess.Popen[str] | None = None
-        self._job_path: Path | None = None
-        self._cancel_path: Path | None = None
-        self._tmp_path: Path | None = None
-        self._terminate_timer: threading.Timer | None = None
-
-    def run(self) -> None:
-        job_id = uuid.uuid4().hex
-        job_dir = Path(tempfile.gettempdir()) / "netconsole_export_jobs"
-        job_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.output_path.with_name(f"{self.output_path.stem}.{job_id}.tmp{self.output_path.suffix}")
-        job_path = job_dir / f"{job_id}.json"
-        cancel_path = job_dir / f"{job_id}.cancel"
-        self._job_path = job_path
-        self._cancel_path = cancel_path
-        self._tmp_path = tmp_path
-        try:
-            app_logger.log_info("MESH_LINK_EXPORT_PROCESS_START", f"path={self.output_path}, source_file_id={self.source_file_id or 'ALL'}, radio={self.radio or 'ALL'}")
-            job = ExportJob(
-                job_id=job_id,
-                export_type="mesh_link_detail",
-                db_path=str(self.db_path),
-                output_path=str(self.output_path),
-                tmp_path=str(tmp_path),
-                cancel_path=str(cancel_path),
-                filters=self.filters,
-                context={
-                    "source_file_id": self.source_file_id,
-                    "radio": self.radio,
-                    "site_name": self.site_name,
-                    "mr_name": self.mr_name,
-                    "source_label": "全部源文件" if self.source_file_id in (None, "") else str(self.source_file_id),
-                    "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                },
-                params={
-                    "analysis_params": self.analysis_params or {},
-                    "fallback_analysis_params": self.fallback_analysis_params or {},
-                },
-            )
-            with job_path.open("w", encoding="utf-8") as handle:
-                json.dump(job.to_dict(), handle, ensure_ascii=False, indent=2)
-            if self.isInterruptionRequested():
-                self._touch_cancel_file()
-            result = self._run_export_process(job_path)
-            if result.get("ok"):
-                self.completed_path = str(self.output_path)
-                app_logger.log_info("MESH_LINK_EXPORT_PROCESS_DONE", f"path={self.output_path}")
-                self.completed.emit(str(self.output_path))
-                return
-            if result.get("cancelled") or self.isInterruptionRequested():
-                self.cancelled_by_user = True
-                self._cleanup_tmp_files()
-                app_logger.log_info("MESH_LINK_EXPORT_PROCESS_CANCELLED", f"path={self.output_path}")
-                self.cancelled.emit()
-                return
-            error = str(result.get("error") or "导出子进程未返回有效结果")
-            raise RuntimeError(error)
-        except Exception as exc:
-            self.failed_error = str(exc)
-            self._cleanup_tmp_files()
-            app_logger.log_error("MESH_LINK_EXPORT_FAILED", traceback.format_exc())
-            self.failed.emit(str(exc))
-            return
-        finally:
-            self._cleanup_job_files()
-
-    def cancel_export(self) -> None:
-        self.requestInterruption()
-        self._touch_cancel_file()
-        timer = threading.Timer(3.0, self._terminate_process_if_running)
-        timer.daemon = True
-        self._terminate_timer = timer
-        timer.start()
-
-    def _run_export_process(self, job_path: Path) -> dict[str, object]:
-        command = self._export_worker_command(job_path)
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=creationflags,
-        )
-        self._process = process
-        result: dict[str, object] = {}
-        assert process.stdout is not None
-        for raw_line in process.stdout:
-            if self.isInterruptionRequested():
-                self._touch_cancel_file()
-            line = raw_line.strip()
-            if not line:
-                continue
-            event = self._parse_export_event(line)
-            event_type = event.get("type")
-            if event_type == "progress":
-                stage = str(event.get("stage") or "mesh_analysis.export_progress_write_links")
-                done = int(event.get("done") or 0)
-                total = int(event.get("total") or 0)
-                self.stageChanged.emit(stage)
-                self.progressChanged.emit(done, total, stage)
-            elif event_type in {"result", "finished", "success", "error", "failed", "cancelled"}:
-                result = event
-            elif event_type == "log":
-                app_logger.log_error("MESH_LINK_EXPORT_PROCESS_LOG", str(event.get("message") or line))
-        return_code = process.wait()
-        stderr = process.stderr.read() if process.stderr is not None else ""
-        self._process = None
-        if return_code == 0 and result:
-            return result
-        if self.isInterruptionRequested() or return_code == 2:
-            return result or {"ok": False, "cancelled": True, "error": "导出已取消"}
-        if result:
-            return result
-        if stderr.strip():
-            app_logger.log_error("MESH_LINK_EXPORT_PROCESS_STDERR", stderr)
-        return {"ok": False, "cancelled": False, "error": stderr.strip() or f"导出子进程异常退出，退出码 {return_code}"}
-
-    def _export_worker_command(self, job_path: Path) -> list[str]:
-        if getattr(sys, "frozen", False):
-            return [sys.executable, "--export-worker-job", str(job_path)]
-        return [sys.executable, "-m", "netconsole.tools.export_worker_main", "--job", str(job_path)]
-
-    def _parse_export_event(self, line: str) -> dict[str, object]:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            app_logger.log_info("MESH_LINK_EXPORT_PROCESS_OUTPUT", line)
-            return {}
-        return event if isinstance(event, dict) else {}
-
-    def _touch_cancel_file(self) -> None:
-        cancel_path = self._cancel_path
-        if cancel_path is None:
-            return
-        try:
-            cancel_path.parent.mkdir(parents=True, exist_ok=True)
-            cancel_path.write_text("cancelled", encoding="utf-8")
-        except OSError:
-            pass
-
-    def _terminate_process_if_running(self) -> None:
-        process = self._process
-        if process is None or process.poll() is not None:
-            return
-        try:
-            process.terminate()
-        except OSError:
-            pass
-
-    def _cleanup_tmp_files(self) -> None:
-        for path in (self._tmp_path,):
-            if path is None:
-                continue
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
-
-    def _cleanup_job_files(self) -> None:
-        for path in (self._job_path, self._cancel_path):
-            if path is None:
-                continue
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
-
-
 class MeshTabLoadWorker(QThread):
     completed = Signal(int, str, dict)
     failed = Signal(int, str, str)
@@ -570,8 +360,7 @@ class MeshLogAnalysisPage(QWidget):
         self.analysis_params_override: MeshAnalysisParams | None = None
         self.profile_by_id: dict[str, MeshMrProfile] = {}
         self.worker: MeshLogImportWorker | None = None
-        self.export_worker: MeshLinkDetailExportWorker | None = None
-        self.link_export_result_handled = False
+        self.link_export_job_id = ""
         self.report_worker: object | None = None
         self.report_open_output_dir = True
         self.derived_worker: MeshDerivedAnalysisRebuildWorker | None = None
@@ -971,7 +760,7 @@ class MeshLogAnalysisPage(QWidget):
         profile = self._require_profile()
         if profile is None:
             return
-        if self.export_worker is not None and self.export_worker.isRunning():
+        if self.link_export_job_id:
             self._cancel_link_export()
             return
         filters = self._current_link_filters()
@@ -990,26 +779,40 @@ class MeshLogAnalysisPage(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText(self.i18n.t("mesh_analysis.export_progress_query_links"))
-        self.link_export_result_handled = False
-        self.export_worker = MeshLinkDetailExportWorker(
-            self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name),
-            path,
-            filters,
-            self.current_source_file_id,
-            radio,
-            self._analysis_params_override_payload(),
-            self._site_analysis_params().to_dict(),
-            self.site_name,
-            profile.display_name,
+        job_id = uuid.uuid4().hex
+        job = ExportJob(
+            job_id=job_id,
+            job_type="mesh_link_detail",
+            site_name=self.site_name,
+            db_path=str(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name)),
+            output_path=str(path),
+            filters=filters,
+            context={
+                "source_file_id": self.current_source_file_id,
+                "radio": radio,
+                "site_name": self.site_name,
+                "mr_name": profile.display_name,
+                "source_label": "全部源文件" if self.current_source_file_id in (None, "") else str(self.current_source_file_id),
+                "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            params={
+                "analysis_params": self._analysis_params_override_payload() or {},
+                "fallback_analysis_params": self._site_analysis_params().to_dict(),
+                "open_dir_on_success": True,
+            },
         )
-        worker = self.export_worker
-        worker.stageChanged.connect(self._on_link_export_stage)
-        worker.progressChanged.connect(self._on_link_export_progress)
-        worker.completed.connect(self._on_link_export_completed)
-        worker.failed.connect(self._on_link_export_failed)
-        worker.cancelled.connect(self._on_link_export_cancelled)
-        worker.finished.connect(self._on_link_export_finished)
-        worker.start()
+        self.link_export_job_id = job_id
+        submit_export_task(
+            self,
+            job,
+            success_title="链路明细导出完成",
+            progress_title="正在导出链路明细",
+            paths=self.paths,
+            on_progress=self._on_link_export_progress,
+            on_finished=self._on_link_export_completed,
+            on_failed=self._on_link_export_failed,
+            on_cancelled=self._on_link_export_cancelled,
+        )
 
     def open_analysis_params_dialog(self) -> None:
         params = self.analysis_params_override or self._site_analysis_params()
@@ -1040,17 +843,16 @@ class MeshLogAnalysisPage(QWidget):
         return self.analysis_params_override.to_dict() if self.analysis_params_override is not None else None
 
     def _cancel_link_export(self) -> None:
-        worker = self.export_worker
-        if worker is None or not worker.isRunning():
+        if not self.link_export_job_id:
             return
-        worker.cancel_export()
+        cancel_export_task(self, self.link_export_job_id)
         self.export_link_button.setEnabled(False)
         self.progress_label.setText("正在取消导出链路明细...")
 
-    def _on_link_export_stage(self, key: str) -> None:
-        self.progress_label.setText(self.i18n.t(key))
-
-    def _on_link_export_progress(self, done: int, total: int, key: str) -> None:
+    def _on_link_export_progress(self, event: dict[str, object]) -> None:
+        total = int(event.get("total") or 0)
+        done = int(event.get("current", event.get("done", 0)) or 0)
+        key = str(event.get("stage") or "mesh_analysis.export_progress_write_links")
         if total > 0:
             self.progress_bar.setRange(0, total)
             self.progress_bar.setValue(min(max(done, 0), total))
@@ -1059,70 +861,37 @@ class MeshLogAnalysisPage(QWidget):
             self.progress_bar.setRange(0, 0)
             self.progress_label.setText(self.i18n.t(key))
 
-    def _on_link_export_completed(self, path: str) -> None:
-        self.link_export_result_handled = True
+    def _on_link_export_completed(self, payload: dict[str, object]) -> None:
+        result = payload.get("result")
+        result_path = result.get("output_path") if isinstance(result, dict) else ""
+        path = str(payload.get("output_path") or result_path or "")
         self._restore_link_export_button()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self.progress_label.setText(f"链路明细已导出：{path}")
-        MessageBox.information(self, self.i18n.t("mesh_analysis.title"), f"链路明细已导出：\n{path}")
 
-    def _on_link_export_failed(self, error: str) -> None:
-        self.link_export_result_handled = True
+    def _on_link_export_failed(self, payload: dict[str, object]) -> None:
+        error = str(payload.get("message") or payload.get("error") or "导出失败")
         self._restore_link_export_button()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText(f"导出链路明细失败：{error}")
-        MessageBox.warning(self, self.i18n.t("mesh_analysis.title"), f"导出链路明细失败：{error}")
 
-    def _on_link_export_cancelled(self) -> None:
-        self.link_export_result_handled = True
+    def _on_link_export_cancelled(self, _payload: dict[str, object]) -> None:
         self._restore_link_export_button()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_label.setText("已取消导出链路明细")
 
     def _restore_link_export_button(self) -> None:
+        self.link_export_job_id = ""
         self.export_link_button.setEnabled(True)
         self.export_link_button.setText("导出链路明细")
 
-    def _cleanup_export_worker(self, worker: MeshLinkDetailExportWorker | None = None) -> None:
-        worker = worker or self.export_worker
-        if worker is not None:
-            worker.deleteLater()
-        if worker is self.export_worker:
-            self.export_worker = None
-
-    def _on_link_export_finished(self) -> None:
-        worker = self.sender()
-        if isinstance(worker, MeshLinkDetailExportWorker) and not self.link_export_result_handled:
-            if worker.completed_path:
-                self._on_link_export_completed(worker.completed_path)
-            elif worker.cancelled_by_user:
-                self._on_link_export_cancelled()
-            elif worker.failed_error:
-                self._on_link_export_failed(worker.failed_error)
-        self._cleanup_export_worker(worker if isinstance(worker, MeshLinkDetailExportWorker) else None)
-
     def closeEvent(self, event) -> None:
         self._stop_tab_load_worker()
-        worker = self.export_worker
-        if worker is not None and worker.isRunning():
-            worker.cancel_export()
-            for signal, slot in (
-                (worker.stageChanged, self._on_link_export_stage),
-                (worker.progressChanged, self._on_link_export_progress),
-                (worker.completed, self._on_link_export_completed),
-                (worker.failed, self._on_link_export_failed),
-                (worker.cancelled, self._on_link_export_cancelled),
-                (worker.finished, self._on_link_export_finished),
-            ):
-                try:
-                    signal.disconnect(slot)
-                except (RuntimeError, TypeError):
-                    pass
-            worker.finished.connect(worker.deleteLater)
-            self.export_worker = None
+        if self.link_export_job_id:
+            cancel_export_task(self, self.link_export_job_id)
         super().closeEvent(event)
 
     def open_full_active_chart(self) -> None:

@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -82,12 +83,18 @@ def test_app_log_page_exports_current_page_only(tmp_path, monkeypatch):
         "netconsole.ui.export_path.QFileDialog.getSaveFileName",
         lambda *args, **kwargs: (str(export_path), "Text Files (*.txt)"),
     )
-    page = AppLogPage(I18n("en_US"))
+    page = AppLogPage(I18n("en_US"), paths=paths)
 
     page.set_page(2)
     page.export_current_page()
 
-    exported_lines = export_path.read_text(encoding="utf-8").splitlines()
+    deadline = time.time() + 5
+    while not export_path.exists() and time.time() < deadline:
+        app().processEvents()
+        time.sleep(0.01)
+
+    assert export_path.exists(), "异步导出进程未在超时前生成文件"
+    exported_lines = export_path.read_text(encoding="utf-8-sig").splitlines()
     assert len(exported_lines) == 101
     assert exported_lines[0] == "时间,级别,事件,详情,原始事件,原始详情"
     assert "EVENT_0099" in exported_lines[1]

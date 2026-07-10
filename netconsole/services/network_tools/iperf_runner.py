@@ -299,6 +299,11 @@ class IperfResultStore:
                     interval_start_sec REAL,
                     interval_end_sec REAL,
                     interval_center_time TEXT,
+                    device_aligned_time TEXT,
+                    device_interval_center_time TEXT,
+                    clock_offset_ms REAL,
+                    offset_source TEXT,
+                    time_source TEXT,
                     transfer_bytes REAL,
                     bitrate_mbps REAL,
                     retransmits INTEGER,
@@ -314,6 +319,20 @@ class IperfResultStore:
                 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_run ON iperf_intervals(run_id);
                 """
             )
+            self._ensure_interval_alignment_columns(conn)
+
+    @staticmethod
+    def _ensure_interval_alignment_columns(conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(iperf_intervals)").fetchall()}
+        for column, definition in {
+            "device_aligned_time": "TEXT",
+            "device_interval_center_time": "TEXT",
+            "clock_offset_ms": "REAL",
+            "offset_source": "TEXT",
+            "time_source": "TEXT",
+        }.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE iperf_intervals ADD COLUMN {column} {definition}")
 
     def start_run(self, run_id: str, *, mode: str, command: list[str], log_file: Path, started_at: datetime, session_id: str = "", device_id: int | None = None, config: IperfClientConfig | None = None) -> None:
         cfg = config.normalized() if config else None
@@ -357,9 +376,10 @@ class IperfResultStore:
                 """
                 INSERT INTO iperf_intervals (
                     run_id, session_id, collector_time, interval_start_sec, interval_end_sec, interval_center_time,
+                    device_aligned_time, device_interval_center_time, clock_offset_ms, offset_source, time_source,
                     transfer_bytes, bitrate_mbps, retransmits, cwnd, role, jitter_ms, lost_packets,
                     total_packets, loss_percent, raw_line
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -368,6 +388,11 @@ class IperfResultStore:
                     row.get("interval_start_sec"),
                     row.get("interval_end_sec"),
                     row.get("interval_center_time"),
+                    row.get("device_aligned_time"),
+                    row.get("device_interval_center_time"),
+                    row.get("clock_offset_ms"),
+                    row.get("offset_source"),
+                    row.get("time_source"),
                     row.get("transfer_bytes"),
                     row.get("bitrate_mbps"),
                     row.get("retransmits"),

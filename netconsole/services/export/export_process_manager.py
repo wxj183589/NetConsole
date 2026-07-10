@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.services.export.export_job import ExportJob
+from netconsole.services.job_center.worker_protocol import feed_jsonl, parse_event_line
 
 
 @dataclass
@@ -66,7 +66,9 @@ class ExportProcessManager(QObject):
         process.errorOccurred.connect(lambda error, job_id=job_id: self._handle_process_error(job_id, error))
         process.finished.connect(lambda exit_code, exit_status, job_id=job_id: self._handle_finished(job_id, exit_code, exit_status))
         program, args = self._export_worker_command(job_path)
-        process.setWorkingDirectory(str(self.paths.app_root))
+        worker_root = self._worker_code_root()
+        process.setWorkingDirectory(str(worker_root))
+        process.setProcessEnvironment(self._worker_environment(worker_root))
         app_logger.log_info("EXPORT_JOB_STARTED", f"job_id={job_id} type={runtime_job.job_type} output={runtime_job.output_path}")
         process.start(program, args)
         return job_id
@@ -83,9 +85,12 @@ class ExportProcessManager(QObject):
             pass
         app_logger.log_info("EXPORT_JOB_CANCELLED", f"job_id={job_id} requested=1")
         process = state.process
-        if process.state() != QProcess.NotRunning:
-            process.terminate()
-            QTimer.singleShot(3000, lambda job_id=job_id: self._kill_if_running(job_id))
+        try:
+            if process.state() != QProcess.NotRunning:
+                process.terminate()
+                QTimer.singleShot(3000, lambda job_id=job_id: self._kill_if_running(job_id))
+        except RuntimeError:
+            pass
 
     def is_running(self, job_id: str) -> bool:
         return job_id in self._jobs
@@ -95,17 +100,33 @@ class ExportProcessManager(QObject):
             return sys.executable, ["--export-worker", "--job", str(job_path)]
         return sys.executable, ["-m", "netconsole.export_worker", "--job", str(job_path)]
 
+    def _worker_code_root(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return self.paths.app_root
+        return Path(__file__).resolve().parents[3]
+
+    def _worker_environment(self, worker_root: Path) -> QProcessEnvironment:
+        environment = QProcessEnvironment.systemEnvironment()
+        existing = environment.value("PYTHONPATH")
+        root_text = str(worker_root)
+        environment.insert("PYTHONPATH", root_text if not existing else f"{root_text}{os.pathsep}{existing}")
+        return environment
+
     def _read_stdout(self, job_id: str) -> None:
         state = self._jobs.get(job_id)
         if state is None:
             return
         # Internal JSONL export-worker protocol, not exported device/log content.
         # Device/log text must be decoded at its source before it is packed into the export job payload.
-        raw = bytes(state.process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        state.stdout_buffer += raw
-        while "\n" in state.stdout_buffer:
-            line, state.stdout_buffer = state.stdout_buffer.split("\n", 1)
-            self._handle_stdout_line(state, line.strip())
+        try:
+            chunk = bytes(state.process.readAllStandardOutput())
+        except RuntimeError:
+            return
+        events, diagnostics, state.stdout_buffer = feed_jsonl(state.stdout_buffer, chunk)
+        for line in diagnostics:
+            app_logger.log_info("EXPORT_JOB_OUTPUT", line)
+        for event in events:
+            self._handle_event(state, event)
 
     def _read_stderr(self, job_id: str) -> None:
         state = self._jobs.get(job_id)
@@ -113,22 +134,21 @@ class ExportProcessManager(QObject):
             return
         # Internal export-worker diagnostics only; replacement prevents malformed tracebacks from breaking UI.
         # External tool stderr should be decoded in that tool's adapter before reaching this process manager.
-        state.stderr_buffer += bytes(state.process.readAllStandardError()).decode("utf-8", errors="replace")
+        try:
+            state.stderr_buffer += bytes(state.process.readAllStandardError()).decode("utf-8", errors="replace")
+        except RuntimeError:
+            return
 
     def _handle_stdout_line(self, state: _RunningExport, line: str) -> None:
-        if not line:
+        event = parse_event_line(line)
+        if event is None:
+            if line:
+                app_logger.log_info("EXPORT_JOB_OUTPUT", line)
             return
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            app_logger.log_info("EXPORT_JOB_OUTPUT", line)
-            return
-        if not isinstance(event, dict):
-            return
-        event_type = str(event.get("type") or event.get("event") or "")
-        if event_type == "started":
-            self.progress.emit({**event, "type": "progress", "event": "progress", "current": 0, "total": 0})
-            return
+        self._handle_event(state, event)
+
+    def _handle_event(self, state: _RunningExport, event: dict[str, Any]) -> None:
+        event_type = str(event.get("type") or "")
         if event_type == "progress":
             app_logger.log_info(
                 "EXPORT_JOB_PROGRESS",
@@ -137,23 +157,14 @@ class ExportProcessManager(QObject):
                     f"current={event.get('current', event.get('done', 0))} total={event.get('total', 0)}"
                 ),
             )
-            self.progress.emit(event)
+            self._safe_emit(self.progress, event)
             return
-        if event_type in {"finished", "success", "error", "failed", "cancelled", "result"}:
-            normalized = dict(event)
-            if event_type == "success":
-                normalized["type"] = "finished"
-                normalized["ok"] = True
-            elif event_type in {"failed", "cancelled"}:
-                normalized["type"] = "error"
-                normalized["ok"] = False
-                normalized["cancelled"] = event_type == "cancelled" or bool(normalized.get("cancelled"))
-                if "message" not in normalized:
-                    normalized["message"] = normalized.get("error_message") or normalized.get("error") or "导出失败"
-            state.terminal_event = normalized
+        if event_type in {"finished", "error", "cancelled"}:
+            state.terminal_event = event
             return
         if event_type == "log":
-            app_logger.log_error("EXPORT_JOB_PROCESS_LOG", str(event.get("message") or line))
+            log = app_logger.log_error if str(event.get("level") or "").casefold() == "error" else app_logger.log_info
+            log("EXPORT_JOB_PROCESS_LOG", str(event.get("message") or ""))
 
     def _handle_finished(self, job_id: str, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
         state = self._jobs.pop(job_id, None)
@@ -166,11 +177,11 @@ class ExportProcessManager(QObject):
         cancelled = bool(event.get("cancelled")) or state.cancel_requested
         if exit_code == 0 and ok:
             app_logger.log_info("EXPORT_JOB_COMPLETED", f"job_id={job_id} type={state.job.job_type} output={state.job.output_path}")
-            self.finished.emit(event)
+            self._safe_emit(self.finished, event)
         else:
             message = self._failed_message(state, event, exit_code, cancelled)
             payload = {
-                "type": "error",
+                "type": "cancelled" if cancelled else "error",
                 "job_id": job_id,
                 "message": message,
                 "error": message,
@@ -180,24 +191,41 @@ class ExportProcessManager(QObject):
             }
             if cancelled:
                 app_logger.log_info("EXPORT_JOB_CANCELLED", f"job_id={job_id} type={state.job.job_type}")
-                self.cancelled.emit(payload)
+                self._safe_emit(self.cancelled, payload)
             else:
                 app_logger.log_error("EXPORT_JOB_FAILED", f"job_id={job_id} type={state.job.job_type} error={message}")
+                self._safe_emit(self.failed, payload)
             self._cleanup_tmp_file(state)
-            self.failed.emit(payload)
         self._cleanup_job_files(state)
-        state.process.deleteLater()
+        self._safe_delete_process(state.process)
 
     def _handle_process_error(self, job_id: str, _error: QProcess.ProcessError) -> None:
         state = self._jobs.pop(job_id, None)
         if state is None:
             return
-        message = state.process.errorString() or "导出进程启动失败"
-        app_logger.log_error("EXPORT_JOB_FAILED", f"job_id={job_id} type={state.job.job_type} error={message}")
+        try:
+            message = state.process.errorString() or "导出进程启动失败"
+        except RuntimeError:
+            message = "导出进程启动失败"
+        cancelled = state.cancel_requested
+        payload_message = "已取消导出" if cancelled else f"导出失败：{message}"
+        payload = {
+            "type": "cancelled" if cancelled else "error",
+            "job_id": job_id,
+            "message": payload_message,
+            "error": payload_message,
+            "traceback": "",
+            "output_path": state.job.output_path,
+            "cancelled": cancelled,
+        }
+        if cancelled:
+            app_logger.log_info("EXPORT_JOB_CANCELLED", f"job_id={job_id} type={state.job.job_type}")
+        else:
+            app_logger.log_error("EXPORT_JOB_FAILED", f"job_id={job_id} type={state.job.job_type} error={message}")
         self._cleanup_tmp_file(state)
         self._cleanup_job_files(state)
-        self.failed.emit({"type": "error", "job_id": job_id, "message": f"导出失败：{message}", "error": message, "cancelled": False})
-        state.process.deleteLater()
+        self._safe_emit(self.cancelled if cancelled else self.failed, payload)
+        self._safe_delete_process(state.process)
 
     def _failed_message(self, state: _RunningExport, event: dict[str, Any], exit_code: int, cancelled: bool) -> str:
         if cancelled:
@@ -213,8 +241,11 @@ class ExportProcessManager(QObject):
         state = self._jobs.get(job_id)
         if state is None:
             return
-        if state.process.state() != QProcess.NotRunning:
-            state.process.kill()
+        try:
+            if state.process.state() != QProcess.NotRunning:
+                state.process.kill()
+        except RuntimeError:
+            pass
 
     def _cleanup_tmp_file(self, state: _RunningExport) -> None:
         try:
@@ -230,3 +261,17 @@ class ExportProcessManager(QObject):
                     path.unlink()
             except OSError:
                 pass
+
+    @staticmethod
+    def _safe_emit(signal: Signal, payload: dict[str, Any]) -> None:
+        try:
+            signal.emit(payload)
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _safe_delete_process(process: QProcess) -> None:
+        try:
+            process.deleteLater()
+        except RuntimeError:
+            pass

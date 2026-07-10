@@ -5583,6 +5583,7 @@ def test_trackside_ap_business_ap_mac_double_click_opens_existing_ap_detail_by_m
     page.apply_trackside_pagination()
 
     page.open_ap_detail_from_trackside(0)
+    process_events_until(lambda: bool(opened))
 
     assert opened == [(ac.device_uuid, "ap-mac")]
 
@@ -5608,6 +5609,7 @@ def test_trackside_ap_business_ap_name_double_click_opens_existing_ap_detail_by_
     page.apply_trackside_pagination()
 
     page.open_ap_detail_from_trackside(0)
+    process_events_until(lambda: bool(opened))
 
     assert opened == [(ac.device_uuid, "ap-name")]
 

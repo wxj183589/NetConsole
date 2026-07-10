@@ -491,6 +491,40 @@ def test_iperf_result_store_creates_required_tables(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM iperf_runs").fetchone()[0] == 1
         assert conn.execute("SELECT device_id FROM iperf_runs").fetchone()[0] == 7
         assert conn.execute("SELECT COUNT(*) FROM iperf_intervals").fetchone()[0] == 1
+        columns = {item[1] for item in conn.execute("PRAGMA table_info(iperf_intervals)")}
+        assert {
+            "device_aligned_time",
+            "device_interval_center_time",
+            "clock_offset_ms",
+            "offset_source",
+            "time_source",
+        } <= columns
+
+
+def test_iperf_result_store_migrates_old_interval_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "old_iperf.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE iperf_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                interval_center_time TEXT
+            )
+            """
+        )
+
+    IperfResultStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {item[1] for item in conn.execute("PRAGMA table_info(iperf_intervals)")}
+    assert {
+        "device_aligned_time",
+        "device_interval_center_time",
+        "clock_offset_ms",
+        "offset_source",
+        "time_source",
+    } <= columns
 
 
 def test_network_tools_iperf_page_uses_bandwidth_value_and_unit(tmp_path: Path) -> None:

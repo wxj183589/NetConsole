@@ -1,0 +1,13 @@
+devices:
+  - name: h3c-test
+    ip: ""
+    version: v2c
+    port: 161
+    community_env: NETCONSOLE_SNMP_SMOKE_COMMUNITY
+    timeout_ms: 2000
+    retries: 1
+    get_oid: 1.3.6.1.2.1.1.5.0
+    walk_oid: 1.3.6.1.2.1.1
+    getbulk_oid: 1.3.6.1.2.1.1
+    max_repetitions: 10
+    max_rows: 50

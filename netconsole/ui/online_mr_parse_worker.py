@@ -147,8 +147,11 @@ def _load_analysis_table_rows(session_dir: Path, *, limit: int) -> tuple[dict[st
             FROM fping_1s_summary ORDER BY 1 ASC, target_ip ASC LIMIT ?
         """,
         "iperf": """
-            SELECT COALESCE(interval_center_time, collector_time), bitrate_mbps, retransmits, transfer_bytes, raw_line
-            FROM iperf_intervals ORDER BY COALESCE(interval_center_time, collector_time) ASC LIMIT ?
+            SELECT COALESCE(NULLIF(device_interval_center_time, ''), NULLIF(device_aligned_time, ''), interval_center_time, collector_time),
+                   bitrate_mbps, retransmits, transfer_bytes, raw_line
+            FROM iperf_intervals
+            ORDER BY COALESCE(NULLIF(device_interval_center_time, ''), NULLIF(device_aligned_time, ''), interval_center_time, collector_time) ASC
+            LIMIT ?
         """,
         "radio_statistics": """
             SELECT collector_time, metric_name, metric_value, metric_unit

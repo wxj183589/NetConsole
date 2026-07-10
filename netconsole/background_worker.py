@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
-import traceback
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_tasks import BackgroundTaskCancelled, run_background_task
+from netconsole.services.job_center.job_events import progress_event
+from netconsole.services.job_center.job_runner import run_job as run_center_job
+from netconsole.services.job_center.worker_protocol import write_event
 
 
 def _emit(event: dict[str, Any]) -> None:
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    write_event(event)
 
 
 def _should_cancel(job: BackgroundJob) -> bool:
@@ -20,30 +23,21 @@ def _should_cancel(job: BackgroundJob) -> bool:
 
 
 def run_job(job: BackgroundJob) -> int:
-    try:
-        result = run_background_task(
+    diagnostics = sys.stderr or getattr(sys, "__stderr__", None) or io.StringIO()
+    with redirect_stdout(diagnostics):
+        result = run_center_job(
             job,
             progress_callback=lambda stage, current, total, message: _emit(
-                {
-                    "type": "progress",
-                    "job_id": job.job_id,
-                    "stage": stage,
-                    "current": current,
-                    "total": total,
-                    "message": message,
-                }
+                progress_event(job.job_id, stage, current, total, message)
             ),
             should_cancel=lambda: _should_cancel(job),
         )
-        _emit({"type": "finished", "job_id": job.job_id, "result": result, "message": "后台任务完成"})
+    _emit(result.to_event())
+    if result.ok:
         return 0
-    except BackgroundTaskCancelled as exc:
-        _emit({"type": "error", "job_id": job.job_id, "message": str(exc), "cancelled": True})
+    if result.cancelled:
         return 2
-    except Exception as exc:
-        stack = traceback.format_exc()
-        _emit({"type": "error", "job_id": job.job_id, "message": str(exc) or exc.__class__.__name__, "traceback": stack, "cancelled": False})
-        return 1
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:

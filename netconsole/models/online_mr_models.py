@@ -5,6 +5,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from netconsole.services.online_mr.collection_commands import (
+    CONFIG_COLLECT_COMMANDS,
+    INIT_COMMANDS,
+    TASK_COMMANDS,
+    TERMINAL_MONITOR_INIT_COMMANDS,
+    repeat_command_group,
+)
+
 
 STATE_CREATED = "CREATED"
 STATE_CONNECTING = "CONNECTING"
@@ -34,67 +42,6 @@ TASK_TERMINAL_MONITOR = "terminal_monitor"
 TASK_FPING = "fping"
 TASK_CONFIG_COLLECT = "config_collect"
 TASK_WIRELESS_STATUS = "wireless_status"
-
-CONFIG_COLLECT_COMMANDS: tuple[str, ...] = (
-    "screen-length disable",
-    "display current-configuration",
-    "quit",
-)
-
-INIT_COMMANDS: tuple[str, ...] = (
-    "screen-length disable",
-    "terminal logging level 7",
-    "terminal monitor",
-    "system-view",
-    "user-interface vty 0 31",
-    "idle-timeout 1440 0",
-    "return",
-    "system-view",
-    "probe",
-    "return",
-)
-
-TERMINAL_MONITOR_INIT_COMMANDS: tuple[str, ...] = (
-    "screen-length disable",
-    "terminal monitor",
-    "terminal logging level 7",
-)
-
-TASK_COMMANDS: dict[str, tuple[str, ...]] = {
-    TASK_MESH_LINK: ("display clock", "display wlan mesh-link"),
-    TASK_CHANNEL_BUSY: ("display clock", "display ar5drv 1 channelbusy"),
-    TASK_AP_RADIO_STATISTICS: ("display clock", "display ar5drv 1 statistics"),
-    TASK_SWITCH_HISTORY: ("display clock", "display wlan mesh-link switch-history"),
-    TASK_INTERFACE_RATE: ("display clock", "dis counters rate inbound interface", "dis counters rate outbound interface"),
-}
-
-
-def repeat_command_group(task_type: str, *, interval: int | None = None, radio_id: int = 1) -> tuple[str, ...]:
-    delay = max(1, int(interval or 1))
-    if task_type == TASK_MESH_LINK:
-        return ("display clock", "display wlan mesh-link", f"repeat 2 delay {delay}")
-    if task_type == TASK_CHANNEL_BUSY:
-        return ("display clock", f"display ar5drv {radio_id} channelbusy", f"repeat 2 delay {delay}")
-    if task_type == TASK_AP_RADIO_STATISTICS:
-        return ("display clock", f"display ar5drv {radio_id} statistics", f"repeat 2 delay {delay}")
-    if task_type == TASK_WIRELESS_STATUS:
-        return (
-            "display clock",
-            f"display ar5drv {radio_id} client all rssi",
-            f"display ar5drv {radio_id} client all status",
-            f"repeat 3 delay {delay}",
-        )
-    if task_type == TASK_SWITCH_HISTORY:
-        return ("display clock", "display wlan mesh-link switch-history", f"repeat 2 delay {delay}")
-    if task_type == TASK_INTERFACE_RATE:
-        return (
-            "display clock",
-            "dis counters rate inbound interface",
-            "dis counters rate outbound interface",
-            f"repeat 3 delay {delay}",
-        )
-    raise ValueError(f"unsupported repeat task: {task_type}")
-
 
 @dataclass
 class OnlineMrIntervals:

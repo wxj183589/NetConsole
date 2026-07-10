@@ -210,12 +210,12 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
 
     page.export_link_details()
     deadline = time.time() + 5
-    while page.export_worker is not None and time.time() < deadline:
+    while page.link_export_job_id and time.time() < deadline:
         _app().processEvents()
         time.sleep(0.01)
     _drain_qt_events()
 
-    assert page.export_worker is None, "Timed out waiting for Mesh link detail export worker to finish"
+    assert not page.link_export_job_id, "Timed out waiting for Mesh link detail export process to finish"
     assert not warnings
     assert target.exists()
     workbook = load_workbook(target)
@@ -247,7 +247,12 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     assert "Peer Radio MAC" not in headers
     state_index = headers.index("链路状态") + 1
     assert sheet.cell(2, state_index).value == "主链路"
-    assert any("链路明细已导出" in message for message in messages)
+    assert "链路明细已导出" in page.progress_label.text()
+    assert not getattr(page, "_netconsole_export_controllers", [])
+    assert not target.with_name(f"{target.name}.tmp").exists()
+    export_job_dir = paths.runtime_cache_dir / "export_jobs"
+    assert not list(export_job_dir.glob("*.json"))
+    assert not list(export_job_dir.glob("*.cancel"))
 
 
 def test_mesh_page_state_filter_defaults_to_raw_and_filters_active_standby(tmp_path):
