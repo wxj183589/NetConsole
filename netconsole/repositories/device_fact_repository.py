@@ -347,6 +347,33 @@ class DeviceFactRepository:
             (device_uuid, local_interface),
         )
 
+    def list_object_history_page(
+        self,
+        history_kind: str,
+        device_uuid: str,
+        object_name: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, object | None]]:
+        table, object_field = _device_object_history_source(history_kind)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE device_uuid = ? AND {object_field} = ? "
+                "ORDER BY collected_at DESC, id DESC LIMIT ? OFFSET ?",
+                (device_uuid, object_name, max(1, int(limit)), max(0, int(offset))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_object_history(self, history_kind: str, device_uuid: str, object_name: str) -> int:
+        table, object_field = _device_object_history_source(history_kind)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM {table} WHERE device_uuid = ? AND {object_field} = ?",
+                (device_uuid, object_name),
+            ).fetchone()
+        return int(row["total"] if row is not None else 0)
+
     def create_collect_run(self, data: dict[str, object | None]) -> dict[str, object | None]:
         payload = self._payload(COLLECT_RUN_FIELDS, data)
         now = self._now()
@@ -442,6 +469,18 @@ def _latest_rows_by_interface(rows: list[dict[str, object | None]], field: str) 
         if current is None or _latest_fact_score(row) >= _latest_fact_score(current):
             latest[key] = row
     return [*latest.values(), *passthrough]
+
+
+def _device_object_history_source(history_kind: str) -> tuple[str, str]:
+    sources = {
+        "interface": ("device_interfaces_history", "interface_name"),
+        "optical": ("device_optical_modules_history", "interface_name"),
+        "lldp": ("device_lldp_neighbors_history", "local_interface"),
+    }
+    try:
+        return sources[str(history_kind or "").strip().casefold()]
+    except KeyError as exc:
+        raise ValueError(f"不支持的设备历史类型：{history_kind}") from exc
 
 
 def _latest_fact_score(row: dict[str, object | None]) -> tuple[str, str, int]:

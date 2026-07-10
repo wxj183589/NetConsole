@@ -183,13 +183,19 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
     log_path = Path(str(payload.get("log_path") or ""))
     keyword = str(payload.get("keyword") or "").strip() or None
     level = str(payload.get("level") or "").strip() or None
+    offset = max(0, int(payload.get("offset") or 0))
+    limit = max(0, int(payload.get("limit") or 0))
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     _emit(progress, "write_logs", 0, 0, "正在导出日志")
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["时间", "级别", "事件", "详情", "原始事件", "原始详情"])
-        for row in iter_logs(log_path, keyword=keyword, level=level, parser=_parse_log_line):
+        for matched_index, row in enumerate(iter_logs(log_path, keyword=keyword, level=level, parser=_parse_log_line)):
+            if matched_index < offset:
+                continue
+            if limit and count >= limit:
+                break
             display = display_log_row(row)
             writer.writerow(
                 [
@@ -206,6 +212,107 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
                 _emit(progress, "write_logs", count, 0, f"正在导出日志 {count} 条")
                 _check_cancel(should_cancel)
     return count
+
+
+def export_command_reference_markdown(
+    path: Path,
+    payload: Mapping[str, Any],
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> int:
+    import json
+
+    from netconsole.services.command_reference_service import CommandReference, export_command_references_markdown
+    from netconsole.utils.text_encoding import read_text_with_fallback
+
+    source = Path(str(payload.get("resource_path") or ""))
+    if not source.is_file():
+        raise FileNotFoundError(f"命令说明资源不存在：{source}")
+    _emit(progress, "read_command_reference", 0, 1, "正在读取命令说明")
+    _check_cancel(should_cancel)
+    raw = json.loads(read_text_with_fallback(source))
+    items = raw.get("items", raw) if isinstance(raw, Mapping) else raw
+    references = [CommandReference.from_dict(dict(item)) for item in items or [] if isinstance(item, Mapping)]
+    selected_ids = {str(value) for value in payload.get("selected_ids") or [] if str(value)}
+    if selected_ids:
+        references = [item for item in references if item.id in selected_ids]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(export_command_references_markdown(references), encoding="utf-8")
+    _emit(progress, "write_command_reference", len(references), len(references), "命令说明导出完成")
+    return len(references)
+
+
+def export_vehicle_mr_history_xlsx(
+    path: Path,
+    payload: Mapping[str, Any],
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> int:
+    from openpyxl import Workbook
+
+    from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
+
+    filters = dict(payload.get("filters") or {})
+    store = VehicleMrOnlineStore(_path_resolver_from_payload(payload), str(payload.get("site_name") or ""))
+    _emit(progress, "query_vehicle_mr_history", 0, 1, "正在查询车载 MR 历史")
+    _check_cancel(should_cancel)
+    rows = store.query_events(
+        train_id=str(payload.get("train_id") or ""),
+        start_time=str(filters.get("start_time") or ""),
+        end_time=str(filters.get("end_time") or ""),
+        car_end_label=str(filters.get("car_end_label") or ""),
+        status=str(filters.get("status") or ""),
+        station=str(filters.get("station") or ""),
+        ap_name=str(filters.get("ap_name") or ""),
+        limit=1_000_000,
+    )
+    headers = ["时间", "端别", "状态", "车站", "轨旁AP", "RSSI", "事件类型", "判断说明"]
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "历史记录"
+    sheet.append(headers)
+    for index, row in enumerate(rows, start=1):
+        sheet.append(
+            [
+                row.get("event_time") or "",
+                row.get("car_end_label") or "",
+                row.get("status") or "",
+                row.get("station") or "",
+                row.get("ap_name") or "",
+                row.get("rssi") if row.get("rssi") is not None else "-",
+                row.get("event_type") or "",
+                _vehicle_mr_status_reason_label(str(row.get("status_reason") or "")),
+            ]
+        )
+        if index % 500 == 0:
+            _emit(progress, "write_vehicle_mr_history", index, len(rows), f"正在写入历史记录 {index}/{len(rows)}")
+            _check_cancel(should_cancel)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column, width in enumerate((22, 10, 12, 20, 24, 10, 16, 28), start=1):
+        sheet.column_dimensions[sheet.cell(row=1, column=column).column_letter].width = width
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
+    return len(rows)
+
+
+def _vehicle_mr_status_reason_label(reason: str) -> str:
+    labels = {
+        "both_offline": "双端均离线",
+        "dual_active_ok": "双端在线",
+        "tc1_missing": "双活缺TC1",
+        "tc2_missing": "双活缺TC2",
+        "both_ends_online": "双端在线",
+        "expected_tc1_online": "TC1符合预期在线",
+        "expected_tc2_online": "TC2符合预期在线",
+        "unexpected_tc1_online": "非预期TC1在线",
+        "unexpected_tc2_online": "非预期TC2在线",
+        "expected_tail_online": "尾端在线",
+        "unexpected_end_online": "非预期端在线",
+        "direction_unknown_any_end_online": "方向未知，任意一端在线视为在线",
+        "policy_unknown_any_end_online": "自动/未知策略，任意一端在线视为在线",
+    }
+    return labels.get(reason, reason or "-")
 
 
 def export_device_csv(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
@@ -939,6 +1046,50 @@ def _resolve_repository_rows(source: Mapping[str, Any]) -> list[dict[str, Any]]:
 
         mode = str(filters.get("mode") or TRACKSIDE_AP_PLAN_MODE)
         return AcRepository(Database(db_path)).list_trackside_ap_plan(mode)
+    if repository == "ac_repository" and method == "list_station_online_summary_history":
+        from netconsole.core.database import Database
+        from netconsole.repositories.ac_repository import AcRepository
+
+        site_name = str(filters.get("site_name") or "").strip() or None
+        return AcRepository(Database(db_path)).list_station_online_summary_history(site_name, int(filters.get("limit") or 1_000_000))
+    if repository == "ac_repository" and method == "list_fit_ap_history":
+        from netconsole.core.database import Database
+        from netconsole.repositories.ac_repository import AcRepository
+        from netconsole.services.history_export_service import OPTICAL_HISTORY_COLORS, history_display_value
+
+        history_kind = str(filters.get("history_kind") or "")
+        ap_uuid = str(filters.get("ap_uuid") or "")
+        color_field = str(filters.get("color_field") or "")
+        language = str(filters.get("language") or "zh")
+        rows = AcRepository(Database(db_path)).list_fit_ap_history_page(history_kind, ap_uuid, limit=1_000_000)
+        result = []
+        for row in rows:
+            display_row = {key: history_display_value(row, key, color_field or None, language) for key in row}
+            if color_field:
+                display_row["__row_fill"] = OPTICAL_HISTORY_COLORS.get(str(row.get(color_field) or ""), "")
+            result.append(display_row)
+        return result
+    if repository == "device_fact_repository" and method == "list_trackside_interface_history":
+        from netconsole.core.database import Database
+        from netconsole.repositories.device_fact_repository import DeviceFactRepository
+        from netconsole.repositories.device_repository import DeviceRepository
+
+        database = Database(db_path)
+        device_uuid = str(filters.get("device_uuid") or "")
+        interface_name = str(filters.get("interface_name") or "")
+        device = next((item for item in DeviceRepository(database).list() if str(item.device_uuid or "") == device_uuid), None)
+        rows = DeviceFactRepository(database).list_object_history_page("optical", device_uuid, interface_name, limit=1_000_000)
+        return [
+            {
+                **row,
+                "source_device_name": device.name if device is not None else row.get("device_uuid"),
+                "source_device_id": device_uuid,
+                "host": device.ip_address if device is not None else "",
+                "optical_status": row.get("status"),
+                "session_id": row.get("collect_run_uuid"),
+            }
+            for row in rows
+        ]
     raise ValueError(f"不支持的 repository_query：{repository}.{method}")
 
 

@@ -8,12 +8,13 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSplitter, QTabl
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
-from netconsole.services.export.export_task_builders import table_xlsx_spec
-from netconsole.services.history_export_service import OPTICAL_HISTORY_COLORS, history_display_value
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
 from netconsole.ui.dialogs.ap_history_dialog import AP_OPTICAL_HISTORY_COLUMNS
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.export_action_helper import submit_export_task
-from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
@@ -22,11 +23,29 @@ from netconsole.ui.window_popup_service import show_non_focus_window
 
 
 class ApOpticalHistoryDialog(QWidget):
-    def __init__(self, i18n: I18n, ap_name: str, rows: list[dict[str, object | None]], settings: SettingsStore, owner: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        i18n: I18n,
+        ap_name: str,
+        rows: list[dict[str, object | None]] | None,
+        settings: SettingsStore,
+        owner: QWidget | None = None,
+        *,
+        db_path: str | Path | None = None,
+        ap_uuid: str = "",
+    ) -> None:
         super().__init__(None)
         self.i18n = i18n
         self.ap_name = ap_name
-        self.rows = rows
+        self.rows = list(rows or [])
+        self.visible_rows: list[dict[str, object | None]] = []
+        self.db_path = Path(db_path) if db_path else None
+        self.ap_uuid = ap_uuid
+        self.background_manager = BackgroundProcessManager(self) if self.db_path else None
+        self.query_job_id: str | None = None
+        if self.background_manager is not None:
+            self.background_manager.finished.connect(self._background_finished)
+            self.background_manager.failed.connect(self._background_failed)
         self.settings = settings
         self.owner = owner
         self.page = 1
@@ -107,10 +126,58 @@ class ApOpticalHistoryDialog(QWidget):
         self.pagination.retranslate()
 
     def refresh_table(self) -> None:
+        if self.background_manager is not None:
+            self._start_background_query()
+            return
         rows, state = paginate_rows(self.rows, self.page_size, self.page)
+        self._apply_rows(rows, state)
+
+    def _start_background_query(self) -> None:
+        if self.background_manager is None or self.query_job_id is not None:
+            return
+        self.query_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="ac_ap_history_page",
+                params={
+                    "db_path": str(self.db_path),
+                    "ap_uuid": self.ap_uuid,
+                    "history_kind": "optical",
+                    "page": self.page,
+                    "page_size": self.page_size,
+                },
+            )
+        )
+        self.export_button.setEnabled(False)
+
+    def _background_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.query_job_id:
+            return
+        self.query_job_id = None
+        self.export_button.setEnabled(True)
+        result = dict(event.get("result") or {})
+        rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+        state = PaginationState(
+            page_size=int(result.get("page_size") or self.page_size),
+            current_page=int(result.get("current_page") or 1),
+            total_items=int(result.get("total_items") or 0),
+            total_pages=int(result.get("total_pages") or 1),
+        )
+        self._apply_rows(rows, state)
+
+    def _background_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.query_job_id:
+            return
+        self.query_job_id = None
+        self.export_button.setEnabled(True)
+        from netconsole.ui.dialogs.message_service import MessageBox
+
+        MessageBox.warning(self, self.windowTitle(), str(event.get("message") or event.get("error") or "历史查询失败"))
+
+    def _apply_rows(self, rows: list[dict[str, object | None]], state: PaginationState) -> None:
+        self.visible_rows = rows
         self.page = state.current_page
         self.pagination.set_state(state)
-        self.empty_label.setVisible(not self.rows)
+        self.empty_label.setVisible(state.total_items == 0)
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             for column_index, (_key, field) in enumerate(AP_OPTICAL_HISTORY_COLUMNS):
@@ -135,8 +202,7 @@ class ApOpticalHistoryDialog(QWidget):
 
     def current_record(self) -> dict[str, object | None] | None:
         current = self.table.currentRow()
-        rows, _state = paginate_rows(self.rows, self.page_size, self.page)
-        return rows[current] if 0 <= current < len(rows) else None
+        return self.visible_rows[current] if 0 <= current < len(self.visible_rows) else None
 
     def set_page(self, page: int) -> None:
         self.page = page
@@ -148,27 +214,32 @@ class ApOpticalHistoryDialog(QWidget):
         self.refresh_table()
 
     def export_history(self) -> None:
+        if self.db_path is None:
+            return
         filename = f"{self.ap_name}_optical_history_{datetime.now().strftime('%Y%m%d%H%M')}.xlsx"
         path = select_export_path(self, self.i18n.t("ac.export_table"), filename, EXCEL_FILTER)
         if not path:
             return
         headers = [self.i18n.t(key) for key, _field in AP_OPTICAL_HISTORY_COLUMNS]
-        rows = []
-        for row in self.rows:
-            export_row = {field: history_display_value(row, field, "optical_alarm_status", self.i18n.language) for _key, field in AP_OPTICAL_HISTORY_COLUMNS}
-            export_row["__row_fill"] = OPTICAL_HISTORY_COLORS.get(str(row.get("optical_alarm_status") or ""), "")
-            rows.append(export_row)
         submit_export_task(
             self,
-            table_xlsx_spec(
+            table_xlsx_source_spec(
                 Path(path),
                 columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(AP_OPTICAL_HISTORY_COLUMNS)],
-                rows=rows,
+                source=repository_query_source(
+                    db_path=self.db_path,
+                    repository="ac_repository",
+                    method="list_fit_ap_history",
+                    filters={
+                        "ap_uuid": self.ap_uuid,
+                        "history_kind": "optical",
+                        "color_field": "optical_alarm_status",
+                        "language": self.i18n.language,
+                    },
+                ),
                 sheet_name="AP History",
                 title=self.i18n.t("ac.export_table"),
                 row_fill_field="__row_fill",
-                allow_inline_rows=True,
-                inline_reason="AP 光衰历史弹窗导出当前已加载筛选视图",
             ),
             success_title=self.i18n.t("ac.export_table"),
         )
@@ -182,7 +253,7 @@ class ApOpticalHistoryDialog(QWidget):
     def return_to_parent(self) -> None:
         self.close()
         if self.owner is not None:
-            show_non_focus_window(self, self.owner, key="ap_optical_history_owner", activate=False, raise_window=False)
+            show_non_focus_window(None, self.owner, key="ap_optical_history_owner", center=False, activate=False, raise_window=False)
 
     def closeEvent(self, event) -> None:
         self.settings.set_value("ac/ap_history/window_geometry", {"width": self.width(), "height": self.height()})

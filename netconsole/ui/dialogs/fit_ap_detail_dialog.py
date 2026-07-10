@@ -437,19 +437,28 @@ class FitApDetailDialog(QWidget):
 
     def open_history(self, kind: str) -> None:
         if kind == "radio":
-            rows = self.repository.list_fit_ap_radio_history_by_ap(self.ap_uuid)
             columns = AP_RADIO_HISTORY_COLUMNS
             title = "Radio"
             color_field = None
         elif kind == "lldp":
-            rows = self.repository.list_fit_ap_lldp_history_by_ap(self.ap_uuid)
             columns = AP_LLDP_HISTORY_COLUMNS
             title = self.i18n.t("ac.lldp_neighbor")
             color_field = None
         else:
             self.open_optical_history()
             return
-        dialog = ApHistoryDialog(self.i18n, self.ap_name, title, rows, columns, color_field, owner=self)
+        dialog = ApHistoryDialog(
+            self.i18n,
+            self.ap_name,
+            title,
+            None,
+            columns,
+            color_field,
+            owner=self,
+            db_path=self.repository.database.path,
+            ap_uuid=self.ap_uuid,
+            history_kind=kind,
+        )
         self.history_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_history_window(window))
         show_non_focus_window(self, dialog, key=f"ap_history:{title}", activate=False, raise_window=False)
@@ -461,8 +470,15 @@ class FitApDetailDialog(QWidget):
         if self.optical_history_window is not None:
             show_non_focus_window(self, self.optical_history_window, key="ap_optical_history", activate=False, raise_window=False)
             return
-        rows = self.optical_history_service.query_ap_optical_history_all(self.ap_uuid)
-        dialog = ApOpticalHistoryDialog(self.i18n, self.ap_name, rows, self.settings, owner=self)
+        dialog = ApOpticalHistoryDialog(
+            self.i18n,
+            self.ap_name,
+            None,
+            self.settings,
+            owner=self,
+            db_path=self.repository.database.path,
+            ap_uuid=self.ap_uuid,
+        )
         self.optical_history_window = dialog
         dialog.destroyed.connect(lambda _=None: setattr(self, "optical_history_window", None))
         show_non_focus_window(self, dialog, key="ap_optical_history", activate=False, raise_window=False)

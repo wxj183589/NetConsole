@@ -689,6 +689,8 @@ def app_logs_csv_spec(
     log_path: str | Path,
     keyword: str | None = None,
     level: str | None = None,
+    offset: int = 0,
+    limit: int = 0,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -697,5 +699,58 @@ def app_logs_csv_spec(
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
-        payload={"log_path": str(log_path), "keyword": keyword or "", "level": level or ""},
+        payload={
+            "log_path": str(log_path),
+            "keyword": keyword or "",
+            "level": level or "",
+            "offset": max(0, int(offset)),
+            "limit": max(0, int(limit)),
+        },
+    )
+
+
+def command_reference_markdown_spec(
+    output_path: str | Path,
+    *,
+    resource_path: str | Path,
+    selected_ids: Iterable[str] | None = None,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="command_reference_markdown",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        payload={
+            "resource_path": str(resource_path),
+            "selected_ids": [str(value) for value in selected_ids or [] if str(value)],
+        },
+    )
+
+
+def vehicle_mr_history_xlsx_spec(
+    output_path: str | Path,
+    *,
+    app_root: str | Path,
+    data_root: str | Path,
+    site_name: str,
+    train_id: str,
+    filters: Mapping[str, Any],
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="vehicle_mr_history_xlsx",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        site_name=site_name,
+        payload={
+            "app_root": str(app_root),
+            "data_root": str(data_root),
+            "site_name": site_name,
+            "train_id": train_id,
+            "filters": dict(filters),
+        },
     )

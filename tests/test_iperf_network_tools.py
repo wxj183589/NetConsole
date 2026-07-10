@@ -515,8 +515,10 @@ def test_iperf_page_shows_server_and_client_panels_together(tmp_path: Path) -> N
     page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
 
     assert page.splitter.count() == 2
-    assert page.splitter.widget(0).title() == "Server"
-    assert page.splitter.widget(1).title() == "Client"
+    assert page.server_panel.title() == "Server"
+    assert page.client_panel.title() == "Client"
+    assert page.splitter.widget(0).widgetResizable()
+    assert page.splitter.widget(1).widgetResizable()
     assert page.server_output.parentWidget() is not page.client_output.parentWidget()
     assert page.findChildren(QTabWidget) == []
 

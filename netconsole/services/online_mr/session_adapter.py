@@ -18,6 +18,7 @@ from netconsole.services.online_mr.core.event_model import (
     OnlineMrEvent,
 )
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrRawBlockSplitter
+from netconsole.utils.text_encoding import read_text_with_fallback
 
 
 class SessionAdapter:
@@ -56,7 +57,7 @@ class SessionAdapter:
         path = self.raw_dir / "fping_v5_samples.jsonl"
         if not path.exists():
             return
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in read_text_with_fallback(path).splitlines():
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:

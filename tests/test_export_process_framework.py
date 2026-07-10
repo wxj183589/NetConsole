@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import json
 
 import pytest
 from openpyxl import load_workbook
 
 from netconsole.core.i18n import I18n
 from netconsole.services.export.export_handlers import run_generic_export_handler
-from netconsole.services.export.export_task_builders import INLINE_ROW_LIMIT, table_csv_spec
+from netconsole.services.export.export_task_builders import INLINE_ROW_LIMIT, app_logs_csv_spec, command_reference_markdown_spec, table_csv_spec
 from netconsole.services.export_task_models import ExportJob
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
@@ -136,6 +137,55 @@ def test_generic_markdown_text_handler_writes_utf8(tmp_path) -> None:
 
     assert result["row_count"] > 0
     assert output.read_text(encoding="utf-8").startswith("# 命令清单")
+
+
+def test_command_reference_export_reads_resource_in_export_process(tmp_path) -> None:
+    resource = tmp_path / "command_reference.json"
+    resource.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "display-version",
+                        "module": "设备管理",
+                        "category": "巡检",
+                        "command_template": "display version",
+                        "purpose": "查看版本",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "commands.md"
+    spec = command_reference_markdown_spec(output, resource_path=resource, selected_ids=["display-version"])
+    job = spec.to_job("command-reference-job")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "commands.md.tmp")})
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] == 1
+    assert "display version" in output.read_text(encoding="utf-8")
+
+
+def test_app_log_export_applies_page_offset_and_limit_in_export_process(tmp_path) -> None:
+    log_path = tmp_path / "app.log"
+    log_path.write_text(
+        "2026-01-01 00:00:01 | INFO | FIRST | first\n"
+        "2026-01-01 00:00:02 | INFO | SECOND | second\n"
+        "2026-01-01 00:00:03 | INFO | THIRD | third\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "current_page.csv"
+    spec = app_logs_csv_spec(output, log_path=log_path, offset=1, limit=1)
+    job = spec.to_job("app-log-page-job")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "current_page.csv.tmp")})
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] == 1
+    assert len(output.read_text(encoding="utf-8-sig").splitlines()) == 2
 
 
 def test_trackside_xlsx_export_reports_progress(tmp_path) -> None:

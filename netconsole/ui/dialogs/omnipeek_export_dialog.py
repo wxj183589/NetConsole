@@ -236,7 +236,7 @@ class OmniPeekExportDialog(QDialog):
         self.refresh_preview()
 
     def _build_layout(self) -> None:
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(900, 620)
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -260,7 +260,7 @@ class OmniPeekExportDialog(QDialog):
         config_scroll.setMaximumHeight(300)
         config_scroll.setMinimumHeight(110)
         config_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        config_content.setMinimumWidth(1040)
+        config_content.setMinimumWidth(760)
         config_scroll.setWidget(config_content)
 
         root.addWidget(config_scroll, 0)
@@ -274,8 +274,8 @@ class OmniPeekExportDialog(QDialog):
             self.resize(1200, 760)
             return
         available = screen.availableGeometry()
-        width = min(max(1200, int(available.width() * 0.8)), max(1100, available.width() - 40))
-        height = min(max(760, int(available.height() * 0.8)), max(700, available.height() - 40))
+        width = min(max(1000, int(available.width() * 0.8)), max(900, available.width() - 40))
+        height = min(max(700, int(available.height() * 0.8)), max(620, available.height() - 40))
         self.resize(width, height)
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
@@ -284,9 +284,9 @@ class OmniPeekExportDialog(QDialog):
     def _build_basic_group(self) -> QGroupBox:
         group = QGroupBox("基础信息")
         form = QFormLayout(group)
-        self.line_name_input.setMinimumWidth(420)
-        self.file_name_input.setMinimumWidth(420)
-        self.output_dir_input.setMinimumWidth(640)
+        self.line_name_input.setMinimumWidth(260)
+        self.file_name_input.setMinimumWidth(260)
+        self.output_dir_input.setMinimumWidth(360)
         output_row = QHBoxLayout()
         output_row.addWidget(self.output_dir_input, 1)
         output_row.addWidget(self.browse_dir_button)
@@ -345,7 +345,7 @@ class OmniPeekExportDialog(QDialog):
 
     def _build_preview_group(self) -> QGroupBox:
         group = QGroupBox("预览表")
-        group.setMinimumHeight(480)
+        group.setMinimumHeight(420)
         group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(group)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -359,7 +359,7 @@ class OmniPeekExportDialog(QDialog):
         self.preview_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.preview_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.preview_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.preview_table.setMinimumHeight(420)
+        self.preview_table.setMinimumHeight(380)
         self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.preview_table.verticalHeader().setDefaultSectionSize(34)
         self.preview_table.verticalHeader().setMinimumSectionSize(30)

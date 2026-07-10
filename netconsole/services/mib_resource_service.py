@@ -426,13 +426,7 @@ def _detect_h3c_package(path: Path) -> H3cPackageMeta:
 
 
 def _read_text(path: Path) -> str:
-    raw = path.read_bytes()
-    for encoding in ("utf-8", "gb18030", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="ignore")
+    return read_text_with_fallback(path)
 
 
 def sha256_file(path: Path) -> str:
@@ -452,3 +446,4 @@ def unique_target(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         index += 1
+from netconsole.utils.text_encoding import read_text_with_fallback

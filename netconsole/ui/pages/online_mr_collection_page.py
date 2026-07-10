@@ -134,10 +134,10 @@ TABLE_WIDTH_KEYS = {
     "history_sessions": "online_mr/table_widths/history_sessions",
 }
 
-ONLINE_MR_PAGE_MIN_WIDTH = 1080
-ONLINE_MR_WORK_PANEL_MIN_WIDTH = 1040
-ONLINE_MR_LEFT_PANEL_MIN_WIDTH = 620
-ONLINE_MR_RIGHT_PANEL_MIN_WIDTH = 420
+ONLINE_MR_PAGE_MIN_WIDTH = 820
+ONLINE_MR_WORK_PANEL_MIN_WIDTH = 780
+ONLINE_MR_LEFT_PANEL_MIN_WIDTH = 420
+ONLINE_MR_RIGHT_PANEL_MIN_WIDTH = 320
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
 PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
 FORCE_STOP_DELAY_SECONDS = 5
@@ -1393,7 +1393,7 @@ class OnlineMrCollectionPage(QWidget):
         view_layout.setContentsMargins(0, 4, 0, 4)
         if self.analysis_only:
             self.session_search_input.setMinimumWidth(220)
-            self.session_select_combo.setMinimumWidth(520)
+            self.session_select_combo.setMinimumWidth(320)
             view_layout.addWidget(self._text_label("online_mr.search_device"))
             view_layout.addWidget(self.session_search_input)
             view_layout.addWidget(self._text_label("online_mr.select_session"))
@@ -2714,7 +2714,7 @@ class OnlineMrCollectionPage(QWidget):
         switch_path = session_dir / "raw" / "switch_history_latest.log"
         if switch_path.exists():
             collected_at = datetime.fromtimestamp(switch_path.stat().st_mtime)
-            rows = parse_switch_history_text(switch_path.read_text(encoding="utf-8", errors="replace"), collected_at)
+            rows = parse_switch_history_text(read_text_with_fallback(switch_path), collected_at)
             for parsed in rows[:5000]:
                 self._append_switch_history_table_row(parsed)
             if rows:
@@ -3068,7 +3068,7 @@ class OnlineMrCollectionPage(QWidget):
         if not lines:
             raw_path = session_dir / "raw" / "ap_radio_statistics_raw.log"
             if raw_path.exists():
-                parsed = parse_ap_radio_statistics_text(raw_path.read_text(encoding="utf-8", errors="replace"))
+                parsed = parse_ap_radio_statistics_text(read_text_with_fallback(raw_path))
                 counters = parsed.get("counters") if isinstance(parsed, dict) else {}
                 if isinstance(counters, dict) and counters:
                     lines.append("raw summary: " + "  ".join(f"{key}={value}" for key, value in counters.items()))
@@ -5772,3 +5772,4 @@ def _is_valid_peer_resolution(value: dict[str, object]) -> bool:
     if str(value.get("match_rule") or "").strip().lower() == "unresolved":
         return False
     return any(str(value.get(key) or "").strip() for key in ("peer_ap_name", "peer_site", "peer_section", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
+from netconsole.utils.text_encoding import read_text_with_fallback

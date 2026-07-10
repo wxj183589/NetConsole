@@ -1193,6 +1193,28 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_fit_ap_history_page(
+        self,
+        history_kind: str,
+        ap_uuid: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, object | None]]:
+        table = _fit_ap_history_table(history_kind)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE ap_uuid = ? ORDER BY collected_at DESC, id DESC LIMIT ? OFFSET ?",
+                (ap_uuid, max(1, int(limit)), max(0, int(offset))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
+        table = _fit_ap_history_table(history_kind)
+        with self.database.connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE ap_uuid = ?", (ap_uuid,)).fetchone()
+        return int(row["total"] if row is not None else 0)
+
     def list_all_ap_optical_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             entity_rows = conn.execute(
@@ -1721,25 +1743,36 @@ class AcRepository:
             conn.commit()
         return len(payload_rows)
 
-    def list_station_online_summary_history(self, site_name: str | None = None, limit: int = 500) -> list[dict[str, object | None]]:
+    def list_station_online_summary_history(self, site_name: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[str, object | None]]:
         clauses: list[str] = []
         params: list[object] = []
         if site_name:
             clauses.append("site_name = ?")
             params.append(site_name)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
+        params.extend((max(int(limit), 1), max(int(offset), 0)))
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM ac_station_online_summary_history
                 {where}
                 ORDER BY collected_at DESC, id DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_station_online_summary_history(self, site_name: str | None = None) -> int:
+        clauses: list[str] = []
+        params: list[object] = []
+        if site_name:
+            clauses.append("site_name = ?")
+            params.append(site_name)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) AS total FROM ac_station_online_summary_history {where}", params).fetchone()
+        return int(row["total"] if row is not None else 0)
 
     def _resolve_ap_uuid(self, value: str, ac_device_uuid: str | None = None) -> str | None:
         with self.database.connect() as conn:
@@ -2712,3 +2745,15 @@ def _int_value(value: object) -> int:
         return int(str(value or "0"))
     except ValueError:
         return 0
+
+
+def _fit_ap_history_table(history_kind: str) -> str:
+    tables = {
+        "radio": "ac_fit_ap_radio_history",
+        "lldp": "ac_fit_ap_lldp_history",
+        "optical": "ac_fit_ap_optical_history",
+    }
+    try:
+        return tables[str(history_kind or "").strip().casefold()]
+    except KeyError as exc:
+        raise ValueError(f"不支持的 FIT-AP 历史类型：{history_kind}") from exc

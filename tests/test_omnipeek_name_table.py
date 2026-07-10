@@ -159,15 +159,15 @@ def test_omnipeek_export_dialog_keeps_preview_table_as_main_area(tmp_path: Path)
         settings=settings,
     )
 
-    assert dialog.minimumWidth() >= 1100
-    assert dialog.minimumHeight() >= 700
-    assert dialog.preview_table.minimumHeight() >= 420
+    assert dialog.minimumWidth() >= 900
+    assert dialog.minimumHeight() >= 620
+    assert dialog.preview_table.minimumHeight() >= 380
     assert dialog.preview_table.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
     assert dialog.preview_table.columnWidth(0) == PREVIEW_COLUMN_MIN_WIDTHS[0]
     assert dialog.preview_table.columnWidth(1) == PREVIEW_COLUMN_MIN_WIDTHS[1]
     assert "共 2 条｜已选 1 条｜异常 1 条｜可导出 1 条" in dialog.preview_summary_label.text()
 
-    dialog.resize(1100, 700)
+    dialog.resize(900, 620)
     dialog.show()
     QApplication.processEvents()
     assert dialog.preview_table.viewport().height() >= dialog.preview_table.verticalHeader().defaultSectionSize() * 10

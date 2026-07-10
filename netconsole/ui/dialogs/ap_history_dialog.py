@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
-from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
 from netconsole.ui.theme.contrast_engine import apply_item_contrast
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
@@ -14,7 +14,9 @@ from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_popup_service import show_non_focus_window
-from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
 from netconsole.services.history_export_service import OPTICAL_HISTORY_COLORS, export_ap_history_xlsx as _export_ap_history_xlsx, history_display_value
 
 
@@ -71,20 +73,33 @@ class ApHistoryDialog(QWidget):
         i18n: I18n,
         ap_name: str,
         history_type: str,
-        rows: list[dict[str, object | None]],
+        rows: list[dict[str, object | None]] | None,
         columns: tuple[tuple[str, str], ...],
         color_field: str | None = None,
         owner=None,
         parent=None,
+        *,
+        db_path: str | Path | None = None,
+        ap_uuid: str = "",
+        history_kind: str = "",
     ) -> None:
         super().__init__(None)
         self.i18n = i18n
         self.ap_name = ap_name
         self.history_type = history_type
-        self.rows = rows
+        self.rows = list(rows or [])
+        self.visible_rows: list[dict[str, object | None]] = []
         self.columns = columns
         self.color_field = color_field
         self.owner = owner if owner is not None else parent
+        self.db_path = Path(db_path) if db_path else None
+        self.ap_uuid = ap_uuid
+        self.history_kind = history_kind
+        self.background_manager = BackgroundProcessManager(self) if self.db_path else None
+        self.query_job_id: str | None = None
+        if self.background_manager is not None:
+            self.background_manager.finished.connect(self._background_finished)
+            self.background_manager.failed.connect(self._background_failed)
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
@@ -155,7 +170,55 @@ class ApHistoryDialog(QWidget):
         self.detail_table.setHorizontalHeaderLabels([self.i18n.t("field.name"), self.i18n.t("field.value")])
 
     def refresh_table(self) -> None:
+        if self.background_manager is not None:
+            self._start_background_query()
+            return
         rows, state = paginate_rows(self.rows, self.page_size, self.page)
+        self._apply_rows(rows, state)
+
+    def _start_background_query(self) -> None:
+        if self.background_manager is None or self.query_job_id is not None:
+            return
+        self.query_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="ac_ap_history_page",
+                params={
+                    "db_path": str(self.db_path),
+                    "ap_uuid": self.ap_uuid,
+                    "history_kind": self.history_kind,
+                    "page": self.page,
+                    "page_size": self.page_size,
+                },
+            )
+        )
+        self.export_button.setEnabled(False)
+
+    def _background_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.query_job_id:
+            return
+        self.query_job_id = None
+        self.export_button.setEnabled(True)
+        result = dict(event.get("result") or {})
+        rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+        state = PaginationState(
+            page_size=int(result.get("page_size") or self.page_size),
+            current_page=int(result.get("current_page") or 1),
+            total_items=int(result.get("total_items") or 0),
+            total_pages=int(result.get("total_pages") or 1),
+        )
+        self._apply_rows(rows, state)
+
+    def _background_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.query_job_id:
+            return
+        self.query_job_id = None
+        self.export_button.setEnabled(True)
+        from netconsole.ui.dialogs.message_service import MessageBox
+
+        MessageBox.warning(self, self.windowTitle(), str(event.get("message") or event.get("error") or "历史查询失败"))
+
+    def _apply_rows(self, rows: list[dict[str, object | None]], state: PaginationState) -> None:
+        self.visible_rows = rows
         self.page = state.current_page
         self.pagination.set_state(state)
         self.table.setUpdatesEnabled(False)
@@ -189,8 +252,7 @@ class ApHistoryDialog(QWidget):
 
     def current_record(self) -> dict[str, object | None] | None:
         current = self.table.currentRow()
-        rows, _state = paginate_rows(self.rows, self.page_size, self.page)
-        return rows[current] if 0 <= current < len(rows) else None
+        return self.visible_rows[current] if 0 <= current < len(self.visible_rows) else None
 
     def set_page(self, page: int) -> None:
         self.page = page
@@ -214,30 +276,34 @@ class ApHistoryDialog(QWidget):
     def return_to_parent(self) -> None:
         self.close()
         if self.owner is not None:
-            show_non_focus_window(self, self.owner, key="ap_history_owner", activate=False, raise_window=False)
+            show_non_focus_window(None, self.owner, key="ap_history_owner", center=False, activate=False, raise_window=False)
 
     def export_history(self) -> None:
+        if self.db_path is None:
+            return
         path = select_export_path(self, self.i18n.t("ac.export_table"), f"{self.ap_name}_{self.history_type}_history.xlsx", EXCEL_FILTER)
         if not path:
             return
         headers = [self.i18n.t(key) for key, _field in self.columns]
-        rows = []
-        for row in self.rows:
-            export_row = {field: history_display_value(row, field, self.color_field, self.i18n.language) for _key, field in self.columns}
-            if self.color_field:
-                export_row["__row_fill"] = OPTICAL_HISTORY_COLORS.get(str(row.get(self.color_field) or ""), "")
-            rows.append(export_row)
         submit_export_task(
             self,
-            table_xlsx_spec(
+            table_xlsx_source_spec(
                 path,
                 columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(self.columns)],
-                rows=rows,
+                source=repository_query_source(
+                    db_path=self.db_path,
+                    repository="ac_repository",
+                    method="list_fit_ap_history",
+                    filters={
+                        "ap_uuid": self.ap_uuid,
+                        "history_kind": self.history_kind,
+                        "color_field": self.color_field or "",
+                        "language": self.i18n.language,
+                    },
+                ),
                 sheet_name="AP History",
                 title=self.i18n.t("ac.export_table"),
                 row_fill_field="__row_fill" if self.color_field else "",
-                allow_inline_rows=True,
-                inline_reason="AP 历史弹窗导出当前已加载筛选视图",
             ),
             success_title=self.i18n.t("ac.export_table"),
         )

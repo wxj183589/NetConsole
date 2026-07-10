@@ -50,7 +50,7 @@ from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
-from netconsole.utils.text_encoding import read_text_with_fallback
+from netconsole.utils.text_encoding import read_text_auto
 
 
 OVERVIEW_FIELDS = (
@@ -479,19 +479,26 @@ class DeviceDetailDialog(QDialog):
         device_uuid = str(self.device.device_uuid or "")
         if history_kind == "interface":
             object_name = str(row.get("interface_name") or "")
-            rows = self.repository.list_interface_history(device_uuid, object_name)
             columns = INTERFACE_HISTORY_COLUMNS
         elif history_kind == "optical":
             object_name = str(row.get("interface_name") or "")
-            rows = self.repository.list_optical_history(device_uuid, object_name)
             columns = OPTICAL_HISTORY_COLUMNS
         elif history_kind == "lldp":
             object_name = str(row.get("local_interface") or "")
-            rows = self.repository.list_lldp_history(device_uuid, object_name)
             columns = LLDP_HISTORY_COLUMNS
         else:
             raise ValueError(f"Unsupported history kind: {history_kind}")
-        dialog = HistoryDataDialog(self.i18n, self.device.name, object_name, columns, rows, self)
+        dialog = HistoryDataDialog(
+            self.i18n,
+            self.device.name,
+            object_name,
+            columns,
+            None,
+            self,
+            db_path=str(self.repository.database.path),
+            device_uuid=device_uuid,
+            history_kind=history_kind,
+        )
         self.history_dialogs.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._remove_history_dialog(window))
         show_non_focus_window(self, dialog, key=f"history:{object_name}", activate=False, raise_window=False)
@@ -669,7 +676,7 @@ def read_collect_log_text(raw_log_path: str | None, site_root: Path | None = Non
         path = site_root / path
     if not path.is_file():
         raise FileNotFoundError(COLLECT_LOG_NOT_FOUND)
-    return path, read_text_with_fallback(path)
+    return path, read_text_auto(path)
 
 
 def _column_index(columns: tuple[tuple[str, str], ...], field: str) -> int | None:

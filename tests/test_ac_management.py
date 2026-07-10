@@ -959,6 +959,7 @@ def test_trackside_ap_plan_page_saves_edited_ap_count_from_table(tmp_path):
         [{"station_name": "Station A", "ap_count": 42, "ap_management_vlans": "921"}],
     )
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
 
     item = page.table.item(0, 1)
     assert item is not None
@@ -966,6 +967,7 @@ def test_trackside_ap_plan_page_saves_edited_ap_count_from_table(tmp_path):
     item.setText("34")
 
     assert page.save_plan() is True
+    process_events_until(lambda: not page._busy)
     rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
     assert rows[0]["ap_count"] == 34
     assert page.table.item(0, 1).text() == "34"
@@ -976,12 +978,14 @@ def test_trackside_ap_plan_accepts_dotted_netmask_and_saves_prefix(tmp_path):
     app()
     repository = AcRepository(make_database(tmp_path))
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
     page.add_row()
     values = ["站", "0", "192.168.104.1", "255.255.252.0", "192.168.104.254", "201"]
     for column, value in enumerate(values):
         page.table.item(0, column).setText(value)
 
     assert page.save_plan() is True
+    process_events_until(lambda: not page._busy)
 
     rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
     assert rows[0]["mask_length"] == 22
@@ -1044,6 +1048,7 @@ def test_trackside_ap_plan_column_layout_keeps_network_fields_readable(tmp_path)
         ],
     )
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
     page._apply_column_layout()
 
     assert page.table.horizontalHeader().stretchLastSection() is False
@@ -1091,6 +1096,7 @@ def test_trackside_ap_plan_refresh_prompts_for_unsaved_changes(tmp_path, monkeyp
         [{"station_name": "Station A", "ap_count": 42, "ap_management_vlans": "921"}],
     )
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
 
     monkeypatch.setattr(plan_page_module.MessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
     page.table.item(0, 1).setText("34")
@@ -1100,11 +1106,13 @@ def test_trackside_ap_plan_refresh_prompts_for_unsaved_changes(tmp_path, monkeyp
 
     monkeypatch.setattr(plan_page_module.MessageBox, "question", lambda *_args: QMessageBox.StandardButton.Discard)
     page.refresh()
+    process_events_until(lambda: not page._busy)
     assert page.table.item(0, 1).text() == "42"
 
     page.table.item(0, 1).setText("34")
     monkeypatch.setattr(plan_page_module.MessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
     page.refresh()
+    process_events_until(lambda: not page._busy)
     assert page.table.item(0, 1).text() == "34"
     assert repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)[0]["ap_count"] == 34
 
@@ -5395,6 +5403,7 @@ def test_trackside_ap_business_double_click_interface_opens_history(tmp_path):
 
     assert len(page.history_windows) == 1
     history = page.history_windows[0]
+    process_events_until(lambda: history.query_job_id is None)
     assert "Interface Optical History - HX_1 GigabitEthernet1/0/1" == history.windowTitle()
     assert history.parent() is None
     assert history.windowFlags() & Qt.Window
@@ -5422,6 +5431,7 @@ def test_trackside_ap_business_double_click_interface_without_history_opens_empt
     assert messages == []
     assert len(page.history_windows) == 1
     history = page.history_windows[0]
+    process_events_until(lambda: history.query_job_id is None)
     assert history.table.rowCount() == 0
     assert history.status_label.text() == "No optical history was found for this interface"
 
@@ -6716,11 +6726,25 @@ def test_ap_optical_history_export_contains_full_history(tmp_path, monkeypatch):
 
     export_path = tmp_path / "ap_history.xlsx"
     monkeypatch.setattr(dialog_module, "select_export_path", lambda *_args, **_kwargs: export_path)
-    rows = [
-        {"collected_at": "2026-01-02T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/1", "rx_power": "-10.10"},
-        {"collected_at": "2026-01-01T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/2", "rx_power": "-11.10"},
-    ]
-    dialog = ApOpticalHistoryDialog(I18n("en_US"), "ap-a", rows, SettingsStore(PathResolver(tmp_path)))
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    ap_uuid = str(repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"])
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [
+            {"ap_uuid": ap_uuid, "collected_at": "2026-01-02T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/1", "rx_power": "-10.10"},
+            {"ap_uuid": ap_uuid, "collected_at": "2026-01-01T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/2", "rx_power": "-11.10"},
+        ],
+    )
+    dialog = ApOpticalHistoryDialog(
+        I18n("en_US"),
+        "ap-a",
+        None,
+        SettingsStore(PathResolver(tmp_path)),
+        db_path=repository.database.path,
+        ap_uuid=ap_uuid,
+    )
+    process_events_until(lambda: dialog.query_job_id is None)
 
     dialog.export_history()
     process_events_until(lambda: not getattr(dialog, "_netconsole_export_controllers", []))

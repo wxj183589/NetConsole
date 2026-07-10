@@ -463,7 +463,7 @@ class IperfProcessRunner:
             if self.log_file.exists():
                 prior_lines = [
                     line
-                    for line in self.log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                    for line in self.log_file.read_text(encoding="utf-8").splitlines()
                     if line and not line.startswith("#")
                 ]
             with log_file.open("w", encoding="utf-8") as file:

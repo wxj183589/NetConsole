@@ -2501,8 +2501,7 @@ class AcManagementPage(QWidget):
 
     def open_overview_history(self) -> None:
         site_name = self.selected_overview_site()
-        rows = self.repository.list_station_online_summary_history(site_name=site_name)
-        dialog = StationOnlineHistoryDialog(self.i18n, rows, site_name)
+        dialog = StationOnlineHistoryDialog(self.i18n, site_name=site_name, db_path=self.repository.database.path)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
         show_non_focus_window(self, dialog, key=f"station_online_history:{site_name}", activate=False, raise_window=False)

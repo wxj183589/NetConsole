@@ -45,13 +45,13 @@ def read_text_with_retry(path: Path, retries: int = 10, interval: float = 0.3) -
     last_exc: PermissionError | None = None
     for _ in range(max(1, retries)):
         try:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return read_text_with_fallback(path)
         except PermissionError as exc:
             last_exc = exc
             time.sleep(interval)
     if last_exc is not None:
         raise last_exc
-    return path.read_text(encoding="utf-8", errors="replace")
+    return read_text_with_fallback(path)
 
 
 @dataclass
@@ -1087,7 +1087,7 @@ class OnlineMrDiagnosisParser:
         return len(rows)
 
     def _parse_fping_v5_jsonl(self, path: Path) -> int:
-        return self._parse_fping_v5_lines(path, path.read_text(encoding="utf-8", errors="replace").splitlines())
+        return self._parse_fping_v5_lines(path, read_text_with_fallback(path).splitlines())
 
     def _parse_fping_v5_raw_log(self, path: Path) -> int:
         try:
@@ -2121,3 +2121,4 @@ class OnlineMrTimelineFusionService:
                 busy[3],
             ),
         )
+from netconsole.utils.text_encoding import read_text_with_fallback

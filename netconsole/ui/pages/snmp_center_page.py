@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
@@ -46,9 +47,8 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import is_sqlite_locked_error
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import DeviceSnmpProfileResult, SNMP_STATUS_LABELS, SnmpProfile, SnmpQueryRequest, SnmpQueryResult, SnmpSetRequest, SnmpSetResult
+from netconsole.models.snmp_models import DictionaryRecommendation, DeviceSnmpProfileResult, ProductReferenceRecommendation, SNMP_STATUS_LABELS, SnmpProfile, SnmpQueryRequest, SnmpQueryResult, SnmpSetRequest, SnmpSetResult
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.background_job import BackgroundJob
@@ -61,7 +61,6 @@ from netconsole.services.mib_translation_service import translate_mib_descriptio
 from netconsole.services.snmp_poll_service import SnmpPollService
 from netconsole.services.export.export_task_builders import mib_product_compare_spec, snmp_query_result_spec
 from netconsole.services.snmp_client import SnmpClient
-from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services.snmp_trap_service import SnmpTrapService
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
@@ -180,7 +179,7 @@ class SnmpAdvancedParametersDialog(QDialog):
         self.priv_key_input = QLineEdit(profile.priv_key or "")
         self.context_input = QLineEdit(profile.context_name or "")
         self.set_enabled_checkbox = QCheckBox("启用 SNMP Set 写操作")
-        self.set_enabled_checkbox.setChecked(parent.center.site_repo.snmp_set_enabled() if hasattr(parent, "center") else False)
+        self.set_enabled_checkbox.setChecked(bool(getattr(getattr(parent, "center", None), "snmp_set_enabled", False)))
         self.status_label = QLabel(f"目标：{target_name}{'（临时，不写入设备管理）' if temporary else ''}")
         self.status_label.setWordWrap(True)
         form = QFormLayout()
@@ -272,9 +271,11 @@ class SnmpCenterPage(QWidget):
         self.background_manager.finished.connect(self._background_refresh_finished)
         self.background_manager.failed.connect(self._background_refresh_failed)
         self._background_refresh_callbacks: dict[str, tuple[str, Callable[[dict[str, object]], None]]] = {}
+        self._background_action_callbacks: dict[str, tuple[str, Callable[[dict[str, object]], None] | None]] = {}
         self.startup_worker: SnmpStartupWorker | None = None
         self._snmp_ready = False
         self._startup_running = False
+        self.snmp_set_enabled = False
         self.tabs = QTabWidget()
         self.overview_page = SnmpOverviewPage(self)
         self.resource_page = MibResourcePage(self)
@@ -323,15 +324,59 @@ class SnmpCenterPage(QWidget):
         self._background_refresh_callbacks[job_id] = (view, callback)
         return job_id
 
+    def start_data_action(
+        self,
+        action: str,
+        params: dict[str, object],
+        callback: Callable[[dict[str, object]], None] | None = None,
+    ) -> str:
+        job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_center_data_action",
+                params={
+                    "action": action,
+                    "global_db_path": str(self.paths.global_mib_db_path()),
+                    "site_snmp_db_path": str(self.paths.site_snmp_db_path(self.site_name)),
+                    **dict(params),
+                },
+            )
+        )
+        if action == "set_snmp_set_enabled":
+            requested = bool(params.get("enabled"))
+            original_callback = callback
+
+            def apply_setting(result: dict[str, object]) -> None:
+                self.snmp_set_enabled = requested
+                if original_callback is not None:
+                    original_callback(result)
+
+            callback = apply_setting
+        self._background_action_callbacks[job_id] = (action, callback)
+        return job_id
+
     def _background_refresh_finished(self, event: dict) -> None:
-        context = self._background_refresh_callbacks.pop(str(event.get("job_id") or ""), None)
+        job_id = str(event.get("job_id") or "")
+        action_context = self._background_action_callbacks.pop(job_id, None)
+        if action_context is not None:
+            _action, callback = action_context
+            if callback is not None:
+                callback(dict(event.get("result") or {}))
+            return
+        context = self._background_refresh_callbacks.pop(job_id, None)
         if context is None:
             return
         _view, callback = context
         callback(dict(event.get("result") or {}))
 
     def _background_refresh_failed(self, event: dict) -> None:
-        context = self._background_refresh_callbacks.pop(str(event.get("job_id") or ""), None)
+        job_id = str(event.get("job_id") or "")
+        action_context = self._background_action_callbacks.pop(job_id, None)
+        if action_context is not None:
+            action, _callback = action_context
+            message = str(event.get("message") or event.get("error") or "后台操作失败")
+            MessageBox.warning(self, "SNMP Center", f"{action} 执行失败：{message}")
+            return
+        context = self._background_refresh_callbacks.pop(job_id, None)
         if context is None:
             return
         view, _callback = context
@@ -339,15 +384,6 @@ class SnmpCenterPage(QWidget):
         if view == "devices" and hasattr(self.browser_page, "_refreshing_devices"):
             self.browser_page._refreshing_devices = False
         MessageBox.warning(self, "SNMP Center", f"{view} 刷新失败：{message}")
-
-    def _initialize_light_storage(self) -> None:
-        self.paths.ensure_global_mib_dirs()
-        self.paths.ensure_site_snmp_dirs(self.site_name)
-        self.site_repo.initialize()
-
-    def _initialize_storage(self) -> None:
-        self._initialize_light_storage()
-        self.global_repo.initialize()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
@@ -408,6 +444,7 @@ class SnmpCenterPage(QWidget):
             app_logger.log_error("SNMP_STARTUP_FAILED", str(result))
             return
         summary = dict(result) if isinstance(result, dict) else {}
+        self.snmp_set_enabled = bool(summary.get("snmp_set_enabled"))
         self._snmp_ready = True
         SNMP_SERVICE_STATE[self.site_name] = {"status": "ready", "summary": summary}
         self._set_tabs_enabled(True)
@@ -991,8 +1028,7 @@ class MibDictionaryPage(QWidget):
         name, ok = InputDialog.getText(self, "新建字典集", "字典集名称")
         if not ok or not name.strip():
             return
-        MibDictionaryService(self.center.global_repo).create_dictionary_set(name.strip())
-        self.refresh()
+        self.center.start_data_action("create_dictionary", {"name": name.strip()}, lambda _result: self.refresh())
 
     def refresh(self) -> None:
         self.center.start_data_refresh("dictionary_sets", self._apply_rows)
@@ -1079,13 +1115,21 @@ class DeviceDictionaryRecommendPage(QWidget):
             return
         profile = result if isinstance(result, DeviceSnmpProfileResult) else DeviceSnmpProfileResult(status="failed", error_message=str(result))
         self.last_profile = profile
-        self.center.site_repo.save_device_profile(str(device.device_uuid or device.id), profile)
-        recommend_service = SnmpRecommendService(self.center.global_repo)
-        recommendations = recommend_service.recommend(device, profile)
-        reference_recommendations = recommend_service.recommend_product_references(device, profile)
+        self.center.start_data_action(
+            "save_profile_recommendations",
+            {
+                "device_id": str(device.device_uuid or device.id),
+                "device": device.to_record(),
+                "profile": asdict(profile),
+            },
+            lambda payload, profile=profile: self._recommendations_finished(profile, payload),
+        )
+
+    def _recommendations_finished(self, profile: DeviceSnmpProfileResult, payload: dict[str, object]) -> None:
+        recommendations = [DictionaryRecommendation(**dict(row)) for row in payload.get("recommendations") or [] if isinstance(row, dict)]
+        reference_recommendations = [ProductReferenceRecommendation(**dict(row)) for row in payload.get("reference_recommendations") or [] if isinstance(row, dict)]
         self.last_recommendations = recommendations
         self.last_reference_recommendations = reference_recommendations
-        self.center.site_repo.save_recommendations(str(device.device_uuid or device.id), recommendations)
         reference_lines = [f"{item.reference_name}（{item.score}%）：{'；'.join(item.reasons)}" for item in reference_recommendations[:3]]
         if not reference_lines and (profile.release_series or profile.release):
             reference_lines = [
@@ -1123,8 +1167,14 @@ class DeviceDictionaryRecommendPage(QWidget):
         device = self._current_device()
         if device is None or not self.last_recommendations:
             return
-        self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), self.last_recommendations)
-        MessageBox.information(self, "设备字典推荐", "已启用推荐字典。")
+        self.center.start_data_action(
+            "apply_recommendations",
+            {
+                "device_id": str(device.device_uuid or device.id),
+                "recommendations": [asdict(item) for item in self.last_recommendations],
+            },
+            lambda _result: MessageBox.information(self, "设备字典推荐", "已启用推荐字典。"),
+        )
 
 
 class MibBrowserPage(QWidget):
@@ -1139,8 +1189,10 @@ class MibBrowserPage(QWidget):
         self.last_result: SnmpQueryResult | None = None
         self.devices: list[Device] = []
         self.product_references: list[dict[str, object]] = []
+        self.product_reference_tree_nodes: list[dict[str, object]] = []
         self.product_references_loaded = False
         self.product_reference_job_id: str | None = None
+        self.enabled_dictionary_ids_by_device: dict[str, list[int]] = {}
         self.background_manager = BackgroundProcessManager(self, paths=center.paths)
         self.background_manager.progress.connect(self._product_reference_progress)
         self.background_manager.finished.connect(self._product_reference_finished)
@@ -1361,6 +1413,11 @@ class MibBrowserPage(QWidget):
         current_device = self.device_combo.currentData()
         current_group = self.device_group_filter.currentData()
         self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        self.enabled_dictionary_ids_by_device = {
+            str(key): [int(value) for value in values]
+            for key, values in dict(result.get("enabled_dictionary_ids") or {}).items()
+            if isinstance(values, list)
+        }
         self.device_group_filter.blockSignals(True)
         self.device_group_filter.clear()
         self.device_group_filter.addItem("全部分组", "")
@@ -1394,19 +1451,7 @@ class MibBrowserPage(QWidget):
         self.refresh_devices()
 
     def _refresh_device_groups(self) -> None:
-        current = self.device_group_filter.currentData()
-        groups = DeviceGroupRepository(self.center.repository.database, self.center.site_name).list()
-        self.device_group_filter.blockSignals(True)
-        self.device_group_filter.clear()
-        self.device_group_filter.addItem("全部", "")
-        self.device_group_filter.addItem("未分组", "__ungrouped__")
-        for group in groups:
-            if group.id is not None:
-                self.device_group_filter.addItem(group.name, int(group.id))
-        index = self.device_group_filter.findData(current)
-        if index >= 0:
-            self.device_group_filter.setCurrentIndex(index)
-        self.device_group_filter.blockSignals(False)
+        self.refresh_devices()
 
     def _handle_database_locked(self, context: str, retry_fn, counter_name: str, exc: sqlite3.OperationalError) -> None:
         app_logger.log_warning("SNMP_MIB_BROWSER_DATABASE_LOCKED", f"context={context}; error={exc}")
@@ -1473,6 +1518,7 @@ class MibBrowserPage(QWidget):
         self.product_reference_job_id = None
         result = dict(event.get("result") or {})
         self.product_references = [dict(row) for row in result.get("references") or [] if isinstance(row, dict)]
+        self.product_reference_tree_nodes = [dict(row) for row in result.get("tree_nodes") or [] if isinstance(row, dict)]
         self.product_references_loaded = True
         self._build_product_reference_tree()
 
@@ -1488,7 +1534,7 @@ class MibBrowserPage(QWidget):
         device = self._current_device()
         if device is None:
             return []
-        return self.center.site_repo.list_enabled_dictionary_ids(str(device.device_uuid or device.id))
+        return list(self.enabled_dictionary_ids_by_device.get(str(device.device_uuid or device.id), []))
 
     def _current_device(self) -> Device | None:
         device_id = self.device_combo.currentData()
@@ -1525,7 +1571,7 @@ class MibBrowserPage(QWidget):
             return
         self.temporary_profile = profile
         self.temporary_name = f"临时：{profile.host}"
-        self.center.site_repo.set_snmp_set_enabled(dialog.set_enabled_checkbox.isChecked())
+        self.center.start_data_action("set_snmp_set_enabled", {"enabled": dialog.set_enabled_checkbox.isChecked()})
         self.max_repetitions.setValue(dialog.max_rep_input.value())
         self.max_rows.setValue(dialog.max_rows_input.value())
         self.refresh_devices()
@@ -1660,24 +1706,16 @@ class MibBrowserPage(QWidget):
         if device is None:
             MessageBox.information(self, "MIB 视图", "请先选择设备。")
             return
-        profile_row = self.center.site_repo.latest_device_profile(str(device.device_uuid or device.id)) or {}
-        profile = DeviceSnmpProfileResult(
-            device_name=str(profile_row.get("device_name") or device.name),
-            vendor=str(profile_row.get("vendor") or device.device_vendor or ""),
-            device_type=str(profile_row.get("device_type") or device.device_type or ""),
-            model=str(profile_row.get("model") or ""),
-            system=str(profile_row.get("system") or ""),
-            system_version=str(profile_row.get("system_version") or ""),
-            sys_object_id=str(profile_row.get("sys_object_id") or ""),
-            sys_descr=str(profile_row.get("sys_descr") or ""),
-            sys_up_time=str(profile_row.get("sys_up_time") or ""),
-            status=str(profile_row.get("status") or "cached"),
+        self.center.start_data_action(
+            "generate_recommended_view",
+            {"device": device.to_record()},
+            self._recommended_view_finished,
         )
-        recommendations = SnmpRecommendService(self.center.global_repo).recommend(device, profile)
-        if not recommendations:
+
+    def _recommended_view_finished(self, result: dict[str, object]) -> None:
+        if int(result.get("applied") or 0) <= 0:
             MessageBox.information(self, "MIB 视图", "当前设备暂无可用推荐字典，请先导入或初始化 H3C MIB 包。")
             return
-        self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), recommendations)
         index = self.source_filter.findData("h3c_v7v9")
         if index >= 0:
             self.source_filter.setCurrentIndex(index)
@@ -1854,6 +1892,12 @@ class MibBrowserPage(QWidget):
     def _build_product_reference_tree(self) -> None:
         self.tree.clear()
         references = list(self.product_references)
+        nodes_by_parent: dict[tuple[int, int | None], list[dict[str, object]]] = {}
+        for node in self.product_reference_tree_nodes:
+            reference_id = int(node.get("reference_id") or 0)
+            parent_value = node.get("parent_id")
+            parent_id = int(parent_value) if parent_value not in (None, "") else None
+            nodes_by_parent.setdefault((reference_id, parent_id), []).append(node)
         if not references:
             self.tree.addTopLevelItem(QTreeWidgetItem(["尚未导入 H3C 产品 MIB 参考表", "", "product_reference"]))
             auto_resize_tree_columns(self.tree, {0: 260, 1: 220, 2: 120})
@@ -1897,7 +1941,7 @@ class MibBrowserPage(QWidget):
             for column in range(3):
                 item.setToolTip(column, mib_tooltip(data))
             parent.addChild(item)
-            for child_row in self.center.global_repo.list_product_reference_tree_nodes(int(row["reference_id"]), int(row["id"])):
+            for child_row in nodes_by_parent.get((int(row["reference_id"]), int(row["id"])), []):
                 add_reference_node(item, child_row)
             return item
 
@@ -1910,9 +1954,9 @@ class MibBrowserPage(QWidget):
             root.setData(0, Qt.UserRole, {"name": label, "oid": "", "syntax": "product_reference", "access": "", "status": "", "reference_id": reference_id})
             root.setData(0, Qt.UserRole + 1, True)
             self.tree.addTopLevelItem(root)
-            top_nodes = self.center.global_repo.list_product_reference_tree_nodes(reference_id, None)
+            top_nodes = list(nodes_by_parent.get((reference_id, None), []))
             if len(top_nodes) == 1 and str(top_nodes[0].get("node_type") or "") == "reference_root":
-                top_nodes = self.center.global_repo.list_product_reference_tree_nodes(reference_id, int(top_nodes[0]["id"]))
+                top_nodes = list(nodes_by_parent.get((reference_id, int(top_nodes[0]["id"])), []))
             if not top_nodes:
                 object_count = int(reference.get("object_override_count") or reference.get("object_count") or 0)
                 if object_count > 0:
@@ -1978,6 +2022,24 @@ class MibBrowserPage(QWidget):
         if not isinstance(item, dict):
             fill_table(self.property_table, [])
             return
+        lookup = current.data(0, Qt.UserRole + 2)
+        if not isinstance(lookup, dict):
+            current.setData(0, Qt.UserRole + 2, {"loading": True})
+            self.center.start_data_refresh(
+                "mib_detail_lookup",
+                lambda result, tree_item=current: self._detail_lookup_finished(tree_item, result),
+                params={
+                    "module_name": str(item.get("module_name") or ""),
+                    "object_name": str(item.get("name") or ""),
+                    "oid": str(item.get("oid") or ""),
+                    "syntax": str(item.get("syntax") or ""),
+                    "source_text": str(item.get("description") or ""),
+                    "is_trap": bool(item.get("is_trap") or item.get("is_notification")),
+                },
+            )
+            return
+        if lookup.get("loading"):
+            return
         method, query_oid = MibIndexService(self.center.global_repo).object_query_method(item)
         self._selected_method = method
         self._selected_query_oid = query_oid if method else ""
@@ -1986,13 +2048,12 @@ class MibBrowserPage(QWidget):
         module_name = str(item.get("module_name") or "")
         object_name = str(item.get("name") or "")
         oid = str(item.get("oid") or "")
-        object_override = self.center.global_repo.find_product_object_override(module_name=module_name, object_name=object_name, numeric_oid=oid)
-        trap_override = None
+        object_override = lookup.get("object_override") if isinstance(lookup.get("object_override"), dict) else None
+        trap_override = lookup.get("trap_override") if isinstance(lookup.get("trap_override"), dict) else None
         if "Counter" in syntax:
             hints.append("这是 Counter / Counter64 类型，单次查询只能看到累计值。如需速率，请创建周期采集任务。")
         if int(item.get("is_trap") or 0) or int(item.get("is_notification") or 0):
             hints.append("这是 Trap / Notification 定义，不支持 Get。可以加入 Trap 解析规则。")
-            trap_override = self.center.global_repo.find_product_trap_override(module_name=module_name, trap_name=object_name, trap_oid=oid)
         reference = trap_override or object_override
         reference_status = "未匹配"
         if reference:
@@ -2050,6 +2111,11 @@ class MibBrowserPage(QWidget):
         allowed, reason = can_set_mib_object(item, query_oid if method else oid)
         self.set_current_button.setEnabled(allowed)
         self.set_current_button.setToolTip(reason)
+
+    def _detail_lookup_finished(self, tree_item: QTreeWidgetItem, result: dict[str, object]) -> None:
+        tree_item.setData(0, Qt.UserRole + 2, dict(result))
+        if self.tree.currentItem() is tree_item:
+            self._show_detail(tree_item)
 
     def copy_selected_oid(self, query_oid: bool) -> None:
         data = self._selected_data()
@@ -2192,10 +2258,22 @@ class MibBrowserPage(QWidget):
         module_name = str(data.get("module_name") or "")
         object_name = str(data.get("name") or "")
         oid = str(data.get("oid") or "")
-        cached = self.center.global_repo.get_object_translation(module_name=module_name, object_name=object_name, numeric_oid=oid, source_text=source_text)
+        current = self.tree.currentItem()
+        lookup = current.data(0, Qt.UserRole + 2) if current is not None else {}
+        cached = lookup.get("translation") if isinstance(lookup, dict) and isinstance(lookup.get("translation"), dict) else None
         translated = str(cached.get("translated_text") or "") if cached else translate_mib_description(source_text)
         if not cached:
-            self.center.global_repo.upsert_object_translation(object_id=int(data.get("id") or 0) or None, module_name=module_name, object_name=object_name, numeric_oid=oid, source_text=source_text, translated_text=translated)
+            self.center.start_data_action(
+                "upsert_translation",
+                {
+                    "object_id": int(data.get("id") or 0) or None,
+                    "module_name": module_name,
+                    "object_name": object_name,
+                    "numeric_oid": oid,
+                    "source_text": source_text,
+                    "translated_text": translated,
+                },
+            )
         fill_table(self.property_table, [[self.property_table.item(row, 0).text(), translated if self.property_table.item(row, 0).text() == "中文描述" else self.property_table.item(row, 1).text()] for row in range(self.property_table.rowCount())])
 
     def _tree_path(self, item: QTreeWidgetItem) -> str:
@@ -2284,7 +2362,7 @@ class MibBrowserPage(QWidget):
             parent=self,
         )
         if dialog.exec() == QDialog.Accepted:
-            if dialog.set_enabled_checkbox.isChecked() and not self.center.site_repo.snmp_set_enabled():
+            if dialog.set_enabled_checkbox.isChecked() and not self.center.snmp_set_enabled:
                 confirm = MessageBox.warning(self, "启用写操作", "启用 SNMP Set 后可以修改设备配置。确认启用？", MessageBox.Yes | MessageBox.No)
                 if confirm != MessageBox.Yes:
                     return
@@ -2300,7 +2378,7 @@ class MibBrowserPage(QWidget):
                 self.profile_overrides[target.device_id] = profile
             self.max_repetitions.setValue(dialog.max_rep_input.value())
             self.max_rows.setValue(dialog.max_rows_input.value())
-            self.center.site_repo.set_snmp_set_enabled(dialog.set_enabled_checkbox.isChecked())
+            self.center.start_data_action("set_snmp_set_enabled", {"enabled": dialog.set_enabled_checkbox.isChecked()})
 
     def cancel_query(self) -> None:
         cancelled = False
@@ -2403,12 +2481,18 @@ class MibBrowserPage(QWidget):
 
     def _resolve_result_oid(self, oid: str) -> dict[str, object]:
         parts = oid.split(".")
-        for end in range(len(parts), 0, -1):
-            prefix = ".".join(parts[:end])
-            rows = self.center.global_repo.list_objects(prefix, limit=1)
-            for row in rows:
-                if str(row.get("oid") or "") == prefix:
-                    return row
+        prefixes = {".".join(parts[:end]): end for end in range(len(parts), 0, -1)}
+        iterator = QTreeWidgetItemIterator(self.tree)
+        best: tuple[int, dict[str, object]] | None = None
+        while iterator.value() is not None:
+            data = iterator.value().data(0, Qt.UserRole)
+            if isinstance(data, dict):
+                candidate_oid = str(data.get("oid") or "").strip(".")
+                if candidate_oid in prefixes and (best is None or prefixes[candidate_oid] > best[0]):
+                    best = (prefixes[candidate_oid], data)
+            iterator += 1
+        if best is not None:
+            return best[1]
         return {"oid": oid, "name": oid, "module_name": ""}
 
     def export_result(self) -> None:
@@ -2470,8 +2554,17 @@ class MibBrowserPage(QWidget):
             return
         name, ok = InputDialog.getText(self, "保存为 OID 模板", "模板名称", text=str(data.get("name") or ""))
         if ok and name.strip():
-            self.center.global_repo.create_template(name=name.strip(), oid=query_oid, method=method, module_name=str(data.get("module_name") or ""), object_name=str(data.get("name") or ""))
-            MessageBox.information(self, "OID 模板", "已保存模板。")
+            self.center.start_data_action(
+                "create_template",
+                {
+                    "name": name.strip(),
+                    "oid": query_oid,
+                    "method": method,
+                    "module_name": str(data.get("module_name") or ""),
+                    "object_name": str(data.get("name") or ""),
+                },
+                lambda _result: MessageBox.information(self, "OID 模板", "已保存模板。"),
+            )
 
 
 class SnmpQueryPage(QWidget):
@@ -2708,8 +2801,11 @@ class OidTemplatePage(QWidget):
             return
         oid, ok = InputDialog.getText(self, "新增模板", "数字 OID")
         if ok and oid.strip():
-            self.center.global_repo.create_template(name=name.strip(), oid=oid.strip(), method="Get")
-            self.refresh()
+            self.center.start_data_action(
+                "create_template",
+                {"name": name.strip(), "oid": oid.strip(), "method": "Get"},
+                lambda _result: self.refresh(),
+            )
 
     def refresh(self) -> None:
         self.center.start_data_refresh("templates", self._apply_rows)

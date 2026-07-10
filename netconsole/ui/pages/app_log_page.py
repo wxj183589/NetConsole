@@ -31,7 +31,7 @@ from netconsole.ui.logs.log_display import display_log_level, display_log_row
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, format_row_for_copy
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
-from netconsole.services.export.export_task_builders import app_logs_csv_spec, table_csv_spec
+from netconsole.services.export.export_task_builders import app_logs_csv_spec
 
 
 LOG_EXPORT_FILTER = "CSV Files (*.csv);;Text Files (*.txt);;Log Files (*.log);;All Files (*.*)"
@@ -210,13 +210,14 @@ class AppLogPage(QWidget):
             return
         submit_export_task(
             self,
-            table_csv_spec(
+            app_logs_csv_spec(
                 path,
-                columns=_log_export_columns(),
-                rows=self.current_rows,
+                log_path=self.paths.app_log_path,
+                keyword=self.search_input.text().strip() or None,
+                level=self.level_filter.currentData(),
+                offset=(self.page - 1) * self.page_size,
+                limit=self.page_size,
                 title=self.i18n.t("logs.export_current"),
-                allow_inline_rows=True,
-                inline_reason="日志当前页导出仅包含 UI 当前分页行",
             ),
             success_title=self.i18n.t("logs.export_current"),
         )

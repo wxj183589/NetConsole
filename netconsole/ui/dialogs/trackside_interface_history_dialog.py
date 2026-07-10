@@ -8,12 +8,14 @@ from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushB
 from netconsole.core.i18n import I18n
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path
 from netconsole.ui.export_action_helper import submit_export_task
-from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
-from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
 from netconsole.services.history_export_service import export_interface_history_xlsx as _export_interface_history_xlsx
 
 
@@ -31,7 +33,18 @@ INTERFACE_HISTORY_COLUMNS = (
 
 
 class TracksideInterfaceHistoryDialog(QDialog):
-    def __init__(self, i18n: I18n, rows: list[dict[str, object | None]], title: str, settings, parent=None) -> None:
+    def __init__(
+        self,
+        i18n: I18n,
+        rows: list[dict[str, object | None]] | None,
+        title: str,
+        settings,
+        parent=None,
+        *,
+        db_path: str | Path | None = None,
+        device_uuid: str = "",
+        interface_name: str = "",
+    ) -> None:
         super().__init__(
             None,
             Qt.Window
@@ -40,7 +53,16 @@ class TracksideInterfaceHistoryDialog(QDialog):
             | Qt.WindowCloseButtonHint,
         )
         self.i18n = i18n
-        self.rows = rows
+        self.rows = list(rows or [])
+        self.visible_rows: list[dict[str, object | None]] = []
+        self.db_path = Path(db_path) if db_path else None
+        self.device_uuid = device_uuid
+        self.interface_name = interface_name
+        self.background_manager = BackgroundProcessManager(self) if self.db_path else None
+        self.query_job_id: str | None = None
+        if self.background_manager is not None:
+            self.background_manager.finished.connect(self._background_finished)
+            self.background_manager.failed.connect(self._background_failed)
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
         self.settings = settings
@@ -113,7 +135,55 @@ class TracksideInterfaceHistoryDialog(QDialog):
         self.pagination.retranslate()
 
     def refresh_table(self) -> None:
+        if self.background_manager is not None:
+            self._start_background_query()
+            return
         rows, state = paginate_rows(self.rows, self.page_size, self.page)
+        self._apply_rows(rows, state)
+
+    def _start_background_query(self) -> None:
+        if self.background_manager is None or self.query_job_id is not None:
+            return
+        self.query_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="trackside_interface_history_page",
+                params={
+                    "db_path": str(self.db_path),
+                    "device_uuid": self.device_uuid,
+                    "interface_name": self.interface_name,
+                    "page": self.page,
+                    "page_size": self.page_size,
+                },
+            )
+        )
+        self.export_button.setEnabled(False)
+
+    def _background_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.query_job_id:
+            return
+        self.query_job_id = None
+        self.export_button.setEnabled(True)
+        result = dict(event.get("result") or {})
+        rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+        state = PaginationState(
+            page_size=int(result.get("page_size") or self.page_size),
+            current_page=int(result.get("current_page") or 1),
+            total_items=int(result.get("total_items") or 0),
+            total_pages=int(result.get("total_pages") or 1),
+        )
+        self._apply_rows(rows, state)
+
+    def _background_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.query_job_id:
+            return
+        self.query_job_id = None
+        self.export_button.setEnabled(True)
+        from netconsole.ui.dialogs.message_service import MessageBox
+
+        MessageBox.warning(self, self.windowTitle(), str(event.get("message") or event.get("error") or "历史查询失败"))
+
+    def _apply_rows(self, rows: list[dict[str, object | None]], state: PaginationState) -> None:
+        self.visible_rows = rows
         self.page = state.current_page
         self.pagination.set_state(state)
         self.table.setRowCount(len(rows))
@@ -143,8 +213,7 @@ class TracksideInterfaceHistoryDialog(QDialog):
 
     def current_record(self) -> dict[str, object | None] | None:
         current = self.table.currentRow()
-        rows, _state = paginate_rows(self.rows, self.page_size, self.page)
-        return rows[current] if 0 <= current < len(rows) else None
+        return self.visible_rows[current] if 0 <= current < len(self.visible_rows) else None
 
     def set_page(self, page: int) -> None:
         self.page = page
@@ -156,20 +225,25 @@ class TracksideInterfaceHistoryDialog(QDialog):
         self.refresh_table()
 
     def export_history(self) -> None:
+        if self.db_path is None:
+            return
         path = select_export_path(self, self.i18n.t("trackside_ap.export_history"), "interface_history.xlsx", EXCEL_FILTER)
         if not path:
             return
         headers = [self.i18n.t(key) for key, _field in INTERFACE_HISTORY_COLUMNS]
         submit_export_task(
             self,
-            table_xlsx_spec(
+            table_xlsx_source_spec(
                 path,
                 columns=[{"key": field, "title": headers[index]} for index, (_key, field) in enumerate(INTERFACE_HISTORY_COLUMNS)],
-                rows=self.rows,
+                source=repository_query_source(
+                    db_path=self.db_path,
+                    repository="device_fact_repository",
+                    method="list_trackside_interface_history",
+                    filters={"device_uuid": self.device_uuid, "interface_name": self.interface_name},
+                ),
                 sheet_name="Interface History",
                 title=self.i18n.t("trackside_ap.export_history"),
-                allow_inline_rows=True,
-                inline_reason="轨旁接口历史弹窗导出当前查询结果",
             ),
             success_title=self.i18n.t("trackside_ap.export_history"),
         )

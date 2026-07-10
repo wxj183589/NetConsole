@@ -17,6 +17,7 @@ from netconsole.services.export.common_exporters import (
     export_online_mr_report_xlsx,
     export_app_logs_csv,
     export_car_network_point_table,
+    export_command_reference_markdown,
     export_fit_ap_csv_task,
     export_fit_ap_extension_template_xlsx_task,
     export_fit_ap_extension_xlsx_task,
@@ -28,6 +29,7 @@ from netconsole.services.export.common_exporters import (
     export_table_xlsx,
     export_wifi_survey_csv,
     export_wifi_survey_heatmap_png,
+    export_vehicle_mr_history_xlsx,
     export_zip_files,
     replace_output,
 )
@@ -63,6 +65,8 @@ GENERIC_EXPORT_TASK_TYPES = {
     "omnipeek_name_table",
     "online_mr_report_xlsx",
     "car_network_point_table",
+    "command_reference_markdown",
+    "vehicle_mr_history_xlsx",
 }
 
 
@@ -123,6 +127,10 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_online_mr_report_xlsx(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "car_network_point_table":
         row_count = export_car_network_point_table(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "command_reference_markdown":
+        row_count = export_command_reference_markdown(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "vehicle_mr_history_xlsx":
+        row_count = export_vehicle_mr_history_xlsx(tmp_path, payload, progress_callback, should_cancel)
     else:
         raise ValueError(f"不支持的通用导出任务类型：{job.job_type}")
     if should_cancel and should_cancel():

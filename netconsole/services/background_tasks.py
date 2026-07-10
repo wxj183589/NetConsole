@@ -22,6 +22,10 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _device_csv_import(params, progress_callback, should_cancel)
     if job.task_type == "device_list_page":
         return _device_list_page(params, progress_callback, should_cancel)
+    if job.task_type == "device_object_history_page":
+        return _device_object_history_page(params, progress_callback, should_cancel)
+    if job.task_type == "trackside_interface_history_page":
+        return _trackside_interface_history_page(params, progress_callback, should_cancel)
     if job.task_type == "car_network_point_table_import":
         return _car_network_point_table_import(params, progress_callback, should_cancel)
     if job.task_type == "car_network_refresh_all":
@@ -32,6 +36,10 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _car_network_save_point_table(params, progress_callback, should_cancel)
     if job.task_type == "trackside_ap_plan_import":
         return _trackside_ap_plan_import(params, progress_callback, should_cancel)
+    if job.task_type == "trackside_ap_plan_refresh":
+        return _trackside_ap_plan_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "trackside_ap_plan_save":
+        return _trackside_ap_plan_save(params, progress_callback, should_cancel)
     if job.task_type == "vehicle_mr_mapping_import":
         return _vehicle_mr_mapping_import(params, progress_callback, should_cancel)
     if job.task_type == "vehicle_mr_online_refresh_all":
@@ -56,6 +64,10 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _omnipeek_name_table_preview(params, progress_callback, should_cancel)
     if job.task_type == "ac_overview_history_snapshot":
         return _ac_overview_history_snapshot(params, progress_callback, should_cancel)
+    if job.task_type == "ac_station_online_history_page":
+        return _ac_station_online_history_page(params, progress_callback, should_cancel)
+    if job.task_type == "ac_ap_history_page":
+        return _ac_ap_history_page(params, progress_callback, should_cancel)
     if job.task_type == "ac_trackside_business_refresh":
         return _ac_trackside_business_refresh(params, progress_callback, should_cancel)
     if job.task_type == "config_compare_latest_running_between_devices":
@@ -70,6 +82,8 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _config_snapshot_copy(params, progress_callback, should_cancel)
     if job.task_type == "config_snapshot_pair_load_content":
         return _config_snapshot_pair_load_content(params, progress_callback, should_cancel)
+    if job.task_type == "config_snapshot_delete_many":
+        return _config_snapshot_delete_many(params, progress_callback, should_cancel)
     if job.task_type == "online_mr_parse":
         return _online_mr_parse(params, progress_callback, should_cancel)
     if job.task_type == "mesh_log_import":
@@ -84,6 +98,8 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _snmp_product_references_refresh(params, progress_callback, should_cancel)
     if job.task_type == "snmp_center_data_refresh":
         return _snmp_center_data_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "snmp_center_data_action":
+        return _snmp_center_data_action(params, progress_callback, should_cancel)
     if job.task_type == "wireless_scan_history_refresh":
         return _wireless_scan_history_refresh(params, progress_callback, should_cancel)
     if job.task_type == "wireless_scan_result_load":
@@ -155,9 +171,27 @@ def _snmp_product_references_refresh(params: dict[str, Any], progress: ProgressC
 
     _emit(progress, "snmp_product_references_refresh", 0, 1, "正在读取产品 MIB 参考表")
     _check_cancel(should_cancel)
-    references = GlobalMibRepository(Path(str(params.get("db_path") or ""))).list_product_references()
+    repository = GlobalMibRepository(Path(str(params.get("db_path") or "")))
+    references = repository.list_product_references()
+    tree_nodes: list[dict[str, object]] = []
+    visited: set[int] = set()
+
+    def collect(reference_id: int, parent_id: int | None) -> None:
+        for node in repository.list_product_reference_tree_nodes(reference_id, parent_id):
+            node_id = int(node.get("id") or 0)
+            if not node_id or node_id in visited:
+                continue
+            visited.add(node_id)
+            tree_nodes.append(node)
+            _check_cancel(should_cancel)
+            collect(reference_id, node_id)
+
+    for reference in references:
+        reference_id = int(reference.get("id") or 0)
+        if reference_id:
+            collect(reference_id, None)
     _emit(progress, "snmp_product_references_refresh", 1, 1, "产品 MIB 参考表刷新完成")
-    return {"references": references}
+    return {"references": references, "tree_nodes": tree_nodes}
 
 
 def _snmp_center_data_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -186,7 +220,12 @@ def _snmp_center_data_refresh(params: dict[str, Any], progress: ProgressCallback
         database = Database(Path(str(params.get("site_db_path") or "")))
         filters = dict(params.get("filters") or {})
         allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
-        result["devices"] = [device.to_record() for device in DeviceRepository(database).list(**allowed_filters)[:limit]]
+        devices = DeviceRepository(database).list(**allowed_filters)[:limit]
+        result["devices"] = [device.to_record() for device in devices]
+        result["enabled_dictionary_ids"] = {
+            str(device.device_uuid or device.id): site_repo.list_enabled_dictionary_ids(str(device.device_uuid or device.id))
+            for device in devices
+        }
         groups = DeviceGroupRepository(database, str(params.get("site_name") or "")).list()
         result["groups"] = [{"id": group.id, "name": group.name} for group in groups if group.id is not None]
     elif view == "templates":
@@ -199,10 +238,127 @@ def _snmp_center_data_refresh(params: dict[str, Any], progress: ProgressCallback
     elif view == "topology":
         result["nodes"] = site_repo.list_topology_nodes()[:limit]
         result["edges"] = site_repo.list_topology_edges()[:limit]
+    elif view == "mib_detail_lookup":
+        module_name = str(params.get("module_name") or "")
+        object_name = str(params.get("object_name") or "")
+        oid = str(params.get("oid") or "")
+        syntax = str(params.get("syntax") or "")
+        source_text = str(params.get("source_text") or "")
+        result["object_override"] = global_repo.find_product_object_override(
+            module_name=module_name,
+            object_name=object_name,
+            numeric_oid=oid,
+        )
+        result["trap_override"] = (
+            global_repo.find_product_trap_override(
+                module_name=module_name,
+                trap_name=object_name,
+                trap_oid=oid,
+            )
+            if "trap" in syntax.casefold() or bool(params.get("is_trap"))
+            else None
+        )
+        result["translation"] = global_repo.get_object_translation(
+            module_name=module_name,
+            object_name=object_name,
+            numeric_oid=oid,
+            source_text=source_text,
+        )
     else:
         raise ValueError(f"不支持的 SNMP 后台刷新视图：{view}")
     _emit(progress, "snmp_center_data_refresh", 1, 1, f"SNMP {view} 刷新完成")
     return result
+
+
+def _snmp_center_data_action(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.models.snmp_models import DictionaryRecommendation, DeviceSnmpProfileResult
+    from netconsole.repositories.global_mib_repository import GlobalMibRepository
+    from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
+    from netconsole.services.mib_dictionary_service import MibDictionaryService
+
+    action = str(params.get("action") or "")
+    _emit(progress, "snmp_center_data_action", 0, 1, f"正在执行 SNMP 操作：{action}")
+    _check_cancel(should_cancel)
+    global_repo = GlobalMibRepository(Path(str(params.get("global_db_path") or "")))
+    site_repo = SiteSnmpRepository(Path(str(params.get("site_snmp_db_path") or "")))
+    if action == "create_dictionary":
+        result = {"id": MibDictionaryService(global_repo).create_dictionary_set(str(params.get("name") or ""))}
+    elif action == "create_template":
+        result = {
+            "id": global_repo.create_template(
+                name=str(params.get("name") or ""),
+                oid=str(params.get("oid") or ""),
+                method=str(params.get("method") or "Get"),
+                module_name=str(params.get("module_name") or ""),
+                object_name=str(params.get("object_name") or ""),
+            )
+        }
+    elif action == "save_profile_recommendations":
+        from netconsole.models.device import Device
+        from netconsole.services.snmp_recommend_service import SnmpRecommendService
+
+        device_id = str(params.get("device_id") or "")
+        profile = DeviceSnmpProfileResult(**dict(params.get("profile") or {}))
+        device_payload = dict(params.get("device") or {})
+        if device_payload:
+            device = Device.from_mapping(device_payload)
+            recommend_service = SnmpRecommendService(global_repo)
+            recommendations = recommend_service.recommend(device, profile)
+            reference_recommendations = recommend_service.recommend_product_references(device, profile)
+        else:
+            recommendations = [DictionaryRecommendation(**dict(row)) for row in params.get("recommendations") or []]
+            reference_recommendations = []
+        site_repo.save_device_profile(device_id, profile)
+        site_repo.save_recommendations(device_id, recommendations)
+        result = {
+            "saved": True,
+            "recommendations": [asdict(item) for item in recommendations],
+            "reference_recommendations": [asdict(item) for item in reference_recommendations],
+        }
+    elif action == "apply_recommendations":
+        recommendations = [DictionaryRecommendation(**dict(row)) for row in params.get("recommendations") or []]
+        site_repo.apply_recommendations(str(params.get("device_id") or ""), recommendations)
+        result = {"applied": len(recommendations)}
+    elif action == "set_snmp_set_enabled":
+        site_repo.set_snmp_set_enabled(bool(params.get("enabled")))
+        result = {"enabled": bool(params.get("enabled"))}
+    elif action == "generate_recommended_view":
+        from netconsole.models.device import Device
+        from netconsole.services.snmp_recommend_service import SnmpRecommendService
+
+        device = Device.from_mapping(dict(params.get("device") or {}))
+        device_id = str(device.device_uuid or device.id)
+        profile_row = site_repo.latest_device_profile(device_id) or {}
+        profile = DeviceSnmpProfileResult(
+            device_name=str(profile_row.get("device_name") or device.name),
+            vendor=str(profile_row.get("vendor") or device.device_vendor or ""),
+            device_type=str(profile_row.get("device_type") or device.device_type or ""),
+            model=str(profile_row.get("model") or ""),
+            system=str(profile_row.get("system") or ""),
+            system_version=str(profile_row.get("system_version") or ""),
+            sys_object_id=str(profile_row.get("sys_object_id") or ""),
+            sys_descr=str(profile_row.get("sys_descr") or ""),
+            sys_up_time=str(profile_row.get("sys_up_time") or ""),
+            status=str(profile_row.get("status") or "cached"),
+        )
+        recommendations = SnmpRecommendService(global_repo).recommend(device, profile)
+        if recommendations:
+            site_repo.apply_recommendations(device_id, recommendations)
+        result = {"applied": len(recommendations)}
+    elif action == "upsert_translation":
+        global_repo.upsert_object_translation(
+            object_id=int(params.get("object_id") or 0) or None,
+            module_name=str(params.get("module_name") or ""),
+            object_name=str(params.get("object_name") or ""),
+            numeric_oid=str(params.get("numeric_oid") or ""),
+            source_text=str(params.get("source_text") or ""),
+            translated_text=str(params.get("translated_text") or ""),
+        )
+        result = {"saved": True}
+    else:
+        raise ValueError(f"不支持的 SNMP 后台操作：{action}")
+    _emit(progress, "snmp_center_data_action", 1, 1, f"SNMP 操作完成：{action}")
+    return {"action": action, **result}
 
 
 def _snmp_module_display_name(row: dict[str, object]) -> str:
@@ -245,6 +401,7 @@ def _wireless_scan_history_refresh(params: dict[str, Any], progress: ProgressCal
 def _wireless_scan_result_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
     from netconsole.services.network_tools.wireless_scan_service import repository_row_to_display_row
+    from netconsole.utils.text_encoding import read_text_with_fallback
 
     _emit(progress, "wireless_scan_result_load", 0, 2, "正在后台读取无线扫描结果")
     _check_cancel(should_cancel)
@@ -253,7 +410,7 @@ def _wireless_scan_result_load(params: dict[str, Any], progress: ProgressCallbac
     limit = max(1, min(int(params.get("limit") or 500), 2000))
     rows = [repository_row_to_display_row(row) for row in all_rows[:limit]]
     raw_file = Path(str(params.get("raw_file") or ""))
-    raw_text = raw_file.read_text(encoding="utf-8", errors="replace") if raw_file.is_file() else ""
+    raw_text = read_text_with_fallback(raw_file) if raw_file.is_file() else ""
     _emit(progress, "wireless_scan_result_load", 2, 2, "无线扫描结果加载完成")
     return {"rows": rows, "total_items": len(all_rows), "raw_text": raw_text, "scan_id": str(params.get("scan_id") or "")}
 
@@ -309,6 +466,70 @@ def _device_list_page(params: dict[str, Any], progress: ProgressCallback | None,
         "current_page": current_page,
         "page_size": page_size,
         "groups": [{"id": group.id, "name": group.name} for group in groups],
+    }
+
+
+def _device_object_history_page(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from math import ceil
+
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_fact_repository import DeviceFactRepository
+
+    _emit(progress, "device_object_history_page", 0, 1, "正在查询设备历史")
+    _check_cancel(should_cancel)
+    repository = DeviceFactRepository(Database(Path(str(params.get("db_path") or ""))))
+    history_kind = str(params.get("history_kind") or "")
+    device_uuid = str(params.get("device_uuid") or "")
+    object_name = str(params.get("object_name") or "")
+    page_size = max(1, min(int(params.get("page_size") or 200), 1000))
+    total = repository.count_object_history(history_kind, device_uuid, object_name)
+    total_pages = max(ceil(total / page_size), 1)
+    current_page = min(max(int(params.get("page") or 1), 1), total_pages)
+    rows = repository.list_object_history_page(
+        history_kind,
+        device_uuid,
+        object_name,
+        limit=page_size,
+        offset=(current_page - 1) * page_size,
+    )
+    _emit(progress, "device_object_history_page", 1, 1, "设备历史查询完成")
+    return {
+        "rows": rows,
+        "total_items": total,
+        "total_pages": total_pages,
+        "current_page": current_page,
+        "page_size": page_size,
+    }
+
+
+def _trackside_interface_history_page(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    result = _device_object_history_page(
+        {
+            **params,
+            "history_kind": "optical",
+            "object_name": str(params.get("interface_name") or ""),
+        },
+        progress,
+        should_cancel,
+    )
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    device_uuid = str(params.get("device_uuid") or "")
+    device = next((item for item in DeviceRepository(database).list() if str(item.device_uuid or "") == device_uuid), None)
+    result["rows"] = [_trackside_interface_history_row(dict(row), device, device_uuid) for row in result.get("rows") or []]
+    return result
+
+
+def _trackside_interface_history_row(row: dict[str, Any], device: Any, device_uuid: str) -> dict[str, Any]:
+    return {
+        **row,
+        "source_device_name": device.name if device is not None else row.get("device_uuid"),
+        "source_device_id": device_uuid,
+        "host": device.ip_address if device is not None else "",
+        "optical_status": row.get("status"),
+        "session_id": row.get("collect_run_uuid"),
     }
 
 
@@ -424,6 +645,31 @@ def _trackside_ap_plan_import(params: dict[str, Any], progress: ProgressCallback
     repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
     repository.replace_trackside_ap_plan_rows(str(params.get("mode") or TRACKSIDE_AP_PLAN_MODE), rows)
     _emit(progress, "trackside_ap_plan_import", 1, 1, "轨旁 AP 规划导入完成")
+    return {"count": len(rows)}
+
+
+def _trackside_ap_plan_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+
+    _emit(progress, "trackside_ap_plan_refresh", 0, 1, "正在加载轨旁 AP 规划")
+    _check_cancel(should_cancel)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    rows = repository.list_trackside_ap_plan(str(params.get("mode") or TRACKSIDE_AP_PLAN_MODE))
+    _emit(progress, "trackside_ap_plan_refresh", 1, 1, "轨旁 AP 规划加载完成")
+    return {"rows": rows, "count": len(rows)}
+
+
+def _trackside_ap_plan_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+
+    rows = [dict(row) for row in params.get("rows") or [] if isinstance(row, dict)]
+    _emit(progress, "trackside_ap_plan_save", 0, max(len(rows), 1), "正在保存轨旁 AP 规划")
+    _check_cancel(should_cancel)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    repository.replace_trackside_ap_plan_rows(str(params.get("mode") or TRACKSIDE_AP_PLAN_MODE), rows)
+    _emit(progress, "trackside_ap_plan_save", max(len(rows), 1), max(len(rows), 1), "轨旁 AP 规划保存完成")
     return {"count": len(rows)}
 
 
@@ -776,6 +1022,62 @@ def _ac_overview_history_snapshot(params: dict[str, Any], progress: ProgressCall
     return {"count": count}
 
 
+def _ac_station_online_history_page(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from math import ceil
+
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    _emit(progress, "ac_station_online_history_page", 0, 1, "正在查询 AP 在线历史")
+    _check_cancel(should_cancel)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    site_name = str(params.get("site_name") or "").strip() or None
+    page_size = max(1, min(int(params.get("page_size") or 200), 1000))
+    total = repository.count_station_online_summary_history(site_name)
+    total_pages = max(ceil(total / page_size), 1)
+    current_page = min(max(int(params.get("page") or 1), 1), total_pages)
+    rows = repository.list_station_online_summary_history(site_name, page_size, (current_page - 1) * page_size)
+    _emit(progress, "ac_station_online_history_page", 1, 1, "AP 在线历史查询完成")
+    return {
+        "rows": rows,
+        "total_items": total,
+        "total_pages": total_pages,
+        "current_page": current_page,
+        "page_size": page_size,
+    }
+
+
+def _ac_ap_history_page(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from math import ceil
+
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    _emit(progress, "ac_ap_history_page", 0, 1, "正在查询 FIT-AP 历史")
+    _check_cancel(should_cancel)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    history_kind = str(params.get("history_kind") or "")
+    ap_uuid = str(params.get("ap_uuid") or "")
+    page_size = max(1, min(int(params.get("page_size") or 200), 1000))
+    total = repository.count_fit_ap_history(history_kind, ap_uuid)
+    total_pages = max(ceil(total / page_size), 1)
+    current_page = min(max(int(params.get("page") or 1), 1), total_pages)
+    rows = repository.list_fit_ap_history_page(
+        history_kind,
+        ap_uuid,
+        limit=page_size,
+        offset=(current_page - 1) * page_size,
+    )
+    _emit(progress, "ac_ap_history_page", 1, 1, "FIT-AP 历史查询完成")
+    return {
+        "rows": rows,
+        "total_items": total,
+        "total_pages": total_pages,
+        "current_page": current_page,
+        "page_size": page_size,
+    }
+
+
 def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.core.sources.switch_source import build_switch_data_lookup
@@ -975,6 +1277,29 @@ def _config_snapshot_pair_load_content(params: dict[str, Any], progress: Progres
         )
     _emit(progress, "config_snapshot_pair_load_content", 2, 2, "配置快照读取完成")
     return {"snapshots": rows, "raw_diff": str(params.get("raw_diff") or "")}
+
+
+def _config_snapshot_delete_many(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository, service = _config_snapshot_service(params)
+    snapshot_ids = [int(value) for value in params.get("snapshot_ids") or [] if int(value or 0) > 0]
+    total = len(snapshot_ids)
+    deleted = 0
+    failed_items: list[dict[str, object]] = []
+    for index, snapshot_id in enumerate(snapshot_ids, start=1):
+        _check_cancel(should_cancel)
+        _emit(progress, "config_snapshot_delete_many", index - 1, max(total, 1), f"正在删除配置快照 {index}/{total}")
+        try:
+            service.delete_snapshot(repository.get(snapshot_id))
+            deleted += 1
+        except Exception as exc:
+            failed_items.append({"snapshot_id": snapshot_id, "error": str(exc)})
+    _emit(progress, "config_snapshot_delete_many", max(total, 1), max(total, 1), "配置快照删除完成")
+    return {
+        "total": total,
+        "deleted": deleted,
+        "failed": len(failed_items),
+        "failed_items": failed_items,
+    }
 
 
 def _compare_snapshot_texts(service: Any, left: Any, right: Any) -> dict[str, Any]:

@@ -33,7 +33,6 @@ from netconsole.core.settings import SettingsStore
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.rail_transit.trackside_optical_history import TracksideOpticalHistoryService
 from netconsole.services.rail_transit.trackside_optical_collection import DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
@@ -796,10 +795,16 @@ class TracksideApServicePage(QWidget):
             existing.raise_()
             existing.activateWindow()
             return
-        service = TracksideOpticalHistoryService(self.device_repository)
-        history_rows = service.query_interface_history_all(device_uuid, interface_name)
         title = self.i18n.t("trackside_ap.interface_history_title", device=device_name, interface=interface_name)
-        dialog = TracksideInterfaceHistoryDialog(self.i18n, history_rows, title, self.settings)
+        dialog = TracksideInterfaceHistoryDialog(
+            self.i18n,
+            None,
+            title,
+            self.settings,
+            db_path=self.device_repository.database.path,
+            device_uuid=device_uuid,
+            interface_name=interface_name,
+        )
         self.history_windows.append(dialog)
         self.history_windows_by_key[window_key] = dialog
         dialog.destroyed.connect(lambda _=None, window=dialog, key=window_key: self._forget_history_window(window, key))

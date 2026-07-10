@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core.paths import PathResolver
-from netconsole.services.export.export_task_builders import markdown_text_spec
-from netconsole.services.command_reference_service import CommandReference, export_command_references_markdown, load_command_references, unique_values
+from netconsole.services.export.export_task_builders import command_reference_markdown_spec
+from netconsole.services.command_reference_service import CommandReference, command_reference_path, load_command_references, unique_values
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.shell.fluent_bridge import ComboBox, InfoBar, InfoBarPosition, PushButton
 from netconsole.ui.table_utils import auto_resize_table_columns_to_contents, configure_readonly_table, make_table_item
@@ -110,7 +110,12 @@ class CommandReferencePage(QWidget):
         target = Path(path_text)
         submit_export_task(
             self,
-            markdown_text_spec(target, text=export_command_references_markdown(self.filtered_references), title="导出命令说明"),
+            command_reference_markdown_spec(
+                target,
+                resource_path=command_reference_path(self.paths),
+                selected_ids=[item.id for item in self.filtered_references],
+                title="导出命令说明",
+            ),
             success_title="导出命令说明",
         )
 

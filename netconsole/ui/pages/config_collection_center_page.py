@@ -482,6 +482,16 @@ class ConfigCollectionCenterPage(QWidget):
             self._show_success(self.t("config_center.status.snapshot_downloaded"))
         elif task_type == "config_snapshot_pair_load_content":
             self._apply_snapshot_pair_content(result)
+        elif task_type == "config_snapshot_delete_many":
+            deleted = int(result.get("deleted") or 0)
+            failed_items = [dict(item) for item in result.get("failed_items") or [] if isinstance(item, dict)]
+            self.checked_snapshot_ids.clear()
+            self.refresh_snapshots()
+            if failed_items:
+                details = "\n".join(f"ID {item.get('snapshot_id')}：{item.get('error')}" for item in failed_items[:10])
+                MessageBox.warning(self, self._title(), f"已删除 {deleted} 条，失败 {len(failed_items)} 条。\n{details}")
+            else:
+                self._show_success(self.t("config_center.status.snapshot_deleted", count=deleted))
 
     def _background_failed(self, event: dict) -> None:
         message = str(event.get("message") or event.get("error") or "后台任务失败")
@@ -712,11 +722,14 @@ class ConfigCollectionCenterPage(QWidget):
             return
         answer = MessageBox.question(self, self.t("config_center.btn.delete_snapshot"), self.t("config_center.msg.confirm_delete_snapshot", count=len(snapshots)))
         if answer == MessageBox.Yes:
-            for snapshot in snapshots:
-                self.service.delete_snapshot(snapshot)
-            self.checked_snapshot_ids.clear()
-            self.refresh_snapshots()
-            self._show_success(self.t("config_center.status.snapshot_deleted", count=len(snapshots)))
+            self._start_background_io(
+                "config_snapshot_delete_many",
+                {
+                    **self._background_path_params(),
+                    "snapshot_ids": [int(snapshot.id) for snapshot in snapshots if snapshot.id is not None],
+                },
+                "正在后台删除配置快照...",
+            )
 
     def _show_result_snapshots(self, snapshots: list[ConfigSnapshot], diff: ConfigDiffResult | None) -> None:
         snapshot_ids = [int(snapshot.id) for snapshot in snapshots if snapshot.id is not None]

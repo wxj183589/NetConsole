@@ -72,6 +72,8 @@ class TracksideApPlanPage(QWidget):
         self.background_manager = BackgroundProcessManager(self)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
+        self._jobs: dict[str, str] = {}
+        self._busy = False
         self._dirty = False
         self._build_ui()
         self.retranslate()
@@ -129,6 +131,8 @@ class TracksideApPlanPage(QWidget):
             _set_button_icon(button, icon)
 
     def refresh(self) -> None:
+        if self._busy:
+            return
         if not self._confirm_discard_or_save_changes():
             return
         self.reload_plan_table()
@@ -147,48 +151,67 @@ class TracksideApPlanPage(QWidget):
             self._dirty = True
 
     def save_plan(self) -> bool:
+        if self._busy:
+            return False
         try:
             rows = self._read_table_rows()
         except ValueError as exc:
             MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(exc))
             return False
-        self.repository.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, rows)
         for row in rows:
             app_logger.log_info(
                 "TRACKSIDE_AP_PLAN_SAVED",
                 f"保存轨旁AP规划：station={row.get('station_name')}, ap_count={row.get('ap_count')}, vlan={row.get('ap_management_vlans')}",
             )
-        self._dirty = False
-        self.reload_plan_table()
-        self.plan_saved.emit()
+        self._start_job("trackside_ap_plan_save", {"rows": rows})
         return True
 
     def import_plan(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ac.trackside_plan.import"), "", "Excel/CSV (*.xlsx *.csv)")
         if not path:
             return
-        self.background_manager.start_job(
+        self._start_job("trackside_ap_plan_import", {"path": path})
+
+    def _start_job(self, task_type: str, params: dict[str, object] | None = None) -> None:
+        if self._busy:
+            return
+        self._set_busy(True)
+        job_id = self.background_manager.start_job(
             BackgroundJob(
-                task_type="trackside_ap_plan_import",
+                task_type=task_type,
                 params={
-                    "path": path,
                     "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
                     "mode": TRACKSIDE_AP_PLAN_MODE,
+                    **dict(params or {}),
                 },
             )
         )
+        self._jobs[job_id] = task_type
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        for button in (self.add_button, self.delete_button, self.save_button, self.import_button, self.refresh_button):
+            button.setEnabled(not busy)
 
     def _background_finished(self, event: dict) -> None:
+        task_type = self._jobs.pop(str(event.get("job_id") or ""), "")
+        self._set_busy(False)
         result = dict(event.get("result") or {})
-        if "count" not in result:
+        if task_type == "trackside_ap_plan_refresh":
+            self._set_rows([dict(row) for row in result.get("rows") or [] if isinstance(row, dict)])
+            self._dirty = False
             return
-        app_logger.log_info("TRACKSIDE_AP_PLAN_IMPORTED", f"count={result.get('count')}")
-        self._dirty = False
-        self.reload_plan_table()
-        self.plan_saved.emit()
+        if task_type in {"trackside_ap_plan_import", "trackside_ap_plan_save"}:
+            app_logger.log_info("TRACKSIDE_AP_PLAN_SAVED", f"task={task_type}, count={result.get('count', 0)}")
+            self._dirty = False
+            self.plan_saved.emit()
+            self.reload_plan_table()
 
     def _background_failed(self, event: dict) -> None:
-        MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(event.get("message") or event.get("error") or "导入失败"))
+        self._jobs.pop(str(event.get("job_id") or ""), None)
+        self._set_busy(False)
+        MessageBox.warning(self, self.i18n.t("ac.trackside_plan.validation_failed"), str(event.get("message") or event.get("error") or "后台任务失败"))
 
     def export_plan(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, self.i18n.t("ac.trackside_plan.export"), self._default_export_name(), "Excel (*.xlsx)")
@@ -230,8 +253,7 @@ class TracksideApPlanPage(QWidget):
         )
 
     def reload_plan_table(self) -> None:
-        self._set_rows(self.repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE))
-        self._dirty = False
+        self._start_job("trackside_ap_plan_refresh")
 
     def _set_rows(self, rows: list[dict[str, object | None]]) -> None:
         self.table.blockSignals(True)
@@ -328,8 +350,8 @@ class TracksideApPlanPage(QWidget):
             MessageBox.StandardButton.Save | MessageBox.StandardButton.Discard | MessageBox.StandardButton.Cancel,
         )
         if result == MessageBox.StandardButton.Save:
-            return self.save_plan()
+            self.save_plan()
+            return False
         if result == MessageBox.StandardButton.Cancel:
             return False
         return result == MessageBox.StandardButton.Discard
-

@@ -64,7 +64,7 @@ from netconsole.services.vehicle_mr_online import (
 from netconsole.ui.pages.online_mr_collection_page import connection_fields_from_device
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.services.export.common_exporters import export_table_xlsx
-from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.export.export_task_builders import table_xlsx_spec, vehicle_mr_history_xlsx_spec
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
@@ -859,14 +859,21 @@ class VehicleMrHistoryQueryDialog(QDialog):
             return
         submit_export_task(
             self,
-            table_xlsx_spec(
+            vehicle_mr_history_xlsx_spec(
                 Path(path),
-                columns=[{"key": key, "title": title, "width": width} for key, title, width in VEHICLE_MR_HISTORY_EXPORT_COLUMNS],
-                rows=_vehicle_mr_history_export_rows(self.rows),
-                sheet_name="历史记录",
+                app_root=self.store.paths.app_root,
+                data_root=self.store.paths.data_root,
+                site_name=self.store.site_name,
+                train_id=self.train.train_id,
+                filters={
+                    "start_time": self.start_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                    "end_time": self.end_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                    "car_end_label": "" if self.end_combo.currentText() == "全部" else self.end_combo.currentText(),
+                    "status": "" if self.status_combo.currentText() == "全部" else self.status_combo.currentText(),
+                    "station": self.station_edit.text().strip(),
+                    "ap_name": self.ap_edit.text().strip(),
+                },
                 title="导出历史记录",
-                allow_inline_rows=True,
-                inline_reason="车载 MR 在线历史弹窗导出当前查询结果",
             ),
             success_title="导出历史记录",
         )

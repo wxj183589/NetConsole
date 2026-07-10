@@ -10,10 +10,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QGroupBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QSpinBox,
@@ -115,16 +117,28 @@ class IperfBandwidthPage(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.addWidget(self.tool_label)
-        self.splitter.addWidget(self._server_panel())
-        self.splitter.addWidget(self._client_panel())
+        self.server_panel = self._server_panel()
+        self.client_panel = self._client_panel()
+        self.splitter.addWidget(self._scrollable_panel(self.server_panel))
+        self.splitter.addWidget(self._scrollable_panel(self.client_panel))
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([620, 620])
         root.addWidget(self.splitter, 1)
 
+    @staticmethod
+    def _scrollable_panel(panel: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidget(panel)
+        return scroll
+
     def _server_panel(self) -> QGroupBox:
         panel = QGroupBox()
-        panel.setMinimumWidth(520)
+        panel.setMinimumWidth(360)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
         box = QGroupBox()
@@ -149,7 +163,7 @@ class IperfBandwidthPage(QWidget):
 
     def _client_panel(self) -> QGroupBox:
         panel = QGroupBox()
-        panel.setMinimumWidth(520)
+        panel.setMinimumWidth(360)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
         box = QGroupBox()
@@ -203,7 +217,7 @@ class IperfBandwidthPage(QWidget):
             self.client_protocol_combo,
             self.client_direction_combo,
         ):
-            widget.setMinimumWidth(260)
+            widget.setMinimumWidth(180)
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for spin in (
             self.server_port_spin,
@@ -231,8 +245,8 @@ class IperfBandwidthPage(QWidget):
         self.client_open_logs_button.clicked.connect(lambda: self._open_log_dir(self.paths.iperf_client_dir(self.site_name)))
 
     def retranslate(self) -> None:
-        self.splitter.widget(0).setTitle(self.i18n.t("iperf.server"))
-        self.splitter.widget(1).setTitle(self.i18n.t("iperf.client"))
+        self.server_panel.setTitle(self.i18n.t("iperf.server"))
+        self.client_panel.setTitle(self.i18n.t("iperf.client"))
         self.server_start_button.setText(self.i18n.t("iperf.start_server"))
         self.server_stop_button.setText(self.i18n.t("iperf.stop_server"))
         self.server_clear_button.setText(self.i18n.t("iperf.clear_output"))
