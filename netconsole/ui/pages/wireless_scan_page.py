@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -43,6 +42,8 @@ from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_column_state import TableColumnState
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.wireless_scan_worker import WirelessAdapterLoadWorker, WirelessScanWorker
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
+from netconsole.ui.widgets.scrollable_toolbar import make_horizontal_scroll_area
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
 
@@ -81,7 +82,7 @@ class WirelessScanPage(QWidget):
         self.start_button = QPushButton()
         self.stop_button = QPushButton()
         self.auto_refresh_check = QCheckBox()
-        self.interval_spin = QSpinBox()
+        self.interval_spin = NoWheelSpinBox()
         self.interval_spin.setRange(3, 3600)
         self.interval_spin.setValue(5)
         self.only_trackside_check = QCheckBox()
@@ -142,7 +143,10 @@ class WirelessScanPage(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.addWidget(self.description_label)
-        toolbar = QHBoxLayout()
+        toolbar_widget = QWidget()
+        toolbar = QHBoxLayout(toolbar_widget)
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(8)
         for widget in (
             QLabel(self.i18n.t("wireless_scan.adapter")),
             self.adapter_combo,
@@ -161,7 +165,7 @@ class WirelessScanPage(QWidget):
         ):
             toolbar.addWidget(widget)
         toolbar.addStretch(1)
-        root.addLayout(toolbar)
+        root.addWidget(make_horizontal_scroll_area(toolbar_widget))
         root.addWidget(self.summary_label)
         root.addWidget(self.status_label)
         self.tabs.addTab(self.result_table, "")

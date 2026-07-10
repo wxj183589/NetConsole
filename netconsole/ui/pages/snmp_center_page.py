@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QProgressBar,
     QPushButton,
-    QSpinBox,
     QSplitter,
     QTableView,
     QTableWidget,
@@ -67,6 +66,7 @@ from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
 from netconsole.ui.table_utils import auto_fit_table_columns
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
 SNMP_SERVICE_STATE: dict[str, dict[str, object]] = {}
@@ -151,7 +151,7 @@ class SnmpAdvancedParametersDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("高级参数")
         self.host_input = QLineEdit(profile.host)
-        self.port_input = QSpinBox()
+        self.port_input = NoWheelSpinBox()
         self.port_input.setRange(1, 65535)
         self.port_input.setValue(int(profile.port or 161))
         self.version_combo = QComboBox()
@@ -159,17 +159,17 @@ class SnmpAdvancedParametersDialog(QDialog):
         self.version_combo.setCurrentText(str(profile.version or "v2c"))
         self.read_community_input = QLineEdit(profile.community_ro or "public")
         self.write_community_input = QLineEdit(profile.community_rw or "")
-        self.timeout_input = QSpinBox()
+        self.timeout_input = NoWheelSpinBox()
         self.timeout_input.setRange(100, 60000)
         self.timeout_input.setSuffix(" ms")
         self.timeout_input.setValue(int(profile.timeout_ms or 2000))
-        self.retries_input = QSpinBox()
+        self.retries_input = NoWheelSpinBox()
         self.retries_input.setRange(0, 10)
         self.retries_input.setValue(int(profile.retries or 1))
-        self.max_rep_input = QSpinBox()
+        self.max_rep_input = NoWheelSpinBox()
         self.max_rep_input.setRange(1, 50)
         self.max_rep_input.setValue(int(max_repetitions or 10))
-        self.max_rows_input = QSpinBox()
+        self.max_rows_input = NoWheelSpinBox()
         self.max_rows_input.setRange(1, 10000)
         self.max_rows_input.setValue(int(max_rows or 200))
         self.username_input = QLineEdit(profile.username or "")
@@ -783,7 +783,7 @@ class ProductReferenceComparePage(QWidget):
         self.diff_filter.addItem("分册编号变化", "category_changed")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索模块、OID、对象名或说明")
-        self.page_size = QSpinBox()
+        self.page_size = NoWheelSpinBox()
         self.page_size.setRange(50, 2000)
         self.page_size.setValue(500)
         self.summary_label = QLabel("请选择两个产品 MIB 参考表后开始对比。")
@@ -1221,10 +1221,10 @@ class MibBrowserPage(QWidget):
         self.oid_input = QLineEdit()
         self.operation_combo = QComboBox()
         self.operation_combo.addItems(["Get", "Get Next", "Get Bulk", "Get Subtree", "Walk", "Bulk Walk", "Table Walk", "Set"])
-        self.max_repetitions = QSpinBox()
+        self.max_repetitions = NoWheelSpinBox()
         self.max_repetitions.setRange(1, 50)
         self.max_repetitions.setValue(10)
-        self.max_rows = QSpinBox()
+        self.max_rows = NoWheelSpinBox()
         self.max_rows.setRange(1, 10000)
         self.max_rows.setValue(200)
         self.search_input = QLineEdit()
@@ -2579,10 +2579,10 @@ class SnmpQueryPage(QWidget):
         self.method_combo = QComboBox()
         self.method_combo.addItems(["Get", "GetNext", "Walk", "BulkWalk", "Table Walk", "Set"])
         self.oid_input = QLineEdit("1.3.6.1.2.1.1.5.0")
-        self.max_repetitions = QSpinBox()
+        self.max_repetitions = NoWheelSpinBox()
         self.max_repetitions.setRange(1, 50)
         self.max_repetitions.setValue(10)
-        self.max_rows = QSpinBox()
+        self.max_rows = NoWheelSpinBox()
         self.max_rows.setRange(1, 10000)
         self.max_rows.setValue(200)
         self.save_history = QCheckBox("保存历史")

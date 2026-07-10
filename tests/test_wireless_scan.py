@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 from openpyxl import load_workbook
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.wireless_scan_models import TracksideBssidMatch, WirelessNetwork, WirelessScanResult
 from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
-from netconsole.services.network_tools.netsh_wireless_scanner import parse_netsh_networks
+from netconsole.services.network_tools.netsh_wireless_scanner import NetshWirelessScanner, parse_netsh_networks
 from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
 from netconsole.services.network_tools.hybrid_wireless_scanner import HybridWirelessScanner, merge_wireless_networks
 from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac, rssi_level
@@ -206,6 +207,30 @@ def test_netsh_wireless_parser_extracts_hidden_ssid_and_bssid_fields():
     assert hidden.mimo_source == "unavailable"
     assert hidden.channel_width_text == "-"
     assert "netsh_no_ie_blob" in hidden.parse_warnings
+
+
+def test_netsh_wireless_scanner_decodes_gbk_output(monkeypatch):
+    raw = """
+SSID 1 : 车地无线
+    身份验证          : WPA2-个人
+    加密              : CCMP
+    BSSID 1           : 30:f5:27:7a:5a:2f
+         信号         : 90%
+         无线电类型   : 802.11ac
+         频道         : 149
+""".encode("gbk")
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs == {"capture_output": True, "check": False}
+        return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr=b"")
+
+    monkeypatch.setattr("netconsole.services.network_tools.netsh_wireless_scanner.subprocess.run", fake_run)
+
+    networks, text = NetshWirelessScanner().scan()
+
+    assert "车地无线" in text
+    assert networks[0].ssid == "车地无线"
+    assert networks[0].channel == 149
 
 
 def test_wireless_mimo_parser_vht_ht_and_unavailable():

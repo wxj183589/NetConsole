@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QSizePolicy,
     QSplitter,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -59,12 +58,12 @@ from netconsole.services.vehicle_mr_online import (
 )
 from netconsole.ui.pages.online_mr_collection_page import connection_fields_from_device
 from netconsole.ui.components.button_icons import apply_button_icon
-from netconsole.services.export.common_exporters import export_table_xlsx
 from netconsole.services.export.export_task_builders import table_xlsx_spec, vehicle_mr_history_xlsx_spec
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.vehicle_mr_online_worker import VehicleMrOnlineWorker
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 from netconsole.ui.widgets.table_combo_delegate import ComboBoxItemDelegate, combo_item_value
 
 
@@ -81,16 +80,6 @@ VEHICLE_MR_MAPPING_TEMPLATE_ROWS = [
     {"train": "3车", "tc1": "0301", "tc2": "0306", "online_policy": "单端在线-TC1固定在线", "remark": ""},
     {"train": "4车", "tc1": "0401", "tc2": "0406", "online_policy": "单端在线-TC2固定在线", "remark": ""},
 ]
-VEHICLE_MR_HISTORY_EXPORT_COLUMNS = (
-    ("event_time", "时间", 20),
-    ("car_end_label", "端别", 10),
-    ("status", "状态", 12),
-    ("station", "车站", 20),
-    ("ap_name", "轨旁AP", 24),
-    ("rssi", "RSSI", 10),
-    ("event_type", "事件类型", 14),
-    ("status_reason_label", "判断说明", 24),
-)
 
 
 def _vehicle_train_state_map(payload: object) -> dict[str, VehicleMrTrainState]:
@@ -166,7 +155,7 @@ class VehicleMrOnlinePage(QWidget):
         self.title_label = QLabel("列车在线情况")
         self.title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         self.ac_combo = QComboBox()
-        self.interval_spin = QSpinBox()
+        self.interval_spin = NoWheelSpinBox()
         self.interval_spin.setRange(3, 300)
         self.interval_spin.setValue(10)
         self.interval_spin.setMinimumWidth(80)
@@ -1224,44 +1213,6 @@ def _combo_data(table: QTableWidget, row: int, column: int, default: str = "") -
     if isinstance(widget, QComboBox):
         return str(widget.currentData() or default)
     return default
-
-
-def export_vehicle_mr_mapping_template(path: Path) -> None:
-    export_table_xlsx(
-        path,
-        {
-            "sheet_name": "车载MR映射表",
-            "columns": [{"key": key, "title": title} for key, title in VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS],
-            "rows": VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
-        },
-    )
-
-
-def export_vehicle_mr_history_rows(path: Path, rows: list[dict[str, object]]) -> None:
-    export_table_xlsx(
-        path,
-        {
-            "sheet_name": "历史记录",
-            "columns": [{"key": key, "title": title, "width": width} for key, title, width in VEHICLE_MR_HISTORY_EXPORT_COLUMNS],
-            "rows": _vehicle_mr_history_export_rows(rows),
-        },
-    )
-
-
-def _vehicle_mr_history_export_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        {
-            "event_time": row.get("event_time") or "",
-            "car_end_label": row.get("car_end_label") or "",
-            "status": row.get("status") or "",
-            "station": row.get("station") or "",
-            "ap_name": row.get("ap_name") or "",
-            "rssi": row.get("rssi") if row.get("rssi") is not None else "",
-            "event_type": row.get("event_type") or "",
-            "status_reason_label": _status_reason_label(str(row.get("status_reason") or "")),
-        }
-        for row in rows
-    ]
 
 
 def _status_palette(status: str) -> tuple[str, str, str]:

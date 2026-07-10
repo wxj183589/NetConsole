@@ -29,6 +29,7 @@ from netconsole.services.netmiko_connection import ConnectionTestResult, extract
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 from netconsole.ui.windowing import fit_default_window_size
 
 
@@ -274,7 +275,7 @@ class DeviceDialog(QDialog):
         self._add_labelled_widget(form, "group_id", widget)
 
     def _add_spin(self, form: QFormLayout, field: str, minimum: int, maximum: int) -> None:
-        widget = QSpinBox()
+        widget = NoWheelSpinBox()
         widget.setRange(minimum, maximum)
         self._add_labelled_widget(form, field, widget)
 

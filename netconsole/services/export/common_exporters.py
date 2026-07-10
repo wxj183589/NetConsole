@@ -261,9 +261,9 @@ def export_vehicle_mr_history_xlsx(
     _emit(progress, "query_vehicle_mr_history", 0, 1, "正在查询车载 MR 历史")
     _check_cancel(should_cancel)
     rows = store.query_events(
-        train_id=str(payload.get("train_id") or ""),
-        start_time=str(filters.get("start_time") or ""),
-        end_time=str(filters.get("end_time") or ""),
+        str(payload.get("train_id") or ""),
+        str(filters.get("start_time") or ""),
+        str(filters.get("end_time") or ""),
         car_end_label=str(filters.get("car_end_label") or ""),
         status=str(filters.get("status") or ""),
         station=str(filters.get("station") or ""),

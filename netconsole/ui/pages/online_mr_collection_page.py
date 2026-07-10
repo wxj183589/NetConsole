@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -5200,8 +5199,8 @@ class OnlineMrCollectionPage(QWidget):
                 return row
         return -1
 
-    def _interval_spin(self, minimum: int, maximum: int, value: int) -> QSpinBox:
-        spin = QSpinBox()
+    def _interval_spin(self, minimum: int, maximum: int, value: int) -> NoWheelSpinBox:
+        spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
         self._configure_numeric_spin(spin)

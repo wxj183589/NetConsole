@@ -26,6 +26,7 @@ from netconsole.services.command_reference_service import CommandReference, comm
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.shell.fluent_bridge import ComboBox, InfoBar, InfoBarPosition, PushButton
 from netconsole.ui.table_utils import auto_resize_table_columns_to_contents, configure_readonly_table, make_table_item
+from netconsole.ui.widgets.scrollable_toolbar import make_horizontal_scroll_area
 
 
 FILTER_FIELDS = (
@@ -138,7 +139,7 @@ class CommandReferencePage(QWidget):
             filter_layout.addWidget(combo)
         filter_layout.addWidget(self.copy_button)
         filter_layout.addWidget(self.export_button)
-        layout.addWidget(filter_bar)
+        layout.addWidget(make_horizontal_scroll_area(filter_bar))
         layout.addWidget(self.summary_label)
 
         self.table.setHorizontalHeaderLabels([title for _field, title in TABLE_COLUMNS])

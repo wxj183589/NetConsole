@@ -61,3 +61,6 @@ tmp/*
 
 .agents
 .codex
+
+.vs
+.vs/*

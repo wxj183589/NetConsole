@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QSpinBox, QWidget
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import PAGE_SIZE_OPTIONS, PaginationState
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
 class PaginationWidget(QWidget):
@@ -23,7 +24,7 @@ class PaginationWidget(QWidget):
         self.last_button = QPushButton()
         self.total_label = QLabel()
         self.jump_label = QLabel()
-        self.page_jump_spin = QSpinBox()
+        self.page_jump_spin = NoWheelSpinBox()
         self.page_unit_label = QLabel()
         self.page_jump_button = QPushButton()
 

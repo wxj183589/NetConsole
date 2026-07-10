@@ -13,6 +13,9 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.export.export_handlers import run_generic_export_handler
+from netconsole.services.export.export_task_builders import table_xlsx_spec, vehicle_mr_history_xlsx_spec
+from netconsole.services.export_task_models import ExportJob
 from netconsole.services.vehicle_mr_online import (
     H3CComwareV9VehicleMrMeshLinkParser,
     MatchedAp,
@@ -44,11 +47,11 @@ from netconsole.services.vehicle_mr_online import (
 )
 from netconsole.ui.pages.rail_transit_page import RailTransitPage
 from netconsole.ui.pages.vehicle_mr_online_page import (
+    VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS,
+    VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
     VehicleMrHistoryQueryDialog,
     VehicleMrMappingDialog,
     _vehicle_ap_lookup_from_payload,
-    export_vehicle_mr_history_rows,
-    export_vehicle_mr_mapping_template,
 )
 
 
@@ -310,12 +313,23 @@ def test_mapping_edit_replaces_old_peer(tmp_path: Path) -> None:
 def test_mapping_template_export_contains_required_headers(tmp_path: Path) -> None:
     path = tmp_path / "template.xlsx"
 
-    export_vehicle_mr_mapping_template(path)
+    spec = table_xlsx_spec(
+        path,
+        columns=[{"key": key, "title": title} for key, title in VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS],
+        rows=VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
+        sheet_name="车载MR映射表",
+        title="导出映射模板",
+        allow_inline_rows=True,
+        inline_reason="车载 MR 映射模板固定小样例",
+    )
+    job = spec.to_job("vehicle-mr-template-test")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "template.xlsx.tmp")})
+    run_generic_export_handler(job)
 
     from openpyxl import load_workbook
 
     sheet = load_workbook(path).active
-    assert [sheet.cell(1, index).value for index in range(1, 6)] == ["车次", "TC1", "TC2", "在线策略", "备注"]
+    assert [sheet.cell(2, index).value for index in range(1, 6)] == ["车次", "TC1", "TC2", "在线策略", "备注"]
 
 
 def test_online_policy_dual_active_marks_missing_end_abnormal() -> None:
@@ -765,21 +779,31 @@ def test_vehicle_mr_store_query_events_filters_by_time_end_status_station_and_ap
 
 def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
     path = tmp_path / "history.xlsx"
+    paths = PathResolver(tmp_path)
+    store = VehicleMrOnlineStore(paths, "demo")
+    with store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO vehicle_mr_train_pass_events (
+                train_id, train_display_name, train_no, car_end_label, event_time,
+                status, station, ap_name, rssi, event_type, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("列车06", "06车", "06", "TC1", "2026-06-26 01:00:00", "在线", "鼓楼站", "AP-A", 46, "online", "2026-06-26 01:00:00"),
+        )
 
-    export_vehicle_mr_history_rows(
+    spec = vehicle_mr_history_xlsx_spec(
         path,
-        [
-            {
-                "event_time": "2026-06-26 01:00:00",
-                "car_end_label": "TC1",
-                "status": "在线",
-                "station": "鼓楼站",
-                "ap_name": "AP-A",
-                "rssi": 46,
-                "event_type": "online",
-            }
-        ],
+        app_root=paths.app_root,
+        data_root=paths.data_root,
+        site_name="demo",
+        train_id="列车06",
+        filters={"start_time": "2026-06-26 00:00:00", "end_time": "2026-06-26 02:00:00"},
+        title="导出历史记录",
     )
+    job = spec.to_job("vehicle-mr-history-test")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "history.xlsx.tmp")})
+    run_generic_export_handler(job)
 
     from openpyxl import load_workbook
 

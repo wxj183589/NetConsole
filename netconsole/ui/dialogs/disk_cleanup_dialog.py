@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -22,6 +21,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.app_auto_cleanup import APP_CLEANUP_RETENTION_DAYS, AppCleanupResult, AppCleanupService, CleanupItem
 from netconsole.ui.table_utils import auto_resize_table_columns_to_contents, setup_readable_table
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_table_row_checked
 
 
@@ -81,7 +81,7 @@ class DiskCleanupDialog(QDialog):
         layout.addWidget(subtitle)
 
         actions = QHBoxLayout()
-        self.retention_spin = QSpinBox()
+        self.retention_spin = NoWheelSpinBox()
         self.retention_spin.setRange(1, 365)
         self.retention_spin.setValue(APP_CLEANUP_RETENTION_DAYS)
         self.scan_button = QPushButton("扫描")

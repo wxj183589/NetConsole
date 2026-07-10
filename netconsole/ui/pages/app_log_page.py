@@ -31,6 +31,7 @@ from netconsole.ui.logs.log_display import display_log_level, display_log_row
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, format_row_for_copy
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.widgets.scrollable_toolbar import make_horizontal_scroll_area
 from netconsole.services.export.export_task_builders import app_logs_csv_spec
 
 
@@ -66,7 +67,10 @@ class AppLogPage(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
 
-        filters = QHBoxLayout()
+        filters_widget = QWidget()
+        filters = QHBoxLayout(filters_widget)
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(8)
         filters.addWidget(self.search_input, 1)
         filters.addWidget(self.level_filter)
         filters.addWidget(self.refresh_button)
@@ -77,7 +81,7 @@ class AppLogPage(QWidget):
         filters.addWidget(self.export_button)
 
         layout = QVBoxLayout()
-        layout.addLayout(filters)
+        layout.addWidget(make_horizontal_scroll_area(filters_widget))
         layout.addWidget(self.cleanup_status_label)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.pagination)

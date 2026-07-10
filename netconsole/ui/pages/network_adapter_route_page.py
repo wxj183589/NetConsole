@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QSizePolicy,
     QSplitter,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -51,6 +50,7 @@ from netconsole.services.windows_network_manager import (
     parse_prefix_or_netmask,
 )
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
 ADAPTER_HEADERS = ["名称", "描述", "MAC", "状态", "速率", "IPv4", "网关", "标签"]
@@ -205,7 +205,7 @@ class NetworkAdapterRoutePage(QWidget):
         self.gateway_edit = QLineEdit()
         self.secondary_edit = QTextEdit()
         self.secondary_edit.setPlaceholderText("192.168.1.200/24\n172.16.1.200/255.255.255.0")
-        self.vlan_spin = QSpinBox()
+        self.vlan_spin = NoWheelSpinBox()
         self.vlan_spin.setRange(0, 4094)
         self.profile_name_edit = QLineEdit()
         self.profile_combo = QComboBox()

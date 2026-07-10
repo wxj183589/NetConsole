@@ -5,6 +5,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea, QTableWidget
 
 from netconsole.core import app_logger
@@ -30,7 +31,7 @@ from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, open_diagnostic_folder_for_results, select_device_id_for_connection
-from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
+from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_TABLE_DIRECT_FILL_LIMIT, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 
 
@@ -478,6 +479,24 @@ def test_device_table_columns_keep_readable_widths_without_cell_widgets():
     assert table.item(0, action_column).data(Qt.UserRole) == 1
     assert table.verticalHeader().defaultSectionSize() == 36
     assert table.rowHeight(0) == 36
+
+
+def test_device_table_batches_large_device_rendering():
+    application = app()
+    table = DeviceTable(I18n("en_US"))
+    devices = [Device(id=index + 1, name=f"Device {index + 1}") for index in range(DEVICE_TABLE_DIRECT_FILL_LIMIT + 50)]
+
+    table.set_devices(devices)
+
+    assert table.rowCount() == 0
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and table.item(len(devices) - 1, table._column_index("name")) is None:
+        application.processEvents()
+        QTest.qWait(1)
+
+    assert table.rowCount() == len(devices)
+    assert table.item(len(devices) - 1, table._column_index("name")).text() == f"Device {len(devices)}"
+    assert table.cellWidget(0, table._column_index("actions")) is None
 
 
 def test_checkbox_click_adds_and_removes_selected_device_id():

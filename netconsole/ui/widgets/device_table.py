@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QHeaderView,
     QMenu,
@@ -16,6 +16,9 @@ from netconsole.ui.widgets.table_check_delegate import create_checkable_table_it
 
 
 CHECK_COLUMN = 0
+DEVICE_TABLE_DIRECT_FILL_LIMIT = 200
+DEVICE_TABLE_BATCH_SIZE = 100
+DEVICE_TABLE_FILTER_HINT_LIMIT = 1000
 DEVICE_COLUMN_WIDTHS = {
     "select": 48,
     "name": 180,
@@ -79,6 +82,7 @@ class DeviceTable(QTableWidget):
         self.external_terminal_enabled = True
         self._active_action_menu: QMenu | None = None
         self._updating_checks = False
+        self._populate_generation = 0
         set_table_column_fields(self, [field for field, _key in COLUMNS])
         configure_readonly_table(self)
         install_checkbox_only_delegate(self, CHECK_COLUMN)
@@ -106,33 +110,77 @@ class DeviceTable(QTableWidget):
             item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else (self.i18n.t(key) if key else ""))
 
     def set_devices(self, devices: list[Device]) -> None:
-        self._updating_checks = True
+        self._populate_generation += 1
+        generation = self._populate_generation
         self.devices = devices
         self.selected_device_ids.clear()
-        self.setRowCount(len(devices))
-        for row, device in enumerate(devices):
-            self._set_checkbox_item(row, device)
-            values = {
-                "name": device.name,
-                "group": self.group_names.get(int(device.group_id), self.i18n.t("groups.ungrouped")) if device.group_id else self.i18n.t("groups.ungrouped"),
-                "system_name": device.system_name,
-                "station": device.station,
-                "primary_address": device.primary_address,
-                "backup_address": device.backup_address,
-                "protocols": protocol_label(device.ssh_enabled, device.telnet_enabled),
-                "updated_at": device.updated_at,
-            }
-            for column, (field, _) in enumerate(COLUMNS):
-                if field in {"select", "actions"}:
-                    continue
-                item = QTableWidgetItem("" if values.get(field) is None else str(values[field]))
-                item.setData(Qt.UserRole, device.id)
-                self.setItem(row, column, item)
-            action_item = QTableWidgetItem(self.i18n.t("field.actions"))
-            action_item.setData(Qt.UserRole, device.id)
-            action_item.setTextAlignment(Qt.AlignCenter)
-            self.setItem(row, self._column_index("actions"), action_item)
-        self._updating_checks = False
+        self.clearContents()
+        self.setRowCount(0)
+        total = len(devices)
+        if total <= 0:
+            self._finish_populate(total)
+            return
+        if total <= DEVICE_TABLE_DIRECT_FILL_LIMIT:
+            self._append_device_rows(0, total)
+            self._finish_populate(total)
+            return
+
+        self.setToolTip(f"正在分批显示 {total} 台设备" + ("；设备较多时建议使用分组或筛选缩小范围。" if total > DEVICE_TABLE_FILTER_HINT_LIMIT else "。"))
+
+        def fill_next(start: int = 0) -> None:
+            try:
+                if generation != self._populate_generation:
+                    return
+                end = min(start + DEVICE_TABLE_BATCH_SIZE, total)
+                self._append_device_rows(start, end)
+                if end < total:
+                    QTimer.singleShot(0, lambda: fill_next(end))
+                    return
+                self._finish_populate(total)
+            except RuntimeError:
+                return
+
+        QTimer.singleShot(0, fill_next)
+
+    def _append_device_rows(self, start: int, end: int) -> None:
+        self._updating_checks = True
+        self.setUpdatesEnabled(False)
+        try:
+            self.setRowCount(end)
+            for row in range(start, end):
+                self._populate_device_row(row, self.devices[row])
+        finally:
+            self.setUpdatesEnabled(True)
+            self._updating_checks = False
+
+    def _populate_device_row(self, row: int, device: Device) -> None:
+        self._set_checkbox_item(row, device)
+        values = {
+            "name": device.name,
+            "group": self.group_names.get(int(device.group_id), self.i18n.t("groups.ungrouped")) if device.group_id else self.i18n.t("groups.ungrouped"),
+            "system_name": device.system_name,
+            "station": device.station,
+            "primary_address": device.primary_address,
+            "backup_address": device.backup_address,
+            "protocols": protocol_label(device.ssh_enabled, device.telnet_enabled),
+            "updated_at": device.updated_at,
+        }
+        for column, (field, _) in enumerate(COLUMNS):
+            if field in {"select", "actions"}:
+                continue
+            item = QTableWidgetItem("" if values.get(field) is None else str(values[field]))
+            item.setData(Qt.UserRole, device.id)
+            self.setItem(row, column, item)
+        action_item = QTableWidgetItem(self.i18n.t("field.actions"))
+        action_item.setData(Qt.UserRole, device.id)
+        action_item.setTextAlignment(Qt.AlignCenter)
+        self.setItem(row, self._column_index("actions"), action_item)
+
+    def _finish_populate(self, total: int) -> None:
+        if total > DEVICE_TABLE_FILTER_HINT_LIMIT:
+            self.setToolTip(f"当前显示 {total} 台设备，建议使用分组或筛选缩小范围。")
+        else:
+            self.setToolTip("")
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
         apply_action_column(self)
@@ -185,7 +233,7 @@ class DeviceTable(QTableWidget):
 
     def _refresh_action_items(self) -> None:
         action_column = self._column_index("actions")
-        for row, device in enumerate(self.devices):
+        for row, device in enumerate(self.devices[: self.rowCount()]):
             item = self.item(row, action_column)
             if item is None:
                 item = QTableWidgetItem()

@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -845,7 +844,7 @@ class NetworkToolboxPage(QWidget):
         widget.setMinimumHeight(34)
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         if spin and isinstance(widget, QAbstractSpinBox):
-            widget.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
+            widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             widget.setMinimumWidth(136)
             widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -1677,7 +1676,7 @@ class NetworkToolboxPage(QWidget):
         return f"{adapter.name} / {ip_text} / {status}"
 
     @staticmethod
-    def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
+    def _spin(minimum: int, maximum: int, value: int) -> NoWheelSpinBox:
         spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)

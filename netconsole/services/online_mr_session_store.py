@@ -337,7 +337,7 @@ class OnlineMrSession:
     def write_current_configuration(self, raw_text: str) -> Path:
         path = self.session_dir / "outputs" / "current_configuration.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(raw_text.rstrip() + "\n", encoding="utf-8", errors="replace")
+        path.write_text(raw_text.rstrip() + "\n", encoding="utf-8")
         return path
 
     def update_config_collect(
@@ -414,7 +414,7 @@ class OnlineMrSession:
         path = self.session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE
         stamp = (collected_at or datetime.now()).isoformat(sep=" ", timespec="milliseconds")
         payload = text if text.endswith("\n") else f"{text}\n"
-        with path.open("a", encoding="utf-8", errors="replace") as file:
+        with path.open("a", encoding="utf-8") as file:
             file.write(f"{stamp} {payload}")
             file.flush()
         return path
@@ -422,7 +422,7 @@ class OnlineMrSession:
     def append_device_terminal_monitor_raw(self, text: str) -> Path:
         path = self.session_dir / "raw" / DEVICE_TERMINAL_MONITOR_RAW_FILE
         payload = text if text.endswith("\n") else f"{text}\n"
-        with path.open("a", encoding="utf-8", errors="replace") as file:
+        with path.open("a", encoding="utf-8") as file:
             file.write(payload)
             file.flush()
         return path

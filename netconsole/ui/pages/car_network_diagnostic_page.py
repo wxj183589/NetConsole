@@ -144,6 +144,10 @@ class NoWheelComboBox(QComboBox):
 
 
 class NoWheelSpinBox(QSpinBox):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+
     def wheelEvent(self, event) -> None:
         event.ignore()
 

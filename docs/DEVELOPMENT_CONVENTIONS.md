@@ -46,6 +46,7 @@
 
 ## 性能约定
 
+- 后续新增页面、弹窗、导出、后台任务、表格和文本读取必须遵守 [存量例外与新增代码约束](ui_governance_guardrails.md)。
 - 全局强制遵守 [UI 线程全局规范](ui_thread_policy.md)：UI 线程只负责 UI。
 - 耗时任务、网络任务、数据库大查询、文件扫描、解析、压缩、图表生成、设备连接必须使用后台线程或独立进程。
 - 后台线程必须遵守 [后台任务规范](background_task_policy.md)，Worker 不得访问 QWidget，必须通过 signal 返回进度、结果和错误。

@@ -136,7 +136,7 @@ class NetmikoShellConnection(OnlineMrConnection):
 
         def write_loop() -> None:
             try:
-                with raw_path.open("a", encoding="utf-8", errors="replace") as file:
+                with raw_path.open("a", encoding="utf-8") as file:
                     while True:
                         line = write_queue.get()
                         if line is None:
