@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QSplitter, QTableWidget, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QScrollArea, QSplitter, QTableWidget, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
@@ -6719,6 +6719,7 @@ def test_ap_optical_history_detail_and_column_width_persist(tmp_path):
     assert reopened.table.columnWidth(interface_column) == 280
     assert reopened.detail_table.rowCount() == len(AP_OPTICAL_HISTORY_COLUMNS)
     assert reopened.detail_table.item(1, 1).text() == "WLAN-Radio1/0/1"
+    assert reopened.findChild(QScrollArea) is not None
     assert reopened.table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert reopened.detail_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     reopened.splitter.setSizes([700, 300])

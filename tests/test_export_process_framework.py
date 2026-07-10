@@ -9,7 +9,15 @@ from openpyxl import load_workbook
 
 from netconsole.core.i18n import I18n
 from netconsole.services.export.export_handlers import run_generic_export_handler
-from netconsole.services.export.export_task_builders import INLINE_ROW_LIMIT, app_logs_csv_spec, command_reference_markdown_spec, table_csv_spec
+from netconsole.services.export.export_task_builders import (
+    INLINE_ROW_LIMIT,
+    app_logs_csv_spec,
+    command_reference_markdown_spec,
+    markdown_text_file_spec,
+    result_file_rows_source,
+    table_csv_source_spec,
+    table_csv_spec,
+)
 from netconsole.services.export_task_models import ExportJob
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
@@ -86,6 +94,29 @@ def test_table_csv_spec_uses_inline_rows_source(tmp_path) -> None:
     assert "宁波站" in output.read_text(encoding="utf-8-sig")
 
 
+def test_table_csv_source_spec_reads_jsonl_result_file_in_export_process(tmp_path) -> None:
+    result_file = tmp_path / "toolbox_result.jsonl"
+    result_file.write_text(
+        '{"name":"宁波站","status":"正常"}\n{"name":"鼓楼站","status":"告警"}\n',
+        encoding="utf-8",
+    )
+    output = tmp_path / "source_table.csv"
+    spec = table_csv_source_spec(
+        output,
+        columns=[("名称", "name"), ("状态", "status")],
+        source=result_file_rows_source(result_file),
+    )
+    job = spec.to_job("jsonl-source-csv-job")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "source_table.csv.tmp")})
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] == 2
+    text = output.read_text(encoding="utf-8-sig")
+    assert "宁波站" in text
+    assert "鼓楼站" in text
+
+
 def test_inline_rows_builder_rejects_large_payload(tmp_path) -> None:
     rows = ({"name": str(index)} for index in range(INLINE_ROW_LIMIT + 1))
 
@@ -137,6 +168,20 @@ def test_generic_markdown_text_handler_writes_utf8(tmp_path) -> None:
 
     assert result["row_count"] > 0
     assert output.read_text(encoding="utf-8").startswith("# 命令清单")
+
+
+def test_generic_markdown_text_handler_reads_text_file_in_export_process(tmp_path) -> None:
+    source = tmp_path / "collect.log"
+    source.write_text("display current-configuration\n中文日志", encoding="utf-8")
+    output = tmp_path / "collect_export.txt"
+    spec = markdown_text_file_spec(output, text_file=source, title="采集日志")
+    job = spec.to_job("md-file-job")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "collect_export.txt.tmp")})
+
+    result = run_generic_export_handler(job)
+
+    assert result["row_count"] > 0
+    assert output.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
 
 
 def test_command_reference_export_reads_resource_in_export_process(tmp_path) -> None:

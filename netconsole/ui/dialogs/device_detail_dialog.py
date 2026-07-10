@@ -33,7 +33,7 @@ from netconsole.services.background_process_manager import BackgroundProcessMana
 from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, format_trackside_display_value, trackside_row_status
 from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url
-from netconsole.services.export.export_task_builders import markdown_text_spec
+from netconsole.services.export.export_task_builders import markdown_text_file_spec
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
 from netconsole.ui.collect_worker import DeviceCollectThread
@@ -49,6 +49,7 @@ from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, stat
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
 from netconsole.ui.export_action_helper import submit_export_task
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
@@ -168,7 +169,6 @@ class DeviceDetailDialog(QDialog):
         self.optical_refresh_thread: OpticalRefreshThread | None = None
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(False)
-        self.setMinimumSize(720, 480)
         self.resize(800, 520)
 
         self.title_label = make_text_selectable(QLabel())
@@ -180,7 +180,9 @@ class DeviceDetailDialog(QDialog):
         self.refresh_button.clicked.connect(self.refresh_device_details)
         self.refresh_optical_button.clicked.connect(self.refresh_device_optical)
         self.tabs = QTabWidget()
-        layout = QVBoxLayout(self)
+        self.tabs.setMinimumHeight(360)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         header = QHBoxLayout()
         header.addWidget(self.title_label)
         header.addStretch(1)
@@ -189,6 +191,7 @@ class DeviceDetailDialog(QDialog):
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=480, content_minimum_width=760)
         self.retranslate()
         self._load_detail_data()
 
@@ -571,6 +574,7 @@ class CollectLogDialog(QDialog):
         super().__init__(parent, Qt.Window)
         self.matches: list[tuple[int, int]] = []
         self.current_match_index = -1
+        self.raw_log_path = Path(raw_log_path)
         self._plain_text = text
         self._folded_text = text.casefold()
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -589,6 +593,7 @@ class CollectLogDialog(QDialog):
         self.count_label = make_text_selectable(QLabel("0 / 0"))
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
+        self.text_edit.setMinimumHeight(380)
         self.text_edit.setPlainText(text)
         self.copy_button.clicked.connect(self.copy_log)
         self.export_button.clicked.connect(self.export_log)
@@ -607,10 +612,12 @@ class CollectLogDialog(QDialog):
         toolbar.addWidget(self.clear_button)
         toolbar.addWidget(self.count_label)
         toolbar.addWidget(self.close_button)
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addWidget(self.path_label)
         layout.addLayout(toolbar)
         layout.addWidget(self.text_edit, 1)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=460, content_minimum_width=840)
 
     def copy_log(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText())
@@ -620,9 +627,18 @@ class CollectLogDialog(QDialog):
         if path:
             submit_export_task(
                 self,
-                markdown_text_spec(path, text=self.text_edit.toPlainText(), title=self.windowTitle(), open_dir_on_success=True),
+                markdown_text_file_spec(path, text_file=self._export_source_file(), title=self.windowTitle(), open_dir_on_success=True),
                 success_title=self.windowTitle(),
             )
+
+    def _export_source_file(self) -> Path:
+        if self.raw_log_path.is_file():
+            return self.raw_log_path
+        cache_dir = PathResolver().runtime_cache_dir / "collect_log_exports"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        text_file = cache_dir / f"collect_log_{uuid4().hex}.txt"
+        text_file.write_text(self._plain_text, encoding="utf-8")
+        return text_file
 
     def focus_search(self) -> None:
         self.search_input.setFocus()

@@ -5,7 +5,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea, QTableWidget
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
@@ -734,6 +734,7 @@ def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path
         "LLDP Neighbors",
         "Trackside AP Business",
     ]
+    assert dialog.findChild(QScrollArea) is not None
     assert any("Demo data is generated only when the demo database is first created" in text for text in labels)
 
 

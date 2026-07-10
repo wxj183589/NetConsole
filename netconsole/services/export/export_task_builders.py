@@ -69,6 +69,10 @@ def inline_rows_source(
     return {"type": "inline_rows", "rows": materialized, "inline_reason": reason}
 
 
+def result_file_rows_source(result_file: str | Path) -> dict[str, Any]:
+    return {"type": "jsonl_rows", "result_file": str(result_file)}
+
+
 def repository_query_source(
     *,
     db_path: str | Path,
@@ -215,6 +219,22 @@ def markdown_text_spec(
         title=title,
         open_dir_on_success=open_dir_on_success,
         payload=payload,
+    )
+
+
+def markdown_text_file_spec(
+    output_path: str | Path,
+    *,
+    text_file: str | Path,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="markdown_text",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        payload={"text_file": str(text_file)},
     )
 
 

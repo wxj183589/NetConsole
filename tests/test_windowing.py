@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QSystemTrayIcon, QTextEdit, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QScrollArea, QSystemTrayIcon, QTextEdit, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core import app_logger
@@ -989,3 +989,19 @@ def test_collect_log_dialog_search_count_highlight_and_ctrl_f():
     dialog.focus_search()
     QApplication.processEvents()
     assert dialog.search_input.selectedText() == "error"
+    assert dialog.findChild(QScrollArea) is not None
+
+
+def test_collect_log_dialog_export_uses_text_file_source(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    raw_log = tmp_path / "raw.log"
+    raw_log.write_text("display interface\n中文日志", encoding="utf-8")
+    output = tmp_path / "collect_export.txt"
+    captured = {}
+    monkeypatch.setattr("netconsole.ui.dialogs.device_detail_dialog.QFileDialog.getSaveFileName", lambda *_args, **_kwargs: (str(output), "Text Files (*.txt)"))
+    monkeypatch.setattr("netconsole.ui.dialogs.device_detail_dialog.submit_export_task", lambda _parent, spec, **_kwargs: captured.setdefault("spec", spec))
+    dialog = CollectLogDialog("Log", str(raw_log), "display interface\n中文日志")
+
+    dialog.export_log()
+
+    assert captured["spec"].payload == {"text_file": str(raw_log)}

@@ -288,6 +288,51 @@ def test_windows_wlan_bss_entry_binds_ie_capabilities():
     assert no_ie.raw_ie_available is False
 
 
+def test_windows_wlan_bss_entry_decodes_non_utf8_ssid_with_fallback():
+    from netconsole.services.network_tools.windows_wlan_scanner import _WlanBssEntry, _network_from_bss_entry
+
+    entry = _WlanBssEntry()
+    ssid = "车地无线".encode("gbk")
+    entry.dot11Ssid.uSSIDLength = len(ssid)
+    for index, value in enumerate(ssid):
+        entry.dot11Ssid.ucSSID[index] = value
+    for index, value in enumerate(bytes.fromhex("30f5277a5a2d")):
+        entry.dot11Bssid[index] = value
+    entry.lRssi = -51
+    entry.uLinkQuality = 88
+    entry.ulChCenterFrequency = 2412000
+    entry.dot11BssPhyType = 7
+
+    network = _network_from_bss_entry(entry, "wlan0", "2026-06-22 10:00:00", b"")
+
+    assert network.ssid == "车地无线"
+    assert network.raw["ssid_encoding"] in {"gb18030", "gbk"}
+    assert network.raw["ssid_used_replacement"] is False
+    assert any(str(warning).startswith("ssid_encoding_") for warning in network.parse_warnings)
+
+
+def test_windows_wlan_bss_entry_marks_unrecoverable_ssid_decode_replacement():
+    from netconsole.services.network_tools.windows_wlan_scanner import _WlanBssEntry, _network_from_bss_entry
+
+    entry = _WlanBssEntry()
+    ssid = b"\xff\xff\xff"
+    entry.dot11Ssid.uSSIDLength = len(ssid)
+    for index, value in enumerate(ssid):
+        entry.dot11Ssid.ucSSID[index] = value
+    for index, value in enumerate(bytes.fromhex("30f5277a5a2d")):
+        entry.dot11Bssid[index] = value
+    entry.lRssi = -51
+    entry.uLinkQuality = 88
+    entry.ulChCenterFrequency = 2412000
+    entry.dot11BssPhyType = 7
+
+    network = _network_from_bss_entry(entry, "wlan0", "2026-06-22 10:00:00", b"")
+
+    assert network.raw["ssid_encoding"] == "utf-8-replace"
+    assert network.raw["ssid_used_replacement"] is True
+    assert "ssid_decode_replacement" in network.parse_warnings
+
+
 def test_hybrid_wireless_merge_combines_wlan_width_mimo_and_netsh_security():
     wlan = WirelessNetwork(
         ssid="",

@@ -271,6 +271,40 @@ def test_tool_result_panel_state_is_not_shared(tmp_path) -> None:
     assert right.result_table.item(0, 0).text() == "192.0.2.2"
 
 
+def test_tool_result_panel_limits_visible_rows_and_caches_full_result(tmp_path) -> None:
+    _app()
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    panel = ToolResultPanel(paths, "demo", "large")
+    rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(5001)]
+
+    panel.show_rows(rows, "large")
+
+    assert panel.result_table.rowCount() == 5000
+    assert panel.current_result_file is not None
+    assert panel.current_result_file.is_file()
+    assert len(panel.current_result_file.read_text(encoding="utf-8").splitlines()) == 5001
+    assert "导出将读取缓存文件" in panel.summary_text.toPlainText()
+
+
+def test_tool_result_panel_export_uses_result_file_source(tmp_path, monkeypatch) -> None:
+    _app()
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    panel = ToolResultPanel(paths, "demo", "export")
+    panel.show_rows([{"target": "192.0.2.1", "status": "online"}], "export")
+    selected = tmp_path / "export.csv"
+    captured = {}
+
+    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.QFileDialog.getSaveFileName", lambda *_args, **_kwargs: (str(selected), "CSV (*.csv)"))
+    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.submit_export_task", lambda _parent, spec, **_kwargs: captured.setdefault("spec", spec))
+
+    panel.export_current("csv")
+
+    spec = captured["spec"]
+    assert spec.payload["source"]["type"] == "jsonl_rows"
+    assert spec.payload["source"]["result_file"] == str(panel.current_result_file)
+    assert "rows" not in spec.payload
+
+
 def test_network_ping_grid_initializes_24_hosts(tmp_path) -> None:
     _app()
     page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())

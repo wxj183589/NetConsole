@@ -71,6 +71,8 @@ def run_background_job_process(
     if stdout_buffer.strip():
         terminal_event = _handle_event_line(stdout_buffer.strip(), terminal_event, progress_handler)
 
+    # Internal background worker stderr, not device/remote command output.
+    # External command stderr belongs in its adapter, where encoding fallback can be applied before event payloads.
     stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace").strip()
     exit_code = process.exitCode()
     _cleanup(job_path, cancel_path)
@@ -88,6 +90,7 @@ def _consume_stdout(
     terminal_event: dict[str, Any] | None,
     progress_handler: ProgressHandler | None,
 ) -> tuple[str, dict[str, Any] | None]:
+    # Internal JSONL worker protocol; device text is already decoded before worker events are emitted.
     stdout_buffer += bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
     while "\n" in stdout_buffer:
         line, stdout_buffer = stdout_buffer.split("\n", 1)

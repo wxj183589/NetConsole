@@ -93,7 +93,8 @@ class BackgroundProcessManager(QObject):
         if state is None:
             return
         try:
-            # Internal background worker JSONL protocol; device/remote text uses text_encoding fallback at source.
+            # Internal JSONL worker protocol, not device/remote command output.
+            # Device text must be decoded with text_encoding fallback before it is packed into worker events.
             chunk = bytes(state.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         except RuntimeError:
             return
@@ -106,7 +107,8 @@ class BackgroundProcessManager(QObject):
         state = self._jobs.get(job_id)
         if state is not None:
             try:
-                # Internal background worker stderr, not device output; keep UTF-8 replacement for malformed diagnostics.
+                # Internal worker diagnostics only; keep UTF-8 replacement so malformed tracebacks do not break UI.
+                # External tool stderr should be decoded at the tool adapter boundary before becoming event payload.
                 state.stderr_buffer += bytes(state.process.readAllStandardError()).decode("utf-8", errors="replace")
             except RuntimeError:
                 return

@@ -123,7 +123,11 @@ def export_table_csv(path: Path, payload: Mapping[str, Any], progress: ProgressC
 
 def export_markdown_text(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = str(payload.get("text") or "")
+    text_file = str(payload.get("text_file") or "").strip()
+    if text_file:
+        text = Path(text_file).read_text(encoding="utf-8")
+    else:
+        text = str(payload.get("text") or "")
     _emit(progress, "write_text", 0, 1, "正在写入文本")
     _check_cancel(should_cancel)
     path.write_text(text, encoding="utf-8")
@@ -1005,9 +1009,28 @@ def resolve_rows(payload: Mapping[str, Any]) -> list[Any]:
     source_type = str(source.get("type") or "").strip()
     if source_type == "inline_rows":
         return list(source.get("rows") or [])
+    if source_type == "jsonl_rows":
+        return _resolve_jsonl_rows(source)
     if source_type == "repository_query":
         return _resolve_repository_rows(source)
     raise ValueError(f"不支持的导出数据源：{source_type or '<empty>'}")
+
+
+def _resolve_jsonl_rows(source: Mapping[str, Any]) -> list[dict[str, Any]]:
+    result_file = Path(str(source.get("result_file") or ""))
+    if not result_file.is_file():
+        raise FileNotFoundError(f"运行结果文件不存在：{result_file}")
+    rows: list[dict[str, Any]] = []
+    with result_file.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            value = json.loads(text)
+            if not isinstance(value, Mapping):
+                raise ValueError(f"运行结果文件第 {line_no} 行不是对象")
+            rows.append(dict(value))
+    return rows
 
 
 def _resolve_repository_rows(source: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -2925,22 +2925,24 @@ def make_table(headers: list[str]) -> QTableWidget:
     return table
 
 
-SNMP_UI_ROW_LIMIT = 2000
-SNMP_UI_FILL_BATCH_SIZE = 200
+SNMP_UI_ROW_LIMIT = 500
+SNMP_UI_FILL_BATCH_SIZE = 100
 
 
 def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
-    # 后台查询同样限制为 2000 条，避免子页一次填充无限数据。
+    # 先按 UI 硬上限截断，再 setRowCount；完整查询/导出仍在后台或数据源侧完成，避免子页一次物化大表格。
     visible_rows = rows[:SNMP_UI_ROW_LIMIT]
     table.setRowCount(len(visible_rows))
     generation = int(table.property("snmp_fill_generation") or 0) + 1
     table.setProperty("snmp_fill_generation", generation)
     table.clearContents()
+    limit_tip = f"仅显示前 {SNMP_UI_ROW_LIMIT} 条 SNMP 数据，请通过筛选或导出查看更大结果。" if len(rows) > len(visible_rows) else ""
     if len(visible_rows) <= SNMP_UI_FILL_BATCH_SIZE:
         _fill_table_rows(table, visible_rows, 0, len(visible_rows))
         auto_fit_table_columns(table, max_rows=200, default_min_width=90, default_max_width=520)
+        table.setToolTip(limit_tip)
         return
-    table.setToolTip(f"正在分批填充 {len(visible_rows)} 行 SNMP 数据...")
+    table.setToolTip(f"正在分批填充 {len(visible_rows)} 行 SNMP 数据..." + (f"\n{limit_tip}" if limit_tip else ""))
 
     def fill_next(start: int = 0) -> None:
         try:
@@ -2951,7 +2953,7 @@ def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
             if end < len(visible_rows):
                 QTimer.singleShot(0, lambda: fill_next(end))
                 return
-            table.setToolTip("")
+            table.setToolTip(limit_tip)
             auto_fit_table_columns(table, max_rows=200, default_min_width=90, default_max_width=520)
         except RuntimeError:
             return

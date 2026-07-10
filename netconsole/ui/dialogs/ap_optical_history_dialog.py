@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
@@ -67,6 +67,7 @@ class ApOpticalHistoryDialog(QWidget):
         self.detail_table = QTableWidget()
         self.pagination = PaginationWidget(i18n)
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setMinimumHeight(420)
 
         for table in (self.table, self.detail_table):
             configure_readonly_table(table)
@@ -97,10 +98,20 @@ class ApOpticalHistoryDialog(QWidget):
         self.splitter.addWidget(self.detail_table)
         self.splitter.setSizes(self._saved_splitter_sizes())
 
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        content.setMinimumWidth(980)
+        layout = QVBoxLayout(content)
         layout.addLayout(actions)
         layout.addWidget(self.empty_label)
         layout.addWidget(self.splitter, 1)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setWidget(content)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(self.scroll_area)
 
         self.table_state = TableColumnState(settings, self.table, "ac/ap_history/table_column_widths", default_history_widths())
         self.detail_state = TableColumnState(settings, self.detail_table, "ac/ap_history/detail_column_widths", {"name": 180, "value": 360})

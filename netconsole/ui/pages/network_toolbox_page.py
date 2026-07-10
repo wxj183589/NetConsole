@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from netconsole.ui.dialogs.message_service import MessageBox
 import ipaddress
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QRect, QSize, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QRect, QSize, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -36,7 +37,7 @@ from PySide6.QtWidgets import (
 from netconsole.core.admin import is_admin
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
-from netconsole.services.export.export_task_builders import table_csv_spec, table_xlsx_spec
+from netconsole.services.export.export_task_builders import result_file_rows_source, table_csv_source_spec, table_xlsx_source_spec
 from netconsole.services.network_tools.toolbox.fping_runner import discover_fping, scan_targets as scan_fping_targets
 from netconsole.services.network_tools.toolbox.ip_calc import (
     TableResult,
@@ -115,6 +116,10 @@ DISPLAY_HEADERS = {
     "on_link": "在链路上",
     "persistent": "\u6301\u4e45",
 }
+
+TOOLBOX_DIRECT_FILL_LIMIT = 200
+TOOLBOX_FILL_BATCH_SIZE = 200
+TOOLBOX_RESULT_DISPLAY_LIMIT = 5000
 
 STATUS_LABELS = {
     "ready": "就绪",
@@ -342,6 +347,8 @@ class ToolResultPanel(QGroupBox):
         self.export_prefix = export_prefix
         self.current_rows: list[dict[str, object]] = []
         self.current_headers: list[str] = []
+        self.current_result_file: Path | None = None
+        self._fill_generation = 0
 
         self.status_label = QLabel()
         self.result_table = QTableWidget()
@@ -406,14 +413,60 @@ class ToolResultPanel(QGroupBox):
                 if key not in headers:
                     headers.append(key)
         self.current_headers = headers
+        self.current_result_file = self._write_result_cache(prefix, normalized) if headers else None
+        display_rows = normalized[:TOOLBOX_RESULT_DISPLAY_LIMIT]
+        hidden_count = max(0, len(normalized) - len(display_rows))
+        self._fill_generation += 1
+        generation = self._fill_generation
 
         self.result_table.setUpdatesEnabled(False)
         try:
             self.result_table.clearContents()
             self.result_table.setColumnCount(len(headers))
-            self.result_table.setRowCount(len(normalized))
+            # UI 表格只承载硬上限内的可见结果；完整运行结果写入 JSONL 缓存供导出进程读取。
+            self.result_table.setRowCount(len(display_rows))
             self.result_table.setHorizontalHeaderLabels(headers)
-            for row_index, row in enumerate(normalized):
+        finally:
+            self.result_table.setUpdatesEnabled(True)
+
+        summary_lines = [summary_title] if summary_title else []
+        if summary:
+            summary_lines.extend(f"{key}: {_stringify(value)}" for key, value in summary.items())
+        if hidden_count:
+            summary_lines.append(f"表格仅显示前 {len(display_rows)} 条，导出将读取缓存文件中的 {len(normalized)} 条完整结果。")
+        self.summary_text.setPlainText("\n".join(summary_lines))
+        self.result_table.setToolTip(
+            f"当前表格仅显示前 {len(display_rows)} 条；如需完整数据，请直接导出。"
+            if hidden_count
+            else ""
+        )
+        if len(display_rows) <= TOOLBOX_DIRECT_FILL_LIMIT:
+            self._fill_table_rows(display_rows, headers, 0, len(display_rows))
+            auto_fit_table_columns(self.result_table, max_rows=200)
+            self.set_status("done", self._result_status_text(len(normalized), len(display_rows)))
+            return
+
+        self.set_status("loading", f"正在填充 0/{len(display_rows)} 行")
+
+        def fill_next(start: int = 0) -> None:
+            if generation != self._fill_generation:
+                return
+            end = min(start + TOOLBOX_FILL_BATCH_SIZE, len(display_rows))
+            self._fill_table_rows(display_rows, headers, start, end)
+            self.set_status("loading", f"正在填充 {end}/{len(display_rows)} 行")
+            if end < len(display_rows):
+                QTimer.singleShot(0, lambda: fill_next(end))
+                return
+            auto_fit_table_columns(self.result_table, max_rows=200)
+            self.set_status("done", self._result_status_text(len(normalized), len(display_rows)))
+
+        QTimer.singleShot(0, fill_next)
+
+    def _fill_table_rows(self, rows: list[dict[str, object]], headers: list[str], start: int, end: int) -> None:
+        self.result_table.setUpdatesEnabled(False)
+        try:
+            for row_index in range(start, end):
+                row = rows[row_index]
                 row_color = STATUS_VALUE_COLORS.get(str(row.get("状态", "")))
                 for column, header in enumerate(headers):
                     item = QTableWidgetItem(_stringify(row.get(header, "")))
@@ -423,17 +476,28 @@ class ToolResultPanel(QGroupBox):
         finally:
             self.result_table.setUpdatesEnabled(True)
 
-        auto_fit_table_columns(self.result_table, max_rows=200)
+    def _write_result_cache(self, prefix: str, rows: list[dict[str, object]]) -> Path:
+        cache_dir = self.paths.runtime_cache_dir / "toolbox_results"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str))
+                handle.write("\n")
+        return path
 
-        summary_lines = [summary_title] if summary_title else []
-        if summary:
-            summary_lines.extend(f"{key}: {_stringify(value)}" for key, value in summary.items())
-        self.summary_text.setPlainText("\n".join(summary_lines))
-        self.set_status("done", f"{len(normalized)} 条")
+    @staticmethod
+    def _result_status_text(total_count: int, display_count: int) -> str:
+        if total_count > display_count:
+            return f"显示 {display_count}/{total_count} 条，导出读取完整缓存"
+        return f"{total_count} 条"
 
     def export_current(self, suffix: str) -> None:
         if not self.current_headers:
             MessageBox.information(self, "导出", "没有可导出的结果。")
+            return
+        if self.current_result_file is None or not self.current_result_file.is_file():
+            MessageBox.warning(self, "导出", "未找到运行结果缓存文件，请重新生成结果后再导出。")
             return
         export_dir = self.paths.toolbox_outputs_dir(self.site_name)
         default = export_dir / f"{self.export_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{suffix}"
@@ -442,36 +506,32 @@ class ToolResultPanel(QGroupBox):
         if not selected:
             return
         path = Path(selected)
-        export_rows = self.current_rows[:5000]
-        if len(self.current_rows) > len(export_rows):
-            MessageBox.information(self, "导出", "当前运行结果超过 5000 条，本次仅导出前 5000 条。")
         columns = [{"key": header, "title": header, "text": True} for header in self.current_headers]
+        source = result_file_rows_source(self.current_result_file)
         if suffix == "xlsx":
-            spec = table_xlsx_spec(
+            spec = table_xlsx_source_spec(
                 path,
                 columns=columns,
-                rows=export_rows,
+                source=source,
                 sheet_name="结果",
                 title="导出结果",
                 open_dir_on_success=True,
-                allow_inline_rows=True,
-                inline_reason="small_runtime_result_not_persisted",
             )
         else:
-            spec = table_csv_spec(
+            spec = table_csv_source_spec(
                 path,
                 columns=columns,
-                rows=export_rows,
+                source=source,
                 title="导出结果",
                 open_dir_on_success=True,
-                allow_inline_rows=True,
-                inline_reason="small_runtime_result_not_persisted",
             )
         submit_export_task(self, spec, success_title="导出结果", paths=self.paths)
 
     def clear_results(self) -> None:
         self.current_rows = []
         self.current_headers = []
+        self.current_result_file = None
+        self._fill_generation += 1
         self.result_table.setUpdatesEnabled(False)
         try:
             self.result_table.clearContents()
