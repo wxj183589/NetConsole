@@ -16,6 +16,7 @@ from netconsole.models.mesh_log_models import (
     MeshLogRecord,
     ParseIssue,
 )
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 TIMESTAMP_RE = re.compile(
@@ -371,12 +372,7 @@ def _iter_decoded_lines(path: Path) -> Iterable[tuple[int, int, int, str]]:
 
 
 def _decode_line(line: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
-        try:
-            return line.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return line.decode("utf-8", errors="replace")
+    return decode_bytes_with_fallback(line).text
 
 
 def _parse_sample_time(date_text: str, time_text: str) -> datetime:

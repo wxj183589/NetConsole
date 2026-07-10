@@ -198,13 +198,23 @@ def table_csv_source_spec(
     )
 
 
-def markdown_text_spec(output_path: str | Path, *, text: str, title: str = "", open_dir_on_success: bool = True) -> ExportTaskSpec:
+def markdown_text_spec(
+    output_path: str | Path,
+    *,
+    text: str,
+    title: str = "",
+    open_dir_on_success: bool = True,
+    inline_reason: str = "",
+) -> ExportTaskSpec:
+    payload: dict[str, Any] = {"text": text}
+    if inline_reason:
+        payload["inline_reason"] = inline_reason
     return ExportTaskSpec(
         task_type="markdown_text",
         output_path=str(output_path),
         title=title,
         open_dir_on_success=open_dir_on_success,
-        payload={"text": text},
+        payload=payload,
     )
 
 
@@ -464,7 +474,6 @@ def fit_ap_extension_xlsx_spec(
     output_path: str | Path,
     *,
     db_path: str | Path,
-    rows: Iterable[Mapping[str, Any]] | None = None,
     ac_uuid: str = "",
     search: str = "",
     filters: Mapping[str, Any] | None = None,
@@ -478,11 +487,6 @@ def fit_ap_extension_xlsx_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "db_path": str(db_path),
-            "rows": inline_rows_source(
-                rows,
-                allow_inline_rows=True,
-                inline_reason="兼容旧调用的 FIT-AP 扩展信息小型内联集合",
-            )["rows"] if rows is not None else [],
             "ac_uuid": ac_uuid,
             "search": search,
             "filters": dict(filters or {}),
@@ -494,8 +498,6 @@ def fit_ap_extension_template_xlsx_spec(
     output_path: str | Path,
     *,
     db_path: str | Path,
-    rows: Iterable[Mapping[str, Any]] | None = None,
-    ap_entities: Iterable[Mapping[str, Any]] | None = None,
     ac_uuid: str = "",
     title: str = "",
     open_dir_on_success: bool = True,
@@ -507,16 +509,6 @@ def fit_ap_extension_template_xlsx_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "db_path": str(db_path),
-            "rows": inline_rows_source(
-                rows,
-                allow_inline_rows=True,
-                inline_reason="兼容旧调用的 AP 扩展模板资源小型内联集合",
-            )["rows"] if rows is not None else [],
-            "ap_entities": inline_rows_source(
-                ap_entities,
-                allow_inline_rows=True,
-                inline_reason="兼容旧调用的 AP 实体小型内联集合",
-            )["rows"] if ap_entities is not None else [],
             "ac_uuid": ac_uuid,
         },
     )

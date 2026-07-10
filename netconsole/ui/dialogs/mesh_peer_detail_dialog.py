@@ -28,6 +28,7 @@ from netconsole.ui.mesh_chart_payload import build_chart_payload, preserve_extre
 from netconsole.ui.mesh_chart_time_axis import configure_mesh_time_axis
 from netconsole.ui.mesh_peer_series_worker import MeshPeerSeriesWorker
 from netconsole.ui.mesh_time_window_controller import MeshTimeWindowController
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 DEFAULT_VISIBLE_SAMPLES = 120
@@ -171,7 +172,8 @@ class MeshPeerDetailDialog(QDialog):
             self._load()
 
     def _build_layout(self) -> None:
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
         summary = QGridLayout()
@@ -209,12 +211,12 @@ class MeshPeerDetailDialog(QDialog):
             self.visible_samples_combo.addItem(self.i18n.t("mesh_analysis.all_samples") if value == 0 else str(value), value)
         self.visible_samples_combo.setCurrentIndex(2)
         self.visible_samples_combo.setMinimumWidth(110)
-        self.visible_samples_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.visible_samples_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         controls_layout.addWidget(self.visible_samples_combo)
         controls_layout.addWidget(self.show_switch_points_checkbox)
         for button in (self.unlock_point_button, self.clear_focus_button, self.center_button, self.reset_button):
             button.setMinimumWidth(96)
-            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             button.setMinimumHeight(24)
             button.setMaximumHeight(28)
             controls_layout.addWidget(button)
@@ -240,8 +242,10 @@ class MeshPeerDetailDialog(QDialog):
             self.tab_keys.append(key)
         self.status_label.setMaximumHeight(24)
         layout.addWidget(self.status_label)
+        self.tabs.setMinimumHeight(420)
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self.time_scrollbar)
+        install_scrollable_dialog_content(self, content, minimum_width=760, minimum_height=560, content_minimum_width=980)
 
     def _load(self) -> None:
         self.status_label.setText(self.i18n.t("mesh_analysis.loading_full_active_links") if self.active_only else self.i18n.t("mesh_analysis.loading_chart"))

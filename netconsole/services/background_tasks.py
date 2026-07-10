@@ -145,6 +145,20 @@ def run_background_task(job: BackgroundJob, progress_callback: ProgressCallback 
         return _device_mutation(params, progress_callback, should_cancel)
     if job.task_type == "device_lookup":
         return _device_lookup(params, progress_callback, should_cancel)
+    if job.task_type == "device_group_refresh":
+        return _device_group_refresh(params, progress_callback, should_cancel)
+    if job.task_type == "device_group_create":
+        return _device_group_create(params, progress_callback, should_cancel)
+    if job.task_type == "device_group_rename":
+        return _device_group_rename(params, progress_callback, should_cancel)
+    if job.task_type == "device_group_count_devices":
+        return _device_group_count_devices(params, progress_callback, should_cancel)
+    if job.task_type == "device_group_delete":
+        return _device_group_delete(params, progress_callback, should_cancel)
+    if job.task_type == "trackside_device_detail_resolve":
+        return _trackside_device_detail_resolve(params, progress_callback, should_cancel)
+    if job.task_type == "trackside_fit_ap_detail_resolve":
+        return _trackside_fit_ap_detail_resolve(params, progress_callback, should_cancel)
     if job.task_type == "network_profile_store":
         return _network_profile_store(params, progress_callback, should_cancel)
     raise ValueError(f"不支持的后台任务类型：{job.task_type}")
@@ -1763,6 +1777,98 @@ def _device_lookup(params: dict[str, Any], progress: ProgressCallback | None, sh
         None,
     )
     return {"device": device.to_record() if device is not None else None}
+
+
+def _device_group_repository(params: dict[str, Any]):
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_group_repository import DeviceGroupRepository
+
+    return DeviceGroupRepository(Database(Path(str(params.get("db_path") or ""))), str(params.get("site_name") or ""))
+
+
+def _device_group_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    repository = _device_group_repository(params)
+    groups = repository.list()
+    counts = repository.counts()
+    return {"groups": [asdict(group) for group in groups], "counts": {str(key): int(value) for key, value in counts.items()}}
+
+
+def _device_group_create(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.repositories.device_group_repository import DuplicateGroupName
+
+    try:
+        group = _device_group_repository(params).create(str(params.get("name") or ""))
+    except DuplicateGroupName as exc:
+        raise ValueError("DuplicateGroupName") from exc
+    return {"group": asdict(group)}
+
+
+def _device_group_rename(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.repositories.device_group_repository import DuplicateGroupName
+
+    try:
+        group = _device_group_repository(params).rename(int(params.get("group_id") or 0), str(params.get("name") or ""))
+    except DuplicateGroupName as exc:
+        raise ValueError("DuplicateGroupName") from exc
+    return {"group": asdict(group)}
+
+
+def _device_group_count_devices(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    group_id = int(params.get("group_id") or 0)
+    return {"group_id": group_id, "count": _device_group_repository(params).count_devices(group_id)}
+
+
+def _device_group_delete(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    group_id = int(params.get("group_id") or 0)
+    _device_group_repository(params).delete(group_id)
+    return {"group_id": group_id}
+
+
+def _trackside_device_detail_resolve(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.models.device import Device
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    device_id = int(params.get("device_id") or 0)
+    device_uuid = str(params.get("device_uuid") or "").strip()
+    device_ip = str(params.get("device_ip") or "").strip()
+    device_name = str(params.get("device_name") or "").strip()
+    with database.connect() as conn:
+        row = None
+        if device_id > 0:
+            row = conn.execute("SELECT * FROM devices WHERE id = ? LIMIT 1", (device_id,)).fetchone()
+        if row is None and device_uuid:
+            row = conn.execute("SELECT * FROM devices WHERE device_uuid = ? LIMIT 1", (device_uuid,)).fetchone()
+        if row is None and device_ip:
+            row = conn.execute("SELECT * FROM devices WHERE primary_address = ? OR backup_address = ? LIMIT 1", (device_ip, device_ip)).fetchone()
+        if row is None and device_name:
+            row = conn.execute("SELECT * FROM devices WHERE name = ? OR system_name = ? LIMIT 1", (device_name, device_name)).fetchone()
+    device = Device.from_mapping(dict(row)) if row is not None else None
+    return {"device": device.to_record() if device is not None else None}
+
+
+def _trackside_fit_ap_detail_resolve(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    def normalize_mac(value: object) -> str:
+        hex_text = "".join(char for char in str(value or "") if char in "0123456789abcdefABCDEF")
+        return hex_text.casefold() if len(hex_text) == 12 else ""
+
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    ac_uuid = str(params.get("ac_device_uuid") or "").strip()
+    ap_uuid = str(params.get("ap_uuid") or "").strip()
+    ap_mac = normalize_mac(params.get("ap_mac"))
+    ap_name = str(params.get("ap_name") or "").strip()
+    if ac_uuid and ap_uuid:
+        return {"matches": [{"ac_device_uuid": ac_uuid, "ap_uuid": ap_uuid, "ap_name": ap_name}]}
+    resources = repository.list_all_fit_ap_resources_with_metadata()
+    matches: list[dict[str, object | None]] = []
+    if ap_mac:
+        matches = [item for item in resources if normalize_mac(item.get("ap_mac")) == ap_mac]
+    if not matches and ap_name:
+        matches = [item for item in resources if str(item.get("ap_name") or "").strip().casefold() == ap_name.casefold()]
+    return {"matches": matches}
 
 
 def _network_profile_store(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

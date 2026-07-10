@@ -398,7 +398,7 @@ class MeshLinkDetailExportWorker(QThread):
                 total = int(event.get("total") or 0)
                 self.stageChanged.emit(stage)
                 self.progressChanged.emit(done, total, stage)
-            elif event_type == "result":
+            elif event_type in {"result", "finished", "success", "error", "failed", "cancelled"}:
                 result = event
             elif event_type == "log":
                 app_logger.log_error("MESH_LINK_EXPORT_PROCESS_LOG", str(event.get("message") or line))

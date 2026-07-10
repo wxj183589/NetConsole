@@ -42,7 +42,6 @@ from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.core.state_engine import STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
@@ -2237,15 +2236,7 @@ class AcManagementPage(QWidget):
             settings=self.settings,
             parent=self,
         )
-        dialog.exec()
-
-    def _device_group_names(self) -> dict[int, str]:
-        try:
-            groups = DeviceGroupRepository(self.device_repository.database, self.site_name).list()
-        except Exception as exc:
-            app_logger.log_error("OMNIPEEK_GROUP_LOAD_FAILED", str(exc))
-            return {}
-        return {int(group.id): group.name for group in groups if group.id is not None}
+        show_non_focus_window(self, dialog, key="ac_omnipeek_export_dialog", activate=True, raise_window=True)
 
     def current_optical_filters(self) -> dict[str, object | None]:
         return {

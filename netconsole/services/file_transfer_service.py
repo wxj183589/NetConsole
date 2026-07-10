@@ -16,7 +16,7 @@ from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
-from netconsole.utils.text_encoding import clean_h3c_device_text
+from netconsole.utils.text_encoding import decode_bytes_with_fallback, clean_h3c_device_text
 
 
 FILE_MANAGEMENT_CONTEXT = "file_management"
@@ -250,7 +250,7 @@ class FileTransferService:
             if callable(recv_ready) and recv_ready():
                 data = shell.recv(65535)
                 if isinstance(data, bytes):
-                    output.append(data.decode("utf-8", errors="ignore"))
+                    output.append(decode_bytes_with_fallback(data).text)
                 else:
                     output.append(str(data))
                 idle_deadline = monotonic() + 0.2

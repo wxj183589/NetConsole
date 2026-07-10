@@ -99,6 +99,7 @@ class ExportProcessManager(QObject):
         state = self._jobs.get(job_id)
         if state is None:
             return
+        # Internal export worker JSONL protocol; exported device/log content is decoded before entering this channel.
         raw = bytes(state.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         state.stdout_buffer += raw
         while "\n" in state.stdout_buffer:
@@ -109,6 +110,7 @@ class ExportProcessManager(QObject):
         state = self._jobs.get(job_id)
         if state is None:
             return
+        # Internal export worker stderr, not device output; replacement prevents malformed diagnostics from breaking UI.
         state.stderr_buffer += bytes(state.process.readAllStandardError()).decode("utf-8", errors="replace")
 
     def _handle_stdout_line(self, state: _RunningExport, line: str) -> None:

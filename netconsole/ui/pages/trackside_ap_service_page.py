@@ -34,6 +34,8 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.trackside_optical_collection import DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
@@ -139,8 +141,10 @@ class TracksideApServicePage(QWidget):
         self.load_thread: TracksideApBusinessLoadThread | None = None
         self.full_update_thread: TracksideApFullUpdateThread | None = None
         self.export_manager = ExportProcessManager(self, paths=self.paths)
+        self.detail_resolve_manager = BackgroundProcessManager(self, paths=self.paths)
         self.export_job_id: str | None = None
         self.export_output_path: Path | None = None
+        self.detail_resolve_jobs: dict[str, dict[str, object]] = {}
         self.is_loading = False
         self.load_generation = 0
         self.dirty = True
@@ -218,6 +222,8 @@ class TracksideApServicePage(QWidget):
         self.export_manager.progress.connect(self._handle_export_progress)
         self.export_manager.finished.connect(self._finish_export)
         self.export_manager.failed.connect(self._fail_export)
+        self.detail_resolve_manager.finished.connect(self._finish_detail_resolve)
+        self.detail_resolve_manager.failed.connect(self._fail_detail_resolve)
         self.trackside_site_filter.currentIndexChanged.connect(self.apply_trackside_filters)
         self.trackside_search_input.textChanged.connect(self.schedule_trackside_filter)
         self.search_debounce_timer.timeout.connect(self.apply_trackside_filters)
@@ -854,10 +860,28 @@ class TracksideApServicePage(QWidget):
         rows = self.current_trackside_page_rows()
         if row < 0 or row >= len(rows):
             return
-        device_uuid = str(rows[row].get("device_uuid") or "")
-        device = next((item for item in self.device_repository.list() if item.device_uuid == device_uuid), None)
-        if device is None:
-            return
+        current_row = rows[row]
+        job_id = uuid.uuid4().hex
+        self.detail_resolve_jobs[job_id] = {"kind": "device"}
+        self.status_label.setText("正在解析设备详情...")
+        self.detail_resolve_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="trackside_device_detail_resolve",
+                params={
+                    "db_path": str(self.device_repository.database.path),
+                    "device_id": current_row.get("source_device_id"),
+                    "device_uuid": current_row.get("device_uuid"),
+                    "device_ip": current_row.get("device_ip") or current_row.get("source_device_ip"),
+                    "device_name": current_row.get("device_name") or current_row.get("source_device"),
+                },
+            )
+        )
+
+    def _open_resolved_device_detail(self, device_row: dict[str, object]) -> None:
+        from netconsole.models.device import Device
+
+        device = Device.from_mapping(device_row)
         dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
@@ -870,10 +894,37 @@ class TracksideApServicePage(QWidget):
         if row < 0 or row >= len(rows):
             return
         current_row = rows[row]
-        match = self._resolve_ap_detail_match(current_row)
-        if match is None:
+        if not any(str(current_row.get(field) or "").strip() for field in ("ap_uuid", "ap_mac", "ap_name")):
             MessageBox.information(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.no_ap_detail"))
             return
+        job_id = uuid.uuid4().hex
+        self.detail_resolve_jobs[job_id] = {"kind": "ap"}
+        self.status_label.setText("正在解析 AP 详情...")
+        self.detail_resolve_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="trackside_fit_ap_detail_resolve",
+                params={
+                    "db_path": str(self.device_repository.database.path),
+                    "ac_device_uuid": current_row.get("ac_device_uuid"),
+                    "ap_uuid": current_row.get("ap_uuid"),
+                    "ap_mac": current_row.get("ap_mac"),
+                    "ap_name": current_row.get("ap_name"),
+                },
+            )
+        )
+
+    def _open_resolved_ap_detail(self, matches: list[dict[str, object | None]]) -> None:
+        if not matches:
+            MessageBox.information(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.no_ap_detail"))
+            return
+        match = matches[0]
+        if len(matches) > 1:
+            labels = [f"{item.get('ap_name') or '-'} | {item.get('ap_mac') or '-'} | {item.get('ap_ip') or '-'}" for item in matches]
+            selected, accepted = InputDialog.getItem(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.open_ap_detail"), labels, 0, False)
+            if not accepted:
+                return
+            match = matches[labels.index(selected)]
         dialog = FitApDetailDialog(self.i18n, self.ac_repository, str(match.get("ac_device_uuid") or ""), str(match.get("ap_uuid") or match.get("ap_name") or ""))
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
@@ -881,26 +932,27 @@ class TracksideApServicePage(QWidget):
         dialog.raise_()
         dialog.activateWindow()
 
-    def _resolve_ap_detail_match(self, row: dict[str, object | None]) -> dict[str, object | None] | None:
-        if row.get("ac_device_uuid") and row.get("ap_uuid"):
-            return {"ac_device_uuid": row.get("ac_device_uuid"), "ap_uuid": row.get("ap_uuid"), "ap_name": row.get("ap_name")}
-        resources = self.ac_repository.list_all_fit_ap_resources_with_metadata()
-        ap_mac = normalize_trackside_mac(row.get("ap_mac"))
-        ap_name = str(row.get("ap_name") or "").strip()
-        matches: list[dict[str, object | None]] = []
-        if ap_mac:
-            matches = [item for item in resources if normalize_trackside_mac(item.get("ap_mac")) == ap_mac]
-        if not matches and ap_name:
-            matches = [item for item in resources if str(item.get("ap_name") or "").strip().casefold() == ap_name.casefold()]
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        labels = [f"{item.get('ap_name') or '-'} | {item.get('ap_mac') or '-'} | {item.get('ap_ip') or '-'}" for item in matches]
-        selected, accepted = InputDialog.getItem(self, self.i18n.t("trackside_ap.open_ap_detail"), self.i18n.t("trackside_ap.open_ap_detail"), labels, 0, False)
-        if not accepted:
-            return None
-        return matches[labels.index(selected)]
+    def _finish_detail_resolve(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self.detail_resolve_jobs.pop(job_id, {})
+        result = dict(event.get("result") or {})
+        self.status_label.setText("")
+        if context.get("kind") == "device":
+            device = result.get("device")
+            if not isinstance(device, dict):
+                MessageBox.information(self, self.i18n.t("details.title"), "未找到对应设备")
+                return
+            self._open_resolved_device_detail(device)
+            return
+        if context.get("kind") == "ap":
+            matches = [dict(row) for row in result.get("matches") or [] if isinstance(row, dict)]
+            self._open_resolved_ap_detail(matches)
+
+    def _fail_detail_resolve(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        self.detail_resolve_jobs.pop(job_id, None)
+        self.status_label.setText("")
+        MessageBox.warning(self, self.i18n.t("details.title"), str(event.get("message") or event.get("error") or "详情解析失败"))
 
     def _forget_detail_window(self, window: QWidget) -> None:
         self.detail_windows = [item for item in self.detail_windows if item is not window]

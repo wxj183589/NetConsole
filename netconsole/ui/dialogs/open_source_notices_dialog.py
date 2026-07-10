@@ -6,13 +6,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QDialog
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QDialog, QWidget
 
 from netconsole.core import app_logger
 from netconsole.services.export.export_task_builders import markdown_text_spec, table_xlsx_spec
 from netconsole.services.open_source_notice_service import OpenSourceComponent, OpenSourceNoticeService
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import auto_resize_table_columns_to_contents, setup_readable_table
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class OpenSourceNoticeThread(QThread):
@@ -40,10 +41,10 @@ class OpenSourceNoticesDialog(QDialog):
         self.worker: OpenSourceNoticeThread | None = None
         self.setModal(False)
         self.setWindowTitle("开源许可")
-        self.setMinimumSize(640, 420)
         self.resize(920, 560)
 
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         title = QLabel("开源许可")
         title.setObjectName("fluentPageTitle")
         subtitle = QLabel("NetConsole 使用的第三方开源组件及其许可证信息。")
@@ -70,6 +71,7 @@ class OpenSourceNoticesDialog(QDialog):
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setMinimumHeight(260)
         setup_readable_table(self.table, horizontal_scroll=True, interactive=True, stretch_last_section=False)
         layout.addWidget(self.table, 1)
 
@@ -78,6 +80,7 @@ class OpenSourceNoticesDialog(QDialog):
         self.close_button = QPushButton("关闭")
         close_row.addWidget(self.close_button)
         layout.addLayout(close_row)
+        install_scrollable_dialog_content(self, content, minimum_width=640, minimum_height=420, content_minimum_width=760)
 
         self.refresh_button.clicked.connect(self.refresh_components)
         self.export_button.clicked.connect(self.export_notices)
@@ -114,7 +117,12 @@ class OpenSourceNoticesDialog(QDialog):
         if selected_filter.startswith("文本") or output.suffix.lower() == ".txt":
             submit_export_task(
                 self,
-                markdown_text_spec(output, text=self._export_text_content(), title="导出开源许可说明"),
+                markdown_text_spec(
+                    output,
+                    text=self._export_text_content(),
+                    title="导出开源许可说明",
+                    inline_reason="small_static_notice",
+                ),
                 success_title="导出开源许可说明",
             )
         else:

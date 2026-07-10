@@ -648,16 +648,14 @@ def export_fit_ap_csv_task(path: Path, payload: Mapping[str, Any], progress: Pro
 
 
 def export_fit_ap_extension_xlsx_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
-    if not rows:
-        filters = dict(payload.get("filters") or {})
-        rows = _ac_repository(payload).list_ap_extension_points(
-            search=str(payload.get("search") or filters.get("search") or ""),
-            station_name=str(filters.get("station_name") or ""),
-            line_side=str(filters.get("line_side") or ""),
-            direction=str(filters.get("direction") or ""),
-            match_status=str(filters.get("match_status") or ""),
-        )
+    filters = dict(payload.get("filters") or {})
+    rows = _ac_repository(payload).list_ap_extension_points(
+        search=str(payload.get("search") or filters.get("search") or ""),
+        station_name=str(filters.get("station_name") or ""),
+        line_side=str(filters.get("line_side") or ""),
+        direction=str(filters.get("direction") or ""),
+        match_status=str(filters.get("match_status") or ""),
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_fit_ap_extension", 0, len(rows), "正在导出 FIT-AP 扩展信息")
     _check_cancel(should_cancel)
@@ -667,13 +665,9 @@ def export_fit_ap_extension_xlsx_task(path: Path, payload: Mapping[str, Any], pr
 
 
 def export_fit_ap_extension_template_xlsx_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
-    ap_entities = [dict(row) for row in payload.get("ap_entities") or [] if isinstance(row, Mapping)]
     ac_uuid = str(payload.get("ac_uuid") or "").strip()
-    if ac_uuid and not rows:
-        rows = _ac_repository(payload).list_fit_ap_resources_with_metadata(ac_uuid)
-    if ac_uuid and not ap_entities:
-        ap_entities = _ac_repository(payload).list_ap_entities(ac_uuid)
+    rows = _ac_repository(payload).list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else []
+    ap_entities = _ac_repository(payload).list_ap_entities(ac_uuid) if ac_uuid else []
     path.parent.mkdir(parents=True, exist_ok=True)
     _emit(progress, "write_fit_ap_extension_template", 0, len(rows), "正在导出 AP 扩展模板")
     _check_cancel(should_cancel)

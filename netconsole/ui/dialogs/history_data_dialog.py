@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
@@ -11,6 +11,7 @@ from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 INTERFACE_HISTORY_COLUMNS = (
@@ -85,7 +86,6 @@ class HistoryDataDialog(QDialog):
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
         self.setModal(False)
-        self.setMinimumSize(640, 420)
         self.resize(900, 560)
 
         self.title_label = QLabel()
@@ -97,10 +97,12 @@ class HistoryDataDialog(QDialog):
         header.addStretch(1)
         header.addWidget(self.always_on_top_button)
 
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addLayout(header)
         if rows or self.background_manager is not None:
             self.table = self._table()
+            self.table.setMinimumHeight(260)
             self.pagination = PaginationWidget(self.i18n)
             self.pagination.pageChanged.connect(self.set_page)
             self.pagination.pageSizeChanged.connect(self.set_page_size)
@@ -111,6 +113,7 @@ class HistoryDataDialog(QDialog):
             label = QLabel(self.i18n.t("history.no_data"))
             label.setAlignment(Qt.AlignCenter)
             layout.addWidget(label, 1)
+        install_scrollable_dialog_content(self, content, minimum_width=640, minimum_height=420, content_minimum_width=760)
         self.retranslate()
 
     def retranslate(self) -> None:

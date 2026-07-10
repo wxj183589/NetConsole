@@ -203,8 +203,10 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     page.current_profile = profile
     target = paths.mesh_mr_export_dir("demo", profile.safe_folder_name) / "MR2_链路明细.xlsx"
     messages: list[str] = []
+    warnings: list[str] = []
     monkeypatch.setattr(page_module.QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (str(target), "Excel Files (*.xlsx)"))
     monkeypatch.setattr(page_module.QMessageBox, "information", lambda *_args: messages.append(str(_args[-1])) or None)
+    monkeypatch.setattr(page_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])) or None)
 
     page.export_link_details()
     deadline = time.time() + 5
@@ -213,6 +215,8 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
         time.sleep(0.01)
     _drain_qt_events()
 
+    assert page.export_worker is None, "Timed out waiting for Mesh link detail export worker to finish"
+    assert not warnings
     assert target.exists()
     workbook = load_workbook(target)
     assert set(workbook.sheetnames) >= {"导出说明", "统计汇总", "链路明细", "主链路建链顺序", "事件明细", "分析参数"}
