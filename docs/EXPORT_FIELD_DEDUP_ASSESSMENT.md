@@ -164,4 +164,4 @@ samples
 - diagnostics 初始化、逐行统计或汇总失败时统一降级为 `available=false`；原导出继续完成。默认不生成 sidecar，也不写数据库或运行缓存。
 - 当前观察结果只能说明字段相同或上下文缺失，不能授权删除、改名、合并字段，也不能改变 AP/Radio/Peer identity、ACTIVE/STANDBY、备链、RSSI、Busy、短链或乒乓结论。
 
-阶段 7 如继续，应只设计真实局点 diagnostics 观测、脱敏汇总和准入阈值；在获得稳定样本前，仍不得修改导出字段或报告 SQL。
+阶段 7 已完成真实局点 diagnostics 观测、脱敏汇总、准入阈值和运行手册设计，见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。在获得稳定脱敏样本前，仍不得修改导出字段或报告 SQL；即使达到初始阈值，也只能进入只读展示评估。

@@ -155,6 +155,9 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 导出逻辑 golden 应比较Sheet、表头、关键行值、筛选、冻结窗格、样式和列宽；不得依赖不稳定的XLSX二进制哈希。diagnostics或sidecar失败不得改变原导出终态。
 - 阶段6.1 P0统一使用`services/export_identity_diagnostics.py`；Mesh只在旧行进入formatter前流式观察，Online MR兼容报告只在旧位置数组生成后按原表头观察。diagnostics不得持久化、不得生成默认sidecar，也不得成为字段删除或SQL修改依据。
 - Mesh Export Process只在finished result附加`export_identity_diagnostics`；`OnlineMrAnalysisReportExporter.export()`继续返回原`Path`，诊断通过只读`result_metadata`暴露。诊断失败必须`available=false`且原导出继续成功。
+- 阶段7真实局点观测统一遵守 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)：只提取聚合字段，不支持的指标写`null`，完整result/items/evidence/raw log/数据库/xlsx不得进入仓库，MAC/IP/名称/路径必须使用campaign HMAC或token脱敏。
+- 阶段7阈值只用于决定是否有资格评估只读展示，不是生产强制规则。identity changed非零、作用域/歧义超阈值或RSSI/备链缺失相对基线增加时，继续使用旧生产路径；不得自动修复、删除字段或调整resolver。
+- 后续只读展示必须使用独立feature flag、默认关闭、可整体禁用，只展示脱敏聚合和不可用状态，不展示shadow items、samples、evidence或warning明文。
 
 ## 提交前检查
 

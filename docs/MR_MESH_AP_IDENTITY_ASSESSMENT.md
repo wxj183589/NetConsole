@@ -250,4 +250,5 @@ shadow 失败统一 `available=false`，旧任务继续原 finished/failed/cance
 - shadow unavailable、unresolved、ambiguous或 identity changed只记录诊断，不阻断导入、解析、采集、图表或导出。
 - 阶段 6 导出入口、字段差异和只读 diagnostics 设计见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。
 - 阶段 6.1 P0 只返回有限聚合计数和样例引用；失败为 `available=false`，默认不写 sidecar，原始 H3C raw log、parser 输出、mapping/cache 和 workbook 保持不变。
+- 阶段 7 真实局点 MR/Mesh 观测只使用日志/会话副本，提取聚合后丢弃 items、evidence、warning 明文和临时 xlsx；统一口径、脱敏和阈值见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。
 - 在真实局点 shadow证明候选稳定、作用域充分且旧/new结论可解释之前，不进入生产 resolver接管或导出字段删除、改名、合并阶段。
