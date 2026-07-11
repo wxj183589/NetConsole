@@ -4,9 +4,20 @@ from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
-from netconsole.services.ac import AcResourceRefreshRequest, AcResourceService, AcService
+from netconsole.services.ac import (
+    AcCommandCancelled,
+    AcCommandRequest,
+    AcCommandService,
+    AcOpticalRefreshCancelled,
+    AcOpticalRefreshRequest,
+    AcOpticalService,
+    AcResourceRefreshRequest,
+    AcResourceService,
+    AcService,
+)
 from netconsole.services.ac.ac_resource_service import AcResourceRefreshCancelled
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
@@ -14,11 +25,19 @@ from netconsole.services.job_center.job_context import BackgroundTaskCancelled, 
 from netconsole.services.snmp.snmp_collection_service import SnmpCollectionService
 from netconsole.services.snmp_query_service import SnmpQueryService
 
+
+def _string_list(value: object, fallback: object = None) -> list[str]:
+    if value in (None, "", []):
+        value = [] if fallback in (None, "") else [fallback]
+    elif isinstance(value, (str, int)):
+        value = [value]
+    return [str(item) for item in value if str(item or "").strip()]
+
+
 fit_ap_metadata_import = legacy_handler(legacy_tasks._fit_ap_metadata_import)
 fit_ap_extension_preview = legacy_handler(legacy_tasks._fit_ap_extension_preview)
 fit_ap_extension_commit = legacy_handler(legacy_tasks._fit_ap_extension_commit)
 ac_overview_refresh = legacy_handler(legacy_tasks._ac_overview_refresh)
-ac_fit_ap_optical_refresh = legacy_handler(legacy_tasks._ac_fit_ap_optical_refresh)
 ac_ap_extensions_refresh = legacy_handler(legacy_tasks._ac_ap_extensions_refresh)
 omnipeek_name_table_preview = legacy_handler(legacy_tasks._omnipeek_name_table_preview)
 ac_overview_history_snapshot = legacy_handler(legacy_tasks._ac_overview_history_snapshot)
@@ -53,7 +72,7 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
         snmp_collection_service=SnmpCollectionService(create_snmp_query_service),
     )
     ac_service = AcService(resource_service)
-    ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or "")
+    ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
     if str(params.get("mode") or "load").lower() != "collect":
         context.progress("ac_fit_ap_resources_refresh", 0, 1, "正在读取 FIT-AP 资源")
         payload = resource_service.load_snapshot(ac_uuid).to_payload()
@@ -84,6 +103,94 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
         raise RuntimeError(result.error_message or "FIT-AP 资源更新失败")
     return result.to_payload()
 
+
+def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    site_name = str(params.get("site_name") or "demo")
+    database_path = Path(str(params.get("db_path") or context.paths.site_db_path(site_name)))
+    database = Database(database_path)
+    service = AcOpticalService(
+        DeviceRepository(database),
+        AcRepository(database),
+        DeviceFactRepository(database),
+        context.paths,
+    )
+    ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
+    if str(params.get("mode") or "load").lower() != "collect":
+        return service.load_optical_snapshot(
+            ac_uuid,
+            progress_callback=context.progress,
+            should_cancel=context.should_cancel,
+        ).to_payload()
+
+    refresh_scope = str(params.get("refresh_scope") or "all").lower()
+    request = AcOpticalRefreshRequest(
+        device_uuid=ac_uuid,
+        site_name=site_name,
+        refresh_scope=refresh_scope,
+        source=str(params.get("source") or "auto"),
+        max_workers=int(params.get("concurrency") or params.get("max_workers") or 200),
+        timeout=int(params.get("timeout") or 15),
+        retry=int(params.get("retry") or 2),
+        target_ap_uuids=_string_list(params.get("target_ap_uuids"), params.get("ap_uuid") or params.get("ap_id")),
+        target_ap_macs=_string_list(params.get("target_ap_macs"), params.get("ap_mac")),
+        target_ap_names=_string_list(params.get("target_ap_names"), params.get("ap_name")),
+    )
+    try:
+        if refresh_scope == "single":
+            result = service.refresh_single_ap_optical(
+                request,
+                progress_callback=context.progress,
+                should_cancel=context.should_cancel,
+            )
+        else:
+            result = service.refresh_fit_ap_optical(
+                request,
+                progress_callback=context.progress,
+                should_cancel=context.should_cancel,
+            )
+    except AcOpticalRefreshCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+    if not result.success:
+        raise RuntimeError(result.error_message or "FIT-AP 光衰更新失败")
+    return result.to_payload()
+
+
+def ac_command_action_execute(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    site_name = str(params.get("site_name") or "demo")
+    database_path = Path(str(params.get("db_path") or context.paths.site_db_path(site_name)))
+    database = Database(database_path)
+    service = AcCommandService(
+        DeviceRepository(database),
+        AcRepository(database),
+        context.paths,
+    )
+    device_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
+    request = AcCommandRequest(
+        device_uuid=device_uuid,
+        site_name=site_name,
+        action=str(params.get("action") or ""),
+        command_sequence=_string_list(params.get("command_sequence")),
+        confirm_required=bool(params.get("confirm_required", True)),
+        timeout=int(params.get("timeout") or 10),
+        retry=int(params.get("retry") or 0),
+        source=str(params.get("source") or "auto"),
+    )
+    try:
+        result = service.execute_action(
+            request,
+            progress_callback=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except AcCommandCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+    if not result.success:
+        raise RuntimeError(result.error_message or "AC 命令动作执行失败")
+    return result.to_payload()
+
 HANDLERS = {
     name: globals()[name]
     for name in (
@@ -93,6 +200,7 @@ HANDLERS = {
         "ac_overview_refresh",
         "ac_fit_ap_resources_refresh",
         "ac_fit_ap_optical_refresh",
+        "ac_command_action_execute",
         "ac_ap_extensions_refresh",
         "omnipeek_name_table_preview",
         "ac_overview_history_snapshot",

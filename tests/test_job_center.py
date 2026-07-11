@@ -53,7 +53,8 @@ def _jsonl_events(result: subprocess.CompletedProcess[str]) -> list[dict[str, ob
 def test_registry_contains_all_existing_task_types() -> None:
     tasks = registered_task_types()
 
-    assert len(tasks) == 82
+    assert len(tasks) == 83
+    assert "ac_command_action_execute" in tasks
     assert "device_csv_import" in tasks
     assert "mesh_mr_profiles_refresh" in tasks
     assert "snmp_center_data_action" in tasks

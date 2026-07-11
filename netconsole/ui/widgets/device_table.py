@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Qt, Signal
+import json
+
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QHeaderView,
     QMenu,
     QTableWidget,
@@ -10,8 +13,8 @@ from PySide6.QtWidgets import (
 
 from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
-from netconsole.ui.render.table_render_engine import apply_action_column, apply_table_style, set_table_column_fields
-from netconsole.ui.table_utils import configure_readonly_table
+from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
+from netconsole.ui.table_utils import configure_readonly_table, format_row_for_copy
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 
 
@@ -29,7 +32,6 @@ DEVICE_COLUMN_WIDTHS = {
     "backup_address": 130,
     "protocols": 80,
     "updated_at": 170,
-    "actions": 100,
 }
 
 COLUMNS = (
@@ -42,7 +44,6 @@ COLUMNS = (
     ("backup_address", "field.backup_address"),
     ("protocols", "field.protocols"),
     ("updated_at", "field.updated_at"),
-    ("actions", "field.actions"),
 )
 
 DEVICE_HEADER_TOOLTIPS = {
@@ -68,6 +69,7 @@ def protocol_label(ssh_enabled: object, telnet_enabled: object) -> str:
 class DeviceTable(QTableWidget):
     selection_changed = Signal()
     detail_requested = Signal(int)
+    duplicate_requested = Signal(int)
     edit_requested = Signal(int)
     delete_requested = Signal(int)
     external_terminal_requested = Signal(int)
@@ -80,7 +82,6 @@ class DeviceTable(QTableWidget):
         self.selected_device_ids: set[int] = set()
         self.external_terminal_visible = True
         self.external_terminal_enabled = True
-        self._active_action_menu: QMenu | None = None
         self._updating_checks = False
         self._populate_generation = 0
         set_table_column_fields(self, [field for field, _key in COLUMNS])
@@ -90,6 +91,8 @@ class DeviceTable(QTableWidget):
         self.itemChanged.connect(self._item_changed)
         self.cellClicked.connect(self._cell_clicked)
         self.cellDoubleClicked.connect(self._cell_double_clicked)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         self.retranslate()
 
     def retranslate(self) -> None:
@@ -97,9 +100,7 @@ class DeviceTable(QTableWidget):
         self._apply_header_tooltips()
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
-        apply_action_column(self)
         self._apply_column_layout()
-        self._refresh_action_items()
 
     def _apply_header_tooltips(self) -> None:
         for column, (field, key) in enumerate(COLUMNS):
@@ -166,15 +167,11 @@ class DeviceTable(QTableWidget):
             "updated_at": device.updated_at,
         }
         for column, (field, _) in enumerate(COLUMNS):
-            if field in {"select", "actions"}:
+            if field == "select":
                 continue
             item = QTableWidgetItem("" if values.get(field) is None else str(values[field]))
             item.setData(Qt.UserRole, device.id)
             self.setItem(row, column, item)
-        action_item = QTableWidgetItem(self.i18n.t("field.actions"))
-        action_item.setData(Qt.UserRole, device.id)
-        action_item.setTextAlignment(Qt.AlignCenter)
-        self.setItem(row, self._column_index("actions"), action_item)
 
     def _finish_populate(self, total: int) -> None:
         if total > DEVICE_TABLE_FILTER_HINT_LIMIT:
@@ -183,7 +180,6 @@ class DeviceTable(QTableWidget):
             self.setToolTip("")
         self._set_header_check_state(Qt.Unchecked)
         apply_table_style(self)
-        apply_action_column(self)
         self._apply_column_layout()
         self.selection_changed.emit()
 
@@ -193,7 +189,6 @@ class DeviceTable(QTableWidget):
     def set_external_terminal_action_state(self, *, visible: bool, enabled: bool) -> None:
         self.external_terminal_visible = visible
         self.external_terminal_enabled = enabled
-        self._refresh_action_items()
 
     def selected_device_id(self) -> int | None:
         row = self.currentRow()
@@ -231,20 +226,10 @@ class DeviceTable(QTableWidget):
         item = create_checkable_table_item(False, user_data=device.id)
         self.setItem(row, CHECK_COLUMN, item)
 
-    def _refresh_action_items(self) -> None:
-        action_column = self._column_index("actions")
-        for row, device in enumerate(self.devices[: self.rowCount()]):
-            item = self.item(row, action_column)
-            if item is None:
-                item = QTableWidgetItem()
-                self.setItem(row, action_column, item)
-            item.setText(self.i18n.t("field.actions"))
-            item.setData(Qt.UserRole, device.id)
-            item.setTextAlignment(Qt.AlignCenter)
-
-    def action_menu_for_device(self, device_id: int) -> QMenu:
+    def context_menu_for_device(self, device_id: int, row: int, column: int) -> QMenu:
         menu = QMenu(self)
         menu.addAction(self.i18n.t("details.button"), lambda: self.detail_requested.emit(device_id))
+        menu.addAction(self.i18n.t("devices.duplicate"), lambda: self.duplicate_requested.emit(device_id))
         if self.external_terminal_visible:
             terminal_action = menu.addAction(
                 self.i18n.t("devices.external_terminal"),
@@ -253,23 +238,50 @@ class DeviceTable(QTableWidget):
             terminal_action.setEnabled(self.external_terminal_enabled)
         menu.addAction(self.i18n.t("devices.edit"), lambda: self.edit_requested.emit(device_id))
         menu.addAction(self.i18n.t("devices.delete"), lambda: self.delete_requested.emit(device_id))
+        menu.addSeparator()
+        copy_menu = QMenu(self.i18n.t("devices.copy_text"), menu)
+        menu.addMenu(copy_menu)
+        menu._copy_text_menu = copy_menu
+        copy_menu.addAction(self.i18n.t("devices.copy_current_cell"), lambda: self._copy_current_cell(row, column))
+        device = self.devices[row]
+        copy_menu.addAction(self.i18n.t("devices.copy_name"), lambda: self._copy_text(device.name))
+        copy_menu.addAction(self.i18n.t("devices.copy_primary_address"), lambda: self._copy_text(device.primary_address))
+        copy_menu.addAction(self.i18n.t("devices.copy_backup_address"), lambda: self._copy_text(device.backup_address))
+        copy_menu.addAction(self.i18n.t("devices.copy_system_name"), lambda: self._copy_text(device.system_name))
+        copy_menu.addAction(self.i18n.t("devices.copy_station"), lambda: self._copy_text(device.station))
+        copy_menu.addAction(self.i18n.t("devices.copy_row"), lambda: self._copy_row(row))
+        copy_menu.addAction(self.i18n.t("devices.copy_device_info"), lambda: self._copy_device_info(device))
         return menu
 
-    def _show_action_menu(self, row: int) -> None:
-        item = self.item(row, self._column_index("actions"))
-        if item is None or item.data(Qt.UserRole) is None:
+    def _show_context_menu(self, position: QPoint) -> None:
+        index = self.indexAt(position)
+        row = index.row()
+        if not 0 <= row < len(self.devices):
             return
-        if self._active_action_menu is not None:
-            self._active_action_menu.close()
-        menu = self.action_menu_for_device(int(item.data(Qt.UserRole)))
-        self._active_action_menu = menu
-        menu.aboutToHide.connect(lambda current=menu: self._release_action_menu(current))
-        menu.popup(self.viewport().mapToGlobal(self.visualItemRect(item).bottomLeft()))
-
-    def _release_action_menu(self, menu: QMenu) -> None:
-        if self._active_action_menu is menu:
-            self._active_action_menu = None
+        device = self.devices[row]
+        if device.id is None:
+            return
+        self.setCurrentCell(row, index.column())
+        menu = self.context_menu_for_device(int(device.id), row, index.column())
+        menu.exec(self.viewport().mapToGlobal(position))
         menu.deleteLater()
+
+    @staticmethod
+    def _copy_text(value: object | None) -> None:
+        QApplication.clipboard().setText("" if value is None else str(value))
+
+    def _copy_current_cell(self, row: int, column: int) -> None:
+        item = self.item(row, column)
+        self._copy_text(item.text() if item is not None else "")
+
+    def _copy_row(self, row: int) -> None:
+        visible_columns = [column for column, (field, _key) in enumerate(COLUMNS) if field != "select"]
+        headers = [self.horizontalHeaderItem(column).text() if self.horizontalHeaderItem(column) else "" for column in visible_columns]
+        values = [self.item(row, column).text() if self.item(row, column) else "" for column in visible_columns]
+        self._copy_text(format_row_for_copy(headers, values))
+
+    def _copy_device_info(self, device: Device) -> None:
+        self._copy_text(json.dumps(device.to_record(), ensure_ascii=False, indent=2, default=str))
 
     def _header_clicked(self, section: int) -> None:
         if section != CHECK_COLUMN:
@@ -305,9 +317,6 @@ class DeviceTable(QTableWidget):
         self.selection_changed.emit()
 
     def _cell_clicked(self, row: int, column: int) -> None:
-        if column == self._column_index("actions"):
-            self._show_action_menu(row)
-            return
         if column != CHECK_COLUMN:
             return
         item = self.item(row, CHECK_COLUMN)
@@ -316,7 +325,7 @@ class DeviceTable(QTableWidget):
         self.setCurrentCell(row, column)
 
     def _cell_double_clicked(self, row: int, column: int) -> None:
-        if column in {CHECK_COLUMN, self._column_index("actions")}:
+        if column == CHECK_COLUMN:
             return
         if 0 <= row < len(self.devices):
             device = self.devices[row]

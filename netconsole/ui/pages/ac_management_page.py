@@ -38,7 +38,6 @@ from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.core.state_engine import STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
@@ -74,6 +73,7 @@ from netconsole.services.ap_online_overview import (
 )
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.fit_ap_optical_export import (
     evaluate_fit_ap_ap_status,
@@ -95,7 +95,7 @@ from netconsole.services.export.export_task_builders import (
 from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
-from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, FitApOpticalCollectThread
+from netconsole.ui.ac_collect_worker import AcInfoCollectThread
 from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
@@ -350,49 +350,6 @@ def sort_fit_ap_optical_rows(rows: list[dict[str, object | None]]) -> list[dict[
     return sorted(rows, key=key)
 
 
-def enrich_fit_ap_optical_rows(
-    rows: list[dict[str, object | None]],
-    resources: list[dict[str, object | None]],
-    device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] | None = None,
-) -> list[dict[str, object | None]]:
-    resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
-    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
-    lookup = device_optical_status_lookup or {}
-    result: list[dict[str, object | None]] = []
-    for row in rows:
-        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
-        neighbor_name = None if _is_invalid_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name")
-        switch_status = _lookup_switch_status(neighbor_name, row.get("neighbor_interface"), lookup)
-        is_offline = is_fit_ap_offline(resource) or bool(row.get("is_ap_offline"))
-        result.append(
-            {
-                **row,
-                "ap_mac": row.get("ap_mac") or resource.get("ap_mac"),
-                "site": row.get("site") or resource.get("site_name") or resource.get("site") or "未归属",
-                "neighbor_device_name": neighbor_name,
-                "switch_optical_status": switch_status,
-                "is_ap_offline": is_offline,
-                "optical_alarm_status": OFFLINE_AP_STATUS_TEXT if is_offline else row.get("optical_alarm_status"),
-                "ap_optical_status": "offline" if is_offline else row.get("ap_optical_status"),
-                "data_source": "historical" if is_offline else row.get("data_source"),
-            }
-        )
-    return result
-
-
-def _lookup_switch_status(
-    neighbor_device_name: object,
-    neighbor_interface: object,
-    lookup: dict[tuple[str, str], dict[str, object | None]],
-) -> str:
-    """Compute switch-side status real-time from raw optical module data."""
-    return compute_switch_status(
-        device_name=neighbor_device_name,
-        interface_name=neighbor_interface,
-        lookup=lookup,
-    )
-
-
 def filter_fit_ap_optical_rows(rows: list[dict[str, object | None]], filters: dict[str, object | None]) -> list[dict[str, object | None]]:
     text_fields = ("ap_name", "site")
     result = rows
@@ -597,6 +554,7 @@ class AcManagementPage(QWidget):
         self.settings = SettingsStore(PathResolver())
         self.background_manager = BackgroundProcessManager(self, paths=self.settings.paths)
         self.background_manager.progress.connect(self._background_progress)
+        self.background_manager.log.connect(self._background_progress)
         self.background_manager.finished.connect(self._background_finished)
         self.background_manager.failed.connect(self._background_failed)
         self.background_manager.cancelled.connect(self._background_cancelled)
@@ -606,8 +564,8 @@ class AcManagementPage(QWidget):
         self.ac_devices: list[Device] = []
         self.resource_job_id: str | None = None
         self.ac_info_thread: AcInfoCollectThread | None = None
-        self.action_thread: AcCommandActionThread | None = None
-        self.optical_thread: FitApOpticalCollectThread | None = None
+        self.action_job_id: str | None = None
+        self.optical_job_id: str | None = None
         self.trackside_export_manager = ExportProcessManager(self, paths=PathResolver())
         self.trackside_export_job_id: str | None = None
         self.trackside_export_output_path: Path | None = None
@@ -1257,6 +1215,9 @@ class AcManagementPage(QWidget):
     def _on_current_tab_changed(self, index: int) -> None:
         if index < 0:
             return
+        if self.action_job_id is not None:
+            self.background_manager.cancel_job(self.action_job_id)
+            self.cancel_update_button.setEnabled(False)
         feature_id = self._current_feature_id() or ""
         tab_text = self.tabs.tabText(index)
         actions = ", ".join(self.current_tab_action_labels())
@@ -1472,12 +1433,12 @@ class AcManagementPage(QWidget):
     def cancel_current_update(self) -> None:
         if self.resource_job_id is not None:
             self.background_manager.cancel_job(self.resource_job_id)
+        if self.optical_job_id is not None:
+            self.background_manager.cancel_job(self.optical_job_id)
+        if self.action_job_id is not None:
+            self.background_manager.cancel_job(self.action_job_id)
         if self.ac_info_thread is not None and self.ac_info_thread.isRunning():
             self.ac_info_thread.cancel()
-        if self.action_thread is not None and self.action_thread.isRunning():
-            self.action_thread.cancel()
-        if self.optical_thread is not None and self.optical_thread.isRunning():
-            self.optical_thread.cancel()
         self.cancel_update_button.setEnabled(False)
         self.status_label.setText(self.i18n.t("ac.update_cancelled"))
 
@@ -1550,13 +1511,23 @@ class AcManagementPage(QWidget):
         if MessageBox.question(self, title, confirm_text) != MessageBox.Yes:
             return
         self._set_update_running(True, f"正在执行：{title}...")
-        self.action_thread = AcCommandActionThread(device, self.site_name, action, parent=self)
-        self.action_thread.progress.connect(self._set_update_progress)
-        self.action_thread.action_finished.connect(lambda result, action_title=title: self._finish_ac_action(result, action_title))
-        self.action_thread.action_failed.connect(self._fail_resource_collect)
-        self.action_thread.finished.connect(self.action_thread.deleteLater)
-        self.action_thread.finished.connect(lambda: setattr(self, "action_thread", None))
-        self.action_thread.start()
+        self.action_job_id = self._start_background_job(
+            "ac_command_action_execute",
+            {
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "action": action,
+                "command_sequence": list(commands),
+                "confirm_required": True,
+                "timeout": 10,
+                "retry": 0,
+                "source": "auto",
+                "_cancel_grace_ms": 15000,
+                "_emit_log_events": True,
+            },
+            title=title,
+        )
 
     def refresh_fit_ap_optical(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_optical")
@@ -1564,13 +1535,22 @@ class AcManagementPage(QWidget):
         if device is None:
             return
         self._set_update_running(True, self.i18n.t("ac.updating_optical"))
-        self.optical_thread = FitApOpticalCollectThread(device, self.site_name, int(self.optical_concurrency_combo.currentData() or 200), self)
-        self.optical_thread.progress.connect(self._set_update_progress)
-        self.optical_thread.collect_finished.connect(self._finish_optical_collect)
-        self.optical_thread.collect_failed.connect(self._fail_optical_collect)
-        self.optical_thread.finished.connect(self.optical_thread.deleteLater)
-        self.optical_thread.finished.connect(lambda: setattr(self, "optical_thread", None))
-        self.optical_thread.start()
+        self.optical_job_id = self._start_background_job(
+            "ac_fit_ap_optical_refresh",
+            {
+                "mode": "collect",
+                "source": "auto",
+                "refresh_scope": "all",
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "concurrency": int(self.optical_concurrency_combo.currentData() or 200),
+                "timeout": 15,
+                "retry": 2,
+                "_cancel_grace_ms": 15000,
+            },
+            title=self.i18n.t("ac.fit_ap_optical"),
+        )
 
     def _finish_resource_collect(self, result) -> None:
         self._set_update_progress(self.i18n.t("ac.refreshing_page"))
@@ -1632,22 +1612,18 @@ class AcManagementPage(QWidget):
         else:
             self.status_label.setText("AC信息更新完成；HTTPS端口未解析，打开网页时将使用默认443")
 
-    def _finish_ac_action(self, result, title: str) -> None:
-        self._set_update_running(False)
-        if result.success:
-            if getattr(result, "action", "") == "persist_auto_ap":
-                self.status_label.setText("一键固化新上线AP完成，已执行 save force")
-                return
-            if getattr(result, "action", "") == "enable_ap_remote_login" and any(
-                item.success and str(item.error_message or "").startswith("warning: read timeout")
-                for item in getattr(result, "command_results", [])
-            ):
-                self.status_label.setText("一键开启AP远程登入完成；设备尾部回显读取超时，已按命令成功处理")
-                return
-            self.status_label.setText(f"{title}执行成功")
+    def _finish_ac_action(self, result: dict[str, object], title: str) -> None:
+        if str(result.get("action") or "") == "persist_auto_ap":
+            self.status_label.setText("一键固化新上线AP完成，已执行 save force")
             return
-        self.status_label.setText(f"{title}执行失败")
-        MessageBox.warning(self, title, result.error_message or "命令执行失败")
+        if str(result.get("action") or "") == "enable_ap_remote_login" and any(
+            bool(item.get("success")) and str(item.get("error_message") or "").startswith("warning: read timeout")
+            for item in result.get("command_results") or []
+            if isinstance(item, dict)
+        ):
+            self.status_label.setText("一键开启AP远程登入完成；设备尾部回显读取超时，已按命令成功处理")
+            return
+        self.status_label.setText(f"{title}执行成功")
 
     def _ensure_h3c_ac_selected(self, device: Device | None) -> bool:
         if device is None:
@@ -1668,19 +1644,6 @@ class AcManagementPage(QWidget):
         self.update_open_web_button()
 
     def _fail_resource_collect(self, message: str) -> None:
-        self._set_update_running(False)
-        self.status_label.setText(self.i18n.t("ac.status.failed"))
-        MessageBox.warning(self, self.i18n.t("ac.title"), message)
-
-    def _finish_optical_collect(self, result) -> None:
-        self._set_update_progress(self.i18n.t("ac.refreshing_page"))
-        self._set_update_running(False)
-        self.status_label.setText(self.i18n.t("ac.status.done" if result.success else "ac.status.failed"))
-        if getattr(result, "error_message", None) == "用户已取消更新":
-            self.status_label.setText(self.i18n.t("ac.update_cancelled"))
-        self.refresh_data()
-
-    def _fail_optical_collect(self, message: str) -> None:
         self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.failed"))
         MessageBox.warning(self, self.i18n.t("ac.title"), message)
@@ -1831,7 +1794,7 @@ class AcManagementPage(QWidget):
         }
         if task_type not in write_tasks:
             for context in self._background_jobs.values():
-                same_mode = task_type != "ac_fit_ap_resources_refresh" or str(context.get("mode") or "load") == str(params.get("mode") or "load")
+                same_mode = task_type not in {"ac_fit_ap_resources_refresh", "ac_fit_ap_optical_refresh"} or str(context.get("mode") or "load") == str(params.get("mode") or "load")
                 if str(context.get("task_type") or "") == task_type and same_mode:
                     self.status_label.setText(f"{title}：后台处理中...")
                     return str(context.get("job_id") or "")
@@ -1942,12 +1905,28 @@ class AcManagementPage(QWidget):
                 self._status_after_resource_refresh = ""
             return
         if task_type == "ac_fit_ap_optical_refresh":
+            is_collect = str(context.get("mode") or "load") == "collect"
+            if is_collect:
+                self.optical_job_id = None
+                self._set_update_running(False)
             if str(result.get("ac_uuid") or "") != self.current_device_uuid():
                 return
             self._set_summary(dict(result.get("summary") or {}) or None)
             self._apply_resource_rows([dict(row) for row in result.get("resources") or [] if isinstance(row, dict)])
             self._apply_optical_rows([dict(row) for row in result.get("optical_rows") or [] if isinstance(row, dict)])
-            self.status_label.setText(f"{title}：完成，共 {len(self.optical_rows)} 条")
+            if is_collect:
+                collection = dict(result.get("collection") or {})
+                updated = int(collection.get("optical_rows_updated") or 0)
+                failed = int(collection.get("failed_aps") or 0)
+                suffix = "（部分成功）" if bool(collection.get("partial_success")) else ""
+                self.status_label.setText(f"FIT-AP光衰更新完成{suffix}：更新 {updated} 条；失败 {failed} 条")
+            else:
+                self.status_label.setText(f"{title}：完成，共 {len(self.optical_rows)} 条")
+            return
+        if task_type == "ac_command_action_execute":
+            self.action_job_id = None
+            self._set_update_running(False)
+            self._finish_ac_action(result, title)
             return
         if task_type == "ac_ap_extensions_refresh":
             rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
@@ -1981,6 +1960,12 @@ class AcManagementPage(QWidget):
         if str(context.get("task_type") or "") == "ac_fit_ap_resources_refresh" and str(context.get("mode") or "load") == "collect":
             self.resource_job_id = None
             self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_fit_ap_optical_refresh" and str(context.get("mode") or "load") == "collect":
+            self.optical_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_command_action_execute":
+            self.action_job_id = None
+            self._set_update_running(False)
         title = str(context.get("title") or "后台任务")
         message = str(event.get("message") or event.get("error") or "后台任务失败")
         if "Unsupported AP metadata template header" in message:
@@ -1993,6 +1978,12 @@ class AcManagementPage(QWidget):
         context = self._background_jobs.pop(job_id, {})
         if str(context.get("task_type") or "") == "ac_fit_ap_resources_refresh" and str(context.get("mode") or "load") == "collect":
             self.resource_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_fit_ap_optical_refresh" and str(context.get("mode") or "load") == "collect":
+            self.optical_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_command_action_execute":
+            self.action_job_id = None
             self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.update_cancelled"))
 
@@ -2479,12 +2470,12 @@ class AcManagementPage(QWidget):
             MessageBox.warning(self, self.i18n.t("trackside.export"), f"导出失败：{exc}")
 
     def _set_trackside_export_running(self, running: bool, message: str = "") -> None:
-        self.update_progress.setVisible(running or self.resource_job_id is not None or self.optical_thread is not None)
+        self.update_progress.setVisible(running or self.resource_job_id is not None or self.optical_job_id is not None)
         if running:
             self.update_progress.setRange(0, 0)
             self.update_progress.setValue(0)
         self.trackside_export_button.setEnabled(not running)
-        self.refresh_button.setEnabled(not running and self.resource_job_id is None and self.optical_thread is None)
+        self.refresh_button.setEnabled(not running and self.resource_job_id is None and self.optical_job_id is None)
         if message:
             self.status_label.setText(message)
 
@@ -2704,7 +2695,7 @@ class AcManagementPage(QWidget):
             menu.addAction(refresh_ap)
             menu.addAction(open_terminal)
             menu.addAction(detail)
-        refresh_ap.setEnabled(row >= 0 and self.optical_thread is None and self.resource_job_id is None)
+        refresh_ap.setEnabled(row >= 0 and self.optical_job_id is None and self.resource_job_id is None)
         open_terminal.setEnabled(row >= 0)
         detail.setEnabled(row >= 0)
         refresh_ap.triggered.connect(lambda: self.refresh_resource_ap_optical(row))
@@ -2778,21 +2769,25 @@ class AcManagementPage(QWidget):
             return
         label = ap_name or ap_mac or ap_uuid
         self._set_update_running(True, self.i18n.t("ap.refreshing_current_optical", ap=label))
-        self.optical_thread = FitApOpticalCollectThread(
-            device,
-            self.site_name,
-            int(self.optical_concurrency_combo.currentData() or 200),
-            self,
-            target_ap_uuids=[ap_uuid] if ap_uuid else None,
-            target_ap_macs=[ap_mac] if ap_mac else None,
-            target_ap_names=[ap_name] if ap_name else None,
+        self.optical_job_id = self._start_background_job(
+            "ac_fit_ap_optical_refresh",
+            {
+                "mode": "collect",
+                "source": "auto",
+                "refresh_scope": "single",
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "concurrency": int(self.optical_concurrency_combo.currentData() or 200),
+                "timeout": 15,
+                "retry": 2,
+                "ap_uuid": ap_uuid,
+                "ap_mac": ap_mac,
+                "ap_name": ap_name,
+                "_cancel_grace_ms": 15000,
+            },
+            title=self.i18n.t("ac.fit_ap_optical"),
         )
-        self.optical_thread.progress.connect(self._set_update_progress)
-        self.optical_thread.collect_finished.connect(self._finish_optical_collect)
-        self.optical_thread.collect_failed.connect(self._fail_optical_collect)
-        self.optical_thread.finished.connect(self.optical_thread.deleteLater)
-        self.optical_thread.finished.connect(lambda: setattr(self, "optical_thread", None))
-        self.optical_thread.start()
 
     def show_optical_context_menu(self, position) -> None:
         index = self.optical_table.indexAt(position)

@@ -169,7 +169,28 @@ submit_export_task(
 - `source=auto` 只选择已验证的数据策略。当前 H3C AP 资源由 CLI 信息最完整，因此默认继续使用 CLI；不得因架构迁移强制改成 SNMP。
 - AC Domain 已提供 `SnmpCollectionService` 策略入口，但只有同时存在明确 OID 和经测试的资源映射器时才允许写入 AC repository；未验证映射必须拒绝执行。
 - CLI 原始回显、命令 JSONL、collect run、parser 和 repository 写入规则保持原状。命令失败转换为 Job error，用户取消转换为唯一 cancelled 终态。
-- 光衰、AP 离线关联、异常规则、轨旁业务和 AC 命令动作不属于本阶段，继续使用现有专用服务。
+- AP 统一模型和轨旁业务不属于本阶段，继续使用现有专用服务。
+
+## AC 光衰刷新 Job
+
+- `ac_fit_ap_optical_refresh` 保持原 task_type；`mode=load` 读取并关联现有光衰，`mode=collect` 在 Worker 内调用 `AcOpticalService`。`refresh_scope=all/single` 分别承载全量和单 AP 刷新，不增加平行 task_type。
+- 页面不再创建 `FitApOpticalCollectThread`，只提交 device/AP 标识、并发、来源和取消宽限期，并在 finished/failed/cancelled 后恢复按钮。
+- `AcOpticalService` 继续调用既有 `collect_h3c_fit_ap_optical`；AP 控制台启用、Telnet 命令、解析、重试、历史合并、raw log 和 repository 写入语义均不改变。
+- AP 在线/离线关联和交换机侧光模块状态在 Domain 层合并。交换机侧无光不直接改写在线 AP 的 AP 侧异常；AP 离线仍按现有状态映射为历史光衰展示。
+- 采集取消转换为唯一 cancelled 终态；全部失败转换为结构化 error；部分失败以 finished 返回 `partial_success/failed_aps`，便于 UI 保留现有结果并提示。
+- 本阶段不修改数据库 schema、AP 统一模型、轨旁 AP 业务、MR/Mesh 或 MIB/SNMP Collection。
+
+## AC 命令动作 Job
+
+- `ac_command_action_execute` 统一承载现有 AC 命令动作，动作由 `action` 参数区分，不为固化 AP、远程登入、保存等动作增加细碎 task_type。
+- 页面保留危险动作确认弹窗，并提交 device/action/command_sequence/confirm_required 等可序列化参数；页面不再创建 `AcCommandActionThread` 或直接执行 CLI。
+- 页面关闭或切换 AC 功能页时请求取消当前命令动作 Job，终态统一恢复按钮，避免遗留命令进程或把取消误报为失败。
+- `AcCommandService` 复用 `H3cAcCommandProfile` 和 `run_h3c_ac_action`。固化新上线 AP 保留 `system-view → wlan auto-ap persistent all → save force → return → quit`；开启 AP 远程登入保留 `screen-length disable → system-view → probe → wlan ap-execute all exec-console enable → return → quit`。
+- 原有命令白名单、逐命令超时、提示符/命令回显处理、尾部 read-timeout 特殊成功判定、连接清理、raw log 和 commands JSONL 均保持不变。
+- `custom_sequence` 只接受与已验证动作完全一致的命令序列，禁止借统一任务开放任意配置命令。
+- 连接、认证、超时、设备命令和保存错误由 Domain 返回结构化错误；handler 转换为标准 error 终态，用户取消转换为唯一 cancelled 终态。
+- Worker stdout 只输出 UTF-8 JSONL。设备普通输出即使被旧执行器 print，也会被 background worker 重定向到诊断通道；结构化 command result 可作为 JSON 字段返回。
+- 本阶段不迁移 AP 统一模型、轨旁业务、光衰规则、MR/Mesh、MIB/SNMP、Online MR 或 Agent。
 
 ## 避免 UI 卡死
 

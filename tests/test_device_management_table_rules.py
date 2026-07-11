@@ -270,7 +270,6 @@ def test_main_table_columns_only_include_core_fields():
         "backup_address",
         "protocols",
         "updated_at",
-        "actions",
     ]
 
 
@@ -428,18 +427,49 @@ def test_row_edit_menu_action_calls_edit_callback():
     edited = []
     table.edit_requested.connect(lambda device_id: edited.append(device_id))
 
-    menu = table.action_menu_for_device(1)
-    menu.actions()[2].trigger()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    menu.actions()[3].trigger()
 
     assert edited == [1]
 
 
+def test_row_duplicate_menu_action_calls_duplicate_callback():
+    table = make_table()
+    duplicated = []
+    table.duplicate_requested.connect(lambda device_id: duplicated.append(device_id))
+
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    menu.actions()[1].trigger()
+
+    assert duplicated == [1]
+
+
 def test_row_action_menu_includes_connection_edit_and_delete():
     table = make_table()
-    menu = table.action_menu_for_device(1)
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
 
-    assert [action.text() for action in menu.actions()] == ["Details", "External Terminal", "Edit", "Delete"]
-    assert table.cellWidget(0, table._column_index("actions")) is None
+    assert [action.text() for action in menu.actions() if not action.isSeparator()] == ["Details", "Duplicate Device", "External Terminal", "Edit", "Delete", "Copy Text"]
+    assert table.contextMenuPolicy() == Qt.CustomContextMenu
+
+
+def test_row_context_menu_keeps_text_copy_actions_in_submenu():
+    table = make_table()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    copy_menu = menu.actions()[-1].menu()
+
+    assert copy_menu is not None
+    assert [action.text() for action in copy_menu.actions()] == [
+        "Copy Current Cell",
+        "Copy Name",
+        "Copy Primary Address",
+        "Copy Backup Address",
+        "Copy System Name",
+        "Copy Station",
+        "Copy Row",
+        "Copy Device Information",
+    ]
+    copy_menu.actions()[1].trigger()
+    assert QApplication.clipboard().text() == "A"
 
 
 def test_row_external_terminal_menu_action_calls_single_device_callback():
@@ -447,8 +477,8 @@ def test_row_external_terminal_menu_action_calls_single_device_callback():
     requested = []
     table.external_terminal_requested.connect(lambda device_id: requested.append(device_id))
 
-    menu = table.action_menu_for_device(1)
-    menu.actions()[1].trigger()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    menu.actions()[2].trigger()
 
     assert requested == [1]
 
@@ -457,7 +487,7 @@ def test_row_action_menu_includes_chinese_detail_text():
     app()
     table = DeviceTable(I18n("zh_CN"))
     table.set_devices([Device(id=1, name="A")])
-    menu = table.action_menu_for_device(1)
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
 
     assert menu.actions()[0].text() == "\u8be6\u60c5"
 
@@ -465,18 +495,13 @@ def test_row_action_menu_includes_chinese_detail_text():
 
 def test_device_table_columns_keep_readable_widths_without_cell_widgets():
     table = make_table()
-    action_column = table._column_index("actions")
 
-    assert table.columnWidth(action_column) == DEVICE_COLUMN_WIDTHS["actions"]
-    assert table.horizontalHeader().sectionResizeMode(action_column) == QHeaderView.Interactive
     assert table.horizontalHeader().stretchLastSection() is False
     assert table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert table.columnWidth(table._column_index("select")) == DEVICE_COLUMN_WIDTHS["select"]
     assert table.columnWidth(table._column_index("name")) == DEVICE_COLUMN_WIDTHS["name"]
     assert table.columnWidth(table._column_index("primary_address")) == DEVICE_COLUMN_WIDTHS["primary_address"]
     assert isinstance(table.itemDelegateForColumn(CHECK_COLUMN), CheckBoxOnlyDelegate)
-    assert table.cellWidget(0, action_column) is None
-    assert table.item(0, action_column).data(Qt.UserRole) == 1
     assert table.verticalHeader().defaultSectionSize() == 36
     assert table.rowHeight(0) == 36
 
@@ -496,7 +521,6 @@ def test_device_table_batches_large_device_rendering():
 
     assert table.rowCount() == len(devices)
     assert table.item(len(devices) - 1, table._column_index("name")).text() == f"Device {len(devices)}"
-    assert table.cellWidget(0, table._column_index("actions")) is None
 
 
 def test_checkbox_click_adds_and_removes_selected_device_id():
@@ -539,6 +563,78 @@ class PageRepository:
 
     def delete(self, device_id):
         self.devices = [device for device in self.devices if device.id != device_id]
+
+
+def test_duplicate_template_clears_identity_and_keeps_device_configuration():
+    source = Device(
+        id=8,
+        device_uuid="120b39cf-bb77-4789-a3a5-76a8630f7c65",
+        name="MR-A",
+        group_id=2,
+        station="车库",
+        primary_address="172.20.28.253",
+        ssh_username="operator",
+        ssh_password="secret",
+        snmp_ro_community="readonly",
+        tunnel1_host="10.1.1.1",
+        remark="现场设备",
+        created_at="2026-07-11T10:00:00",
+        updated_at="2026-07-11T10:01:00",
+    )
+
+    duplicate = DeviceManagementPage._build_device_duplicate_template(source)
+
+    assert duplicate.id is None
+    assert duplicate.device_uuid is None
+    assert duplicate.created_at is None
+    assert duplicate.updated_at is None
+    assert duplicate.name == "MR-A-副本"
+    assert duplicate.group_id == 2
+    assert duplicate.primary_address == "172.20.28.253"
+    assert duplicate.ssh_username == "operator"
+    assert duplicate.ssh_password == "secret"
+    assert duplicate.snmp_ro_community == "readonly"
+    assert duplicate.tunnel1_host == "10.1.1.1"
+    assert duplicate.remark == "现场设备"
+
+
+def test_duplicate_device_opens_add_dialog_with_template_values(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    source = Device(
+        id=1,
+        device_uuid="120b39cf-bb77-4789-a3a5-76a8630f7c65",
+        name="MR-A",
+        group_id=None,
+        station="Depot",
+        primary_address="172.20.28.253",
+        ssh_username="operator",
+        ssh_password="secret",
+        snmp_ro_community="readonly",
+        tunnel1_host="10.1.1.1",
+        remark="现场设备",
+    )
+    page.table.set_devices([source])
+    monkeypatch.setattr(page, "_show_window", lambda _dialog: None)
+
+    page.duplicate_device_by_id(1)
+
+    dialog = page.dialog_registry.get_add_window()
+    assert dialog is not None
+    assert dialog.original is None
+    assert dialog.windowTitle() == "Duplicate Device"
+    duplicate = dialog.device()
+    assert duplicate.id is None
+    assert duplicate.device_uuid is None
+    assert duplicate.name == "MR-A-副本"
+    assert duplicate.station == "Depot"
+    assert duplicate.primary_address == "172.20.28.253"
+    assert duplicate.ssh_username == "operator"
+    assert duplicate.ssh_password == "secret"
+    assert duplicate.snmp_ro_community == "readonly"
+    assert duplicate.tunnel1_host == "10.1.1.1"
+    assert duplicate.remark == "现场设备"
+    dialog.close()
 
 
 def test_batch_delete_button_tracks_selected_device_ids(monkeypatch):

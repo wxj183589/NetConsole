@@ -255,6 +255,7 @@ class DeviceManagementPage(QWidget):
         self.invert_selection_button.clicked.connect(self.invert_selection)
         self.table.selection_changed.connect(self.update_selection_state)
         self.table.detail_requested.connect(self.show_device_detail)
+        self.table.duplicate_requested.connect(self.duplicate_device_by_id)
         self.table.edit_requested.connect(self.edit_device_by_id)
         self.table.delete_requested.connect(self.delete_device_by_id)
         self.table.external_terminal_requested.connect(self.launch_external_terminal_for_device_id)
@@ -766,6 +767,38 @@ class DeviceManagementPage(QWidget):
         dialog.saved.connect(self._update_device_from_dialog)
         dialog.destroyed.connect(lambda _=None, uuid=device_uuid, window=dialog: self.dialog_registry.remove_edit_window(uuid, window))
         self._show_window(dialog)
+
+    def duplicate_device_by_id(self, device_id: int) -> None:
+        source = self._loaded_device(device_id)
+        if source is None:
+            self.refresh()
+            return
+        existing = self.dialog_registry.get_add_window()
+        if isinstance(existing, DeviceDialog):
+            self._activate_window(existing)
+            return
+
+        duplicate = self._build_device_duplicate_template(source)
+        dialog = DeviceDialog(self.i18n, None, groups=self._list_groups())
+        dialog._load(duplicate)
+        dialog.setWindowTitle(self.i18n.t("devices.duplicate"))
+        dialog.title_label.setText(self.i18n.t("devices.duplicate"))
+        self.dialog_registry.set_add_window(dialog)
+        dialog.saved.connect(self._create_device_from_dialog)
+        dialog.destroyed.connect(lambda _=None, window=dialog: self.dialog_registry.remove_add_window(window))
+        self._show_window(dialog)
+
+    @staticmethod
+    def _build_device_duplicate_template(source: Device) -> Device:
+        record = source.to_record()
+        record["id"] = None
+        record["device_uuid"] = None
+        record["created_at"] = None
+        record["updated_at"] = None
+        source_name = str(record.get("name") or "").strip()
+        if source_name:
+            record["name"] = f"{source_name}-副本"
+        return Device.from_mapping(record)
 
     def show_device_detail(self, device_id: int) -> None:
         device = self._loaded_device(device_id)

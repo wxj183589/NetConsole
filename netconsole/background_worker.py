@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.job_center.job_events import progress_event
+from netconsole.services.job_center.job_events import log_event, progress_event
 from netconsole.services.job_center.job_runner import run_job as run_center_job
 from netconsole.services.job_center.worker_protocol import write_event
 
@@ -24,12 +24,16 @@ def _should_cancel(job: BackgroundJob) -> bool:
 
 def run_job(job: BackgroundJob) -> int:
     diagnostics = sys.stderr or getattr(sys, "__stderr__", None) or io.StringIO()
+
+    def emit_progress(stage: str, current: int, total: int, message: str) -> None:
+        _emit(progress_event(job.job_id, stage, current, total, message))
+        if bool(job.params.get("_emit_log_events")) and message:
+            _emit(log_event(job.job_id, message, stage=stage))
+
     with redirect_stdout(diagnostics):
         result = run_center_job(
             job,
-            progress_callback=lambda stage, current, total, message: _emit(
-                progress_event(job.job_id, stage, current, total, message)
-            ),
+            progress_callback=emit_progress,
             should_cancel=lambda: _should_cancel(job),
         )
     _emit(result.to_event())

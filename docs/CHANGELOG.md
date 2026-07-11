@@ -16,6 +16,14 @@
 - SNMP 批量结果以原子 JSON 缓存保存任务摘要和去敏 records，包含 device_id、OID、value、timestamp、success、error，不新增数据库表。
 - 新增 `services/ac` facade，FIT-AP/AP状态/Radio/LLDP 资源刷新复用既有 `ac_fit_ap_resources_refresh` 进入 Job Center；H3C CLI collector、parser、raw log 和 repository 规则保持不变。
 - AC 页面不再为资源刷新创建 `AcResourceCollectThread`；取消、异常和完成改为统一 Job 终态。SNMP Collection 仅在提供明确 OID 与已验证映射器时使用，避免未经验证的数据覆盖 FIT-AP 主数据。
+- 新增 `AcOpticalService`，FIT-AP 全量与单 AP 光衰采集复用 `ac_fit_ap_optical_refresh` 进入 Worker；页面不再创建 `FitApOpticalCollectThread` 或直接调用光衰 collector。
+- 光衰迁移保留 H3C CLI 命令、解析、阈值、重试、历史合并及 repository 规则；AP 离线关联与交换机侧光模块状态在 Domain 层完成，不修改 AP 统一模型、轨旁业务或数据库结构。
+- 新增 `AcCommandService` 与 `ac_command_action_execute`，AC 页面固化新上线 AP、开启 AP 远程登入等现有命令动作改由 Worker Process 执行，不再创建 `AcCommandActionThread`。
+- 命令迁移保留原确认弹窗、H3C command profile、命令白名单、连接/编码、逐命令超时、尾部 read-timeout 特殊成功判定及 raw log；固化 AP 继续执行 `wlan auto-ap persistent all + save force`，远程登入继续执行 `probe + wlan ap-execute all exec-console enable`。
+- 完成 AP 统一模型阶段 0 评估，新增 AP 数据来源、标识/字段矩阵、消费者读写边界、不可破坏业务规则、风险清单和阶段 1～6 迁移路线。
+- 评估确认现有 `ap_entities` 应作为统一 identity 基础，不新增第二张 AP 主表；本阶段未修改生产模型、数据库 schema、Repository 写入、轨旁/光衰/MR/Mesh 规则、页面或导出字段。
+- 完成 AP identity 阶段 1，新增不可变 Identity/Radio/Location/Observation/Candidate/Evidence 模型、严格 MAC/名称/里程规范化、保守 resolver 和六类只读 row adapters。
+- 新工具尚未接入任何生产流程，不写数据库、不访问 UI/Worker/网络，也不承担光衰、轨旁或 MR/Mesh 业务判断；Peer 只命中 AP MAC时保持 unresolved 并记录低置信证据。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。
@@ -23,6 +31,9 @@
 - 新增 SNMP 请求模型兼容、五类操作 handler、Worker JSONL 成功/异常/取消、结果缓存和页面提交/状态恢复测试。
 - 新增 100 设备并发、部分 timeout、重试、停止策略、取消、JSONL、去敏缓存和内部提交接口测试；增加默认跳过的真实设备 GET/WALK/GETBULK smoke 框架。
 - 新增 AC Domain 的 CLI/SNMP 策略、未映射拒绝、Job finished/failed/cancelled、页面 Job 提交和依赖边界测试；AC 既有业务回归保持通过。
+- 新增 AC 光衰批量/单 AP、离线关联、交换机无光不误判、采集失败、部分成功、取消单终态、UI 提交与状态恢复测试。
+- 新增 AC 命令顺序、安全白名单、结构化错误、Job 成功/失败/取消、Worker JSONL 防污染、确认弹窗和 UI 终态恢复测试。
+- 新增 36 个 AP identity characterization tests，覆盖 MAC/名称/UUID/APID 作用域、跨 AC 歧义、显式 Radio/BSSID、Peer observation、位置辅助证据、PIS/信号网络域和只读依赖边界。
 
 ## v1.3.7 - 2026-07-08
 

@@ -19,6 +19,10 @@
 | SNMP 查询执行 | GET / GETNEXT / GETBULK / WALK / SET 统一提交 `snmp_query_execute`，Worker 内创建 Domain Service、Repository 与 Client，并回传进度、结果、异常和取消事件 |
 | SNMP 批量采集 | 多设备、多 OID 的只读采集统一提交 `snmp_collection_execute`；Worker 内按设备并发、独立 Client、部分失败汇总，并写入去敏结果缓存 |
 | AC 资源刷新（第一阶段） | 页面“刷新资源”复用 `ac_fit_ap_resources_refresh` 进入 Worker；`services/ac` facade 统一选择已验证的 H3C CLI 或显式 SNMP 策略，AP/Radio/LLDP parser 和 repository 保持原规则 |
+| AC 光衰刷新（第一阶段） | FIT-AP 全量和单 AP 光衰复用 `ac_fit_ap_optical_refresh` 进入 Worker；`AcOpticalService` 复用既有 H3C collector，并在 Domain 层完成 AP 离线和交换机光模块状态关联 |
+| AC 命令动作（第一阶段） | 固化新上线 AP、开启 AP 远程登入等现有动作统一提交 `ac_command_action_execute`；Worker 内通过 `AcCommandService` 复用既有命令 profile、白名单、连接和 raw log 逻辑 |
+| AP 统一模型评估（阶段 0） | 已完成数据来源、标识/字段矩阵、消费者、不可破坏规则和阶段 1～6 路线评估；本阶段只更新文档，未替换生产模型或修改 schema |
+| AP identity 工具（阶段 1） | 已新增 frozen identity/observation/candidate/evidence 模型、MAC/名称/里程 normalizer、保守 resolver 和只读 adapters；36 个 characterization tests 通过，尚未接入生产流程 |
 | UI helper | 已新增 `ui/job_action_helper.py`，普通任务可复用非模态进度、取消和回调 |
 
 ## 兼容保留
@@ -52,7 +56,7 @@ UI page
 | P0 | `ui/pages/mesh_log_analysis_page.py` | 链路明细导出已迁；仍有导入、派生分析和报告等存量 worker | 所有重任务只提交 Job/ExportJob，页面只消费事件 |
 | 已迁移 | `ui/pages/online_mr_collection_page.py` | SSH 实时采集已改为长运行 Job，解析和报告分别使用 Job / ExportJob；页面只轻量跟踪已落盘日志 | 保留现有 fping/iperf 专用运行时和实时显示策略，不改业务规则；后续仅按明确需求收敛 |
 | 已迁移（第一阶段） | `ui/pages/snmp_center_page.py` | 查询执行链路已迁入 Job Center；页面仅收集参数、提交任务并绑定结构化结果 | MIB 浏览/搜索、全局 MIB 仓库、H3C 映射、Trap 与 Poll 保持原状；后续单独迁移批量采集 |
-| 已迁移（第一阶段） | `ui/pages/ac_management_page.py` | FIT-AP/AP状态/Radio/LLDP 资源采集已改为 Job + AC Domain；AC 信息、命令动作、光衰仍保留原专用 worker | 后续按光衰服务、AP 模型分阶段迁移，不整体重写页面 |
+| 已迁移（第三阶段） | `ui/pages/ac_management_page.py` | FIT-AP 资源、光衰和现有 AC 命令动作均已改为 Job + AC Domain；AC 信息刷新仍保留原专用 worker | AP identity 阶段 1 已完成但未接入；下一步仅评估 FIT-AP/extension 兼容适配，不迁移轨旁业务 |
 | P1 | `ui/pages/network_toolbox_page.py` | 多种外部工具和结果导出 | 工具进程归 Job Center，服务端/客户端状态保持隔离 |
 | P1 | `ui/pages/file_management_page.py` | 导航已后台化，传输有专用 worker | 扫描、传输、批量操作统一任务事件和退出治理 |
 | P2 | `ui/pages/config_collection_center_page.py` | 已使用 BackgroundProcessManager 和 export helper | 采集、diff、快照、导出全部只通过 Job |
@@ -67,7 +71,15 @@ UI page
 ## 后续拆分建议
 
 1. 以页面实际维护需求为触发点，从 `legacy_tasks.py` 逐领域迁出，不做一次性大爆炸重写。
-2. AC 资源刷新第一阶段已完成；下一阶段迁移光衰 Domain Service，保持 AP 离线关联、异常判断和轨旁业务规则不变。
+2. AC 资源、光衰和命令动作 Domain Service 第一阶段已完成；AP 统一模型阶段 0/1 见 [AP_MODEL_ASSESSMENT.md](AP_MODEL_ASSESSMENT.md) 与 [AP_IDENTITY.md](AP_IDENTITY.md)，下一阶段只做 FIT-AP/extension shadow adapter。
 3. 为每个领域增加 handler 注册完整性和业务回归测试。
 4. 逐页替换重复 manager signal 绑定为 `submit_background_job`。
 5. 完成领域迁出后删除 legacy 中已无引用的函数；`services/background_tasks.py` 兼容入口长期保留。
+
+## AP 统一模型迁移边界
+
+- 现有 `ap_entities` 是统一 identity 的基础，不新增第二张 AP 主表。
+- `ap_uuid` 用于站点数据库内已落表对象；跨模块优先规范化 AP MAC；名称和 AC APID 只作带作用域降级匹配。
+- Radio MAC、BSSID/BBSSID、Peer MAC、Peer Radio MAC 保持 radio/观测层语义，不折叠为 AP MAC。
+- 推荐路线固定为：identity 工具（已完成，未接生产）→ AC/extension 适配 → 光衰适配 → 轨旁只读 → MR/Mesh 匹配增强 → 导出去重。
+- 每一阶段先做旧/新 shadow comparison，保持数据库、业务规则、页面字段和导出兼容；不得从 identity 工具直接跳到轨旁业务迁移。

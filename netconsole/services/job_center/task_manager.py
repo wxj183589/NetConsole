@@ -30,6 +30,7 @@ class _RunningBackgroundJob:
 
 class BackgroundProcessManager(QObject):
     progress = Signal(dict)
+    log = Signal(dict)
     finished = Signal(dict)
     failed = Signal(dict)
     cancelled = Signal(dict)
@@ -174,6 +175,7 @@ class BackgroundProcessManager(QObject):
         event_type = str(event.get("type") or "")
         if event_type == "log":
             app_logger.log_info("BACKGROUND_JOB_PROCESS_LOG", str(event.get("message") or ""))
+            self._safe_emit(self.log, event)
             return
         if event_type == "progress":
             self._safe_emit(self.progress, event)

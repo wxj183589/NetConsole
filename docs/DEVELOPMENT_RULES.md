@@ -103,8 +103,14 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - AC Domain 决定 CLI/SNMP 来源。H3C CLI 信息更完整时保留 CLI；只有明确 OID 与已验证 mapper 同时存在时才允许 SNMP 结果写入 AC repository。
 - `display wlan ap all`、address、radio、LLDP 等命令及其 parser 合并规则保持在现有 Adapter/Service/Parser，不复制到页面或通用 SNMP 层。
 - Domain/Worker 内创建 DeviceRepository、AcRepository 和采集 Client；页面不得创建 AC 资源采集 QThread。
+- FIT-AP 全量与单 AP 光衰采集统一复用 `ac_fit_ap_optical_refresh`；页面不得创建光衰 QThread、直接调用 H3C 光模块 collector 或重新判断 AP 离线关联。
+- 光衰命令、解析、阈值、历史合并及 AP 离线关联保持在现有 AC Optical Domain/H3C collector；交换机无光不得直接改写在线 AP 的 AP 侧异常。
 - 光衰异常、AP 离线关联、里程/区间归属、轨旁 AP 业务规则不得下沉到通用 SNMP Collection。
 - FIT-AP 是主应用数据，迁移 facade 和任务入口不得修改 schema 或破坏旧资源、历史和扩展信息兼容。
+- AC 命令动作统一提交 `ac_command_action_execute`，通过 `action` 区分动作；页面不得创建 `AcCommandActionThread`、连接设备或直接运行 CLI。
+- 固化 AP、开启远程登入等危险动作必须在页面提交前保留确认弹窗；Worker 不弹窗，也不得把 `confirm_required` 当作已完成确认的替代品。
+- 固化新上线 AP 必须保留 `wlan auto-ap persistent all + save force`；开启 AP 远程登入必须保留 `probe + wlan ap-execute all exec-console enable`，不得改成 SNMP。
+- 页面提交的 command_sequence 必须由 Domain 与既有 command profile 再校验。自定义序列只能复用已验证固定序列，不开放任意配置命令。
 
 ## Qt 测试生命周期
 
@@ -112,6 +118,21 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - fixture 在 pytest 进程内强引用唯一 `QApplication`，每条用例后先排空当前事件，再关闭顶层窗口并处理 `DeferredDelete`，避免对象累计到 pytest 最终 GC 时触发 native abort。
 - 不得把页面清理 fixture 全局 autouse；带延迟回调、QThread 或 QProcess 的页面必须先确保任务已完成或已取消，再按模块接入。
 - 如果某个 Qt 模块仍无法安全共享 `QApplication`，应使用独立 pytest 子进程隔离该模块，不在业务代码中加入测试专用延迟或异常吞噬。
+
+## AP Identity 边界
+
+- AP identity 迁移以 [AP_MODEL_ASSESSMENT.md](AP_MODEL_ASSESSMENT.md) 为基线；现有 `ap_entities` 是内部统一身份基础，不得再新增平行 AP 主表。
+- `ap_uuid` 只用于已解析的站点数据库对象；跨模块关联优先规范化 AP MAC。序列号、AC+APID 和 AP 名称只能按来源、站点/AC 作用域和唯一性降级匹配。
+- 表内 `id`、AC 原生 `apid/ap_id`、`ap_uuid` 是三种不同语义，接口和测试不得混用。
+- AP MAC 与 Radio MAC/BSSID/BBSSID 分层；Peer MAC 是日志观测值，只有带 source/match rule 的 resolver 结果才能说明其对应 AP 或 Radio。
+- identity 解析必须返回 matched、unresolved 或 ambiguous；多候选不得静默选第一条，失败不得顺手创建 AP 实体。只有 AC 资源 Repository 写入口可以创建新 `ap_uuid`。
+- `site_id` 数据作用域、业务站点 station 和区间 section 分开；section 可以存在而 station 为空。PIS 默认不强制红/蓝网，信号系统按既有规则处理。
+- 轨旁业务同时引用 AP identity 与交换机 device_uuid+interface 拓扑 identity；光衰同时引用 AC、AP、接口和在线状态，任何 identity 工具不得承载或改写业务判定。
+- MR/Mesh、无线扫描、历史查询、页面展示和导出只能读取统一 identity 结果，写入各自的观测/派生数据，不能回写 AP 主身份。
+- 阶段 1 只允许纯 Python identity 工具和 characterization tests，不接生产写流程、不改 schema；后续领域接入必须先做旧/新 shadow comparison 并提供回滚适配器。
+- 阶段 1 工具固定在 `services/ap_identity`，不得导入 PySide6、UI、Repository、Job Center、网络连接或光衰/轨旁业务规则。
+- Radio/BSSID resolver 默认只使用 Candidate 显式映射；复用 H3C 派生规则时必须通过后续具名适配器和 shadow comparison，不能在通用 resolver 中隐式推导。
+- 阶段 2 验收前，生产模块不得导入 `services.ap_identity`；阶段 2 也只能先接 FIT-AP/extension 只读或兼容适配，不得连带迁移光衰、轨旁、MR/Mesh 或导出。
 
 ## 提交前检查
 
