@@ -4,7 +4,7 @@
 
 `netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
-当前阶段只供单元测试和后续适配设计使用，尚未接入 AC、光衰、轨旁、MR/Mesh、无线扫描、Repository、页面、Job Center 或导出流程。
+阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison。它只向既有 preview/commit/refresh/save Job result 附加 `identity_shadow`，不接管 Repository 写入；光衰、轨旁、MR/Mesh、无线扫描、页面和导出仍未接入。
 
 目录结构：
 
@@ -27,7 +27,7 @@ netconsole/services/ap_identity/
 - 光衰异常、在线/离线、轨旁规划或 MR/Mesh 分析规则引擎。
 - “尽量匹配”的模糊绑定器。
 
-本阶段不修改数据库 schema、生产写入语义、页面字段、导出表头或现有业务测试期望。
+阶段 1/2 均不修改数据库 schema、生产写入语义、页面字段、导出表头或现有业务测试期望。
 
 ## 3. 模型定义
 
@@ -151,15 +151,36 @@ AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作�
 - `observation_from_online_mr_sample()`
 - `observation_from_wireless_bssid()`
 
-适配器只复制和转换 Mapping，不导入 Repository、UI、Worker、Netmiko，不访问数据库或网络。当前生产模块尚未调用这些函数。
+适配器只复制和转换 Mapping，不导入 Repository、UI、Worker、Netmiko，不访问数据库或网络。阶段 2 仅由 `services/ac/ac_identity_adapter.py` 调用，并由 AC handler 在既有 Repository 读取完成后传入普通 row。
 
-## 10. 后续接入与回滚
+## 10. 阶段 2 AC shadow comparison
 
-下一阶段只评估 AC FIT-AP 与 AP 扩展信息共用 identity 适配：
+`AcApIdentityAdapter` 提供：
 
-1. 先对旧 helper 与新工具做 shadow comparison。
-2. 比较 matched、unresolved、ambiguous、UUID/MAC/name 变化数量。
-3. 保持 Repository SQL、schema、返回字段和业务规则不变。
-4. 通过具名兼容适配器切换；出现非预期差异时直接回退旧 helper。
+- FIT-AP row → Candidate。
+- 扩展信息 row → Observation。
+- 旧 MAC/name helper baseline 与新 resolver 对比。
+- `matched/unresolved/ambiguous/identity_changed` 汇总。
+- name-only、MAC-like name、缺失 AC 作用域统计。
 
-阶段 2 完成并单独验收前，不接入光衰、轨旁、MR/Mesh、无线扫描或导出。
+`identity_changed` 表示旧/new 匹配状态不同，或双方都 matched 但候选 identity 不同；它只用于诊断，不会改变 commit/save 的旧写入 key。
+
+当前接入点：
+
+- `fit_ap_extension_preview`：保留原 preview 字段并附加 shadow。
+- `fit_ap_extension_commit`：写入前生成 shadow，之后仍调用 `FitApImportExportService.commit_ap_extension_import()`。
+- `ac_ap_extensions_refresh`：保留原 rows 并附加 shadow。
+- `ac_ap_extension_save`：写入前生成 shadow，之后仍调用 legacy save helper。
+
+旧 `legacy_tasks` helper 保持不变，是直接回滚路径。shadow 自身异常时返回 `available=false` 和 warning，不阻断旧流程。
+
+## 11. 后续接入与回滚
+
+下一阶段只允许光衰 Domain Service 读取 identity 适配结果：
+
+1. 先做旧/new AP 关联 shadow comparison。
+2. 保持 AP 在线/离线、交换机无光和阈值规则不变。
+3. 保持 Repository 写入、schema、页面和导出字段不变。
+4. 通过具名兼容适配器切换；出现差异时回退旧 UUID/name/MAC helper。
+
+阶段 3 完成并单独验收前，不接入轨旁、MR/Mesh、无线扫描或导出。

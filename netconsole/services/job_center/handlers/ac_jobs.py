@@ -8,6 +8,8 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.ac import (
+    AcApIdentityAdapter,
+    AcApIdentityShadowReport,
     AcCommandCancelled,
     AcCommandRequest,
     AcCommandService,
@@ -24,6 +26,7 @@ from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.snmp.snmp_collection_service import SnmpCollectionService
 from netconsole.services.snmp_query_service import SnmpQueryService
+from netconsole.services.fit_ap_import_export import FitApImportExportService
 
 
 def _string_list(value: object, fallback: object = None) -> list[str]:
@@ -35,10 +38,7 @@ def _string_list(value: object, fallback: object = None) -> list[str]:
 
 
 fit_ap_metadata_import = legacy_handler(legacy_tasks._fit_ap_metadata_import)
-fit_ap_extension_preview = legacy_handler(legacy_tasks._fit_ap_extension_preview)
-fit_ap_extension_commit = legacy_handler(legacy_tasks._fit_ap_extension_commit)
 ac_overview_refresh = legacy_handler(legacy_tasks._ac_overview_refresh)
-ac_ap_extensions_refresh = legacy_handler(legacy_tasks._ac_ap_extensions_refresh)
 omnipeek_name_table_preview = legacy_handler(legacy_tasks._omnipeek_name_table_preview)
 ac_overview_history_snapshot = legacy_handler(legacy_tasks._ac_overview_history_snapshot)
 ac_station_online_history_page = legacy_handler(legacy_tasks._ac_station_online_history_page)
@@ -46,10 +46,94 @@ ac_ap_history_page = legacy_handler(legacy_tasks._ac_ap_history_page)
 ac_trackside_business_refresh = legacy_handler(legacy_tasks._ac_trackside_business_refresh)
 ac_devices_refresh = legacy_handler(legacy_tasks._ac_devices_refresh)
 ac_fit_ap_delete_many = legacy_handler(legacy_tasks._ac_fit_ap_delete_many)
-ac_ap_extension_save = legacy_handler(legacy_tasks._ac_ap_extension_save)
 ac_ap_extension_delete = legacy_handler(legacy_tasks._ac_ap_extension_delete)
 ac_ap_extension_clear = legacy_handler(legacy_tasks._ac_ap_extension_clear)
 ac_station_overview_value_save = legacy_handler(legacy_tasks._ac_station_overview_value_save)
+
+
+def fit_ap_extension_preview(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    service = FitApImportExportService(repository)
+    context.progress("fit_ap_extension_preview", 0, 1, "正在解析 AP 扩展信息预览")
+    preview = service.preview_ap_extension_import(
+        Path(str(params.get("path") or "")),
+        str(params.get("import_mode") or "standard_template"),
+    )
+    context.check_cancelled()
+    result: dict[str, object] = {
+        "file_name": preview.file_name,
+        "template_type": preview.template_type,
+        "confidence_score": preview.confidence_score,
+        "sheet_count": len(preview.sheets),
+        "summary": dict(preview.summary),
+        "low_confidence": bool(preview.low_confidence),
+        "identity_shadow": _identity_shadow_payload(repository, preview.standard_rows, params),
+    }
+    context.progress("fit_ap_extension_preview", 1, 1, "AP 扩展信息预览完成")
+    return result
+
+
+def fit_ap_extension_commit(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    service = FitApImportExportService(repository)
+    context.progress("fit_ap_extension_commit", 0, 2, "正在解析 AP 扩展信息")
+    preview = service.preview_ap_extension_import(
+        Path(str(params.get("path") or "")),
+        str(params.get("import_mode") or "standard_template"),
+    )
+    identity_shadow = _identity_shadow_payload(repository, preview.standard_rows, params)
+    context.progress("fit_ap_extension_commit", 1, 2, "正在写入 AP 扩展信息")
+    context.check_cancelled()
+    result = dict(
+        service.commit_ap_extension_import(
+            preview,
+            duplicate_strategy=str(params.get("duplicate_strategy") or "update_by_priority"),
+        )
+    )
+    result["identity_shadow"] = identity_shadow
+    context.progress("fit_ap_extension_commit", 2, 2, "AP 扩展信息导入完成")
+    return result
+
+
+def ac_ap_extensions_refresh(context: JobContext) -> dict[str, object]:
+    result = legacy_tasks._ac_ap_extensions_refresh(context.params, context.progress_callback, context.should_cancel)
+    rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+    repository = AcRepository(Database(Path(str(context.params.get("db_path") or ""))))
+    return {**result, "identity_shadow": _identity_shadow_payload(repository, rows, context.params)}
+
+
+def ac_ap_extension_save(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    row = dict(context.params.get("row") or {})
+    repository = AcRepository(Database(Path(str(context.params.get("db_path") or ""))))
+    identity_shadow = _identity_shadow_payload(repository, [row], context.params)
+    result = legacy_tasks._ac_ap_extension_save(context.params, context.progress_callback, context.should_cancel)
+    return {**result, "identity_shadow": identity_shadow}
+
+
+def _identity_shadow_payload(
+    repository: AcRepository,
+    extension_rows: list[dict[str, object | None]],
+    params: dict[str, object],
+) -> dict[str, object]:
+    try:
+        ac_uuid = str(params.get("ac_uuid") or params.get("device_uuid") or "").strip()
+        fit_ap_rows = (
+            repository.list_fit_ap_resources_with_metadata(ac_uuid)
+            if ac_uuid
+            else repository.list_all_fit_ap_resources_with_metadata()
+        )
+        return AcApIdentityAdapter().shadow_compare_extension_match(extension_rows, fit_ap_rows).to_payload()
+    except Exception as exc:
+        return AcApIdentityShadowReport(
+            total=len(extension_rows),
+            available=False,
+            warnings=(f"identity shadow 不可用：{type(exc).__name__}: {exc}",),
+        ).to_payload()
 
 
 def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:

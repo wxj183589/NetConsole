@@ -133,6 +133,10 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 阶段 1 工具固定在 `services/ap_identity`，不得导入 PySide6、UI、Repository、Job Center、网络连接或光衰/轨旁业务规则。
 - Radio/BSSID resolver 默认只使用 Candidate 显式映射；复用 H3C 派生规则时必须通过后续具名适配器和 shadow comparison，不能在通用 resolver 中隐式推导。
 - 阶段 2 验收前，生产模块不得导入 `services.ap_identity`；阶段 2 也只能先接 FIT-AP/extension 只读或兼容适配，不得连带迁移光衰、轨旁、MR/Mesh 或导出。
+- 阶段 2 统一通过 `services/ac/ac_identity_adapter.py` 接入，adapter 只接收普通 row，不导入 Repository/UI/Worker，不写数据库。
+- AP 扩展 preview/commit/refresh/save 的 `identity_shadow` 仅是诊断附加字段；commit/save 必须继续使用旧 service/legacy 写入路径，shadow unavailable、unresolved 或 ambiguous 都不得阻断原流程。
+- `identity_changed` 只表示 old/new 状态或候选差异，不授权新 resolver 覆盖旧 key；旧 helper 必须保留为回滚路径。
+- 阶段 3 只能在光衰 Domain 内增加 identity shadow，不得改变光衰阈值、AP 离线关联、交换机无光规则、Repository 写入或页面字段。
 
 ## 提交前检查
 
