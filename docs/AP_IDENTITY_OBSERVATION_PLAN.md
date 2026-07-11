@@ -273,4 +273,4 @@ AP identity 阶段 2～6.1 已在 AC 扩展信息、AC 光衰、轨旁 AP、MR/M
 单独立项、重新评审、用户明确批准
 ```
 
-阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。评估定义了聚合允许列表、禁止字段、默认关闭、不可用状态和阶段 8.1 最小设计；尚未执行真实局点采样，也未实现 UI、feature flag 或报告。后续仍不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。
+阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。阶段 8.1 已实现默认关闭的纯 Python 聚合 ViewModel 和逻辑开关，但尚未执行真实局点采样，也未接入 Qt 宿主、报告或持久化。后续可见展示仍须通过本方案准入；不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。

@@ -50,6 +50,8 @@
 - 阶段7规定MAC/IP/名称/路径使用campaign HMAC或token，完整result/items/evidence/raw log/SQLite/xlsx不得提交；阈值只作评估门槛。本阶段未新增脚本、sidecar、UI或生产业务改动。
 - 完成AP identity阶段8只读展示方案评估，核对六类shadow/diagnostics真实结构，定义安全聚合允许列表、禁止字段、UI/报告候选、默认关闭、全局kill switch、不可用状态和权限边界。
 - 阶段8确认当前没有独立Job Center任务详情或通用诊断中心；阶段8.1必须等待真实局点观测准入并只选一个维护宿主。本阶段未实现UI、feature flag、报告、数据库、sidecar或生产逻辑。
+- 完成AP identity阶段8.1最小实现，新增默认关闭的纯Python `DiagnosticsSummaryViewModel`；只读取三类既有result metadata的允许列表聚合，过滤明细、身份、路径和未知字段，并将异常安全降级。
+- 当前没有统一Job详情宿主，因此未新增Qt组件、页面入口或持久化；风险等级只提供只读建议，不改变Job/Export终态、resolver、数据库、导出文件或业务规则。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。
@@ -64,6 +66,7 @@
 - 新增 AC 光衰 identity shadow 测试，覆盖 AP/交换机/离线记录、跨 AC 歧义、name-only、H3C MAC、Radio/BSSID/Peer 边界、Job load/collect/single 兼容、失败隔离和回滚路径。
 - 新增轨旁 identity shadow 测试，覆盖 UUID/MAC/name、跨 AC 歧义、interface/location/LLDP/Radio/BSSID保护、主 snapshot/兼容 Job、详情 fallback、失败隔离和输入不变。
 - 新增MR/Mesh identity shadow测试，覆盖Peer MAC低置信边界、显式Radio/BSSID、duplicate MAC诊断、old/new变化、section-only、Vehicle name-only、三个Job兼容和失败隔离。
+- 新增Diagnostics Summary ViewModel测试，覆盖默认关闭、三类来源、export别名、白名单过滤、samples禁用、安全状态、风险建议和异常不影响业务结果。
 
 ## v1.3.7 - 2026-07-08
 

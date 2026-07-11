@@ -14,7 +14,7 @@
 8. [MR/Mesh AP Identity Resolver Shadow 评估](MR_MESH_AP_IDENTITY_ASSESSMENT.md)
 9. [导出字段去重评估与阶段 6.1 只读诊断](EXPORT_FIELD_DEDUP_ASSESSMENT.md)
 10. [AP Identity 真实局点只读观测方案](AP_IDENTITY_OBSERVATION_PLAN.md)
-11. [AP Identity 只读展示方案评估](AP_IDENTITY_DISPLAY_ASSESSMENT.md)
+11. [AP Identity 只读展示方案与阶段 8.1 ViewModel](AP_IDENTITY_DISPLAY_ASSESSMENT.md)
 12. [开发约定](DEVELOPMENT_CONVENTIONS.md)
 13. [UI 线程全局规范](ui_thread_policy.md)
 14. [存量例外与新增代码约束](ui_governance_guardrails.md)

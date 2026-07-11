@@ -410,3 +410,15 @@ tests/test_ap_identity_diagnostics_display.py
 - 不得为补齐展示指标修改 parser、Repository SQL、报告 SQL、业务页面字段或采集命令。
 
 阶段 8 的结论是：展示方案可继续细化，但可见阶段 8.1 必须以真实局点观测达标、单一宿主明确、默认关闭和严格允许列表为准入条件。
+
+## 15. 阶段 8.1 当前实现
+
+阶段 8.1 已新增纯 Python `netconsole.ui.diagnostics.DiagnosticsSummaryViewModel`，只从普通 Job/Export result mapping 中读取 `identity_shadow`、`detail_identity_shadow` 或 `export_identity_diagnostics`。实现边界如下：
+
+- 全局开关 `ap_identity_diagnostics_enabled` 与 UI 开关 `ap_identity_diagnostics_ui_enabled` 必须同时显式为真；缺失或关闭时状态固定为 `disabled`，默认不展示。
+- `ap_identity_diagnostics_samples_enabled` 仅保留后续策略名称；当前即使显式开启也不读取或暴露 `items/samples/evidence/warnings/error`。
+- ViewModel 只复制本文允许的聚合计数，并归一化有限的 export 字段别名；未知字段与 MAC、IP、名称、候选、路径等定位信息不进入模型。
+- 风险等级仅生成只读建议和 `blocks_takeover` 提示，不修改输入 mapping，不改变 Job/Export 终态，也不触发 resolver、Repository、文件或网络操作。
+- 异常、字段不足、schema 不支持和诊断不可用均降级为安全状态，不向调用方抛出诊断异常。
+
+当前仓库仍没有统一 Job 详情或通用诊断中心，因此阶段 8.1 **未接入真实 Qt 宿主**，也未新增 widget/dialog、页面入口或集中任务持久化。可见 UI 接线延后到阶段 8.2，并继续受真实局点准入、单宿主批准和默认关闭约束。

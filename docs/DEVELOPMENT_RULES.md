@@ -161,6 +161,8 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 阶段8只读展示评估以 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md) 为准。展示层必须先经过严格字段允许列表，未知字段丢弃，`items/samples/evidence/warnings/error`和明文身份/路径不得进入ViewModel、UI、日志或默认报告。
 - 阶段8.1可见展示必须等待真实局点试运行、脱敏复核和单一宿主批准；所有flag默认关闭且internal-only。当前没有独立Job Center详情或通用诊断中心，不得为了展示同时修改多个业务页面、增加任务持久化或直接绑定原始result。
 - diagnostics disabled/unavailable/failed只影响诊断区域，不得改变原Job/Export终态、成功提示或旧业务结果；全局kill switch关闭展示时不得停止生产任务或删除业务数据。
+- 阶段8.1统一使用`ui/diagnostics/diagnostics_summary_view_model.py`消费普通mapping；该模块不得导入PySide6、业务Service、Repository、parser、网络、数据库或文件IO，不得保留原始result引用。
+- 阶段8.1的全局/UI逻辑开关缺失时视为关闭；samples开关即使为真也不得暴露明细。当前无统一Job详情宿主，禁止在多个业务页面临时接线；阶段8.2必须另行批准单一宿主。
 
 ## 提交前检查
 
