@@ -26,6 +26,9 @@
 - 新工具尚未接入任何生产流程，不写数据库、不访问 UI/Worker/网络，也不承担光衰、轨旁或 MR/Mesh 业务判断；Peer 只命中 AP MAC时保持 unresolved 并记录低置信证据。
 - 完成 AP identity 阶段 2，新增 AC FIT-AP/扩展信息 shadow adapter 与结构化报告；统计 matched、unresolved、ambiguous、identity_changed、name-only、MAC-like name 和缺失 AC 作用域。
 - `fit_ap_extension_preview/commit`、`ac_ap_extensions_refresh/save` 只附加 `identity_shadow`；旧 preview/result 字段、commit/save service、legacy helper、Repository SQL、schema、UI 和导出保持不变。
+- 完成 AP identity 阶段 3，新增 AC 光衰只读 identity adapter；区分 AP 侧、交换机侧、合并和离线记录，统计 matched、unresolved、ambiguous、identity_changed、interface-only 和缺失 AC 作用域。
+- `ac_fit_ap_optical_refresh` 的 load/collect、all/single 只附加 `identity_shadow`；仅交换机接口、Radio/BSSID 和 Peer MAC 不会被当作 AP identity，shadow 失败不改变原光衰任务结果。
+- 原 AP 在线/离线、交换机无光、阈值、H3C 采集/解析、历史合并、Repository SQL、schema、UI 和导出字段保持不变。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。
@@ -37,6 +40,7 @@
 - 新增 AC 命令顺序、安全白名单、结构化错误、Job 成功/失败/取消、Worker JSONL 防污染、确认弹窗和 UI 终态恢复测试。
 - 新增 36 个 AP identity characterization tests，覆盖 MAC/名称/UUID/APID 作用域、跨 AC 歧义、显式 Radio/BSSID、Peer observation、位置辅助证据、PIS/信号网络域和只读依赖边界。
 - 新增 15 个 AC identity adapter/Job 兼容测试，覆盖 old/new 一致、unresolved、ambiguous、候选变化、作用域、Radio/BSSID 保护、shadow 失败不阻断及旧写入路径保留。
+- 新增 AC 光衰 identity shadow 测试，覆盖 AP/交换机/离线记录、跨 AC 歧义、name-only、H3C MAC、Radio/BSSID/Peer 边界、Job load/collect/single 兼容、失败隔离和回滚路径。
 
 ## v1.3.7 - 2026-07-08
 

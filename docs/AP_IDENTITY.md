@@ -4,7 +4,7 @@
 
 `netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
-阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison。它只向既有 preview/commit/refresh/save Job result 附加 `identity_shadow`，不接管 Repository 写入；光衰、轨旁、MR/Mesh、无线扫描、页面和导出仍未接入。
+阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`。两阶段都不接管 Repository 写入或业务判断；轨旁、MR/Mesh、无线扫描、页面和导出仍未接入。
 
 目录结构：
 
@@ -174,13 +174,18 @@ AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作�
 
 旧 `legacy_tasks` helper 保持不变，是直接回滚路径。shadow 自身异常时返回 `available=false` 和 warning，不阻断旧流程。
 
-## 11. 后续接入与回滚
+## 11. 阶段 3 光衰 identity shadow
 
-下一阶段只允许光衰 Domain Service 读取 identity 适配结果：
+`AcOpticalIdentityAdapter` 只接收光衰 row 和 FIT-AP row，并区分 `ap_side/switch_side/merged/offline`：
 
-1. 先做旧/new AP 关联 shadow comparison。
-2. 保持 AP 在线/离线、交换机无光和阈值规则不变。
-3. 保持 Repository 写入、schema、页面和导出字段不变。
-4. 通过具名兼容适配器切换；出现差异时回退旧 UUID/name/MAC helper。
+- AP 侧和已有旧 AP 绑定的记录可与 resolver 候选对比。
+- 仅有交换机接口的记录固定 unresolved；交换机接口不是 AP identity。
+- Radio MAC、BSSID/BBSSID 和 Peer MAC 只生成语义风险 warning，不进入光衰 AP 匹配。
+- AC/FIT-AP 常见 `xxxx-xxxx-xxxx` MAC 只在本适配器边界转换后交给通用 resolver，不改通用模型或持久化值。
+- report 统计 matched、unresolved、ambiguous、identity unchanged/changed、记录类型、interface-only、name-only、MAC-like name 和缺失 AC 作用域。
 
-阶段 3 完成并单独验收前，不接入轨旁、MR/Mesh、无线扫描或导出。
+`ac_fit_ap_optical_refresh` 的 load/collect、all/single 都保留原 result 字段，只新增 `identity_shadow`。shadow 异常返回 `available=false`，不改变 finished/failed；删除该附加字段即可回退。原 `AcOpticalService` 的 UUID/name 关联、AP 在线/离线、交换机无光、阈值、历史合并和 Repository 写入仍是生产路径。
+
+## 12. 后续接入与回滚
+
+下一阶段只做轨旁业务只读接入评估，不直接替换轨旁 lookup、缓存、双击定位或业务规则。MR/Mesh、无线扫描和导出继续保持未接入。

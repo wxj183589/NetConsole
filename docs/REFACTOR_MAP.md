@@ -24,6 +24,7 @@
 | AP 统一模型评估（阶段 0） | 已完成数据来源、标识/字段矩阵、消费者、不可破坏规则和阶段 1～6 路线评估；本阶段只更新文档，未替换生产模型或修改 schema |
 | AP identity 工具（阶段 1） | 已新增 frozen identity/observation/candidate/evidence 模型、MAC/名称/里程 normalizer、保守 resolver 和只读 adapters；36 个 characterization tests 通过，尚未接入生产流程 |
 | AC AP identity 适配（阶段 2） | FIT-AP 资源与 AP 扩展 preview/commit/refresh/save 已增加 old/new shadow comparison；只附加诊断字段，旧 helper、Repository 写入、schema、UI 和导出保持不变 |
+| AC 光衰 identity shadow（阶段 3） | `ac_fit_ap_optical_refresh` 的 load/collect、all/single 已附加 AP 关联诊断；仅接口记录不解析 AP，旧光衰关联、离线/无光/阈值规则和写入保持不变 |
 | UI helper | 已新增 `ui/job_action_helper.py`，普通任务可复用非模态进度、取消和回调 |
 
 ## 兼容保留
@@ -57,7 +58,7 @@ UI page
 | P0 | `ui/pages/mesh_log_analysis_page.py` | 链路明细导出已迁；仍有导入、派生分析和报告等存量 worker | 所有重任务只提交 Job/ExportJob，页面只消费事件 |
 | 已迁移 | `ui/pages/online_mr_collection_page.py` | SSH 实时采集已改为长运行 Job，解析和报告分别使用 Job / ExportJob；页面只轻量跟踪已落盘日志 | 保留现有 fping/iperf 专用运行时和实时显示策略，不改业务规则；后续仅按明确需求收敛 |
 | 已迁移（第一阶段） | `ui/pages/snmp_center_page.py` | 查询执行链路已迁入 Job Center；页面仅收集参数、提交任务并绑定结构化结果 | MIB 浏览/搜索、全局 MIB 仓库、H3C 映射、Trap 与 Poll 保持原状；后续单独迁移批量采集 |
-| 已迁移（第三阶段） | `ui/pages/ac_management_page.py` | FIT-AP 资源、光衰和现有 AC 命令动作均已改为 Job + AC Domain；扩展 identity 阶段 2 仅在 Job result 附加 shadow，页面流程未改 | 下一步只评估光衰 identity shadow，不迁移轨旁业务 |
+| 已迁移（第三阶段） | `ui/pages/ac_management_page.py` | FIT-AP 资源、光衰和现有 AC 命令动作均已改为 Job + AC Domain；identity 阶段 2/3 仅在 Job result 附加 shadow，页面流程未改 | 下一步只做轨旁业务只读接入评估，不直接迁移轨旁业务 |
 | P1 | `ui/pages/network_toolbox_page.py` | 多种外部工具和结果导出 | 工具进程归 Job Center，服务端/客户端状态保持隔离 |
 | P1 | `ui/pages/file_management_page.py` | 导航已后台化，传输有专用 worker | 扫描、传输、批量操作统一任务事件和退出治理 |
 | P2 | `ui/pages/config_collection_center_page.py` | 已使用 BackgroundProcessManager 和 export helper | 采集、diff、快照、导出全部只通过 Job |
@@ -72,7 +73,7 @@ UI page
 ## 后续拆分建议
 
 1. 以页面实际维护需求为触发点，从 `legacy_tasks.py` 逐领域迁出，不做一次性大爆炸重写。
-2. AC 资源、光衰和命令动作 Domain Service 第一阶段已完成；AP identity 阶段 0～2 见 [AP_MODEL_ASSESSMENT.md](AP_MODEL_ASSESSMENT.md) 与 [AP_IDENTITY.md](AP_IDENTITY.md)，下一阶段只做光衰关联 shadow adapter。
+2. AC 资源、光衰和命令动作 Domain Service 第一阶段已完成；AP identity 阶段 0～3 见 [AP_MODEL_ASSESSMENT.md](AP_MODEL_ASSESSMENT.md) 与 [AP_IDENTITY.md](AP_IDENTITY.md)，下一阶段只评估轨旁只读接入。
 3. 为每个领域增加 handler 注册完整性和业务回归测试。
 4. 逐页替换重复 manager signal 绑定为 `submit_background_job`。
 5. 完成领域迁出后删除 legacy 中已无引用的函数；`services/background_tasks.py` 兼容入口长期保留。
@@ -82,5 +83,5 @@ UI page
 - 现有 `ap_entities` 是统一 identity 的基础，不新增第二张 AP 主表。
 - `ap_uuid` 用于站点数据库内已落表对象；跨模块优先规范化 AP MAC；名称和 AC APID 只作带作用域降级匹配。
 - Radio MAC、BSSID/BBSSID、Peer MAC、Peer Radio MAC 保持 radio/观测层语义，不折叠为 AP MAC。
-- 推荐路线固定为：identity 工具（已完成）→ AC/extension shadow（已完成）→ 光衰适配 → 轨旁只读 → MR/Mesh 匹配增强 → 导出去重。
+- 推荐路线固定为：identity 工具（已完成）→ AC/extension shadow（已完成）→ 光衰 shadow（已完成）→ 轨旁只读评估 → MR/Mesh 匹配增强 → 导出去重。
 - 每一阶段先做旧/新 shadow comparison，保持数据库、业务规则、页面字段和导出兼容；不得从 identity 工具直接跳到轨旁业务迁移。

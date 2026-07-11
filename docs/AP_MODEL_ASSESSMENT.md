@@ -308,7 +308,7 @@ CanonicalApProfile
 | 0：评估 | 本文、迁移地图和开发规则 | 遗漏消费者 | 静态搜索、UTF-8、Markdown、diff 检查 | 否 | 删除本轮文档增量 |
 | 1：统一 identity 工具（已完成） | 新增纯 Python normalizer、identity key、resolution result；未接入写流程 | 优先级写成全局规则、错误折叠 Radio | 36 个 characterization tests 覆盖格式化、歧义、跨 AC、Radio/BSSID、Peer 和空值 | 否 | 移除工具；生产链路尚未依赖 |
 | 2：AC FIT-AP + extension 适配（已完成） | AC adapter 读取资源/扩展 row，preview/commit/refresh/save 附加 shadow；Repository SQL、写入 key 和原字段保持不变 | UUID 漂移、扩展误绑定、重名覆盖 | 旧/新 shadow compare；15 个 adapter/Job 兼容测试 | 否 | 删除 handler 附加字段并切回保留的 legacy helper |
-| 3：光衰适配 | 光衰 service 只通过 identity adapter 解析 AP | 离线/光衰规则被误改、孤立 UUID | 批量/单 AP、离线关联、无光不误判、历史快照对比 | 否 | 保留旧 UUID/name fallback 并切回 |
+| 3：光衰 identity shadow（已完成） | 光衰 Job result 附加 old/new AP 关联诊断；旧 service 仍决定最终结果 | 离线/光衰规则被误改、接口被误当 AP | 批量/单 AP、离线关联、无光不误判、作用域、接口/Radio/Peer 边界与 Job 兼容测试 | 否 | 删除 `identity_shadow`；原 UUID/name fallback 始终保留 |
 | 4：轨旁只读接入 | 轨旁业务读取统一 identity/profile，保留 switch-interface 拓扑键与现有缓存 | AP/端口误关联、站点/区间丢失 | 全量轨旁 golden rows、双击定位、离线台账、光衰状态、里程方向回归 | 否 | feature flag/adapter 切回原 lookup |
 | 5：MR/Mesh 匹配增强 | resolver 返回 canonical identity、radio identity 和证据；不改分析判定 | 解析结果变化导致切换/乒乓结论漂移 | 同一日志旧/新结果 shadow compare；source_file 隔离；双 Radio 和多候选样例 | 默认否；如需持久化新字段，另立 additive migration | 关闭新 resolver，继续使用旧映射缓存/字段 |
 | 6：导出命名与去重 | 统一展示别名；Peer/Peer Radio 相同只展示一次；保持兼容表头策略 | 下游模板依赖、列含义变化 | Golden XLSX/CSV、WPS/Excel 打开、表头和行值对比 | 否 | 使用旧 formatter/兼容导出模板 |
@@ -342,7 +342,7 @@ CanonicalApProfile
 9. 导出：表头兼容、重复 MAC 展示抑制、原始证据仍可追溯。
 10. 每次接入都执行旧/新 resolver shadow compare，并记录 unmatched、ambiguous、identity-changed 数量；任何非预期变化阻止迁移。
 
-## 15. 阶段 1/2 完成状态与阶段 3 准入
+## 15. 阶段 1～3 完成状态与阶段 4 准入
 
 阶段 1 已完成并满足：
 
@@ -354,4 +354,6 @@ CanonicalApProfile
 
 阶段 2 已完成：AC adapter 对 FIT-AP Candidate 与扩展 Observation 执行 old/new shadow comparison；preview/commit/refresh/save 只新增 `identity_shadow`，旧 helper、Repository SQL、写入 key、原 result 字段和 UI 流程保持不变。
 
-可以评估阶段 3，但只允许光衰 Domain Service 读取 identity 适配结果并做 shadow comparison。不得修改离线关联、无光判断、阈值、历史写入或页面字段，也不得跳到轨旁迁移。具体规则见 [AP_IDENTITY.md](AP_IDENTITY.md)。
+阶段 3 已完成：`AcOpticalIdentityAdapter` 区分 AP 侧、交换机侧、合并和离线记录；仅有交换机接口时不解析 AP，Radio/BSSID/Peer 不参与光衰 AP 匹配。`ac_fit_ap_optical_refresh` 的 load/collect、all/single 只附加可失败隔离的 `identity_shadow`，原离线关联、无光判断、阈值、历史写入、页面字段和任务终态保持不变。
+
+可以进入阶段 4 评估，但只能梳理轨旁业务的只读接入点、拓扑 identity 和回归基线，不直接迁移或替换轨旁业务。

@@ -14,6 +14,8 @@ from netconsole.services.ac import (
     AcCommandRequest,
     AcCommandService,
     AcOpticalRefreshCancelled,
+    AcOpticalIdentityAdapter,
+    AcOpticalIdentityShadowReport,
     AcOpticalRefreshRequest,
     AcOpticalService,
     AcResourceRefreshRequest,
@@ -202,11 +204,12 @@ def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
     )
     ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
     if str(params.get("mode") or "load").lower() != "collect":
-        return service.load_optical_snapshot(
+        payload = service.load_optical_snapshot(
             ac_uuid,
             progress_callback=context.progress,
             should_cancel=context.should_cancel,
         ).to_payload()
+        return _append_optical_identity_shadow(payload, ac_uuid)
 
     refresh_scope = str(params.get("refresh_scope") or "all").lower()
     request = AcOpticalRefreshRequest(
@@ -238,7 +241,27 @@ def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
         raise BackgroundTaskCancelled(str(exc)) from exc
     if not result.success:
         raise RuntimeError(result.error_message or "FIT-AP 光衰更新失败")
-    return result.to_payload()
+    return _append_optical_identity_shadow(result.to_payload(), ac_uuid)
+
+
+def _append_optical_identity_shadow(payload: dict[str, object], ac_uuid: str) -> dict[str, object]:
+    result = dict(payload)
+    optical_rows = [dict(row) for row in payload.get("optical_rows") or [] if isinstance(row, dict)]
+    fit_ap_rows = [dict(row) for row in payload.get("resources") or [] if isinstance(row, dict)]
+    try:
+        shadow = AcOpticalIdentityAdapter().shadow_compare_optical_binding(
+            optical_rows,
+            fit_ap_rows,
+            ac_uuid=ac_uuid or None,
+        )
+    except Exception as exc:
+        shadow = AcOpticalIdentityShadowReport(
+            total=len(optical_rows),
+            available=False,
+            warnings=(f"optical identity shadow 不可用：{type(exc).__name__}: {exc}",),
+        )
+    result["identity_shadow"] = shadow.to_payload()
+    return result
 
 
 def ac_command_action_execute(context: JobContext) -> dict[str, object]:
