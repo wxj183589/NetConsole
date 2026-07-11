@@ -2,9 +2,9 @@
 
 ## 1. 背景
 
-本评估对应 AP identity 阶段 5，只梳理 MR/Mesh、Online MR 和 Vehicle MR 当前如何表达、匹配和导出 AP/Peer/Radio 信息，并设计阶段 5.1 的只读 shadow 接入点。
+本评估对应 AP identity 阶段 5，并记录阶段 5.1 的第一批只读 shadow 接入。阶段 5 梳理 MR/Mesh、Online MR 和 Vehicle MR 当前如何表达、匹配和导出 AP/Peer/Radio 信息；阶段 5.1 只在三个旧 Job result 后附加诊断。
 
-本阶段没有修改生产 Python、解析规则、Repository SQL、数据库 schema、页面字段或导出字段。现有 raw log、主链路/备份链路、短时建链、乒乓、RSSI 和繁忙度规则仍是唯一生产结果。
+阶段 5.1 新增纯 Python `services/mr_mesh_identity_shadow.py`，并在 `mesh_log_import`、`online_mr_parse`、`vehicle_mr_mapping_load` 的旧结果完成后附加 `identity_shadow`。解析规则、Repository SQL、数据库 schema、页面字段或导出字段没有修改；现有 raw log、mapping/cache、主链路/备份链路、短时建链、乒乓、RSSI 和繁忙度规则仍是唯一生产结果。
 
 关键结论：
 
@@ -157,10 +157,10 @@ Vehicle MR 先按 `VehicleMrTrainMapping` 或 Peer Name 规则识别列车及 TC
 
 | 候选接入点 | 输入字段 | Candidate 来源 | 建议 shadow 输出 | 生产影响 | 主要风险、回滚与测试 |
 | --- | --- | --- | --- | --- | --- |
-| 离线 MR/Mesh 导入完成后 | distinct Peer MAC、旧 mapping、可选 Peer Name、Radio、source file | FIT-AP + extension，只读快照 | matched/unresolved/ambiguous、old/new candidate、Radio evidence、缺作用域 | 无；只附加 Job result | resolver 异常返回 unavailable；删除字段回滚；锁定旧 mapping、derived rows 和分析结论 |
+| 离线 MR/Mesh 导入完成后（已接入） | distinct Peer MAC、旧 mapping、可选 Peer Name、Radio、source file | FIT-AP + entity + extension，只读快照 | matched/unresolved/ambiguous、old/new candidate、Radio evidence、缺作用域 | 无；只附加 Job result | resolver 异常返回 unavailable；删除字段回滚；锁定旧 mapping、derived rows 和分析结论 |
 | Mesh 链路明细导出前 | 实际导出 rows 的 Peer/AP/Radio字段 | 已有 mapping + Candidate 快照 | duplicate MAC、字段冲突、缺失 identity/RSSI 统计 | 无；不改导出列和值 | 大数据扫描成本；仅采样/汇总并失败隔离；golden XLSX 必须完全一致 |
-| Online MR 解析完成后 | `main_link_samples` 的 Peer Name/MAC/BSSID、session/source | FIT-AP + extension，只读快照 | old/new identity、name-only、BSSID-only、section-only、缺失率 | 无；仅附加 parse Job result | 不能写 parsed DB 新列；旧 summary、图表、切换表保持一致 |
-| Vehicle MR AP mapping load 后 | 旧 `ap_lookup`、local AP name/MAC、mapping rows | 无副作用的 FIT-AP/extension/轨旁 Candidate loader | old/new AP、station/section差异、lookup覆盖风险 | 无；只附加 load Job result | 不能调用带站点回填的 loader构建 shadow；旧 backfill和显示不变 |
+| Online MR 解析完成后（已接入） | `main_link_samples` 的 distinct Peer Name/MAC/BSSID、session/source | FIT-AP + entity + extension，只读快照 | old/new identity、name-only、BSSID-only、section-only、缺失率 | 无；仅附加 parse Job result | parsed DB 以只读 URI 打开，不写新列；旧 summary、图表、切换表保持一致 |
+| Vehicle MR mapping load 后（已接入） | 原 `mappings` 中 TC1/TC2 Peer Name | FIT-AP + entity + extension只读快照 | name-only、missing scope、unresolved/ambiguous | 无；只附加 load Job result | 不调用带站点回填的 loader；车端Peer Name明确标记为低置信 observation |
 | 单 AP 动态图表数据加载后 | anchor link、Peer/AP/Radio字段、`source_file_id` | 当前 detail DB mapping + Candidate 快照 | Peer/Radio语义、跨文件冲突、重复 MAC | 无；图表 payload外附诊断 | `anchor_link_id` 非全局唯一；必须以 detail DB + source file隔离，tooltip payload不变 |
 
 不建议把第一批 shadow 放进 UI page、export formatter 或 parser 行级循环。优先在现有 Job/Service 已完成生产结果之后做一次批量、可失败隔离的诊断。
@@ -177,17 +177,17 @@ Vehicle MR 先按 `VehicleMrTrainMapping` 或 Peer Name 规则识别列车及 TC
 
 发现的重复列、作用域缺失、section 丢失、name cache 覆盖或 Vehicle loader 写入副作用，本阶段只记录。
 
-## 11. 推荐阶段 5.1 只读 shadow 接入方案
+## 11. 阶段 5.1 只读 shadow 接入
 
 ### 11.1 适配器边界
 
-建议新增纯 Python `services/rail_transit/mr_mesh_ap_identity_shadow.py`：
+当前新增纯 Python `services/mr_mesh_identity_shadow.py`：
 
 ```text
-MrMeshApIdentityShadowService
-  - build_observation_from_mesh_row(row)
-  - build_observation_from_online_sample(row)
-  - build_observation_from_vehicle_match(row)
+MrMeshIdentityShadowService
+  - build_observation_from_mesh_link(row)
+  - build_observation_from_online_mr_summary(row)
+  - build_observation_from_vehicle_mr_mapping(row)
   - compare_old_mapping(observation, old_mapping, candidates)
   - inspect_export_field_conflicts(rows)
   - summarize(items)
@@ -195,13 +195,13 @@ MrMeshApIdentityShadowService
 
 适配器只接收普通 Mapping/Sequence，不导入 UI、Repository、Worker、数据库、网络连接或 parser，不计算链路质量。
 
-### 11.2 推荐实施顺序
+### 11.2 当前接入顺序
 
-1. 先建立 V5/V7、Peer Name 缺失、BSSID、显式 Radio、同 AP 双 Radio和跨站重名 characterization fixtures。
-2. 在 `mesh_log_import` 完成旧 mapping和派生重建后附加聚合 `identity_shadow`，不持久化。
-3. 在 `online_mr_parse` 返回旧 summary后附加聚合 `identity_shadow`，不改 parsed DB。
-4. 在 `vehicle_mr_mapping_load/refresh` 的旧 result后附加只读比较；另建无副作用 Candidate快照，不复用站点回填写路径。
-5. 导出和单 AP图表只增加独立诊断入口；待前三处 shadow 数据稳定后再决定是否接入任务结果。
+1. `mesh_log_import` 完成旧 mapping/cache和派生重建后，读取现有 distinct mapping/cache并附加聚合 `identity_shadow`，不持久化。
+2. `online_mr_parse` 返回旧 summary后，以只读模式读取已生成的 `main_link_samples` distinct observation并附加 shadow，不改 parsed DB。
+3. `vehicle_mr_mapping_load` 返回旧 mappings后，只使用映射行和安全 Candidate快照做低置信名称诊断，不调用站点回填写 lookup。
+4. Candidate快照只读取 FIT-AP、`ap_entities` 和AP扩展信息；H3C 4-4-4 MAC只在shadow适配边界规范化。
+5. 导出和单 AP图表仍未接入；待前三处真实局点统计稳定后再进入阶段6去重诊断评估。
 
 建议输出：
 
@@ -244,8 +244,8 @@ shadow 失败统一 `available=false`，旧任务继续原 finished/failed/cance
 
 ## 13. 回滚策略
 
-- 阶段 5 只有文档，删除文档增量即可回滚。
-- 阶段 5.1 不新增 schema、不写 shadow cache；删除 Job result附加字段和纯 adapter即可回滚。
+- 阶段 5 文档检查点已单独提交。
+- 阶段 5.1 不新增 schema、不写 shadow cache；删除三个 Job result附加字段和纯 adapter即可回滚。
 - 旧 parser、mapping/cache、Vehicle lookup、derived analysis和导出 formatter必须始终保留为生产路径。
 - shadow unavailable、unresolved、ambiguous或 identity changed只记录诊断，不阻断导入、解析、采集、图表或导出。
 - 在真实局点 shadow证明候选稳定、作用域充分且旧/new结论可解释之前，不进入生产 resolver接管或导出字段去重阶段。

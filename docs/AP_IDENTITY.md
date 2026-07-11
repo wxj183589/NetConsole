@@ -4,7 +4,7 @@
 
 `netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
-阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5 已完成 MR/Mesh resolver shadow 评估。各阶段均未让 resolver 接管生产结果；MR/Mesh 生产解析、无线扫描、页面和导出仍未接入。
+阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出仍未接入。
 
 目录结构：
 
@@ -190,4 +190,4 @@ AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作�
 
 轨旁业务的数据来源、旧 lookup、双击详情、缓存/历史和阶段 4.1 实现见 [TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md)。当前只在旧聚合完成后附加 `identity_shadow`，在旧详情 matches 生成后附加 `detail_identity_shadow`；lookup、缓存、双击定位、采集范围和业务规则均未替换。
 
-MR/Mesh、Online MR、Vehicle MR 的数据来源、Peer/Radio语义、lookup差异、主备链依赖、导出风险和阶段 5.1 方案见 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)。阶段 5 只完成评估；生产 parser、mapping/cache、链路判断、页面和导出未接入 shadow。
+MR/Mesh、Online MR、Vehicle MR 的数据来源、Peer/Radio语义、lookup差异、主备链依赖、导出风险和阶段 5.1实现见 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)。当前只在`mesh_log_import`、`online_mr_parse`和`vehicle_mr_mapping_load`旧结果后附加`identity_shadow`；生产parser、mapping/cache、链路判断、页面和导出未接入shadow。

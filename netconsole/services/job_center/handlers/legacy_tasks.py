@@ -799,8 +799,23 @@ def _vehicle_mr_mapping_load(params: dict[str, Any], progress: ProgressCallback 
     _check_cancel(should_cancel)
     store = VehicleMrOnlineStore(_path_resolver_from_params(params), str(params.get("site_name") or ""))
     mappings = store.list_mappings()
+    result = {"mappings": [asdict(mapping) for mapping in mappings], "count": len(mappings)}
+    try:
+        from netconsole.services.mr_mesh_identity_shadow import MrMeshIdentityShadowService
+
+        service = MrMeshIdentityShadowService()
+        candidates = _mr_mesh_shadow_candidates(params, str(params.get("site_name") or ""), service)
+        result["identity_shadow"] = service.shadow_vehicle_mr_mapping_result(result, candidates).to_payload()
+    except Exception as exc:
+        from netconsole.services.mr_mesh_identity_shadow import unavailable_mr_mesh_identity_shadow
+
+        shadow_total = sum(
+            bool(str(mapping.tc1_peer_name or "").strip()) + bool(str(mapping.tc2_peer_name or "").strip())
+            for mapping in mappings
+        )
+        result["identity_shadow"] = unavailable_mr_mesh_identity_shadow(shadow_total, exc)
     _emit(progress, "vehicle_mr_mapping_load", 1, 1, "车载 MR 映射表读取完成")
-    return {"mappings": [asdict(mapping) for mapping in mappings], "count": len(mappings)}
+    return result
 
 
 def _vehicle_mr_mapping_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1521,12 +1536,28 @@ def _device_by_uuid(database: Any, device_uuid: str):
 def _online_mr_parse(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
 
-    summary = OnlineMrDiagnosisParser(Path(str(params.get("session_dir") or ""))).parse(
+    parser = OnlineMrDiagnosisParser(Path(str(params.get("session_dir") or "")))
+    summary = parser.parse(
         force=bool(params.get("force_reparse", True)),
         progress=progress,
         should_cancel=should_cancel,
     )
-    return asdict(summary)
+    result = asdict(summary)
+    try:
+        from netconsole.services.mr_mesh_identity_shadow import MrMeshIdentityShadowService
+
+        service = MrMeshIdentityShadowService()
+        site_name = str(getattr(parser.meta, "site", "") or "")
+        candidates = _mr_mesh_shadow_candidates(params, site_name, service)
+        rows = _online_mr_shadow_rows(parser.db_path)
+        if int(result.get("mesh_samples") or 0) > 0 and not rows:
+            raise RuntimeError("Online MR 已有主链路采样，但没有可用于 shadow 的只读 observation")
+        result["identity_shadow"] = service.shadow_online_mr_parse_result(result, candidates, rows).to_payload()
+    except Exception as exc:
+        from netconsole.services.mr_mesh_identity_shadow import unavailable_mr_mesh_identity_shadow
+
+        result["identity_shadow"] = unavailable_mr_mesh_identity_shadow(int(result.get("mesh_samples") or 0), exc)
+    return result
 
 
 def _mesh_log_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1548,19 +1579,112 @@ def _mesh_log_import(params: dict[str, Any], progress: ProgressCallback | None, 
     def emit_mesh_progress(file_index: int, total_files: int, lines: int, parsed: int, skipped: int) -> None:
         _emit(progress, f"mesh_log_import:{int(lines)}:{int(parsed)}:{int(skipped)}", int(file_index), int(total_files), "正在导入 MESH 日志")
 
-    result = MeshImportService(site_name, _path_resolver_from_params(params)).import_files(
+    paths = _path_resolver_from_params(params)
+    result = MeshImportService(site_name, paths).import_files(
         profile,
         files,
         should_cancel=should_cancel,
         progress=emit_mesh_progress,
     )
-    return {
+    payload = {
         "imported_count": result.imported_count,
         "duplicate_count": result.duplicate_count,
         "parsed_record_count": result.parsed_record_count,
         "issue_count": len(result.issues),
         "file_count": len(result.files),
     }
+    try:
+        from netconsole.services.mr_mesh_identity_shadow import MrMeshIdentityShadowService
+
+        service = MrMeshIdentityShadowService()
+        candidates = _mr_mesh_shadow_candidates(params, site_name, service)
+        rows = _offline_mesh_shadow_rows(site_name, paths, profile)
+        if result.parsed_record_count > 0 and not rows:
+            raise RuntimeError("离线 MESH 已有解析记录，但没有可用于 shadow 的旧 mapping observation")
+        payload["identity_shadow"] = service.shadow_mesh_import_result(payload, candidates, rows).to_payload()
+    except Exception as exc:
+        from netconsole.services.mr_mesh_identity_shadow import unavailable_mr_mesh_identity_shadow
+
+        payload["identity_shadow"] = unavailable_mr_mesh_identity_shadow(result.parsed_record_count, exc)
+    return payload
+
+
+def _mr_mesh_shadow_candidates(params: dict[str, Any], site_name: str, service) -> tuple:
+    from netconsole.core.database import Database
+    from netconsole.repositories.ac_repository import AcRepository
+
+    if not site_name:
+        raise ValueError("缺少局点，无法构建 MR/Mesh identity shadow 候选")
+    paths = _path_resolver_from_params(params)
+    db_path = Path(paths.site_db_path(site_name))
+    if not db_path.is_file():
+        raise FileNotFoundError(f"局点数据库不存在：{db_path}")
+    repository = AcRepository(Database(db_path))
+    candidates = service.build_candidates(
+        repository.list_all_fit_ap_resources_with_metadata(),
+        repository.list_ap_entities(),
+        repository.list_ap_extension_points(),
+    )
+    if not candidates:
+        raise RuntimeError("没有可用于 MR/Mesh identity shadow 的只读 AP 候选")
+    return candidates
+
+
+def _offline_mesh_shadow_rows(site_name: str, paths, profile) -> list[dict[str, object]]:
+    from netconsole.services.mesh_storage_service import MeshStorageService
+
+    repository = MeshStorageService(site_name, paths).mr_repository(profile)
+    mappings = repository.export_rows("mesh_peer_mapping")
+    cache = {
+        str(row.get("peer_mac") or "").strip(): dict(row)
+        for row in repository.export_rows("mesh_peer_resolve_cache")
+        if str(row.get("peer_mac") or "").strip()
+    }
+    rows: list[dict[str, object]] = []
+    for mapping in mappings:
+        row = dict(mapping)
+        peer_mac = str(row.get("peer_mac_normalized") or "").strip()
+        resolved = cache.get(peer_mac) or {}
+        row["peer_mac"] = peer_mac
+        row["peer_radio_mac"] = resolved.get("peer_radio_mac") or ""
+        row["peer_resolve_source"] = resolved.get("source") or row.get("match_rule") or ""
+        row["source_ref"] = f"mesh-peer:{peer_mac}"
+        rows.append(row)
+    return rows
+
+
+def _online_mr_shadow_rows(db_path: Path) -> list[dict[str, object]]:
+    import sqlite3
+
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Online MR parsed DB 不存在：{path}")
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT DISTINCT
+                session_id, radio, peer_name, peer_mac, peer_mac_normalized,
+                resolved_peer_name, bssid, mesh_interface, belong_station,
+                belong_section, belong_type, belonging_source, raw_file
+            FROM main_link_samples
+            WHERE COALESCE(
+                NULLIF(peer_mac, ''), NULLIF(peer_mac_normalized, ''),
+                NULLIF(peer_name, ''), NULLIF(bssid, ''), ''
+            ) <> ''
+            LIMIT 5000
+            """
+        ).fetchall()
+    result: list[dict[str, object]] = []
+    for index, row in enumerate(rows, start=1):
+        payload = dict(row)
+        payload["interface_name"] = payload.get("mesh_interface") or ""
+        payload["station"] = payload.get("belong_station") or ""
+        payload["section"] = payload.get("belong_section") or ""
+        payload["source_ref"] = f"online-mr:{payload.get('session_id') or '-'}:{index}"
+        result.append(payload)
+    return result
 
 
 def _mesh_derived_rebuild(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

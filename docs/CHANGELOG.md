@@ -38,6 +38,9 @@
 - 完成 AP identity阶段5 MR/Mesh resolver shadow评估，梳理离线MESH、Online MR、Vehicle MR的数据来源、Peer/AP/Radio字段语义、lookup差异、主备链依赖与阶段5.1接入点。
 - 评估确认离线/Online仅部分复用`MeshPeerMappingService`，Online页面和Vehicle MR仍有独立缓存/旧lookup；Peer MAC、Peer Radio、BSSID和AP MAC不得折叠。
 - 记录Online MR报告重复MAC列、离线section持久化不完整、无作用域名称和Vehicle lookup副作用等现有风险；本阶段未修改生产代码、parser、mapping/cache、schema、业务规则、页面或导出。
+- 完成AP identity阶段5.1，新增纯Python `MrMeshIdentityShadowService`；统一统计matched/unresolved/ambiguous、identity变化、Peer/AP/Radio重复MAC、Radio/BSSID-only、name-only和缺失AC作用域。
+- `mesh_log_import`、`online_mr_parse`、`vehicle_mr_mapping_load`仅在旧result后附加`identity_shadow`；诊断异常返回`available=false`，原任务仍保持finished。
+- Candidate只读来自FIT-AP、`ap_entities`和AP扩展；离线只读旧mapping/cache，Online MR只读parsed DB，Vehicle mapping不调用带站点回填副作用的旧lookup。parser、DB写入、主备链、短链、乒乓、RSSI、UI和导出字段保持不变。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。
@@ -51,6 +54,7 @@
 - 新增 15 个 AC identity adapter/Job 兼容测试，覆盖 old/new 一致、unresolved、ambiguous、候选变化、作用域、Radio/BSSID 保护、shadow 失败不阻断及旧写入路径保留。
 - 新增 AC 光衰 identity shadow 测试，覆盖 AP/交换机/离线记录、跨 AC 歧义、name-only、H3C MAC、Radio/BSSID/Peer 边界、Job load/collect/single 兼容、失败隔离和回滚路径。
 - 新增轨旁 identity shadow 测试，覆盖 UUID/MAC/name、跨 AC 歧义、interface/location/LLDP/Radio/BSSID保护、主 snapshot/兼容 Job、详情 fallback、失败隔离和输入不变。
+- 新增MR/Mesh identity shadow测试，覆盖Peer MAC低置信边界、显式Radio/BSSID、duplicate MAC诊断、old/new变化、section-only、Vehicle name-only、三个Job兼容和失败隔离。
 
 ## v1.3.7 - 2026-07-08
 

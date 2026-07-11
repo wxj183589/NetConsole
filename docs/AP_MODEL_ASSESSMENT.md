@@ -312,7 +312,7 @@ CanonicalApProfile
 | 4：轨旁只读接入评估（已完成） | 梳理页面、聚合、详情、缓存、历史、字段风险和阶段 4.1 旁路点；未改生产代码 | 遗漏旧 fallback 或误把 topology 当 AP identity | 静态搜索、调用链核对、Markdown/UTF-8 检查 | 否 | 删除评估文档增量 |
 | 4.1：轨旁只读 shadow（已完成） | 旧聚合 rows 和旧详情 matches 生成后附加 shadow，生产结果原样保留 | AP/端口误关联、跨 AC 歧义、Qt 时序受影响 | row/detail shadow、双击代表用例、接口/LLDP/Radio边界和失败隔离 | 否 | 删除 shadow 字段并保留全部旧 helper |
 | 5：MR/Mesh resolver shadow 评估（已完成） | 梳理离线/Online/Vehicle lookup、Peer/Radio语义、主备链和导出风险；未改生产代码 | 遗漏页面缓存或让 identity 影响分析结论 | 静态调用链、字段矩阵、UTF-8/Markdown/diff检查 | 否 | 删除评估文档增量 |
-| 5.1：MR/Mesh 只读 shadow（待实施） | 在旧 mapping/parse Job完成后附加诊断，不写 parsed DB或导出 | 解析结果、physical AP key、短链/乒乓结论漂移 | 同日志 old/new compare、source file/session隔离、双 Radio和导出 golden | 否 | 删除附加字段和纯 adapter，保留旧 mapping/cache |
+| 5.1：MR/Mesh 只读 shadow（已完成） | 三个旧Job result附加诊断，不写parsed DB或导出 | 解析结果、physical AP key、短链/乒乓结论漂移 | 纯service、三个Job兼容、失败隔离、静态边界和原业务回归 | 否 | 删除附加字段和纯adapter，保留旧mapping/cache |
 | 6：导出命名与去重 | 统一展示别名；Peer/Peer Radio 相同只展示一次；保持兼容表头策略 | 下游模板依赖、列含义变化 | Golden XLSX/CSV、WPS/Excel 打开、表头和行值对比 | 否 | 使用旧 formatter/兼容导出模板 |
 
 阶段 1～6 都不应顺带拆 `legacy_tasks.py`、替换页面模型或调整数据库 schema。只有前述 shadow comparison 表明确认现有 `ap_entities` 无法承载需求后，才单独评估 additive schema migration。
@@ -364,4 +364,6 @@ CanonicalApProfile
 
 阶段 5 评估已完成。离线 MESH 和 Online MR 部分复用 `MeshPeerMappingService`，但 Online 实时页面另有名称/MAC缓存，Vehicle MR 使用多表旧 lookup；`peer_mac`、Peer Radio、BSSID和 AP MAC 语义不能折叠。详细证据见 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)。
 
-可以进入阶段 5.1，但只能在旧 mapping、解析或加载结果完成后附加可失败隔离的诊断字段。不得修改 parser、mapping/cache、数据库、主备链、同 AP双 Radio、短链、乒乓、RSSI、页面或导出。
+阶段 5.1 已完成：`mesh_log_import`、`online_mr_parse`、`vehicle_mr_mapping_load`在旧结果完成后附加可失败隔离的`identity_shadow`。Candidate只读来自FIT-AP、`ap_entities`和AP扩展信息；离线读取旧mapping/cache，Online MR只读读取parsed DB，Vehicle mapping不调用带站点回填副作用的旧lookup。
+
+parser、mapping/cache、数据库schema/写入、主备链、同AP双Radio、短链、乒乓、RSSI、页面和导出均未改变。进入阶段6前只能评估导出字段去重诊断，不直接修改表头或值。
