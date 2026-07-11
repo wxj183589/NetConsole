@@ -44,6 +44,8 @@
 - 完成AP identity阶段6导出字段去重诊断评估，盘点MR/Mesh、Online/Vehicle MR、轨旁AP、AC光衰、FIT-AP、OmniPeek和无线扫描导出入口、字段语义与现有契约测试。
 - 评估区分Online MR当前页面Export Process报告与兼容直接详细报告；后者存在PeerMac、AP MAC、Peer Radio MAC三列同源风险，本阶段仅记录，不修改SQL、表头或行值。
 - 阶段6只设计阶段6.1只读diagnostics；未修改任何生产Python、数据库schema、Repository SQL、parser、workbook/CSV/NAM、样式、列宽、WPS/Excel兼容、页面或业务统计。
+- 完成AP identity阶段6.1 P0，新增纯Python `ExportIdentityDiagnostics`；Mesh链路明细以流式旁路计数并在Export Process finished result附加元数据，Online MR兼容详细报告在旧rows后附加`result_metadata`。
+- diagnostics覆盖Peer/AP/Peer Radio重复、MAC-like名称、Radio/BSSID-only、缺失MAC/min RSSI/备链和字段存在性；异常降级为`available=false`。原workbook、Sheet、表头、SQL、三列同源值、样式、列宽、筛选、冻结、parser和业务规则未改，默认不生成sidecar。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。

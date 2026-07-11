@@ -153,3 +153,15 @@ samples
 - 阶段 6.1 只能以可删除的只读 adapter/wrapper 接入；旧 formatter、SQL、表头和 Export Job 必须保留。
 - 当前可以进入阶段 6.1，但只建议先做 P0 的纯 diagnostics service 和两个 MR/Mesh 接入点。
 - 在真实局点统计稳定、逻辑 golden 完全一致之前，不进入导出字段删除、改名、合并或 SQL修复阶段。
+
+## 11. 阶段 6.1 P0 实施结果
+
+阶段 6.1 已按本文 P0 边界完成：
+
+- 新增纯 Python `services/export_identity_diagnostics.py`，只读取普通 mapping/位置数组，流式统计重复 MAC、MAC-like 名称、Radio/BSSID-only、缺失字段和字段存在性；不导入 UI、Repository、Workbook、SQLite 或 parser。
+- Mesh 链路明细在每个旧 row 进入 `link_detail_row_values()` 前旁路统计，`export_worker` 仅在 finished result 中附加 `export_identity_diagnostics`。现有 Sheet、表头、行值、样式、列宽、筛选、冻结窗格和临时文件替换不变。
+- `OnlineMrAnalysisReportExporter` 在既有 `_mesh_link_detail_rows()` 返回后、worksheet 写入前按原表头解释位置数组，并通过 `result_metadata` 暴露 `export_identity_diagnostics`。原 SQL、三列同源值、Sheet 和 workbook 返回类型不变。
+- diagnostics 初始化、逐行统计或汇总失败时统一降级为 `available=false`；原导出继续完成。默认不生成 sidecar，也不写数据库或运行缓存。
+- 当前观察结果只能说明字段相同或上下文缺失，不能授权删除、改名、合并字段，也不能改变 AP/Radio/Peer identity、ACTIVE/STANDBY、备链、RSSI、Busy、短链或乒乓结论。
+
+阶段 7 如继续，应只设计真实局点 diagnostics 观测、脱敏汇总和准入阈值；在获得稳定样本前，仍不得修改导出字段或报告 SQL。

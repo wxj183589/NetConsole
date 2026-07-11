@@ -314,7 +314,7 @@ CanonicalApProfile
 | 5：MR/Mesh resolver shadow 评估（已完成） | 梳理离线/Online/Vehicle lookup、Peer/Radio语义、主备链和导出风险；未改生产代码 | 遗漏页面缓存或让 identity 影响分析结论 | 静态调用链、字段矩阵、UTF-8/Markdown/diff检查 | 否 | 删除评估文档增量 |
 | 5.1：MR/Mesh 只读 shadow（已完成） | 三个旧Job result附加诊断，不写parsed DB或导出 | 解析结果、physical AP key、短链/乒乓结论漂移 | 纯service、三个Job兼容、失败隔离、静态边界和原业务回归 | 否 | 删除附加字段和纯adapter，保留旧mapping/cache |
 | 6：导出字段去重诊断评估（已完成） | 盘点 MR/Mesh、Online/Vehicle MR、轨旁、AC/FIT-AP、OmniPeek和无线扫描导出；只设计只读 diagnostics | 把不同语义 MAC误当重复、遗漏兼容直接服务 | 静态调用链、字段矩阵、逻辑 golden、UTF-8/Markdown/diff检查 | 否 | 删除评估文档增量 |
-| 6.1：导出只读 diagnostics（待实施） | 在旧 formatter输入或输出旁路统计重复、scope和完整性，不改 workbook/SQL/result语义 | 大数据扫描、诊断反向影响导出终态 | 纯service、失败隔离、所有旧 Sheet/表头/行值/样式 golden | 否 | 删除 diagnostics adapter和附加结果 |
+| 6.1：导出只读 diagnostics（P0 已完成） | Mesh 链路明细流式旁路统计，Online MR兼容详细报告在旧 rows 后统计；只附加元数据 | 大数据扫描、位置数组错位、诊断反向影响导出终态 | 纯service、失败隔离、旧 Sheet/表头/SQL/三列值/筛选/冻结/样式 golden | 否 | 删除 diagnostics service、两处旁路调用和附加结果 |
 
 阶段 1～6 都不应顺带拆 `legacy_tasks.py`、替换页面模型或调整数据库 schema。只有前述 shadow comparison 表明确认现有 `ap_entities` 无法承载需求后，才单独评估 additive schema migration。
 
@@ -369,4 +369,6 @@ CanonicalApProfile
 
 parser、mapping/cache、数据库schema/写入、主备链、同AP双Radio、短链、乒乓、RSSI、页面和导出均未改变。
 
-阶段 6 评估已完成。当前页面 Online MR 报告走 Export Process 与 `VehicleMrOfflineExcelReportExporter`，兼容直接服务 `OnlineMrAnalysisReportExporter` 仍有 PeerMac/AP MAC/Peer Radio MAC 三列同源风险；Mesh 链路明细则已由契约测试锁定为不包含“归属来源”和“Peer Radio MAC”。详细入口、字段矩阵和阶段 6.1 方案见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。阶段 6.1 仍只能旁路诊断，不得修改 formatter、表头、报告 SQL或业务统计。
+阶段 6 评估已完成。当前页面 Online MR 报告走 Export Process 与 `VehicleMrOfflineExcelReportExporter`，兼容直接服务 `OnlineMrAnalysisReportExporter` 仍有 PeerMac/AP MAC/Peer Radio MAC 三列同源风险；Mesh 链路明细则已由契约测试锁定为不包含“归属来源”和“Peer Radio MAC”。
+
+阶段 6.1 P0 已完成：`ExportIdentityDiagnostics` 在 Mesh 链路明细旧 formatter 前流式计数，并在兼容 Online MR 详细 rows 写入 worksheet 前按原表头计数。两处只暴露 `export_identity_diagnostics` 元数据，失败降级为 `available=false`，默认不生成 sidecar；formatter、workbook、表头、报告 SQL、三列同源值和业务统计均未修改。详细结果见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。

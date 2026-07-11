@@ -106,7 +106,7 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
         "source_label": context.get("source_label") or ("全部源文件" if source_file_id in (None, "") else str(source_file_id)),
         "exported_at": context.get("exported_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    export_mesh_link_details_xlsx(
+    export_result = export_mesh_link_details_xlsx(
         tmp_path,
         rows,
         active_build_order_rows,
@@ -122,7 +122,11 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
         raise MeshLinkDetailExportCancelled("导出已取消")
     _emit_progress(job, total, total, "mesh_analysis.export_progress_save", "正在保存链路明细 Excel")
     os.replace(tmp_path, output_path)
-    _emit(finished_event(job.job_id, str(output_path), row_count=total))
+    event = finished_event(job.job_id, str(output_path), row_count=total)
+    result = event.get("result")
+    if isinstance(result, dict):
+        result.update(export_result)
+    _emit(event)
 
 
 def run_job(job: ExportJob) -> int:

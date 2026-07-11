@@ -30,6 +30,7 @@
 | MR/Mesh identity 评估（阶段 5） | 已梳理离线 MESH、Online MR、Vehicle MR 的 Peer/AP/Radio来源、lookup差异、主备链依赖和导出风险；未修改生产代码 |
 | MR/Mesh identity shadow（阶段 5.1） | `mesh_log_import`、`online_mr_parse`、`vehicle_mr_mapping_load`只附加`identity_shadow`；parser、mapping/cache、DB、链路规则、UI和导出不变 |
 | 导出字段去重诊断评估（阶段 6） | 已盘点 MR/Mesh、Online/Vehicle MR、轨旁、AC/FIT-AP、OmniPeek和无线扫描导出；只设计阶段6.1只读diagnostics，未改表头、SQL、formatter或页面 |
+| 导出只读 diagnostics（阶段 6.1 P0） | Mesh 链路明细 finished result 与 Online MR兼容详细 exporter metadata 已附加有限诊断；失败隔离，workbook/SQL/表头/行值不变，默认无 sidecar |
 | UI helper | 已新增 `ui/job_action_helper.py`，普通任务可复用非模态进度、取消和回调 |
 
 ## 兼容保留
@@ -63,7 +64,7 @@ UI page
 | P0 | `ui/pages/mesh_log_analysis_page.py` | 链路明细导出已迁；仍有导入、派生分析和报告等存量 worker | 所有重任务只提交 Job/ExportJob，页面只消费事件 |
 | 已迁移 | `ui/pages/online_mr_collection_page.py` | SSH 实时采集已改为长运行 Job，解析和报告分别使用 Job / ExportJob；页面只轻量跟踪已落盘日志 | 保留现有 fping/iperf 专用运行时和实时显示策略，不改业务规则；后续仅按明确需求收敛 |
 | 已迁移（第一阶段） | `ui/pages/snmp_center_page.py` | 查询执行链路已迁入 Job Center；页面仅收集参数、提交任务并绑定结构化结果 | MIB 浏览/搜索、全局 MIB 仓库、H3C 映射、Trap 与 Poll 保持原状；后续单独迁移批量采集 |
-| 已迁移（第三阶段） | `ui/pages/ac_management_page.py` | FIT-AP 资源、光衰和现有 AC 命令动作均已改为 Job + AC Domain；identity 阶段 2～4.1 只附加 shadow，页面流程未改 | 阶段 5/5.1 和阶段6评估已完成；后续只允许导出只读 diagnostics，不接管生产结果 |
+| 已迁移（第三阶段） | `ui/pages/ac_management_page.py` | FIT-AP 资源、光衰和现有 AC 命令动作均已改为 Job + AC Domain；identity 阶段 2～4.1 只附加 shadow，页面流程未改 | 阶段 5/5.1、阶段6评估和6.1 P0 diagnostics已完成；不接管生产结果 |
 | P1 | `ui/pages/network_toolbox_page.py` | 多种外部工具和结果导出 | 工具进程归 Job Center，服务端/客户端状态保持隔离 |
 | P1 | `ui/pages/file_management_page.py` | 导航已后台化，传输有专用 worker | 扫描、传输、批量操作统一任务事件和退出治理 |
 | P2 | `ui/pages/config_collection_center_page.py` | 已使用 BackgroundProcessManager 和 export helper | 采集、diff、快照、导出全部只通过 Job |
@@ -88,5 +89,5 @@ UI page
 - 现有 `ap_entities` 是统一 identity 的基础，不新增第二张 AP 主表。
 - `ap_uuid` 用于站点数据库内已落表对象；跨模块优先规范化 AP MAC；名称和 AC APID 只作带作用域降级匹配。
 - Radio MAC、BSSID/BBSSID、Peer MAC、Peer Radio MAC 保持 radio/观测层语义，不折叠为 AP MAC。
-- 推荐路线固定为：identity工具（已完成）→ AC/extension shadow（已完成）→ 光衰shadow（已完成）→ 轨旁评估/shadow（已完成）→ MR/Mesh评估/shadow（已完成）→ 导出字段去重诊断评估（已完成）→ 导出只读 diagnostics。
+- 推荐路线固定为：identity工具（已完成）→ AC/extension shadow（已完成）→ 光衰shadow（已完成）→ 轨旁评估/shadow（已完成）→ MR/Mesh评估/shadow（已完成）→ 导出字段去重诊断评估（已完成）→ 导出只读 diagnostics P0（已完成）→ 真实局点只读观测。
 - 每一阶段先做旧/新 shadow comparison，保持数据库、业务规则、页面字段和导出兼容；不得从 identity 工具直接跳到轨旁业务迁移。

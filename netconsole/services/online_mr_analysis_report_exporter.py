@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from copy import deepcopy
 from pathlib import Path
 
+from netconsole.services.export_identity_diagnostics import (
+    ExportIdentityDiagnostics,
+    unavailable_export_identity_diagnostics,
+)
 from netconsole.services.online_mr_chart_builder import OnlineMrChartBuilder, ChartData
 
 
 class OnlineMrAnalysisReportExporter:
+    def __init__(self) -> None:
+        self._result_metadata: dict[str, object] = {}
+
+    @property
+    def result_metadata(self) -> dict[str, object]:
+        return deepcopy(self._result_metadata)
+
     def export(self, session_dir: Path, output_path: Path) -> Path:
         from openpyxl import Workbook
         from openpyxl.chart import BarChart, LineChart, Reference
@@ -15,6 +27,7 @@ class OnlineMrAnalysisReportExporter:
 
         session_dir = Path(session_dir)
         output_path = Path(output_path)
+        self._result_metadata = {}
         db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
         builder = OnlineMrChartBuilder(db_path)
         workbook = Workbook()
@@ -53,6 +66,10 @@ class OnlineMrAnalysisReportExporter:
         return output_path
 
     def _append_offline_report_sheets(self, workbook, session_dir: Path, db_path: Path) -> None:
+        mesh_link_detail_rows = self._mesh_link_detail_rows(db_path)
+        self._result_metadata = {
+            "export_identity_diagnostics": self._inspect_mesh_link_detail_rows(mesh_link_detail_rows)
+        }
         sheet_rows = {
             "会话信息": self._session_info_rows(session_dir, db_path),
             "质量总览": [["维度", "结论", "说明"], ["业务连通性", "N/A", "缺少 fping 数据时不按 0 计算"], ["Mesh主链路", "N/A", "基于 parsed 数据计算"], ["空口繁忙度", "N/A", "无数据时显示 N/A"]],
@@ -60,7 +77,7 @@ class OnlineMrAnalysisReportExporter:
             "fping业务质量": self._fping_quality_rows(db_path),
             "fping 1s聚合": self._fping_1s_rows(db_path),
             "Mesh主链路质量": self._mesh_main_link_rows(db_path),
-            "链路明细": self._mesh_link_detail_rows(db_path),
+            "链路明细": mesh_link_detail_rows,
             "Peer稳定性分析": [["Peer", "Active次数", "平均RSSI", "最低RSSI", "切换次数", "结论"]],
             "主链路切换历史": self._switch_history_rows(db_path),
             "主链路切换日志": self._active_switch_log_rows(db_path),
@@ -78,6 +95,15 @@ class OnlineMrAnalysisReportExporter:
             sheet = workbook.create_sheet(name)
             for row in rows:
                 sheet.append(["N/A" if value is None else value for value in row])
+
+    @staticmethod
+    def _inspect_mesh_link_detail_rows(rows: list[list[object]]) -> dict[str, object]:
+        try:
+            diagnostics = ExportIdentityDiagnostics("online_mr_compat_detail")
+            headers = rows[0] if rows else []
+            return diagnostics.inspect_online_mr_detail_rows(rows[1:], headers=headers).to_dict()
+        except Exception as exc:
+            return unavailable_export_identity_diagnostics("online_mr_compat_detail", exc)
 
     def _mesh_main_link_rows(self, db_path: Path) -> list[list[object]]:
         rows: list[list[object]] = [["采样时间", "设备时间", "射频ID", "链路状态", "对端名称", "对端MAC", "MR侧RSSI", "归属站点", "归属区间", "归属类型", "归属来源"]]

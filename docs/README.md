@@ -12,7 +12,7 @@
 6. [AP Identity 工具](AP_IDENTITY.md)
 7. [轨旁 AP Identity 只读接入评估](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md)
 8. [MR/Mesh AP Identity Resolver Shadow 评估](MR_MESH_AP_IDENTITY_ASSESSMENT.md)
-9. [导出字段去重诊断评估](EXPORT_FIELD_DEDUP_ASSESSMENT.md)
+9. [导出字段去重评估与阶段 6.1 只读诊断](EXPORT_FIELD_DEDUP_ASSESSMENT.md)
 10. [开发约定](DEVELOPMENT_CONVENTIONS.md)
 11. [UI 线程全局规范](ui_thread_policy.md)
 12. [存量例外与新增代码约束](ui_governance_guardrails.md)

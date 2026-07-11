@@ -153,6 +153,8 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 阶段6.1只允许在旧formatter输入/输出旁路附加小型聚合 diagnostics；不得修改workbook/CSV/NAM、Sheet、表头、报告SQL、解析、页面、主备链、RSSI/min RSSI、Busy、短链或乒乓结果。
 - Peer MAC、Peer Radio MAC、AP MAC、Radio MAC和BSSID/BBSSID只可按各自语义统计相同值；相同不等于可删除。现有输入没有安全字段时diagnostics必须`available=false`。
 - 导出逻辑 golden 应比较Sheet、表头、关键行值、筛选、冻结窗格、样式和列宽；不得依赖不稳定的XLSX二进制哈希。diagnostics或sidecar失败不得改变原导出终态。
+- 阶段6.1 P0统一使用`services/export_identity_diagnostics.py`；Mesh只在旧行进入formatter前流式观察，Online MR兼容报告只在旧位置数组生成后按原表头观察。diagnostics不得持久化、不得生成默认sidecar，也不得成为字段删除或SQL修改依据。
+- Mesh Export Process只在finished result附加`export_identity_diagnostics`；`OnlineMrAnalysisReportExporter.export()`继续返回原`Path`，诊断通过只读`result_metadata`暴露。诊断失败必须`available=false`且原导出继续成功。
 
 ## 提交前检查
 

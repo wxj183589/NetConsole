@@ -9,6 +9,10 @@ from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STAN
 from netconsole.services.excel_autosize import excel_column_width
 from netconsole.services.excel_stream_exporter import XlsxColumn, fixed_or_sampled_width, write_row
 from netconsole.services.excel_report_utils import format_link_state
+from netconsole.services.export_identity_diagnostics import (
+    ExportIdentityDiagnostics,
+    unavailable_export_identity_diagnostics,
+)
 
 MESH_LINK_EXPORT_ACTIVE_FONT_COLOR = "15803D"
 MESH_LINK_EXPORT_STANDBY_FONT_COLOR = "1D4ED8"
@@ -207,7 +211,7 @@ def export_mesh_link_details_xlsx(
     export_context: dict[str, object] | None = None,
     progress_callback: ProgressCallback | None = None,
     should_cancel: CancelCallback | None = None,
-) -> None:
+) -> dict[str, object]:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         import xlsxwriter
@@ -219,6 +223,13 @@ def export_mesh_link_details_xlsx(
     events = list(event_rows or [])
     row_total = max(int(total_rows or 0), 0)
     fast_mode = row_total >= LINK_DETAIL_FAST_MODE_THRESHOLD
+    diagnostics: ExportIdentityDiagnostics | None
+    diagnostics_fallback: dict[str, object] | None = None
+    try:
+        diagnostics = ExportIdentityDiagnostics("mesh_link_detail")
+    except Exception as exc:
+        diagnostics = None
+        diagnostics_fallback = unavailable_export_identity_diagnostics("mesh_link_detail", exc)
     workbook = xlsxwriter.Workbook(
         str(path),
         {
@@ -246,6 +257,7 @@ def export_mesh_link_details_xlsx(
             progress_callback=progress_callback,
             should_cancel=should_cancel,
             fast_mode=fast_mode,
+            diagnostics=diagnostics,
         )
         _write_basic_sheet_xlsx(
             active_sheet,
@@ -270,6 +282,17 @@ def export_mesh_link_details_xlsx(
             except Exception:
                 pass
         raise
+    if diagnostics is None:
+        diagnostics_payload = diagnostics_fallback or unavailable_export_identity_diagnostics(
+            "mesh_link_detail",
+            "diagnostics 初始化失败",
+        )
+    else:
+        try:
+            diagnostics_payload = diagnostics.summarize().to_dict()
+        except Exception as exc:
+            diagnostics_payload = unavailable_export_identity_diagnostics("mesh_link_detail", exc)
+    return {"export_identity_diagnostics": diagnostics_payload}
 
 
 def _write_link_detail_sheet_xlsx(
@@ -282,6 +305,7 @@ def _write_link_detail_sheet_xlsx(
     progress_callback: ProgressCallback | None,
     should_cancel: CancelCallback | None,
     fast_mode: bool,
+    diagnostics: ExportIdentityDiagnostics | None,
 ) -> dict[str, object]:
     specs = _xlsx_column_specs(columns)
     widths = [column.width for column in specs]
@@ -295,6 +319,11 @@ def _write_link_detail_sheet_xlsx(
     last_progress_at = time.monotonic()
     for row in rows:
         _raise_if_cancelled(should_cancel)
+        if diagnostics is not None and diagnostics.available:
+            try:
+                diagnostics.inspect_mesh_link_detail_row(row, row_index=written + 1)
+            except Exception as exc:
+                diagnostics.mark_unavailable(exc)
         values = link_detail_row_values(row)
         _collect_link_stats(stats, row, values)
         group_key = (row.get("source_file_id"), row.get("sample_time"), row.get("radio"))
