@@ -22,6 +22,7 @@
 16. [后台任务规范](background_task_policy.md)
 17. [导出进程规范](export_process_policy.md)
 18. [Codex 工作流](CODEX_WORKFLOW.md)
+   - [项目级 Codex Skills](CODEX_SKILLS.md)
 19. [UI 表格与全选框规范](ui_table_guidelines.md)
 20. [MR 原始 MESH 日志分析规则](mr_mesh_log_analysis_rules.md)
 21. [功能模块说明](FEATURE_MODULES.md)
