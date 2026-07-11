@@ -12,7 +12,7 @@ from netconsole.ui.batch_connection_worker import (
     run_batch_connection_tests,
 )
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
 
 def app():
@@ -53,15 +53,21 @@ def test_batch_connection_tests_single_failure_does_not_stop_others():
     assert by_name["B"].method == "backup_direct"
 
 
-def test_batch_connection_concurrency_defaults_to_50_and_allows_200():
+def test_batch_connection_dialog_removes_bottom_controls():
     app()
     dialog = BatchConnectionTestProgressDialog(I18n("en_US"), 1)
-    options = [dialog.concurrency_combo.itemData(index) for index in range(dialog.concurrency_combo.count())]
 
-    assert dialog.concurrency_combo.currentData() == BATCH_CONNECTION_DEFAULT_CONCURRENCY
-    assert options == [10, 20, 50, 100, 200]
-    assert 100 in options
-    assert 200 in options
+    assert not hasattr(dialog, "concurrency_combo")
+    assert not hasattr(dialog, "copy_button")
+    assert not hasattr(dialog, "close_button")
+    assert dialog.findChildren(QComboBox) == []
+    assert dialog.findChildren(QPushButton) == []
+
+
+def test_batch_connection_worker_defaults_to_50():
+    worker = BatchConnectionTestWorker([])
+
+    assert worker.max_workers == BATCH_CONNECTION_DEFAULT_CONCURRENCY
 
 
 def test_batch_connection_worker_caps_concurrency_at_200():

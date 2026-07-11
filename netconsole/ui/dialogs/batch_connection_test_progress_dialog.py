@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.ui.batch_connection_worker import (
-    BATCH_CONNECTION_CONCURRENCY_OPTIONS,
-    BATCH_CONNECTION_DEFAULT_CONCURRENCY,
     BatchConnectionTestItemResult,
 )
 from netconsole.ui.render.table_render_engine import set_table_column_fields
@@ -44,10 +42,7 @@ class BatchConnectionTestProgressDialog(QDialog):
         self.completed = 0
         self.success = 0
         self.failed = 0
-        self.concurrency_combo = QComboBox()
-        for value in BATCH_CONNECTION_CONCURRENCY_OPTIONS:
-            self.concurrency_combo.addItem(str(value), value)
-        self.concurrency_combo.setCurrentText(str(BATCH_CONNECTION_DEFAULT_CONCURRENCY))
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.resize(900, 540)
 
         self.summary_label = make_text_selectable(QLabel())
@@ -59,24 +54,12 @@ class BatchConnectionTestProgressDialog(QDialog):
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         attach_table_context_menu(self.table, self.i18n.language, include_history=False)
-        self.copy_button = QPushButton()
-        self.close_button = QPushButton()
-        self.copy_button.clicked.connect(self.copy_results)
-        self.close_button.clicked.connect(self.close)
-
-        buttons = QHBoxLayout()
-        buttons.addWidget(QLabel(self.i18n.t("batch_collect.concurrency")))
-        buttons.addWidget(self.concurrency_combo)
-        buttons.addWidget(self.copy_button)
-        buttons.addStretch(1)
-        buttons.addWidget(self.close_button)
 
         content = QWidget(self)
         layout = QVBoxLayout(content)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.progress)
         layout.addWidget(self.table, 1)
-        layout.addLayout(buttons)
         self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=440, content_minimum_width=900)
         self.retranslate()
         self.update_summary()
@@ -95,8 +78,6 @@ class BatchConnectionTestProgressDialog(QDialog):
                 self.i18n.t("batch_collect.error_message"),
             ]
         )
-        self.copy_button.setText(self.i18n.t("batch_collect.copy_results"))
-        self.close_button.setText(self.i18n.t("dialog.close"))
 
     def mark_waiting(self, row: int, device_name: str, primary_address: str) -> None:
         self._set_row(row, [device_name, primary_address, "", "", self.i18n.t("batch_collect.status.waiting"), "", "", ""])
@@ -125,14 +106,6 @@ class BatchConnectionTestProgressDialog(QDialog):
                 failed=self.failed,
             )
         )
-
-    def copy_results(self) -> None:
-        lines = []
-        for row in range(self.table.rowCount()):
-            values = [self.table.item(row, column).text() if self.table.item(row, column) else "" for column in range(self.table.columnCount())]
-            if any(values):
-                lines.append("\t".join(values))
-        QApplication.clipboard().setText("\n".join(lines))
 
     def _set_row(self, row: int, values: list[str]) -> None:
         for column, value in enumerate(values):

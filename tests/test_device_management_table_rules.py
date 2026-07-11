@@ -4,6 +4,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea, QTableWidget
@@ -31,12 +32,27 @@ from netconsole.ui.theme.qt_theme_engine import apply_theme
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
 from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, open_diagnostic_folder_for_results, select_device_id_for_connection
+from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
+from netconsole.ui.batch_collect_worker import BATCH_COLLECT_DEFAULT_CONCURRENCY, BatchCollectWorker
 from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_TABLE_DIRECT_FILL_LIMIT, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 
 
 def app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _stub_device_management_background_jobs(monkeypatch):
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.DeviceManagementPage.refresh", lambda *_args, **_kwargs: None)
+    yield
+    application = QApplication.instance()
+    if application is None:
+        return
+    for widget in list(application.topLevelWidgets()):
+        widget.close()
+        widget.deleteLater()
+    application.processEvents()
 
 
 _BaseDeviceDetailDialog = DeviceDetailDialog
@@ -674,7 +690,10 @@ def test_toolbar_test_connection_without_selection_shows_select_first(monkeypatc
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.test_selected_device_connection()
 
@@ -687,10 +706,28 @@ def test_toolbar_test_connection_with_multiple_devices_uses_batch(monkeypatch):
     captured = []
     monkeypatch.setattr(page, "batch_test_connections", lambda devices: captured.extend(devices))
 
+    page.table.set_devices(page.repository.devices)
     page.table._set_all_checked(True)
     page.test_selected_device_connection()
 
     assert [device.name for device in captured] == ["A", "B"]
+
+
+def test_batch_connection_dialog_removes_bottom_controls_and_uses_default_concurrency(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(BatchConnectionTestWorker, "start", lambda _worker: None)
+
+    page.table.set_devices(page.repository.devices)
+    page.table._set_all_checked(True)
+    page.batch_test_connections(page.table.checked_devices())
+
+    assert page.batch_connection_test_worker.max_workers == BATCH_CONNECTION_DEFAULT_CONCURRENCY
+    assert not hasattr(page.batch_connection_test_dialog, "concurrency_combo")
+    assert not hasattr(page.batch_connection_test_dialog, "copy_button")
+    assert not hasattr(page.batch_connection_test_dialog, "close_button")
+    page.batch_connection_test_dialog.close()
 
 
 def test_top_toolbar_omits_edit_delete_and_contains_batch_refresh_details():
@@ -743,8 +780,12 @@ def test_row_external_terminal_without_config_only_prompts(monkeypatch):
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.available_external_terminal_configs", lambda _settings: [])
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
+    page.table.set_devices(page.repository.devices)
     page.launch_external_terminal_for_device_id(1)
 
     assert messages == ["No external terminal path is configured. Click External Terminal Config first."]
@@ -779,7 +820,9 @@ def test_same_device_detail_window_is_created_once(monkeypatch):
 
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.DeviceDetailDialog", FakeDetail)
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.window_manager.register_child_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
 
+    page.table.set_devices(page.repository.devices)
     page.show_device_detail(1)
     page.show_device_detail(1)
 
@@ -804,7 +847,10 @@ def test_toolbar_detail_without_selection_shows_select_first(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.show_selected_device_detail()
 
@@ -815,11 +861,33 @@ def test_batch_refresh_details_without_selection_shows_select_first(monkeypatch)
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.batch_refresh_details()
 
     assert messages == ["Select a device first."]
+
+
+def test_batch_refresh_details_uses_fixed_safe_concurrency_and_progress_dialog(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    page.table.set_devices(page.repository.devices)
+    page.table._set_all_checked(True)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.MessageBox.question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(BatchCollectWorker, "start", lambda _worker: None)
+
+    page.batch_refresh_details()
+
+    assert page.batch_collect_worker is not None
+    assert page.batch_collect_worker.max_workers == BATCH_COLLECT_DEFAULT_CONCURRENCY == 20
+    assert page.batch_collect_dialog is not None
+    assert not hasattr(page.batch_collect_dialog, "concurrency_combo")
+    assert page.batch_collect_dialog.table.columnCount() == 8
+    assert page.batch_collect_dialog.table.cellWidget(0, 3) is not None
 
 
 def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path):
@@ -910,13 +978,13 @@ def test_optical_status_labels_and_colors_are_mapped():
 
     assert i18n.t("optical.status.link_abnormal") == "\u94fe\u8def\u5f02\u5e38"
     assert i18n.t("optical.status.no_light") == "\u65e0\u5149"
-    assert DeviceDetailDialog.optical_status_color("normal") == "#22c55e"
-    assert DeviceDetailDialog.optical_status_color("warning") == "#fbbf24"
-    assert DeviceDetailDialog.optical_status_color("alarm") == "#f87171"
-    assert DeviceDetailDialog.optical_status_color("link_abnormal") == "#fb7185"
-    assert DeviceDetailDialog.optical_status_color("no_light") == "#6b7280"
-    assert DeviceDetailDialog.interface_row_status_color("link_abnormal") == "#fb7185"
-    assert DeviceDetailDialog.interface_row_status_color("no_light") == "#6b7280"
+    assert _BaseDeviceDetailDialog.optical_status_color("normal") == "#22c55e"
+    assert _BaseDeviceDetailDialog.optical_status_color("warning") == "#fbbf24"
+    assert _BaseDeviceDetailDialog.optical_status_color("alarm") == "#f87171"
+    assert _BaseDeviceDetailDialog.optical_status_color("link_abnormal") == "#fb7185"
+    assert _BaseDeviceDetailDialog.optical_status_color("no_light") == "#6b7280"
+    assert _BaseDeviceDetailDialog.interface_row_status_color("link_abnormal") == "#fb7185"
+    assert _BaseDeviceDetailDialog.interface_row_status_color("no_light") == "#6b7280"
 
 
 def test_device_detail_tabs_include_color_notes_and_interface_color_follows_optical_status(tmp_path):
@@ -1038,7 +1106,10 @@ def test_toolbar_edit_without_selection_shows_select_first(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.edit_device()
 
@@ -1049,8 +1120,12 @@ def test_toolbar_edit_with_multiple_checked_devices_shows_single_edit_message(mo
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
+    page.table.set_devices(page.repository.devices)
     page.table._set_all_checked(True)
     page.edit_device()
 

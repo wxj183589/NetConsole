@@ -155,12 +155,20 @@ def test_collect_service_does_not_connect_when_no_protocol_enabled(tmp_path):
     device = make_device()
     device.ssh_enabled = 0
     device.telnet_enabled = 0
+    progress = []
 
-    result = collect_h3c_device_details(device, "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        progress_callback=lambda percent, stage, command="", message="": progress.append((percent, stage, command, message)),
+    )
 
     assert result.success is False
     assert result.error_message == "未启用连接方式"
     assert repository.get_collect_run(result.collect_run_uuid)["status"] == "failed"
+    assert progress[-1] == (100, "batch_collect.stage.failed", "", "未启用连接方式")
 
 
 def test_update_collect_run_status(tmp_path):
@@ -183,6 +191,33 @@ def test_collect_service_validates_commands_before_execution(monkeypatch, tmp_pa
     collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
 
     assert calls == [(["screen-length disable", *COLLECT_COMMANDS], "device_collect")]
+
+
+def test_collect_service_reports_connection_command_parse_and_write_progress(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    repository = make_repository(tmp_path)
+    progress = []
+
+    result = collect_h3c_device_details(
+        make_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        progress_callback=lambda percent, stage, command="", message="": progress.append((percent, stage, command, message)),
+    )
+
+    assert result.success is True
+    assert (5, "batch_collect.stage.connecting", "", "") in progress
+    assert (10, "batch_collect.stage.login_success", "", "") in progress
+    assert (15, "batch_collect.stage.init_terminal", "screen-length disable", "") in progress
+    command_updates = [item for item in progress if item[1].startswith("batch_collect.stage.collecting_command")]
+    assert len(command_updates) == len(COLLECT_COMMANDS)
+    assert command_updates[-1][0] == 80
+    assert command_updates[-1][2] == COLLECT_COMMANDS[-1]
+    assert any(item[1] == "batch_collect.stage.parsing" and item[0] == 85 for item in progress)
+    assert any(item[1] == "batch_collect.stage.saving" and item[0] == 95 for item in progress)
+    assert progress[-1][0:2] == (100, "batch_collect.stage.completed")
 
 
 def test_optical_refresh_service_runs_three_commands_and_writes_interfaces_optical(monkeypatch, tmp_path):

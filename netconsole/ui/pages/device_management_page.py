@@ -41,7 +41,7 @@ from netconsole.services.external_terminal import TERMINAL_LABELS, available_ext
 from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
-from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
+from netconsole.ui.batch_collect_worker import BATCH_COLLECT_DEFAULT_CONCURRENCY, BatchCollectWorker, device_key
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.diagnostic_download_worker import DiagnosticDownloadWorker
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
@@ -333,9 +333,16 @@ class DeviceManagementPage(QWidget):
         for row, device in enumerate(devices):
             dialog.mark_waiting(row, str(device.name or ""), str(device.ip_address or ""))
         self.batch_connection_test_dialog = dialog
-        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, concurrency=int(dialog.concurrency_combo.currentData() or BATCH_CONNECTION_DEFAULT_CONCURRENCY), parent=self)
+        self.batch_connection_test_worker = BatchConnectionTestWorker(
+            devices,
+            concurrency=BATCH_CONNECTION_DEFAULT_CONCURRENCY,
+            parent=self,
+        )
+        dialog_alive = {"value": True}
 
         def on_device_finished(item) -> None:
+            if not dialog_alive["value"]:
+                return
             row = next(
                 (
                     index
@@ -346,6 +353,12 @@ class DeviceManagementPage(QWidget):
             )
             dialog.add_result(row, item)
 
+        def on_dialog_destroyed(_object=None) -> None:
+            dialog_alive["value"] = False
+            if self.batch_connection_test_worker is not None:
+                self.batch_connection_test_worker.cancel()
+
+        dialog.destroyed.connect(on_dialog_destroyed)
         self.batch_connection_test_worker.device_finished.connect(on_device_finished)
         self.batch_connection_test_worker.finished.connect(self.batch_connection_test_worker.deleteLater)
         self.batch_connection_test_worker.finished.connect(lambda: setattr(self, "batch_connection_test_worker", None))
@@ -915,31 +928,31 @@ class DeviceManagementPage(QWidget):
             return
         dialog = BatchCollectProgressDialog(self.i18n, len(devices), self)
         for row, device in enumerate(devices):
-            dialog.mark_running(row, str(device.name or ""), str(device.ip_address or ""))
-            item = dialog.table.item(row, 2)
-            if item:
-                item.setText(self.i18n.t("batch_collect.status.waiting"))
-            dialog.running = max(0, dialog.running - 1)
-        dialog.update_summary()
+            dialog.mark_waiting(row, device_key(device), str(device.name or ""), str(device.primary_address or ""))
+        dialog.resize_columns()
         self.batch_collect_dialog = dialog
-        start_concurrency = int(dialog.concurrency_combo.currentData() or BATCH_CONCURRENCY)
-        dialog.set_running(True)
-        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, max_workers=start_concurrency, parent=self)
+        self.batch_collect_worker = BatchCollectWorker(
+            devices,
+            self.site_name,
+            max_workers=BATCH_COLLECT_DEFAULT_CONCURRENCY,
+            parent=self,
+        )
+        dialog_alive = {"value": True}
 
         def on_device_finished(item) -> None:
-            row = next(
-                (
-                    index
-                    for index in range(dialog.table.rowCount())
-                    if dialog.table.item(index, 0) and dialog.table.item(index, 0).text() == item.device_name
-                ),
-                dialog.completed,
-            )
-            dialog.add_result(row, item)
+            if not dialog_alive["value"]:
+                return
+            dialog.add_result(item)
 
-        self.batch_collect_worker.device_finished.connect(on_device_finished)
-        self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh())
-        self.batch_collect_worker.finished.connect(lambda: dialog.set_running(False))
+        def on_dialog_destroyed(_object=None) -> None:
+            dialog_alive["value"] = False
+            if self.batch_collect_worker is not None:
+                self.batch_collect_worker.cancel()
+
+        dialog.destroyed.connect(on_dialog_destroyed)
+        self.batch_collect_worker.device_progress.connect(dialog.update_device_progress, Qt.QueuedConnection)
+        self.batch_collect_worker.device_finished.connect(on_device_finished, Qt.QueuedConnection)
+        self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh(), Qt.QueuedConnection)
         self.batch_collect_worker.finished.connect(self.batch_collect_worker.deleteLater)
         self.batch_collect_worker.finished.connect(lambda: setattr(self, "batch_collect_worker", None))
         show_non_focus_window(self, dialog, key="batch_collect_progress", activate=False, raise_window=False)
