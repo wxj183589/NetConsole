@@ -43,13 +43,14 @@ class OnlineMrRealtimeParser:
             return payload
         if event.module == "busy":
             payload = self._parser.parse_busy(event)
-            if not any(payload.get(key) is not None for key in ("ctl_busy", "tx_busy", "rx_busy")):
+            if not any(payload.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy")):
                 return None
             return payload
         if event.module == "stats":
             payload = self._parser.parse_stats(event)
             counters = payload.get("counters")
-            if not isinstance(counters, dict) or not counters:
+            has_busy = any(payload.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy"))
+            if (not isinstance(counters, dict) or not counters) and not has_busy:
                 return None
             return payload
         if event.module == "interface_rate":

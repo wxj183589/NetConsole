@@ -10,7 +10,10 @@ from netconsole.parsers.mesh_log_parser import normalize_peer_mac, parse_link_st
 COLLECTOR_RX_PREFIX_RE = re.compile(
     r"^(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+\[collector=[^\]]+\]\s+RX\s?(?P<payload>.*)$"
 )
-CHANNEL_BUSY_RE = re.compile(r"(?P<key>ctlbusy|txbusy|rxbusy|ctl\s*busy|tx\s*busy|rx\s*busy)\D+(?P<value>\d+)", re.IGNORECASE)
+CHANNEL_BUSY_RE = re.compile(
+    r"(?P<key>channelbusy|channel\s*busy|totalbusy|total\s*busy|ctlbusy|txbusy|rxbusy|ctl\s*busy|tx\s*busy|rx\s*busy)\D+(?P<value>\d+)",
+    re.IGNORECASE,
+)
 CHANNEL_BUSY_ROW_RE = re.compile(
     r"^\s*(?P<idx>\d+)\s+"
     r"(?P<time>\d{2}:\d{2}:\d{2})\s+"
@@ -205,11 +208,13 @@ def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None)
         table_rows.append(
             {
                 "radio": 1,
+                "channel_busy_total": ctl_busy,
                 "tx_busy": tx_busy,
                 "rx_busy": rx_busy,
                 "raw_text": summary,
                 "raw_line": line.strip(),
                 "sample_time": sample_time,
+                "channel_busy_sample_time": sample_time,
                 "collector_time": collected_at.isoformat(sep=" ", timespec="milliseconds") if collected_at else None,
                 "ctl_busy": ctl_busy,
                 "ctl_channel": ctl_channel,
@@ -221,14 +226,11 @@ def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None)
         )
     if table_rows:
         return table_rows
-    values: dict[str, int] = {}
-    for match in CHANNEL_BUSY_RE.finditer(raw_text):
-        key = match.group("key").lower().replace(" ", "")
-        normalized = {"ctlbusy": "ctl_busy", "txbusy": "tx_busy", "rxbusy": "rx_busy"}.get(key, "rx_busy")
-        values[normalized] = int(match.group("value"))
+    values = _extract_busy_values(raw_text)
     return [
         {
             "radio": 1,
+            "channel_busy_total": values.get("ctl_busy"),
             "tx_busy": values.get("tx_busy"),
             "rx_busy": values.get("rx_busy"),
             "ctl_busy": values.get("ctl_busy"),
@@ -237,6 +239,7 @@ def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None)
             "record_interval": record_interval,
             "row_index": 1,
             "sample_time": collected_at.isoformat(sep=" ", timespec="seconds") if collected_at else "",
+            "channel_busy_sample_time": collected_at.isoformat(sep=" ", timespec="seconds") if collected_at else "",
             "collector_time": collected_at.isoformat(sep=" ", timespec="milliseconds") if collected_at else None,
             "raw_text": f"display ar5drv 1 channelbusy | CtlBusy={values.get('ctl_busy')} TxBusy={values.get('tx_busy')} RxBusy={values.get('rx_busy')}",
         }
@@ -251,6 +254,23 @@ def _first_int_match(pattern: re.Pattern[str], text: str) -> int | None:
 def _first_text_match(pattern: re.Pattern[str], text: str) -> str:
     match = pattern.search(text)
     return match.group("value") if match else ""
+
+
+def _extract_busy_values(raw_text: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in str(raw_text or "").splitlines():
+        for match in CHANNEL_BUSY_RE.finditer(line):
+            key = match.group("key").lower().replace(" ", "")
+            normalized = {
+                "channelbusy": "ctl_busy",
+                "totalbusy": "ctl_busy",
+                "ctlbusy": "ctl_busy",
+                "txbusy": "tx_busy",
+                "rxbusy": "rx_busy",
+            }.get(key)
+            if normalized:
+                values[normalized] = int(match.group("value"))
+    return values
 
 
 def _channel_busy_sample_time(sample_date: str, raw_time: str, current_time: str) -> str:
@@ -317,6 +337,7 @@ def parse_interface_rate_text(raw_text: str) -> list[dict[str, object]]:
 
 
 def parse_ap_radio_statistics_text(raw_text: str) -> dict[str, object]:
+    raw_text, collector_time = _clean_collector_text(raw_text)
     counters: dict[str, int] = {}
     counter_values: dict[str, list[int]] = {}
     canonical_keys = {key.lower(): key for key in AP_RADIO_STAT_COUNTERS}
@@ -330,9 +351,18 @@ def parse_ap_radio_statistics_text(raw_text: str) -> dict[str, object]:
             continue
         counter_values[key] = values
         counters[key] = sum(values) if len(values) > 1 else values[0]
+    busy_values = _extract_busy_values(raw_text)
+    sample_time = collector_time.isoformat(sep=" ", timespec="seconds") if collector_time else ""
     return {
         "counters": counters,
         "counter_values": counter_values,
+        "channel_busy_total": busy_values.get("ctl_busy"),
+        "ctl_busy": busy_values.get("ctl_busy"),
+        "tx_busy": busy_values.get("tx_busy"),
+        "rx_busy": busy_values.get("rx_busy"),
+        "sample_time": sample_time,
+        "channel_busy_sample_time": sample_time,
+        "collector_time": collector_time.isoformat(sep=" ", timespec="milliseconds") if collector_time else None,
         "tx_frame_count": counters.get("TxFrameAllCnt"),
         "tx_frame_bytes": counters.get("TxFrameAllBytes"),
         "rx_frame_count": counters.get("RxFrameAllCnt"),

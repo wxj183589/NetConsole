@@ -28,9 +28,11 @@ class RealtimeMRState:
     peer_serial_number: str | None = None
     mr_rssi: int | None = None
     link_state: str | None = None
+    channel_busy_total: float | None = None
     ctl_busy: float | None = None
     tx_busy: float | None = None
     rx_busy: float | None = None
+    channel_busy_sample_time: str | None = None
     loss: float | None = None
     rtt: float | None = None
     retry_count: int | None = None
@@ -138,10 +140,9 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
             state.belonging_source = _text(resolved.get("belonging_source")) or state.belonging_source
             state.peer_serial_number = _text(resolved.get("peer_serial_number") or resolved.get("serial_number")) or state.peer_serial_number
     elif event.module == "busy":
-        state.ctl_busy = _float_or_none(payload.get("ctl_busy")) if payload.get("ctl_busy") is not None else state.ctl_busy
-        state.tx_busy = _float_or_none(payload.get("tx_busy")) if payload.get("tx_busy") is not None else state.tx_busy
-        state.rx_busy = _float_or_none(payload.get("rx_busy")) if payload.get("rx_busy") is not None else state.rx_busy
+        _apply_busy_payload(state, payload)
     elif event.module == "stats":
+        _apply_busy_payload(state, payload)
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
         state.retry_count = retry if retry is not None else state.retry_count
         state.retry = retry if retry is not None else state.retry
@@ -155,6 +156,25 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
 
 def _has_any(payload: dict[str, object], *keys: str) -> bool:
     return any(payload.get(key) is not None for key in keys)
+
+
+def _apply_busy_payload(state: RealtimeMRState, payload: dict[str, object]) -> None:
+    total = _float_or_none(payload.get("channel_busy_total"), payload.get("ctl_busy"))
+    ctl = _float_or_none(payload.get("ctl_busy"), payload.get("channel_busy_total"))
+    tx = _float_or_none(payload.get("tx_busy"))
+    rx = _float_or_none(payload.get("rx_busy"))
+    if total is not None:
+        state.channel_busy_total = total
+    if ctl is not None:
+        state.ctl_busy = ctl
+    if tx is not None:
+        state.tx_busy = tx
+    if rx is not None:
+        state.rx_busy = rx
+    if any(value is not None for value in (total, ctl, tx, rx)):
+        sample_time = _text(payload.get("channel_busy_sample_time") or payload.get("sample_time") or payload.get("collector_time"))
+        if sample_time:
+            state.channel_busy_sample_time = sample_time
 
 
 def _text(value: object) -> str:

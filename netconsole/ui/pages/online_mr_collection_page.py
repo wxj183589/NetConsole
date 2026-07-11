@@ -149,6 +149,7 @@ PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
 FORCE_STOP_DELAY_SECONDS = 5
 BATCH_STOP_TIMEOUT_SECONDS = 30
 DEFAULT_REALTIME_SPLITTER_SIZES = [380, 150, 160, 320]
+COLLAPSED_COLLECTION_SPLITTER_SIZES = [120, 150, 220, 420]
 
 STATUS_I18N_KEYS = {
     "CREATED": "online_mr.status_created",
@@ -170,23 +171,41 @@ SUMMARY_COL_STATUS = 2
 SUMMARY_COL_ACTIVE_PEER = 3
 SUMMARY_COL_PEER_MAC = 4
 SUMMARY_COL_MR_RSSI = 5
-SUMMARY_COL_PEER_SITE = 6
-SUMMARY_COL_PEER_SECTION = 7
-SUMMARY_COL_PING_LOSS = 8
-SUMMARY_COL_PING_LATENCY = 9
-SUMMARY_COL_COLLECTED = 10
-SUMMARY_COL_FAILED = 11
-SUMMARY_COL_RECONNECTS = 12
-SUMMARY_COL_LAST_COLLECTION = 13
-SUMMARY_COL_IPERF_MBPS = 14
-SUMMARY_COL_IPERF_RETRANS = 15
-SUMMARY_COL_SESSION = 16
-SUMMARY_COL_DEVICE_ID = 17
+SUMMARY_COL_BUSY_TIME = 6
+SUMMARY_COL_BUSY_TOTAL = 7
+SUMMARY_COL_BUSY_TX = 8
+SUMMARY_COL_BUSY_RX = 9
+SUMMARY_COL_PEER_SITE = 10
+SUMMARY_COL_PEER_SECTION = 11
+SUMMARY_COL_PING_LOSS = 12
+SUMMARY_COL_PING_LATENCY = 13
+SUMMARY_COL_COLLECTED = 14
+SUMMARY_COL_FAILED = 15
+SUMMARY_COL_RECONNECTS = 16
+SUMMARY_COL_LAST_COLLECTION = 17
+SUMMARY_COL_IPERF_MBPS = 18
+SUMMARY_COL_IPERF_RETRANS = 19
+SUMMARY_COL_SESSION = 20
+SUMMARY_COL_DEVICE_ID = 21
 
 
 def _rail_mrcollect_diag(message: str) -> None:
     print(message)
     app_logger.log_info("RAIL_MR_COLLECT_UI", message)
+
+
+def _status_color(status: str) -> str:
+    return {
+        "COLLECTING": "#1f7a4d",
+        "CONNECTING": "#2563eb",
+        "INITIALIZING": "#2563eb",
+        "RECONNECTING": "#b45309",
+        "STOPPING": "#b45309",
+        "FAILED": "#b91c1c",
+        "ABORTED": "#b91c1c",
+        "FORCED_STOPPED": "#b91c1c",
+        "STOPPED": "#475569",
+    }.get(str(status or "").upper(), "#475569")
 
 
 @dataclass
@@ -632,7 +651,7 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_tool_label.setWordWrap(True)
         self._no_wheel_filter = NoWheelValueChangeFilter(self)
 
-        self.summary_table = QTableWidget(0, 18)
+        self.summary_table = QTableWidget(0, 22)
         self.mesh_table = QTableWidget(0, 13)
         self.mesh_detail_table = QTableWidget(0, 15)
         self.channel_table = QTableWidget(0, 9)
@@ -1233,6 +1252,10 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.peer_name"),
                 self.i18n.t("online_mr.peer_mac"),
                 "MR RSSI",
+                self.i18n.t("online_mr.latest_channel_busy_time"),
+                self.i18n.t("online_mr.latest_channel_busy_total"),
+                self.i18n.t("online_mr.latest_channel_busy_tx"),
+                self.i18n.t("online_mr.latest_channel_busy_rx"),
                 self.i18n.t("online_mr.peer_site"),
                 self.i18n.t("online_mr.peer_section"),
                 self.i18n.t("online_mr.ping_loss_rate"),
@@ -1423,7 +1446,7 @@ class OnlineMrCollectionPage(QWidget):
             content_layout.addWidget(controls)
             content_layout.addWidget(self.filter_hint_label)
 
-        self.device_table.setMinimumHeight(260)
+        self.device_table.setMinimumHeight(120)
         self.device_table.setMaximumHeight(16777215)
         self.device_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._configure_online_table(self.device_table)
@@ -1443,14 +1466,14 @@ class OnlineMrCollectionPage(QWidget):
         device_panel = QWidget()
         self.device_panel = device_panel
         device_panel.setMinimumWidth(ONLINE_MR_LEFT_PANEL_MIN_WIDTH)
-        device_panel.setMinimumHeight(360)
+        device_panel.setMinimumHeight(180)
         device_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         device_layout = QVBoxLayout(device_panel)
         device_layout.setContentsMargins(0, 0, 0, 0)
         device_layout.setSpacing(6)
         device_layout.addWidget(self.device_search_input)
         device_layout.addWidget(self.device_table)
-        self.collect_status_box.setMinimumHeight(140)
+        self.collect_status_box.setMinimumHeight(110)
         self.collect_status_box.setMaximumHeight(16777215)
         self.collect_status_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         collect_layout = QHBoxLayout(self.collect_status_box)
@@ -1497,9 +1520,9 @@ class OnlineMrCollectionPage(QWidget):
         main_splitter.setStretchFactor(0, 2)
         main_splitter.setStretchFactor(1, 1)
         main_splitter.setSizes([760, 460])
-        main_splitter.setMinimumHeight(360)
+        main_splitter.setMinimumHeight(220)
         main_layout.addWidget(main_splitter, 1)
-        main_work_panel.setMinimumHeight(380)
+        main_work_panel.setMinimumHeight(240)
         main_work_panel.setMinimumWidth(ONLINE_MR_WORK_PANEL_MIN_WIDTH)
 
         vertical_splitter = QSplitter(Qt.Vertical)
@@ -1873,18 +1896,12 @@ class OnlineMrCollectionPage(QWidget):
         if capacity <= 0:
             MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_running"))
             return
-        if self.enable_iperf_check.isChecked() and len([device for device in selected if device.id not in self.workers_by_device_id]) >= 2:
-            answer = MessageBox.question(
-                self,
-                self.i18n.t("online_mr.traffic_test"),
-                self.i18n.t("online_mr.confirm_two_traffic"),
-                MessageBox.StandardButton.Yes | MessageBox.StandardButton.No,
-                MessageBox.StandardButton.No,
-            )
-            if answer != MessageBox.StandardButton.Yes:
-                return
+        pending_selected = [device for device in selected if device.id not in self.workers_by_device_id]
+        if not self._confirm_start_collection(pending_selected[:capacity]):
+            return
         if not self._preflight_iperf_before_start():
             return
+        self._collapse_collection_inputs_after_start()
         started = 0
         skipped: list[str] = []
         for device in selected:
@@ -1923,6 +1940,47 @@ class OnlineMrCollectionPage(QWidget):
         if started:
             self._set_status("CONNECTING")
         self._update_action_state()
+
+    def _confirm_start_collection(self, devices: list[Device]) -> bool:
+        if not devices:
+            return True
+        device_lines = [
+            f"- {device.name} ({str(device.primary_address or '').strip() or '-'})"
+            for device in devices
+        ]
+        ping_enabled = self.enable_fping_check.isChecked()
+        traffic_enabled = self.enable_iperf_check.isChecked()
+        traffic_note = ""
+        if traffic_enabled and len(devices) >= 2:
+            traffic_note = f"\n{self.i18n.t('online_mr.confirm_two_traffic')}"
+        message = (
+            f"{self.i18n.t('online_mr.start_confirm_devices')}\n"
+            f"{chr(10).join(device_lines)}\n\n"
+            f"{self.i18n.t('online_mr.start_confirm_params')}\n"
+            f"- {self.i18n.t('online_mr.mesh_link')}: {self.mesh_interval.value()} {self.i18n.t('online_mr.seconds')}\n"
+            f"- {self.i18n.t('online_mr.channel_busy')}: {self.channel_interval.value()} {self.i18n.t('online_mr.seconds')}\n"
+            f"- {self.i18n.t('online_mr.ap_radio_statistics')}: {self.statistics_interval.value()} {self.i18n.t('online_mr.seconds')}\n"
+            f"- {self.i18n.t('online_mr.high_freq_ping')}: {self.i18n.t('online_mr.enabled' if ping_enabled else 'online_mr.disabled')}\n"
+            f"- {self.i18n.t('online_mr.traffic_test')}: {self.i18n.t('online_mr.enabled' if traffic_enabled else 'online_mr.disabled')}\n"
+            f"- {self.i18n.t('online_mr.collect_config_on_start')}: {self.i18n.t('online_mr.enabled' if self.collect_config_on_start_check.isChecked() else 'online_mr.disabled')}"
+            f"{traffic_note}\n\n"
+            f"{self.i18n.t('online_mr.start_confirm_hint')}"
+        )
+        answer = MessageBox.question(
+            self,
+            self.i18n.t("online_mr.start_confirm_title"),
+            message,
+            MessageBox.StandardButton.Yes | MessageBox.StandardButton.No,
+            MessageBox.StandardButton.No,
+        )
+        return answer == MessageBox.StandardButton.Yes
+
+    def _collapse_collection_inputs_after_start(self) -> None:
+        if self.analysis_only:
+            return
+        self._apply_parameter_panel_collapsed(True, persist=False)
+        if hasattr(self, "vertical_splitter"):
+            self.vertical_splitter.setSizes(COLLAPSED_COLLECTION_SPLITTER_SIZES)
 
     def check_iperf_server(self) -> None:
         ok, message = self._run_current_iperf_preflight()
@@ -4020,13 +4078,14 @@ class OnlineMrCollectionPage(QWidget):
             return payload
         if event.module == "busy":
             payload = parser.parse_busy(event)
-            if not any(payload.get(key) is not None for key in ("ctl_busy", "tx_busy", "rx_busy")):
+            if not any(payload.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy")):
                 return None
             return payload
         if event.module == "stats":
             payload = parser.parse_stats(event)
             counters = payload.get("counters")
-            if not isinstance(counters, dict) or not counters:
+            has_busy = any(payload.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy"))
+            if (not isinstance(counters, dict) or not counters) and not has_busy:
                 return None
             return payload
         if event.module == "interface_rate":
@@ -4226,6 +4285,10 @@ class OnlineMrCollectionPage(QWidget):
             SUMMARY_COL_ACTIVE_PEER: state.peer_name or state.peer_mac or "",
             SUMMARY_COL_PEER_MAC: state.peer_mac or "",
             SUMMARY_COL_MR_RSSI: state.mr_rssi,
+            SUMMARY_COL_BUSY_TIME: state.channel_busy_sample_time,
+            SUMMARY_COL_BUSY_TOTAL: self._summary_percent(state.channel_busy_total if state.channel_busy_total is not None else state.ctl_busy),
+            SUMMARY_COL_BUSY_TX: self._summary_percent(state.tx_busy),
+            SUMMARY_COL_BUSY_RX: self._summary_percent(state.rx_busy),
             SUMMARY_COL_PEER_SITE: state.peer_station or state.peer_site or "",
             SUMMARY_COL_PEER_SECTION: state.peer_section or "",
             SUMMARY_COL_PING_LOSS: None if state.loss is None else f"{state.loss:.2f}%",
@@ -4239,6 +4302,8 @@ class OnlineMrCollectionPage(QWidget):
         }
         for column, value in values.items():
             item = make_table_item(self._summary_text(value))
+            if column == SUMMARY_COL_STATUS:
+                self._apply_summary_status_style(item, state.status)
             self.summary_table.setItem(row, column, item)
         app_logger.log_info(
             "ONLINE_MR_REALTIME_SUMMARY_UPDATED",
@@ -4257,24 +4322,30 @@ class OnlineMrCollectionPage(QWidget):
             state.device_name or (config.device_name if config is not None else getattr(device, "name", "")),
             host,
             state.status,
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
+            "",  # active peer
+            "",  # peer mac
+            "",  # mr rssi
+            "",  # latest busy time
+            "",  # total busy
+            "",  # tx busy
+            "",  # rx busy
+            "",  # peer site
+            "",  # peer section
+            "",  # ping loss
+            "",  # ping latency
             state.sample_count,
             state.fail_count,
             state.reconnect_count,
-            "",
-            "",
-            "",
+            "",  # last collection
+            "",  # iperf mbps
+            "",  # iperf retransmits
             session_id,
             state.device_id,
         ]
         for column, value in enumerate(values):
             item = make_table_item(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
+            if column == SUMMARY_COL_STATUS:
+                self._apply_summary_status_style(item, str(value))
             self.summary_table.setItem(row, column, item)
         return row
 
@@ -4744,12 +4815,14 @@ class OnlineMrCollectionPage(QWidget):
                 combo.addItem(label, int(device.id))
             combo.blockSignals(False)
 
-        defaults = [selected[0].id if selected else None, selected[1].id if len(selected) > 1 else (selected[0].id if selected else None)]
+        defaults = [selected[0].id if selected else None, selected[1].id if len(selected) > 1 else None]
         desired: list[int | None] = []
         for previous, default in ((previous_1, defaults[0]), (previous_2, defaults[1])):
             wanted = int(previous) if previous in available_ids else (int(default) if default is not None else None)
             desired.append(wanted)
-        if len(selected) > 1 and desired[0] is not None and desired[0] == desired[1]:
+        if len(selected) < 2:
+            desired[1] = None
+        elif desired[0] is not None and desired[0] == desired[1]:
             desired[1] = int(selected[1].id)
         for combo, wanted in (
             (self.fping_device_combo_1, desired[0]),
@@ -4761,7 +4834,8 @@ class OnlineMrCollectionPage(QWidget):
             combo.blockSignals(False)
         if previous_1 != desired[0]:
             self._fping_target_user_edited[1] = False
-        if previous_2 != desired[1]:
+        preserve_manual_ping2_text = len(selected) == 1 and self._fping_target_user_edited.get(2, False)
+        if previous_2 != desired[1] and not preserve_manual_ping2_text:
             self._fping_target_user_edited[2] = False
         self._refresh_ping_target_labels()
         self._refresh_ping_status_labels()
@@ -5303,6 +5377,10 @@ class OnlineMrCollectionPage(QWidget):
             peer_display,
             snapshot.active_peer,
             snapshot.local_rssi,
+            "",
+            "",
+            "",
+            "",
             peer_site,
             peer_section,
             "",
@@ -5318,6 +5396,8 @@ class OnlineMrCollectionPage(QWidget):
         ]
         for column, value in enumerate(values):
             item = make_table_item(self._status_text(str(value)) if column == SUMMARY_COL_STATUS and value else self._summary_text(value))
+            if column == SUMMARY_COL_STATUS:
+                self._apply_summary_status_style(item, str(value))
             self.summary_table.setItem(row, column, item)
         app_logger.log_info(
             "ONLINE_MR_REALTIME_SUMMARY_UPDATED",
@@ -5371,6 +5451,7 @@ class OnlineMrCollectionPage(QWidget):
         if row < 0:
             return
         item = make_table_item(self._status_text(status))
+        self._apply_summary_status_style(item, status)
         self.summary_table.setItem(row, SUMMARY_COL_STATUS, item)
 
     def _append_mesh_snapshot(self, snapshot: OnlineMrSnapshot) -> None:
@@ -5955,7 +6036,7 @@ class OnlineMrCollectionPage(QWidget):
         apply_analysis_table_style(table)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        table.setMinimumHeight(260 if table is self.device_table else 250 if table is not self.summary_table else 120)
+        table.setMinimumHeight(120 if table is self.device_table else 220 if table is not self.summary_table else 120)
         if table is self.device_table:
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
             table.setColumnWidth(0, 48)
@@ -5993,7 +6074,7 @@ class OnlineMrCollectionPage(QWidget):
             "active_link_switch_logs": {0: 60, 1: 190, 2: 160, 3: 150, 4: 150, 5: 80, 6: 140, 7: 160, 8: 150, 9: 150, 10: 80, 11: 140, 12: 160, 13: 90, 14: 90, 15: 100, 16: 260, 17: 520},
             "interface_rate": {0: 60, 1: 190, 2: 100, 3: 120, 4: 100, 5: 100, 6: 100, 7: 100, 8: 700},
             "fping_1s": {0: 60, 1: 190, 2: 190, 3: 190, 4: 140, 5: 150, 6: 90, 7: 90, 8: 90, 9: 100, 10: 120, 11: 120, 12: 120, 13: 100, 14: 90},
-            "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 150, 5: 80, 6: 130, 7: 160, 8: 80, 9: 90, 10: 90, 11: 90, 12: 90, 13: 190, 14: 100, 15: 80, 16: 170, 17: 80},
+            "session_summary": {0: 180, 1: 130, 2: 90, 3: 190, 4: 150, 5: 80, 6: 150, 7: 95, 8: 90, 9: 90, 10: 130, 11: 160, 12: 80, 13: 90, 14: 90, 15: 90, 16: 90, 17: 190, 18: 100, 19: 80, 20: 170, 21: 80},
             "statistics": {0: 180, 1: 120, 2: 90, 3: 180, 4: 180, 5: 320},
             "iperf": {0: 180, 1: 100, 2: 90, 3: 120, 4: 700},
             "diagnosis": {0: 190, 1: 190, 2: 170, 3: 90, 4: 90, 5: 90, 6: 110, 7: 110, 8: 110, 9: 130, 10: 130, 11: 100, 12: 100, 13: 100},
@@ -6018,7 +6099,7 @@ class OnlineMrCollectionPage(QWidget):
             "history_sessions": self.history_table,
         }
         defaults = {
-            "session_summary": [180, 130, 90, 190, 150, 80, 130, 160, 80, 90, 90, 90, 90, 190, 100, 80, 170, 80],
+            "session_summary": [180, 130, 90, 190, 150, 80, 150, 95, 90, 90, 130, 160, 80, 90, 90, 90, 90, 190, 100, 80, 170, 80],
             "mesh_link": [70, 190, 190, 90, 110, 160, 170, 90, 160, 150, 130, 160, 140],
             "mesh_link_detail": [70, 190, 190, 90, 110, 160, 170, 160, 130, 160, 160, 90, 160, 150, 140],
             "channel_busy": [60, 190, 90, 100, 80, 90, 150, 120, 120],
@@ -6054,16 +6135,7 @@ class OnlineMrCollectionPage(QWidget):
         if not self._can_update_ui():
             return
         self.status_label.setText(self._status_text(status))
-        color = {
-            "COLLECTING": "#1f7a4d",
-            "CONNECTING": "#2563eb",
-            "INITIALIZING": "#2563eb",
-            "RECONNECTING": "#b45309",
-            "STOPPING": "#b45309",
-            "FAILED": "#b91c1c",
-            "ABORTED": "#b91c1c",
-            "STOPPED": "#475569",
-        }.get(status, "#475569")
+        color = _status_color(status)
         self.status_label.setStyleSheet(f"QLabel {{ border-radius: 4px; padding: 4px 8px; background: {color}; color: white; }}")
         self._update_action_state()
 
@@ -6076,6 +6148,23 @@ class OnlineMrCollectionPage(QWidget):
             return "-"
         text = str(value).strip()
         return text if text else "-"
+
+    @staticmethod
+    def _summary_percent(value: object) -> str | None:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if numeric.is_integer():
+            return f"{int(numeric)}%"
+        return f"{numeric:.2f}%"
+
+    def _apply_summary_status_style(self, item: QTableWidgetItem, status: str) -> None:
+        color = _status_color(self._summary_status_code(status))
+        item.setForeground(QColor("#ffffff"))
+        item.setBackground(QColor(color))
 
 
 def _snapshot_time(value: object) -> datetime:

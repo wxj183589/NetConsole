@@ -67,9 +67,9 @@ class EventParserEngine:
     def parse_busy(self, event: OnlineMrEvent) -> dict[str, Any]:
         payload = {"timestamp": event.timestamp, "raw": event.raw, **event.payload}
         if event.raw:
-            rows = parse_channel_busy_text(event.raw)
+            rows = parse_channel_busy_text(event.raw, collected_at=event.timestamp)
             if rows:
-                payload.update(rows[0])
+                payload.update(_latest_channel_busy_row(rows))
         return payload
 
     def parse_stats(self, event: OnlineMrEvent) -> dict[str, Any]:
@@ -126,6 +126,25 @@ def _float(*values: object) -> float:
         except (TypeError, ValueError):
             continue
     return 0.0
+
+
+def _latest_channel_busy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    valid = [
+        row
+        for row in rows
+        if any(row.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy"))
+    ]
+    if not valid:
+        return rows[-1] if rows else {}
+
+    def sort_key(row: dict[str, Any]) -> tuple[int, str]:
+        sample_time = str(row.get("channel_busy_sample_time") or row.get("sample_time") or "")
+        try:
+            return (1, sample_time if sample_time else "")
+        except (TypeError, ValueError):
+            return (0, "")
+
+    return max(valid, key=sort_key)
 
 
 def _extract_iperf_mbps(payload: dict[str, Any]) -> float | None:

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QLineEdit, QSizePolicy, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QLineEdit, QMessageBox, QSizePolicy, QTableWidget, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -75,6 +75,10 @@ from netconsole.ui.pages.online_mr_collection_page import (
     ONLINE_MR_WORK_PANEL_MIN_WIDTH,
     OnlineMrCollectionPage,
     SUMMARY_COL_ACTIVE_PEER,
+    SUMMARY_COL_BUSY_TIME,
+    SUMMARY_COL_BUSY_TOTAL,
+    SUMMARY_COL_BUSY_TX,
+    SUMMARY_COL_BUSY_RX,
     SUMMARY_COL_COLLECTED,
     SUMMARY_COL_DEVICE_ID,
     SUMMARY_COL_FAILED,
@@ -1325,6 +1329,7 @@ def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path,
     page.enable_iperf_check.setChecked(False)
     monkeypatch.setattr(page, "_selected_devices", lambda: [device])
     monkeypatch.setattr(page, "_build_config_for_device", lambda _device: config)
+    monkeypatch.setattr(page, "_confirm_start_collection", lambda _devices: True)
     started: list[OnlineMrCollectorWorker] = []
     monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
     monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.QMessageBox.warning", lambda *_args: None)
@@ -1373,6 +1378,51 @@ def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path,
     assert int(device.id) not in page.workers_by_device_id
     assert page.start_button.isEnabled()
     assert not page.stop_selected_button.isEnabled()
+
+
+def test_online_mr_start_confirmation_cancel_does_not_start_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Cancel")
+    page.refresh_all()
+    page.enable_fping_check.setChecked(False)
+    page.enable_iperf_check.setChecked(False)
+    page.selected_device_ids = {int(device.id)}
+    started: list[OnlineMrCollectorWorker] = []
+    monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.online_mr_collection_page.MessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+    )
+
+    page.start_collection()
+
+    assert started == []
+    assert page.session_dirs == {}
+    assert int(device.id) not in page.workers_by_device_id
+
+
+def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Start")
+    page.refresh_all()
+    page.enable_fping_check.setChecked(False)
+    page.enable_iperf_check.setChecked(False)
+    page.selected_device_ids = {int(device.id)}
+    started: list[OnlineMrCollectorWorker] = []
+    monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.online_mr_collection_page.MessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    page.start_collection()
+
+    assert len(started) == 1
+    assert page.parameter_panel_collapsed is True
+    assert page.right_control_scroll.isHidden() is True
+    assert page.vertical_splitter.sizes()[0] <= 260
 
 
 def test_parse_failure_saves_raw_marks_failed_and_loop_continues(tmp_path: Path) -> None:
@@ -1567,6 +1617,8 @@ def test_channel_busy_parser_keeps_table_rows_with_structured_fields() -> None:
     assert len(rows) == 2
     assert rows[0]["row_index"] == 1
     assert rows[0]["sample_time"] == "2026-06-26 22:08:24"
+    assert rows[0]["channel_busy_sample_time"] == "2026-06-26 22:08:24"
+    assert rows[0]["channel_busy_total"] == 4
     assert rows[0]["ctl_channel"] == 165
     assert rows[0]["bandwidth"] == 1
     assert rows[0]["record_interval"] == 9
@@ -1730,6 +1782,21 @@ def test_ap_radio_statistics_parser_extracts_required_counters() -> None:
     assert parsed["discard_count"] == 226631
 
 
+def test_ap_radio_statistics_parser_extracts_latest_busy_values_from_prefixed_log() -> None:
+    parsed = parse_ap_radio_statistics_text(
+        "2026-07-07 03:05:11.465 [collector=repeat] RX [Radio Statistics]\n"
+        "2026-07-07 03:05:11.465 [collector=repeat] RX ChannelBusy: 65\n"
+        "2026-07-07 03:05:11.465 [collector=repeat] RX TxBusy: 12\n"
+        "2026-07-07 03:05:11.465 [collector=repeat] RX RxBusy: 34\n"
+    )
+
+    assert parsed["channel_busy_total"] == 65
+    assert parsed["ctl_busy"] == 65
+    assert parsed["tx_busy"] == 12
+    assert parsed["rx_busy"] == 34
+    assert parsed["channel_busy_sample_time"] == "2026-07-07 03:05:11"
+
+
 def test_realtime_state_unifies_mesh_busy_and_ping_fields() -> None:
     now = datetime(2026, 6, 27, 10, 0, 0)
     events = [
@@ -1751,9 +1818,28 @@ def test_realtime_state_unifies_mesh_busy_and_ping_fields() -> None:
     assert state.peer_site == "宁波站"
     assert state.peer_station == "宁波站"
     assert state.mr_rssi == 36
+    assert state.channel_busy_total == 4
     assert state.ctl_busy == 4
     assert state.loss == 0.5
     assert state.rtt == 2.5
+
+
+def test_realtime_state_preserves_latest_valid_busy_when_later_stats_are_blank() -> None:
+    now = datetime(2026, 6, 27, 10, 0, 0)
+    state = build_realtime_state(
+        device_id=7,
+        device_name="MR",
+        status="COLLECTING",
+        events=[
+            OnlineMrEvent(now, "s1", 7, "ssh", "busy", EVENT_BUSY_SAMPLE, {"ctl_busy": 55, "tx_busy": 12, "rx_busy": 34, "sample_time": "2026-06-27 10:00:00"}),
+            OnlineMrEvent(now + timedelta(seconds=1), "s1", 7, "ssh", "stats", "STATS_SAMPLE", {"counters": {}}),
+        ],
+    )
+
+    assert state.channel_busy_total == 55
+    assert state.tx_busy == 12
+    assert state.rx_busy == 34
+    assert state.channel_busy_sample_time == "2026-06-27 10:00:00"
 
 
 def test_realtime_state_continues_after_unresolved_peer_mac() -> None:
@@ -1832,6 +1918,34 @@ def test_event_parser_extracts_simple_mesh_peer_fields() -> None:
     assert latest["bssid"] == "74ad-cb9d-317f"
     assert latest["interface"] == "WLAN-MeshLink774"
     assert latest["link_state"] == "ACTIVE"
+
+
+def test_realtime_parser_extracts_latest_channel_busy_sample_from_stream_table() -> None:
+    parser = OnlineMrRealtimeParser()
+    parsed = parser.parse_raw_event(
+        OnlineMrEvent(
+            datetime(2026, 7, 7, 3, 5, 11, 465000),
+            "s1",
+            7,
+            "ssh_stream",
+            "busy",
+            EVENT_BUSY_SAMPLE,
+            {},
+            raw=(
+                "Date/Month/Year: 07/07/2026\n"
+                "CurrentTime: 03:05:13\n"
+                "      Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
+                "01     03:05:07          81          2          77          -\n"
+                "02     03:04:58          82          3          78          -\n"
+            ),
+        )
+    )
+
+    assert parsed is not None
+    assert parsed.payload["channel_busy_total"] == 81
+    assert parsed.payload["tx_busy"] == 2
+    assert parsed.payload["rx_busy"] == 77
+    assert parsed.payload["channel_busy_sample_time"] == "2026-07-07 03:05:07"
 
 
 def test_realtime_aggregator_updates_stats_and_iperf_fields() -> None:
@@ -2124,12 +2238,12 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.wireless_status_interval_edit.text() == "3"
     assert page.period_box.layout().columnStretch(1) == 1
     assert page.collect_status_box.title() == "实时采集状态"
-    assert page.collect_status_box.minimumHeight() >= 140
+    assert page.collect_status_box.minimumHeight() >= 110
     assert page.collect_status_box.maximumHeight() > 10000
     assert page.collect_card_1.parentWidget() is page.collect_status_box
     assert page.collect_card_2.parentWidget() is page.collect_status_box
     assert not page.collect_progress_1.isVisible()
-    assert page.device_table.minimumHeight() >= 260
+    assert page.device_table.minimumHeight() >= 120
     assert page.device_table.maximumHeight() > 10000
     assert page.device_table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
     assert page.device_table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel
@@ -2140,7 +2254,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.main_splitter.widget(1) is page.right_control_scroll
     assert page.main_work_panel.minimumWidth() >= ONLINE_MR_WORK_PANEL_MIN_WIDTH
     assert page.device_panel.minimumWidth() >= ONLINE_MR_LEFT_PANEL_MIN_WIDTH
-    assert page.device_panel.minimumHeight() >= 280
+    assert page.device_panel.minimumHeight() >= 180
     assert page.right_control_scroll.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
     assert page.right_control_scroll.maximumWidth() > 10000
     assert page.right_control_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
@@ -2205,6 +2319,10 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
         SUMMARY_COL_ACTIVE_PEER: 190,
         SUMMARY_COL_PEER_MAC: 150,
         SUMMARY_COL_MR_RSSI: 80,
+        SUMMARY_COL_BUSY_TIME: 150,
+        SUMMARY_COL_BUSY_TOTAL: 95,
+        SUMMARY_COL_BUSY_TX: 90,
+        SUMMARY_COL_BUSY_RX: 90,
         SUMMARY_COL_PEER_SITE: 120,
         SUMMARY_COL_PEER_SECTION: 160,
         SUMMARY_COL_PING_LOSS: 80,
@@ -2349,7 +2467,34 @@ def test_online_mr_fping_devices_follow_checked_mrs(tmp_path: Path) -> None:
     assert second_config.fping.target == second.primary_address
 
 
-def test_online_mr_summary_binds_station_without_busy_columns(tmp_path: Path) -> None:
+def test_online_mr_single_checked_device_only_fills_ping1_and_preserves_manual_ping2(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    first = _create_onboard_device(repository, onboard.id, "MR-A")
+    second = _create_onboard_device(repository, onboard.id, "MR-B")
+    page.refresh_all()
+
+    first_row = next(row for row, device in enumerate(page.filtered_devices) if device.id == first.id)
+    page.device_table.item(first_row, 0).setCheckState(Qt.Checked)
+
+    assert page.fping_device_combo_1.currentData() == first.id
+    assert page.fping_target_label_1.text() == first.primary_address
+    assert page.fping_device_combo_2.currentData() is None
+    assert page.fping_target_label_2.text() == ""
+
+    page.fping_target_label_2.setText("10.122.7.250")
+    page._fping_target_edited(2)
+    page.device_table.item(first_row, 0).setCheckState(Qt.Unchecked)
+    second_row = next(row for row, device in enumerate(page.filtered_devices) if device.id == second.id)
+    page.device_table.item(second_row, 0).setCheckState(Qt.Checked)
+
+    assert page.fping_device_combo_1.currentData() == second.id
+    assert page.fping_target_label_1.text() == second.primary_address
+    assert page.fping_device_combo_2.currentData() is None
+    assert page.fping_target_label_2.text() == "10.122.7.250"
+
+
+def test_online_mr_summary_binds_station_and_latest_busy_columns(tmp_path: Path) -> None:
     page, _repository, _groups = _online_page_with_devices(tmp_path)
     page.summary_table.setRowCount(1)
     page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem("7"))
@@ -2361,7 +2506,7 @@ def test_online_mr_summary_binds_station_without_busy_columns(tmp_path: Path) ->
         status="COLLECTING",
         events=[
             OnlineMrEvent(now, "s1", 7, "ssh", "mesh", EVENT_MESH_SAMPLE, {"peer_mac": "30f5-277a-5a2f", "mr_rssi": 36, "link_state": "ACTIVE"}),
-            OnlineMrEvent(now, "s1", 7, "ssh", "busy", EVENT_BUSY_SAMPLE, {"ctl_busy": 4, "tx_busy": 1, "rx_busy": 3}),
+            OnlineMrEvent(now, "s1", 7, "ssh", "busy", EVENT_BUSY_SAMPLE, {"ctl_busy": 4, "tx_busy": 1, "rx_busy": 3, "sample_time": "2026-06-27 10:00:00"}),
         ],
         sample_count=2,
         resolve_peer=lambda _mac: {"peer_ap_name": "AP-01", "peer_site": "宁波站"},
@@ -2370,13 +2515,18 @@ def test_online_mr_summary_binds_station_without_busy_columns(tmp_path: Path) ->
     page._update_summary_from_state(state)
 
     headers = [page.summary_table.horizontalHeaderItem(column).text() for column in range(page.summary_table.columnCount())]
-    assert page.summary_table.columnCount() == 18
-    assert "CtlBusy(%)" not in headers
-    assert "TxBusy(%)" not in headers
-    assert "RxBusy(%)" not in headers
-    assert "Status" not in headers[14:17]
+    assert page.summary_table.columnCount() == 22
+    assert headers[SUMMARY_COL_BUSY_TIME] == "Latest Busy Time"
+    assert headers[SUMMARY_COL_BUSY_TOTAL] == "Total Busy"
+    assert headers[SUMMARY_COL_BUSY_TX] == "Tx Busy"
+    assert headers[SUMMARY_COL_BUSY_RX] == "Rx Busy"
     assert page.summary_table.item(0, SUMMARY_COL_PEER_SITE).text() == "宁波站"
     assert page.summary_table.item(0, SUMMARY_COL_PEER_MAC).text() == "30f5-277a-5a2f"
+    assert page.summary_table.item(0, SUMMARY_COL_BUSY_TIME).text() == "2026-06-27 10:00:00"
+    assert page.summary_table.item(0, SUMMARY_COL_BUSY_TOTAL).text() == "4%"
+    assert page.summary_table.item(0, SUMMARY_COL_BUSY_TX).text() == "1%"
+    assert page.summary_table.item(0, SUMMARY_COL_BUSY_RX).text() == "3%"
+    assert page.summary_table.item(0, SUMMARY_COL_STATUS).background().color().name().lower() == "#1f7a4d"
     assert page.summary_table.item(0, SUMMARY_COL_DEVICE_ID).text() == "7"
 
 
