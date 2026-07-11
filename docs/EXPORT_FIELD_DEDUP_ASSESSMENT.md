@@ -165,3 +165,5 @@ samples
 - 当前观察结果只能说明字段相同或上下文缺失，不能授权删除、改名、合并字段，也不能改变 AP/Radio/Peer identity、ACTIVE/STANDBY、备链、RSSI、Busy、短链或乒乓结论。
 
 阶段 7 已完成真实局点 diagnostics 观测、脱敏汇总、准入阈值和运行手册设计，见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。在获得稳定脱敏样本前，仍不得修改导出字段或报告 SQL；即使达到初始阈值，也只能进入只读展示评估。
+
+阶段 8 只读展示评估见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。阶段 8.1 优先只读消费现有 metadata，不改 workbook、不新增默认 sidecar，也不展示 `samples/warnings/error`；报告 Sheet、首页摘要和独立 XLSX 均不进入最小实现。

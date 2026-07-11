@@ -4,7 +4,7 @@
 
 `netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
-阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入；阶段 6/6.1 已完成导出评估和两个 P0 diagnostics 接入；阶段 7 已定义真实局点只读观测、脱敏汇总和准入阈值。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出字段语义保持不变。
+阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入；阶段 6/6.1 已完成导出评估和两个 P0 diagnostics 接入；阶段 7 已定义真实局点只读观测、脱敏汇总和准入阈值；阶段 8 已完成只读展示方案评估。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出字段语义保持不变。
 
 目录结构：
 
@@ -195,3 +195,5 @@ MR/Mesh、Online MR、Vehicle MR 的数据来源、Peer/Radio语义、lookup差�
 阶段 6 导出字段去重诊断评估与阶段 6.1 P0 实施见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。Mesh 链路明细和 `OnlineMrAnalysisReportExporter` 只附加小型 `export_identity_diagnostics` 元数据；没有修改 workbook/CSV/NAM、表头、报告 SQL、解析、页面或业务统计，默认不写 sidecar。
 
 阶段 7 真实局点运行步骤、统一指标、HMAC 脱敏、采样范围、风险分级和保守决策门见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。观测只提取聚合，不保存完整 items/evidence/raw log/xlsx；达到阈值也只允许进入阶段 8 的只读展示评估，不授权生产接管。
+
+阶段 8 可展示字段允许列表、禁止字段、UI/报告候选、默认关闭策略、不可用状态和阶段 8.1 最小设计见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。当前尚无真实局点采样，也没有独立 Job Center 任务详情或通用诊断中心；本阶段未实现 UI、feature flag、报告或生产代码。

@@ -32,6 +32,7 @@
 | 导出字段去重诊断评估（阶段 6） | 已盘点 MR/Mesh、Online/Vehicle MR、轨旁、AC/FIT-AP、OmniPeek和无线扫描导出；只设计阶段6.1只读diagnostics，未改表头、SQL、formatter或页面 |
 | 导出只读 diagnostics（阶段 6.1 P0） | Mesh 链路明细 finished result 与 Online MR兼容详细 exporter metadata 已附加有限诊断；失败隔离，workbook/SQL/表头/行值不变，默认无 sidecar |
 | 真实局点只读观测方案（阶段 7） | 已定义六类接入点、运行步骤、聚合口径、HMAC脱敏、采样范围、保守阈值和回滚；未新增脚本、UI、sidecar或生产逻辑 |
+| 观察结果只读展示评估（阶段 8） | 已定义安全聚合允许列表、禁止字段、UI/报告候选、默认关闭、不可用状态、权限边界和阶段8.1最小设计；未实现UI、flag、报告或生产逻辑 |
 | UI helper | 已新增 `ui/job_action_helper.py`，普通任务可复用非模态进度、取消和回调 |
 
 ## 兼容保留
@@ -90,5 +91,5 @@ UI page
 - 现有 `ap_entities` 是统一 identity 的基础，不新增第二张 AP 主表。
 - `ap_uuid` 用于站点数据库内已落表对象；跨模块优先规范化 AP MAC；名称和 AC APID 只作带作用域降级匹配。
 - Radio MAC、BSSID/BBSSID、Peer MAC、Peer Radio MAC 保持 radio/观测层语义，不折叠为 AP MAC。
-- 推荐路线固定为：identity工具（已完成）→ AC/extension shadow（已完成）→ 光衰shadow（已完成）→ 轨旁评估/shadow（已完成）→ MR/Mesh评估/shadow（已完成）→ 导出字段去重诊断评估（已完成）→ 导出只读 diagnostics P0（已完成）→ 真实局点只读观测方案（已完成）→ 观察结果只读展示评估。
+- 推荐路线固定为：identity工具（已完成）→ AC/extension shadow（已完成）→ 光衰shadow（已完成）→ 轨旁评估/shadow（已完成）→ MR/Mesh评估/shadow（已完成）→ 导出字段去重诊断评估（已完成）→ 导出只读 diagnostics P0（已完成）→ 真实局点只读观测方案（已完成）→ 观察结果只读展示评估（已完成）→ 默认关闭的单宿主最小展示（待真实观测准入）。
 - 每一阶段先做旧/新 shadow comparison，保持数据库、业务规则、页面字段和导出兼容；不得从 identity 工具直接跳到轨旁业务迁移。

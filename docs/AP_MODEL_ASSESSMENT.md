@@ -316,8 +316,9 @@ CanonicalApProfile
 | 6：导出字段去重诊断评估（已完成） | 盘点 MR/Mesh、Online/Vehicle MR、轨旁、AC/FIT-AP、OmniPeek和无线扫描导出；只设计只读 diagnostics | 把不同语义 MAC误当重复、遗漏兼容直接服务 | 静态调用链、字段矩阵、逻辑 golden、UTF-8/Markdown/diff检查 | 否 | 删除评估文档增量 |
 | 6.1：导出只读 diagnostics（P0 已完成） | Mesh 链路明细流式旁路统计，Online MR兼容详细报告在旧 rows 后统计；只附加元数据 | 大数据扫描、位置数组错位、诊断反向影响导出终态 | 纯service、失败隔离、旧 Sheet/表头/SQL/三列值/筛选/冻结/样式 golden | 否 | 删除 diagnostics service、两处旁路调用和附加结果 |
 | 7：真实局点只读观测方案（已完成） | 定义六类观测点、聚合口径、HMAC脱敏、采样范围、阈值、运行手册和决策门；不执行现场采样 | 敏感 items/result 被误保存、不同对象错误合并、阈值被误当生产规则 | UTF-8/Markdown/diff检查和生产文件零改动 | 否 | 删除阶段7文档增量 |
+| 8：只读展示方案评估（已完成） | 定义聚合允许列表、禁止字段、UI/报告候选、默认关闭、不可用状态、安全边界和阶段8.1最小设计；不实现展示 | 原始 result 直绑 UI、诊断被误当业务失败、宿主范围失控 | 真实结构静态核对、UTF-8/Markdown/diff检查和生产文件零改动 | 否 | 删除阶段8文档增量 |
 
-阶段 1～6 都不应顺带拆 `legacy_tasks.py`、替换页面模型或调整数据库 schema。只有前述 shadow comparison 表明确认现有 `ap_entities` 无法承载需求后，才单独评估 additive schema migration。
+阶段 1～8 都不应顺带拆 `legacy_tasks.py`、替换页面模型或调整数据库 schema。只有前述 shadow comparison 表明确认现有 `ap_entities` 无法承载需求后，才单独评估 additive schema migration。
 
 ## 13. 不建议立刻迁移的范围
 
@@ -375,3 +376,5 @@ parser、mapping/cache、数据库schema/写入、主备链、同AP双Radio、�
 阶段 6.1 P0 已完成：`ExportIdentityDiagnostics` 在 Mesh 链路明细旧 formatter 前流式计数，并在兼容 Online MR 详细 rows 写入 worksheet 前按原表头计数。两处只暴露 `export_identity_diagnostics` 元数据，失败降级为 `available=false`，默认不生成 sidecar；formatter、workbook、表头、报告 SQL、三列同源值和业务统计均未修改。详细结果见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。
 
 阶段 7 已完成方案设计，详见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。统一汇总要求不支持的指标写 `null`，只保存聚合和 warning code；真实 MAC/IP/名称/路径使用 campaign HMAC 或 token，完整 result、raw log、数据库和 xlsx 不得进入仓库。初始门槛包括 identity changed 必须为 0、ambiguous 不超过 1%、unresolved 和 missing AC scope 不超过 5%、name-only 不超过 10%；这些只用于后续评估，不是生产强制规则。
+
+阶段 8 已完成方案评估，详见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。阶段 8.1 只能通过严格允许列表 ViewModel 消费现有 metadata，默认关闭且只选一个维护宿主；当前没有真实局点采样，也没有独立 Job Center 任务详情或通用诊断中心，因此不得直接启用可见展示或改造多个业务页面。

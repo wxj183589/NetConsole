@@ -273,4 +273,4 @@ AP identity 阶段 2～6.1 已在 AC 扩展信息、AC 光衰、轨旁 AP、MR/M
 单独立项、重新评审、用户明确批准
 ```
 
-阶段 8 最多评估观察结果如何在 UI 或报告中只读展示，不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。
+阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。评估定义了聚合允许列表、禁止字段、默认关闭、不可用状态和阶段 8.1 最小设计；尚未执行真实局点采样，也未实现 UI、feature flag 或报告。后续仍不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。
