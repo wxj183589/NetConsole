@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QHeaderView, QLineEdit, QMessageBox, QSizePolicy, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QDialogButtonBox, QHeaderView, QLabel, QLineEdit, QMessageBox, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -1389,17 +1389,19 @@ def test_online_mr_start_confirmation_cancel_does_not_start_worker(tmp_path: Pat
     page.enable_iperf_check.setChecked(False)
     page.selected_device_ids = {int(device.id)}
     started: list[OnlineMrCollectorWorker] = []
+    preflight_calls: list[bool] = []
+    initial_status = page.status_value
     monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
-    monkeypatch.setattr(
-        "netconsole.ui.pages.online_mr_collection_page.MessageBox.question",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
-    )
+    monkeypatch.setattr(page, "_show_start_confirm_dialog", lambda _message: False)
+    monkeypatch.setattr(page, "_preflight_iperf_before_start", lambda: preflight_calls.append(True) or True)
 
     page.start_collection()
 
     assert started == []
+    assert preflight_calls == []
     assert page.session_dirs == {}
     assert int(device.id) not in page.workers_by_device_id
+    assert page.status_value == initial_status
 
 
 def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1411,18 +1413,157 @@ def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monke
     page.enable_iperf_check.setChecked(False)
     page.selected_device_ids = {int(device.id)}
     started: list[OnlineMrCollectorWorker] = []
+    preflight_calls: list[bool] = []
     monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
-    monkeypatch.setattr(
-        "netconsole.ui.pages.online_mr_collection_page.MessageBox.question",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(page, "_show_start_confirm_dialog", lambda _message: True)
+    monkeypatch.setattr(page, "_preflight_iperf_before_start", lambda: preflight_calls.append(True) or True)
 
     page.start_collection()
 
+    assert preflight_calls == [True]
     assert len(started) == 1
     assert page.parameter_panel_collapsed is True
     assert page.right_control_scroll.isHidden() is True
     assert page.vertical_splitter.sizes()[0] <= 260
+
+
+def test_online_mr_start_confirmation_summary_includes_ping_details(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "Train01-MR-CT")
+    page.refresh_all()
+
+    row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
+    page.device_table.item(row, 0).setCheckState(Qt.Checked)
+    page.enable_fping_check.setChecked(True)
+    page.enable_iperf_check.setChecked(False)
+    page.fping_packet_size.setValue(64)
+    page.fping_interval_ms.setValue(10)
+    page.fping_loss_threshold_ms.setValue(100)
+    page.fping_loss_warn_edit.setText("0.7")
+    page.fping_latency_warn_ms.setValue(100)
+    page.fping_target_label_2.setText("10.122.7.250")
+    page._fping_target_edited(2)
+
+    message = page._build_start_confirm_message([device])
+
+    assert "High-frequency Ping:" in message
+    assert "- Ping 1: Enabled" in message
+    assert "Device Name: Train01-MR-CT" in message
+    assert f"Target IP: {device.primary_address}" in message
+    assert "Packet Size: 64 bytes" in message
+    assert "Send Interval: 10 ms" in message
+    assert "Timeout Judgment: 100 ms" in message
+    assert "Packet Loss Warning: 0.7%" in message
+    assert "- Ping 2: Not enabled" in message
+    assert "10.122.7.250" not in message
+    assert "iperf: Not enabled" in message
+
+
+def test_online_mr_start_confirmation_summary_keeps_ping_two_independent(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device_1 = _create_onboard_device(repository, onboard.id, "Train01-MR-CT")
+    device_2 = _create_onboard_device(repository, onboard.id, "Train01-MR-DT")
+    page.refresh_all()
+
+    for row, row_device in enumerate(page.filtered_devices):
+        if row_device.id in {device_1.id, device_2.id}:
+            page.device_table.item(row, 0).setCheckState(Qt.Checked)
+    page.enable_fping_check.setChecked(True)
+    ping_1_index = page.fping_device_combo_1.findData(device_1.id)
+    ping_2_index = page.fping_device_combo_2.findData(device_2.id)
+    assert ping_1_index >= 0
+    assert ping_2_index >= 0
+    page.fping_device_combo_1.setCurrentIndex(ping_1_index)
+    page.fping_device_combo_2.setCurrentIndex(ping_2_index)
+    page.fping_target_label_1.setText("10.122.1.249")
+    page.fping_target_label_2.setText("10.122.1.250")
+
+    message = page._build_start_confirm_message([device_1, device_2])
+
+    assert "- Ping 1: Enabled" in message
+    assert "Device Name: Train01-MR-CT" in message
+    assert "Target IP: 10.122.1.249" in message
+    assert "- Ping 2: Enabled" in message
+    assert "Device Name: Train01-MR-DT" in message
+    assert "Target IP: 10.122.1.250" in message
+
+
+def test_online_mr_start_confirmation_summary_includes_udp_iperf_details(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "Train01-MR-CT")
+    page.refresh_all()
+
+    page.enable_fping_check.setChecked(False)
+    page.enable_iperf_check.setChecked(True)
+    preset_index = page.iperf_preset_combo.findData("pis_udp_downlink_carrier")
+    assert preset_index >= 0
+    page.iperf_preset_combo.setCurrentIndex(preset_index)
+    page.iperf_server_edit.setText("10.122.1.100")
+    page.iperf_port_spin.setValue(5202)
+    page.iperf_udp_bitrate_edit.setText("300")
+    page.iperf_udp_threshold_edit.setText("280")
+    page.iperf_packet_length_spin.setValue(1400)
+    page.iperf_parallel_spin.setValue(2)
+    page.auto_reconnect_check.setChecked(True)
+
+    message = page._build_start_confirm_message([device])
+
+    assert "iperf Traffic Test:" in message
+    assert "State: Enabled" in message
+    assert "Protocol: UDP" in message
+    assert "Test Preset: PIS UDP 下行指定码率承载" in message
+    assert "Server Address: 10.122.1.100" in message
+    assert "Port: 5202" in message
+    assert "Target Bandwidth: 300M" in message
+    assert "UDP Acceptance Threshold: 280M" in message
+    assert "UDP Packet Length: 1400 bytes" in message
+    assert "Parallel Streams: 2" in message
+    assert "Interval: 1 s" in message
+    assert "Role: Ground server / onboard client" in message
+    assert "Ground -> Onboard" in message
+    assert "Startup Preflight: Enabled" in message
+    assert "Auto Reconnect on Interruption: Enabled" in message
+
+
+def test_online_mr_start_confirmation_summary_includes_tcp_iperf_details(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "Train01-MR-CT")
+    page.refresh_all()
+
+    page.enable_fping_check.setChecked(False)
+    page.enable_iperf_check.setChecked(True)
+    page.iperf_server_edit.setText("10.122.1.100")
+    page.iperf_protocol_combo.setCurrentText("TCP")
+    page.iperf_tcp_threshold_edit.setText("600")
+    page.iperf_tcp_pacing_check.setChecked(False)
+
+    message = page._build_start_confirm_message([device])
+
+    assert "Protocol: TCP" in message
+    assert "Target Bandwidth: Auto Maximum Bandwidth" in message
+    assert "TCP Acceptance Threshold: 600M" in message
+    assert "TCP Pacing: Disabled" in message
+
+
+def test_online_mr_start_confirmation_dialog_is_scrollable(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+
+    dialog = page._create_start_confirm_dialog("\n".join(f"line {index}" for index in range(80)))
+
+    scroll_area = dialog.findChild(QScrollArea)
+    buttons = dialog.findChild(QDialogButtonBox)
+    labels = dialog.findChildren(QLabel)
+    assert scroll_area is not None
+    assert scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert buttons is not None
+    assert any("line 79" in label.text() for label in labels)
+    assert dialog.minimumWidth() >= 640
+    assert dialog.minimumHeight() >= 420
+    dialog.deleteLater()
 
 
 def test_parse_failure_saves_raw_marks_failed_and_loop_continues(tmp_path: Path) -> None:

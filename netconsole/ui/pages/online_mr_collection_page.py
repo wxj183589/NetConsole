@@ -22,8 +22,11 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHeaderView,
@@ -113,6 +116,7 @@ from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, OnlineMrHistoryLoadWorker
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.dialogs.dialog_style import apply_dialog_style
 from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
@@ -1944,36 +1948,213 @@ class OnlineMrCollectionPage(QWidget):
     def _confirm_start_collection(self, devices: list[Device]) -> bool:
         if not devices:
             return True
+        return self._show_start_confirm_dialog(self._build_start_confirm_message(devices))
+
+    def _build_start_confirm_message(self, devices: list[Device]) -> str:
         device_lines = [
             f"- {device.name} ({str(device.primary_address or '').strip() or '-'})"
             for device in devices
         ]
-        ping_enabled = self.enable_fping_check.isChecked()
         traffic_enabled = self.enable_iperf_check.isChecked()
-        traffic_note = ""
+        lines = [
+            self.i18n.t("online_mr.start_confirm_devices"),
+            *device_lines,
+            "",
+            self.i18n.t("online_mr.start_confirm_params"),
+            f"- {self.i18n.t('online_mr.mesh_link')}: {self.mesh_interval.value()} {self.i18n.t('online_mr.seconds')}",
+            f"- {self.i18n.t('online_mr.channel_busy')}: {self.channel_interval.value()} {self.i18n.t('online_mr.seconds')}",
+            f"- {self.i18n.t('online_mr.ap_radio_statistics')}: {self.statistics_interval.value()} {self.i18n.t('online_mr.seconds')}",
+            f"- {self.i18n.t('online_mr.collect_config_on_start')}: {self._enabled_text(self.collect_config_on_start_check.isChecked())}",
+            "",
+            *self._build_ping_confirm_lines(),
+            "",
+            *self._build_iperf_confirm_lines(),
+        ]
         if traffic_enabled and len(devices) >= 2:
-            traffic_note = f"\n{self.i18n.t('online_mr.confirm_two_traffic')}"
-        message = (
-            f"{self.i18n.t('online_mr.start_confirm_devices')}\n"
-            f"{chr(10).join(device_lines)}\n\n"
-            f"{self.i18n.t('online_mr.start_confirm_params')}\n"
-            f"- {self.i18n.t('online_mr.mesh_link')}: {self.mesh_interval.value()} {self.i18n.t('online_mr.seconds')}\n"
-            f"- {self.i18n.t('online_mr.channel_busy')}: {self.channel_interval.value()} {self.i18n.t('online_mr.seconds')}\n"
-            f"- {self.i18n.t('online_mr.ap_radio_statistics')}: {self.statistics_interval.value()} {self.i18n.t('online_mr.seconds')}\n"
-            f"- {self.i18n.t('online_mr.high_freq_ping')}: {self.i18n.t('online_mr.enabled' if ping_enabled else 'online_mr.disabled')}\n"
-            f"- {self.i18n.t('online_mr.traffic_test')}: {self.i18n.t('online_mr.enabled' if traffic_enabled else 'online_mr.disabled')}\n"
-            f"- {self.i18n.t('online_mr.collect_config_on_start')}: {self.i18n.t('online_mr.enabled' if self.collect_config_on_start_check.isChecked() else 'online_mr.disabled')}"
-            f"{traffic_note}\n\n"
-            f"{self.i18n.t('online_mr.start_confirm_hint')}"
+            lines.extend(["", self.i18n.t("online_mr.confirm_two_traffic")])
+        lines.extend(["", self.i18n.t("online_mr.start_confirm_hint")])
+        return "\n".join(lines)
+
+    def _build_ping_confirm_lines(self) -> list[str]:
+        return [
+            f"{self.i18n.t('online_mr.start_confirm_ping_group')}:",
+            f"- {self.i18n.t('online_mr.start_confirm_ping_group')}: {self._enabled_text(self.enable_fping_check.isChecked())}",
+            *self._ping_slot_confirm_lines(1, self.fping_device_combo_1, self.fping_target_label_1),
+            *self._ping_slot_confirm_lines(2, self.fping_device_combo_2, self.fping_target_label_2),
+        ]
+
+    def _ping_slot_confirm_lines(self, slot: int, combo: QComboBox, target_label: QLineEdit) -> list[str]:
+        title = f"Ping {slot}"
+        if not self.enable_fping_check.isChecked():
+            return [f"- {title}: {self.i18n.t('online_mr.not_enabled')}"]
+        device_id = combo.currentData()
+        if device_id is None:
+            return [f"- {title}: {self.i18n.t('online_mr.not_enabled')}"]
+        device = self._device_by_id(int(device_id))
+        target_ip = target_label.text().strip()
+        if not target_ip and device is not None:
+            target_ip = str(device.primary_address or "").strip()
+        if not target_ip:
+            return [f"- {title}: {self.i18n.t('online_mr.not_enabled')}"]
+        device_name = device.name if device is not None else combo.currentText().strip()
+        return [
+            f"- {title}: {self.i18n.t('online_mr.enabled')}",
+            f"  {self.i18n.t('online_mr.device_name')}: {device_name or '-'}",
+            f"  {self.i18n.t('online_mr.target_ip')}: {target_ip}",
+            f"  {self.i18n.t('online_mr.packet_size')}: {self.fping_packet_size.value()} {self.i18n.t('online_mr.bytes')}",
+            f"  {self.i18n.t('online_mr.confirm_ping_interval')}: {self.fping_interval_ms.value()} {self.i18n.t('online_mr.milliseconds')}",
+            f"  {self.i18n.t('online_mr.confirm_timeout')}: {self.fping_loss_threshold_ms.value()} {self.i18n.t('online_mr.milliseconds')}",
+            f"  {self.i18n.t('online_mr.confirm_loss_warn')}: {self._format_number(self._current_fping_loss_warn_percent())}{self.i18n.t('online_mr.percent')}",
+            f"  {self.i18n.t('online_mr.confirm_latency_warn')}: {self.fping_latency_warn_ms.value()} {self.i18n.t('online_mr.milliseconds')}",
+        ]
+
+    def _build_iperf_confirm_lines(self) -> list[str]:
+        enabled = self.enable_iperf_check.isChecked()
+        lines = [
+            f"{self.i18n.t('online_mr.start_confirm_iperf_group')}:",
+            f"- {self.i18n.t('online_mr.state')}: {self._enabled_text(enabled)}",
+        ]
+        if not enabled:
+            lines.append(f"- iperf: {self.i18n.t('online_mr.not_enabled')}")
+            return lines
+
+        traffic = self._current_iperf_summary_config()
+        protocol = traffic.protocol.upper()
+        lines.extend(
+            [
+                f"- {self.i18n.t('iperf.protocol')}: {protocol}",
+                f"- {self.i18n.t('iperf.preset')}: {traffic.preset_name or self.iperf_preset_combo.currentText() or '-'}",
+                f"- {self.i18n.t('online_mr.iperf_role')}: {self._format_iperf_role(traffic.deployment_mode)}",
+                f"- {self.i18n.t('iperf.server_address')}: {traffic.server_ip or '-'}",
+                f"- {self.i18n.t('iperf.port')}: {traffic.port}",
+            ]
         )
-        answer = MessageBox.question(
-            self,
-            self.i18n.t("online_mr.start_confirm_title"),
-            message,
-            MessageBox.StandardButton.Yes | MessageBox.StandardButton.No,
-            MessageBox.StandardButton.No,
+        if protocol == "UDP":
+            lines.append(f"- {self.i18n.t('iperf.target_bandwidth')}: {traffic.target_bandwidth or self._format_mbps(traffic.udp_bitrate_mbps)}")
+            lines.append(f"- {self.i18n.t('iperf.udp_report_threshold')}: {self._format_mbps(traffic.udp_report_threshold_mbps)}")
+            if traffic.packet_length:
+                lines.append(f"- {self.i18n.t('iperf.packet_length')}: {traffic.packet_length} {self.i18n.t('online_mr.bytes')}")
+        else:
+            target = self._format_mbps(traffic.tcp_pacing_mbps) if traffic.tcp_pacing_enabled else self.i18n.t("iperf.auto_max_bandwidth")
+            lines.append(f"- {self.i18n.t('iperf.target_bandwidth')}: {target}")
+            lines.append(f"- {self.i18n.t('iperf.tcp_report_threshold')}: {self._format_mbps(traffic.tcp_report_threshold_mbps)}")
+            lines.append(f"- {self.i18n.t('iperf.tcp_pacing')}: {self._enabled_text(traffic.tcp_pacing_enabled)}")
+        lines.extend(
+            [
+                f"- {self.i18n.t('iperf.parallel')}: {traffic.parallel}",
+                f"- {self.i18n.t('iperf.interval')}: {traffic.interval_seconds} {self.i18n.t('online_mr.seconds')}",
+                f"- {self.i18n.t('iperf.direction')}: {self._format_iperf_direction(traffic.direction, traffic.business_direction)}",
+                f"- {self.i18n.t('online_mr.iperf_preflight')}: {self.i18n.t('online_mr.enabled')}",
+                f"- {self.i18n.t('online_mr.iperf_auto_reconnect')}: {self._enabled_text(self.auto_reconnect_check.isChecked())}",
+            ]
         )
-        return answer == MessageBox.StandardButton.Yes
+        return lines
+
+    def _current_iperf_summary_config(self) -> IperfTrafficConfig:
+        preset = self._current_iperf_preset()
+        direction = self.iperf_direction_combo.currentData() or "upload"
+        return IperfTrafficConfig(
+            enabled=self.enable_iperf_check.isChecked(),
+            server_ip=self.iperf_server_edit.text().strip(),
+            port=self.iperf_port_spin.value(),
+            preset_key=self.iperf_preset_combo.currentData() or "",
+            preset_name=self.iperf_preset_combo.currentText(),
+            test_type=preset.test_type if preset else "",
+            deployment_mode=preset.deployment_mode if preset else "ground_server_train_client",
+            business_direction=preset.business_direction if preset else ("ground_to_train" if direction == "download" else "train_to_ground"),
+            protocol=self.iperf_protocol_combo.currentText(),
+            direction=direction,
+            parallel=self.iperf_parallel_spin.value(),
+            interval_seconds=self.iperf_interval_spin.value(),
+            target_bandwidth=None,
+            tcp_report_threshold_mbps=self._current_iperf_tcp_threshold_mbps(),
+            tcp_pacing_enabled=self.iperf_tcp_pacing_check.isChecked(),
+            tcp_pacing_mbps=self._current_iperf_tcp_pacing_mbps(),
+            udp_bitrate_mbps=self._current_iperf_udp_bitrate_mbps(),
+            udp_report_threshold_mbps=self._current_iperf_udp_threshold_mbps(),
+            packet_length=self._current_iperf_packet_length(),
+            follow_collection=True,
+            duration_seconds=FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+        ).normalized()
+
+    def _format_iperf_role(self, deployment_mode: str) -> str:
+        return {
+            "ground_server_train_client": self.i18n.t("online_mr.iperf_role_ground_server_train_client"),
+        }.get(str(deployment_mode or "").strip(), str(deployment_mode or "-").strip() or "-")
+
+    def _format_iperf_direction(self, direction: str, business_direction: str) -> str:
+        index = self.iperf_direction_combo.findData(direction)
+        ui_direction = self.iperf_direction_combo.itemText(index) if index >= 0 else str(direction or "-")
+        business = {
+            "ground_to_train": self.i18n.t("online_mr.iperf_business_ground_to_train"),
+            "train_to_ground": self.i18n.t("online_mr.iperf_business_train_to_ground"),
+            "bidirectional": self.i18n.t("online_mr.iperf_business_bidirectional"),
+        }.get(str(business_direction or "").strip(), "")
+        return f"{ui_direction} / {business}" if business else ui_direction
+
+    def _enabled_text(self, enabled: bool) -> str:
+        return self.i18n.t("online_mr.enabled" if enabled else "online_mr.disabled")
+
+    @staticmethod
+    def _format_number(value: float | int | None) -> str:
+        if value is None:
+            return "-"
+        return f"{float(value):g}"
+
+    def _format_mbps(self, value: float | int | None) -> str:
+        if value is None:
+            return "-"
+        return f"{self._format_number(value)}M"
+
+    def _show_start_confirm_dialog(self, message: str) -> bool:
+        dialog = self._create_start_confirm_dialog(message)
+        return dialog.exec() == QDialog.Accepted
+
+    def _create_start_confirm_dialog(self, message: str) -> QDialog:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.i18n.t("online_mr.start_confirm_title"))
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        scroll_area = QScrollArea(dialog)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setMinimumHeight(300)
+
+        content = QWidget(scroll_area)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(4, 4, 12, 4)
+        summary = QLabel(message, content)
+        summary.setWordWrap(True)
+        summary.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        summary.setMinimumWidth(560)
+        content_layout.addWidget(summary)
+        content_layout.addStretch(1)
+        scroll_area.setWidget(content)
+        root.addWidget(scroll_area, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.button(QDialogButtonBox.Ok).setText(self.i18n.t("online_mr.start_confirm_ok"))
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        cancel_button.setText(self.i18n.t("dialog.cancel"))
+        cancel_button.setDefault(True)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+
+        apply_dialog_style(
+            dialog,
+            title=self.i18n.t("online_mr.start_confirm_title"),
+            minimum_size=(640, 420),
+            default_size=(720, 560),
+            scrollable=True,
+        )
+        return dialog
 
     def _collapse_collection_inputs_after_start(self) -> None:
         if self.analysis_only:
