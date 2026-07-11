@@ -68,6 +68,8 @@ from netconsole.services.online_mr.parser.event_parser_engine import EventParser
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.online_mr.collection_models import collection_config_from_payload, collection_config_to_payload
 from netconsole.ui.pages.online_mr_collection_page import (
+    COLLECT_STATUS_MIN_HEIGHT,
+    DEVICE_LIST_COLLAPSED_HEIGHT,
     ONLINE_MR_LEFT_PANEL_MIN_WIDTH,
     ONLINE_MR_DEVICE_DISPLAY_LIMIT,
     ONLINE_MR_PAGE_MIN_WIDTH,
@@ -1402,6 +1404,8 @@ def test_online_mr_start_confirmation_cancel_does_not_start_worker(tmp_path: Pat
     assert page.session_dirs == {}
     assert int(device.id) not in page.workers_by_device_id
     assert page.status_value == initial_status
+    assert page.is_device_list_collapsed() is False
+    assert page.device_filter_container.isHidden() is False
 
 
 def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1424,7 +1428,42 @@ def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monke
     assert len(started) == 1
     assert page.parameter_panel_collapsed is True
     assert page.right_control_scroll.isHidden() is True
+    assert page.is_device_list_collapsed() is True
+    assert page.device_filter_container.isHidden() is True
+    assert page.device_table_container.isHidden() is True
+    assert page.device_list_summary_label.isVisibleTo(page) is True
     assert page.vertical_splitter.sizes()[0] <= 260
+
+
+def test_online_mr_device_list_collapse_toggles_without_losing_selection(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Toggle")
+    page.refresh_all()
+
+    row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
+    page.device_table.item(row, 0).setCheckState(Qt.Checked)
+
+    page.set_device_list_collapsed(True)
+
+    assert page.is_device_list_collapsed() is True
+    assert page.device_search_input.isHidden() is True
+    assert page.device_table.isHidden() is True
+    assert page.filter_hint_label.isHidden() is True
+    assert page.device_list_summary_label.isVisibleTo(page) is True
+    assert "Device list collapsed" in page.device_list_summary_label.text()
+    assert page.device_panel.maximumHeight() <= DEVICE_LIST_COLLAPSED_HEIGHT + 16
+    assert int(device.id) in page.selected_device_ids
+
+    page.toggle_device_list_collapsed()
+
+    assert page.is_device_list_collapsed() is False
+    assert page.device_search_input.isHidden() is False
+    assert page.device_table.isHidden() is False
+    assert page.filter_hint_label.isHidden() is False
+    assert page.device_list_summary_label.isHidden() is True
+    assert int(device.id) in page.selected_device_ids
+    assert page.device_table.item(row, 0).checkState() == Qt.Checked
 
 
 def test_online_mr_start_confirmation_summary_includes_ping_details(tmp_path: Path) -> None:
@@ -2379,7 +2418,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.wireless_status_interval_edit.text() == "3"
     assert page.period_box.layout().columnStretch(1) == 1
     assert page.collect_status_box.title() == "实时采集状态"
-    assert page.collect_status_box.minimumHeight() >= 110
+    assert page.collect_status_box.minimumHeight() >= COLLECT_STATUS_MIN_HEIGHT
     assert page.collect_status_box.maximumHeight() > 10000
     assert page.collect_card_1.parentWidget() is page.collect_status_box
     assert page.collect_card_2.parentWidget() is page.collect_status_box
@@ -2396,6 +2435,8 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.main_work_panel.minimumWidth() >= ONLINE_MR_WORK_PANEL_MIN_WIDTH
     assert page.device_panel.minimumWidth() >= ONLINE_MR_LEFT_PANEL_MIN_WIDTH
     assert page.device_panel.minimumHeight() >= 180
+    assert page.device_list_toggle_button.text() == "收起设备列表"
+    assert page.device_list_toggle_button.parentWidget() is not None
     assert page.right_control_scroll.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
     assert page.right_control_scroll.maximumWidth() > 10000
     assert page.right_control_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded

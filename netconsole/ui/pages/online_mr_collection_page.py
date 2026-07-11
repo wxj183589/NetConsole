@@ -153,7 +153,10 @@ PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
 FORCE_STOP_DELAY_SECONDS = 5
 BATCH_STOP_TIMEOUT_SECONDS = 30
 DEFAULT_REALTIME_SPLITTER_SIZES = [380, 150, 160, 320]
-COLLAPSED_COLLECTION_SPLITTER_SIZES = [120, 150, 220, 420]
+DEVICE_LIST_EXPANDED_MIN_HEIGHT = 180
+DEVICE_LIST_COLLAPSED_HEIGHT = 76
+COLLECT_STATUS_MIN_HEIGHT = 150
+COLLAPSED_COLLECTION_SPLITTER_SIZES = [DEVICE_LIST_COLLAPSED_HEIGHT, COLLECT_STATUS_MIN_HEIGHT, 240, 520]
 
 STATUS_I18N_KEYS = {
     "CREATED": "online_mr.status_created",
@@ -535,6 +538,7 @@ class OnlineMrCollectionPage(QWidget):
         self._stop_requested_monotonic: float | None = None
         self._force_stop_in_progress = False
         self.parameter_panel_collapsed = False
+        self.device_list_collapsed = False
         self._bind_runtime_site(site_name)
 
         self.site_label = QLabel()
@@ -555,6 +559,7 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_all_button = QPushButton()
         self.force_stop_button = QPushButton("强制停止")
         self.params_toggle_button = QPushButton("收起参数")
+        self.device_list_toggle_button = QPushButton("收起设备列表")
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
         self.action_bar: QWidget | None = None
@@ -719,6 +724,10 @@ class OnlineMrCollectionPage(QWidget):
         self.advanced_toggle = QToolButton()
         self.advanced_summary_label = QLabel()
         self.advanced_detail = QWidget()
+        self.device_list_title_label = QLabel()
+        self.device_list_summary_label = QLabel()
+        self.device_filter_container: QWidget | None = None
+        self.device_table_container: QWidget | None = None
         self.labels: dict[str, QLabel] = {}
         self.text_labels: list[tuple[str, QLabel]] = []
         self._updating_fping_preset = False
@@ -1067,6 +1076,67 @@ class OnlineMrCollectionPage(QWidget):
             splitter.setOrientation(Qt.Horizontal)
             splitter.setSizes([760, 460])
 
+    def is_device_list_collapsed(self) -> bool:
+        return bool(self.device_list_collapsed)
+
+    def toggle_device_list_collapsed(self) -> None:
+        self.set_device_list_collapsed(not self.device_list_collapsed)
+
+    def set_device_list_collapsed(self, collapsed: bool) -> None:
+        if self.analysis_only:
+            return
+        self.device_list_collapsed = bool(collapsed)
+        self._apply_device_list_collapsed()
+        self._update_device_list_summary()
+
+    def _apply_device_list_collapsed(self) -> None:
+        collapsed = bool(self.device_list_collapsed)
+        for widget in (
+            self.device_filter_container,
+            self.device_table_container,
+            self.device_search_input,
+            self.device_table,
+            self.filter_hint_label,
+        ):
+            if widget is not None:
+                widget.setVisible(not collapsed)
+        self.device_list_summary_label.setVisible(collapsed)
+        self.device_list_toggle_button.setText(
+            self.i18n.t("online_mr.expand_device_list" if collapsed else "online_mr.collapse_device_list")
+        )
+        self.device_list_toggle_button.setToolTip(self.device_list_toggle_button.text())
+        panel = getattr(self, "device_panel", None)
+        if panel is not None:
+            panel.setMinimumHeight(DEVICE_LIST_COLLAPSED_HEIGHT if collapsed else DEVICE_LIST_EXPANDED_MIN_HEIGHT)
+            panel.setMaximumHeight(DEVICE_LIST_COLLAPSED_HEIGHT if collapsed else 16777215)
+            panel.updateGeometry()
+        if self.main_work_panel is not None:
+            self.main_work_panel.setMinimumHeight(DEVICE_LIST_COLLAPSED_HEIGHT if collapsed else 240)
+            if collapsed:
+                self.main_work_panel.setMaximumHeight(180 if not self.parameter_panel_collapsed else DEVICE_LIST_COLLAPSED_HEIGHT + 16)
+            else:
+                self.main_work_panel.setMaximumHeight(16777215)
+            self.main_work_panel.updateGeometry()
+        if self.main_splitter is not None:
+            self.main_splitter.setMinimumHeight(DEVICE_LIST_COLLAPSED_HEIGHT if collapsed else 220)
+        if hasattr(self, "vertical_splitter"):
+            if collapsed:
+                self.vertical_splitter.setSizes(COLLAPSED_COLLECTION_SPLITTER_SIZES)
+            else:
+                self._restore_vertical_splitter_sizes()
+
+    def _update_device_list_summary(self) -> None:
+        if not hasattr(self, "device_list_summary_label"):
+            return
+        self.device_list_summary_label.setText(
+            self.i18n.t(
+                "online_mr.device_list_collapsed_summary",
+                available=self._available_device_count,
+                selected=self._selected_device_count,
+                running=self._running_count,
+            )
+        )
+
     def _toggle_parameter_panel(self) -> None:
         self._apply_parameter_panel_collapsed(not self.parameter_panel_collapsed, persist=True)
 
@@ -1083,6 +1153,8 @@ class OnlineMrCollectionPage(QWidget):
                 self.main_splitter.setSizes([760, 460])
             else:
                 self.main_splitter.setSizes([420, 520])
+        if self.device_list_collapsed:
+            self._apply_device_list_collapsed()
         if persist:
             self.settings.set_value(PARAM_PANEL_COLLAPSED_KEY, self.parameter_panel_collapsed)
 
@@ -1192,6 +1264,10 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_all_button.setText(self.i18n.t("online_mr.stop_all"))
         self.force_stop_button.setText("强制停止")
         self.params_toggle_button.setText("展开参数" if self.parameter_panel_collapsed else "收起参数")
+        self.device_list_title_label.setText(self.i18n.t("online_mr.device_list"))
+        self.device_list_toggle_button.setText(
+            self.i18n.t("online_mr.expand_device_list" if self.device_list_collapsed else "online_mr.collapse_device_list")
+        )
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
@@ -1202,6 +1278,7 @@ class OnlineMrCollectionPage(QWidget):
         self.export_analysis_report_button.setVisible(self.analysis_only)
         self._apply_button_icons()
         self.device_search_input.setPlaceholderText(self.i18n.t("online_mr.device_search_placeholder"))
+        self._update_device_list_summary()
         self.session_search_input.setPlaceholderText(self.i18n.t("online_mr.search_device"))
         self.auto_reconnect_check.setText(self.i18n.t("online_mr.auto_reconnect"))
         self.collect_config_on_start_check.setText(self.i18n.t("online_mr.collect_config_on_start"))
@@ -1389,6 +1466,7 @@ class OnlineMrCollectionPage(QWidget):
             (self.stop_all_button, "CANCEL"),
             (self.force_stop_button, "CANCEL"),
             (self.params_toggle_button, "MENU"),
+            (self.device_list_toggle_button, "MENU"),
             (self.open_button, "FOLDER"),
             (self.refresh_devices_button, "SYNC"),
             (self.parse_session_button, "PLAY"),
@@ -1448,7 +1526,6 @@ class OnlineMrCollectionPage(QWidget):
         if not self.analysis_only:
             root.insertWidget(0, action_bar)
             content_layout.addWidget(controls)
-            content_layout.addWidget(self.filter_hint_label)
 
         self.device_table.setMinimumHeight(120)
         self.device_table.setMaximumHeight(16777215)
@@ -1470,30 +1547,57 @@ class OnlineMrCollectionPage(QWidget):
         device_panel = QWidget()
         self.device_panel = device_panel
         device_panel.setMinimumWidth(ONLINE_MR_LEFT_PANEL_MIN_WIDTH)
-        device_panel.setMinimumHeight(180)
+        device_panel.setMinimumHeight(DEVICE_LIST_EXPANDED_MIN_HEIGHT)
         device_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         device_layout = QVBoxLayout(device_panel)
         device_layout.setContentsMargins(0, 0, 0, 0)
         device_layout.setSpacing(6)
-        device_layout.addWidget(self.device_search_input)
-        device_layout.addWidget(self.device_table)
-        self.collect_status_box.setMinimumHeight(110)
+        device_header = QWidget()
+        device_header_layout = QHBoxLayout(device_header)
+        device_header_layout.setContentsMargins(0, 0, 0, 0)
+        device_header_layout.setSpacing(8)
+        self.device_list_title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.device_list_summary_label.setWordWrap(True)
+        self.device_list_summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.device_list_summary_label.setVisible(False)
+        self.device_list_toggle_button.setMinimumWidth(116)
+        self.device_list_toggle_button.setMinimumHeight(30)
+        device_header_layout.addWidget(self.device_list_title_label)
+        device_header_layout.addWidget(self.device_list_summary_label, 1)
+        device_header_layout.addWidget(self.device_list_toggle_button)
+        device_layout.addWidget(device_header)
+        device_layout.addWidget(self.filter_hint_label)
+        self.device_filter_container = QWidget()
+        device_filter_layout = QVBoxLayout(self.device_filter_container)
+        device_filter_layout.setContentsMargins(0, 0, 0, 0)
+        device_filter_layout.addWidget(self.device_search_input)
+        device_layout.addWidget(self.device_filter_container)
+        self.device_table_container = QWidget()
+        device_table_layout = QVBoxLayout(self.device_table_container)
+        device_table_layout.setContentsMargins(0, 0, 0, 0)
+        device_table_layout.addWidget(self.device_table)
+        device_layout.addWidget(self.device_table_container, 1)
+        self.collect_status_box.setMinimumHeight(COLLECT_STATUS_MIN_HEIGHT)
         self.collect_status_box.setMaximumHeight(16777215)
         self.collect_status_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         collect_layout = QHBoxLayout(self.collect_status_box)
-        collect_layout.setContentsMargins(8, 8, 8, 8)
-        collect_layout.setSpacing(8)
+        collect_layout.setContentsMargins(10, 10, 10, 10)
+        collect_layout.setSpacing(10)
         for progress in (self.collect_progress_1, self.collect_progress_2):
             progress.setRange(0, 0)
             progress.setTextVisible(False)
             progress.setMaximumHeight(12)
             progress.setVisible(False)
         for card, label in ((self.collect_card_1, self.collect_status_label_1), (self.collect_card_2, self.collect_status_label_2)):
-            card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            card.setMinimumHeight(104)
+            card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 8, 8, 8)
+            card_layout.setContentsMargins(10, 10, 10, 10)
+            card_layout.setSpacing(6)
             label.setWordWrap(True)
             label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            label.setMinimumHeight(78)
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
             card_layout.addWidget(label)
             collect_layout.addWidget(card)
         control_panel = QWidget()
@@ -1637,6 +1741,7 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_all_button.clicked.connect(self.stop_all)
         self.force_stop_button.clicked.connect(self.force_stop_collection)
         self.params_toggle_button.clicked.connect(self._toggle_parameter_panel)
+        self.device_list_toggle_button.clicked.connect(self.toggle_device_list_collapsed)
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)
@@ -1786,7 +1891,14 @@ class OnlineMrCollectionPage(QWidget):
         self.output_panel.setMaximumHeight(54 if collapsed else 16777215)
         if not self.analysis_only and hasattr(self, "vertical_splitter"):
             if collapsed:
-                self.vertical_splitter.setSizes([420, 170, 240, 56])
+                self.vertical_splitter.setSizes(
+                    [
+                        DEVICE_LIST_COLLAPSED_HEIGHT if self.device_list_collapsed else 420,
+                        COLLECT_STATUS_MIN_HEIGHT,
+                        240,
+                        56,
+                    ]
+                )
             else:
                 self._restore_vertical_splitter_sizes()
 
@@ -1808,7 +1920,13 @@ class OnlineMrCollectionPage(QWidget):
         if not isinstance(sizes, list) or len(sizes) != 4:
             sizes = DEFAULT_REALTIME_SPLITTER_SIZES
         try:
-            self.vertical_splitter.setSizes([max(40, int(size)) for size in sizes])
+            minimums = [
+                DEVICE_LIST_COLLAPSED_HEIGHT if self.device_list_collapsed else 90,
+                COLLECT_STATUS_MIN_HEIGHT,
+                120,
+                180,
+            ]
+            self.vertical_splitter.setSizes([max(minimums[index], int(size)) for index, size in enumerate(sizes)])
         except (TypeError, ValueError):
             self.vertical_splitter.setSizes(DEFAULT_REALTIME_SPLITTER_SIZES)
 
@@ -1905,7 +2023,6 @@ class OnlineMrCollectionPage(QWidget):
             return
         if not self._preflight_iperf_before_start():
             return
-        self._collapse_collection_inputs_after_start()
         started = 0
         skipped: list[str] = []
         for device in selected:
@@ -1942,6 +2059,7 @@ class OnlineMrCollectionPage(QWidget):
         if self.enable_fping_check.isChecked() and not self._selected_fping_device_ids():
             self.log_text.append(self.i18n.t("online_mr.ping_target_empty"))
         if started:
+            self._collapse_collection_inputs_after_start()
             self._set_status("CONNECTING")
         self._update_action_state()
 
@@ -2159,6 +2277,7 @@ class OnlineMrCollectionPage(QWidget):
     def _collapse_collection_inputs_after_start(self) -> None:
         if self.analysis_only:
             return
+        self.set_device_list_collapsed(True)
         self._apply_parameter_panel_collapsed(True, persist=False)
         if hasattr(self, "vertical_splitter"):
             self.vertical_splitter.setSizes(COLLAPSED_COLLECTION_SPLITTER_SIZES)
@@ -4979,6 +5098,7 @@ class OnlineMrCollectionPage(QWidget):
         self.available_metric_label.setText(f"{self.i18n.t('online_mr.available_devices')}: {self._available_device_count}")
         self.selected_metric_label.setText(f"{self.i18n.t('online_mr.selected_devices')}: {self._selected_device_count}")
         self.running_metric_label.setText(f"{self.i18n.t('online_mr.running_collectors')}: {self._running_count}")
+        self._update_device_list_summary()
 
     def _refresh_fping_device_choices(self) -> None:
         selected = [device for device in self._selected_devices() if device.id is not None]
