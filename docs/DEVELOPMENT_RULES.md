@@ -149,6 +149,10 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - MR/Mesh shadow adapter只接收普通row，不导入UI/Repository/Worker/网络或parser，不写parsed DB；候选快照由handler通过现有Repository只读方法构建，shadow失败必须unavailable且不得改变原任务终态。
 - Online MR shadow读取parsed DB时必须使用只读连接；Vehicle mapping shadow不得调用带光衰站点回填副作用的`load_trackside_ap_lookup()`。
 - Mesh链路明细继续不导出“归属来源”和“Peer Radio MAC”；任何重复MAC诊断不得在阶段5.1改变页面列、报告SQL或导出表头/值。
+- 阶段6导出评估以 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md) 为准；必须区分当前页面 Export Process入口与兼容/直接 exporter，不得把同名报告服务视为同一调用链。
+- 阶段6.1只允许在旧formatter输入/输出旁路附加小型聚合 diagnostics；不得修改workbook/CSV/NAM、Sheet、表头、报告SQL、解析、页面、主备链、RSSI/min RSSI、Busy、短链或乒乓结果。
+- Peer MAC、Peer Radio MAC、AP MAC、Radio MAC和BSSID/BBSSID只可按各自语义统计相同值；相同不等于可删除。现有输入没有安全字段时diagnostics必须`available=false`。
+- 导出逻辑 golden 应比较Sheet、表头、关键行值、筛选、冻结窗格、样式和列宽；不得依赖不稳定的XLSX二进制哈希。diagnostics或sidecar失败不得改变原导出终态。
 
 ## 提交前检查
 

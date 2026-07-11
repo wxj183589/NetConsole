@@ -201,7 +201,7 @@ MrMeshIdentityShadowService
 2. `online_mr_parse` 返回旧 summary后，以只读模式读取已生成的 `main_link_samples` distinct observation并附加 shadow，不改 parsed DB。
 3. `vehicle_mr_mapping_load` 返回旧 mappings后，只使用映射行和安全 Candidate快照做低置信名称诊断，不调用站点回填写 lookup。
 4. Candidate快照只读取 FIT-AP、`ap_entities` 和AP扩展信息；H3C 4-4-4 MAC只在shadow适配边界规范化。
-5. 导出和单 AP图表仍未接入；待前三处真实局点统计稳定后再进入阶段6去重诊断评估。
+5. 导出和单 AP图表仍未接入；阶段 6 已完成静态去重诊断评估，但尚未接入 diagnostics。
 
 建议输出：
 
@@ -248,4 +248,5 @@ shadow 失败统一 `available=false`，旧任务继续原 finished/failed/cance
 - 阶段 5.1 不新增 schema、不写 shadow cache；删除三个 Job result附加字段和纯 adapter即可回滚。
 - 旧 parser、mapping/cache、Vehicle lookup、derived analysis和导出 formatter必须始终保留为生产路径。
 - shadow unavailable、unresolved、ambiguous或 identity changed只记录诊断，不阻断导入、解析、采集、图表或导出。
-- 在真实局点 shadow证明候选稳定、作用域充分且旧/new结论可解释之前，不进入生产 resolver接管或导出字段去重阶段。
+- 阶段 6 导出入口、字段差异和只读 diagnostics 设计见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。
+- 在真实局点 shadow证明候选稳定、作用域充分且旧/new结论可解释之前，不进入生产 resolver接管或导出字段删除、改名、合并阶段。

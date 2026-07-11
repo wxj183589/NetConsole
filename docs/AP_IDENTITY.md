@@ -4,7 +4,7 @@
 
 `netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
-阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出仍未接入。
+阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入；阶段 6 已完成导出字段去重诊断评估。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出仍未接入 diagnostics。
 
 目录结构：
 
@@ -186,8 +186,10 @@ AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作�
 
 `ac_fit_ap_optical_refresh` 的 load/collect、all/single 都保留原 result 字段，只新增 `identity_shadow`。shadow 异常返回 `available=false`，不改变 finished/failed；删除该附加字段即可回退。原 `AcOpticalService` 的 UUID/name 关联、AP 在线/离线、交换机无光、阈值、历史合并和 Repository 写入仍是生产路径。
 
-## 12. 轨旁与 MR/Mesh 后续接入
+## 12. 轨旁、MR/Mesh 与导出后续接入
 
 轨旁业务的数据来源、旧 lookup、双击详情、缓存/历史和阶段 4.1 实现见 [TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md)。当前只在旧聚合完成后附加 `identity_shadow`，在旧详情 matches 生成后附加 `detail_identity_shadow`；lookup、缓存、双击定位、采集范围和业务规则均未替换。
 
 MR/Mesh、Online MR、Vehicle MR 的数据来源、Peer/Radio语义、lookup差异、主备链依赖、导出风险和阶段 5.1实现见 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)。当前只在`mesh_log_import`、`online_mr_parse`和`vehicle_mr_mapping_load`旧结果后附加`identity_shadow`；生产parser、mapping/cache、链路判断、页面和导出未接入shadow。
+
+阶段 6 导出字段去重诊断评估见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。当前只完成入口、字段语义、重复风险、逻辑 golden 和阶段 6.1 接入点设计；没有修改 workbook/CSV/NAM、表头、报告 SQL、解析、页面或业务统计。
