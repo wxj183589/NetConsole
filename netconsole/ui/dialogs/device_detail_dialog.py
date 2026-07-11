@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
 from PySide6.QtCore import Qt
@@ -19,18 +21,19 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
 )
 
 from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
-from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
-from netconsole.core.sources.switch_source import build_switch_data_lookup, compute_switch_status
-from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, build_trackside_ap_business_rows, format_trackside_display_value, trackside_row_status
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.core.sources.switch_source import compute_switch_status
+from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, format_trackside_display_value, trackside_row_status
 from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url
+from netconsole.services.export.export_task_builders import markdown_text_file_spec
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
 from netconsole.ui.collect_worker import DeviceCollectThread
@@ -45,9 +48,12 @@ from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, status_background_color
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_table_columns, configure_readonly_table, make_text_selectable
+from netconsole.ui.export_action_helper import submit_export_task
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_manager import window_manager
-from netconsole.utils.text_encoding import read_text_with_fallback
+from netconsole.ui.window_popup_service import show_non_focus_window
+from netconsole.utils.text_encoding import read_text_auto
 
 
 OVERVIEW_FIELDS = (
@@ -152,12 +158,17 @@ class DeviceDetailDialog(QDialog):
         self.device = device
         self.site_name = site_name
         self.group_names = dict(group_names or {})
+        self.detail_data: dict[str, object] = {}
+        self.background_manager = BackgroundProcessManager(self, paths=PathResolver())
+        self.background_manager.finished.connect(self._detail_load_finished)
+        self.background_manager.failed.connect(self._detail_load_failed)
+        self.background_manager.cancelled.connect(self._detail_load_failed)
+        self.detail_load_job_id = ""
         self.collect_thread: DeviceCollectThread | None = None
         self.history_dialogs: list[HistoryDataDialog] = []
         self.optical_refresh_thread: OpticalRefreshThread | None = None
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(False)
-        self.setMinimumSize(720, 480)
         self.resize(800, 520)
 
         self.title_label = make_text_selectable(QLabel())
@@ -169,7 +180,9 @@ class DeviceDetailDialog(QDialog):
         self.refresh_button.clicked.connect(self.refresh_device_details)
         self.refresh_optical_button.clicked.connect(self.refresh_device_optical)
         self.tabs = QTabWidget()
-        layout = QVBoxLayout(self)
+        self.tabs.setMinimumHeight(360)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         header = QHBoxLayout()
         header.addWidget(self.title_label)
         header.addStretch(1)
@@ -178,7 +191,9 @@ class DeviceDetailDialog(QDialog):
         header.addWidget(self.always_on_top_button)
         layout.addLayout(header)
         layout.addWidget(self.tabs)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=480, content_minimum_width=760)
         self.retranslate()
+        self._load_detail_data()
 
     def retranslate(self) -> None:
         title = self.i18n.t("details.title_with_name", name=self.device.name)
@@ -197,6 +212,40 @@ class DeviceDetailDialog(QDialog):
         self.tabs.addTab(self._lldp_tab(), self.i18n.t("details.lldp"))
         self.tabs.addTab(self._trackside_ap_business_tab(), self.i18n.t("trackside.title"))
 
+    def _load_detail_data(self) -> None:
+        if self.detail_load_job_id:
+            return
+        self.refresh_button.setEnabled(False)
+        self.tabs.setEnabled(False)
+        self.title_label.setText(f"{self.windowTitle()} - {self.i18n.t('app.loading')}")
+        job_id = uuid4().hex
+        self.detail_load_job_id = job_id
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="device_detail_load_all",
+                params={"db_path": str(self.repository.database.path), "device": self.device.to_record()},
+            )
+        )
+
+    def _detail_load_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.detail_load_job_id:
+            return
+        self.detail_load_job_id = ""
+        self.detail_data = dict(event.get("result") or {})
+        self.refresh_button.setEnabled(True)
+        self.tabs.setEnabled(True)
+        self.retranslate()
+
+    def _detail_load_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.detail_load_job_id:
+            return
+        self.detail_load_job_id = ""
+        self.refresh_button.setEnabled(True)
+        self.tabs.setEnabled(True)
+        self.retranslate()
+        MessageBox.warning(self, self.windowTitle(), str(event.get("message") or "设备详情加载失败"))
+
     def refresh_device_details(self) -> None:
         if self.collect_thread is not None and self.collect_thread.isRunning():
             return
@@ -212,18 +261,18 @@ class DeviceDetailDialog(QDialog):
     def _collect_finished(self, result: CollectDeviceResult) -> None:
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
-        self.reload_tabs()
+        self._load_detail_data()
         if result.success and result.error_message:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_partial"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_partial"))
         elif result.success:
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_done"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_done"))
         else:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=result.error_message or "unknown"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=result.error_message or "unknown"))
 
     def _collect_failed(self, error_message: str) -> None:
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText(self.i18n.t("details.refresh"))
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=error_message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_failed", error=error_message))
 
     def refresh_device_optical(self) -> None:
         if self.optical_refresh_thread is not None and self.optical_refresh_thread.isRunning():
@@ -240,21 +289,21 @@ class DeviceDetailDialog(QDialog):
     def _optical_refresh_finished(self, result: OpticalRefreshResult) -> None:
         self.refresh_optical_button.setEnabled(True)
         self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
-        self.reload_tabs()
+        self._load_detail_data()
         if result.success and result.error_message:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_partial"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_partial"))
         elif result.success:
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_optical_done"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("details.refresh_optical_done"))
         else:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=result.error_message or "unknown"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=result.error_message or "unknown"))
 
     def _optical_refresh_failed(self, error_message: str) -> None:
         self.refresh_optical_button.setEnabled(True)
         self.refresh_optical_button.setText(self.i18n.t("details.refresh_optical"))
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=error_message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("details.refresh_optical_failed", error=error_message))
 
     def _overview_tab(self) -> QWidget:
-        fact = self.repository.get_device_fact(str(self.device.device_uuid or ""))
+        fact = dict(self.detail_data.get("fact") or {})
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.addWidget(self._note_label("details.overview_note"))
@@ -311,24 +360,28 @@ class DeviceDetailDialog(QDialog):
     def open_device_web(self) -> None:
         port, _source = effective_https_port(self.device.https_port)
         if not build_https_url(self.device.primary_address, port):
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
             return
         if not open_https_url(self.device.primary_address, port):
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
 
     def _interfaces_tab(self) -> QWidget:
-        rows = self.repository.list_device_interfaces(str(self.device.device_uuid or ""))
+        rows = [dict(row) for row in self.detail_data.get("interfaces") or [] if isinstance(row, dict)]
         if not rows:
             return self._empty_tab("details.interfaces_note")
         optical_status_by_interface = {
             str(item.get("interface_name") or ""): str(item.get("status") or "")
-            for item in self._computed_optical_rows(self.repository.list_optical_modules(str(self.device.device_uuid or "")), rows)
+            for item in self._computed_optical_rows(
+                [dict(row) for row in self.detail_data.get("optical_modules") or [] if isinstance(row, dict)], rows
+            )
         }
         return self._table_tab("details.interfaces_note", INTERFACE_COLUMNS, rows, "description", "interface", optical_status_by_interface)
 
     def _optical_modules_tab(self) -> QWidget:
-        device_uuid = str(self.device.device_uuid or "")
-        rows = self._computed_optical_rows(self.repository.list_optical_modules(device_uuid), self.repository.list_device_interfaces(device_uuid))
+        rows = self._computed_optical_rows(
+            [dict(row) for row in self.detail_data.get("optical_modules") or [] if isinstance(row, dict)],
+            [dict(row) for row in self.detail_data.get("interfaces") or [] if isinstance(row, dict)],
+        )
         if not rows:
             return self._empty_tab("details.optical_modules_note")
         return self._table_tab("details.optical_modules_note", OPTICAL_MODULE_COLUMNS, rows, "module_model", "optical")
@@ -359,24 +412,13 @@ class DeviceDetailDialog(QDialog):
         return computed_rows
 
     def _lldp_tab(self) -> QWidget:
-        rows = self.repository.list_lldp_neighbors(str(self.device.device_uuid or ""))
+        rows = [dict(row) for row in self.detail_data.get("lldp") or [] if isinstance(row, dict)]
         if not rows:
             return self._empty_tab("details.lldp_note")
         return self._table_tab("details.lldp_note", LLDP_COLUMNS, rows, "neighbor_sysname", "lldp")
 
     def _trackside_ap_business_tab(self) -> QWidget:
-        device_uuid = str(self.device.device_uuid or "")
-        optical_modules = self.repository.list_optical_modules(device_uuid)
-        lookup = build_switch_data_lookup([self.device], {device_uuid: optical_modules})
-        rows = build_trackside_ap_business_rows(
-            [self.device],
-            {device_uuid: self.repository.list_device_interfaces(device_uuid)},
-            {device_uuid: optical_modules},
-            AcRepository(self.repository.database).list_all_fit_ap_optical(),
-            {device_uuid: self.repository.list_lldp_neighbors(device_uuid)},
-            AcRepository(self.repository.database).list_all_fit_ap_resources_with_metadata(),
-            lookup,
-        )
+        rows = [dict(row) for row in self.detail_data.get("trackside") or [] if isinstance(row, dict)]
         if not rows:
             return self._empty_tab("trackside.note")
         return self._table_tab("trackside.note", TRACKSIDE_AP_DEVICE_COLUMNS, rows, "description", "trackside")
@@ -476,24 +518,29 @@ class DeviceDetailDialog(QDialog):
         device_uuid = str(self.device.device_uuid or "")
         if history_kind == "interface":
             object_name = str(row.get("interface_name") or "")
-            rows = self.repository.list_interface_history(device_uuid, object_name)
             columns = INTERFACE_HISTORY_COLUMNS
         elif history_kind == "optical":
             object_name = str(row.get("interface_name") or "")
-            rows = self.repository.list_optical_history(device_uuid, object_name)
             columns = OPTICAL_HISTORY_COLUMNS
         elif history_kind == "lldp":
             object_name = str(row.get("local_interface") or "")
-            rows = self.repository.list_lldp_history(device_uuid, object_name)
             columns = LLDP_HISTORY_COLUMNS
         else:
             raise ValueError(f"Unsupported history kind: {history_kind}")
-        dialog = HistoryDataDialog(self.i18n, self.device.name, object_name, columns, rows, self)
+        dialog = HistoryDataDialog(
+            self.i18n,
+            self.device.name,
+            object_name,
+            columns,
+            None,
+            self,
+            db_path=str(self.repository.database.path),
+            device_uuid=device_uuid,
+            history_kind=history_kind,
+        )
         self.history_dialogs.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._remove_history_dialog(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"history:{object_name}", activate=False, raise_window=False)
         return dialog
 
     def _remove_history_dialog(self, dialog: HistoryDataDialog) -> None:
@@ -527,6 +574,7 @@ class CollectLogDialog(QDialog):
         super().__init__(parent, Qt.Window)
         self.matches: list[tuple[int, int]] = []
         self.current_match_index = -1
+        self.raw_log_path = Path(raw_log_path)
         self._plain_text = text
         self._folded_text = text.casefold()
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -545,6 +593,7 @@ class CollectLogDialog(QDialog):
         self.count_label = make_text_selectable(QLabel("0 / 0"))
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
+        self.text_edit.setMinimumHeight(380)
         self.text_edit.setPlainText(text)
         self.copy_button.clicked.connect(self.copy_log)
         self.export_button.clicked.connect(self.export_log)
@@ -563,10 +612,12 @@ class CollectLogDialog(QDialog):
         toolbar.addWidget(self.clear_button)
         toolbar.addWidget(self.count_label)
         toolbar.addWidget(self.close_button)
-        layout = QVBoxLayout(self)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
         layout.addWidget(self.path_label)
         layout.addLayout(toolbar)
         layout.addWidget(self.text_edit, 1)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=720, minimum_height=460, content_minimum_width=840)
 
     def copy_log(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText())
@@ -574,7 +625,20 @@ class CollectLogDialog(QDialog):
     def export_log(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, self.windowTitle(), "collect_log.txt", "Text Files (*.txt);;All Files (*.*)")
         if path:
-            Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
+            submit_export_task(
+                self,
+                markdown_text_file_spec(path, text_file=self._export_source_file(), title=self.windowTitle(), open_dir_on_success=True),
+                success_title=self.windowTitle(),
+            )
+
+    def _export_source_file(self) -> Path:
+        if self.raw_log_path.is_file():
+            return self.raw_log_path
+        cache_dir = PathResolver().runtime_cache_dir / "collect_log_exports"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        text_file = cache_dir / f"collect_log_{uuid4().hex}.txt"
+        text_file.write_text(self._plain_text, encoding="utf-8")
+        return text_file
 
     def focus_search(self) -> None:
         self.search_input.setFocus()
@@ -664,7 +728,7 @@ def read_collect_log_text(raw_log_path: str | None, site_root: Path | None = Non
         path = site_root / path
     if not path.is_file():
         raise FileNotFoundError(COLLECT_LOG_NOT_FOUND)
-    return path, read_text_with_fallback(path)
+    return path, read_text_auto(path)
 
 
 def _column_index(columns: tuple[tuple[str, str], ...], field: str) -> int | None:

@@ -1,139 +1,51 @@
-# 功能模块说明
+# 功能模块与 Feature Registry
 
-## 设备管理
+## 1. 唯一事实来源
 
-设备管理是基础主数据入口。
+用户可见模块、页面、Tab、动作和按钮统一登记在 `netconsole/core/feature_registry.py`。Feature key 使用点号分层；页面通过 `FeatureGate` 和 `apply_feature_to_widget` 控制，而不是散落读取配置。
 
-职责：
+内部功能开关页面使用 `module.feature_switch`，标记为 internal-only，不应出现在客户版普通导航中。
 
-- 设备新增、编辑、删除、搜索、筛选、分组。
-- SSH / Telnet 连接测试。
-- 设备详情查看与 H3C 设备详情刷新。
-- CSV / Excel 类导入导出。
-- 外部终端配置和 SecureCRT 会话生成。
+## 2. 一级模块
 
-约定：
+| Feature key | 中文模块 | 说明 |
+| --- | --- | --- |
+| `module.devices` | 设备管理 | 设备、分组、连接、批量任务和相关导出 |
+| `module.ac` | AC 管理 | FIT AP 资源、扩展、光衰、历史和命令 |
+| `module.rail_transit` | 轨道交通 | MR、Mesh、轨旁 AP、车载网络 |
+| `module.wifi_survey` | 无线测试 | 无线扫描、勘测和热力图 |
+| `module.config_collection` | 配置采集 | 快照、比较、批量采集 |
+| `module.file_management` | 文件管理 | 局点文件和下载 |
+| `module.snmp_center` | SNMP Center | MIB/OID、查询、监控、Trap、拓扑 |
+| `module.network_tools` | 网络工具 | Ping/fping、iPerf 和工具箱 |
+| `module.command_reference` | 命令参考 | 命令、解析器与消费者索引 |
+| `module.logs` | 日志 | 应用日志 |
+| `module.system_settings` | 系统设置 | 设置、清理、版本等 |
 
-- 设备分组由用户自定义；常见分组可覆盖控制中心、车站、车载、车载 MR 等，但不能写死。
-- 设备详情功能应通过行内入口访问。
-- 连接优先使用现有连接策略，不在页面中散写连接逻辑。
-- 设备主数据包括名称、系统名、地址、协议、端口、账号、厂商、类型、型号、版本、SN、归属站点、MAC、备注等，具体字段以当前模型和数据库为准。
+## 3. 已登记的子功能与内部能力
 
-## 配置采集中心
+Registry 当前显式登记的主要子功能包括：设备外部终端/SecureCRT/OmniPeek 导出；轨道交通 train online、车载网络、轨旁 AP、MR/Mesh、Online MR 采集与分析；Online MR 链路详情、fping 汇总、备注、高级 Ping 和 iPerf；AC 轨旁计划、在线概览、FIT AP 资源/光衰/扩展及动作；文件管理 Mesh 下载/自动导入/WinSCP；网络工具 toolbox；Mesh 报告；系统磁盘清理、变更记录、开源信息和内部 Feature 页面。
 
-职责：
+SNMP Center 的 MIB 资源、Browser、OID 模板、监控、Trap/告警和拓扑目前作为 `module.snmp_center` 内部 Tab，尚未分别登记子 Feature key。单次查询和推荐页面是中心内部工作流，不是独立可见 Tab。若未来需要 edition 级单独控制，必须先在 Registry 增加明确 key，不能在页面另造配置。
 
-- 执行 `save force` 保存配置。
-- 单独 SSH 会话下载运行配置和已保存配置。
-- 采集命令包括：
+## 4. 新功能登记流程
 
-```text
-screen-length disable
-display current-configuration
-display saved-configuration
-```
+1. 在 Registry 中选择稳定 key，声明父模块、默认值、版本/edition 策略和 internal 属性。
+2. 页面、Tab、动作或按钮使用同一个 key；隐藏与禁用语义必须明确。
+3. 若能力需要后台任务，登记 task type 和对应 handler；若产生用户文件，登记 Export Process 类型。
+4. 添加 Feature 开/关测试，至少覆盖导航、直接入口、按钮状态和空/错误状态。
+5. 同步本文、根 README、变更记录及相关业务专题。
 
-- 配置 diff 只比较 `#version` 到 `#return` 的主体区间。
-- 诊断下载使用：
+## 5. Edition 与运行时配置
 
-```text
-screen-length disable
-display diagnostic-information
-```
+构建配置可按 internal/customer edition 或 profile 生成默认功能集合，但运行时仍由统一 Registry/Gate 判定。不得在页面用 edition 名称硬编码同一能力的第二套开关。
 
-边界：
+## 6. AP Identity 特例
 
-- 配置采集中心负责配置、快照、诊断文件。
-- 文件管理负责交互式设备文件下载/上传，不与配置采集混淆。
+AP Identity diagnostics 使用：
 
-## 文件管理
+- `ap_identity_diagnostics_enabled`
+- `ap_identity_diagnostics_ui_enabled`
+- `ap_identity_diagnostics_samples_enabled`
 
-职责：
-
-- 类 WinSCP 双栏文件管理。
-- 本地/设备双窗格、多选、全选、上传、下载、打开目录。
-- MESH 日志快速选择和下载。
-- 内置 SFTP/SCP 优先。
-- 外部 WinSCP 可作为完整功能入口。
-
-约定：
-
-- 外部 WinSCP 是外部进程，主程序退出时不强制处理。
-- 内置 fping、iperf 等工具由主程序明确管理和回收。
-- 如存在 SSH 隧道，外部 WinSCP 应传递隧道目标。
-
-## AC 管理 / FIT-AP
-
-当前主要适配 H3C AC，实机场景以 Comware v9 为主。
-
-常用采集命令：
-
-```text
-screen-length disable
-display wlan ap all
-display wlan ap all address
-display wlan ap all radio
-display lldp neighbor-information list
-display transceiver diagnosis interface
-```
-
-能力：
-
-- FIT-AP 资源采集和展示。
-- FIT-AP 光衰采集、历史和详情。
-- FIT-AP 扩展信息导入、编辑、异常检查。
-- AP 上线情况概览。
-- 轨旁 AP 规划。
-
-约定：
-
-- AP ID 可能由 AC 生成，不一定稳定唯一。
-- 稳定识别优先 SN、MAC；AP 更换硬件时可能沿用 AP 名称。
-- FIT-AP 普通 UI 默认隐藏固化状态、新上线状态、新上线来源、新上线采集时间；底层原始字段可保留。
-- AP 上线情况概览页面不保留导出概览、保存历史快照、查看历史按钮。
-- 轨旁 AP 规划支持备注字段，新增、编辑、导入、导出都应保留备注。
-
-## 轨道交通
-
-轨道交通模块至少包含：
-
-- 列车在线情况。
-- 车内通信检测。
-- 轨旁 AP 业务。
-- MR 原始 MESH 日志分析。
-- 车载 MR 实时收集。
-- 车载 MR 收集分析。
-
-模块切换约定：
-
-- AC 管理和轨道交通切换必须懒加载。
-- 不一次性初始化所有子页。
-- 子页状态尽量保留。
-- 正在运行的任务不能因切换模块停止。
-- 旧请求返回时不能覆盖当前模块状态。
-
-## 网络工具 / 小工具
-
-### iPerf 带宽测试
-
-- 使用项目 `tools/iperf/iperf3.exe`，路径由当前工具发现逻辑决定。
-- 页面为左右分栏：左侧服务端，右侧客户端。
-- 服务端和客户端进程、状态、日志独立。
-- 客户端测试结束不能误停服务端；服务端停止不能误清空客户端日志。
-
-### 无线扫描
-
-- 用于扫描轨旁 AP 隐藏 MESH 信号，并通过 BSSID 反查轨旁 AP 信息。
-- 保留子页：扫描结果、扫描历史、原始输出。
-- 已移除：2.4G 信道图、5G 信道图。
-- 信道图入口移除不影响扫描解析和 AP 反查匹配。
-
-### 本地网卡和路由
-
-- 本地网卡配置保留 IP / VLAN / DHCP 等网卡配置职责。
-- 本机路由维护在小工具中，排序参考原路由管理机制。
-- 调试时不修改当前活动网卡。
-
-## 日志和运行诊断
-
-运行日志用于问题定位，不应替代结构化数据。新增后台任务应提供清晰阶段提示、错误信息和可验证的日志上下文。
+只读摘要只有前两个开关都显式为 true 才可启用；缺失按 false。`samples` 开关当前不授权展示或持久化 samples。阶段 8.3 的统一 Job 详情宿主尚不存在，因此即使代码中有纯 ViewModel，也不得据此在多个业务页面添加可见入口。

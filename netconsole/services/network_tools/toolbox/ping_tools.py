@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import locale
 import re
 import socket
 import subprocess
@@ -10,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
+
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 Runner = Callable[[list[str], int], subprocess.CompletedProcess]
@@ -260,15 +261,5 @@ def _decode_output(data: bytes | str | None) -> str:
         return ""
     if isinstance(data, str):
         return data.replace("\ufffd", "")
-    encodings = [
-        locale.getpreferredencoding(False),
-        "gbk",
-        "gb18030",
-        "utf-8",
-    ]
-    for encoding in dict.fromkeys(item for item in encodings if item):
-        try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("gb18030", errors="replace").replace("\ufffd", "")
+    # 外部 ping 回显统一按 utf-8-sig/utf-8/gb18030/gbk 解码；仅无法识别时才 replacement。
+    return decode_bytes_with_fallback(data).text

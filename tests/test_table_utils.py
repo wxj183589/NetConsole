@@ -26,7 +26,7 @@ from netconsole.ui.table.table_autosize_engine import (
     weighted_text_length,
 )
 from netconsole.ui.theme.contrast_engine import apply_status_item_contrast, get_contrast_text_color
-from netconsole.ui.theme.qt_theme_engine import apply_theme
+from netconsole.ui.theme.qt_theme_engine import apply_table_theme, apply_theme
 from netconsole.ui.table_utils import (
     READONLY_TABLE_STYLESHEET,
     auto_resize_table_columns_to_contents,
@@ -323,14 +323,19 @@ def test_apply_dark_theme_sets_global_stylesheet():
     assert "QDialog" in qt_app.styleSheet()
 
 
-def test_apply_theme_switches_without_local_table_stylesheet():
+def test_apply_table_theme_switches_local_table_stylesheet():
     qt_app = app()
     table = QTableWidget()
 
+    apply_theme("light")
     configure_readonly_table(table)
-    apply_theme("dark")
+    assert "background-color: #ffffff" in table.styleSheet()
 
-    assert table.styleSheet() == ""
+    apply_theme("dark")
+    apply_table_theme(table, "dark")
+
+    assert "background-color: #1f2937" in table.styleSheet()
+    assert table.property("netconsoleTheme") == "dark"
     assert "background-color: #111827" in qt_app.styleSheet()
     assert "background-color: #0b0f14" not in qt_app.styleSheet()
     assert "background-color: #0f172a" not in qt_app.styleSheet()

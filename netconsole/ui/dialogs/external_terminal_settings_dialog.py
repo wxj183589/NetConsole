@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class ExternalTerminalSettingsDialog(QDialog):
@@ -14,9 +16,13 @@ class ExternalTerminalSettingsDialog(QDialog):
         self.i18n = i18n
         self.settings = settings
         self.setWindowTitle(self.i18n.t("external_terminal.settings"))
+        self.resize(760, 320)
         self.securecrt_path = QLineEdit(str(settings.get_value("external_terminal/securecrt_path", "") or ""))
         self.xshell_path = QLineEdit(str(settings.get_value("external_terminal/xshell_path", "") or ""))
         self.putty_path = QLineEdit(str(settings.get_value("external_terminal/putty_path", "") or ""))
+        for edit in (self.securecrt_path, self.xshell_path, self.putty_path):
+            edit.setMinimumWidth(260)
+            edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.pass_password = QCheckBox(self.i18n.t("external_terminal.pass_password"))
         self.pass_password.setChecked(bool(settings.get_value("external_terminal/pass_password", False)))
 
@@ -29,17 +35,21 @@ class ExternalTerminalSettingsDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.addLayout(form)
         layout.addWidget(buttons)
+        install_scrollable_dialog_content(self, content, minimum_width=480, minimum_height=260, content_minimum_width=620)
 
     def _path_row(self, edit: QLineEdit, mode: str) -> QHBoxLayout:
         row = QHBoxLayout()
         row.addWidget(edit, 1)
         button = QPushButton(self.i18n.t("common.browse"))
+        button.setMinimumWidth(88)
         button.clicked.connect(lambda: self._browse(edit, mode))
         row.addWidget(button)
         test_button = QPushButton(self.i18n.t("external_terminal.test_path"))
+        test_button.setMinimumWidth(88)
         test_button.clicked.connect(lambda: self._test_path(edit))
         row.addWidget(test_button)
         return row
@@ -57,9 +67,9 @@ class ExternalTerminalSettingsDialog(QDialog):
     def _test_path(self, edit: QLineEdit) -> None:
         path = Path(edit.text().strip())
         if path.is_file():
-            QMessageBox.information(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_ok"))
+            MessageBox.information(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_ok"))
         else:
-            QMessageBox.warning(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_missing"))
+            MessageBox.warning(self, self.i18n.t("external_terminal.settings"), self.i18n.t("external_terminal.path_missing"))
 
     def _save(self) -> None:
         self.settings.set_value("external_terminal/securecrt_path", self.securecrt_path.text().strip())

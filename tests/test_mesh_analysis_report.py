@@ -40,12 +40,28 @@ PEER_B = "30f5277a5a30"
 PEER_C = "30f5277a5a31"
 
 
-def _row(sample_time: str, peer: str, state: str = "ACTIVE", radio: int = 1, mr_rssi: int = 41, peer_rssi: int = 39) -> dict[str, object]:
+def _row(
+    sample_time: str,
+    peer: str,
+    state: str = "ACTIVE",
+    radio: int = 1,
+    mr_rssi: int = 41,
+    peer_rssi: int = 39,
+    peer_ap_name: str | None = None,
+    peer_ap_mac: str | None = None,
+    peer_radio: str | None = None,
+) -> dict[str, object]:
     return {
         "sample_time": sample_time,
         "radio": radio,
         "link_state": state,
         "peer_mac_normalized": peer,
+        "peer_ap_name": peer_ap_name or f"AP-{peer[-4:]}",
+        "peer_ap_mac": peer_ap_mac or peer,
+        "peer_site": "03横溪站",
+        "peer_radio": peer_radio or "radio1",
+        "peer_radio_label": peer_radio or "radio1",
+        "peer_radio_mac": peer,
         "establish_time": "2025-12-03 09:59:00.000",
         "duration_seconds": 60,
         "mr_rssi": mr_rssi,
@@ -59,6 +75,18 @@ def _row(sample_time: str, peer: str, state: str = "ACTIVE", radio: int = 1, mr_
         "source_line_number": 1,
         "raw_line": f"{sample_time} {state} {peer}",
     }
+
+
+def _source_row(source_file_id: int, sample_time: str, peer: str, state: str, radio: int = 1, mr_rssi: int | None = 41, peer_rssi: int | None = 39) -> dict[str, object]:
+    row = _row(sample_time, peer, state, radio=radio, mr_rssi=mr_rssi if mr_rssi is not None else 0, peer_rssi=peer_rssi if peer_rssi is not None else 0)
+    row["source_file_id"] = source_file_id
+    row["archived_filename"] = f"source-{source_file_id}.log"
+    row["source_line_number"] = source_file_id * 100
+    if mr_rssi is None:
+        row["mr_rssi"] = None
+    if peer_rssi is None:
+        row["peer_rssi"] = None
+    return row
 
 
 def test_active_segments_preserve_aba_runs_and_switch_sequence():
@@ -75,6 +103,21 @@ def test_active_segments_preserve_aba_runs_and_switch_sequence():
     assert [(switch["from_peer_mac"], switch["to_peer_mac"]) for switch in switches] == [(PEER_A, PEER_B), (PEER_B, PEER_A)]
     assert switches[0]["from_mr_rssi"] == 41
     assert switches[0]["to_mr_rssi"] == 55
+
+
+def test_report_active_segments_rssi_stats_are_complete_and_consistent():
+    rows = [
+        _row("2025-12-03 10:00:00.000", PEER_A, mr_rssi=0),
+        _row("2025-12-03 10:00:01.000", PEER_A, mr_rssi=40),
+        _row("2025-12-03 10:00:02.000", PEER_A, mr_rssi=50),
+    ]
+    segment = build_active_segments(rows)[0]
+
+    assert segment["avg_mr_rssi"] == 30
+    assert segment["min_mr_rssi"] == 0
+    assert segment["max_mr_rssi"] == 50
+    assert segment["p10_mr_rssi"] == 8
+    assert segment["min_mr_rssi"] <= segment["avg_mr_rssi"] <= segment["max_mr_rssi"]
 
 
 def test_mesh_threshold_templates_follow_business_scenario_not_wifi_generation():
@@ -176,19 +219,62 @@ def test_flap_detects_aba_inside_window_and_ignores_non_flap():
     flap_segments = build_active_segments(
         [
             _row("2025-12-03 10:00:00.000", PEER_A),
-            _row("2025-12-03 10:00:02.000", PEER_B),
-            _row("2025-12-03 10:00:04.000", PEER_A),
+            _row("2025-12-03 10:00:01.000", PEER_B),
+            _row("2025-12-03 10:00:02.000", PEER_A),
         ]
     )
-    assert detect_flap_switches(flap_segments, flap_window_seconds=5)[0]["flap_type"] == "A-B-A"
+    flap = detect_flap_switches(flap_segments, flap_window_seconds=5)[0]
+    assert flap["flap_type"] == "AP乒乓切换异常"
+    assert flap["is_pingpong_abnormal"] is True
     non_flap_segments = build_active_segments(
         [
             _row("2025-12-03 10:00:00.000", PEER_A),
-            _row("2025-12-03 10:00:02.000", PEER_B),
-            _row("2025-12-03 10:00:04.000", PEER_C),
+            _row("2025-12-03 10:00:01.000", PEER_B),
+            _row("2025-12-03 10:00:02.000", PEER_C),
         ]
     )
     assert detect_flap_switches(non_flap_segments, flap_window_seconds=5) == []
+
+
+def test_flap_detects_critical_normal_and_same_ap_radio_return_without_abnormal():
+    critical_segments = build_active_segments(
+        [
+            _row("2025-12-03 10:00:00.000", PEER_A),
+            _row("2025-12-03 10:00:01.000", PEER_B),
+            _row("2025-12-03 10:00:02.000", PEER_B),
+            _row("2025-12-03 10:00:03.000", PEER_B),
+            _row("2025-12-03 10:00:04.000", PEER_A),
+        ]
+    )
+    normal_segments = build_active_segments(
+        [
+            _row("2025-12-03 10:10:00.000", PEER_A),
+            _row("2025-12-03 10:10:01.000", PEER_B),
+            _row("2025-12-03 10:10:02.000", PEER_B),
+            _row("2025-12-03 10:10:03.000", PEER_B),
+            _row("2025-12-03 10:10:04.000", PEER_B),
+            _row("2025-12-03 10:10:05.000", PEER_B),
+            _row("2025-12-03 10:10:06.000", PEER_A),
+        ]
+    )
+    same_ap_segments = build_active_segments(
+        [
+            _row("2025-12-03 10:20:00.000", PEER_A, peer_ap_name="AP-A", peer_ap_mac="aaaa", peer_radio="radio1"),
+            _row("2025-12-03 10:20:01.000", PEER_B, peer_ap_name="AP-A", peer_ap_mac="aaaa", peer_radio="radio2"),
+            _row("2025-12-03 10:20:02.000", PEER_A, peer_ap_name="AP-A", peer_ap_mac="aaaa", peer_radio="radio1"),
+        ]
+    )
+
+    critical = detect_flap_switches(critical_segments, flap_window_seconds=5)[0]
+    normal = detect_flap_switches(normal_segments, flap_window_seconds=10)[0]
+    same_ap = detect_flap_switches(same_ap_segments, flap_window_seconds=5)[0]
+
+    assert critical["flap_type"] == "临界回切"
+    assert critical["is_pingpong_abnormal"] is False
+    assert normal["flap_type"] == "普通回切事件"
+    assert normal["is_pingpong_abnormal"] is False
+    assert same_ap["flap_type"] == "同AP射频往返"
+    assert same_ap["is_pingpong_abnormal"] is False
 
 
 def test_link_establishment_order_lifecycle_and_anomalies():
@@ -299,7 +385,7 @@ def test_report_export_translates_internal_enum_values():
     assert translate_report_value("switch_type", "LATE_SWITCH") == "切换滞后"
     assert translate_report_value("event_type", "NO_BACKUP") == "无可用备份"
     assert translate_report_value("rebuild_type", "DURATION_RESET") == "持续时间回退"
-    assert translate_report_value("link_state", "ACTIVE") == "主链路"
+    assert translate_report_value("link_state", "ACTIVE") == "ACTIVE 主链路"
     assert translate_report_value("data_source_type", "MR_RAW_MESH_LOG") == "MR原始MESH日志"
     assert translate_report_value("fping_loss_rate", None) == "N/A"
     assert translate_report_value("related_event_type", "SHORT_SEGMENT_SWITCH") == "短时切换"
@@ -317,6 +403,52 @@ def test_quality_sample_point_and_fping_na():
     assert sample["quality_level"] == "EXCELLENT"
     assert sample["available_backup_count"] == 1
     assert rows[0]["fping_loss_rate"] is None
+
+
+def test_quality_sample_point_uses_full_link_group_for_backup_counts():
+    rules = MeshQualityRules(backup_available_threshold=32, backup_strong_threshold=42, no_backup_min_seconds=0)
+    rows = normalize_samples(
+        [
+            _source_row(1, "2025-12-03 10:00:00.100", PEER_A, "ACTIVE 主链路", mr_rssi=45),
+            _source_row(1, "2025-12-03 10:00:00.250", PEER_B, "STANDBY 备链", mr_rssi=35),
+            _source_row(1, "2025-12-03 10:00:00.300", PEER_C, "Standy", mr_rssi=None, peer_rssi=43),
+            _source_row(2, "2025-12-03 10:00:00.100", PEER_A, "ACTIVE", mr_rssi=45),
+        ]
+    )
+
+    samples = build_sample_quality(rows, rules)
+    source1 = next(sample for sample in samples if sample["source_file_id"] == 1)
+    source2 = next(sample for sample in samples if sample["source_file_id"] == 2)
+    events = analyze_anomaly_events(samples, rows, rules)
+
+    assert source1["standby_peer_count"] == 2
+    assert source1["available_backup_count"] == 2
+    assert source1["strong_backup_count"] == 1
+    assert source1["best_backup_peer_key"] == PEER_C
+    assert source1["best_backup_rssi"] == 43
+    assert source1["backup_judgment_reason"] == "Active 存在，已识别 2 条可用备链。"
+    assert source2["standby_peer_count"] == 0
+    assert source2["available_backup_count"] == 0
+    assert not any(event["event_type"] == "NO_BACKUP" and event["source_file"] == "source-1.log" for event in events)
+
+
+def test_no_backup_diagnosis_distinguishes_missing_and_weak_standby():
+    rules = MeshQualityRules(backup_available_threshold=32, no_backup_min_seconds=0)
+    missing_rows = normalize_samples([_source_row(1, "2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=45)])
+    weak_rows = normalize_samples(
+        [
+            _source_row(2, "2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=45),
+            _source_row(2, "2025-12-03 10:00:00", PEER_B, "备链", mr_rssi=25),
+        ]
+    )
+
+    missing_event = analyze_anomaly_events(build_sample_quality(missing_rows, rules), missing_rows, rules)[0]
+    weak_event = analyze_anomaly_events(build_sample_quality(weak_rows, rules), weak_rows, rules)[0]
+
+    assert "没有任何 STANDBY/备链记录" in missing_event["diagnosis"]
+    assert "最佳备链 RSSI 25" in weak_event["diagnosis"]
+    assert weak_event["standby_peer_count_min"] == 1
+    assert weak_event["best_backup_rssi"] == 25
 
 
 def test_quality_anomaly_event_merging_for_no_backup_weak_no_active_multi_active_and_busy():
@@ -367,6 +499,35 @@ def test_quality_switch_late_weak_target_and_flap_detection():
     late_segments = build_quality_active_segments(late_samples, late_rows, rules)
     late_switches = analyze_switch_events(late_segments, late_samples, rules)
     assert late_switches[0]["switch_type"] in {"LATE_SWITCH", "WEAK_TARGET_SWITCH"}
+
+
+def test_quality_switch_long_return_is_not_pingpong_abnormal():
+    rules = MeshQualityRules(
+        switch_late_window_seconds=5,
+        switch_target_window_seconds=5,
+        flap_window_seconds=10,
+        short_active_segment_seconds=0,
+        main_link_switch_time_ms=2500,
+        pingpong_tolerance_ms=500,
+        pingpong_return_window_ms=10000,
+    )
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:00:00", PEER_A, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:01", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:02", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:03", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:04", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:05", PEER_B, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:00:06", PEER_A, "ACTIVE", mr_rssi=40),
+        ]
+    )
+    samples = build_sample_quality(rows, rules)
+    segments = build_quality_active_segments(samples, rows, rules)
+    switches = analyze_switch_events(segments, samples, rules)
+
+    assert not any(switch["switch_type"] == "FLAP_SWITCH" for switch in switches)
+    assert any(switch["pingpong_type"] == "普通回切事件" and not switch["is_pingpong_abnormal"] for switch in switches)
 
 
 def test_quality_rebuild_busy_and_percentiles():

@@ -22,12 +22,17 @@ class RealtimeMRState:
     peer_mac: str | None = None
     peer_station: str | None = None
     peer_site: str | None = None
+    peer_section: str | None = None
+    belong_type: str | None = None
+    belonging_source: str | None = None
     peer_serial_number: str | None = None
     mr_rssi: int | None = None
     link_state: str | None = None
+    channel_busy_total: float | None = None
     ctl_busy: float | None = None
     tx_busy: float | None = None
     rx_busy: float | None = None
+    channel_busy_sample_time: str | None = None
     loss: float | None = None
     rtt: float | None = None
     retry_count: int | None = None
@@ -108,6 +113,10 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
         peer_site = _text(payload.get("peer_station") or payload.get("peer_site") or payload.get("site"))
         state.peer_station = peer_site or state.peer_station
         state.peer_site = peer_site or state.peer_site
+        peer_section = _text(payload.get("peer_section") or payload.get("belong_section"))
+        state.peer_section = peer_section or state.peer_section
+        state.belong_type = _text(payload.get("belong_type")) or state.belong_type
+        state.belonging_source = _text(payload.get("belonging_source")) or state.belonging_source
         mr_rssi = _int_or_none(payload.get("mr_rssi"), payload.get("local_rssi"), payload.get("local_rssi_db"), payload.get("rssi"))
         state.mr_rssi = mr_rssi if mr_rssi is not None else state.mr_rssi
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
@@ -126,12 +135,14 @@ def _apply_event(state: RealtimeMRState, event: OnlineMrEvent, resolve_peer: Cal
             resolved_site = _text(resolved.get("peer_site") or resolved.get("site"))
             state.peer_station = resolved_site or state.peer_station
             state.peer_site = resolved_site or state.peer_site
+            state.peer_section = _text(resolved.get("peer_section") or resolved.get("belong_section")) or state.peer_section
+            state.belong_type = _text(resolved.get("belong_type")) or state.belong_type
+            state.belonging_source = _text(resolved.get("belonging_source")) or state.belonging_source
             state.peer_serial_number = _text(resolved.get("peer_serial_number") or resolved.get("serial_number")) or state.peer_serial_number
     elif event.module == "busy":
-        state.ctl_busy = _float_or_none(payload.get("ctl_busy")) if payload.get("ctl_busy") is not None else state.ctl_busy
-        state.tx_busy = _float_or_none(payload.get("tx_busy")) if payload.get("tx_busy") is not None else state.tx_busy
-        state.rx_busy = _float_or_none(payload.get("rx_busy")) if payload.get("rx_busy") is not None else state.rx_busy
+        _apply_busy_payload(state, payload)
     elif event.module == "stats":
+        _apply_busy_payload(state, payload)
         retry = _int_or_none(payload.get("retry_count"), payload.get("retry"), payload.get("local_retry"))
         state.retry_count = retry if retry is not None else state.retry_count
         state.retry = retry if retry is not None else state.retry
@@ -147,6 +158,25 @@ def _has_any(payload: dict[str, object], *keys: str) -> bool:
     return any(payload.get(key) is not None for key in keys)
 
 
+def _apply_busy_payload(state: RealtimeMRState, payload: dict[str, object]) -> None:
+    total = _float_or_none(payload.get("channel_busy_total"), payload.get("ctl_busy"))
+    ctl = _float_or_none(payload.get("ctl_busy"), payload.get("channel_busy_total"))
+    tx = _float_or_none(payload.get("tx_busy"))
+    rx = _float_or_none(payload.get("rx_busy"))
+    if total is not None:
+        state.channel_busy_total = total
+    if ctl is not None:
+        state.ctl_busy = ctl
+    if tx is not None:
+        state.tx_busy = tx
+    if rx is not None:
+        state.rx_busy = rx
+    if any(value is not None for value in (total, ctl, tx, rx)):
+        sample_time = _text(payload.get("channel_busy_sample_time") or payload.get("sample_time") or payload.get("collector_time"))
+        if sample_time:
+            state.channel_busy_sample_time = sample_time
+
+
 def _text(value: object) -> str:
     return str(value or "").strip()
 
@@ -156,7 +186,7 @@ def _is_resolved_peer(value: dict[str, object]) -> bool:
         return False
     if _text(value.get("match_rule")).lower() == "unresolved":
         return False
-    return any(_text(value.get(key)) for key in ("peer_ap_name", "peer_site", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
+    return any(_text(value.get(key)) for key in ("peer_ap_name", "peer_site", "peer_section", "site", "serial_number", "peer_serial_number", "radio_mac", "peer_radio_mac"))
 
 
 def _int_or_none(*values: object) -> int | None:

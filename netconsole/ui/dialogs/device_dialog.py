@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -29,6 +29,7 @@ from netconsole.services.netmiko_connection import ConnectionTestResult, extract
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 from netconsole.ui.windowing import fit_default_window_size
 
 
@@ -274,7 +275,7 @@ class DeviceDialog(QDialog):
         self._add_labelled_widget(form, "group_id", widget)
 
     def _add_spin(self, form: QFormLayout, field: str, minimum: int, maximum: int) -> None:
-        widget = QSpinBox()
+        widget = NoWheelSpinBox()
         widget.setRange(minimum, maximum)
         self._add_labelled_widget(form, field, widget)
 
@@ -348,14 +349,14 @@ class DeviceDialog(QDialog):
         data = self.form_data()
         error_key = validate_device_form_data(data)
         if error_key:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t(error_key))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t(error_key))
             return
         self.saved.emit(self.device())
 
     def test_connection(self) -> None:
         device = self.device()
         if not device.primary_address:
-            QMessageBox.warning(self, self.windowTitle(), self.i18n.t("validation.host_required"))
+            MessageBox.warning(self, self.windowTitle(), self.i18n.t("validation.host_required"))
             return
         self.test_button.setEnabled(False)
         self.test_button.setText(self.i18n.t("devices.testing_connection"))
@@ -379,9 +380,9 @@ class DeviceDialog(QDialog):
             )
             if sysname:
                 message = f"{message}\n{self.i18n.t('field.system_name')}: {sysname}"
-            QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
+            MessageBox.information(self, self.i18n.t("connection.success_title"), message)
         else:
-            QMessageBox.warning(
+            MessageBox.warning(
                 self,
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),

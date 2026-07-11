@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.data_disk_manager import clean_data_disk, scan_data_disk
+from netconsole.ui.table_utils import auto_fit_table_columns
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 
 class DataDiskScanThread(QThread):
@@ -47,12 +50,14 @@ class DataDiskManagerDialog(QDialog):
         self.categories: list[str] = []
         self.scan_thread: DataDiskScanThread | None = None
         self.clean_thread: DataDiskCleanThread | None = None
-        self.setMinimumSize(680, 420)
 
-        root = QVBoxLayout(self)
+        content = QWidget(self)
+        root = QVBoxLayout(content)
         self.table = QTableWidget(0, 4)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("data_disk.category"),
@@ -77,6 +82,7 @@ class DataDiskManagerDialog(QDialog):
         buttons.addWidget(self.clean_button)
         buttons.addWidget(self.close_button)
         root.addLayout(buttons)
+        self.scroll_area = install_scrollable_dialog_content(self, content, minimum_width=560, minimum_height=360, content_minimum_width=720)
 
         self.retranslate()
         self.refresh()
@@ -110,7 +116,7 @@ class DataDiskManagerDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, category.name)
                 self.table.setItem(row_index, column, item)
-        self.table.resizeColumnsToContents()
+        auto_fit_table_columns(self.table, max_rows=100)
 
     def clean_selected(self) -> None:
         if self.clean_thread is not None and self.clean_thread.isRunning():
@@ -124,10 +130,10 @@ class DataDiskManagerDialog(QDialog):
             selected = {"legacy_debug_data", "debug_logs", "runtime_cache"}
         cleanable = selected & {"legacy_debug_data", "debug_logs", "runtime_cache"}
         if not cleanable:
-            QMessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.no_cleanable_selected"))
+            MessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.no_cleanable_selected"))
             return
-        answer = QMessageBox.question(self, self.windowTitle(), self.i18n.t("data_disk.clean_confirm"))
-        if answer != QMessageBox.Yes:
+        answer = MessageBox.question(self, self.windowTitle(), self.i18n.t("data_disk.clean_confirm"))
+        if answer != MessageBox.Yes:
             return
         self._set_busy(True, self.i18n.t("data_disk.cleaning"))
         self.clean_thread = DataDiskCleanThread(self.paths, cleanable)
@@ -140,14 +146,14 @@ class DataDiskManagerDialog(QDialog):
 
     def _show_clean_done(self, result: object) -> None:
         removed = sum(result.values())
-        QMessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.clean_done", size=_format_bytes(removed)))
+        MessageBox.information(self, self.windowTitle(), self.i18n.t("data_disk.clean_done", size=_format_bytes(removed)))
         self.refresh()
 
     def _show_scan_failed(self, message: str) -> None:
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.scan_failed", error=message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.scan_failed", error=message))
 
     def _show_clean_failed(self, message: str) -> None:
-        QMessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.clean_failed", error=message))
+        MessageBox.warning(self, self.windowTitle(), self.i18n.t("data_disk.clean_failed", error=message))
 
     def _set_busy(self, busy: bool, message: str) -> None:
         self.refresh_button.setEnabled(not busy)

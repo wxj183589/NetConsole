@@ -1,30 +1,52 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 
-TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk", "gb2312")
+TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
 H3C_DEVICE_ENCODINGS = ("gb2312", "gbk", "gb18030", "utf-8", "utf-8-sig")
 FILE_ENCODING_ERROR = "文件编码无法识别"
 MOJIBAKE_MARKERS = ("锟", "�", "脙", "脗", "悴", "ハ")
 
 
+@dataclass(frozen=True)
+class TextDecodeResult:
+    text: str
+    encoding: str
+    used_replacement: bool = False
+
+
 def safe_decode(text: bytes | str) -> str:
     if isinstance(text, bytes):
-        try:
-            return clean_h3c_device_text(text.decode("gb2312"))
-        except UnicodeDecodeError:
-            return clean_h3c_device_text(text.decode("utf-8", errors="replace"))
+        result = decode_bytes_with_fallback(text)
+        return clean_h3c_device_text(result.text)
     return clean_h3c_device_text(str(text or ""))
 
 
 def decode_text_auto(data: bytes) -> str:
-    for encoding in TEXT_ENCODINGS:
+    result = decode_bytes_with_fallback(data, replace_on_failure=False)
+    return result.text
+
+
+def decode_bytes_with_fallback(
+    data: bytes,
+    *,
+    encodings: Iterable[str] = TEXT_ENCODINGS,
+    replace_on_failure: bool = True,
+) -> TextDecodeResult:
+    raw = bytes(data)
+    for encoding in tuple(encodings):
+        if encoding.lower().replace("_", "-") == "utf-8-sig" and not raw.startswith(b"\xef\xbb\xbf"):
+            continue
         try:
-            return clean_device_text(bytes(data).decode(encoding))
+            return TextDecodeResult(clean_device_text(raw.decode(encoding)), encoding)
         except UnicodeDecodeError:
             continue
-    raise ValueError(FILE_ENCODING_ERROR)
+    if not replace_on_failure:
+        raise ValueError(FILE_ENCODING_ERROR)
+    return TextDecodeResult(clean_device_text(raw.decode("utf-8", errors="replace")), "utf-8-replace", True)
 
 
 def read_text_auto(path: Path) -> str:
@@ -32,7 +54,11 @@ def read_text_auto(path: Path) -> str:
 
 
 def read_text_with_fallback(path: Path) -> str:
-    return read_text_auto(path)
+    return read_text_with_encoding(path).text
+
+
+def read_text_with_encoding(path: Path) -> TextDecodeResult:
+    return decode_bytes_with_fallback(Path(path).read_bytes())
 
 
 def clean_device_text(text: str) -> str:

@@ -1,10 +1,13 @@
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea, QTableWidget
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
@@ -26,16 +29,44 @@ from netconsole.services.external_terminal import (
 from netconsole.services.netmiko_connection import ConnectionTarget, choose_connection_target
 from netconsole.services.securecrt_session_export import export_securecrt_sessions, sanitize_path_part
 from netconsole.ui.theme.qt_theme_engine import apply_theme
-from netconsole.ui.render.table_render_engine import ACTION_BUTTON_HEIGHT, ACTION_COLUMN_WIDTH
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog, INTERFACE_COLUMNS, LLDP_COLUMNS, OPTICAL_MODULE_COLUMNS, OVERVIEW_FIELDS, _column_min_widths
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
-from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, delete_device_ids, open_diagnostic_folder_for_results, select_device_id_for_connection
-from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
+from netconsole.ui.pages.device_management_page import DeviceManagementPage, choose_devices_for_export, open_diagnostic_folder_for_results, select_device_id_for_connection
+from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
+from netconsole.ui.batch_collect_worker import BATCH_COLLECT_DEFAULT_CONCURRENCY, BatchCollectWorker
+from netconsole.ui.widgets.device_table import CHECK_COLUMN, COLUMNS, DEVICE_TABLE_DIRECT_FILL_LIMIT, DEVICE_COLUMN_WIDTHS, DeviceTable, protocol_label
 from netconsole.ui.widgets.table_check_delegate import CheckBoxOnlyDelegate, is_checked_value
 
 
 def app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _stub_device_management_background_jobs(monkeypatch):
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.DeviceManagementPage.refresh", lambda *_args, **_kwargs: None)
+    yield
+    application = QApplication.instance()
+    if application is None:
+        return
+    for widget in list(application.topLevelWidgets()):
+        widget.close()
+        widget.deleteLater()
+    application.processEvents()
+
+
+_BaseDeviceDetailDialog = DeviceDetailDialog
+
+
+def DeviceDetailDialog(*args, **kwargs):
+    dialog = _BaseDeviceDetailDialog(*args, **kwargs)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        app().processEvents()
+        if not dialog.detail_load_job_id:
+            break
+        time.sleep(0.01)
+    return dialog
 
 
 def test_protocol_display_rules():
@@ -255,7 +286,6 @@ def test_main_table_columns_only_include_core_fields():
         "backup_address",
         "protocols",
         "updated_at",
-        "actions",
     ]
 
 
@@ -292,21 +322,6 @@ def test_device_table_header_tooltips_are_readable():
         assert "�" not in actual
 
 
-def test_delete_device_ids_deletes_multiple_devices():
-    class Repository:
-        def __init__(self):
-            self.deleted = []
-
-        def delete(self, device_id):
-            self.deleted.append(device_id)
-
-    repository = Repository()
-
-    delete_device_ids(repository, [1, 3, 5])
-
-    assert repository.deleted == [1, 3, 5]
-
-
 def test_choose_devices_for_export_uses_all_when_selection_is_empty():
     all_devices = [Device(id=1, name="A"), Device(id=2, name="B")]
 
@@ -331,8 +346,10 @@ def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monk
     second.write_text("second", encoding="utf-8")
     opened = []
 
-    monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.setattr("os.startfile", lambda path: opened.append(path), raising=False)
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toLocalFile()) or True,
+    )
 
     result = open_diagnostic_folder_for_results(
         [
@@ -356,7 +373,7 @@ def test_open_diagnostic_folder_for_successful_results_opens_once(tmp_path, monk
     )
 
     assert result is True
-    assert opened == [str(diagnostic_dir)]
+    assert [Path(path) for path in opened] == [diagnostic_dir]
 
 
 def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
@@ -368,12 +385,10 @@ def test_open_diagnostic_folder_failure_is_logged(tmp_path, monkeypatch):
     diagnostic_file = diagnostic_dir / "SW01_diag_20260618_101200.txt"
     diagnostic_file.write_text("first", encoding="utf-8")
 
-    monkeypatch.setattr("platform.system", lambda: "Windows")
-
-    def fail_open(_path):
+    def fail_open(_url):
         raise OSError("cannot open")
 
-    monkeypatch.setattr("os.startfile", fail_open, raising=False)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.QDesktopServices.openUrl", fail_open)
 
     result = open_diagnostic_folder_for_results(
         [
@@ -423,75 +438,105 @@ def test_double_click_row_does_not_call_edit_callback():
     assert edited == []
 
 
-def test_row_edit_button_calls_edit_callback():
+def test_row_edit_menu_action_calls_edit_callback():
     table = make_table()
     edited = []
     table.edit_requested.connect(lambda device_id: edited.append(device_id))
 
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
-    buttons[2].click()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    menu.actions()[3].trigger()
 
     assert edited == [1]
 
 
-def test_row_action_buttons_include_connection_edit_and_delete():
+def test_row_duplicate_menu_action_calls_duplicate_callback():
     table = make_table()
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
+    duplicated = []
+    table.duplicate_requested.connect(lambda device_id: duplicated.append(device_id))
 
-    assert [button.text() for button in buttons] == ["Details", "External Terminal", "Edit", "Delete"]
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    menu.actions()[1].trigger()
+
+    assert duplicated == [1]
 
 
-def test_row_external_terminal_button_calls_single_device_callback():
+def test_row_action_menu_includes_connection_edit_and_delete():
+    table = make_table()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+
+    assert [action.text() for action in menu.actions() if not action.isSeparator()] == ["Details", "Duplicate Device", "External Terminal", "Edit", "Delete", "Copy Text"]
+    assert table.contextMenuPolicy() == Qt.CustomContextMenu
+
+
+def test_row_context_menu_keeps_text_copy_actions_in_submenu():
+    table = make_table()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    copy_menu = menu.actions()[-1].menu()
+
+    assert copy_menu is not None
+    assert [action.text() for action in copy_menu.actions()] == [
+        "Copy Current Cell",
+        "Copy Name",
+        "Copy Primary Address",
+        "Copy Backup Address",
+        "Copy System Name",
+        "Copy Station",
+        "Copy Row",
+        "Copy Device Information",
+    ]
+    copy_menu.actions()[1].trigger()
+    assert QApplication.clipboard().text() == "A"
+
+
+def test_row_external_terminal_menu_action_calls_single_device_callback():
     table = make_table()
     requested = []
     table.external_terminal_requested.connect(lambda device_id: requested.append(device_id))
 
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
-    buttons[1].click()
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
+    menu.actions()[2].trigger()
 
     assert requested == [1]
 
 
-def test_row_action_buttons_include_chinese_connection_text():
+def test_row_action_menu_includes_chinese_detail_text():
     app()
     table = DeviceTable(I18n("zh_CN"))
     table.set_devices([Device(id=1, name="A")])
-    action_widget = table.cellWidget(0, table._column_index("actions"))
-    buttons = action_widget.findChildren(QPushButton)
+    menu = table.context_menu_for_device(1, 0, table._column_index("name"))
 
-    assert buttons[0].text() == "\u8be6\u60c5"
-
+    assert menu.actions()[0].text() == "\u8be6\u60c5"
 
 
-def test_device_table_columns_keep_readable_widths_and_buttons_are_compact():
+
+def test_device_table_columns_keep_readable_widths_without_cell_widgets():
     table = make_table()
-    action_column = table._column_index("actions")
-    action_widget = table.cellWidget(0, action_column)
-    buttons = action_widget.findChildren(QPushButton)
 
-    assert table.columnWidth(action_column) == ACTION_COLUMN_WIDTH
-    assert table.horizontalHeader().sectionResizeMode(action_column) == QHeaderView.Interactive
     assert table.horizontalHeader().stretchLastSection() is False
     assert table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert table.columnWidth(table._column_index("select")) == DEVICE_COLUMN_WIDTHS["select"]
     assert table.columnWidth(table._column_index("name")) == DEVICE_COLUMN_WIDTHS["name"]
     assert table.columnWidth(table._column_index("primary_address")) == DEVICE_COLUMN_WIDTHS["primary_address"]
     assert isinstance(table.itemDelegateForColumn(CHECK_COLUMN), CheckBoxOnlyDelegate)
-    assert action_widget.layout().spacing() == 6
-    assert action_widget.layout().contentsMargins().left() == 0
-    assert action_widget.layout().contentsMargins().top() == 0
-    assert action_widget.layout().alignment() == Qt.AlignCenter
-    assert [button.objectName() for button in buttons] == ["tableActionButton", "tableActionButton", "tableActionButton", "tableActionButton"]
-    assert all(button.minimumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
-    assert all(button.maximumHeight() == ACTION_BUTTON_HEIGHT for button in buttons)
-    assert ACTION_BUTTON_HEIGHT == 28
     assert table.verticalHeader().defaultSectionSize() == 36
     assert table.rowHeight(0) == 36
-    assert action_widget.minimumHeight() == 36
-    assert action_widget.maximumHeight() == 36
+
+
+def test_device_table_batches_large_device_rendering():
+    application = app()
+    table = DeviceTable(I18n("en_US"))
+    devices = [Device(id=index + 1, name=f"Device {index + 1}") for index in range(DEVICE_TABLE_DIRECT_FILL_LIMIT + 50)]
+
+    table.set_devices(devices)
+
+    assert table.rowCount() == 0
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and table.item(len(devices) - 1, table._column_index("name")) is None:
+        application.processEvents()
+        QTest.qWait(1)
+
+    assert table.rowCount() == len(devices)
+    assert table.item(len(devices) - 1, table._column_index("name")).text() == f"Device {len(devices)}"
 
 
 def test_checkbox_click_adds_and_removes_selected_device_id():
@@ -536,9 +581,87 @@ class PageRepository:
         self.devices = [device for device in self.devices if device.id != device_id]
 
 
-def test_batch_delete_button_tracks_selected_device_ids():
+def test_duplicate_template_clears_identity_and_keeps_device_configuration():
+    source = Device(
+        id=8,
+        device_uuid="120b39cf-bb77-4789-a3a5-76a8630f7c65",
+        name="MR-A",
+        group_id=2,
+        station="车库",
+        primary_address="172.20.28.253",
+        ssh_username="operator",
+        ssh_password="secret",
+        snmp_ro_community="readonly",
+        tunnel1_host="10.1.1.1",
+        remark="现场设备",
+        created_at="2026-07-11T10:00:00",
+        updated_at="2026-07-11T10:01:00",
+    )
+
+    duplicate = DeviceManagementPage._build_device_duplicate_template(source)
+
+    assert duplicate.id is None
+    assert duplicate.device_uuid is None
+    assert duplicate.created_at is None
+    assert duplicate.updated_at is None
+    assert duplicate.name == "MR-A-副本"
+    assert duplicate.group_id == 2
+    assert duplicate.primary_address == "172.20.28.253"
+    assert duplicate.ssh_username == "operator"
+    assert duplicate.ssh_password == "secret"
+    assert duplicate.snmp_ro_community == "readonly"
+    assert duplicate.tunnel1_host == "10.1.1.1"
+    assert duplicate.remark == "现场设备"
+
+
+def test_duplicate_device_opens_add_dialog_with_template_values(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    source = Device(
+        id=1,
+        device_uuid="120b39cf-bb77-4789-a3a5-76a8630f7c65",
+        name="MR-A",
+        group_id=None,
+        station="Depot",
+        primary_address="172.20.28.253",
+        ssh_username="operator",
+        ssh_password="secret",
+        snmp_ro_community="readonly",
+        tunnel1_host="10.1.1.1",
+        remark="现场设备",
+    )
+    page.table.set_devices([source])
+    monkeypatch.setattr(page, "_show_window", lambda _dialog: None)
+
+    page.duplicate_device_by_id(1)
+
+    dialog = page.dialog_registry.get_add_window()
+    assert dialog is not None
+    assert dialog.original is None
+    assert dialog.windowTitle() == "Duplicate Device"
+    duplicate = dialog.device()
+    assert duplicate.id is None
+    assert duplicate.device_uuid is None
+    assert duplicate.name == "MR-A-副本"
+    assert duplicate.station == "Depot"
+    assert duplicate.primary_address == "172.20.28.253"
+    assert duplicate.ssh_username == "operator"
+    assert duplicate.ssh_password == "secret"
+    assert duplicate.snmp_ro_community == "readonly"
+    assert duplicate.tunnel1_host == "10.1.1.1"
+    assert duplicate.remark == "现场设备"
+    dialog.close()
+
+
+def test_batch_delete_button_tracks_selected_device_ids(monkeypatch):
+    app()
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.BackgroundProcessManager.start_job",
+        lambda _manager, _job: "test-device-refresh",
+    )
+    repository = PageRepository()
+    page = DeviceManagementPage(repository, I18n("en_US"))
+    page.table.set_devices(repository.devices)
 
     assert page.batch_delete_button.isEnabled() is False
 
@@ -567,7 +690,10 @@ def test_toolbar_test_connection_without_selection_shows_select_first(monkeypatc
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.test_selected_device_connection()
 
@@ -580,10 +706,28 @@ def test_toolbar_test_connection_with_multiple_devices_uses_batch(monkeypatch):
     captured = []
     monkeypatch.setattr(page, "batch_test_connections", lambda devices: captured.extend(devices))
 
+    page.table.set_devices(page.repository.devices)
     page.table._set_all_checked(True)
     page.test_selected_device_connection()
 
     assert [device.name for device in captured] == ["A", "B"]
+
+
+def test_batch_connection_dialog_removes_bottom_controls_and_uses_default_concurrency(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(BatchConnectionTestWorker, "start", lambda _worker: None)
+
+    page.table.set_devices(page.repository.devices)
+    page.table._set_all_checked(True)
+    page.batch_test_connections(page.table.checked_devices())
+
+    assert page.batch_connection_test_worker.max_workers == BATCH_CONNECTION_DEFAULT_CONCURRENCY
+    assert not hasattr(page.batch_connection_test_dialog, "concurrency_combo")
+    assert not hasattr(page.batch_connection_test_dialog, "copy_button")
+    assert not hasattr(page.batch_connection_test_dialog, "close_button")
+    page.batch_connection_test_dialog.close()
 
 
 def test_top_toolbar_omits_edit_delete_and_contains_batch_refresh_details():
@@ -636,8 +780,12 @@ def test_row_external_terminal_without_config_only_prompts(monkeypatch):
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.available_external_terminal_configs", lambda _settings: [])
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
+    page.table.set_devices(page.repository.devices)
     page.launch_external_terminal_for_device_id(1)
 
     assert messages == ["No external terminal path is configured. Click External Terminal Config first."]
@@ -672,7 +820,9 @@ def test_same_device_detail_window_is_created_once(monkeypatch):
 
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.DeviceDetailDialog", FakeDetail)
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.window_manager.register_child_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
 
+    page.table.set_devices(page.repository.devices)
     page.show_device_detail(1)
     page.show_device_detail(1)
 
@@ -697,7 +847,10 @@ def test_toolbar_detail_without_selection_shows_select_first(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.show_selected_device_detail()
 
@@ -708,11 +861,33 @@ def test_batch_refresh_details_without_selection_shows_select_first(monkeypatch)
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.batch_refresh_details()
 
     assert messages == ["Select a device first."]
+
+
+def test_batch_refresh_details_uses_fixed_safe_concurrency_and_progress_dialog(monkeypatch):
+    app()
+    page = DeviceManagementPage(PageRepository(), I18n("en_US"))
+    page.table.set_devices(page.repository.devices)
+    page.table._set_all_checked(True)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.MessageBox.question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr("netconsole.ui.pages.device_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(BatchCollectWorker, "start", lambda _worker: None)
+
+    page.batch_refresh_details()
+
+    assert page.batch_collect_worker is not None
+    assert page.batch_collect_worker.max_workers == BATCH_COLLECT_DEFAULT_CONCURRENCY == 20
+    assert page.batch_collect_dialog is not None
+    assert not hasattr(page.batch_collect_dialog, "concurrency_combo")
+    assert page.batch_collect_dialog.table.columnCount() == 8
+    assert page.batch_collect_dialog.table.cellWidget(0, 3) is not None
 
 
 def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path):
@@ -734,6 +909,7 @@ def test_device_detail_dialog_title_includes_device_name_and_empty_hint(tmp_path
         "LLDP Neighbors",
         "Trackside AP Business",
     ]
+    assert dialog.findChild(QScrollArea) is not None
     assert any("Demo data is generated only when the demo database is first created" in text for text in labels)
 
 
@@ -802,13 +978,13 @@ def test_optical_status_labels_and_colors_are_mapped():
 
     assert i18n.t("optical.status.link_abnormal") == "\u94fe\u8def\u5f02\u5e38"
     assert i18n.t("optical.status.no_light") == "\u65e0\u5149"
-    assert DeviceDetailDialog.optical_status_color("normal") == "#22c55e"
-    assert DeviceDetailDialog.optical_status_color("warning") == "#fbbf24"
-    assert DeviceDetailDialog.optical_status_color("alarm") == "#f87171"
-    assert DeviceDetailDialog.optical_status_color("link_abnormal") == "#fb7185"
-    assert DeviceDetailDialog.optical_status_color("no_light") == "#6b7280"
-    assert DeviceDetailDialog.interface_row_status_color("link_abnormal") == "#fb7185"
-    assert DeviceDetailDialog.interface_row_status_color("no_light") == "#6b7280"
+    assert _BaseDeviceDetailDialog.optical_status_color("normal") == "#22c55e"
+    assert _BaseDeviceDetailDialog.optical_status_color("warning") == "#fbbf24"
+    assert _BaseDeviceDetailDialog.optical_status_color("alarm") == "#f87171"
+    assert _BaseDeviceDetailDialog.optical_status_color("link_abnormal") == "#fb7185"
+    assert _BaseDeviceDetailDialog.optical_status_color("no_light") == "#6b7280"
+    assert _BaseDeviceDetailDialog.interface_row_status_color("link_abnormal") == "#fb7185"
+    assert _BaseDeviceDetailDialog.interface_row_status_color("no_light") == "#6b7280"
 
 
 def test_device_detail_tabs_include_color_notes_and_interface_color_follows_optical_status(tmp_path):
@@ -930,7 +1106,10 @@ def test_toolbar_edit_without_selection_shows_select_first(monkeypatch):
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
     page.edit_device()
 
@@ -941,8 +1120,12 @@ def test_toolbar_edit_with_multiple_checked_devices_shows_single_edit_message(mo
     app()
     page = DeviceManagementPage(PageRepository(), I18n("en_US"))
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: messages.append(text))
+    monkeypatch.setattr(
+        "netconsole.ui.pages.device_management_page.MessageBox.information",
+        lambda _parent, _title, text: messages.append(text),
+    )
 
+    page.table.set_devices(page.repository.devices)
     page.table._set_all_checked(True)
     page.edit_device()
 

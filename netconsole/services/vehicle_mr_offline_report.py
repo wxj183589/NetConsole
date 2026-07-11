@@ -18,15 +18,16 @@ class VehicleMrOfflineReportService:
         analysis = VehicleMrOfflineAnalysisService().analyze(session_dir)
         return VehicleMrOfflineReport(
             session_dir=analysis.session_dir,
-            title="车载MR收集离线分析报告",
+            title="车载MR离线诊断报告",
             sheet_names=[
-                "综合结论",
+                "报告总览",
                 "会话信息",
-                "质量总览",
-                "时间轴质量分析",
+                "数据完整性",
+                "质量评分",
+                "时间轴质量概览",
                 "fping业务质量",
-                "Mesh主链路质量",
-                "Peer稳定性分析",
+                "Mesh主链路区段",
+                "Peer质量排名",
                 "切换影响分析",
                 "丢包关联分析",
                 "异常事件清单",

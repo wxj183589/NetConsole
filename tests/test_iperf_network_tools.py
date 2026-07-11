@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,9 +20,16 @@ from netconsole.services.network_tools.iperf_parser import (
     split_iperf_log_prefix,
     summarize_iperf_zero_samples,
 )
-from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfResultStore, build_iperf_client_args, normalize_bandwidth_text
+from netconsole.services.network_tools.iperf_runner import (
+    FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+    IperfClientConfig,
+    IperfResultStore,
+    build_iperf_client_args,
+    normalize_bandwidth_text,
+    run_iperf_client_preflight,
+)
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
-from netconsole.services.online_mr.traffic_presets import get_traffic_preset, list_traffic_presets
+from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_PORT, get_traffic_preset, list_traffic_presets
 from netconsole.services.online_mr.workers.iperf3_worker import build_iperf3_json_args
 from netconsole.ui.pages.iperf_bandwidth_page import IperfBandwidthPage
 
@@ -128,6 +136,12 @@ def test_pis_tcp_downlink_max_template_omits_bandwidth_arg(tmp_path: Path) -> No
     assert "-b" not in args
 
 
+def test_online_mr_traffic_presets_default_to_iperf_standard_port() -> None:
+    assert DEFAULT_TRAFFIC_PRESET_PORT == 5201
+    assert list_traffic_presets()
+    assert {preset.port for preset in list_traffic_presets()} == {5201}
+
+
 def test_pis_tcp_parallel_template_omits_bandwidth_arg(tmp_path: Path) -> None:
     preset = get_traffic_preset("pis_tcp_downlink_parallel")
     assert preset is not None
@@ -182,6 +196,8 @@ def test_cbtc_dcs_traffic_presets_are_registered() -> None:
         "cbtc_dcs_udp_1m_1256b",
         "cbtc_dcs_tcp_observation",
     ]
+    assert all(preset.duration_mode == "follow_collection" for preset in list_traffic_presets())
+    assert all(preset.duration_sec == FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS for preset in list_traffic_presets())
 
 
 def test_cbtc_dcs_udp_templates_generate_bitrate_packet_length_and_reverse(tmp_path: Path) -> None:
@@ -274,9 +290,9 @@ def test_online_mr_legacy_tcp_bandwidth_maps_to_threshold_not_pacing(tmp_path: P
 
 
 def test_follow_collection_manual_duration_uses_long_duration(tmp_path: Path) -> None:
-    config = IperfClientConfig("10.0.0.1", duration_seconds=86400, follow_collection=True)
+    config = IperfClientConfig("10.0.0.1", duration_seconds=600, follow_collection=True)
     args = build_iperf_client_args(tmp_path / "iperf3.exe", config)
-    assert args[args.index("-t") + 1] == "86400"
+    assert args[args.index("-t") + 1] == str(FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
 
 
 def test_low_rate_tcp_client_uses_smaller_block_size(tmp_path: Path) -> None:
@@ -353,6 +369,19 @@ def test_format_iperf_log_header_keeps_repeated_metadata_out_of_interval_lines()
     assert "batch_key" not in line
 
 
+def test_format_iperf_log_header_records_follow_collection_policy() -> None:
+    context = {
+        "mode": "client",
+        "duration_mode": "follow_collection",
+        "protection_duration_seconds": FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
+        "stop_policy": "stop_with_collection",
+    }
+    header = format_iperf_log_header(context, datetime(2026, 7, 6, 9, 1, 2))
+    assert "# duration_mode=follow_collection" in header
+    assert f"# protection_duration_seconds={FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS}" in header
+    assert "# stop_policy=stop_with_collection" in header
+
+
 def test_iperf_parser_accepts_compact_log_format() -> None:
     row = parse_iperf_line("IPERF [2026-07-05 19:23:04.116] [client] [  5] 548.01-549.00 sec   128 KBytes  1.05 Mbits/sec")
     assert row is not None
@@ -380,6 +409,26 @@ def test_iperf_error_parser_accepts_compact_error_format() -> None:
     assert event["event_type"] == "error"
     assert event["error_code"] == "server_busy"
     assert event["collector_time"] == "2026-07-05 19:23:10.001"
+
+
+def test_iperf_preflight_reports_connection_refused(tmp_path: Path, monkeypatch) -> None:
+    tool = tmp_path / "iperf3.exe"
+    tool.write_text("fake", encoding="utf-8")
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="iperf3: error - unable to connect to server - Connection refused\n",
+        )
+
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.subprocess.run", fake_run)
+
+    result = run_iperf_client_preflight(tool, IperfClientConfig("127.0.0.1", port=5010))
+
+    assert result.ok is False
+    assert result.error_code == "unable_to_connect"
+    assert "Connection refused" in result.message
 
 
 def test_iperf_interval_center_time_aligns_to_started_at() -> None:
@@ -442,6 +491,40 @@ def test_iperf_result_store_creates_required_tables(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM iperf_runs").fetchone()[0] == 1
         assert conn.execute("SELECT device_id FROM iperf_runs").fetchone()[0] == 7
         assert conn.execute("SELECT COUNT(*) FROM iperf_intervals").fetchone()[0] == 1
+        columns = {item[1] for item in conn.execute("PRAGMA table_info(iperf_intervals)")}
+        assert {
+            "device_aligned_time",
+            "device_interval_center_time",
+            "clock_offset_ms",
+            "offset_source",
+            "time_source",
+        } <= columns
+
+
+def test_iperf_result_store_migrates_old_interval_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "old_iperf.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE iperf_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                interval_center_time TEXT
+            )
+            """
+        )
+
+    IperfResultStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {item[1] for item in conn.execute("PRAGMA table_info(iperf_intervals)")}
+    assert {
+        "device_aligned_time",
+        "device_interval_center_time",
+        "clock_offset_ms",
+        "offset_source",
+        "time_source",
+    } <= columns
 
 
 def test_network_tools_iperf_page_uses_bandwidth_value_and_unit(tmp_path: Path) -> None:
@@ -466,8 +549,10 @@ def test_iperf_page_shows_server_and_client_panels_together(tmp_path: Path) -> N
     page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
 
     assert page.splitter.count() == 2
-    assert page.splitter.widget(0).title() == "Server"
-    assert page.splitter.widget(1).title() == "Client"
+    assert page.server_panel.title() == "Server"
+    assert page.client_panel.title() == "Client"
+    assert page.splitter.widget(0).widgetResizable()
+    assert page.splitter.widget(1).widgetResizable()
     assert page.server_output.parentWidget() is not page.client_output.parentWidget()
     assert page.findChildren(QTabWidget) == []
 

@@ -17,8 +17,10 @@ from typing import Callable, Iterable
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services.netmiko_connection import (
+    ConnectionTarget,
     H3C_NETMIKO_DEVICE_TYPE,
     build_netmiko_params,
+    classify_connection_exception,
     connection_targets,
     encoding_for_vendor,
     normalize_command_output,
@@ -196,6 +198,11 @@ class SshResult:
     task_results: dict[str, PingResult] = field(default_factory=dict)
     task_metadata: dict[str, dict[str, object]] = field(default_factory=dict)
     error: str = ""
+    status: str = ""
+    protocol: str = "SSH"
+    port: int = 22
+    error_type: str = ""
+    suggestion: str = ""
 
 
 @dataclass(frozen=True)
@@ -1117,6 +1124,7 @@ def car_network_root(paths: PathResolver, site_name: str) -> Path:
 
 class CarNetworkPointTableStore:
     def __init__(self, paths: PathResolver, site_name: str) -> None:
+        self.paths = paths
         self.root = car_network_root(paths, site_name)
         self.path = self.root / "point_table.json"
 
@@ -1141,6 +1149,7 @@ class CarNetworkPointTableStore:
 
 class CarNetworkGlobalConfigStore:
     def __init__(self, paths: PathResolver, site_name: str) -> None:
+        self.paths = paths
         self.root = car_network_root(paths, site_name)
         self.path = self.root / "global_config.json"
 
@@ -1419,11 +1428,11 @@ class CarNetworkDiagnosticService:
         if source_node is None or ssh is None:
             ping = PingResult(task.target_ip, False, 100.0, error="跨TC ping 入口不存在")
         else:
-            username, password = self._mr_credentials(source_node)
             try:
-                ping = self._run_mr_remote_ping_task(task, username, password, source_node)
+                target = self._mr_target_for_result(source_node, ssh, task.source_host)
+                ping = self._run_mr_remote_ping_task(task, target, source_node)
             except Exception as exc:
-                ping = PingResult(task.target_ip, False, 100.0, error=str(exc))
+                ping = PingResult(task.target_ip, False, 100.0, error=classify_connection_exception(exc, ssh.protocol).short_detail)
             task_results = dict(ssh.task_results)
             task_metadata = dict(ssh.task_metadata)
             command_results = dict(ssh.command_results)
@@ -1523,81 +1532,77 @@ class CarNetworkDiagnosticService:
         host = self._mr_ssh_host(node)
         if not host:
             return SshResult("", False, node.node_name, error="无 SSH 主机")
-        username, password = self._mr_credentials(node)
-        if not username or not password:
-            return SshResult(host, False, node.node_name, error="跳过：未配置MR SSH账号密码")
+        targets = self._mr_connection_targets(node, host)
+        if not targets:
+            return SshResult(host, False, node.node_name, error="跳过：未配置MR SSH/Telnet账号密码", status="skipped", protocol="", port=0)
         emit("task_started", {"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": "running", "message": f"正在登录 {node.node_name} / {host}"})
         ssh_finished = False
-        try:
-            command_results: dict[str, PingResult] = {}
-            task_results: dict[str, PingResult] = {}
-            task_metadata: dict[str, dict[str, object]] = {}
-            tasks = _mr_remote_ping_tasks(node, self.nodes, host)
-            if not tasks and finish_task:
-                finish_task({"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": "ok", "message": f"{node.node_name} SSH登录成功"})
-                ssh_finished = True
-            with ThreadPoolExecutor(max_workers=max(1, min(MR_REMOTE_PING_CONCURRENCY_PER_MR, len(tasks)))) as executor:
-                future_map = {}
-                for task in tasks:
-                    self._raise_if_cancelled()
-                    emit("task_started", {"task_id": task.task_id, "source": task.source_node, "target": task.target_node, "target_ip": task.target_ip, "layer": task.layer, "status": "running", "message": f"{task.source_node} 正在执行 {task.command}，目标 {task.target_node} / {task.target_ip}"})
-                    future_map[executor.submit(self._run_mr_remote_ping_task, task, username, password, node)] = task
-                first_error: Exception | None = None
-                for future in as_completed(future_map):
-                    self._raise_if_cancelled()
-                    task = future_map[future]
-                    try:
-                        ping = future.result()
-                    except Exception as exc:
-                        if first_error is None:
-                            first_error = exc
-                        ping = PingResult(task.target_ip, False, 100.0, error=str(exc))
-                    else:
-                        if finish_task and not ssh_finished:
-                            finish_task({"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": "ok", "message": f"{node.node_name} SSH登录成功"})
-                            ssh_finished = True
-                    command_results[task.target_ip] = ping
-                    task_results[task.task_id] = ping
-                    task_metadata[task.task_id] = asdict(task)
-                    if finish_task:
-                        finish_task(_remote_ping_task_payload(task, ping))
-                if not ssh_finished and first_error is not None:
-                    raise first_error
-            return SshResult(host, True, node.node_name, command_results, task_results, task_metadata)
-        except Exception as exc:
-            if finish_task and not ssh_finished:
-                finish_task({"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": "fail", "message": f"{node.node_name} SSH登录失败：{exc}"})
-            return SshResult(host, False, node.node_name, error=str(exc))
+        last_error: SshResult | None = None
+        tasks = _mr_remote_ping_tasks(node, self.nodes, host)
+        for target in targets:
+            try:
+                task_results = {}
+                task_metadata = {}
+                command_results = {}
+                if not tasks and finish_task:
+                    status = "telnet_ok" if target.protocol.casefold() == "telnet" else "ok"
+                    finish_task({"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": "ok", "message": f"{node.node_name} {target.protocol}登录成功"})
+                    ssh_finished = True
+                    return SshResult(host, True, node.node_name, status=status, protocol=target.protocol, port=target.port)
+                with ThreadPoolExecutor(max_workers=max(1, min(MR_REMOTE_PING_CONCURRENCY_PER_MR, len(tasks)))) as executor:
+                    future_map = {}
+                    for task in tasks:
+                        self._raise_if_cancelled()
+                        emit("task_started", {"task_id": task.task_id, "source": task.source_node, "target": task.target_node, "target_ip": task.target_ip, "layer": task.layer, "status": "running", "message": f"{task.source_node} 正在执行 {task.command}，目标 {task.target_node} / {task.target_ip}"})
+                        future_map[executor.submit(self._run_mr_remote_ping_task, task, target, node)] = task
+                    first_error: Exception | None = None
+                    for future in as_completed(future_map):
+                        self._raise_if_cancelled()
+                        task = future_map[future]
+                        try:
+                            ping = future.result()
+                        except Exception as exc:
+                            if first_error is None:
+                                first_error = exc
+                            ping = PingResult(task.target_ip, False, 100.0, error=classify_connection_exception(exc, target.protocol).short_detail)
+                        else:
+                            if finish_task and not ssh_finished:
+                                finish_task({"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": "ok", "message": f"{node.node_name} {target.protocol}登录成功"})
+                                ssh_finished = True
+                        command_results[task.target_ip] = ping
+                        task_results[task.task_id] = ping
+                        task_metadata[task.task_id] = asdict(task)
+                        if finish_task:
+                            finish_task(_remote_ping_task_payload(task, ping))
+                    if not ssh_finished and first_error is not None:
+                        raise first_error
+                return SshResult(host, True, node.node_name, command_results, task_results, task_metadata, status="telnet_ok" if target.protocol.casefold() == "telnet" else "ok", protocol=target.protocol, port=target.port)
+            except Exception as exc:
+                classification = classify_connection_exception(exc, target.protocol)
+                last_error = SshResult(host, False, node.node_name, error=classification.short_detail, status=classification.status, protocol=target.protocol, port=target.port, error_type=classification.error_type, suggestion=classification.suggestion)
+                if finish_task and not ssh_finished:
+                    finish_task({"task_id": f"{node.node_name}_ssh", "source": node.node_name, "target_ip": host, "layer": "SSH层", "status": _connection_task_status(classification.status), "message": f"{node.node_name} {classification.short_detail}；{classification.suggestion}"})
+                if classification.status == "auth_failed":
+                    return last_error
+                continue
+        return last_error or SshResult(host, False, node.node_name, error="MR管理连接失败", status="unknown_error")
 
-    def _run_mr_remote_ping_task(self, task: MrRemotePingTask, username: str, password: str, node: CarNetworkNode) -> PingResult:
+    def _run_mr_remote_ping_task(self, task: MrRemotePingTask, target: ConnectionTarget, node: CarNetworkNode) -> PingResult:
         self._raise_if_cancelled()
-        output = self._send_ssh_command(task.source_host, task.command, username, password, node, task.timeout)
+        output = self._send_ssh_command(task.source_host, task.command, target, node, task.timeout)
         return parse_ping_output(task.target_ip, output)
 
-    def _send_ssh_command(self, host: str, command: str, username: str, password: str, node: CarNetworkNode, read_timeout: int = 30) -> str:
+    def _send_ssh_command(self, host: str, command: str, target: ConnectionTarget, node: CarNetworkNode, read_timeout: int = 30) -> str:
         if self.ssh_command_func is not None:
             return self.ssh_command_func(host, command)
         if ConnectHandler is None:
             raise RuntimeError("netmiko is not installed")
-        device = self.mr_devices.get(node.node_name)
-        target = {
-            "device_type": H3C_NETMIKO_DEVICE_TYPE,
-            "host": host,
-            "username": username,
-            "password": password,
-            "port": int(device.ssh_port if device is not None and device.ssh_port else 22),
-            "timeout": 8,
-            "conn_timeout": 8,
-            "auth_timeout": 8,
-            "banner_timeout": 8,
-            "encoding": encoding_for_vendor(device.device_vendor if device else "H3C"),
-            "session_log": None,
-            "global_delay_factor": 1,
-        }
-        conn = ConnectHandler(**target)
+        target = replace(target, host=host)
+        params = build_netmiko_params(target)
+        conn = ConnectHandler(**params)
         try:
             if _is_h3c_ping_command(command):
-                return _send_h3c_ping_command(conn, command, str(target["encoding"]), _h3c_ping_read_timeout(command, read_timeout))
+                return _send_h3c_ping_command(conn, command, str(params["encoding"]), _h3c_ping_read_timeout(command, read_timeout))
             return safe_send_command(
                 conn,
                 command,
@@ -1605,10 +1610,32 @@ class CarNetworkDiagnosticService:
                 strip_prompt=False,
                 strip_command=False,
                 use_timing=True,
-                encoding=str(target["encoding"]),
+                encoding=str(params["encoding"]),
             )
         finally:
             conn.disconnect()
+
+    def _mr_connection_targets(self, node: CarNetworkNode, host: str) -> list[ConnectionTarget]:
+        device = self.mr_devices.get(node.node_name)
+        if device is not None:
+            targets = [replace(target, host=host) for target in connection_targets(device)]
+            if targets:
+                return targets
+        username, password = self._mr_credentials(node)
+        if not username or not password:
+            return []
+        vendor = device.device_vendor if device is not None else "H3C"
+        return [ConnectionTarget("SSH", H3C_NETMIKO_DEVICE_TYPE, host, int(device.ssh_port if device is not None and device.ssh_port else 22), username, password, encoding_for_vendor(vendor))]
+
+    def _mr_target_for_result(self, node: CarNetworkNode, ssh: SshResult, host: str) -> ConnectionTarget:
+        targets = self._mr_connection_targets(node, host)
+        for target in targets:
+            if target.protocol.casefold() == ssh.protocol.casefold() and int(target.port) == int(ssh.port or target.port):
+                return target
+        if targets:
+            return targets[0]
+        username, password = self._mr_credentials(node)
+        return ConnectionTarget("SSH", H3C_NETMIKO_DEVICE_TYPE, host, int(ssh.port or 22), username, password, encoding_for_vendor("H3C"))
 
     def _mr_ssh_host(self, node: CarNetworkNode) -> str:
         return node.ssh_address(self.mr_devices.get(node.node_name))
@@ -1753,6 +1780,16 @@ def _ping_task_status(result: PingResult) -> str:
         return "ok"
     if result.ok and result.loss_percent > 0:
         return "unstable"
+    return "fail"
+
+
+def _connection_task_status(status: str) -> str:
+    if status in {"ok", "telnet_ok"}:
+        return "ok"
+    if status in {"ssh_banner_failed", "auth_failed"}:
+        return "unstable"
+    if status == "skipped":
+        return "skipped"
     return "fail"
 
 
@@ -1916,7 +1953,12 @@ def _ssh_status_json(ssh_results: dict[str, SshResult]) -> dict[str, dict[str, o
         payload[name] = {
             "connected": result.ok,
             "host": result.host,
+            "protocol": result.protocol,
+            "port": result.port,
+            "status": result.status or ("ok" if result.ok else "unknown_error"),
             "error": result.error,
+            "error_type": result.error_type,
+            "suggestion": result.suggestion,
             "remote_ping_count": len(remote_pings),
             "remote_ping_ok_count": sum(1 for ping in remote_pings if _ping_ok_no_loss(ping)),
         }
@@ -2062,7 +2104,7 @@ def _diagnosis_items_from_tables(tables: dict[str, list[dict[str, object]]]) -> 
             status = str(row.get("status") or "")
             layer = str(row.get("layer") or "")
             node_text = str(row.get("node") or "")
-            severity = "ok" if status == "OK" else "warning" if status in {"丢包异常", "AC未发现", "跳过"} else "fail" if status in {"不通", "SSH失败", "AC离线"} else "unknown"
+            severity = "ok" if status == "OK" else "warning" if status in {"丢包异常", "AC未发现", "跳过", "SSH握手失败", "SSH认证失败", "Telnet认证失败"} else "fail" if status in {"不通", "SSH失败", "TCP不可达", "超时", "AC离线"} else "unknown"
             if severity == "ok" and layer not in {"MR远程本端检测", "MR远程跨TC检测", "MR远程跨TC长Ping", "SSH层", "AC层"}:
                 continue
             source, target, target_ip = _parse_diagnosis_node_text(node_text)
@@ -2407,8 +2449,8 @@ def build_result_tables(
                 if not node.ip_vehicle:
                     tables[tc].append(_table_row(node.node_name, "车内IP", "不适用", "-", "-", "MR 未配置车内IP"))
                 ssh = ssh_results.get(node.node_name)
-                ssh_label = "可管理" if ssh and ssh.ok else "跳过" if _ssh_skipped(ssh) else "SSH失败" if ssh else "未检测"
-                ssh_note = f"SSH 登录 {node.node_name} 成功" if ssh and ssh.ok else "" if ssh is None else _clean_ping_error(ssh.error)
+                ssh_label = _ssh_result_label(ssh)
+                ssh_note = _ssh_result_note(node, ssh)
                 ssh_ip = node.ssh_host or node.ip_vehicle or node.ip_uplink or (ssh.host if ssh else "")
                 tables[tc].append(_table_row(f"{node.node_name} / {ssh_ip}" if ssh_ip else f"{node.node_name} SSH", "SSH地址 / MR管理", ssh_label, "-", "-", ssh_note))
                 reachable, remote_ping, remote_note = _mr_vehicle_reachable_by_any_entry(node, ssh_results, nodes)
@@ -2434,6 +2476,33 @@ def build_result_tables(
 
 def _table_row(name: str, layer: str, status: str, rtt: str, loss: str, note: str) -> dict[str, object]:
     return {"node": name, "layer": layer, "status": status, "rtt": rtt, "loss": loss, "note": note}
+
+
+def _ssh_result_label(ssh: SshResult | None) -> str:
+    if ssh is None:
+        return "未检测"
+    if _ssh_skipped(ssh):
+        return "跳过"
+    if ssh.ok:
+        return "可管理" if ssh.protocol.casefold() != "telnet" else "Telnet可管理"
+    return {
+        "ssh_banner_failed": "SSH握手失败",
+        "auth_failed": "Telnet认证失败" if ssh.protocol.casefold() == "telnet" else "SSH认证失败",
+        "tcp_failed": "TCP不可达",
+        "timeout": "超时",
+    }.get(ssh.status, "SSH失败")
+
+
+def _ssh_result_note(node: CarNetworkNode, ssh: SshResult | None) -> str:
+    if ssh is None:
+        return ""
+    if ssh.ok:
+        return f"{ssh.protocol} 登录 {node.node_name} 成功"
+    if ssh.status == "ssh_banner_failed":
+        return "SSH握手失败：未收到SSH banner，疑似SSH未启用或端口不是SSH"
+    if ssh.error:
+        return _clean_ping_error(ssh.error)
+    return ssh.suggestion or ""
 
 
 def _core_task_for_result_key(key: str, nodes: list[CarNetworkNode], core_devices: list[Device]) -> CoreRemotePingTask | None:

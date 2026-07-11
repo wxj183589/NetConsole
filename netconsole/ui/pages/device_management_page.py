@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import os
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from pathlib import Path
-import platform
-import subprocess
+from types import SimpleNamespace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -27,18 +27,21 @@ from netconsole.core import app_logger
 from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS
+from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.omnipeek_name_table import OmniPeekDeviceItem
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
-from netconsole.services.diagnostic_download_service import DiagnosticDownloadService
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
+from netconsole.services.export.export_task_builders import device_csv_spec, device_template_csv_spec, securecrt_sessions_spec
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
-from netconsole.services.securecrt_session_export import export_securecrt_sessions
+from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.batch_connection_worker import BATCH_CONNECTION_DEFAULT_CONCURRENCY, BatchConnectionTestWorker
-from netconsole.ui.batch_collect_worker import BATCH_CONCURRENCY, BatchCollectWorker
+from netconsole.ui.batch_collect_worker import BATCH_COLLECT_DEFAULT_CONCURRENCY, BatchCollectWorker, device_key
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
 from netconsole.ui.diagnostic_download_worker import DiagnosticDownloadWorker
 from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
@@ -47,19 +50,20 @@ from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
 from netconsole.ui.dialogs.device_group_dialog import DeviceGroupDialog
 from netconsole.ui.dialogs.external_terminal_settings_dialog import ExternalTerminalSettingsDialog
+from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.export_path import CSV_FILTER, remember_export_path, select_export_path
+from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.window_manager import window_manager
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.ui.windowing import DeviceDialogRegistry
 from netconsole.ui.widgets.device_table import DeviceTable
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState
+from netconsole.ui.widgets.pagination_widget import PaginationWidget
 
 
-def choose_devices_for_export(all_devices: list, selected_devices: list) -> list:
-    return selected_devices if selected_devices else all_devices
-
-
-def delete_device_ids(repository: DeviceRepository, device_ids: list[int]) -> None:
-    for device_id in device_ids:
-        repository.delete(device_id)
+def choose_devices_for_export(all_devices: list[object], selected_devices: list[object]) -> list[object]:
+    return list(selected_devices or all_devices)
 
 
 def select_device_id_for_connection(checked_ids: list[int], current_id: int | None) -> tuple[int | None, str | None]:
@@ -85,18 +89,24 @@ def open_diagnostic_folder_for_results(results, site_name: str, paths: PathResol
     latest_file = max(existing_files, key=lambda path: path.stat().st_mtime)
     folder_path = latest_file.parent
     try:
-        system = platform.system()
-        if system == "Windows":
-            os.startfile(str(folder_path))  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.run(["open", str(folder_path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(folder_path)], check=False)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder_path))):
+            raise RuntimeError("系统拒绝打开目录")
         app_logger.log_info("DIAGNOSTIC_FOLDER_OPENED", f"folder={folder_path}, latest_file={latest_file.name}")
         return True
     except Exception as exc:
         app_logger.log_error("DIAGNOSTIC_FOLDER_OPEN_FAILED", f"folder={folder_path}, error={exc}")
         return False
+
+
+def _set_button_icon(button: QPushButton, icon: object | None) -> None:
+    if icon is None:
+        return
+    icon_factory = getattr(icon, "icon", None)
+    resolved_icon = icon_factory() if callable(icon_factory) else icon
+    try:
+        button.setIcon(resolved_icon)
+    except TypeError:
+        pass
 
 
 class DeviceManagementPage(QWidget):
@@ -114,6 +124,16 @@ class DeviceManagementPage(QWidget):
         self.service = DeviceImportExportService(repository, self.group_repository)
         self.paths = PathResolver()
         self.settings = SettingsStore(self.paths)
+        self.background_manager = BackgroundProcessManager(self, paths=self.paths)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self._omnipeek_preview_job_id: str | None = None
+        self._omnipeek_preview_source: dict[str, object] = {}
+        self._device_refresh_job_id: str | None = None
+        self._device_refresh_pending = False
+        self._device_mutation_jobs: dict[str, dict[str, object]] = {}
+        self.device_page = 1
+        self.device_page_size = DEFAULT_PAGE_SIZE
         self.feature_gate = feature_gate or default_feature_gate()
         self.dialog_registry = DeviceDialogRegistry()
         self.detail_dialogs: dict[str, DeviceDetailDialog] = {}
@@ -138,16 +158,23 @@ class DeviceManagementPage(QWidget):
         self.import_csv_button = QPushButton()
         self.export_csv_button = QPushButton()
         self.export_template_button = QPushButton()
+        self.more_button = QPushButton()
+        self.more_menu = QMenu(self)
+        self.export_omnipeek_action = self.more_menu.addAction("导出 OmniPeek 名称表")
+        self.more_button.setMenu(self.more_menu)
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
         self.selection_label = QLabel()
         self.table = DeviceTable(i18n)
+        self.device_pagination = PaginationWidget(i18n)
 
         self.search_input.setMinimumWidth(240)
         self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.vendor_filter.setFixedWidth(130)
-        self.type_filter.setFixedWidth(130)
-        self.group_filter.setFixedWidth(170)
+        self.vendor_filter.setMinimumWidth(130)
+        self.type_filter.setMinimumWidth(130)
+        self.group_filter.setMinimumWidth(170)
+        for combo in (self.vendor_filter, self.type_filter, self.group_filter):
+            combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.selection_label.setMinimumWidth(130)
         self.selection_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
@@ -178,6 +205,7 @@ class DeviceManagementPage(QWidget):
             self.import_csv_button,
             self.export_csv_button,
             self.export_template_button,
+            self.more_button,
         ):
             actions.addWidget(button)
         actions.addStretch(1)
@@ -199,12 +227,15 @@ class DeviceManagementPage(QWidget):
         layout.addLayout(filters)
         layout.addLayout(action_row)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.device_pagination)
         self.setLayout(layout)
 
-        self.search_input.textChanged.connect(self.refresh)
-        self.vendor_filter.currentIndexChanged.connect(self.refresh)
-        self.type_filter.currentIndexChanged.connect(self.refresh)
-        self.group_filter.currentIndexChanged.connect(self.refresh)
+        self.search_input.textChanged.connect(self._device_filters_changed)
+        self.vendor_filter.currentIndexChanged.connect(self._device_filters_changed)
+        self.type_filter.currentIndexChanged.connect(self._device_filters_changed)
+        self.group_filter.currentIndexChanged.connect(self._device_filters_changed)
+        self.device_pagination.pageChanged.connect(self._set_device_page)
+        self.device_pagination.pageSizeChanged.connect(self._set_device_page_size)
         self.add_button.clicked.connect(self.add_device)
         self.detail_button.clicked.connect(self.show_selected_device_detail)
         self.test_connection_button.clicked.connect(self.test_selected_device_connection)
@@ -216,13 +247,15 @@ class DeviceManagementPage(QWidget):
         self.batch_refresh_details_button.clicked.connect(self.batch_refresh_details)
         self.batch_delete_button.clicked.connect(self.batch_delete_devices)
         self.refresh_button.clicked.connect(self.refresh)
-        self.import_csv_button.clicked.connect(self.import_csv)
+        self.import_csv_button.clicked.connect(self.start_device_import)
         self.export_csv_button.clicked.connect(self.export_csv)
         self.export_template_button.clicked.connect(self.export_template)
+        self.export_omnipeek_action.triggered.connect(self.export_omnipeek_name_table)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.invert_selection_button.clicked.connect(self.invert_selection)
         self.table.selection_changed.connect(self.update_selection_state)
         self.table.detail_requested.connect(self.show_device_detail)
+        self.table.duplicate_requested.connect(self.duplicate_device_by_id)
         self.table.edit_requested.connect(self.edit_device_by_id)
         self.table.delete_requested.connect(self.delete_device_by_id)
         self.table.external_terminal_requested.connect(self.launch_external_terminal_for_device_id)
@@ -239,6 +272,7 @@ class DeviceManagementPage(QWidget):
             enabled=self.feature_gate.is_enabled("devices.external_terminal"),
         )
         apply_feature_to_widget(self.feature_gate, "devices.securecrt_sessions", self.generate_crt_sessions_button)
+        self._sync_omnipeek_action_state()
         self.diagnostic_download_worker: DiagnosticDownloadWorker | None = None
 
     def retranslate(self) -> None:
@@ -257,11 +291,15 @@ class DeviceManagementPage(QWidget):
         self.import_csv_button.setText(self.i18n.t("devices.import_csv"))
         self.export_csv_button.setText(self.i18n.t("devices.export_csv"))
         self.export_template_button.setText(self.i18n.t("devices.export_template"))
+        self.more_button.setText("更多")
+        self.export_omnipeek_action.setText("导出 OmniPeek 名称表")
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.batch_delete_button.setObjectName("dangerButton")
+        _set_button_icon(self.more_button, getattr(FIF, "MORE", None) or getattr(FIF, "APPLICATION", None))
         self._populate_filters()
         self.table.retranslate()
+        self._sync_omnipeek_action_state()
         self._sync_action_scroll_width()
         self.update_selection_state()
 
@@ -272,13 +310,16 @@ class DeviceManagementPage(QWidget):
     def test_selected_device_connection(self) -> None:
         checked_ids = self.table.checked_device_ids()
         if not checked_ids:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         if len(checked_ids) > 1:
-            self.batch_test_connections([self.repository.get(device_id) for device_id in checked_ids])
+            self.batch_test_connections(self.table.checked_devices())
             return
         device_id = checked_ids[0]
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         self.test_connection_button.setEnabled(False)
         self.test_connection_button.setText(self.i18n.t("devices.testing_connection"))
         self.connection_test_thread = DeviceConnectionTestThread(device, self)
@@ -292,9 +333,16 @@ class DeviceManagementPage(QWidget):
         for row, device in enumerate(devices):
             dialog.mark_waiting(row, str(device.name or ""), str(device.ip_address or ""))
         self.batch_connection_test_dialog = dialog
-        self.batch_connection_test_worker = BatchConnectionTestWorker(devices, concurrency=int(dialog.concurrency_combo.currentData() or BATCH_CONNECTION_DEFAULT_CONCURRENCY), parent=self)
+        self.batch_connection_test_worker = BatchConnectionTestWorker(
+            devices,
+            concurrency=BATCH_CONNECTION_DEFAULT_CONCURRENCY,
+            parent=self,
+        )
+        dialog_alive = {"value": True}
 
         def on_device_finished(item) -> None:
+            if not dialog_alive["value"]:
+                return
             row = next(
                 (
                     index
@@ -305,12 +353,16 @@ class DeviceManagementPage(QWidget):
             )
             dialog.add_result(row, item)
 
+        def on_dialog_destroyed(_object=None) -> None:
+            dialog_alive["value"] = False
+            if self.batch_connection_test_worker is not None:
+                self.batch_connection_test_worker.cancel()
+
+        dialog.destroyed.connect(on_dialog_destroyed)
         self.batch_connection_test_worker.device_finished.connect(on_device_finished)
         self.batch_connection_test_worker.finished.connect(self.batch_connection_test_worker.deleteLater)
         self.batch_connection_test_worker.finished.connect(lambda: setattr(self, "batch_connection_test_worker", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="batch_connection_test_progress", activate=False, raise_window=False)
         self.batch_connection_test_worker.start()
 
     def _show_connection_result(self, result: ConnectionTestResult) -> None:
@@ -324,9 +376,9 @@ class DeviceManagementPage(QWidget):
                 prompt=result.prompt or "-",
                 elapsed=result.elapsed_ms if result.elapsed_ms is not None else "-",
             )
-            QMessageBox.information(self, self.i18n.t("connection.success_title"), message)
+            MessageBox.information(self, self.i18n.t("connection.success_title"), message)
         else:
-            QMessageBox.warning(
+            MessageBox.warning(
                 self,
                 self.i18n.t("connection.failed_title"),
                 self.i18n.t("connection.failed_detail", reason=result.message),
@@ -335,11 +387,11 @@ class DeviceManagementPage(QWidget):
     def launch_external_terminal_for_selection(self) -> None:
         devices = self._external_terminal_target_devices()
         if not devices:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         if len(devices) > 20:
-            answer = QMessageBox.question(self, self.i18n.t("devices.external_terminal"), self.i18n.t("external_terminal.confirm_many", count=len(devices)))
-            if answer != QMessageBox.Yes:
+            answer = MessageBox.question(self, self.i18n.t("devices.external_terminal"), self.i18n.t("external_terminal.confirm_many", count=len(devices)))
+            if answer != MessageBox.Yes:
                 return
         config = self._select_external_terminal_config()
         if config is None:
@@ -355,25 +407,28 @@ class DeviceManagementPage(QWidget):
         message = self.i18n.t("external_terminal.launch_done", success=success, failed=len(failures))
         if failures:
             message = f"{message}\n\n" + "\n".join(failures[:10])
-            QMessageBox.warning(self, self.i18n.t("devices.external_terminal"), message)
+            MessageBox.warning(self, self.i18n.t("devices.external_terminal"), message)
         else:
-            QMessageBox.information(self, self.i18n.t("devices.external_terminal"), message)
+            MessageBox.information(self, self.i18n.t("devices.external_terminal"), message)
 
     def launch_external_terminal_for_device_id(self, device_id: int) -> None:
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         config = self._select_external_terminal_config()
         if config is None:
             return
         result = launch_external_terminal(device, config)
         if result.success:
-            QMessageBox.information(self, self.i18n.t("devices.external_terminal"), result.message)
+            MessageBox.information(self, self.i18n.t("devices.external_terminal"), result.message)
         else:
-            QMessageBox.warning(self, self.i18n.t("devices.external_terminal"), result.message)
+            MessageBox.warning(self, self.i18n.t("devices.external_terminal"), result.message)
 
     def _select_external_terminal_config(self):
         configs = available_external_terminal_configs(self.settings)
         if not configs:
-            QMessageBox.information(
+            MessageBox.information(
                 self,
                 self.i18n.t("devices.external_terminal"),
                 self.i18n.t("external_terminal.not_configured"),
@@ -382,7 +437,7 @@ class DeviceManagementPage(QWidget):
         if len(configs) == 1:
             return configs[0]
         labels = [TERMINAL_LABELS.get(config.terminal_type, config.terminal_type) for config in configs]
-        label, accepted = QInputDialog.getItem(
+        label, accepted = InputDialog.getItem(
             self,
             self.i18n.t("external_terminal.select_terminal"),
             self.i18n.t("external_terminal.select_terminal"),
@@ -401,15 +456,11 @@ class DeviceManagementPage(QWidget):
         dialog = ExternalTerminalSettingsDialog(self.i18n, self.settings, self)
         self.external_terminal_settings_dialog = dialog
         dialog.destroyed.connect(lambda _=None: setattr(self, "external_terminal_settings_dialog", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="external_terminal_settings", activate=False, raise_window=False)
 
     def generate_securecrt_sessions(self) -> None:
-        devices = self.table.checked_devices() or self._filtered_devices()
-        if not devices:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
-            return
+        selected_devices = self.table.checked_devices()
+        selected_device_uuids = [str(device.device_uuid or "") for device in selected_devices if str(device.device_uuid or "")]
         output_dir = QFileDialog.getExistingDirectory(self, self.i18n.t("external_terminal.select_output_dir"), "")
         if not output_dir:
             return
@@ -420,19 +471,19 @@ class DeviceManagementPage(QWidget):
             "SecureCRT Session (*.ini);;All Files (*)",
         )
         template = Path(template_path) if template_path else Path()
-        group_names = {int(group.id): group.name for group in self._list_groups() if group.id is not None}
-        result = export_securecrt_sessions(
-            devices,
-            self.site_name,
-            Path(output_dir),
-            group_names=group_names,
-            template_ini=template if template.is_file() else None,
-        )
-        self._open_folder(result.output_dir)
-        QMessageBox.information(
+        submit_export_task(
             self,
-            self.i18n.t("devices.generate_crt_sessions"),
-            self.i18n.t("external_terminal.export_done", generated=result.generated, skipped=result.skipped, path=result.output_dir),
+            securecrt_sessions_spec(
+                output_dir,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                selected_device_uuids=selected_device_uuids,
+                filters=self._current_device_filters(),
+                template_ini=template if template.is_file() else None,
+                title=self.i18n.t("devices.generate_crt_sessions"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("devices.generate_crt_sessions"),
         )
 
     def _external_terminal_target_devices(self):
@@ -440,16 +491,19 @@ class DeviceManagementPage(QWidget):
         if checked:
             return checked
         current_id = self.selected_id()
-        return [self.repository.get(current_id)] if current_id is not None else []
+        if current_id is None:
+            return []
+        device = self._loaded_device(current_id)
+        return [device] if device is not None else []
 
-    def _filtered_devices(self):
+    def _current_device_filters(self) -> dict[str, object | None]:
         selected_group_data = self.group_filter.currentData()
-        return self.repository.list(
-            search=self.search_input.text().strip() or None,
-            vendor=self.vendor_filter.currentData(),
-            device_type=self.type_filter.currentData(),
-            group_filter=self._repository_group_filter_value(selected_group_data),
-        )
+        return {
+            "search": self.search_input.text().strip() or None,
+            "vendor": self.vendor_filter.currentData(),
+            "device_type": self.type_filter.currentData(),
+            "group_filter": self._repository_group_filter_value(selected_group_data),
+        }
 
     def _repository_group_filter_value(self, value: object) -> int | str | None:
         try:
@@ -464,38 +518,33 @@ class DeviceManagementPage(QWidget):
     @staticmethod
     def _open_folder(path: Path) -> None:
         try:
-            system = platform.system()
-            if system == "Windows":
-                os.startfile(str(path))  # type: ignore[attr-defined]
-            elif system == "Darwin":
-                subprocess.run(["open", str(path)], check=False)
-            else:
-                subprocess.run(["xdg-open", str(path)], check=False)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                raise RuntimeError("系统拒绝打开目录")
         except Exception as exc:
             app_logger.log_warning("OPEN_FOLDER_FAILED", f"{path}: {exc}")
 
     def download_diagnostics(self) -> None:
         devices = self._diagnostic_target_devices()
         if not devices:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.diagnostic_download_button.setEnabled(False)
         self.diagnostic_download_button.setText(self.i18n.t("devices.diagnostic_downloading"))
-        service = DiagnosticDownloadService(self.site_name)
-        self.diagnostic_download_worker = DiagnosticDownloadWorker(service, devices, self)
+        self.diagnostic_download_worker = DiagnosticDownloadWorker(self.site_name, devices, self)
         self.diagnostic_download_worker.result_ready.connect(self._handle_diagnostic_results)
         self.diagnostic_download_worker.finished.connect(self.diagnostic_download_worker.deleteLater)
         self.diagnostic_download_worker.finished.connect(lambda: setattr(self, "diagnostic_download_worker", None))
         self.diagnostic_download_worker.start()
 
     def _diagnostic_target_devices(self):
-        checked_ids = self.table.checked_device_ids()
-        if checked_ids:
-            return [self.repository.get(device_id) for device_id in checked_ids]
+        checked = self.table.checked_devices()
+        if checked:
+            return checked
         current_id = self.selected_id()
         if current_id is None:
             return []
-        return [self.repository.get(current_id)]
+        device = self._loaded_device(current_id)
+        return [device] if device is not None else []
 
     def _handle_diagnostic_results(self, results) -> None:
         self.diagnostic_download_button.setEnabled(True)
@@ -514,9 +563,9 @@ class DeviceManagementPage(QWidget):
         if not folder_opened:
             message = f"{message}\n\n{self.i18n.t('devices.diagnostic_open_folder_failed')}"
         if failed:
-            QMessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
+            MessageBox.warning(self, self.i18n.t("devices.diagnostic_download"), message)
         else:
-            QMessageBox.information(self, self.i18n.t("devices.diagnostic_download"), message)
+            MessageBox.information(self, self.i18n.t("devices.diagnostic_download"), message)
 
     def _populate_filters(self) -> None:
         vendor = self.vendor_filter.currentData()
@@ -532,8 +581,8 @@ class DeviceManagementPage(QWidget):
         self.type_filter.addItem(self.i18n.t("devices.type.all"), None)
         self.group_filter.addItem(self.i18n.t("groups.all_groups"), ALL_GROUPS)
         self.group_filter.addItem(self.i18n.t("groups.ungrouped"), UNGROUPED)
-        for item in self._list_groups():
-            self.group_filter.addItem(item.name, item.id)
+        for group_id, group_name in sorted(self.table.group_names.items(), key=lambda item: item[1].casefold()):
+            self.group_filter.addItem(group_name, group_id)
         for item in DEVICE_VENDORS:
             self.vendor_filter.addItem(item, item)
         for item in DEVICE_TYPES:
@@ -556,41 +605,86 @@ class DeviceManagementPage(QWidget):
         return DeviceGroupRepository(database, site_name) if database is not None else None
 
     def _list_groups(self):
-        if self.group_repository is None:
-            return []
-        try:
-            return self.group_repository.list()
-        except Exception as exc:
-            app_logger.log_warning("DEVICE_GROUP_LIST_FAILED", str(exc))
-            return []
+        return [
+            SimpleNamespace(id=int(group_id), name=group_name)
+            for group_id, group_name in sorted(self.table.group_names.items(), key=lambda item: item[1].casefold())
+        ]
 
-    def refresh(self) -> None:
+    def _device_filters_changed(self, *_args: object) -> None:
+        self.device_page = 1
+        self.refresh()
+
+    def _set_device_page(self, page: int) -> None:
+        self.device_page = max(1, int(page))
+        self.refresh()
+
+    def _set_device_page_size(self, page_size: int) -> None:
+        self.device_page_size = int(page_size)
+        self.device_page = 1
+        self.refresh()
+
+    def refresh(self, *_args: object) -> None:
+        if self._device_refresh_job_id is not None:
+            self._device_refresh_pending = True
+            return
         selected_group_data = self.group_filter.currentData()
         repository_group_filter = self._repository_group_filter_value(selected_group_data)
-        devices = self.repository.list(
-            search=self.search_input.text().strip() or None,
-            vendor=self.vendor_filter.currentData(),
-            device_type=self.type_filter.currentData(),
-            group_filter=repository_group_filter,
+        self.refresh_button.setEnabled(False)
+        self._device_refresh_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="device_list_page",
+                params={
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "filters": {
+                        "search": self.search_input.text().strip() or None,
+                        "vendor": self.vendor_filter.currentData(),
+                        "device_type": self.type_filter.currentData(),
+                        "group_filter": repository_group_filter,
+                    },
+                    "current_page": self.device_page,
+                    "page_size": self.device_page_size,
+                },
+            )
         )
+
+    def _apply_device_list_result(self, result: dict[str, object], selected_group_data: object = None) -> None:
+        devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        group_names = {
+            int(row.get("id")): str(row.get("name") or "")
+            for row in result.get("groups") or []
+            if isinstance(row, dict) and row.get("id") is not None
+        }
         app_logger.log_info(
             "DEVICE_GROUP_FILTER_APPLIED",
             (
                 f"site_name={self.site_name}, selected_text={self.group_filter.currentText()}, "
                 f"selected_data={selected_group_data}, selected_data_type={type(selected_group_data).__name__}, "
-                f"repository_filter_value={repository_group_filter}, result_count={len(devices)}"
+                f"repository_filter_value={self._repository_group_filter_value(self.group_filter.currentData())}, result_count={len(devices)}"
             ),
         )
-        self.table.set_group_names({int(group.id): group.name for group in self._list_groups() if group.id is not None})
+        current_group = self.group_filter.currentData() if selected_group_data is None else selected_group_data
+        self.table.set_group_names(group_names)
+        self._populate_filters()
+        self._restore_combo_value(self.group_filter, current_group if current_group is not None else ALL_GROUPS)
         self.table.set_external_terminal_action_state(
             visible=self.feature_gate.is_visible("devices.external_terminal"),
             enabled=self.feature_gate.is_enabled("devices.external_terminal"),
         )
         self.table.set_devices(devices)
+        self.device_page = int(result.get("current_page") or 1)
+        self.device_page_size = int(result.get("page_size") or DEFAULT_PAGE_SIZE)
+        self.device_pagination.set_state(
+            PaginationState(
+                page_size=self.device_page_size,
+                current_page=self.device_page,
+                total_items=int(result.get("total_items") or 0),
+                total_pages=int(result.get("total_pages") or 1),
+            )
+        )
         self.update_selection_state()
 
     def refresh_groups(self) -> None:
-        self._populate_filters()
         self.refresh()
 
     def manage_groups(self) -> None:
@@ -615,7 +709,7 @@ class DeviceManagementPage(QWidget):
             return
         groups = self._list_groups()
         labels = [self.i18n.t("groups.ungrouped")] + [group.name for group in groups]
-        label, accepted = QInputDialog.getItem(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.select_group"), labels, 0, False)
+        label, accepted = InputDialog.getItem(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.select_group"), labels, 0, False)
         if not accepted:
             return
         group_id = None
@@ -623,7 +717,7 @@ class DeviceManagementPage(QWidget):
             group = next((item for item in groups if item.name == label), None)
             group_id = int(group.id) if group and group.id is not None else None
         result = self.group_service.assign_devices(device_ids, group_id)
-        QMessageBox.information(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.assign_done", success=result.success, failed=result.failed))
+        MessageBox.information(self, self.i18n.t("groups.assign_group"), self.i18n.t("groups.assign_done", success=result.success, failed=result.failed))
         self.clear_selection()
         self.refresh_groups()
         self.groups_changed.emit()
@@ -663,16 +757,19 @@ class DeviceManagementPage(QWidget):
 
     def edit_device(self) -> None:
         if len(self.table.checked_device_ids()) > 1:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_one_for_edit"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_one_for_edit"))
             return
         device_id = self.selected_id()
         if device_id is None:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.edit_device_by_id(device_id)
 
     def edit_device_by_id(self, device_id: int) -> None:
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         device_uuid = device.device_uuid or str(device.id)
         existing = self.dialog_registry.get_edit_window(device_uuid)
         if isinstance(existing, DeviceDialog):
@@ -684,15 +781,48 @@ class DeviceManagementPage(QWidget):
         dialog.destroyed.connect(lambda _=None, uuid=device_uuid, window=dialog: self.dialog_registry.remove_edit_window(uuid, window))
         self._show_window(dialog)
 
+    def duplicate_device_by_id(self, device_id: int) -> None:
+        source = self._loaded_device(device_id)
+        if source is None:
+            self.refresh()
+            return
+        existing = self.dialog_registry.get_add_window()
+        if isinstance(existing, DeviceDialog):
+            self._activate_window(existing)
+            return
+
+        duplicate = self._build_device_duplicate_template(source)
+        dialog = DeviceDialog(self.i18n, None, groups=self._list_groups())
+        dialog._load(duplicate)
+        dialog.setWindowTitle(self.i18n.t("devices.duplicate"))
+        dialog.title_label.setText(self.i18n.t("devices.duplicate"))
+        self.dialog_registry.set_add_window(dialog)
+        dialog.saved.connect(self._create_device_from_dialog)
+        dialog.destroyed.connect(lambda _=None, window=dialog: self.dialog_registry.remove_add_window(window))
+        self._show_window(dialog)
+
+    @staticmethod
+    def _build_device_duplicate_template(source: Device) -> Device:
+        record = source.to_record()
+        record["id"] = None
+        record["device_uuid"] = None
+        record["created_at"] = None
+        record["updated_at"] = None
+        source_name = str(record.get("name") or "").strip()
+        if source_name:
+            record["name"] = f"{source_name}-副本"
+        return Device.from_mapping(record)
+
     def show_device_detail(self, device_id: int) -> None:
-        device = self.repository.get(device_id)
+        device = self._loaded_device(device_id)
+        if device is None:
+            self.refresh()
+            return
         device.ensure_device_uuid()
         detail_key = str(device.device_uuid or device.id)
         existing = self.detail_dialogs.get(detail_key)
         if isinstance(existing, DeviceDetailDialog):
-            existing.show()
-            existing.raise_()
-            existing.activateWindow()
+            show_non_focus_window(self, existing, key=f"device_detail:{detail_key}", activate=False, raise_window=False)
             return
         dialog = DeviceDetailDialog(
             self.i18n,
@@ -705,9 +835,7 @@ class DeviceManagementPage(QWidget):
         self.detail_dialogs[detail_key] = dialog
         window_manager.register_child_window(dialog)
         dialog.destroyed.connect(lambda _=None, key=detail_key, window=dialog: self._remove_detail_dialog(key, window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"device_detail:{detail_key}", activate=False, raise_window=False)
 
     def _remove_detail_dialog(self, detail_key: str, dialog: DeviceDetailDialog) -> None:
         if self.detail_dialogs.get(detail_key) is dialog:
@@ -717,43 +845,22 @@ class DeviceManagementPage(QWidget):
     def show_selected_device_detail(self) -> None:
         device_id = self.selected_id()
         if device_id is None:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.show_device_detail(device_id)
 
     def _show_window(self, dialog: DeviceDialog) -> None:
-        dialog.show()
         self._activate_window(dialog)
 
     @staticmethod
     def _activate_window(dialog: DeviceDialog) -> None:
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(dialog.parentWidget(), dialog, key="device_dialog", activate=False, raise_window=False)
 
     def _create_device_from_dialog(self, device) -> None:
-        try:
-            created = self.repository.create(device)
-        except Exception as exc:
-            app_logger.log_error("DEVICE_CREATE_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
-            return
-        app_logger.log_info("DEVICE_CREATED", f"设备已新增: {created.name}")
-        self.refresh()
-        self.devices_changed.emit()
-        self._close_sender_dialog()
+        self._start_device_mutation("create", device=device, dialog=self.sender())
 
     def _update_device_from_dialog(self, device) -> None:
-        try:
-            updated = self.repository.update(device)
-        except Exception as exc:
-            app_logger.log_error("DEVICE_UPDATE_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
-            return
-        app_logger.log_info("DEVICE_UPDATED", f"设备已编辑: {updated.name}")
-        self.refresh()
-        self.devices_changed.emit()
-        self._close_sender_dialog()
+        self._start_device_mutation("update", device=device, dialog=self.sender())
 
     def _close_sender_dialog(self) -> None:
         sender = self.sender()
@@ -763,80 +870,92 @@ class DeviceManagementPage(QWidget):
     def delete_device(self) -> None:
         device_id = self.selected_id()
         if device_id is None:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
         self.delete_device_by_id(device_id)
 
     def delete_device_by_id(self, device_id: int) -> None:
-        answer = QMessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
-        if answer == QMessageBox.Yes:
-            device = self.repository.get(device_id)
-            self.repository.delete(device_id)
-            app_logger.log_info("DEVICE_DELETED", f"设备已删除: {device.name}")
-            self.refresh()
-            self.devices_changed.emit()
+        answer = MessageBox.question(self, self.i18n.t("devices.title"), self.i18n.t("devices.delete_confirm"))
+        if answer == MessageBox.Yes:
+            self._start_device_mutation("delete", device_ids=[device_id])
 
     def batch_delete_devices(self) -> None:
         device_ids = self.table.checked_device_ids()
         if not device_ids:
             return
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self,
             self.i18n.t("devices.title"),
             self.i18n.t("devices.batch_delete_confirm", count=len(device_ids)),
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
-        delete_device_ids(self.repository, device_ids)
-        app_logger.log_info("DEVICE_BATCH_DELETED", f"批量删除设备: {len(device_ids)}")
-        self.refresh()
-        self.devices_changed.emit()
+        self._start_device_mutation("delete", device_ids=device_ids)
+
+    def _loaded_device(self, device_id: int) -> Device | None:
+        return next((device for device in self.table.devices if int(device.id or 0) == int(device_id)), None)
+
+    def _start_device_mutation(
+        self,
+        action: str,
+        *,
+        device: Device | None = None,
+        device_ids: list[int] | None = None,
+        dialog: object | None = None,
+    ) -> None:
+        params: dict[str, object] = {
+            "db_path": str(self.repository.database.path),
+            "action": action,
+            "device_ids": list(device_ids or []),
+        }
+        if device is not None:
+            params["device"] = device.to_record()
+        job_id = self.background_manager.start_job(BackgroundJob(task_type="device_mutation", params=params))
+        self._device_mutation_jobs[job_id] = {"action": action, "dialog": dialog}
 
     def batch_refresh_details(self) -> None:
         device_ids = self.table.checked_device_ids()
         if not device_ids:
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.select_first"))
             return
-        devices = [self.repository.get(device_id) for device_id in device_ids]
-        answer = QMessageBox.question(
+        devices = self.table.checked_devices()
+        answer = MessageBox.question(
             self,
             self.i18n.t("devices.title"),
             self.i18n.t("devices.batch_refresh_confirm", count=len(devices)),
         )
-        if answer != QMessageBox.Yes:
+        if answer != MessageBox.Yes:
             return
         dialog = BatchCollectProgressDialog(self.i18n, len(devices), self)
         for row, device in enumerate(devices):
-            dialog.mark_running(row, str(device.name or ""), str(device.ip_address or ""))
-            item = dialog.table.item(row, 2)
-            if item:
-                item.setText(self.i18n.t("batch_collect.status.waiting"))
-            dialog.running = max(0, dialog.running - 1)
-        dialog.update_summary()
+            dialog.mark_waiting(row, device_key(device), str(device.name or ""), str(device.primary_address or ""))
+        dialog.resize_columns()
         self.batch_collect_dialog = dialog
-        start_concurrency = int(dialog.concurrency_combo.currentData() or BATCH_CONCURRENCY)
-        dialog.set_running(True)
-        self.batch_collect_worker = BatchCollectWorker(devices, self.site_name, max_workers=start_concurrency, parent=self)
+        self.batch_collect_worker = BatchCollectWorker(
+            devices,
+            self.site_name,
+            max_workers=BATCH_COLLECT_DEFAULT_CONCURRENCY,
+            parent=self,
+        )
+        dialog_alive = {"value": True}
 
         def on_device_finished(item) -> None:
-            row = next(
-                (
-                    index
-                    for index in range(dialog.table.rowCount())
-                    if dialog.table.item(index, 0) and dialog.table.item(index, 0).text() == item.device_name
-                ),
-                dialog.completed,
-            )
-            dialog.add_result(row, item)
+            if not dialog_alive["value"]:
+                return
+            dialog.add_result(item)
 
-        self.batch_collect_worker.device_finished.connect(on_device_finished)
-        self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh())
-        self.batch_collect_worker.finished.connect(lambda: dialog.set_running(False))
+        def on_dialog_destroyed(_object=None) -> None:
+            dialog_alive["value"] = False
+            if self.batch_collect_worker is not None:
+                self.batch_collect_worker.cancel()
+
+        dialog.destroyed.connect(on_dialog_destroyed)
+        self.batch_collect_worker.device_progress.connect(dialog.update_device_progress, Qt.QueuedConnection)
+        self.batch_collect_worker.device_finished.connect(on_device_finished, Qt.QueuedConnection)
+        self.batch_collect_worker.batch_finished.connect(lambda _success, _failed: self.refresh(), Qt.QueuedConnection)
         self.batch_collect_worker.finished.connect(self.batch_collect_worker.deleteLater)
         self.batch_collect_worker.finished.connect(lambda: setattr(self, "batch_collect_worker", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="batch_collect_progress", activate=False, raise_window=False)
         self.batch_collect_worker.start()
 
     def clear_selection(self) -> None:
@@ -858,46 +977,182 @@ class DeviceManagementPage(QWidget):
         self.invert_selection_button.setEnabled(self.table.rowCount() > 0)
         self.assign_group_button.setEnabled(count > 0)
 
-    def import_csv(self) -> None:
+    def start_device_import(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("devices.import_csv"), "", "CSV Files (*.csv)")
         if path:
-            try:
-                result = self.service.import_csv(Path(path))
-            except Exception as exc:
-                app_logger.log_error("CSV_IMPORT_FAILED", f"{Path(path).name}: {exc}")
-                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+            self.background_manager.start_job(
+                BackgroundJob(
+                    task_type="device_csv_import",
+                    params={
+                        "path": path,
+                        "db_path": str(self.repository.database.path),
+                        "site_name": self.site_name,
+                    },
+                )
+            )
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        result = dict(event.get("result") or {})
+        mutation = self._device_mutation_jobs.pop(job_id, None)
+        if mutation is not None:
+            action = str(mutation.get("action") or result.get("action") or "")
+            if action in {"create", "update"}:
+                device = Device.from_mapping(dict(result.get("device") or {}))
+                app_logger.log_info("DEVICE_CREATED" if action == "create" else "DEVICE_UPDATED", f"设备已{'新增' if action == 'create' else '编辑'}: {device.name}")
+                dialog = mutation.get("dialog")
+                if isinstance(dialog, DeviceDialog):
+                    dialog.close()
+            else:
+                app_logger.log_info("DEVICE_DELETED", f"已删除设备: {int(result.get('count') or 0)}")
+            self.refresh()
+            self.devices_changed.emit()
+            return
+        if job_id == str(self._device_refresh_job_id or ""):
+            self._device_refresh_job_id = None
+            self.refresh_button.setEnabled(True)
+            if self._device_refresh_pending:
+                self._device_refresh_pending = False
+                self.refresh()
                 return
-            self.refresh_groups()
-            if result.groups_created:
-                self.groups_changed.emit()
-            if result.created:
-                self.devices_changed.emit()
-            app_logger.log_info("CSV_IMPORTED", f"{Path(path).name}: created={result.created}, skipped={result.skipped}")
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.import_done", created=result.created, skipped=result.skipped))
+            self._apply_device_list_result(result)
+            return
+        if str(event.get("job_id") or "") == str(self._omnipeek_preview_job_id or ""):
+            self._omnipeek_preview_job_id = None
+            self.export_omnipeek_action.setEnabled(True)
+            self._show_omnipeek_preview(result)
+            return
+        if not {"created", "skipped"}.issubset(result):
+            return
+        self.refresh_groups()
+        if result.get("groups_created"):
+            self.groups_changed.emit()
+        if result.get("created"):
+            self.devices_changed.emit()
+        app_logger.log_info("CSV_IMPORTED", f"created={result.get('created')}, skipped={result.get('skipped')}")
+        MessageBox.information(
+            self,
+            self.i18n.t("devices.title"),
+            self.i18n.t("devices.import_done", created=int(result.get("created") or 0), skipped=int(result.get("skipped") or 0)),
+        )
+
+    def _background_failed(self, event: dict) -> None:
+        message = str(event.get("message") or event.get("error") or "后台任务失败")
+        job_id = str(event.get("job_id") or "")
+        if self._device_mutation_jobs.pop(job_id, None) is not None:
+            app_logger.log_error("DEVICE_MUTATION_FAILED", message)
+            MessageBox.warning(self, self.i18n.t("devices.title"), message)
+            return
+        if job_id == str(self._device_refresh_job_id or ""):
+            self._device_refresh_job_id = None
+            self.refresh_button.setEnabled(True)
+            if self._device_refresh_pending:
+                self._device_refresh_pending = False
+                self.refresh()
+                return
+        if str(event.get("job_id") or "") == str(self._omnipeek_preview_job_id or ""):
+            self._omnipeek_preview_job_id = None
+            self.export_omnipeek_action.setEnabled(True)
+        app_logger.log_error("CSV_IMPORT_FAILED", message)
+        MessageBox.warning(self, self.i18n.t("devices.title"), message)
 
     def export_csv(self) -> None:
         path = select_export_path(self, self.i18n.t("devices.export_csv"), make_device_export_filename(self.site_name), CSV_FILTER)
         if path:
             selected_devices = self.table.checked_devices()
             try:
-                self.service.export_csv(path, choose_devices_for_export(self.repository.list(), selected_devices))
+                submit_export_task(
+                    self,
+                    device_csv_spec(
+                        path,
+                        db_path=self.repository.database.path,
+                        site_name=self.site_name,
+                        selected_devices=[device.to_record() for device in selected_devices] if selected_devices else None,
+                        filters=self._current_device_filters(),
+                        title=self.i18n.t("devices.export_csv"),
+                        open_dir_on_success=True,
+                    ),
+                    success_title=self.i18n.t("devices.export_csv"),
+                )
             except Exception as exc:
                 app_logger.log_error("CSV_EXPORT_FAILED", f"{path.name}: {exc}")
-                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             remember_export_path(path)
             app_logger.log_info("CSV_EXPORTED", path.name)
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.export_done"))
 
     def export_template(self) -> None:
         path = select_export_path(self, self.i18n.t("devices.export_template"), self.i18n.t("devices.template_filename"), CSV_FILTER)
         if path:
             try:
-                self.service.export_template_csv(path)
+                submit_export_task(
+                    self,
+                    device_template_csv_spec(
+                        path,
+                        title=self.i18n.t("devices.export_template"),
+                        open_dir_on_success=True,
+                    ),
+                    success_title=self.i18n.t("devices.export_template"),
+                )
             except Exception as exc:
                 app_logger.log_error("CSV_TEMPLATE_EXPORT_FAILED", f"{path.name}: {exc}")
-                QMessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
+                MessageBox.warning(self, self.i18n.t("devices.title"), str(exc))
                 return
             remember_export_path(path)
             app_logger.log_info("CSV_TEMPLATE_EXPORTED", path.name)
-            QMessageBox.information(self, self.i18n.t("devices.title"), self.i18n.t("devices.template_done"))
+
+    def export_omnipeek_name_table(self) -> None:
+        self.feature_gate.assert_enabled("devices.omnipeek_name_table_export")
+        if self._omnipeek_preview_job_id is not None:
+            return
+        checked_devices = self.table.checked_devices()
+        selected_device_uuids = [str(device.device_uuid or "") for device in checked_devices if str(device.device_uuid or "")]
+        self._omnipeek_preview_source = {
+            "db_path": str(self.repository.database.path),
+            "site_name": self.site_name,
+            "ac_uuid": "",
+            "device_filters": self._current_device_filters(),
+            "selected_device_uuids": selected_device_uuids,
+        }
+        self.export_omnipeek_action.setEnabled(False)
+        self._omnipeek_preview_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="omnipeek_name_table_preview",
+                params={
+                    **self._omnipeek_preview_source,
+                    "include_ac_fit_ap": False,
+                    "include_ap_extensions": False,
+                    "include_device_mr": True,
+                    "preview_limit": 500,
+                },
+            )
+        )
+
+    def _show_omnipeek_preview(self, result: dict[str, object]) -> None:
+        items = [OmniPeekDeviceItem(**dict(row)) for row in result.get("items") or [] if isinstance(row, dict)]
+        if not items:
+            MessageBox.warning(self, "导出 OmniPeek 名称表", "当前筛选或勾选设备中没有可导出的车载 MR。")
+            return
+        dialog = OmniPeekExportDialog(
+            items,
+            {str(key): int(value) for key, value in dict(result.get("source_counts") or {}).items()},
+            source=dict(self._omnipeek_preview_source),
+            preview_stats={str(key): int(value) for key, value in dict(result.get("stats") or {}).items()},
+            default_line_name=default_omnipeek_line_name(self.site_name, self.settings.paths),
+            settings=self.settings,
+            parent=self,
+        )
+        show_non_focus_window(self, dialog, key="omnipeek_export_dialog", activate=True, raise_window=True)
+
+    def _sync_omnipeek_action_state(self) -> None:
+        visible = self.feature_gate.is_visible("devices.omnipeek_name_table_export")
+        enabled = self.feature_gate.is_enabled("devices.omnipeek_name_table_export")
+        self.export_omnipeek_action.setVisible(visible)
+        self.export_omnipeek_action.setEnabled(enabled)
+        self.more_button.setVisible(visible)
+        self.more_button.setEnabled(enabled)
+
+    def _device_group_names(self) -> dict[int, str]:
+        if self.table.group_names:
+            return dict(self.table.group_names)
+        return {}

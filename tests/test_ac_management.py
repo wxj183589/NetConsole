@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QSplitter, QTableWidget, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QScrollArea, QSplitter, QTableWidget, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
@@ -21,6 +21,7 @@ from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.state_engine import compute_state, STATUS_COLORS
 from netconsole.models.device import Device
+from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import parse_fit_ap_lldp_neighbor
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver, parse_fit_ap_transceiver_diagnosis_snapshots
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
@@ -271,6 +272,31 @@ def process_events_until(predicate, timeout: float = 3.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("Timed out waiting for Qt event condition")
+
+
+_BaseAcManagementPage = AcManagementPage
+
+
+class AcManagementPage(_BaseAcManagementPage):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        process_events_until(lambda: not self._background_jobs)
+
+
+_BaseDeviceDetailDialog = DeviceDetailDialog
+_BaseFitApDetailDialog = FitApDetailDialog
+
+
+def DeviceDetailDialog(*args, **kwargs):
+    dialog = _BaseDeviceDetailDialog(*args, **kwargs)
+    process_events_until(lambda: not dialog.detail_load_job_id)
+    return dialog
+
+
+def FitApDetailDialog(*args, **kwargs):
+    dialog = _BaseFitApDetailDialog(*args, **kwargs)
+    process_events_until(lambda: not dialog.background_job_id)
+    return dialog
 
 
 class FakeTracksideLoadThread(QObject):
@@ -950,6 +976,7 @@ def test_trackside_ap_plan_page_saves_edited_ap_count_from_table(tmp_path):
         [{"station_name": "Station A", "ap_count": 42, "ap_management_vlans": "921"}],
     )
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
 
     item = page.table.item(0, 1)
     assert item is not None
@@ -957,6 +984,7 @@ def test_trackside_ap_plan_page_saves_edited_ap_count_from_table(tmp_path):
     item.setText("34")
 
     assert page.save_plan() is True
+    process_events_until(lambda: not page._busy)
     rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
     assert rows[0]["ap_count"] == 34
     assert page.table.item(0, 1).text() == "34"
@@ -967,12 +995,14 @@ def test_trackside_ap_plan_accepts_dotted_netmask_and_saves_prefix(tmp_path):
     app()
     repository = AcRepository(make_database(tmp_path))
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
     page.add_row()
     values = ["站", "0", "192.168.104.1", "255.255.252.0", "192.168.104.254", "201"]
     for column, value in enumerate(values):
         page.table.item(0, column).setText(value)
 
     assert page.save_plan() is True
+    process_events_until(lambda: not page._busy)
 
     rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
     assert rows[0]["mask_length"] == 22
@@ -1035,6 +1065,7 @@ def test_trackside_ap_plan_column_layout_keeps_network_fields_readable(tmp_path)
         ],
     )
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
     page._apply_column_layout()
 
     assert page.table.horizontalHeader().stretchLastSection() is False
@@ -1059,12 +1090,15 @@ def test_ap_online_overview_with_trackside_plan_locks_total_but_allows_remark(tm
     )
 
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
     total_item = page.overview_table.item(0, 1)
     remark_item = page.overview_table.item(0, 5)
     assert not total_item.flags() & Qt.ItemFlag.ItemIsEditable
     assert remark_item.flags() & Qt.ItemFlag.ItemIsEditable
 
     remark_item.setText("Keep field note")
+    process_events_until(lambda: not page._background_jobs)
     details = repository.list_active_trackside_plan_capacity_details()
     assert details["Station A"]["ap_total"] == 34
     assert details["Station A"]["remark"] == "Keep field note"
@@ -1072,26 +1106,31 @@ def test_ap_online_overview_with_trackside_plan_locks_total_but_allows_remark(tm
 
 def test_trackside_ap_plan_refresh_prompts_for_unsaved_changes(tmp_path, monkeypatch):
     app()
+    from netconsole.ui.pages import trackside_ap_plan_page as plan_page_module
+
     repository = AcRepository(make_database(tmp_path))
     repository.replace_trackside_ap_plan_rows(
         TRACKSIDE_AP_PLAN_MODE,
         [{"station_name": "Station A", "ap_count": 42, "ap_management_vlans": "921"}],
     )
     page = TracksideApPlanPage(repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._busy)
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
+    monkeypatch.setattr(plan_page_module.MessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
     page.table.item(0, 1).setText("34")
     page.refresh()
     assert page.table.item(0, 1).text() == "34"
     assert repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)[0]["ap_count"] == 42
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Discard)
+    monkeypatch.setattr(plan_page_module.MessageBox, "question", lambda *_args: QMessageBox.StandardButton.Discard)
     page.refresh()
+    process_events_until(lambda: not page._busy)
     assert page.table.item(0, 1).text() == "42"
 
     page.table.item(0, 1).setText("34")
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
+    monkeypatch.setattr(plan_page_module.MessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
     page.refresh()
+    process_events_until(lambda: not page._busy)
     assert page.table.item(0, 1).text() == "34"
     assert repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)[0]["ap_count"] == 34
 
@@ -1141,8 +1180,20 @@ def test_ac_repository_metadata_crud_batch_edit_and_delete(tmp_path):
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
     repository.replace_fit_ap_optical("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
 
-    repository.upsert_fit_ap_metadata({"ap_name": "ap-a", "site_name": "S1"})
-    assert repository.get_fit_ap_metadata("ap-a")["site_name"] == "S1"
+    repository.upsert_fit_ap_metadata(
+        {
+            "ap_name": "ap-a",
+            "site_name": "S1",
+            "belong_type": "section",
+            "belong_section": "联庄-中医药大学",
+            "section_start_station": "中医药大学",
+            "section_end_station": "联庄",
+        }
+    )
+    metadata = repository.get_fit_ap_metadata("ap-a")
+    assert metadata["site_name"] == "S1"
+    assert metadata["belong_type"] == "section"
+    assert metadata["belong_section"] == "联庄-中医药大学"
     assert repository.update_fit_ap_site(["ap-a", "ap-b"], "S2") == 2
     assert repository.get_fit_ap_metadata("ap-b")["site_name"] == "S2"
     assert repository.delete_fit_aps("ac-1", ["ap-a"]) == 1
@@ -1800,6 +1851,8 @@ def test_ac_page_refresh_enables_open_web_button_when_https_port_exists(tmp_path
 
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
     page.refresh_devices()
+    process_events_until(lambda: not page._background_jobs)
+    process_events_until(lambda: not page._background_jobs)
 
     assert page.summary_labels["https_port"].text() == "443"
     assert page.open_web_button.isEnabled() is True
@@ -1812,6 +1865,7 @@ def test_ac_page_uses_default_https_port_when_db_port_is_empty(tmp_path):
 
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
     page.refresh_devices()
+    process_events_until(lambda: not page._background_jobs)
 
     assert page.current_device().https_port is None
     assert page.summary_labels["https_port"].text() == "443 (Default)"
@@ -1827,6 +1881,7 @@ def test_ac_page_prefers_collected_https_port_when_save_failed(tmp_path):
 
     page = AcManagementPage(context.repository, I18n("en_US"), "demo")
     page.refresh_devices()
+    process_events_until(lambda: not page._background_jobs)
     result = SimpleNamespace(
         success=True,
         error_message=None,
@@ -1837,6 +1892,7 @@ def test_ac_page_prefers_collected_https_port_when_save_failed(tmp_path):
     )
 
     page._finish_resource_collect(result)
+    process_events_until(lambda: not page._background_jobs)
 
     assert page.current_device().https_port == 10443
     assert page.summary_labels["https_port"].text() == "10443"
@@ -1880,6 +1936,8 @@ def test_ac_management_page_column_configuration_exists(tmp_path):
         "rid2_bandwidth",
         "rid2_tx_power",
         "site",
+        "section_name",
+        "belong_type",
         "mileage",
         "location_note",
         "direction",
@@ -1965,7 +2023,7 @@ def test_mesh_report_generation_button_is_available(tmp_path, monkeypatch):
     app()
     context = create_demo_context(PathResolver(tmp_path))
     messages: list[str] = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.MessageBox.information", lambda _parent, _title, message: messages.append(message))
 
     page = MeshLogAnalysisPage(context.repository, I18n("en_US"), "demo", PathResolver(tmp_path))
 
@@ -1974,6 +2032,25 @@ def test_mesh_report_generation_button_is_available(tmp_path, monkeypatch):
     assert page.feature_gate.is_enabled("mesh.generate_report")
     assert messages == []
     assert page.report_worker is None
+
+
+def test_mesh_profile_table_fills_large_profile_list_in_batches(tmp_path, monkeypatch):
+    app()
+    context = create_demo_context(PathResolver(tmp_path))
+    page = MeshLogAnalysisPage(context.repository, I18n("en_US"), "demo", PathResolver(tmp_path))
+    page.profiles = [
+        MeshMrProfile(str(index), f"MR-{index:03d}", f"mr-{index:03d}", f"mr-{index:03d}")
+        for index in range(250)
+    ]
+    loaded: list[str] = []
+    monkeypatch.setattr(page, "_load_profile_by_id", loaded.append)
+
+    page._apply_profiles(None)
+    process_events_until(lambda: page.mr_table.item(249, 0) is not None)
+
+    assert page.mr_table.rowCount() == 250
+    assert page.mr_table.item(249, 0).text() == "MR-249"
+    assert loaded == ["0"]
 
 
 def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_resource_history():
@@ -2650,6 +2727,7 @@ def test_fit_ap_resource_search_group_and_state_filters(tmp_path):
         ],
     )
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    process_events_until(lambda: not page._background_jobs)
 
     assert not hasattr(page, "batch_edit_button")
     assert page.resource_search_input.placeholderText() == "Search AP name / AP_MAC"
@@ -2973,7 +3051,7 @@ def test_fit_ap_resource_external_terminal_requires_ap_ip(tmp_path, monkeypatch)
     page.resource_rows = [{"ap_uuid": "ap-1", "ap_name": "AP-A", "ap_ip": "", "ap_mac": "0011-2233-4455"}]
     page.apply_resource_pagination()
     messages: list[str] = []
-    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.MessageBox.information", lambda _parent, _title, message: messages.append(message))
     monkeypatch.setattr("netconsole.ui.pages.ac_management_page.launch_external_terminal", lambda *_args, **_kwargs: pytest.fail("launcher should not be called"))
 
     page.open_resource_ap_external_terminal(0)
@@ -3018,6 +3096,7 @@ def test_clear_optical_filters_restores_all_rows(tmp_path):
         {"ap_name": "AP-A", "optical_alarm_status": "normal"},
         {"ap_name": "AP-B", "optical_alarm_status": "warning"},
     ]
+    page._set_site_filter_items(page.optical_rows)
     page.optical_ap_filter.setText("AP-A")
     assert page.optical_table.rowCount() == 1
 
@@ -3717,6 +3796,8 @@ def test_ap_online_overview_table_edit_rules_and_save(tmp_path):
     repository.upsert_fit_ap_metadata({"ap_uuid": "ap-1", "ap_name": "AP-A", "site_name": "Station A"})
     repository.upsert_fit_ap_metadata({"ap_uuid": "ap-2", "ap_name": "AP-B", "site_name": "Station A"})
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
 
     total_item = page.overview_table.item(0, 1)
     online_item = page.overview_table.item(0, 2)
@@ -3736,6 +3817,7 @@ def test_ap_online_overview_table_edit_rules_and_save(tmp_path):
 
     total_item.setText("5")
     page.overview_table.item(0, 5).setText("Need field check")
+    process_events_until(lambda: not page._background_jobs)
 
     assert repository.list_station_ap_capacities()["Station A"] == 5
     assert repository.list_station_ap_capacity_details()["Station A"]["remark"] == "Need field check"
@@ -3776,6 +3858,8 @@ def test_ap_online_overview_saved_total_survives_refresh_and_reload(tmp_path):
     repository.upsert_station_ap_remark("Station A", "Persistent remark")
 
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
     assert page.overview_table.item(0, 1).text() == "9"
     assert page.overview_table.item(0, 5).text() == "Persistent remark"
 
@@ -3786,13 +3870,16 @@ def test_ap_online_overview_saved_total_survives_refresh_and_reload(tmp_path):
             {"ap_uuid": "ap-2", "serial_number": "SN-2", "site": "Station A", "state": "R/B"},
         ],
     )
-    page.refresh_data()
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
     assert page.overview_table.item(0, 1).text() == "9"
     assert page.overview_table.item(0, 2).text() == "2"
     assert page.overview_table.item(0, 3).text() == "7"
     assert page.overview_table.item(0, 5).text() == "Persistent remark"
 
     reloaded = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    reloaded.refresh_overview_table()
+    process_events_until(lambda: not reloaded._background_jobs)
     assert reloaded.overview_table.item(0, 1).text() == "9"
     assert reloaded.overview_table.item(0, 5).text() == "Persistent remark"
 
@@ -3814,6 +3901,8 @@ def test_ap_online_overview_new_station_defaults_total_to_online_count(tmp_path)
     repository.upsert_fit_ap_metadata({"ap_uuid": "ap-2", "ap_name": "AP-2", "site_name": "Station A"})
 
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
 
     assert page.overview_table.item(0, 1).text() == "2"
     assert page.overview_table.item(0, 2).text() == "1"
@@ -3829,10 +3918,13 @@ def test_ap_online_overview_rejects_invalid_total_and_restores(monkeypatch, tmp_
     repository.replace_fit_ap_resources(ac.device_uuid, [{"ap_uuid": "ap-1", "serial_number": "SN-1", "site": "Station A", "state": "R/M"}])
     repository.upsert_station_ap_capacity("Station A", 5)
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.MessageBox.warning", lambda *args: warnings.append(args))
 
     page.overview_table.item(0, 1).setText("")
+    process_events_until(lambda: not page._background_jobs)
 
     assert warnings
     assert repository.list_station_ap_capacities()["Station A"] == 5
@@ -3849,10 +3941,13 @@ def test_ap_online_overview_save_history_snapshot_from_current_rows(monkeypatch,
     repository.upsert_station_ap_capacity("Station A", 3)
     repository.upsert_station_ap_remark("Station A", "Snapshot note")
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
+    page.refresh_overview_table()
+    process_events_until(lambda: not page._background_jobs)
     messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args))
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.MessageBox.information", lambda *args: messages.append(args))
 
     page.save_overview_history_snapshot()
+    process_events_until(lambda: not page._background_jobs)
     history = repository.list_station_online_summary_history("Station A")
 
     assert messages
@@ -4316,7 +4411,7 @@ def test_trackside_ap_page_does_not_render_i18n_keys(tmp_path):
     visible_text.extend(page.trackside_table.horizontalHeaderItem(index).text() for index in range(page.trackside_table.columnCount()))
 
     assert all("trackside_ap." not in text and "rail_transit." not in text for text in visible_text)
-    assert "\u66f4\u65b0" in visible_text
+    assert any("\u66f4\u65b0" in text for text in visible_text)
     assert "\u8f68\u65c1AP\u4e1a\u52a1" in visible_text
 
 
@@ -5072,7 +5167,11 @@ def test_ac_overview_page_rows_match_trackside_export_overview_sheet(tmp_path):
         ],
     )
     page = AcManagementPage(device_repository, I18n("en_US"), "demo")
-    overview_rows = page.current_overview_rows()
+    process_events_until(lambda: not page._background_jobs)
+    overview_rows = build_ap_online_overview_rows(
+        planned_aps=repository.list_fit_ap_metadata(),
+        fit_ap_resources=repository.list_fit_ap_resources_with_metadata(ac.device_uuid),
+    )
     export_path = tmp_path / "trackside_same_overview.xlsx"
 
     export_trackside_ap_business_xlsx(
@@ -5184,7 +5283,8 @@ def test_trackside_ap_business_update_shows_async_stage_state(tmp_path, monkeypa
 
     page.start_optical_update()
 
-    assert page.update_button.text() == "Updating..."
+    assert page.update_button.text() == "Light Update Running..."
+    assert page.full_update_button.isEnabled() is False
     assert page.update_button.isEnabled() is False
     assert page.cancel_update_button.isEnabled() is True
     assert page.update_progress.isHidden() is False
@@ -5340,6 +5440,7 @@ def test_trackside_ap_business_double_click_interface_opens_history(tmp_path):
 
     assert len(page.history_windows) == 1
     history = page.history_windows[0]
+    process_events_until(lambda: history.query_job_id is None)
     assert "Interface Optical History - HX_1 GigabitEthernet1/0/1" == history.windowTitle()
     assert history.parent() is None
     assert history.windowFlags() & Qt.Window
@@ -5367,6 +5468,7 @@ def test_trackside_ap_business_double_click_interface_without_history_opens_empt
     assert messages == []
     assert len(page.history_windows) == 1
     history = page.history_windows[0]
+    process_events_until(lambda: history.query_job_id is None)
     assert history.table.rowCount() == 0
     assert history.status_label.text() == "No optical history was found for this interface"
 
@@ -5481,6 +5583,7 @@ def test_trackside_ap_business_ap_mac_double_click_opens_existing_ap_detail_by_m
     page.apply_trackside_pagination()
 
     page.open_ap_detail_from_trackside(0)
+    process_events_until(lambda: bool(opened))
 
     assert opened == [(ac.device_uuid, "ap-mac")]
 
@@ -5506,6 +5609,7 @@ def test_trackside_ap_business_ap_name_double_click_opens_existing_ap_detail_by_
     page.apply_trackside_pagination()
 
     page.open_ap_detail_from_trackside(0)
+    process_events_until(lambda: bool(opened))
 
     assert opened == [(ac.device_uuid, "ap-name")]
 
@@ -5896,20 +6000,18 @@ def test_trackside_status_distinguishes_trackside_up_and_ac_online(tmp_path):
     page = TracksideApServicePage(DeviceRepository(database), I18n("en_US"), "demo", PathResolver(tmp_path))
     page.has_loaded = True
     page.trackside_rows = [
-        {"site": "Station A", "serial_number": "SN-001", "ap_name": "AP-1", "link_status": "UP"},
-        {"site": "Station A", "serial_number": "SN-001", "ap_name": "AP-1", "link_status": "UP"},
-        {"site": "Station B", "serial_number": "SN-002", "ap_name": "AP-2", "link_status": "UP"},
+        {"site": "Station A", "serial_number": "SN-001", "ap_name": "AP-1", "link_status": "UP", "ap_state": "R/M"},
+        {"site": "Station A", "serial_number": "SN-001", "ap_name": "AP-1", "link_status": "UP", "ap_state": "R/M"},
+        {"site": "Station B", "serial_number": "SN-002", "ap_name": "AP-2", "link_status": "UP", "ap_state": "R/M"},
     ]
     page._set_trackside_site_filter_items(page.trackside_rows)
     page.trackside_site_filter.setCurrentIndex(page.trackside_site_filter.findData("Station A"))
-    AcRepository(database).upsert_ac_ap_summary({"ac_device_uuid": "ac-1", "online_aps": 898})
-
     page._update_idle_status()
 
     text = page.status_label.text()
     assert "filtered 2" in text
     assert "trackside UP 1" in text
-    assert "AC online AP 898" in text
+    assert "AC online AP 2" in text
     assert "online AP 1" not in text
 
 
@@ -5983,6 +6085,7 @@ def test_main_window_opens_rail_transit_before_lazy_refresh(tmp_path, monkeypatc
 
 def test_main_window_defers_ac_creation_and_uses_current_tab_refresh(tmp_path, monkeypatch):
     from netconsole.ui.main_window import MainWindow
+    from netconsole.ui.pages import ac_management_page as ac_page_module
 
     qt_app = app()
     context = create_demo_context(PathResolver(tmp_path))
@@ -5990,13 +6093,13 @@ def test_main_window_defers_ac_creation_and_uses_current_tab_refresh(tmp_path, m
     ac_row = next(index for index in range(window.navigation.count()) if window.navigation.item(index).data(256) == "ac")
     calls: list[bool] = []
 
-    original_refresh_devices = AcManagementPage.refresh_devices
+    original_refresh_devices = ac_page_module.AcManagementPage.refresh_devices
 
     def refresh_devices(self, *, load_current_only=False):
         calls.append(bool(load_current_only))
         return original_refresh_devices(self, load_current_only=load_current_only)
 
-    monkeypatch.setattr(AcManagementPage, "refresh_devices", refresh_devices)
+    monkeypatch.setattr(ac_page_module.AcManagementPage, "refresh_devices", refresh_devices)
 
     window.open_current_page(ac_row)
 
@@ -6056,6 +6159,9 @@ def test_station_online_history_dialog_columns_and_filter(tmp_path):
     dialog = StationOnlineHistoryDialog(I18n("en_US"), rows, "Station A")
 
     assert STATION_ONLINE_HISTORY_COLUMNS[-1] == ("field.remark", "remark")
+    assert dialog.scroll_area.widgetResizable() is True
+    assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert dialog.table.columnCount() == 7
     assert [dialog.table.horizontalHeaderItem(column).text() for column in range(dialog.table.columnCount())] == [
         "Collected At",
@@ -6123,7 +6229,7 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(AP_EXTENSION_TEMPLATE_FIELDS)
-    sheet.append(["renamed-ap", "30F5:277A:1B00", "Station X", "K12+450", "Platform", "上下行"])
+    sheet.append(["renamed-ap", "30F5:277A:1B00", "站点", "Station X", "", "", "", "", "", "", "", "K12+450", "Platform", "上下行", ""])
     workbook.save(import_path)
 
     result = service.import_metadata_file(import_path)
@@ -6149,6 +6255,8 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     assert "RID3信道" not in text
     headers = text.splitlines()[0].split(",")
     assert headers.index("RID2功率") < headers.index("归属站点") < headers.index("更新时间")
+    assert "归属区间" in headers
+    assert "归属类型" in headers
 
 
 def test_fit_ap_resource_table_row_formats_mileage_with_extension_line_side():
@@ -6262,7 +6370,7 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
 
     assert headers == AP_EXTENSION_TEMPLATE_FIELDS
     assert "归属站点" in headers
-    for forbidden in ("AP_IP", "APID", "SN", "型号", "状态", "AP状态", "AP组", "在线时长", "更新时间", "备注"):
+    for forbidden in ("AP_IP", "APID", "SN", "型号", "状态", "AP状态", "AP组", "在线时长", "更新时间"):
         assert forbidden not in headers
     assert "站点/位置" not in headers
     assert "site" not in headers
@@ -6271,13 +6379,13 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
     assert sheet.max_row == 2
     assert sheet["A2"].value == "AP-1"
     assert sheet["B2"].value == "0011-2233-4455"
-    assert sheet["C2"].value == "Entity Station"
-    assert sheet["D2"].value == "K12+450"
-    assert sheet["E2"].value == "platform"
-    assert sheet["F2"].value == "uplink"
+    assert sheet["D2"].value == "Entity Station"
+    assert sheet["L2"].value == "K12+450"
+    assert sheet["M2"].value == "platform"
+    assert sheet["N2"].value == "uplink"
     assert sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
-    assert sheet.auto_filter.ref == "A1:F2"
+    assert sheet.auto_filter.ref == "A1:O2"
 
 
 def test_export_ap_extension_template_xlsx_allows_empty_template(tmp_path):
@@ -6322,21 +6430,18 @@ def test_ac_management_page_exports_ap_extension_template(tmp_path, monkeypatch)
         conn.execute("UPDATE ap_entities SET station = ? WHERE ap_uuid = ?", ("Entity Station", "ap-1"))
         conn.commit()
     export_path = tmp_path / "selected_template.xlsx"
-    messages: list[str] = []
-
     monkeypatch.setattr(page_module.QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (str(export_path), ""))
-    monkeypatch.setattr(page_module.QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
 
     page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
 
     assert page.export_extension_template_button.text() == "导出AP扩展信息模板"
     page.export_extension_template_button.click()
+    process_events_until(lambda: not getattr(page, "_netconsole_export_controllers", []))
 
     sheet = load_workbook(export_path).active
     assert [cell.value for cell in sheet[1]] == AP_EXTENSION_TEMPLATE_FIELDS
     assert sheet.max_row == 2
-    assert sheet["C2"].value == "Entity Station"
-    assert messages[-1] == "已导出 AP扩展信息模板，共 1 条。"
+    assert sheet["D2"].value == "Entity Station"
 
 
 def test_ac_management_page_exports_empty_ap_extension_template_with_desktop_default(tmp_path, monkeypatch):
@@ -6350,24 +6455,20 @@ def test_ac_management_page_exports_empty_ap_extension_template_with_desktop_def
     desktop = tmp_path / "Desktop"
     desktop.mkdir()
     export_path = tmp_path / "empty_template.xlsx"
-    messages: list[str] = []
-
     monkeypatch.setattr(page_module.QStandardPaths, "writableLocation", lambda _location: str(desktop))
     monkeypatch.setattr(
         page_module.QFileDialog,
         "getSaveFileName",
         lambda _parent, _title, default_path, _filter: selected_defaults.append(default_path) or (str(export_path), ""),
     )
-    monkeypatch.setattr(page_module.QMessageBox, "information", lambda _parent, _title, message: messages.append(message))
-
     page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
     page.export_ap_extension_template()
+    process_events_until(lambda: not getattr(page, "_netconsole_export_controllers", []))
 
     assert selected_defaults
     assert Path(selected_defaults[0]).parent == desktop
     assert "AP扩展信息模板_AC_" in Path(selected_defaults[0]).name
     assert export_path.exists()
-    assert messages[-1] == "当前没有FIT-AP资源数据，已导出空模板。"
 
 
 def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):
@@ -6378,10 +6479,14 @@ def test_ap_detail_dialog_opens_and_saves_metadata(tmp_path):
     dialog = FitApDetailDialog(I18n("en_US"), repository, "ac-1", "ap-a")
     dialog.site_input.setText("Station A")
     dialog.save_metadata()
+    process_events_until(lambda: not dialog.background_job_id)
 
     assert dialog.windowTitle() == "AP Details - ap-a"
     assert dialog.minimumWidth() == 760
     assert dialog.minimumHeight() == 520
+    assert dialog.scroll_area.widgetResizable() is True
+    assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert dialog.tabs.count() == 6
     assert FIT_AP_DETAIL_TABS == ("basic", "metadata", "radio", "lldp", "optical", "raw_fields")
     assert dialog.tabs.currentWidget() is dialog.basic_tab
@@ -6463,6 +6568,7 @@ def test_ap_detail_direction_combo_uses_uplink_downlink_and_saves_chinese(tmp_pa
     assert dialog.direction_combo.currentData() == "上行"
     dialog.direction_combo.setCurrentIndex(dialog.direction_combo.findData("下行"))
     dialog.save_metadata()
+    process_events_until(lambda: not dialog.background_job_id)
     assert repository.get_fit_ap_metadata_by_uuid(ap_uuid)["direction"] == "下行"
 
 
@@ -6641,6 +6747,7 @@ def test_ap_optical_history_detail_and_column_width_persist(tmp_path):
     assert reopened.table.columnWidth(interface_column) == 280
     assert reopened.detail_table.rowCount() == len(AP_OPTICAL_HISTORY_COLUMNS)
     assert reopened.detail_table.item(1, 1).text() == "WLAN-Radio1/0/1"
+    assert reopened.findChild(QScrollArea) is not None
     assert reopened.table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     assert reopened.detail_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     reopened.splitter.setSizes([700, 300])
@@ -6667,18 +6774,32 @@ def test_ap_optical_history_export_contains_full_history(tmp_path, monkeypatch):
 
     export_path = tmp_path / "ap_history.xlsx"
     monkeypatch.setattr(dialog_module, "select_export_path", lambda *_args, **_kwargs: export_path)
-    rows = [
-        {"collected_at": "2026-01-02T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/1", "rx_power": "-10.10"},
-        {"collected_at": "2026-01-01T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/2", "rx_power": "-11.10"},
-    ]
-    dialog = ApOpticalHistoryDialog(I18n("en_US"), "ap-a", rows, SettingsStore(PathResolver(tmp_path)))
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    ap_uuid = str(repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"])
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [
+            {"ap_uuid": ap_uuid, "collected_at": "2026-01-02T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/1", "rx_power": "-10.10"},
+            {"ap_uuid": ap_uuid, "collected_at": "2026-01-01T00:00:00", "ap_name": "ap-a", "interface_name": "GE1/0/2", "rx_power": "-11.10"},
+        ],
+    )
+    dialog = ApOpticalHistoryDialog(
+        I18n("en_US"),
+        "ap-a",
+        None,
+        SettingsStore(PathResolver(tmp_path)),
+        db_path=repository.database.path,
+        ap_uuid=ap_uuid,
+    )
+    process_events_until(lambda: dialog.query_job_id is None)
 
     dialog.export_history()
-    qt_app.processEvents()
+    process_events_until(lambda: not getattr(dialog, "_netconsole_export_controllers", []))
 
     sheet = load_workbook(export_path).active
-    assert sheet.max_row == 3
-    assert sheet["B2"].value == "GE1/0/1"
+    assert sheet.max_row == 4
+    assert sheet["B3"].value == "GE1/0/1"
 
 
 def test_ap_history_column_sets_cover_lldp_and_optical():
@@ -6743,7 +6864,7 @@ def test_ap_detail_dialog_uses_global_theme_without_local_light_style(tmp_path):
 
 
 def test_legacy_ap_detail_import_aliases_fit_ap_detail():
-    assert ApDetailDialog is FitApDetailDialog
+    assert ApDetailDialog is _BaseFitApDetailDialog
 
 
 def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):

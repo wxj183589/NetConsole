@@ -15,6 +15,9 @@ class TracksideApIdentity:
     ap_name: str
     ap_mac: str
     station: str = ""
+    section: str = ""
+    belong_type: str = "unknown"
+    belonging_source: str = ""
     serial_number: str = ""
     location: str = ""
     mileage: str = ""
@@ -26,13 +29,17 @@ class TracksideApIdentity:
 
 class TracksideApBssidResolver:
     def __init__(self, aps: list[dict[str, object]] | None = None) -> None:
-        self.aps = [_identity(row) for row in aps or [] if normalize_mac(row.get("ap_mac"))]
+        self.aps = [ap for ap in (_identity(row) for row in aps or []) if normalize_mac(ap.ap_mac) or ap.ap_name]
         self.radio_mac_map: dict[str, list[tuple[TracksideApIdentity, int | None, str]]] = defaultdict(list)
         self.radio1_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
         self.radio2_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
         self.ap_mac_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
         self.peer_name_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
         for ap in self.aps:
+            for peer_name in ap.peer_names:
+                key = _name_key(peer_name)
+                if key:
+                    self.peer_name_map[key].append(ap)
             mac = normalize_mac(ap.ap_mac)
             if not mac:
                 continue
@@ -43,14 +50,11 @@ class TracksideApBssidResolver:
                 self.radio2_map[radio2].append(ap)
             for radio_mac, radio_id, source in ap.radio_macs:
                 self.radio_mac_map[radio_mac].append((ap, radio_id, source))
-            for peer_name in ap.peer_names:
-                key = _name_key(peer_name)
-                if key:
-                    self.peer_name_map[key].append(ap)
 
     @classmethod
     def from_ac_repository(cls, repository: AcRepository) -> "TracksideApBssidResolver":
         rows = repository.list_all_fit_ap_resources_with_metadata()
+        rows.extend(_extension_identity_rows(repository, rows))
         return cls(rows)
 
     def resolve(self, scanned_bssid: object, peer_name: object | None = None) -> TracksideBssidMatch:
@@ -95,6 +99,9 @@ class TracksideApBssidResolver:
             ap_name=ap.ap_name or "-",
             ap_mac=format_h3c_mac(ap.ap_mac),
             station=ap.station,
+            section=ap.section,
+            belong_type=ap.belong_type,
+            belonging_source=ap.belonging_source,
             serial_number=ap.serial_number,
             location=ap.location,
             mileage=ap.mileage,
@@ -108,13 +115,19 @@ class TracksideApBssidResolver:
 
 def _identity(row: dict[str, object]) -> TracksideApIdentity:
     ap_name = str(row.get("ap_name") or "")
+    station = normalize_station_value(row) or str(row.get("station_name") or "")
+    section = str(row.get("section_name") or row.get("belong_section") or row.get("metadata_belong_section") or "")
+    belong_type = _belong_type(row, station, section)
     return TracksideApIdentity(
         ap_name=ap_name,
-        ap_mac=str(row.get("ap_mac") or ""),
-        station=normalize_station_value(row),
+        ap_mac=str(row.get("ap_mac") or row.get("ap_mac_display") or row.get("ap_mac_norm") or ""),
+        station=station,
+        section=section,
+        belong_type=belong_type,
+        belonging_source=str(row.get("_identity_source") or row.get("extension_match_status") or "fit_ap"),
         serial_number=_serial_number(row),
         location=str(row.get("metadata_location_note") or row.get("location_note") or ""),
-        mileage=str(row.get("metadata_mileage") or row.get("mileage") or ""),
+        mileage=str(row.get("metadata_mileage") or row.get("mileage") or row.get("mileage_text") or ""),
         direction=str(row.get("metadata_direction") or row.get("direction") or ""),
         radio_macs=_extract_radio_macs(row),
         peer_names=tuple(value for value in (ap_name, str(row.get("peer_name") or ""), str(row.get("mesh_peer_name") or "")) if value),
@@ -127,6 +140,9 @@ def _candidate_payload(ap: TracksideApIdentity, radio_id: int | None, rule: str)
         "ap_name": ap.ap_name,
         "ap_mac": format_h3c_mac(ap.ap_mac),
         "station": ap.station,
+        "section": ap.section,
+        "belong_type": ap.belong_type,
+        "belonging_source": ap.belonging_source,
         "serial_number": ap.serial_number,
         "location": ap.location,
         "mileage": ap.mileage,
@@ -160,6 +176,42 @@ def _extract_radio_macs(row: dict[str, object]) -> tuple[tuple[str, int | None, 
             continue
         result.append((mac, _radio_id_from_key(key_l), key_l))
     return tuple(dict.fromkeys(result))
+
+
+def _extension_identity_rows(repository: AcRepository, fit_rows: list[dict[str, object | None]]) -> list[dict[str, object]]:
+    try:
+        extensions = repository.list_ap_extension_points()
+    except Exception:
+        return []
+    known_macs = {normalize_mac(row.get("ap_mac")) for row in fit_rows if normalize_mac(row.get("ap_mac"))}
+    known_names = {str(row.get("ap_name") or "").strip().casefold() for row in fit_rows if str(row.get("ap_name") or "").strip()}
+    rows: list[dict[str, object]] = []
+    for extension in extensions:
+        mac = normalize_mac(extension.get("ap_mac_display") or extension.get("ap_mac_norm"))
+        name = str(extension.get("ap_name") or "").strip()
+        if mac and mac in known_macs:
+            continue
+        if not mac and name and name.casefold() in known_names:
+            continue
+        row = dict(extension)
+        row["ap_mac"] = extension.get("ap_mac_display") or extension.get("ap_mac_norm") or ""
+        row["site_name"] = extension.get("station_name") or ""
+        row["_identity_source"] = "ap_metadata"
+        rows.append(row)
+    return rows
+
+
+def _belong_type(row: dict[str, object], station: str, section: str) -> str:
+    value = str(row.get("belong_type") or row.get("metadata_belong_type") or "").strip().casefold()
+    if value:
+        return value
+    if str(row.get("yard_name") or row.get("area_name") or "").strip():
+        return "yard"
+    if section:
+        return "section"
+    if station:
+        return "station"
+    return "unknown"
 
 
 def _radio_id_from_key(key: str) -> int | None:

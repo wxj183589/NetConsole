@@ -79,6 +79,40 @@ def test_config_snapshot_listing_filters_missing_files_as_source_of_truth(tmp_pa
     assert service.list_device_snapshots(device) == []
 
 
+def test_delete_snapshot_deletes_record_and_ignores_missing_or_zero_byte_files(tmp_path):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = ConfigSnapshotRepository(db)
+    service = ConfigLifecycleService("demo", db, paths, repository)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    raw_log_path = "files/config_center/raw_logs/20260618/SW01/run.log"
+    snapshot = service._write_snapshot(device, "diff", "20260618_101200", "", raw_log_path=raw_log_path)
+    snapshot_path = paths.site_dir("demo") / snapshot.file_path
+    raw_log = paths.site_dir("demo") / raw_log_path
+    raw_log.parent.mkdir(parents=True, exist_ok=True)
+    raw_log.write_text("", encoding="utf-8")
+    raw_log.with_suffix(".jsonl").write_text("", encoding="utf-8")
+
+    service.delete_snapshot(snapshot)
+
+    import pytest
+
+    with pytest.raises(KeyError):
+        repository.get(int(snapshot.id or 0))
+    assert not snapshot_path.exists()
+    assert not raw_log.exists()
+    assert not raw_log.with_suffix(".jsonl").exists()
+
+    missing_snapshot = service._write_snapshot(device, "diff", "20260618_101201", "")
+    (paths.site_dir("demo") / missing_snapshot.file_path).unlink()
+
+    service.delete_snapshot(missing_snapshot)
+
+    with pytest.raises(KeyError):
+        repository.get(int(missing_snapshot.id or 0))
+
+
 def test_extract_h3c_configuration_body_trims_command_echo_and_prompt():
     raw = """display current-configuration
 #

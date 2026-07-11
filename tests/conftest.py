@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtWidgets import QApplication
+
+
+_QT_APPLICATION: QApplication | None = None
+
+
+@pytest.fixture(scope="session")
+def qt_application() -> Iterator[QApplication]:
+    """整个 pytest 进程只保留一个 QApplication，避免包装对象提前回收。"""
+
+    global _QT_APPLICATION
+    application = QApplication.instance()
+    if application is None:
+        application = QApplication([])
+    if not isinstance(application, QApplication):
+        raise RuntimeError("Qt 测试需要 QApplication，当前进程已存在不兼容的 QCoreApplication")
+    application.setQuitOnLastWindowClosed(False)
+    _QT_APPLICATION = application
+    yield application
+
+
+@pytest.fixture
+def qt_page_lifecycle(qt_application: QApplication) -> Iterator[None]:
+    """逐条清理顶层窗口和 deleteLater 队列，隔离 Qt 页面测试生命周期。"""
+
+    yield
+    application = qt_application
+    application.processEvents()
+    widgets = list(application.topLevelWidgets())
+    for widget in widgets:
+        try:
+            widget.close()
+        except RuntimeError:
+            continue
+    application.processEvents()
+    for widget in widgets:
+        try:
+            widget.deleteLater()
+        except RuntimeError:
+            continue
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)

@@ -15,6 +15,18 @@ EVENT_LINK_REESTABLISHED = "LINK_REESTABLISHED"
 EVENT_COUNTER_RESET = "COUNTER_RESET"
 
 
+def normalize_link_state(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "UNKNOWN"
+    lowered = text.lower()
+    if "active" in lowered or "主链路" in text:
+        return LINK_STATE_ACTIVE
+    if "standby" in lowered or "standy" in lowered or "backup" in lowered or "备链" in text:
+        return LINK_STATE_STANDBY
+    return "UNKNOWN"
+
+
 PAIRED_METRICS: tuple[tuple[str, str, str], ...] = (
     ("rssi", "local_rssi_db", "peer_rssi_db"),
     ("cpu", "local_cpu_percent", "peer_cpu_percent"),
@@ -117,6 +129,10 @@ class MeshLogRecord:
     deltas: dict[str, int | None] = field(default_factory=dict)
     source_file_order: int = 0
     record_seq: int = 0
+    raw_line_start: int = 0
+    raw_line_end: int = 0
+    raw_offset_start: int = 0
+    raw_offset_end: int = 0
 
     def peer_mac_h3c(self) -> str:
         return format_mac_h3c(self.peer_mac_normalized) if self.peer_mac_normalized else self.peer_mac_raw

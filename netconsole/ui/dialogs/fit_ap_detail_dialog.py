@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -23,14 +24,19 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label, resolve_fit_ap_link_info
 from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog
 from netconsole.ui.dialogs.ap_history_dialog import AP_LLDP_HISTORY_COLUMNS, AP_OPTICAL_HISTORY_COLUMNS, AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
+from netconsole.ui.dialogs.message_service import MessageBox
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import set_table_column_fields
 from netconsole.ui.table_utils import auto_resize_table_columns, configure_readonly_table, create_table_context_menu, make_text_selectable
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.widgets.adaptive_dialog import install_scrollable_widget_content
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.state_engine import display_optical_status
 from netconsole.utils.mileage import format_track_mileage, mileage_storage_text
@@ -134,9 +140,13 @@ class FitApDetailDialog(QWidget):
         self.ac_device_uuid = ac_device_uuid
         self.settings = SettingsStore(PathResolver())
         self.show_raw_fields_tab = True
-        resource = self.repository.get_fit_ap_resource_by_uuid(ac_device_uuid, ap_uuid) or self.repository.get_fit_ap_resource(ac_device_uuid, ap_uuid) or {}
-        self.ap_uuid = str(resource.get("ap_uuid") or ap_uuid)
-        self.ap_name = str(resource.get("ap_name") or ap_uuid)
+        self.ap_uuid = ap_uuid
+        self.ap_name = ap_uuid
+        self.background_manager = BackgroundProcessManager(self, paths=PathResolver())
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self.background_manager.cancelled.connect(self._background_failed)
+        self.background_job_id = ""
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(self.i18n.t("ap.detail_title", ap=self.ap_name))
         self.resize(900, 680)
@@ -199,10 +209,17 @@ class FitApDetailDialog(QWidget):
         self.tabs.addTab(self.optical_tab, "")
         self.tabs.addTab(self.raw_fields_tab, "")
 
-        layout = QVBoxLayout()
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.addLayout(top)
         layout.addWidget(self.tabs, 1)
-        self.setLayout(layout)
+        self.scroll_area = install_scrollable_widget_content(
+            self,
+            content,
+            minimum_width=760,
+            minimum_height=520,
+            content_minimum_width=840,
+        )
         self.always_on_top_button.toggled.connect(self.set_always_on_top)
         self.save_button.clicked.connect(self.save_metadata)
         self.radio_history_button.clicked.connect(lambda: self.open_history("radio"))
@@ -320,9 +337,27 @@ class FitApDetailDialog(QWidget):
         self.raw_fields_pagination.retranslate()
 
     def refresh(self) -> None:
-        resource = self.repository.get_fit_ap_resource_by_uuid(self.ac_device_uuid, self.ap_uuid) or self.repository.get_fit_ap_resource(self.ac_device_uuid, self.ap_name) or {}
-        optical = self.repository.get_fit_ap_optical_by_uuid(self.ac_device_uuid, self.ap_uuid) or {}
-        metadata = self.repository.get_fit_ap_metadata_by_uuid(self.ap_uuid) or {}
+        if self.background_job_id:
+            return
+        self.save_button.setEnabled(False)
+        self.tabs.setEnabled(False)
+        job_id = uuid4().hex
+        self.background_job_id = job_id
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="fit_ap_detail_load",
+                params={"db_path": str(self.repository.database.path), "ac_uuid": self.ac_device_uuid, "ap_key": self.ap_uuid or self.ap_name},
+            )
+        )
+
+    def _apply_detail_result(self, result: dict[str, object]) -> None:
+        resource = dict(result.get("resource") or {})
+        optical = dict(result.get("optical") or {})
+        metadata = dict(result.get("metadata") or {})
+        self.ap_uuid = str(result.get("ap_uuid") or resource.get("ap_uuid") or self.ap_uuid)
+        self.ap_name = str(resource.get("ap_name") or self.ap_name)
+        self.setWindowTitle(self.i18n.t("ap.detail_title", ap=self.ap_name))
         link_info = resolve_fit_ap_link_info({**resource, **optical})
         basic_source = {
             **resource,
@@ -350,14 +385,15 @@ class FitApDetailDialog(QWidget):
         self.direction_combo.setCurrentIndex(index if index >= 0 else 0)
         self._set_radio_table(resource)
         self._set_table(self.lldp_table, LLDP_COLUMNS, [link_info] if link_info else [])
-        summary = self.optical_history_service.get_latest_optical_summary(self.ac_device_uuid, self.ap_uuid)
+        summary = dict(result.get("optical_summary") or {})
         optical_info = resolve_fit_ap_link_info({**resource, **optical, **(summary or {})})
         self._set_table(self.optical_table, OPTICAL_COLUMNS, [optical_info] if optical_info else [])
         self._set_raw_fields_table(resource, metadata, optical_info)
 
     def save_metadata(self) -> None:
-        self.repository.upsert_fit_ap_metadata(
-            {
+        if self.background_job_id:
+            return
+        metadata = {
                 "ap_name": self.ap_name,
                 "ap_uuid": self.ap_uuid,
                 "site_name": self.site_input.text().strip(),
@@ -365,8 +401,37 @@ class FitApDetailDialog(QWidget):
                 "location_note": self.location_note_input.text().strip(),
                 "direction": normalize_direction(str(self.direction_combo.currentData() or self.direction_combo.currentText())),
             }
+        self.save_button.setEnabled(False)
+        job_id = uuid4().hex
+        self.background_job_id = job_id
+        self.background_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="fit_ap_metadata_save",
+                params={"db_path": str(self.repository.database.path), "metadata": metadata},
+            )
         )
+
+    def _background_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.background_job_id:
+            return
+        self.background_job_id = ""
+        result = dict(event.get("result") or {})
+        self.save_button.setEnabled(True)
+        self.tabs.setEnabled(True)
+        if "resource" in result:
+            self._apply_detail_result(result)
+            return
         app_logger.log_info("FIT_AP_METADATA_SAVED", f"ap={self.ap_name}")
+        self.refresh()
+
+    def _background_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != self.background_job_id:
+            return
+        self.background_job_id = ""
+        self.save_button.setEnabled(True)
+        self.tabs.setEnabled(True)
+        MessageBox.warning(self, self.windowTitle(), str(event.get("message") or "FIT-AP 详情后台任务失败"))
 
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
@@ -436,41 +501,51 @@ class FitApDetailDialog(QWidget):
 
     def open_history(self, kind: str) -> None:
         if kind == "radio":
-            rows = self.repository.list_fit_ap_radio_history_by_ap(self.ap_uuid)
             columns = AP_RADIO_HISTORY_COLUMNS
             title = "Radio"
             color_field = None
         elif kind == "lldp":
-            rows = self.repository.list_fit_ap_lldp_history_by_ap(self.ap_uuid)
             columns = AP_LLDP_HISTORY_COLUMNS
             title = self.i18n.t("ac.lldp_neighbor")
             color_field = None
         else:
             self.open_optical_history()
             return
-        dialog = ApHistoryDialog(self.i18n, self.ap_name, title, rows, columns, color_field, owner=self)
+        dialog = ApHistoryDialog(
+            self.i18n,
+            self.ap_name,
+            title,
+            None,
+            columns,
+            color_field,
+            owner=self,
+            db_path=self.repository.database.path,
+            ap_uuid=self.ap_uuid,
+            history_kind=kind,
+        )
         self.history_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_history_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"ap_history:{title}", activate=False, raise_window=False)
 
     def _forget_history_window(self, window: ApHistoryDialog) -> None:
         self.history_windows = [item for item in self.history_windows if item is not window]
 
     def open_optical_history(self) -> None:
         if self.optical_history_window is not None:
-            self.optical_history_window.show()
-            self.optical_history_window.raise_()
-            self.optical_history_window.activateWindow()
+            show_non_focus_window(self, self.optical_history_window, key="ap_optical_history", activate=False, raise_window=False)
             return
-        rows = self.optical_history_service.query_ap_optical_history_all(self.ap_uuid)
-        dialog = ApOpticalHistoryDialog(self.i18n, self.ap_name, rows, self.settings, owner=self)
+        dialog = ApOpticalHistoryDialog(
+            self.i18n,
+            self.ap_name,
+            None,
+            self.settings,
+            owner=self,
+            db_path=self.repository.database.path,
+            ap_uuid=self.ap_uuid,
+        )
         self.optical_history_window = dialog
         dialog.destroyed.connect(lambda _=None: setattr(self, "optical_history_window", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key="ap_optical_history", activate=False, raise_window=False)
 
     def closeEvent(self, event) -> None:
         self.settings.set_value("ac/ap_detail/window_geometry", {"width": self.width(), "height": self.height()})

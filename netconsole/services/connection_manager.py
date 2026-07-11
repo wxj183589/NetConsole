@@ -91,28 +91,30 @@ class ConnectionManager:
     def iter_attempts(self, device: Device) -> list[ConnectionAttemptResult]:
         profile = self.build_profile(device)
         attempts: list[ConnectionAttemptResult] = []
-        if profile.primary_address:
-            attempts.append(
-                ConnectionAttemptResult("primary_direct", profile.primary_address, profile.port, profile.protocol, profile.username, profile.password)
-            )
-        if profile.backup_address:
-            attempts.append(
-                ConnectionAttemptResult("backup_direct", profile.backup_address, profile.port, profile.protocol, profile.username, profile.password)
-            )
-        for tunnel in profile.tunnels:
-            if tunnel.is_complete and profile.primary_address:
+        for protocol, port, username, password in _device_protocol_attempts(device):
+            suffix = "" if protocol == profile.protocol else f"_{protocol.casefold()}"
+            if profile.primary_address:
                 attempts.append(
-                    ConnectionAttemptResult(
-                        tunnel.label,
-                        profile.primary_address,
-                        profile.port,
-                        profile.protocol,
-                        profile.username,
-                        profile.password,
-                        via_tunnel=True,
-                        tunnel=tunnel,
-                    )
+                    ConnectionAttemptResult(f"primary_direct{suffix}", profile.primary_address, port, protocol, username, password)
                 )
+            if profile.backup_address:
+                attempts.append(
+                    ConnectionAttemptResult(f"backup_direct{suffix}", profile.backup_address, port, protocol, username, password)
+                )
+            for tunnel in profile.tunnels:
+                if tunnel.is_complete and profile.primary_address:
+                    attempts.append(
+                        ConnectionAttemptResult(
+                            f"{tunnel.label}{suffix}",
+                            profile.primary_address,
+                            port,
+                            protocol,
+                            username,
+                            password,
+                            via_tunnel=True,
+                            tunnel=tunnel,
+                        )
+                    )
         return attempts
 
 
@@ -124,6 +126,20 @@ def _device_protocol(device: Device) -> str:
     if device.protocol:
         return str(device.protocol)
     return ""
+
+
+def _device_protocol_attempts(device: Device) -> list[tuple[str, int, str, str]]:
+    attempts: list[tuple[str, int, str, str]] = []
+    if bool(device.ssh_enabled):
+        attempts.append(("SSH", int(device.ssh_port or 22), str(device.ssh_username or ""), str(device.ssh_password or "")))
+    if bool(device.telnet_enabled):
+        attempts.append(("Telnet", int(device.telnet_port or 23), str(device.telnet_username or ""), str(device.telnet_password or "")))
+    if attempts:
+        return attempts
+    protocol = _device_protocol(device)
+    if not protocol:
+        return []
+    return [(protocol, _device_port(device, protocol), _device_username(device, protocol), _device_password(device, protocol))]
 
 
 def _device_port(device: Device, protocol: str) -> int:

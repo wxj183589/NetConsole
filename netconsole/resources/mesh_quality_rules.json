@@ -18,6 +18,9 @@
     "late_window_seconds": 5,
     "target_window_seconds": 5,
     "flap_window_seconds": 30,
+    "main_link_switch_time_ms": 2500,
+    "pingpong_tolerance_ms": 500,
+    "pingpong_return_window_ms": 10000,
     "short_active_segment_seconds": 5
   },
   "anomaly": {

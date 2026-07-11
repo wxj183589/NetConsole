@@ -6,9 +6,10 @@ and manual column resizing, and reuse these helpers. See docs/ui_table_guideline
 
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QLabel, QMenu, QMessageBox, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QLabel, QMenu, QTableWidget, QTableWidgetItem
 
 from netconsole.ui.render.table_render_engine import apply_table_style
 from netconsole.ui.theme.qt_theme_engine import LIGHT_APP_STYLESHEET
@@ -378,7 +379,7 @@ def create_table_context_menu(table: QTableWidget, row: int, column: int, langua
         history = menu.addAction(labels["view_history"])
         history.setEnabled(row >= 0)
         if history_callback is None:
-            history.triggered.connect(lambda: QMessageBox.information(table, labels["view_history"], labels["history_later"]))
+            history.triggered.connect(lambda: MessageBox.information(table, labels["view_history"], labels["history_later"]))
         else:
             history.triggered.connect(lambda: history_callback(row))
     return menu

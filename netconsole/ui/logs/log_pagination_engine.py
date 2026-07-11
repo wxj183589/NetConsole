@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS, PaginationState
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 PAGE_SIZE = DEFAULT_PAGE_SIZE
@@ -55,10 +56,35 @@ def get_logs(
     return LogPage(rows=rows, state=PaginationState(page_size=size, current_page=current_page, total_items=total, total_pages=total_pages))
 
 
-def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024) -> Iterator[str]:
+def iter_logs(
+    log_path: Path,
+    keyword: str | None = None,
+    level: str | None = None,
+    parser: Callable[[str], dict[str, str] | None] | None = None,
+    max_bytes: int | None = None,
+) -> Iterator[dict[str, str]]:
+    keyword_text = keyword.strip().casefold() if keyword else None
+    level_text = level.strip().upper() if level else None
+    parse = parser or _default_parse_line
+    if not log_path.exists():
+        return
+    for line in _read_lines_reversed(log_path, max_bytes=max_bytes):
+        parsed = parse(line)
+        if parsed is None:
+            continue
+        if level_text and parsed.get("level") != level_text:
+            continue
+        if keyword_text and keyword_text not in " ".join(parsed.values()).casefold():
+            continue
+        yield parsed
+
+
+def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024, max_bytes: int | None = None) -> Iterator[str]:
     with path.open("rb") as file:
         file.seek(0, 2)
         position = file.tell()
+        if max_bytes is not None:
+            position = min(position, max(0, int(max_bytes)))
         buffer = b""
         while position > 0:
             read_size = min(chunk_size, position)
@@ -69,9 +95,9 @@ def _read_lines_reversed(path: Path, chunk_size: int = 64 * 1024) -> Iterator[st
             buffer = parts[0]
             for raw_line in reversed(parts[1:]):
                 if raw_line:
-                    yield raw_line.decode("utf-8", errors="replace").rstrip("\r")
+                    yield decode_bytes_with_fallback(raw_line).text.rstrip("\r\n")
         if buffer:
-            yield buffer.decode("utf-8", errors="replace").rstrip("\r")
+            yield decode_bytes_with_fallback(buffer).text.rstrip("\r\n")
 
 
 def _default_parse_line(line: str) -> dict[str, str] | None:

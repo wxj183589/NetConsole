@@ -13,6 +13,7 @@ class OnlineMrRealtimeParser:
         self._interface_direction_by_session: dict[str, str] = {}
 
     def parse_raw_event(self, event: OnlineMrEvent | OnlineMrRawEvent) -> OnlineMrParsedEvent | None:
+        original_raw = event.raw
         parsed_event = self._coerce_event(event)
         payload = self._parse_payload(parsed_event)
         if payload is None:
@@ -23,7 +24,7 @@ class OnlineMrRealtimeParser:
             device_id=parsed_event.device_id,
             module=parsed_event.module,
             payload=payload,
-            raw=parsed_event.raw,
+            raw=original_raw,
         )
 
     def parse_events(self, events: Iterable[OnlineMrEvent | OnlineMrRawEvent]) -> list[OnlineMrParsedEvent]:
@@ -42,13 +43,14 @@ class OnlineMrRealtimeParser:
             return payload
         if event.module == "busy":
             payload = self._parser.parse_busy(event)
-            if not any(payload.get(key) is not None for key in ("ctl_busy", "tx_busy", "rx_busy")):
+            if not any(payload.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy")):
                 return None
             return payload
         if event.module == "stats":
             payload = self._parser.parse_stats(event)
             counters = payload.get("counters")
-            if not isinstance(counters, dict) or not counters:
+            has_busy = any(payload.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy"))
+            if (not isinstance(counters, dict) or not counters) and not has_busy:
                 return None
             return payload
         if event.module == "interface_rate":
@@ -87,7 +89,19 @@ class OnlineMrRealtimeParser:
     @staticmethod
     def _coerce_event(event: OnlineMrEvent | OnlineMrRawEvent) -> OnlineMrEvent:
         if isinstance(event, OnlineMrEvent):
-            return event
+            parser_line = event.payload.get("line")
+            if parser_line is None or str(parser_line) == str(event.raw or ""):
+                return event
+            return OnlineMrEvent(
+                timestamp=event.timestamp,
+                session_id=event.session_id,
+                device_id=event.device_id,
+                source=event.source,
+                module=event.module,
+                event_type=event.event_type,
+                payload=event.payload,
+                raw=str(parser_line),
+            )
         task_type = str(event.task_type or "")
         module = {
             "mesh_link": "mesh",

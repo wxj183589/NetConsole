@@ -22,6 +22,11 @@ RAIL_FEATURE_ORDER = (
 )
 
 
+def _rail_diag(message: str) -> None:
+    print(message)
+    app_logger.log_info("RAIL_UI", message)
+
+
 class RailTransitPage(QWidget):
     def __init__(
         self,
@@ -59,6 +64,34 @@ class RailTransitPage(QWidget):
         self.reload_from_gate(refresh_current=False)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.retranslate()
+
+    def on_enter(self, force_if_empty: bool = True) -> None:
+        if self.tabs.count() == 0:
+            self.reload_from_gate(refresh_current=False)
+        if self.tabs.currentIndex() < 0 and self.tabs.count() > 0:
+            self.tabs.setCurrentIndex(0)
+        if self.tabs.currentIndex() < 0:
+            _rail_diag("[Rail] page enter")
+            _rail_diag(f"[Rail] current site: {self.site_name}")
+            _rail_diag("[Rail] current tab: -")
+            _rail_diag("[Rail] first tab loaded: no")
+            _rail_diag("[Rail] current tab empty state: yes")
+            return
+
+        feature_id = self.feature_by_tab.get(self.tabs.currentWidget(), "")
+        if feature_id:
+            self._ensure_feature_page(feature_id)
+        self.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
+        self._notify_current_page_enter()
+
+        current_tab = self.tabs.tabText(self.tabs.currentIndex())
+        loaded = "yes" if feature_id and self._page_for_feature(feature_id) is not None else "no"
+        empty_state = "yes" if self._current_tab_empty_state() else "no"
+        _rail_diag("[Rail] page enter")
+        _rail_diag(f"[Rail] current site: {self.site_name}")
+        _rail_diag(f"[Rail] current tab: {current_tab}")
+        _rail_diag(f"[Rail] first tab loaded: {loaded}")
+        _rail_diag(f"[Rail] current tab empty state: {empty_state}")
 
     def refresh_all(self) -> None:
         self.refresh_current_async_or_lazy()
@@ -111,6 +144,7 @@ class RailTransitPage(QWidget):
             self._ensure_feature_page(feature_id)
             self._log_page_profile(feature_id, "switch", start)
         self.refresh_current_async_or_lazy()
+        self._notify_current_page_enter()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
@@ -320,6 +354,28 @@ class RailTransitPage(QWidget):
             method = getattr(page, method_name, None)
             if callable(method):
                 method(*args)
+
+    def _notify_current_page_enter(self) -> None:
+        page = self.tabs.currentWidget()
+        method = getattr(page, "on_enter", None)
+        if callable(method):
+            method()
+
+    def _current_tab_empty_state(self) -> bool:
+        page = self.tabs.currentWidget()
+        if page is self.vehicle_mr_online_page and self.vehicle_mr_online_page is not None:
+            return not bool(getattr(self.vehicle_mr_online_page, "current_trains", {}))
+        if page is self.car_network_page and self.car_network_page is not None:
+            return not bool(getattr(self.car_network_page, "trains", []))
+        if page is self.trackside_page and self.trackside_page is not None:
+            return not bool(getattr(self.trackside_page, "trackside_rows", []))
+        if page is self.mesh_page and self.mesh_page is not None:
+            return not bool(getattr(self.mesh_page, "profiles", []))
+        if page is self.online_mr_page and self.online_mr_page is not None:
+            return not bool(getattr(self.online_mr_page, "filtered_devices", []))
+        if page is self.online_mr_analysis_page and self.online_mr_analysis_page is not None:
+            return not bool(getattr(self.online_mr_analysis_page, "sessions", []))
+        return True
 
     def _log_page_profile(self, feature_id: str, phase: str, start: float) -> None:
         elapsed_ms = (perf_counter() - start) * 1000

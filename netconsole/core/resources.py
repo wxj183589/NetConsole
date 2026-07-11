@@ -22,6 +22,9 @@ def get_changelog_path(base_dir: Path) -> Path:
     packaged = base_dir / "netconsole" / "assets" / "changelog.md"
     if packaged.exists():
         return packaged
+    root_changelog = base_dir / "docs" / "CHANGELOG.md"
+    if root_changelog.exists():
+        return root_changelog
     return base_dir / "netconsole" / "docs" / "changelog.md"
 
 
@@ -43,3 +46,14 @@ def icon_path(name: str = "love.png") -> Path:
 
 def changelog_path() -> Path:
     return get_changelog_path(runtime_base_dir())
+
+
+def open_source_notices_path(base_dir: Path | None = None) -> Path:
+    base = base_dir or runtime_base_dir()
+    packaged = base / "netconsole" / "assets" / "open_source_notices.json"
+    if packaged.exists():
+        return packaged
+    root_notices = base / "docs" / "open_source_notices.json"
+    if root_notices.exists():
+        return root_notices
+    return base / "docs" / "open_source_notices.json"

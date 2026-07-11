@@ -63,45 +63,73 @@ class ChineseNavigationToolbar:
 
 
 class ScrollableMatplotlibView(QWidget):
-    def __init__(self, parent: QWidget | None = None, *, min_plot_width: int = 1300, min_plot_height: int = 520) -> None:
+    def __init__(self, parent: QWidget | None = None, *, min_plot_width: int = 1300, min_plot_height: int = 520, fill_parent: bool = False) -> None:
         super().__init__(parent)
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
         from matplotlib.figure import Figure
 
-        self.figure = Figure(figsize=(min_plot_width / 100, min_plot_height / 100), tight_layout=True)
+        self.fill_parent = bool(fill_parent)
+        self.figure = Figure(tight_layout=True) if self.fill_parent else Figure(figsize=(min_plot_width / 100, min_plot_height / 100), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.canvas.setMinimumSize(min_plot_width, min_plot_height)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding if self.fill_parent else QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.canvas.setMinimumSize(640 if self.fill_parent else min_plot_width, 360 if self.fill_parent else min_plot_height)
 
         self.chart_container = QWidget()
+        self.chart_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         container_layout = QVBoxLayout(self.chart_container)
         container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.addWidget(self.canvas)
-        self.chart_container.setMinimumSize(min_plot_width, min_plot_height)
+        container_layout.addWidget(self.canvas, 1)
+        self.chart_container.setMinimumSize(self.canvas.minimumSize())
 
         self.toolbar = ChineseNavigationToolbar.create(self.canvas, self)
+        self.toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.scroll_area.setWidgetResizable(self.fill_parent)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setWidget(self.chart_container)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self.refresh_figure_layout)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        layout.addWidget(self.toolbar)
+        layout.addWidget(self.toolbar, 0)
         layout.addWidget(self.scroll_area, 1)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def set_preferred_plot_width(self, width: int, *, height: int = 520) -> None:
         width = max(900, int(width))
         height = max(420, int(height))
+        if self.fill_parent:
+            self.canvas.setMinimumSize(min(width, 900), min(height, 520))
+            self.chart_container.setMinimumSize(self.canvas.minimumSize())
+            self.refresh_figure_layout()
+            return
         self.figure.set_size_inches(width / 100, height / 100, forward=True)
         self.canvas.setMinimumSize(width, height)
         self.canvas.resize(width, height)
         self.chart_container.setMinimumSize(width, height)
 
+    def refresh_figure_layout(self) -> None:
+        try:
+            self.figure.tight_layout()
+        except Exception:
+            self.figure.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+        self.canvas.draw_idle()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.fill_parent:
+            self._resize_timer.start()
+
 
 class AnalysisChartHoverController:
+    _active_controller: "AnalysisChartHoverController | None" = None
+
     def __init__(self, canvas, axis, points: list[object], tooltip_builder: Callable[[object], str]) -> None:
         self.canvas = canvas
         self.axis = axis
@@ -109,23 +137,30 @@ class AnalysisChartHoverController:
         self.tooltip_builder = tooltip_builder
         self.timestamps = [_point_timestamp_number(point) for point in points]
         self.popup = MeshChartHoverPopup()
-        self.fixed_index: int | None = None
         self.current_index = -1
         self.latest_event = None
         self.timer = QTimer()
         self.timer.setSingleShot(True)
         self.timer.setInterval(35)
         self.timer.timeout.connect(self._process_latest_event)
-        self.vline = axis.axvline(0, color="#0f766e", linewidth=1.0, alpha=0.65, visible=False)
+        original_xlim = axis.get_xlim()
+        original_ylim = axis.get_ylim()
+        vline_x = self.timestamps[0] if self.timestamps else original_xlim[0]
+        self.vline = axis.axvline(vline_x, color="#0f766e", linewidth=1.0, alpha=0.65, visible=False)
         (self.marker,) = axis.plot([], [], "o", markersize=6, color="#0f766e", visible=False, zorder=7)
+        axis.set_xlim(original_xlim)
+        axis.set_ylim(original_ylim)
         self.motion_cid = canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
         self.click_cid = canvas.mpl_connect("button_press_event", self.on_click)
         self.leave_cid = canvas.mpl_connect("axes_leave_event", self.on_axes_leave)
+        self.figure_leave_cid = canvas.mpl_connect("figure_leave_event", self.on_axes_leave)
 
     def disconnect(self) -> None:
-        for cid in (self.motion_cid, self.click_cid, self.leave_cid):
+        for cid in (self.motion_cid, self.click_cid, self.leave_cid, self.figure_leave_cid):
             self.canvas.mpl_disconnect(cid)
         self.timer.stop()
+        if AnalysisChartHoverController._active_controller is self:
+            AnalysisChartHoverController._active_controller = None
         self.popup.hide()
         self.popup.deleteLater()
 
@@ -156,32 +191,24 @@ class AnalysisChartHoverController:
 
     def on_mouse_move(self, event) -> None:
         if event.inaxes is not self.axis or event.xdata is None:
-            if self.fixed_index is None:
-                self.hide()
+            self.hide()
             return
         self.latest_event = event
         self.timer.start()
 
     def on_click(self, event) -> None:
-        if event.inaxes is not self.axis or event.xdata is None or getattr(event, "button", None) != 1:
-            return
-        toolbar = getattr(self.canvas, "toolbar", None)
-        if toolbar is not None and getattr(toolbar, "mode", ""):
-            return
-        index = self.nearest_index(float(event.xdata), float(event.x or 0), max_pixel_distance=32)
-        if index < 0:
-            return
-        self.fixed_index = index
-        self._show_index(index, event)
+        if getattr(event, "button", None) == 1:
+            self.hide()
 
     def on_axes_leave(self, _event) -> None:
-        if self.fixed_index is None:
-            self.hide()
+        self.hide()
 
     def hide(self) -> None:
         self.timer.stop()
         self.latest_event = None
         self.current_index = -1
+        if AnalysisChartHoverController._active_controller is self:
+            AnalysisChartHoverController._active_controller = None
         self.vline.set_visible(False)
         self.marker.set_visible(False)
         self.popup.hide()
@@ -190,18 +217,19 @@ class AnalysisChartHoverController:
     def _process_latest_event(self) -> None:
         event = self.latest_event
         if event is None or event.xdata is None:
-            if self.fixed_index is None:
-                self.hide()
+            self.hide()
             return
         index = self.nearest_index(float(event.xdata), float(event.x or 0))
         if index < 0:
-            if self.fixed_index is None:
-                self.hide()
+            self.hide()
             return
-        if self.fixed_index is None:
-            self._show_index(index, event)
+        self._show_index(index, event)
 
     def _show_index(self, index: int, event) -> None:
+        active = AnalysisChartHoverController._active_controller
+        if active is not None and active is not self:
+            active.hide()
+        AnalysisChartHoverController._active_controller = self
         point = self.points[index]
         x_value = self.timestamps[index]
         y_value = _point_value(point)

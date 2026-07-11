@@ -11,6 +11,7 @@ from netconsole.models.wireless_scan_models import WirelessAdapter, WirelessNetw
 from netconsole.services.network_tools.netsh_wireless_scanner import NetshWirelessScanner
 from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac
 from netconsole.services.network_tools.wireless_ie_parser import parse_wireless_capabilities
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 SCAN_SOURCE_AUTO = "auto"
@@ -200,12 +201,18 @@ class _WlanClient:
 
 
 def _network_from_bss_entry(entry: _WlanBssEntry, adapter_name: str, last_seen: str, ie_blob: bytes | None = None) -> WirelessNetwork:
-    ssid = bytes(entry.dot11Ssid.ucSSID[: min(entry.dot11Ssid.uSSIDLength, 32)]).decode("utf-8", errors="replace")
+    ssid_raw = bytes(entry.dot11Ssid.ucSSID[: min(entry.dot11Ssid.uSSIDLength, 32)])
+    ssid, ssid_encoding, ssid_used_replacement = _decode_ssid(ssid_raw)
     bssid = "".join(f"{byte:02x}" for byte in entry.dot11Bssid)
     frequency_mhz = int(entry.ulChCenterFrequency / 1000) if entry.ulChCenterFrequency else None
     channel = frequency_to_channel(frequency_mhz)
     ie_blob = ie_blob if ie_blob is not None else _ie_blob_from_entry(entry)
     capability = parse_wireless_capabilities(ie_blob)
+    parse_warnings = list(capability.parse_warnings)
+    if ssid_used_replacement:
+        parse_warnings.append("ssid_decode_replacement")
+    elif ssid_encoding.lower().replace("_", "-") not in {"utf-8", "utf-8-sig"}:
+        parse_warnings.append(f"ssid_encoding_{ssid_encoding}")
     return WirelessNetwork(
         ssid=ssid,
         bssid=bssid,
@@ -229,16 +236,23 @@ def _network_from_bss_entry(entry: _WlanBssEntry, adapter_name: str, last_seen: 
         scan_source="wlan_api",
         raw_ie_hex=ie_blob.hex(),
         raw_ie_available=bool(ie_blob),
-        parse_warnings=capability.parse_warnings,
+        parse_warnings=parse_warnings,
         raw={
             "adapter": adapter_name,
             "raw_ie_available": bool(ie_blob),
             "raw_ie_size": len(ie_blob),
             "channel_width_source": capability.channel_width_source,
             "mimo_source": capability.mimo_source,
-            "parse_warnings": capability.parse_warnings,
+            "parse_warnings": parse_warnings,
+            "ssid_encoding": ssid_encoding,
+            "ssid_used_replacement": ssid_used_replacement,
         },
     )
+
+
+def _decode_ssid(raw: bytes) -> tuple[str, str, bool]:
+    result = decode_bytes_with_fallback(raw, replace_on_failure=True)
+    return result.text, result.encoding, result.used_replacement
 
 
 def _ie_blob_from_entry(entry: _WlanBssEntry) -> bytes:

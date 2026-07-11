@@ -6,22 +6,33 @@ from datetime import datetime
 
 from netconsole.models.wireless_scan_models import WirelessAdapter, WirelessNetwork
 from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac, quality_to_rssi_dbm
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
 class NetshWirelessScanner:
     def list_adapters(self) -> list[WirelessAdapter]:
-        result = subprocess.run(["netsh", "wlan", "show", "interfaces"], text=True, capture_output=True, check=False, encoding="utf-8", errors="replace")
+        result = _run_netsh_text(["netsh", "wlan", "show", "interfaces"])
         if result.returncode != 0:
             return []
         return parse_netsh_interfaces(result.stdout)
 
     def scan(self, adapter: WirelessAdapter | None = None) -> tuple[list[WirelessNetwork], str]:
         cmd = ["netsh", "wlan", "show", "networks", "mode=bssid"]
-        result = subprocess.run(cmd, text=True, capture_output=True, check=False, encoding="utf-8", errors="replace")
+        result = _run_netsh_text(cmd)
         raw = result.stdout or result.stderr
         if result.returncode != 0:
             raise RuntimeError(raw.strip() or "netsh wlan scan failed")
         return parse_netsh_networks(raw), raw
+
+
+def _run_netsh_text(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, capture_output=True, check=False)
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        stdout=decode_bytes_with_fallback(result.stdout or b"").text,
+        stderr=decode_bytes_with_fallback(result.stderr or b"").text,
+    )
 
 
 def parse_netsh_interfaces(text: str) -> list[WirelessAdapter]:

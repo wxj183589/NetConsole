@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Callable
 
 from netconsole.core.shutdown_manager import shutdown_manager
-from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_line
+from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_error_lines, parse_iperf_line
+
+
+FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS = 86400
 
 
 @dataclass(frozen=True)
@@ -43,16 +46,20 @@ class IperfClientConfig:
         tcp_block_size = normalize_block_size_text(self.tcp_block_size)
         if protocol == "TCP" and not tcp_block_size and _bandwidth_mbps(bandwidth) is not None and _bandwidth_mbps(bandwidth) <= 2:
             tcp_block_size = "16K"
+        follow_collection = bool(self.follow_collection)
+        duration_seconds = max(1, int(self.duration_seconds or 10))
+        if follow_collection:
+            duration_seconds = max(duration_seconds, FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS)
         return IperfClientConfig(
             server_ip=str(self.server_ip or "").strip(),
             port=max(1, min(65535, int(self.port or 5201))),
             protocol=protocol if protocol in {"TCP", "UDP"} else "TCP",
-            duration_seconds=max(1, int(self.duration_seconds or 10)),
+            duration_seconds=duration_seconds,
             interval_seconds=max(1, int(self.interval_seconds or 1)),
             parallel=max(1, int(self.parallel or 1)),
             direction=str(self.direction or "upload").lower(),
             target_bandwidth=bandwidth,
-            follow_collection=bool(self.follow_collection),
+            follow_collection=follow_collection,
             tcp_block_size=tcp_block_size,
             packet_length=max(1, int(self.packet_length)) if self.packet_length else None,
             tcp_report_threshold_mbps=_optional_float(self.tcp_report_threshold_mbps),
@@ -65,6 +72,15 @@ class IperfClientConfig:
     def as_dict(self) -> dict[str, object]:
         config = self.normalized()
         return dict(config.__dict__)
+
+
+@dataclass(frozen=True)
+class IperfPreflightResult:
+    ok: bool
+    error_code: str = ""
+    message: str = ""
+    command: list[str] | None = None
+    output: str = ""
 
 
 @dataclass(frozen=True)
@@ -174,6 +190,79 @@ def build_iperf_client_args(iperf_path: Path, config: IperfClientConfig) -> list
     return args
 
 
+def build_iperf_client_preflight_args(iperf_path: Path, config: IperfClientConfig) -> list[str]:
+    cfg = config.normalized()
+    preflight = IperfClientConfig(
+        server_ip=cfg.server_ip,
+        port=cfg.port,
+        protocol=cfg.protocol,
+        duration_seconds=1,
+        interval_seconds=1,
+        parallel=cfg.parallel,
+        direction=cfg.direction,
+        target_bandwidth=cfg.target_bandwidth,
+        follow_collection=False,
+        tcp_block_size=cfg.tcp_block_size,
+        packet_length=cfg.packet_length,
+        tcp_report_threshold_mbps=cfg.tcp_report_threshold_mbps,
+        tcp_pacing_enabled=cfg.tcp_pacing_enabled,
+        tcp_pacing_mbps=cfg.tcp_pacing_mbps,
+        udp_bitrate_mbps=cfg.udp_bitrate_mbps,
+        udp_report_threshold_mbps=cfg.udp_report_threshold_mbps,
+    )
+    return build_iperf_client_args(iperf_path, preflight)
+
+
+def run_iperf_client_preflight(iperf_path: Path, config: IperfClientConfig, timeout_seconds: float = 8.0) -> IperfPreflightResult:
+    cfg = config.normalized()
+    if not cfg.server_ip:
+        return IperfPreflightResult(False, "server_required", "server address is required")
+    if not Path(iperf_path).exists():
+        return IperfPreflightResult(False, "tool_missing", f"iperf3 not found: {iperf_path}")
+    command = build_iperf_client_preflight_args(iperf_path, cfg)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=Path(iperf_path).parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(2.0, float(timeout_seconds)),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = str(exc.output or "")
+        return IperfPreflightResult(False, "timed_out", "iperf preflight timed out", command, output)
+    except Exception as exc:
+        return IperfPreflightResult(False, "runner_exception", str(exc), command, "")
+    output = completed.stdout or ""
+    if completed.returncode == 0:
+        return IperfPreflightResult(True, "", "iperf preflight succeeded", command, output)
+    error = _classify_iperf_preflight_error(output)
+    return IperfPreflightResult(False, error.get("error_code", "iperf_error"), str(error.get("error_message") or output.strip() or f"iperf exited with code {completed.returncode}"), command, output)
+
+
+def _classify_iperf_preflight_error(output: str) -> dict[str, object]:
+    events = parse_iperf_error_lines(str(output or "").splitlines(), datetime.now())
+    if events:
+        return events[0]
+    text = str(output or "").strip()
+    lowered = text.casefold()
+    if "no route to host" in lowered:
+        return {"error_code": "no_route_to_host", "error_message": text}
+    if "network is unreachable" in lowered:
+        return {"error_code": "network_unreachable", "error_message": text}
+    if "connection refused" in lowered:
+        return {"error_code": "connection_refused", "error_message": text}
+    if "timed out" in lowered:
+        return {"error_code": "timed_out", "error_message": text}
+    return {"error_code": "iperf_error", "error_message": text}
+
+
 class IperfResultStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -210,6 +299,11 @@ class IperfResultStore:
                     interval_start_sec REAL,
                     interval_end_sec REAL,
                     interval_center_time TEXT,
+                    device_aligned_time TEXT,
+                    device_interval_center_time TEXT,
+                    clock_offset_ms REAL,
+                    offset_source TEXT,
+                    time_source TEXT,
                     transfer_bytes REAL,
                     bitrate_mbps REAL,
                     retransmits INTEGER,
@@ -225,6 +319,20 @@ class IperfResultStore:
                 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_run ON iperf_intervals(run_id);
                 """
             )
+            self._ensure_interval_alignment_columns(conn)
+
+    @staticmethod
+    def _ensure_interval_alignment_columns(conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(iperf_intervals)").fetchall()}
+        for column, definition in {
+            "device_aligned_time": "TEXT",
+            "device_interval_center_time": "TEXT",
+            "clock_offset_ms": "REAL",
+            "offset_source": "TEXT",
+            "time_source": "TEXT",
+        }.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE iperf_intervals ADD COLUMN {column} {definition}")
 
     def start_run(self, run_id: str, *, mode: str, command: list[str], log_file: Path, started_at: datetime, session_id: str = "", device_id: int | None = None, config: IperfClientConfig | None = None) -> None:
         cfg = config.normalized() if config else None
@@ -268,9 +376,10 @@ class IperfResultStore:
                 """
                 INSERT INTO iperf_intervals (
                     run_id, session_id, collector_time, interval_start_sec, interval_end_sec, interval_center_time,
+                    device_aligned_time, device_interval_center_time, clock_offset_ms, offset_source, time_source,
                     transfer_bytes, bitrate_mbps, retransmits, cwnd, role, jitter_ms, lost_packets,
                     total_packets, loss_percent, raw_line
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -279,6 +388,11 @@ class IperfResultStore:
                     row.get("interval_start_sec"),
                     row.get("interval_end_sec"),
                     row.get("interval_center_time"),
+                    row.get("device_aligned_time"),
+                    row.get("device_interval_center_time"),
+                    row.get("clock_offset_ms"),
+                    row.get("offset_source"),
+                    row.get("time_source"),
                     row.get("transfer_bytes"),
                     row.get("bitrate_mbps"),
                     row.get("retransmits"),
@@ -337,6 +451,12 @@ class IperfProcessRunner:
             self.context.setdefault("direction", cfg.direction)
             self.context.setdefault("bandwidth", cfg.target_bandwidth or "")
             self.context.setdefault("tcp_block_size", cfg.tcp_block_size or "")
+            if cfg.follow_collection:
+                self.context.setdefault("duration_mode", "follow_collection")
+                self.context.setdefault("protection_duration_seconds", cfg.duration_seconds)
+                self.context.setdefault("stop_policy", "stop_with_collection")
+            else:
+                self.context.setdefault("duration_seconds", cfg.duration_seconds)
         batch_key = self.context.get("batch_key") or self.context.get("batch_id")
         if batch_key and not self.context.get("batch_key_hash"):
             self.context["batch_key_hash"] = hashlib.sha1(str(batch_key).encode("utf-8")).hexdigest()[:8]
@@ -346,6 +466,7 @@ class IperfProcessRunner:
                 self.mirror_contexts[mirror] = dict(self.context)
         self.process: subprocess.Popen | None = None
         self.stop_requested = False
+        self.stop_status = "STOPPED"
         self.last_status = "CREATED"
         self.last_error_code = ""
         self._log_lock = threading.RLock()
@@ -367,7 +488,7 @@ class IperfProcessRunner:
             if self.log_file.exists():
                 prior_lines = [
                     line
-                    for line in self.log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                    for line in self.log_file.read_text(encoding="utf-8").splitlines()
                     if line and not line.startswith("#")
                 ]
             with log_file.open("w", encoding="utf-8") as file:
@@ -423,7 +544,7 @@ class IperfProcessRunner:
                 self._emit_line(stamped_line, row, error)
             return_code = self.process.wait()
             if self.stop_requested:
-                status = "STOPPED"
+                status = self.stop_status
             elif return_code != 0:
                 status = f"FAILED:{return_code}"
         except Exception:
@@ -433,6 +554,8 @@ class IperfProcessRunner:
             )
             raise
         finally:
+            if self.stop_requested:
+                self._write_line(format_iperf_log_line(datetime.now(), "stopped by collection stop", self.context))
             if return_code is not None and return_code != 0:
                 self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
             self._write_footers(status, return_code)
@@ -442,13 +565,19 @@ class IperfProcessRunner:
             if self.store:
                 self.store.finish_run(self.run_id, status)
 
-    def stop(self) -> None:
+    def stop(self, status: str = "STOPPED_BY_USER") -> None:
         self.stop_requested = True
+        self.stop_status = str(status or "STOPPED_BY_USER")
         if self.process is None:
             return
         if self.process.poll() is not None:
             return
         self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
 
     def _start_header_lines(self, timestamp: datetime, context: dict[str, object]) -> list[str]:
         return format_iperf_log_header(context, timestamp)

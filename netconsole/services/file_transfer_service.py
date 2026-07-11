@@ -16,7 +16,7 @@ from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
-from netconsole.utils.text_encoding import clean_h3c_device_text
+from netconsole.utils.text_encoding import decode_bytes_with_fallback, clean_h3c_device_text
 
 
 FILE_MANAGEMENT_CONTEXT = "file_management"
@@ -25,6 +25,8 @@ FILE_TRANSFER_CONCURRENCY = 50
 FILE_TRANSFER_MAX_CONCURRENCY = 1
 DOWNLOAD_STABLE_WAIT_SECONDS = 2.0
 DOWNLOAD_VERIFY_RETRIES = 3
+DEVICE_FILE_MANAGER_READ_ONLY = True
+DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE = "设备文件管理为只读模式，不允许执行该操作。"
 SftpProgressCallback = Callable[[str], None]
 
 
@@ -248,7 +250,7 @@ class FileTransferService:
             if callable(recv_ready) and recv_ready():
                 data = shell.recv(65535)
                 if isinstance(data, bytes):
-                    output.append(data.decode("utf-8", errors="ignore"))
+                    output.append(decode_bytes_with_fallback(data).text)
                 else:
                     output.append(str(data))
                 idle_deadline = monotonic() + 0.2
@@ -369,6 +371,28 @@ class FileTransferService:
                     part_path.unlink(missing_ok=True)
                 sleep(min(1.0, DOWNLOAD_STABLE_WAIT_SECONDS))
         raise TransferVerificationFailed(f"Download verification failed after retries: {last_error}") from last_error
+
+    def mkdir(self, remote_path: str) -> str:
+        self._ensure_device_write_allowed()
+        sftp = self._require_sftp()
+        target = normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path)
+        sftp.mkdir(target)
+        app_logger.log_info("SFTP_DIRECTORY_CREATED", f"path={target}")
+        return target
+
+    def delete(self, remote_file: RemoteDeviceFile) -> None:
+        self._ensure_device_write_allowed()
+        sftp = self._require_sftp()
+        target = normalize_remote_path(remote_file.remote_path, current_path=self._current_path, root_path=self._root_path)
+        if remote_file.is_dir:
+            sftp.rmdir(target)
+        else:
+            sftp.remove(target)
+        app_logger.log_info("SFTP_REMOTE_DELETED", f"path={target} is_dir={remote_file.is_dir}")
+
+    def _ensure_device_write_allowed(self) -> None:
+        if DEVICE_FILE_MANAGER_READ_ONLY:
+            raise PermissionError(DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE)
 
     def _require_sftp(self):
         if self._sftp is None:

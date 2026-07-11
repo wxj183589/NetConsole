@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
 from time import perf_counter
 
 from PySide6.QtCore import QThread, Signal
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import SnmpQueryRequest, SnmpSetRequest
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
 from netconsole.services.mib_product_reference_compare_service import MibProductReferenceCompareService
 from netconsole.services.mib_resource_service import MibResourceService
-from netconsole.services.snmp_query_service import SnmpQueryService
 from netconsole.services.topology_service import TopologyService
 
 
@@ -97,16 +98,17 @@ class SnmpStartupWorker(CancellableThread):
 class MibImportWorker(CancellableThread):
     finished_with_result = Signal(object)
 
-    def __init__(self, service: MibResourceService, source_paths: list[str], metadata: dict[str, str], parent=None) -> None:
+    def __init__(self, paths: PathResolver, source_paths: list[str], metadata: dict[str, str], parent=None) -> None:
         super().__init__(parent)
-        self.service = service
+        self.paths = paths
         self.source_paths = list(source_paths)
         self.metadata = dict(metadata)
 
     def run(self) -> None:
         try:
             self.progress.emit("正在导入 MIB 文件...")
-            result = self.service.import_paths(self.source_paths, **self.metadata)
+            service = MibResourceService(self.paths, GlobalMibRepository(self.paths.global_mib_db_path()))
+            result = service.import_paths(self.source_paths, **self.metadata)
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)
@@ -115,14 +117,15 @@ class MibImportWorker(CancellableThread):
 class MibRecompileWorker(CancellableThread):
     finished_with_result = Signal(object)
 
-    def __init__(self, service: MibResourceService, parent=None) -> None:
+    def __init__(self, paths: PathResolver, parent=None) -> None:
         super().__init__(parent)
-        self.service = service
+        self.paths = paths
 
     def run(self) -> None:
         try:
             self.progress.emit("正在重新编译缺依赖 MIB 模块...")
-            result = self.service.recompile_missing_dependencies()
+            service = MibResourceService(self.paths, GlobalMibRepository(self.paths.global_mib_db_path()))
+            result = service.recompile_missing_dependencies()
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)
@@ -188,16 +191,17 @@ class MibBrowserTreeLoadWorker(CancellableThread):
 class ProductReferenceCompareWorker(CancellableThread):
     finished_with_result = Signal(object)
 
-    def __init__(self, service: MibProductReferenceCompareService, left_reference_id: int, right_reference_id: int, parent=None) -> None:
+    def __init__(self, db_path, left_reference_id: int, right_reference_id: int, parent=None) -> None:
         super().__init__(parent)
-        self.service = service
+        self.db_path = db_path
         self.left_reference_id = int(left_reference_id)
         self.right_reference_id = int(right_reference_id)
 
     def run(self) -> None:
         try:
             self.progress.emit("正在对比产品 MIB 参考表...")
-            result = self.service.compare(self.left_reference_id, self.right_reference_id, persist=True)
+            service = MibProductReferenceCompareService(GlobalMibRepository(self.db_path))
+            result = service.compare(self.left_reference_id, self.right_reference_id, persist=True)
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)
@@ -223,54 +227,21 @@ class ProductReferenceTreeRebuildWorker(CancellableThread):
 class SnmpInitWorker(CancellableThread):
     finished_with_result = Signal(object)
 
-    def __init__(self, service: MibResourceService, action: str = "initialize", clear_raw_files: bool = False, parent=None) -> None:
+    def __init__(self, paths: PathResolver, action: str = "initialize", clear_raw_files: bool = False, parent=None) -> None:
         super().__init__(parent)
-        self.service = service
+        self.paths = paths
         self.action = action
         self.clear_raw_files = clear_raw_files
 
     def run(self) -> None:
         try:
+            service = MibResourceService(self.paths, GlobalMibRepository(self.paths.global_mib_db_path()))
             if self.action == "reset":
-                result = self.service.reset_and_rebuild(clear_raw_files=self.clear_raw_files, progress=self.progress.emit)
+                result = service.reset_and_rebuild(clear_raw_files=self.clear_raw_files, progress=self.progress.emit)
             elif self.action == "rebuild_h3c":
-                result = self.service.initialize_builtin_resources(rebuild_h3c=True, progress=self.progress.emit)
+                result = service.initialize_builtin_resources(rebuild_h3c=True, progress=self.progress.emit)
             else:
-                result = self.service.initialize_builtin_resources(progress=self.progress.emit)
-        except Exception as exc:
-            result = exc
-        self.finished_with_result.emit(result)
-
-
-class SnmpQueryWorker(CancellableThread):
-    finished_with_result = Signal(object)
-
-    def __init__(self, service: SnmpQueryService, request: SnmpQueryRequest, parent=None) -> None:
-        super().__init__(parent)
-        self.service = service
-        self.request = request
-
-    def run(self) -> None:
-        try:
-            self.progress.emit("正在执行 SNMP 查询...")
-            result = self.service.run(self.request, cancel_checker=self.is_cancelled)
-        except Exception as exc:
-            result = exc
-        self.finished_with_result.emit(result)
-
-
-class SnmpSetWorker(CancellableThread):
-    finished_with_result = Signal(object)
-
-    def __init__(self, service: SnmpQueryService, request: SnmpSetRequest, parent=None) -> None:
-        super().__init__(parent)
-        self.service = service
-        self.request = request
-
-    def run(self) -> None:
-        try:
-            self.progress.emit("正在执行 SNMP Set...")
-            result = self.service.set_value(self.request)
+                result = service.initialize_builtin_resources(progress=self.progress.emit)
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)
@@ -279,15 +250,14 @@ class SnmpSetWorker(CancellableThread):
 class DeviceSnmpDetectWorker(CancellableThread):
     finished_with_result = Signal(object)
 
-    def __init__(self, service: DeviceSnmpDetectService, device: Device, parent=None) -> None:
+    def __init__(self, device: Device, parent=None) -> None:
         super().__init__(parent)
-        self.service = service
         self.device = device
 
     def run(self) -> None:
         try:
             self.progress.emit("正在识别设备 SNMP 画像...")
-            result = self.service.detect(self.device, cancel_checker=self.is_cancelled)
+            result = DeviceSnmpDetectService().detect(self.device, cancel_checker=self.is_cancelled)
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)
@@ -296,14 +266,16 @@ class DeviceSnmpDetectWorker(CancellableThread):
 class TopologyDiscoveryWorker(CancellableThread):
     finished_with_result = Signal(object)
 
-    def __init__(self, service: TopologyService, parent=None) -> None:
+    def __init__(self, site_db_path, site_snmp_db_path, parent=None) -> None:
         super().__init__(parent)
-        self.service = service
+        self.site_db_path = site_db_path
+        self.site_snmp_db_path = site_snmp_db_path
 
     def run(self) -> None:
         try:
             self.progress.emit("正在根据设备管理和 LLDP 数据发现拓扑...")
-            result = self.service.discover_basic_topology()
+            service = TopologyService(DeviceRepository(Database(Path(self.site_db_path))), SiteSnmpRepository(Path(self.site_snmp_db_path)))
+            result = service.discover_basic_topology()
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)

@@ -70,6 +70,9 @@ class WirelessScanRepository:
                     matched_ap_name TEXT DEFAULT '',
                     matched_ap_mac TEXT DEFAULT '',
                     matched_station TEXT DEFAULT '',
+                    matched_section TEXT DEFAULT '',
+                    matched_belong_type TEXT DEFAULT '',
+                    matched_belonging_source TEXT DEFAULT '',
                     matched_location TEXT DEFAULT '',
                     matched_direction TEXT DEFAULT '',
                     matched_radio_id INTEGER NULL,
@@ -112,8 +115,9 @@ class WirelessScanRepository:
                     scan_source, has_wlan_api_data, has_netsh_data, source_flags_json, wlan_api_raw_json, netsh_raw_text,
                     auth_method, security, encryption_method, raw_ie_available, parse_warnings_json, vendor, is_hidden, last_seen, raw_json,
                     matched_trackside_ap, match_status, matched_ap_name, matched_ap_mac, matched_station,
+                    matched_section, matched_belong_type, matched_belonging_source,
                     matched_location, matched_direction, matched_radio_id, match_rule, match_candidates_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._result_row(scan_id, result) for result in results],
             )
@@ -156,6 +160,9 @@ class WirelessScanRepository:
             conn.execute("ALTER " "TABLE wireless_scan_results ADD COLUMN raw_ie_available INTEGER DEFAULT 0")
         if "parse_warnings_json" not in columns:
             conn.execute("ALTER " "TABLE wireless_scan_results ADD COLUMN parse_warnings_json TEXT DEFAULT ''")
+        for column in ("matched_section", "matched_belong_type", "matched_belonging_source"):
+            if column not in columns:
+                conn.execute(f"ALTER " f"TABLE wireless_scan_results ADD COLUMN {column} TEXT DEFAULT ''")
 
     @staticmethod
     def _result_row(scan_id: str, result: WirelessScanResult) -> tuple[object, ...]:
@@ -200,6 +207,9 @@ class WirelessScanRepository:
             match.ap_name,
             match.ap_mac,
             match.station,
+            match.section,
+            match.belong_type,
+            match.belonging_source or match.match_rule,
             match.location or match.mileage,
             match.direction,
             match.radio_id,

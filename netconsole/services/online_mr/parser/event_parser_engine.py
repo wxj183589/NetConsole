@@ -9,6 +9,7 @@ from netconsole.services.online_mr_parser import (
     parse_ap_radio_statistics_text,
     parse_channel_busy_text,
     parse_interface_rate_text,
+    parse_mesh_link_row,
     parse_mesh_link_text,
     summarize_active,
 )
@@ -66,9 +67,9 @@ class EventParserEngine:
     def parse_busy(self, event: OnlineMrEvent) -> dict[str, Any]:
         payload = {"timestamp": event.timestamp, "raw": event.raw, **event.payload}
         if event.raw:
-            rows = parse_channel_busy_text(event.raw)
+            rows = parse_channel_busy_text(event.raw, collected_at=event.timestamp)
             if rows:
-                payload.update(rows[0])
+                payload.update(_latest_channel_busy_row(rows))
         return payload
 
     def parse_stats(self, event: OnlineMrEvent) -> dict[str, Any]:
@@ -127,6 +128,25 @@ def _float(*values: object) -> float:
     return 0.0
 
 
+def _latest_channel_busy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    valid = [
+        row
+        for row in rows
+        if any(row.get(key) is not None for key in ("channel_busy_total", "ctl_busy", "tx_busy", "rx_busy"))
+    ]
+    if not valid:
+        return rows[-1] if rows else {}
+
+    def sort_key(row: dict[str, Any]) -> tuple[int, str]:
+        sample_time = str(row.get("channel_busy_sample_time") or row.get("sample_time") or "")
+        try:
+            return (1, sample_time if sample_time else "")
+        except (TypeError, ValueError):
+            return (0, "")
+
+    return max(valid, key=sort_key)
+
+
 def _extract_iperf_mbps(payload: dict[str, Any]) -> float | None:
     end = payload.get("end")
     if isinstance(end, dict):
@@ -143,32 +163,23 @@ def _extract_iperf_mbps(payload: dict[str, Any]) -> float | None:
     return None
 
 
-MESH_PEER_FIELD_RE = re.compile(
-    r"(?P<peer_name>\S+)\s+"
-    r"(?P<peer_mac>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
-    r"(?P<rssi>-?\d{1,3})\s+"
-    r"(?P<bssid>[0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4}[-:.][0-9a-fA-F]{4})\s+"
-    r"(?P<interface>\S+)\s+"
-    r"(?P<link_state>\S+(?:\([^)]+\))?)\s+"
-    r"(?P<online_time>\S+(?:\s+\S+)*)?"
-)
-
-
 def _extract_mesh_peer_fields(raw_text: str) -> dict[str, Any]:
     for line in raw_text.splitlines():
-        match = MESH_PEER_FIELD_RE.search(line)
-        if not match:
+        parsed = parse_mesh_link_row(line)
+        if parsed is None:
             continue
         return {
-            "peer_name": match.group("peer_name"),
-            "peer_mac": match.group("peer_mac"),
-            "mr_rssi": int(match.group("rssi")),
-            "local_rssi": int(match.group("rssi")),
+            "peer_name": parsed.get("peer_name") or "",
+            "peer_mac": parsed.get("peer_mac") or "",
+            "peer_mac_normalized": parsed.get("peer_mac_normalized") or "",
+            "mr_rssi": int(parsed["rssi"]),
+            "local_rssi": int(parsed["rssi"]),
             "peer_rssi": None,
-            "bssid": match.group("bssid") or "",
-            "interface": match.group("interface") or "",
-            "link_state": _normalize_mesh_link_state(match.group("link_state")),
-            "online_time": (match.group("online_time") or "").strip(),
+            "bssid": parsed.get("bssid") or "",
+            "interface": parsed.get("interface") or "",
+            "link_state": parsed.get("link_state") or "UNKNOWN",
+            "radio_mode": parsed.get("radio_mode") or "",
+            "online_time": parsed.get("online_time") or "",
         }
     return {}
 

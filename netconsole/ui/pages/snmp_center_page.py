@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import re
 import sqlite3
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
+from uuid import uuid4
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -18,15 +21,12 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QApplication,
     QMenu,
     QProgressBar,
     QPushButton,
-    QSpinBox,
     QSplitter,
     QTableView,
     QTableWidget,
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
@@ -44,31 +45,46 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import is_sqlite_locked_error
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import DeviceSnmpProfileResult, SNMP_STATUS_LABELS, SnmpProfile, SnmpQueryRequest, SnmpQueryResult, SnmpSetRequest, SnmpSetResult
+from netconsole.models.snmp_models import DictionaryRecommendation, DeviceSnmpProfileResult, ProductReferenceRecommendation, SNMP_STATUS_LABELS, SnmpProfile, SnmpQueryRequest, SnmpQueryResult, SnmpSetRequest, SnmpSetResult
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
-from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.mib_dictionary_service import MibDictionaryService
 from netconsole.services.mib_index_service import MibIndexService
 from netconsole.services.mib_product_reference_compare_service import COMPARE_HEADERS, MibProductReferenceCompareService, ProductReferenceCompareResult
-from netconsole.services.mib_resource_service import MibImportReport, MibResourceService
+from netconsole.services.mib_resource_service import MibImportReport
 from netconsole.services.mib_translation_service import translate_mib_description
 from netconsole.services.snmp_poll_service import SnmpPollService
-from netconsole.services.snmp_query_service import SnmpQueryService
-from netconsole.services.snmp_client import SnmpClient
-from netconsole.services.snmp_recommend_service import SnmpRecommendService
+from netconsole.services.export.export_task_builders import mib_product_compare_spec, snmp_query_result_spec
+from netconsole.services.snmp.request_builder import query_request_to_payload, set_request_to_payload, snmp_cancel_grace_ms
+from netconsole.services.snmp.result_formatter import (
+    format_browser_rows,
+    query_result_from_payload,
+    set_result_from_payload,
+)
 from netconsole.services.snmp_trap_service import SnmpTrapService
-from netconsole.services.topology_service import TopologyService
+from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.snmp_set_dialog import SnmpSetDialog
-from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpQueryWorker, SnmpSetWorker, SnmpStartupWorker, TopologyDiscoveryWorker
+from netconsole.ui.export_action_helper import submit_export_task
+from netconsole.ui.snmp_workers import DeviceSnmpDetectWorker, MibBrowserTreeLoadWorker, MibImportWorker, MibRecompileWorker, ProductReferenceCompareWorker, ProductReferenceTreeRebuildWorker, SnmpInitWorker, SnmpStartupWorker, TopologyDiscoveryWorker
+from netconsole.ui.table_utils import auto_fit_table_columns
+from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
 SNMP_SERVICE_STATE: dict[str, dict[str, object]] = {}
 TEMPORARY_TARGET_KEY = "__temporary_snmp_target__"
 TREE_MODE_GENERAL = "general"
 TREE_MODE_H3C_PRODUCT = "h3c_product"
+
+
+def snmp_action_button(text: str, icon_name: str | None = None) -> QPushButton:
+    button = QPushButton(text)
+    apply_button_icon(button, icon_name)
+    return button
+
+
 RESULT_HEADERS = ["操作", "名称/OID", "值", "类型", "IP:端口", "状态", "耗时(ms)", "原始OID", "索引", "解码索引", "模块", "时间", "错误信息"]
 RESULT_COLUMN_WIDTHS = {
     "操作": 80,
@@ -131,9 +147,18 @@ class SnmpTargetContext:
 class SnmpAdvancedParametersDialog(QDialog):
     def __init__(self, *, profile: SnmpProfile, target_name: str, temporary: bool = False, max_repetitions: int = 10, max_rows: int = 200, parent=None) -> None:
         super().__init__(parent)
+        center = getattr(parent, "center", None)
+        self.paths = getattr(center, "paths", None) or PathResolver()
+        self.site_name = str(getattr(center, "site_name", "demo") or "demo")
+        self.test_job_id = ""
+        self.test_manager = BackgroundProcessManager(self, paths=self.paths)
+        self.test_manager.progress.connect(self._test_progress)
+        self.test_manager.finished.connect(self._test_finished)
+        self.test_manager.failed.connect(self._test_failed)
+        self.test_manager.cancelled.connect(self._test_cancelled)
         self.setWindowTitle("高级参数")
         self.host_input = QLineEdit(profile.host)
-        self.port_input = QSpinBox()
+        self.port_input = NoWheelSpinBox()
         self.port_input.setRange(1, 65535)
         self.port_input.setValue(int(profile.port or 161))
         self.version_combo = QComboBox()
@@ -141,17 +166,17 @@ class SnmpAdvancedParametersDialog(QDialog):
         self.version_combo.setCurrentText(str(profile.version or "v2c"))
         self.read_community_input = QLineEdit(profile.community_ro or "public")
         self.write_community_input = QLineEdit(profile.community_rw or "")
-        self.timeout_input = QSpinBox()
+        self.timeout_input = NoWheelSpinBox()
         self.timeout_input.setRange(100, 60000)
         self.timeout_input.setSuffix(" ms")
         self.timeout_input.setValue(int(profile.timeout_ms or 2000))
-        self.retries_input = QSpinBox()
+        self.retries_input = NoWheelSpinBox()
         self.retries_input.setRange(0, 10)
         self.retries_input.setValue(int(profile.retries or 1))
-        self.max_rep_input = QSpinBox()
+        self.max_rep_input = NoWheelSpinBox()
         self.max_rep_input.setRange(1, 50)
         self.max_rep_input.setValue(int(max_repetitions or 10))
-        self.max_rows_input = QSpinBox()
+        self.max_rows_input = NoWheelSpinBox()
         self.max_rows_input.setRange(1, 10000)
         self.max_rows_input.setValue(int(max_rows or 200))
         self.username_input = QLineEdit(profile.username or "")
@@ -161,7 +186,7 @@ class SnmpAdvancedParametersDialog(QDialog):
         self.priv_key_input = QLineEdit(profile.priv_key or "")
         self.context_input = QLineEdit(profile.context_name or "")
         self.set_enabled_checkbox = QCheckBox("启用 SNMP Set 写操作")
-        self.set_enabled_checkbox.setChecked(parent.center.site_repo.snmp_set_enabled() if hasattr(parent, "center") else False)
+        self.set_enabled_checkbox.setChecked(bool(getattr(getattr(parent, "center", None), "snmp_set_enabled", False)))
         self.status_label = QLabel(f"目标：{target_name}{'（临时，不写入设备管理）' if temporary else ''}")
         self.status_label.setWordWrap(True)
         form = QFormLayout()
@@ -186,6 +211,7 @@ class SnmpAdvancedParametersDialog(QDialog):
         layout.addWidget(self.set_enabled_checkbox)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         test_button = button_box.addButton("测试连通性", QDialogButtonBox.ActionRole)
+        self.test_button = test_button
         copy_button = button_box.addButton("复制参数", QDialogButtonBox.ActionRole)
         test_button.clicked.connect(self.test_connectivity)
         copy_button.clicked.connect(self.copy_parameters)
@@ -215,11 +241,69 @@ class SnmpAdvancedParametersDialog(QDialog):
         if not profile.host:
             self.status_label.setText("请先填写地址。")
             return
-        result = SnmpClient().test_device(profile)
-        if result.get("status") == "success":
-            self.status_label.setText(f"测试成功：{profile.host}:{profile.port}，耗时 {result.get('latency_ms')} ms")
+        if self.test_job_id:
+            return
+        request = SnmpQueryRequest(
+            profile=profile,
+            method="Get",
+            oid="1.3.6.1.2.1.1.1.0",
+            save_history=False,
+            device_name="临时参数测试",
+            source="temporary",
+        )
+        self.test_job_id = uuid4().hex
+        self.test_button.setEnabled(False)
+        self.status_label.setText(f"正在测试：{profile.host}:{profile.port}...")
+        self.test_manager.start_job(
+            BackgroundJob(
+                job_id=self.test_job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.site_name,
+                    "operation": "GET",
+                    "request": query_request_to_payload(request),
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
+
+    def _test_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") == self.test_job_id:
+            self.status_label.setText(str(event.get("message") or "正在测试 SNMP 连通性..."))
+
+    def _test_finished(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self.test_job_id:
+            return
+        payload = dict(event.get("result") or {})
+        result = query_result_from_payload(dict(payload.get("query_result") or {}))
+        self.test_job_id = ""
+        self.test_button.setEnabled(True)
+        if result.status == "success":
+            self.status_label.setText(f"测试成功：{result.request.profile.host}:{result.request.profile.port}，耗时 {result.elapsed_ms} ms")
         else:
-            self.status_label.setText(f"测试失败：{status_label(result.get('status'))}；{result.get('error_message') or ''}")
+            self.status_label.setText(f"测试失败：{status_label(result.status)}；{result.error_message}")
+
+    def _test_failed(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self.test_job_id:
+            return
+        self.test_job_id = ""
+        self.test_button.setEnabled(True)
+        self.status_label.setText(f"测试失败：{event.get('message') or event.get('error') or '未知错误'}")
+
+    def _test_cancelled(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != self.test_job_id:
+            return
+        self.test_job_id = ""
+        self.test_button.setEnabled(True)
+        self.status_label.setText("测试已取消。")
+
+    def done(self, result: int) -> None:
+        if self.test_job_id:
+            self.test_manager.cancel_job(self.test_job_id)
+            self.test_job_id = ""
+        super().done(result)
 
     def copy_parameters(self) -> None:
         profile = self.profile()
@@ -249,9 +333,15 @@ class SnmpCenterPage(QWidget):
         self.feature_gate = feature_gate
         self.global_repo = GlobalMibRepository(paths.global_mib_db_path())
         self.site_repo = SiteSnmpRepository(paths.site_snmp_db_path(site_name))
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._background_refresh_finished)
+        self.background_manager.failed.connect(self._background_refresh_failed)
+        self._background_refresh_callbacks: dict[str, tuple[str, Callable[[dict[str, object]], None]]] = {}
+        self._background_action_callbacks: dict[str, tuple[str, Callable[[dict[str, object]], None] | None]] = {}
         self.startup_worker: SnmpStartupWorker | None = None
         self._snmp_ready = False
         self._startup_running = False
+        self.snmp_set_enabled = False
         self.tabs = QTabWidget()
         self.overview_page = SnmpOverviewPage(self)
         self.resource_page = MibResourcePage(self)
@@ -282,14 +372,84 @@ class SnmpCenterPage(QWidget):
         self.overview_page.show_startup_message("正在启动 SNMP 服务...", 0)
         QTimer.singleShot(0, self.start_snmp_service_async)
 
-    def _initialize_light_storage(self) -> None:
-        self.paths.ensure_global_mib_dirs()
-        self.paths.ensure_site_snmp_dirs(self.site_name)
-        self.site_repo.initialize()
+    def start_data_refresh(self, view: str, callback: Callable[[dict[str, object]], None], *, limit: int = 500, params: dict[str, object] | None = None) -> str | None:
+        job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_center_data_refresh",
+                params={
+                    "view": view,
+                    "global_db_path": str(self.paths.global_mib_db_path()),
+                    "site_snmp_db_path": str(self.paths.site_snmp_db_path(self.site_name)),
+                    "site_db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "limit": limit,
+                    **dict(params or {}),
+                },
+            )
+        )
+        self._background_refresh_callbacks[job_id] = (view, callback)
+        return job_id
 
-    def _initialize_storage(self) -> None:
-        self._initialize_light_storage()
-        self.global_repo.initialize()
+    def start_data_action(
+        self,
+        action: str,
+        params: dict[str, object],
+        callback: Callable[[dict[str, object]], None] | None = None,
+    ) -> str:
+        job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_center_data_action",
+                params={
+                    "action": action,
+                    "global_db_path": str(self.paths.global_mib_db_path()),
+                    "site_snmp_db_path": str(self.paths.site_snmp_db_path(self.site_name)),
+                    **dict(params),
+                },
+            )
+        )
+        if action == "set_snmp_set_enabled":
+            requested = bool(params.get("enabled"))
+            original_callback = callback
+
+            def apply_setting(result: dict[str, object]) -> None:
+                self.snmp_set_enabled = requested
+                if original_callback is not None:
+                    original_callback(result)
+
+            callback = apply_setting
+        self._background_action_callbacks[job_id] = (action, callback)
+        return job_id
+
+    def _background_refresh_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        action_context = self._background_action_callbacks.pop(job_id, None)
+        if action_context is not None:
+            _action, callback = action_context
+            if callback is not None:
+                callback(dict(event.get("result") or {}))
+            return
+        context = self._background_refresh_callbacks.pop(job_id, None)
+        if context is None:
+            return
+        _view, callback = context
+        callback(dict(event.get("result") or {}))
+
+    def _background_refresh_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        action_context = self._background_action_callbacks.pop(job_id, None)
+        if action_context is not None:
+            action, _callback = action_context
+            message = str(event.get("message") or event.get("error") or "后台操作失败")
+            MessageBox.warning(self, "SNMP Center", f"{action} 执行失败：{message}")
+            return
+        context = self._background_refresh_callbacks.pop(job_id, None)
+        if context is None:
+            return
+        view, _callback = context
+        message = str(event.get("message") or event.get("error") or "后台刷新失败")
+        if view == "devices" and hasattr(self.browser_page, "_refreshing_devices"):
+            self.browser_page._refreshing_devices = False
+        MessageBox.warning(self, "SNMP Center", f"{view} 刷新失败：{message}")
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
         self.repository = repository
@@ -350,6 +510,7 @@ class SnmpCenterPage(QWidget):
             app_logger.log_error("SNMP_STARTUP_FAILED", str(result))
             return
         summary = dict(result) if isinstance(result, dict) else {}
+        self.snmp_set_enabled = bool(summary.get("snmp_set_enabled"))
         self._snmp_ready = True
         SNMP_SERVICE_STATE[self.site_name] = {"status": "ready", "summary": summary}
         self._set_tabs_enabled(True)
@@ -380,9 +541,9 @@ class SnmpOverviewPage(QWidget):
         self.progress_bar.setRange(0, 100)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.init_button = QPushButton("初始化 / 检查 SNMP 资源")
-        self.rebuild_button = QPushButton("重建内置 H3C MIB 库")
-        self.reset_button = QPushButton("清空并重建 SNMP 资源库")
+        self.init_button = snmp_action_button("初始化 / 检查 SNMP 资源", "SYNC")
+        self.rebuild_button = snmp_action_button("重建内置 H3C MIB 库", "SYNC")
+        self.reset_button = snmp_action_button("清空并重建 SNMP 资源库", "DELETE")
         self.init_button.clicked.connect(lambda: self.start_worker("initialize"))
         self.rebuild_button.clicked.connect(lambda: self.start_worker("rebuild_h3c"))
         self.reset_button.clicked.connect(self.confirm_reset)
@@ -406,12 +567,8 @@ class SnmpOverviewPage(QWidget):
         if not self.center._snmp_ready:
             self.show_startup_message("SNMP 服务启动中，请稍候...", self.progress_bar.value())
             return
-        try:
-            summary = {**self.center.global_repo.startup_summary(), **self.center.site_repo.startup_summary(), "device_count": len(self.center.repository.list())}
-        except Exception as exc:
-            self.error_label.setText(f"错误：{exc}")
-            return
-        self.apply_startup_summary(summary)
+        self.status_label.setText("SNMP 服务状态：正在后台刷新")
+        self.center.start_data_refresh("overview", lambda result: self.apply_startup_summary(dict(result.get("summary") or {})))
 
     def show_startup_message(self, message: str, percent: int) -> None:
         self.status_label.setText("SNMP 服务状态：启动中")
@@ -476,25 +633,24 @@ class SnmpOverviewPage(QWidget):
         self.error_label.setText("错误：")
         for button in (self.init_button, self.rebuild_button, self.reset_button):
             button.setEnabled(False)
-        service = MibResourceService(self.center.paths, self.center.global_repo)
-        self.worker = SnmpInitWorker(service, action=action, clear_raw_files=clear_raw_files, parent=self)
+        self.worker = SnmpInitWorker(self.center.paths, action=action, clear_raw_files=clear_raw_files, parent=self)
         self.worker.progress.connect(self._append_log)
         self.worker.finished_with_result.connect(self._worker_finished)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
     def confirm_reset(self) -> None:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
+        box = MessageBox(self)
+        box.setIcon(MessageBox.Warning)
         box.setWindowTitle("清空并重建 SNMP 资源库")
         box.setText("该操作会清空 data/global/mibs/global_mib.db、用户导入的 MIB 索引、编译结果、字典集和产品 MIB 参考表索引。不会删除局点设备、配置备份、任务中心或 MR 数据。")
         box.setInformativeText("确认后将自动重建内置通用 MIB 字典和 H3C V5 / V7/V9 字典。")
         clear_raw = QCheckBox("同时清空用户导入的 raw_files / raw_archives / references")
         box.setCheckBox(clear_raw)
-        box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-        box.button(QMessageBox.Yes).setText("确认清空并重建")
-        box.button(QMessageBox.Cancel).setText("取消")
-        if box.exec() == QMessageBox.Yes:
+        box.setStandardButtons(MessageBox.Cancel | MessageBox.Yes)
+        box.button(MessageBox.Yes).setText("确认清空并重建")
+        box.button(MessageBox.Cancel).setText("取消")
+        if box.exec() == MessageBox.Yes:
             self.start_worker("reset", clear_raw_files=clear_raw.isChecked())
 
     def _append_log(self, text: str) -> None:
@@ -520,6 +676,12 @@ class MibResourcePage(QWidget):
         self.center = center
         self.worker: MibImportWorker | None = None
         self.recompile_worker: MibRecompileWorker | None = None
+        self.refresh_job_id: str | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.background_manager.progress.connect(self._refresh_progress)
+        self.background_manager.finished.connect(self._refresh_finished)
+        self.background_manager.failed.connect(self._refresh_failed)
+        self.background_manager.cancelled.connect(self._refresh_failed)
         self.vendor_input = QLineEdit()
         self.source_input = QLineEdit("用户手动导入")
         self.url_input = QLineEdit()
@@ -529,10 +691,10 @@ class MibResourcePage(QWidget):
         self.missing_summary = QTextEdit()
         self.missing_summary.setReadOnly(True)
         self.only_missing = QCheckBox("只显示缺依赖模块")
-        import_file = QPushButton("导入 MIB / 产品参考表")
-        import_dir = QPushButton("目录批量导入")
-        recompile_missing = QPushButton("重新编译缺依赖模块")
-        reindex = QPushButton("刷新列表")
+        import_file = snmp_action_button("导入 MIB / 产品参考表", "DOWNLOAD")
+        import_dir = snmp_action_button("目录批量导入", "FOLDER")
+        recompile_missing = snmp_action_button("重新编译缺依赖模块", "SYNC")
+        reindex = snmp_action_button("刷新列表", "SYNC")
         import_file.clicked.connect(self.import_file)
         import_dir.clicked.connect(self.import_dir)
         recompile_missing.clicked.connect(self.recompile_missing)
@@ -575,15 +737,14 @@ class MibResourcePage(QWidget):
 
     def _start_import(self, paths: list[str]) -> None:
         if self.worker is not None:
-            QMessageBox.information(self, "MIB 资源库", "当前已有导入任务正在执行。")
+            MessageBox.information(self, "MIB 资源库", "当前已有导入任务正在执行。")
             return
         metadata = {
             "vendor": self.vendor_input.text().strip(),
             "source_name": self.source_input.text().strip() or "用户手动导入",
             "source_url": self.url_input.text().strip(),
         }
-        service = MibResourceService(self.center.paths, self.center.global_repo)
-        self.worker = MibImportWorker(service, paths, metadata, self)
+        self.worker = MibImportWorker(self.center.paths, paths, metadata, self)
         self.worker.progress.connect(self.status.setText)
         self.worker.finished_with_result.connect(self._import_finished)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -593,7 +754,7 @@ class MibResourcePage(QWidget):
         self.worker = None
         if isinstance(result, Exception):
             self.status.setText(f"导入失败：{result}")
-            QMessageBox.warning(self, "MIB 资源库", str(result))
+            MessageBox.warning(self, "MIB 资源库", str(result))
             return
         report = result if isinstance(result, MibImportReport) else None
         if report is not None:
@@ -602,10 +763,9 @@ class MibResourcePage(QWidget):
 
     def recompile_missing(self) -> None:
         if self.recompile_worker is not None:
-            QMessageBox.information(self, "MIB 资源库", "当前已有重新编译任务正在执行。")
+            MessageBox.information(self, "MIB 资源库", "当前已有重新编译任务正在执行。")
             return
-        service = MibResourceService(self.center.paths, self.center.global_repo)
-        self.recompile_worker = MibRecompileWorker(service, self)
+        self.recompile_worker = MibRecompileWorker(self.center.paths, self)
         self.recompile_worker.progress.connect(self.status.setText)
         self.recompile_worker.finished_with_result.connect(self._recompile_finished)
         self.recompile_worker.finished.connect(self.recompile_worker.deleteLater)
@@ -615,7 +775,7 @@ class MibResourcePage(QWidget):
         self.recompile_worker = None
         if isinstance(result, Exception):
             self.status.setText(f"重新编译失败：{result}")
-            QMessageBox.warning(self, "MIB 资源库", str(result))
+            MessageBox.warning(self, "MIB 资源库", str(result))
             return
         report = result if isinstance(result, MibImportReport) else None
         if report is not None:
@@ -623,53 +783,46 @@ class MibResourcePage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        file_rows = [
-            ["ASN.1 MIB", row.get("file_name"), row.get("module_name"), row.get("compile_status"), row.get("file_hash"), row.get("error_message")]
-            for row in self.center.global_repo.list_files()
-        ]
-        file_rows.extend(
-            [
-                [
-                    "产品参考表",
-                    Path(str(row.get("source_file") or "")).name,
-                    row.get("reference_name"),
-                    f"对象覆盖 {row.get('object_override_count', 0)} / Trap 覆盖 {row.get('trap_override_count', 0)}",
-                    row.get("file_hash"),
-                    "",
-                ]
-                for row in self.center.global_repo.list_product_references()
-            ]
+        if self.refresh_job_id is not None:
+            self.status.setText("MIB 资源库正在后台刷新...")
+            return
+        params = {
+            "db_path": str(self.center.paths.global_mib_db_path()),
+            "only_missing": self.only_missing.isChecked(),
+            "app_root": str(self.center.paths.app_root),
+            "data_root": str(self.center.paths.data_root),
+        }
+        self.status.setText("MIB 资源库正在后台刷新...")
+        self.refresh_job_id = self.background_manager.start_job(
+            BackgroundJob(task_type="snmp_mib_resource_refresh", params=params)
         )
-        fill_table(
-            self.file_table,
-            file_rows,
-        )
-        modules = self.center.global_repo.list_modules()
-        if self.only_missing.isChecked():
-            modules = [row for row in modules if row.get("status") == "missing_dependencies"]
-        fill_table(
-            self.module_table,
-            [
-                [
-                    module_display_name(row),
-                    row.get("status"),
-                    row.get("object_count"),
-                    row.get("table_count"),
-                    row.get("trap_count"),
-                    row.get("error_message") or ("缺少依赖，未统计对象/表/Trap" if row.get("status") == "missing_dependencies" else ""),
-                ]
-                for row in modules
-            ],
-        )
-        missing = self.center.global_repo.list_missing_dependency_summary()
-        lines = [f"{row.get('dependency_module')}：影响 {row.get('affected_count')} 个 MIB" for row in missing]
-        if any(row.get("dependency_module") == "HH3C-OID-MIB" for row in missing):
-            lines.insert(0, "提示：大量 H3C 私有 MIB 依赖 HH3C-OID-MIB，请导入完整 H3C Comware MIB 包或补充 HH3C-OID-MIB。")
-        if any(str(row.get("dependency_module") or "") in {"SNMP-FRAMEWORK-MIB", "INET-ADDRESS-MIB", "Q-BRIDGE-MIB", "SNMPv2-SMI", "SNMPv2-TC", "SNMPv2-CONF"} for row in missing):
-            lines.insert(0, "提示：标准依赖缺失，请补齐内置标准 MIB 或导入标准 MIB 包。")
-        self.missing_summary.setPlainText("\n".join(lines) if lines else "当前没有缺失依赖。")
+
+    def _refresh_progress(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        message = str(event.get("message") or "")
+        if message:
+            self.status.setText(message)
+
+    def _refresh_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        result = dict(event.get("result") or {})
+        fill_table(self.file_table, [list(row) for row in result.get("file_rows") or [] if isinstance(row, list)])
+        fill_table(self.module_table, [list(row) for row in result.get("module_rows") or [] if isinstance(row, list)])
+        self.missing_summary.setPlainText(str(result.get("missing_summary") or "当前没有缺失依赖。"))
         self.file_table.setColumnWidth(3, 190)
         self.module_table.setColumnWidth(1, 190)
+        self.status.setText("MIB 资源库刷新完成。")
+
+    def _refresh_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        message = str(event.get("message") or event.get("error") or "MIB 资源库刷新失败")
+        self.status.setText(message)
+        MessageBox.warning(self, "MIB 资源库", message)
 
 
 class ProductReferenceComparePage(QWidget):
@@ -678,6 +831,13 @@ class ProductReferenceComparePage(QWidget):
         self.center = center
         self.worker: ProductReferenceCompareWorker | None = None
         self.last_compare: ProductReferenceCompareResult | None = None
+        self.references: list[dict[str, object]] = []
+        self.refresh_job_id: str | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.background_manager.progress.connect(self._refresh_progress)
+        self.background_manager.finished.connect(self._refresh_finished)
+        self.background_manager.failed.connect(self._refresh_failed)
+        self.background_manager.cancelled.connect(self._refresh_failed)
         self.page_offset = 0
         self.left_combo = QComboBox()
         self.right_combo = QComboBox()
@@ -689,7 +849,7 @@ class ProductReferenceComparePage(QWidget):
         self.diff_filter.addItem("分册编号变化", "category_changed")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索模块、OID、对象名或说明")
-        self.page_size = QSpinBox()
+        self.page_size = NoWheelSpinBox()
         self.page_size.setRange(50, 2000)
         self.page_size.setValue(500)
         self.summary_label = QLabel("请选择两个产品 MIB 参考表后开始对比。")
@@ -705,11 +865,11 @@ class ProductReferenceComparePage(QWidget):
         self.result_table.horizontalHeader().setStretchLastSection(False)
         self.result_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.result_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.compare_button = QPushButton("开始对比")
-        self.export_button = QPushButton("导出结果")
-        self.prev_button = QPushButton("上一页")
-        self.next_button = QPushButton("下一页")
-        self.refresh_button = QPushButton("刷新参考表")
+        self.compare_button = snmp_action_button("开始对比", "PLAY")
+        self.export_button = snmp_action_button("导出结果", "SHARE")
+        self.prev_button = snmp_action_button("上一页", "LEFT_ARROW")
+        self.next_button = snmp_action_button("下一页", "RIGHT_ARROW")
+        self.refresh_button = snmp_action_button("刷新参考表", "SYNC")
         self.export_button.setEnabled(False)
         self.prev_button.setEnabled(False)
         self.next_button.setEnabled(False)
@@ -750,7 +910,35 @@ class ProductReferenceComparePage(QWidget):
         layout.addWidget(self.result_table, 1)
 
     def refresh(self) -> None:
-        references = self.center.global_repo.list_product_references()
+        if self.refresh_job_id is not None:
+            self.status_label.setText("正在后台刷新产品 MIB 参考表...")
+            return
+        self.status_label.setText("正在后台刷新产品 MIB 参考表...")
+        self.refresh_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_product_references_refresh",
+                params={
+                    "db_path": str(self.center.paths.global_mib_db_path()),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
+
+    def _refresh_progress(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        message = str(event.get("message") or "")
+        if message:
+            self.status_label.setText(message)
+
+    def _refresh_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        result = dict(event.get("result") or {})
+        references = [dict(row) for row in result.get("references") or [] if isinstance(row, dict)]
+        self.references = references
         current_left = self.left_combo.currentData()
         current_right = self.right_combo.currentData()
         for combo, current in ((self.left_combo, current_left), (self.right_combo, current_right)):
@@ -765,24 +953,32 @@ class ProductReferenceComparePage(QWidget):
             combo.blockSignals(False)
         if self.right_combo.count() > 1 and self.right_combo.currentIndex() == self.left_combo.currentIndex():
             self.right_combo.setCurrentIndex(1)
+        self.status_label.setText(f"已加载 {len(references)} 份产品 MIB 参考表。")
+
+    def _refresh_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.refresh_job_id or ""):
+            return
+        self.refresh_job_id = None
+        message = str(event.get("message") or event.get("error") or "产品 MIB 参考表刷新失败")
+        self.status_label.setText(message)
+        MessageBox.warning(self, "产品参考对比", message)
 
     def start_compare(self) -> None:
         left_id = self.left_combo.currentData()
         right_id = self.right_combo.currentData()
         if left_id is None or right_id is None:
-            QMessageBox.information(self, "产品参考对比", "请先导入并选择两个产品 MIB 参考表。")
+            MessageBox.information(self, "产品参考对比", "请先导入并选择两个产品 MIB 参考表。")
             return
         if int(left_id) == int(right_id):
-            QMessageBox.information(self, "产品参考对比", "左右两侧不能选择同一份产品 MIB 参考表。")
+            MessageBox.information(self, "产品参考对比", "左右两侧不能选择同一份产品 MIB 参考表。")
             return
         if self.worker is not None:
-            QMessageBox.information(self, "产品参考对比", "当前已有对比任务正在执行。")
+            MessageBox.information(self, "产品参考对比", "当前已有对比任务正在执行。")
             return
         self.compare_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.status_label.setText("正在后台对比产品 MIB 参考表...")
-        service = MibProductReferenceCompareService(self.center.global_repo)
-        self.worker = ProductReferenceCompareWorker(service, int(left_id), int(right_id), self)
+        self.worker = ProductReferenceCompareWorker(self.center.paths.global_mib_db_path(), int(left_id), int(right_id), self)
         self.worker.progress.connect(self.status_label.setText)
         self.worker.finished_with_result.connect(self._compare_finished)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -793,7 +989,7 @@ class ProductReferenceComparePage(QWidget):
         self.compare_button.setEnabled(True)
         if isinstance(result, Exception):
             self.status_label.setText(f"对比失败：{result}")
-            QMessageBox.warning(self, "产品参考对比", str(result))
+            MessageBox.warning(self, "产品参考对比", str(result))
             return
         self.last_compare = result if isinstance(result, ProductReferenceCompareResult) else None
         if self.last_compare is None:
@@ -820,7 +1016,7 @@ class ProductReferenceComparePage(QWidget):
             offset=self.page_offset,
         )
         self.result_model.set_rows(COMPARE_HEADERS, [_compare_table_row(row) for row in rows])
-        self.result_table.resizeColumnsToContents()
+        auto_resize_table_view_columns(self.result_table)
         page = self.page_offset // max(1, self.page_size.value()) + 1
         self.page_label.setText(f"第 {page} 页")
         self.prev_button.setEnabled(self.page_offset > 0)
@@ -840,9 +1036,20 @@ class ProductReferenceComparePage(QWidget):
         target, _ = QFileDialog.getSaveFileName(self, "导出产品参考对比结果", "", "Excel (*.xlsx);;CSV (*.csv)")
         if not target:
             return
-        service = MibProductReferenceCompareService(self.center.global_repo)
-        path = service.export_results(self.last_compare.left_reference_id, self.last_compare.right_reference_id, target)
-        self.status_label.setText(f"已导出：{path}")
+        submit_export_task(
+            self,
+            mib_product_compare_spec(
+                target,
+                db_path=self.center.paths.global_mib_db_path(),
+                left_reference_id=self.last_compare.left_reference_id,
+                right_reference_id=self.last_compare.right_reference_id,
+                title="导出产品参考对比结果",
+                open_dir_on_success=True,
+            ),
+            success_title="导出产品参考对比结果",
+            paths=self.center.paths,
+        )
+        self.status_label.setText("产品参考对比结果导出任务已提交。")
 
     @staticmethod
     def _reference_label(reference: dict[str, object]) -> str:
@@ -871,8 +1078,8 @@ class MibDictionaryPage(QWidget):
         super().__init__()
         self.center = center
         self.table = make_table(["ID", "名称", "厂商", "设备类型", "内置", "默认启用", "说明"])
-        create_button = QPushButton("新建字典集")
-        refresh_button = QPushButton("刷新")
+        create_button = snmp_action_button("新建字典集", "ADD")
+        refresh_button = snmp_action_button("刷新", "SYNC")
         create_button.clicked.connect(self.create_dictionary)
         refresh_button.clicked.connect(self.refresh)
         buttons = QHBoxLayout()
@@ -884,18 +1091,21 @@ class MibDictionaryPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def create_dictionary(self) -> None:
-        name, ok = QInputDialog.getText(self, "新建字典集", "字典集名称")
+        name, ok = InputDialog.getText(self, "新建字典集", "字典集名称")
         if not ok or not name.strip():
             return
-        MibDictionaryService(self.center.global_repo).create_dictionary_set(name.strip())
-        self.refresh()
+        self.center.start_data_action("create_dictionary", {"name": name.strip()}, lambda _result: self.refresh())
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("dictionary_sets", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
         fill_table(
             self.table,
             [
                 [row.get("id"), row.get("name"), row.get("vendor"), row.get("device_type"), yes_no(row.get("is_builtin")), yes_no(row.get("enabled_by_default")), row.get("description")]
-                for row in self.center.global_repo.list_dictionary_sets()
+                for row in result.get("rows") or []
+                if isinstance(row, dict)
             ],
         )
 
@@ -914,9 +1124,9 @@ class DeviceDictionaryRecommendPage(QWidget):
         self.profile_text.setReadOnly(True)
         self.table = make_table(["字典集ID", "字典集", "匹配度", "依据", "状态"])
         self.reference_table = make_table(["参考表ID", "产品 MIB 参考", "匹配度", "依据", "状态"])
-        detect_button = QPushButton("识别设备并推荐")
-        apply_button = QPushButton("一键启用推荐字典")
-        refresh_button = QPushButton("刷新设备")
+        detect_button = snmp_action_button("识别设备并推荐", "SEARCH")
+        apply_button = snmp_action_button("一键启用推荐字典", "ACCEPT")
+        refresh_button = snmp_action_button("刷新设备", "SYNC")
         detect_button.clicked.connect(self.detect)
         apply_button.clicked.connect(self.apply_recommendations)
         refresh_button.clicked.connect(self.refresh)
@@ -936,8 +1146,11 @@ class DeviceDictionaryRecommendPage(QWidget):
         layout.addWidget(splitter, 1)
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("devices", self._apply_devices)
+
+    def _apply_devices(self, result: dict[str, object]) -> None:
         current = self.device_combo.currentData()
-        self.devices = self.center.repository.list()
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for device in self.devices:
@@ -955,7 +1168,7 @@ class DeviceDictionaryRecommendPage(QWidget):
         device = self._current_device()
         if device is None:
             return
-        self.worker = DeviceSnmpDetectWorker(DeviceSnmpDetectService(), device, self)
+        self.worker = DeviceSnmpDetectWorker(device, self)
         self.worker.progress.connect(self.profile_text.setPlainText)
         self.worker.finished_with_result.connect(lambda result, device=device: self._detect_finished(device, result))
         self.worker.finished.connect(self.worker.deleteLater)
@@ -968,13 +1181,21 @@ class DeviceDictionaryRecommendPage(QWidget):
             return
         profile = result if isinstance(result, DeviceSnmpProfileResult) else DeviceSnmpProfileResult(status="failed", error_message=str(result))
         self.last_profile = profile
-        self.center.site_repo.save_device_profile(str(device.device_uuid or device.id), profile)
-        recommend_service = SnmpRecommendService(self.center.global_repo)
-        recommendations = recommend_service.recommend(device, profile)
-        reference_recommendations = recommend_service.recommend_product_references(device, profile)
+        self.center.start_data_action(
+            "save_profile_recommendations",
+            {
+                "device_id": str(device.device_uuid or device.id),
+                "device": device.to_record(),
+                "profile": asdict(profile),
+            },
+            lambda payload, profile=profile: self._recommendations_finished(profile, payload),
+        )
+
+    def _recommendations_finished(self, profile: DeviceSnmpProfileResult, payload: dict[str, object]) -> None:
+        recommendations = [DictionaryRecommendation(**dict(row)) for row in payload.get("recommendations") or [] if isinstance(row, dict)]
+        reference_recommendations = [ProductReferenceRecommendation(**dict(row)) for row in payload.get("reference_recommendations") or [] if isinstance(row, dict)]
         self.last_recommendations = recommendations
         self.last_reference_recommendations = reference_recommendations
-        self.center.site_repo.save_recommendations(str(device.device_uuid or device.id), recommendations)
         reference_lines = [f"{item.reference_name}（{item.score}%）：{'；'.join(item.reasons)}" for item in reference_recommendations[:3]]
         if not reference_lines and (profile.release_series or profile.release):
             reference_lines = [
@@ -1012,20 +1233,43 @@ class DeviceDictionaryRecommendPage(QWidget):
         device = self._current_device()
         if device is None or not self.last_recommendations:
             return
-        self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), self.last_recommendations)
-        QMessageBox.information(self, "设备字典推荐", "已启用推荐字典。")
+        self.center.start_data_action(
+            "apply_recommendations",
+            {
+                "device_id": str(device.device_uuid or device.id),
+                "recommendations": [asdict(item) for item in self.last_recommendations],
+            },
+            lambda _result: MessageBox.information(self, "设备字典推荐", "已启用推荐字典。"),
+        )
 
 
 class MibBrowserPage(QWidget):
     def __init__(self, center: SnmpCenterPage) -> None:
         super().__init__()
         self.center = center
-        self.worker: SnmpQueryWorker | None = None
-        self.set_worker: SnmpSetWorker | None = None
+        self.worker: str | None = None
+        self.set_worker: str | None = None
         self.tree_worker: MibBrowserTreeLoadWorker | None = None
+        self.child_tree_workers: dict[int, tuple[MibBrowserTreeLoadWorker, QTreeWidgetItem]] = {}
         self.product_tree_rebuild_worker: ProductReferenceTreeRebuildWorker | None = None
         self.last_result: SnmpQueryResult | None = None
+        self.last_result_file = ""
         self.devices: list[Device] = []
+        self.product_references: list[dict[str, object]] = []
+        self.product_reference_tree_nodes: list[dict[str, object]] = []
+        self.product_references_loaded = False
+        self.product_reference_job_id: str | None = None
+        self.enabled_dictionary_ids_by_device: dict[str, list[int]] = {}
+        self.background_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.background_manager.progress.connect(self._product_reference_progress)
+        self.background_manager.finished.connect(self._product_reference_finished)
+        self.background_manager.failed.connect(self._product_reference_failed)
+        self.background_manager.cancelled.connect(self._product_reference_failed)
+        self.query_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.query_manager.progress.connect(self._query_job_progress)
+        self.query_manager.finished.connect(self._query_job_finished)
+        self.query_manager.failed.connect(self._query_job_failed)
+        self.query_manager.cancelled.connect(self._query_job_cancelled)
         self.profile_overrides: dict[str, SnmpProfile] = {}
         self.temporary_profile: SnmpProfile | None = None
         self.temporary_name = ""
@@ -1049,10 +1293,10 @@ class MibBrowserPage(QWidget):
         self.oid_input = QLineEdit()
         self.operation_combo = QComboBox()
         self.operation_combo.addItems(["Get", "Get Next", "Get Bulk", "Get Subtree", "Walk", "Bulk Walk", "Table Walk", "Set"])
-        self.max_repetitions = QSpinBox()
+        self.max_repetitions = NoWheelSpinBox()
         self.max_repetitions.setRange(1, 50)
         self.max_repetitions.setValue(10)
-        self.max_rows = QSpinBox()
+        self.max_rows = NoWheelSpinBox()
         self.max_rows.setRange(1, 10000)
         self.max_rows.setValue(200)
         self.search_input = QLineEdit()
@@ -1060,7 +1304,7 @@ class MibBrowserPage(QWidget):
         self.tree_mode_combo.addItem("通用", TREE_MODE_GENERAL)
         self.tree_mode_combo.addItem("H3C 产品目录", TREE_MODE_H3C_PRODUCT)
         self.tree_mode_combo.setCurrentIndex(self.tree_mode_combo.findData(TREE_MODE_H3C_PRODUCT))
-        self.rebuild_product_tree_button = QPushButton("重建产品目录树")
+        self.rebuild_product_tree_button = snmp_action_button("重建产品目录树", "SYNC")
         self.rebuild_product_tree_button.setVisible(False)
         self.module_filter = QComboBox()
         self.module_filter.setVisible(False)
@@ -1084,21 +1328,21 @@ class MibBrowserPage(QWidget):
         self.path_label.setWordWrap(True)
         self.view_hint = QLabel()
         self.view_hint.setWordWrap(True)
-        self.generate_view_button = QPushButton("生成推荐 MIB 视图")
-        self.use_h3c_v7v9_button = QPushButton("使用 H3C V7/V9 无线 AC 默认视图")
-        self.use_global_h3c_button = QPushButton("使用全局 H3C MIB 浏览")
+        self.generate_view_button = snmp_action_button("生成推荐 MIB 视图", "SETTING")
+        self.use_h3c_v7v9_button = snmp_action_button("使用 H3C V7/V9 无线 AC 默认视图", "ACCEPT")
+        self.use_global_h3c_button = snmp_action_button("使用全局 H3C MIB 浏览", "GLOBE")
         self.generate_view_button.clicked.connect(self.generate_recommended_view)
         self.use_h3c_v7v9_button.clicked.connect(self.use_h3c_v7v9_view)
         self.use_global_h3c_button.clicked.connect(self.use_global_h3c_view)
-        copy_oid_button = QPushButton("复制 OID")
-        copy_query_oid_button = QPushButton("复制实际查询 OID")
-        fill_query_button = QPushButton("填入顶部查询栏")
-        run_query_button = QPushButton("立即查询")
-        back_to_column_button = QPushButton("回到列 OID")
+        copy_oid_button = snmp_action_button("复制 OID", "COPY")
+        copy_query_oid_button = snmp_action_button("复制实际查询 OID", "COPY")
+        fill_query_button = snmp_action_button("填入顶部查询栏", "EDIT")
+        run_query_button = snmp_action_button("立即查询", "PLAY")
+        back_to_column_button = snmp_action_button("回到列 OID", "RETURN")
         run_query_button.setVisible(False)
         self.run_query_button = run_query_button
-        set_current_button = QPushButton("Set 当前 OID")
-        translate_button = QPushButton("翻译描述")
+        set_current_button = snmp_action_button("Set 当前 OID", "EDIT")
+        translate_button = snmp_action_button("翻译描述", "LANGUAGE")
         self.set_current_button = set_current_button
         self.back_to_column_button = back_to_column_button
         copy_oid_button.clicked.connect(lambda: self.copy_selected_oid(False))
@@ -1115,15 +1359,15 @@ class MibBrowserPage(QWidget):
         self.result_table.setModel(self.result_model)
         configure_table_view(self.result_table, RESULT_COLUMN_WIDTHS)
         self.result_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        refresh_button = QPushButton("搜索 / 刷新")
-        save_template_button = QPushButton("保存为 OID 模板")
-        go_button = QPushButton("Go")
+        refresh_button = snmp_action_button("搜索 / 刷新", "SEARCH")
+        save_template_button = snmp_action_button("保存为 OID 模板", "SAVE")
+        go_button = snmp_action_button("执行查询", "PLAY")
         self.go_button = go_button
-        cancel_button = QPushButton("取消")
+        cancel_button = snmp_action_button("取消", "CANCEL")
         self.cancel_button = cancel_button
-        export_button = QPushButton("导出结果")
-        advanced_button = QPushButton("高级参数")
-        temporary_button = QPushButton("临时 IP")
+        export_button = snmp_action_button("导出结果", "SHARE")
+        advanced_button = snmp_action_button("高级参数", "SETTING")
+        temporary_button = snmp_action_button("临时 IP", "EDIT")
         refresh_button.clicked.connect(self.refresh)
         save_template_button.clicked.connect(self.save_selected_template)
         go_button.clicked.connect(self.run_browser_query)
@@ -1207,7 +1451,7 @@ class MibBrowserPage(QWidget):
         self._set_view_hint_visible(False)
 
     def refresh(self) -> None:
-        self.refresh_device_groups()
+        self.product_references_loaded = False
         self.refresh_devices()
         self.refresh_mib_tree()
 
@@ -1224,21 +1468,37 @@ class MibBrowserPage(QWidget):
         if self._refreshing_devices:
             return
         self._refreshing_devices = True
-        try:
-            self._refresh_devices_impl()
-            self._device_refresh_retry_count = 0
-        except sqlite3.OperationalError as exc:
-            if not is_sqlite_locked_error(exc):
-                raise
-            self._handle_database_locked("device list", self.refresh_devices, "_device_refresh_retry_count", exc)
-        finally:
-            self._refreshing_devices = False
-
-    def _refresh_devices_impl(self) -> None:
-        current_device = self.device_combo.currentData()
         group_filter = self.device_group_filter.currentData()
-        search = self.device_search_input.text().strip()
-        self.devices = self.center.repository.list(search=search or None, group_filter=group_filter if group_filter not in {"", None} else None)
+        self.center.start_data_refresh(
+            "devices",
+            self._refresh_devices_impl,
+            params={
+                "filters": {
+                    "search": self.device_search_input.text().strip() or None,
+                    "group_filter": group_filter if group_filter not in {"", None} else None,
+                }
+            },
+        )
+
+    def _refresh_devices_impl(self, result: dict[str, object]) -> None:
+        self._refreshing_devices = False
+        current_device = self.device_combo.currentData()
+        current_group = self.device_group_filter.currentData()
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+        self.enabled_dictionary_ids_by_device = {
+            str(key): [int(value) for value in values]
+            for key, values in dict(result.get("enabled_dictionary_ids") or {}).items()
+            if isinstance(values, list)
+        }
+        self.device_group_filter.blockSignals(True)
+        self.device_group_filter.clear()
+        self.device_group_filter.addItem("全部分组", "")
+        for row in result.get("groups") or []:
+            if isinstance(row, dict) and row.get("id") is not None:
+                self.device_group_filter.addItem(str(row.get("name") or ""), int(row.get("id")))
+        group_index = self.device_group_filter.findData(current_group)
+        self.device_group_filter.setCurrentIndex(group_index if group_index >= 0 else 0)
+        self.device_group_filter.blockSignals(False)
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         if self.temporary_profile is not None:
@@ -1260,33 +1520,10 @@ class MibBrowserPage(QWidget):
             self._handle_device_changed()
 
     def refresh_device_groups(self) -> None:
-        if self._refreshing_device_groups:
-            return
-        self._refreshing_device_groups = True
-        try:
-            self._refresh_device_groups()
-            self._device_group_refresh_retry_count = 0
-        except sqlite3.OperationalError as exc:
-            if not is_sqlite_locked_error(exc):
-                raise
-            self._handle_database_locked("device groups", self.refresh_device_groups, "_device_group_refresh_retry_count", exc)
-        finally:
-            self._refreshing_device_groups = False
+        self.refresh_devices()
 
     def _refresh_device_groups(self) -> None:
-        current = self.device_group_filter.currentData()
-        groups = DeviceGroupRepository(self.center.repository.database, self.center.site_name).list()
-        self.device_group_filter.blockSignals(True)
-        self.device_group_filter.clear()
-        self.device_group_filter.addItem("全部", "")
-        self.device_group_filter.addItem("未分组", "__ungrouped__")
-        for group in groups:
-            if group.id is not None:
-                self.device_group_filter.addItem(group.name, int(group.id))
-        index = self.device_group_filter.findData(current)
-        if index >= 0:
-            self.device_group_filter.setCurrentIndex(index)
-        self.device_group_filter.blockSignals(False)
+        self.refresh_devices()
 
     def _handle_database_locked(self, context: str, retry_fn, counter_name: str, exc: sqlite3.OperationalError) -> None:
         app_logger.log_warning("SNMP_MIB_BROWSER_DATABASE_LOCKED", f"context={context}; error={exc}")
@@ -1308,6 +1545,9 @@ class MibBrowserPage(QWidget):
         if tree_mode == TREE_MODE_H3C_PRODUCT:
             self.rebuild_product_tree_button.setVisible(True)
             self._set_view_hint_visible(False)
+            if not self.product_references_loaded:
+                self._start_product_references_refresh()
+                return
             self._build_product_reference_tree()
             return
         if not keyword:
@@ -1321,11 +1561,52 @@ class MibBrowserPage(QWidget):
         self.rebuild_product_tree_button.setVisible(False)
         self._start_tree_load("search", keyword=keyword, source_filter=source_filter, limit=500)
 
+    def _start_product_references_refresh(self) -> None:
+        if self.product_reference_job_id is not None:
+            self.path_label.setText("正在后台加载产品 MIB 参考表...")
+            return
+        self.path_label.setText("正在后台加载产品 MIB 参考表...")
+        self.product_reference_job_id = self.background_manager.start_job(
+            BackgroundJob(
+                task_type="snmp_product_references_refresh",
+                params={
+                    "db_path": str(self.center.paths.global_mib_db_path()),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
+
+    def _product_reference_progress(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.product_reference_job_id or ""):
+            return
+        message = str(event.get("message") or "")
+        if message:
+            self.path_label.setText(message)
+
+    def _product_reference_finished(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.product_reference_job_id or ""):
+            return
+        self.product_reference_job_id = None
+        result = dict(event.get("result") or {})
+        self.product_references = [dict(row) for row in result.get("references") or [] if isinstance(row, dict)]
+        self.product_reference_tree_nodes = [dict(row) for row in result.get("tree_nodes") or [] if isinstance(row, dict)]
+        self.product_references_loaded = True
+        self._build_product_reference_tree()
+
+    def _product_reference_failed(self, event: dict) -> None:
+        if str(event.get("job_id") or "") != str(self.product_reference_job_id or ""):
+            return
+        self.product_reference_job_id = None
+        message = str(event.get("message") or event.get("error") or "产品 MIB 参考表加载失败")
+        self.path_label.setText(message)
+        MessageBox.warning(self, "MIB 浏览器", message)
+
     def _enabled_dictionary_ids(self) -> list[int]:
         device = self._current_device()
         if device is None:
             return []
-        return self.center.site_repo.list_enabled_dictionary_ids(str(device.device_uuid or device.id))
+        return list(self.enabled_dictionary_ids_by_device.get(str(device.device_uuid or device.id), []))
 
     def _current_device(self) -> Device | None:
         device_id = self.device_combo.currentData()
@@ -1358,11 +1639,11 @@ class MibBrowserPage(QWidget):
             return
         profile = dialog.profile()
         if not profile.host:
-            QMessageBox.information(self, "临时 IP", "请填写临时目标地址。")
+            MessageBox.information(self, "临时 IP", "请填写临时目标地址。")
             return
         self.temporary_profile = profile
         self.temporary_name = f"临时：{profile.host}"
-        self.center.site_repo.set_snmp_set_enabled(dialog.set_enabled_checkbox.isChecked())
+        self.center.start_data_action("set_snmp_set_enabled", {"enabled": dialog.set_enabled_checkbox.isChecked()})
         self.max_repetitions.setValue(dialog.max_rep_input.value())
         self.max_rows.setValue(dialog.max_rows_input.value())
         self.refresh_devices()
@@ -1495,26 +1776,18 @@ class MibBrowserPage(QWidget):
     def generate_recommended_view(self) -> None:
         device = self._current_device()
         if device is None:
-            QMessageBox.information(self, "MIB 视图", "请先选择设备。")
+            MessageBox.information(self, "MIB 视图", "请先选择设备。")
             return
-        profile_row = self.center.site_repo.latest_device_profile(str(device.device_uuid or device.id)) or {}
-        profile = DeviceSnmpProfileResult(
-            device_name=str(profile_row.get("device_name") or device.name),
-            vendor=str(profile_row.get("vendor") or device.device_vendor or ""),
-            device_type=str(profile_row.get("device_type") or device.device_type or ""),
-            model=str(profile_row.get("model") or ""),
-            system=str(profile_row.get("system") or ""),
-            system_version=str(profile_row.get("system_version") or ""),
-            sys_object_id=str(profile_row.get("sys_object_id") or ""),
-            sys_descr=str(profile_row.get("sys_descr") or ""),
-            sys_up_time=str(profile_row.get("sys_up_time") or ""),
-            status=str(profile_row.get("status") or "cached"),
+        self.center.start_data_action(
+            "generate_recommended_view",
+            {"device": device.to_record()},
+            self._recommended_view_finished,
         )
-        recommendations = SnmpRecommendService(self.center.global_repo).recommend(device, profile)
-        if not recommendations:
-            QMessageBox.information(self, "MIB 视图", "当前设备暂无可用推荐字典，请先导入或初始化 H3C MIB 包。")
+
+    def _recommended_view_finished(self, result: dict[str, object]) -> None:
+        if int(result.get("applied") or 0) <= 0:
+            MessageBox.information(self, "MIB 视图", "当前设备暂无可用推荐字典，请先导入或初始化 H3C MIB 包。")
             return
-        self.center.site_repo.apply_recommendations(str(device.device_uuid or device.id), recommendations)
         index = self.source_filter.findData("h3c_v7v9")
         if index >= 0:
             self.source_filter.setCurrentIndex(index)
@@ -1640,9 +1913,36 @@ class MibBrowserPage(QWidget):
         if not parent_oid:
             return
         item.takeChildren()
-        source_filter = self._source_filter_key()
+        item.addChild(QTreeWidgetItem(["正在后台加载...", "", ""]))
+        task_id = id(item)
+        worker = MibBrowserTreeLoadWorker(
+            self.center.paths.global_mib_db_path(),
+            mode="children",
+            parent_oid=parent_oid,
+            source_filter=self._source_filter_key(),
+            limit=500,
+            task_id=task_id,
+            parent=self,
+        )
+        self.child_tree_workers[task_id] = (worker, item)
+        worker.finished_with_result.connect(lambda result, task_id=task_id: self._tree_children_loaded(task_id, result))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _tree_children_loaded(self, task_id: int, result: object) -> None:
+        context = self.child_tree_workers.pop(task_id, None)
+        if context is None:
+            return
+        _worker, item = context
+        payload = dict(result) if isinstance(result, dict) else {}
+        item.takeChildren()
+        if payload.get("error"):
+            item.addChild(QTreeWidgetItem([f"加载失败：{payload.get('error')}", "", ""]))
+            return
         seen: set[tuple[str, str, str]] = set()
-        for child_data in self.center.global_repo.list_oid_children(parent_oid, source_filter=source_filter, limit=500):
+        for child_data in payload.get("rows") or []:
+            if not isinstance(child_data, dict):
+                continue
             child_oid = normalize_tree_oid(child_data.get("oid"))
             if not child_oid:
                 continue
@@ -1663,7 +1963,13 @@ class MibBrowserPage(QWidget):
 
     def _build_product_reference_tree(self) -> None:
         self.tree.clear()
-        references = self.center.global_repo.list_product_references()
+        references = list(self.product_references)
+        nodes_by_parent: dict[tuple[int, int | None], list[dict[str, object]]] = {}
+        for node in self.product_reference_tree_nodes:
+            reference_id = int(node.get("reference_id") or 0)
+            parent_value = node.get("parent_id")
+            parent_id = int(parent_value) if parent_value not in (None, "") else None
+            nodes_by_parent.setdefault((reference_id, parent_id), []).append(node)
         if not references:
             self.tree.addTopLevelItem(QTreeWidgetItem(["尚未导入 H3C 产品 MIB 参考表", "", "product_reference"]))
             auto_resize_tree_columns(self.tree, {0: 260, 1: 220, 2: 120})
@@ -1707,7 +2013,7 @@ class MibBrowserPage(QWidget):
             for column in range(3):
                 item.setToolTip(column, mib_tooltip(data))
             parent.addChild(item)
-            for child_row in self.center.global_repo.list_product_reference_tree_nodes(int(row["reference_id"]), int(row["id"])):
+            for child_row in nodes_by_parent.get((int(row["reference_id"]), int(row["id"])), []):
                 add_reference_node(item, child_row)
             return item
 
@@ -1720,9 +2026,9 @@ class MibBrowserPage(QWidget):
             root.setData(0, Qt.UserRole, {"name": label, "oid": "", "syntax": "product_reference", "access": "", "status": "", "reference_id": reference_id})
             root.setData(0, Qt.UserRole + 1, True)
             self.tree.addTopLevelItem(root)
-            top_nodes = self.center.global_repo.list_product_reference_tree_nodes(reference_id, None)
+            top_nodes = list(nodes_by_parent.get((reference_id, None), []))
             if len(top_nodes) == 1 and str(top_nodes[0].get("node_type") or "") == "reference_root":
-                top_nodes = self.center.global_repo.list_product_reference_tree_nodes(reference_id, int(top_nodes[0]["id"]))
+                top_nodes = list(nodes_by_parent.get((reference_id, int(top_nodes[0]["id"])), []))
             if not top_nodes:
                 object_count = int(reference.get("object_override_count") or reference.get("object_count") or 0)
                 if object_count > 0:
@@ -1742,13 +2048,13 @@ class MibBrowserPage(QWidget):
             if isinstance(data, dict) and data.get("reference_id"):
                 return int(data["reference_id"])
             current = current.parent()
-        references = self.center.global_repo.list_product_references()
+        references = list(self.product_references)
         return int(references[0]["id"]) if references else None
 
     def _start_rebuild_product_tree(self) -> None:
         reference_id = self._selected_product_reference_id()
         if reference_id is None:
-            QMessageBox.information(self, "产品目录树", "当前没有可重建的产品 MIB 参考表。")
+            MessageBox.information(self, "产品目录树", "当前没有可重建的产品 MIB 参考表。")
             return
         if self.product_tree_rebuild_worker is not None:
             return
@@ -1768,7 +2074,7 @@ class MibBrowserPage(QWidget):
         self.rebuild_product_tree_button.setEnabled(True)
         if isinstance(result, Exception):
             self.path_label.setText(f"产品目录树重建失败：{result}")
-            QMessageBox.warning(self, "产品目录树", f"产品目录树重建失败：{result}")
+            MessageBox.warning(self, "产品目录树", f"产品目录树重建失败：{result}")
             return
         payload = dict(result) if isinstance(result, dict) else {}
         self.path_label.setText(
@@ -1788,6 +2094,24 @@ class MibBrowserPage(QWidget):
         if not isinstance(item, dict):
             fill_table(self.property_table, [])
             return
+        lookup = current.data(0, Qt.UserRole + 2)
+        if not isinstance(lookup, dict):
+            current.setData(0, Qt.UserRole + 2, {"loading": True})
+            self.center.start_data_refresh(
+                "mib_detail_lookup",
+                lambda result, tree_item=current: self._detail_lookup_finished(tree_item, result),
+                params={
+                    "module_name": str(item.get("module_name") or ""),
+                    "object_name": str(item.get("name") or ""),
+                    "oid": str(item.get("oid") or ""),
+                    "syntax": str(item.get("syntax") or ""),
+                    "source_text": str(item.get("description") or ""),
+                    "is_trap": bool(item.get("is_trap") or item.get("is_notification")),
+                },
+            )
+            return
+        if lookup.get("loading"):
+            return
         method, query_oid = MibIndexService(self.center.global_repo).object_query_method(item)
         self._selected_method = method
         self._selected_query_oid = query_oid if method else ""
@@ -1796,13 +2120,12 @@ class MibBrowserPage(QWidget):
         module_name = str(item.get("module_name") or "")
         object_name = str(item.get("name") or "")
         oid = str(item.get("oid") or "")
-        object_override = self.center.global_repo.find_product_object_override(module_name=module_name, object_name=object_name, numeric_oid=oid)
-        trap_override = None
+        object_override = lookup.get("object_override") if isinstance(lookup.get("object_override"), dict) else None
+        trap_override = lookup.get("trap_override") if isinstance(lookup.get("trap_override"), dict) else None
         if "Counter" in syntax:
             hints.append("这是 Counter / Counter64 类型，单次查询只能看到累计值。如需速率，请创建周期采集任务。")
         if int(item.get("is_trap") or 0) or int(item.get("is_notification") or 0):
             hints.append("这是 Trap / Notification 定义，不支持 Get。可以加入 Trap 解析规则。")
-            trap_override = self.center.global_repo.find_product_trap_override(module_name=module_name, trap_name=object_name, trap_oid=oid)
         reference = trap_override or object_override
         reference_status = "未匹配"
         if reference:
@@ -1861,6 +2184,11 @@ class MibBrowserPage(QWidget):
         self.set_current_button.setEnabled(allowed)
         self.set_current_button.setToolTip(reason)
 
+    def _detail_lookup_finished(self, tree_item: QTreeWidgetItem, result: dict[str, object]) -> None:
+        tree_item.setData(0, Qt.UserRole + 2, dict(result))
+        if self.tree.currentItem() is tree_item:
+            self._show_detail(tree_item)
+
     def copy_selected_oid(self, query_oid: bool) -> None:
         data = self._selected_data()
         if not data:
@@ -1882,12 +2210,12 @@ class MibBrowserPage(QWidget):
                 self.operation_combo.setCurrentIndex(index)
             self.operation_label.setText(f"已回到列 OID：{base_oid}。可使用 Walk / Bulk Walk 遍历整列。")
             return
-        QMessageBox.information(self, "MIB 浏览器", "当前 OID 未识别出可回退的实例后缀。")
+        MessageBox.information(self, "MIB 浏览器", "当前 OID 未识别出可回退的实例后缀。")
 
     def fill_query_tool(self, run_now: bool) -> None:
         data = self._selected_data()
         if not data or not self._selected_method:
-            QMessageBox.information(self, "MIB 浏览器", "Trap / Notification 不支持填入查询栏，只能加入 Trap 解析规则。")
+            MessageBox.information(self, "MIB 浏览器", "Trap / Notification 不支持填入查询栏，只能加入 Trap 解析规则。")
             return
         self.center.switch_to_query_from_mib(self._selected_query_oid, self._selected_method, str(data.get("name") or ""), str(data.get("module_name") or ""), run_now=run_now)
 
@@ -1898,17 +2226,17 @@ class MibBrowserPage(QWidget):
         oid = self._selected_query_oid or str(data.get("oid") or "")
         allowed, reason = can_set_mib_object(data, oid)
         if not allowed:
-            QMessageBox.information(self, "SNMP Set", reason)
+            MessageBox.information(self, "SNMP Set", reason)
             return
         self.open_set_dialog(data, oid=oid)
 
     def open_set_dialog(self, data: dict[str, object], *, oid: str, current_value: str = "") -> None:
         target = self._current_target_context()
         if target is None:
-            QMessageBox.information(self, "SNMP Set", "请先选择设备或临时 IP。")
+            MessageBox.information(self, "SNMP Set", "请先选择设备或临时 IP。")
             return
         if target.profile.version.lower() in {"v1", "v2", "v2c"} and not target.profile.community_rw:
-            QMessageBox.information(self, "SNMP Set", "未配置写团体字，无法执行 SNMP SET")
+            MessageBox.information(self, "SNMP Set", "未配置写团体字，无法执行 SNMP SET")
             return
         dialog = SnmpSetDialog(
             oid=oid,
@@ -1927,8 +2255,8 @@ class MibBrowserPage(QWidget):
             return
         values = dialog.result_data()
         old_value = current_value or "-"
-        confirm = QMessageBox(self)
-        confirm.setIcon(QMessageBox.Warning)
+        confirm = MessageBox(self)
+        confirm.setIcon(MessageBox.Warning)
         confirm.setWindowTitle("确认执行 SNMP Set")
         confirm.setText(
             "\n".join(
@@ -1946,10 +2274,10 @@ class MibBrowserPage(QWidget):
                 ]
             )
         )
-        confirm.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-        confirm.button(QMessageBox.Yes).setText("确认执行")
-        confirm.button(QMessageBox.Cancel).setText("取消")
-        if confirm.exec() != QMessageBox.Yes:
+        confirm.setStandardButtons(MessageBox.Cancel | MessageBox.Yes)
+        confirm.button(MessageBox.Yes).setText("确认执行")
+        confirm.button(MessageBox.Cancel).setText("取消")
+        if confirm.exec() != MessageBox.Yes:
             return
         request = SnmpSetRequest(
             profile=target.profile,
@@ -1963,15 +2291,31 @@ class MibBrowserPage(QWidget):
             access=str(data.get("access") or ""),
             old_value=old_value,
         )
+        self._submit_set_request(request)
+
+    def _submit_set_request(self, request: SnmpSetRequest) -> None:
         if self.set_worker is not None:
-            self.set_worker.cancel()
+            self.query_manager.cancel_job(self.set_worker)
         self._set_task_id += 1
-        task_id = self._set_task_id
-        self.set_worker = SnmpSetWorker(SnmpQueryService(self.center.site_repo), request, self)
-        self.set_worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._set_task_id else None)
-        self.set_worker.finished_with_result.connect(lambda result, task_id=task_id: self._set_finished(result, task_id))
-        self.set_worker.finished.connect(self.set_worker.deleteLater)
-        self.set_worker.start()
+        job_id = uuid4().hex
+        self.set_worker = job_id
+        self.go_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.operation_label.setText("正在执行 SNMP Set...")
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": "SET",
+                    "request": set_request_to_payload(request),
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def _set_finished(self, result: object, task_id: int | None = None) -> None:
         if task_id is not None and task_id != self._set_task_id:
@@ -2002,10 +2346,22 @@ class MibBrowserPage(QWidget):
         module_name = str(data.get("module_name") or "")
         object_name = str(data.get("name") or "")
         oid = str(data.get("oid") or "")
-        cached = self.center.global_repo.get_object_translation(module_name=module_name, object_name=object_name, numeric_oid=oid, source_text=source_text)
+        current = self.tree.currentItem()
+        lookup = current.data(0, Qt.UserRole + 2) if current is not None else {}
+        cached = lookup.get("translation") if isinstance(lookup, dict) and isinstance(lookup.get("translation"), dict) else None
         translated = str(cached.get("translated_text") or "") if cached else translate_mib_description(source_text)
         if not cached:
-            self.center.global_repo.upsert_object_translation(object_id=int(data.get("id") or 0) or None, module_name=module_name, object_name=object_name, numeric_oid=oid, source_text=source_text, translated_text=translated)
+            self.center.start_data_action(
+                "upsert_translation",
+                {
+                    "object_id": int(data.get("id") or 0) or None,
+                    "module_name": module_name,
+                    "object_name": object_name,
+                    "numeric_oid": oid,
+                    "source_text": source_text,
+                    "translated_text": translated,
+                },
+            )
         fill_table(self.property_table, [[self.property_table.item(row, 0).text(), translated if self.property_table.item(row, 0).text() == "中文描述" else self.property_table.item(row, 1).text()] for row in range(self.property_table.rowCount())])
 
     def _tree_path(self, item: QTreeWidgetItem) -> str:
@@ -2030,13 +2386,13 @@ class MibBrowserPage(QWidget):
         menu.addAction("复制对象名", lambda: QApplication.clipboard().setText(str(data.get("name") or "")))
         menu.addAction("填入顶部查询栏", lambda: self.fill_query_tool(False))
         menu.addAction("保存为 OID 模板", self.save_selected_template)
-        menu.addAction("查看所属模块", lambda: QMessageBox.information(self, "所属模块", module_display_name(data)))
+        menu.addAction("查看所属模块", lambda: MessageBox.information(self, "所属模块", module_display_name(data)))
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def run_browser_query(self) -> None:
         target = self._current_target_context()
         if target is None:
-            QMessageBox.information(self, "MIB 浏览器", "请先选择设备或临时 IP。")
+            MessageBox.information(self, "MIB 浏览器", "请先选择设备或临时 IP。")
             return
         oid = self.oid_input.text().strip()
         if not oid:
@@ -2048,12 +2404,12 @@ class MibBrowserPage(QWidget):
             oid = f"{oid}.0"
             self.oid_input.setText(oid)
         if method == "Get" and (int(data.get("is_table") or 0) or int(data.get("is_table_entry") or 0) or int(data.get("is_column") or 0)) and oid == base_oid:
-            QMessageBox.information(self, "MIB 浏览器", "当前对象是表或表字段根 OID，Get 需要具体实例。请改用 Walk / Get Bulk / Bulk Walk。")
+            MessageBox.information(self, "MIB 浏览器", "当前对象是表或表字段根 OID，Get 需要具体实例。请改用 Walk / Get Bulk / Bulk Walk。")
             return
         if method == "Set":
             allowed, reason = can_set_mib_object(data, oid)
             if not allowed and str(data.get("name") or "") != oid:
-                QMessageBox.information(self, "SNMP Set", reason)
+                MessageBox.information(self, "SNMP Set", reason)
                 return
             self.open_set_dialog(data, oid=oid)
             return
@@ -2066,24 +2422,39 @@ class MibBrowserPage(QWidget):
             save_history=True,
             device_id=target.device_id,
             device_name=target.device_name,
+            object_name=str(data.get("name") or ""),
+            module_name=str(data.get("module_name") or ""),
+            base_oid=base_oid or oid,
+            source=target.source,
         )
         if self.worker is not None:
-            self.worker.cancel()
+            self.query_manager.cancel_job(self.worker)
         self._query_task_id += 1
-        task_id = self._query_task_id
-        self.worker = SnmpQueryWorker(SnmpQueryService(self.center.site_repo), request, self)
-        self.worker.progress.connect(lambda text, task_id=task_id: self.operation_label.setText(text) if task_id == self._query_task_id else None)
-        self.worker.finished_with_result.connect(lambda result, task_id=task_id: self._browser_query_finished(result, task_id))
-        self.worker.finished.connect(self.worker.deleteLater)
+        job_id = uuid4().hex
+        self.worker = job_id
         self.go_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.operation_label.setText(f"正在执行 {self.operation_combo.currentText()}...")
-        self.worker.start()
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": method,
+                    "request": query_request_to_payload(request),
+                    "cache_result": True,
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def show_advanced_parameters(self) -> None:
         target = self._current_target_context()
         if target is None:
-            QMessageBox.information(self, "高级参数", "请先选择设备或临时 IP。")
+            MessageBox.information(self, "高级参数", "请先选择设备或临时 IP。")
             return
         dialog = SnmpAdvancedParametersDialog(
             profile=target.profile,
@@ -2094,9 +2465,9 @@ class MibBrowserPage(QWidget):
             parent=self,
         )
         if dialog.exec() == QDialog.Accepted:
-            if dialog.set_enabled_checkbox.isChecked() and not self.center.site_repo.snmp_set_enabled():
-                confirm = QMessageBox.warning(self, "启用写操作", "启用 SNMP Set 后可以修改设备配置。确认启用？", QMessageBox.Yes | QMessageBox.No)
-                if confirm != QMessageBox.Yes:
+            if dialog.set_enabled_checkbox.isChecked() and not self.center.snmp_set_enabled:
+                confirm = MessageBox.warning(self, "启用写操作", "启用 SNMP Set 后可以修改设备配置。确认启用？", MessageBox.Yes | MessageBox.No)
+                if confirm != MessageBox.Yes:
                     return
             profile = dialog.profile()
             if target.source == "temporary":
@@ -2110,13 +2481,13 @@ class MibBrowserPage(QWidget):
                 self.profile_overrides[target.device_id] = profile
             self.max_repetitions.setValue(dialog.max_rep_input.value())
             self.max_rows.setValue(dialog.max_rows_input.value())
-            self.center.site_repo.set_snmp_set_enabled(dialog.set_enabled_checkbox.isChecked())
+            self.center.start_data_action("set_snmp_set_enabled", {"enabled": dialog.set_enabled_checkbox.isChecked()})
 
     def cancel_query(self) -> None:
         cancelled = False
+        query_job_pending = self.worker is not None or self.set_worker is not None
         if self.worker is not None:
-            self.worker.cancel()
-            self._query_task_id += 1
+            self.query_manager.cancel_job(self.worker)
             cancelled = True
         if self.tree_worker is not None:
             self.tree_worker.cancel()
@@ -2130,17 +2501,60 @@ class MibBrowserPage(QWidget):
             self.rebuild_product_tree_button.setEnabled(True)
             cancelled = True
         if self.set_worker is not None:
-            self.set_worker.cancel()
-            self._set_task_id += 1
+            self.query_manager.cancel_job(self.set_worker)
             cancelled = True
         if cancelled:
+            self.go_button.setEnabled(not query_job_pending and self.device_combo.currentData() is not None)
+            self.cancel_button.setEnabled(False)
+        self.operation_label.setText("正在取消当前任务..." if query_job_pending else "已取消" if cancelled else "没有正在执行的任务")
+        if cancelled:
+            self.path_label.setText("正在取消当前后台任务" if query_job_pending else "已取消当前后台任务")
+
+    def _query_job_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") in {self.worker, self.set_worker}:
+            self.operation_label.setText(str(event.get("message") or "正在执行 SNMP 查询..."))
+
+    def _query_job_finished(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        payload = dict(event.get("result") or {})
+        if job_id == self.worker:
+            self.worker = None
+            result = query_result_from_payload(dict(payload.get("query_result") or {}))
+            self.last_result_file = str(payload.get("result_file") or "")
+            self._browser_query_finished(result, display_rows=list(payload.get("browser_rows") or []))
+            return
+        if job_id == self.set_worker:
+            self.set_worker = None
+            self._set_finished(set_result_from_payload(dict(payload.get("set_result") or {})))
+
+    def _query_job_failed(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        message = str(event.get("message") or event.get("error") or "SNMP 查询失败")
+        if job_id == self.worker:
+            self.worker = None
             self.go_button.setEnabled(self.device_combo.currentData() is not None)
             self.cancel_button.setEnabled(False)
-        self.operation_label.setText("已取消" if cancelled else "没有正在执行的任务")
-        if cancelled:
-            self.path_label.setText("已取消当前后台任务")
+            self.operation_label.setText(f"查询失败：{message}")
+        elif job_id == self.set_worker:
+            self.set_worker = None
+            self.go_button.setEnabled(self.device_combo.currentData() is not None)
+            self.cancel_button.setEnabled(False)
+            self.operation_label.setText(f"Set 执行失败：{message}")
 
-    def _browser_query_finished(self, result: object, task_id: int | None = None) -> None:
+    def _query_job_cancelled(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == self.worker:
+            self.worker = None
+        elif job_id == self.set_worker:
+            self.set_worker = None
+        else:
+            return
+        self.go_button.setEnabled(self.device_combo.currentData() is not None)
+        self.cancel_button.setEnabled(False)
+        self.operation_label.setText("SNMP 查询已取消。")
+        self.path_label.setText("已取消当前后台任务")
+
+    def _browser_query_finished(self, result: object, task_id: int | None = None, display_rows: list[list[object]] | None = None) -> None:
         if task_id is not None and task_id != self._query_task_id:
             return
         self.worker = None
@@ -2163,29 +2577,7 @@ class MibBrowserPage(QWidget):
             if base_oid and base_oid != result.request.oid and result.request.oid.startswith(base_oid + "."):
                 message += " 当前 OID 看起来是表字段实例；若要遍历整列，请点击“回到列 OID”。"
         self.operation_label.setText(message)
-        rows = []
-        for row in result.rows:
-            resolved = self._resolve_result_oid(row.oid)
-            instance_raw = instance_suffix(row.oid, str(resolved.get("oid") or ""))
-            decoded_instance = decode_octet_string_instance(instance_raw)
-            name_oid = f"{resolved.get('name')}.{instance_raw}" if resolved.get("name") and instance_raw else str(resolved.get("name") or row.oid)
-            rows.append(
-                [
-                    result.request.method,
-                    name_oid,
-                    row.decoded_value or row.value,
-                    row.value_type,
-                    f"{result.request.profile.host}:{result.request.profile.port}",
-                    status_label(row.status),
-                    row.latency_ms,
-                    row.oid,
-                    instance_raw,
-                    decoded_instance,
-                    resolved.get("module_name") or "",
-                    result.request.started_at,
-                    compact_error_message(row.error_message),
-                ]
-            )
+        rows = display_rows if display_rows is not None else format_browser_rows(result)
         self.result_model.set_rows(RESULT_HEADERS, rows)
         auto_resize_table_view_columns(self.result_table, RESULT_COLUMN_WIDTHS)
 
@@ -2213,12 +2605,18 @@ class MibBrowserPage(QWidget):
 
     def _resolve_result_oid(self, oid: str) -> dict[str, object]:
         parts = oid.split(".")
-        for end in range(len(parts), 0, -1):
-            prefix = ".".join(parts[:end])
-            rows = self.center.global_repo.list_objects(prefix, limit=1)
-            for row in rows:
-                if str(row.get("oid") or "") == prefix:
-                    return row
+        prefixes = {".".join(parts[:end]): end for end in range(len(parts), 0, -1)}
+        iterator = QTreeWidgetItemIterator(self.tree)
+        best: tuple[int, dict[str, object]] | None = None
+        while iterator.value() is not None:
+            data = iterator.value().data(0, Qt.UserRole)
+            if isinstance(data, dict):
+                candidate_oid = str(data.get("oid") or "").strip(".")
+                if candidate_oid in prefixes and (best is None or prefixes[candidate_oid] > best[0]):
+                    best = (prefixes[candidate_oid], data)
+            iterator += 1
+        if best is not None:
+            return best[1]
         return {"oid": oid, "name": oid, "module_name": ""}
 
     def export_result(self) -> None:
@@ -2227,8 +2625,15 @@ class MibBrowserPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_browser_result.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
-        target = SnmpQueryService(self.center.site_repo).export_result(self.last_result, path)
-        QMessageBox.information(self, "MIB 浏览器", f"已导出：{target}")
+        if not self.last_result_file:
+            MessageBox.information(self, "MIB 浏览器", "当前查询结果缓存不可用，请重新执行查询后再导出。")
+            return
+        submit_export_task(
+            self,
+            snmp_query_result_spec(path, result_file=self.last_result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
+            success_title="MIB 浏览器",
+            paths=self.center.paths,
+        )
 
     def _open_result_menu(self, position) -> None:
         index = self.result_table.indexAt(position)
@@ -2260,7 +2665,7 @@ class MibBrowserPage(QWidget):
         resolved = self._resolve_result_oid(raw_oid)
         allowed, reason = can_set_mib_object(resolved, raw_oid)
         if not allowed and str(resolved.get("name") or "") != raw_oid:
-            QMessageBox.information(self, "SNMP Set", reason)
+            MessageBox.information(self, "SNMP Set", reason)
             return
         self.open_set_dialog(resolved, oid=raw_oid, current_value=value)
 
@@ -2271,30 +2676,40 @@ class MibBrowserPage(QWidget):
             return
         method, query_oid = MibIndexService(self.center.global_repo).object_query_method(data)
         if not method:
-            QMessageBox.information(self, "OID 模板", "Trap / Notification 不支持保存为查询模板。")
+            MessageBox.information(self, "OID 模板", "Trap / Notification 不支持保存为查询模板。")
             return
-        name, ok = QInputDialog.getText(self, "保存为 OID 模板", "模板名称", text=str(data.get("name") or ""))
+        name, ok = InputDialog.getText(self, "保存为 OID 模板", "模板名称", text=str(data.get("name") or ""))
         if ok and name.strip():
-            self.center.global_repo.create_template(name=name.strip(), oid=query_oid, method=method, module_name=str(data.get("module_name") or ""), object_name=str(data.get("name") or ""))
-            QMessageBox.information(self, "OID 模板", "已保存模板。")
+            self.center.start_data_action(
+                "create_template",
+                {
+                    "name": name.strip(),
+                    "oid": query_oid,
+                    "method": method,
+                    "module_name": str(data.get("module_name") or ""),
+                    "object_name": str(data.get("name") or ""),
+                },
+                lambda _result: MessageBox.information(self, "OID 模板", "已保存模板。"),
+            )
 
 
 class SnmpQueryPage(QWidget):
     def __init__(self, center: SnmpCenterPage) -> None:
         super().__init__()
         self.center = center
-        self.worker: SnmpQueryWorker | None = None
-        self.set_worker: SnmpSetWorker | None = None
+        self.worker: str | None = None
+        self.set_worker: str | None = None
         self.last_result: SnmpQueryResult | None = None
+        self.last_result_file = ""
         self.devices: list[Device] = []
         self.device_combo = QComboBox()
         self.method_combo = QComboBox()
         self.method_combo.addItems(["Get", "GetNext", "Walk", "BulkWalk", "Table Walk", "Set"])
         self.oid_input = QLineEdit("1.3.6.1.2.1.1.5.0")
-        self.max_repetitions = QSpinBox()
+        self.max_repetitions = NoWheelSpinBox()
         self.max_repetitions.setRange(1, 50)
         self.max_repetitions.setValue(10)
-        self.max_rows = QSpinBox()
+        self.max_rows = NoWheelSpinBox()
         self.max_rows.setRange(1, 10000)
         self.max_rows.setValue(200)
         self.save_history = QCheckBox("保存历史")
@@ -2304,11 +2719,14 @@ class SnmpQueryPage(QWidget):
         self.table = QTableView()
         self.table.setModel(self.model)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        run_button = QPushButton("执行查询")
-        cancel_button = QPushButton("取消")
-        export_button = QPushButton("导出结果")
-        refresh_button = QPushButton("刷新设备")
-        choose_mib_button = QPushButton("从 MIB 选择")
+        run_button = snmp_action_button("执行查询", "PLAY")
+        cancel_button = snmp_action_button("取消", "CANCEL")
+        self.run_button = run_button
+        self.cancel_button = cancel_button
+        self.cancel_button.setEnabled(False)
+        export_button = snmp_action_button("导出结果", "SHARE")
+        refresh_button = snmp_action_button("刷新设备", "SYNC")
+        choose_mib_button = snmp_action_button("从 MIB 选择", "SEARCH")
         run_button.clicked.connect(self.run_query)
         cancel_button.clicked.connect(self.cancel_query)
         export_button.clicked.connect(self.export_result)
@@ -2328,10 +2746,18 @@ class SnmpQueryPage(QWidget):
         layout.addLayout(form)
         layout.addWidget(self.status)
         layout.addWidget(self.table, 1)
+        self.query_manager = BackgroundProcessManager(self, paths=center.paths)
+        self.query_manager.progress.connect(self._job_progress)
+        self.query_manager.finished.connect(self._job_finished)
+        self.query_manager.failed.connect(self._job_failed)
+        self.query_manager.cancelled.connect(self._job_cancelled)
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("devices", self._apply_devices)
+
+    def _apply_devices(self, result: dict[str, object]) -> None:
         current = self.device_combo.currentData()
-        self.devices = self.center.repository.list()
+        self.devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         for device in self.devices:
@@ -2359,26 +2785,51 @@ class SnmpQueryPage(QWidget):
     def run_query(self) -> None:
         device = self._current_device()
         if device is None:
-            QMessageBox.information(self, "SNMP 查询工具", "请先选择设备。")
+            MessageBox.information(self, "SNMP 查询工具", "请先选择设备。")
             return
         if self.method_combo.currentText() == "Set":
             self.run_set(device)
             return
+        oid = self.oid_input.text().strip()
+        data = self.center.browser_page._resolve_result_oid(oid) if oid else {}
         request = SnmpQueryRequest(
             profile=SnmpProfile.from_device(device),
             method=self.method_combo.currentText(),
-            oid=self.oid_input.text().strip(),
+            oid=oid,
             max_repetitions=self.max_repetitions.value(),
             max_rows=self.max_rows.value(),
             save_history=self.save_history.isChecked(),
             device_id=str(device.device_uuid or device.id),
             device_name=device.name,
+            object_name=str(data.get("name") or ""),
+            module_name=str(data.get("module_name") or ""),
+            base_oid=str(data.get("oid") or oid),
         )
-        self.worker = SnmpQueryWorker(SnmpQueryService(self.center.site_repo), request, self)
-        self.worker.progress.connect(self.status.setText)
-        self.worker.finished_with_result.connect(self._query_finished)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()
+        self._submit_query_request(request)
+
+    def _submit_query_request(self, request: SnmpQueryRequest) -> None:
+        if self.worker is not None:
+            self.query_manager.cancel_job(self.worker)
+        job_id = uuid4().hex
+        self.worker = job_id
+        self.run_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.status.setText(f"正在执行 {request.method}...")
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": request.method,
+                    "request": query_request_to_payload(request),
+                    "cache_result": True,
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def run_set(self, device: Device) -> None:
         oid = self.oid_input.text().strip()
@@ -2387,7 +2838,7 @@ class SnmpQueryPage(QWidget):
             oid = f"{oid}.0"
         allowed, reason = can_set_mib_object(data, oid)
         if not allowed and str(data.get("name") or "") != oid:
-            QMessageBox.information(self, "SNMP Set", reason)
+            MessageBox.information(self, "SNMP Set", reason)
             return
         dialog = SnmpSetDialog(
             oid=oid,
@@ -2401,8 +2852,8 @@ class SnmpQueryPage(QWidget):
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.result_data()
-        confirm = QMessageBox(self)
-        confirm.setIcon(QMessageBox.Warning)
+        confirm = MessageBox(self)
+        confirm.setIcon(MessageBox.Warning)
         confirm.setWindowTitle("确认执行 SNMP Set")
         confirm.setText(
             "\n".join(
@@ -2419,10 +2870,10 @@ class SnmpQueryPage(QWidget):
                 ]
             )
         )
-        confirm.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-        confirm.button(QMessageBox.Yes).setText("确认执行")
-        confirm.button(QMessageBox.Cancel).setText("取消")
-        if confirm.exec() != QMessageBox.Yes:
+        confirm.setStandardButtons(MessageBox.Cancel | MessageBox.Yes)
+        confirm.button(MessageBox.Yes).setText("确认执行")
+        confirm.button(MessageBox.Cancel).setText("取消")
+        if confirm.exec() != MessageBox.Yes:
             return
         request = SnmpSetRequest(
             profile=SnmpProfile.from_device(device),
@@ -2435,14 +2886,35 @@ class SnmpQueryPage(QWidget):
             module_name=str(data.get("module_name") or ""),
             access=str(data.get("access") or ""),
         )
-        self.set_worker = SnmpSetWorker(SnmpQueryService(self.center.site_repo), request, self)
-        self.set_worker.progress.connect(self.status.setText)
-        self.set_worker.finished_with_result.connect(self._set_finished)
-        self.set_worker.finished.connect(self.set_worker.deleteLater)
-        self.set_worker.start()
+        self._submit_set_request(request)
+
+    def _submit_set_request(self, request: SnmpSetRequest) -> None:
+        if self.set_worker is not None:
+            self.query_manager.cancel_job(self.set_worker)
+        job_id = uuid4().hex
+        self.set_worker = job_id
+        self.run_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.status.setText("正在执行 SNMP Set...")
+        self.query_manager.start_job(
+            BackgroundJob(
+                job_id=job_id,
+                task_type="snmp_query_execute",
+                params={
+                    "site_name": self.center.site_name,
+                    "operation": "SET",
+                    "request": set_request_to_payload(request),
+                    "_cancel_grace_ms": snmp_cancel_grace_ms(request.profile),
+                    "app_root": str(self.center.paths.app_root),
+                    "data_root": str(self.center.paths.data_root),
+                },
+            )
+        )
 
     def _set_finished(self, result: object) -> None:
         self.set_worker = None
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         if isinstance(result, Exception):
             self.status.setText(f"Set 执行失败：{result}")
             return
@@ -2453,11 +2925,18 @@ class SnmpQueryPage(QWidget):
 
     def cancel_query(self) -> None:
         if self.worker is not None:
-            self.worker.cancel()
+            self.query_manager.cancel_job(self.worker)
+            self.cancel_button.setEnabled(False)
             self.status.setText("正在取消查询...")
+        if self.set_worker is not None:
+            self.query_manager.cancel_job(self.set_worker)
+            self.cancel_button.setEnabled(False)
+            self.status.setText("正在取消 SNMP Set...")
 
-    def _query_finished(self, result: object) -> None:
+    def _query_finished(self, result: object, display_rows: list[list[object]] | None = None) -> None:
         self.worker = None
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         if isinstance(result, Exception):
             self.status.setText(f"查询失败：{result}")
             return
@@ -2466,11 +2945,50 @@ class SnmpQueryPage(QWidget):
             return
         self.last_result = result
         self.status.setText(f"查询完成：状态 {result.status}，返回 {len(result.rows)} 条，耗时 {result.elapsed_ms} ms。{result.error_message}")
-        rows = [
-            [result.request.started_at, result.request.device_name, row.oid, row.name, row.instance, row.value_type, row.value, row.decoded_value, row.latency_ms, row.status, row.error_message]
-            for row in result.rows
-        ]
+        rows = display_rows or []
         self.model.set_rows(self.model.headers, rows)
+
+    def _job_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") in {self.worker, self.set_worker}:
+            self.status.setText(str(event.get("message") or "正在执行 SNMP 查询..."))
+
+    def _job_finished(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        payload = dict(event.get("result") or {})
+        if job_id == self.worker:
+            self.last_result_file = str(payload.get("result_file") or "")
+            self._query_finished(
+                query_result_from_payload(dict(payload.get("query_result") or {})),
+                display_rows=list(payload.get("query_rows") or []),
+            )
+        elif job_id == self.set_worker:
+            self._set_finished(set_result_from_payload(dict(payload.get("set_result") or {})))
+
+    def _job_failed(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        message = str(event.get("message") or event.get("error") or "SNMP 查询失败")
+        if job_id == self.worker:
+            self.worker = None
+            self.status.setText(f"查询失败：{message}")
+        elif job_id == self.set_worker:
+            self.set_worker = None
+            self.status.setText(f"Set 执行失败：{message}")
+        else:
+            return
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+
+    def _job_cancelled(self, event: dict[str, object]) -> None:
+        job_id = str(event.get("job_id") or "")
+        if job_id == self.worker:
+            self.worker = None
+        elif job_id == self.set_worker:
+            self.set_worker = None
+        else:
+            return
+        self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.status.setText("SNMP 查询已取消。")
 
     def export_result(self) -> None:
         if self.last_result is None:
@@ -2478,8 +2996,15 @@ class SnmpQueryPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "导出 SNMP 查询结果", str(Path.home() / "snmp_query.xlsx"), "Excel (*.xlsx);;CSV (*.csv);;JSON (*.json)")
         if not path:
             return
-        target = SnmpQueryService(self.center.site_repo).export_result(self.last_result, path)
-        QMessageBox.information(self, "SNMP 查询工具", f"已导出：{target}")
+        if not self.last_result_file:
+            MessageBox.information(self, "SNMP 查询工具", "当前查询结果缓存不可用，请重新执行查询后再导出。")
+            return
+        submit_export_task(
+            self,
+            snmp_query_result_spec(path, result_file=self.last_result_file, title="导出 SNMP 查询结果", open_dir_on_success=True),
+            success_title="SNMP 查询工具",
+            paths=self.center.paths,
+        )
 
 
 class OidTemplatePage(QWidget):
@@ -2487,8 +3012,8 @@ class OidTemplatePage(QWidget):
         super().__init__()
         self.center = center
         self.table = make_table(["范围", "名称", "模块", "对象", "OID", "方式"])
-        refresh_button = QPushButton("刷新")
-        add_button = QPushButton("手动新增全局模板")
+        refresh_button = snmp_action_button("刷新", "SYNC")
+        add_button = snmp_action_button("手动新增全局模板", "ADD")
         refresh_button.clicked.connect(self.refresh)
         add_button.clicked.connect(self.add_template)
         buttons = QHBoxLayout()
@@ -2500,19 +3025,29 @@ class OidTemplatePage(QWidget):
         layout.addWidget(self.table, 1)
 
     def add_template(self) -> None:
-        name, ok = QInputDialog.getText(self, "新增模板", "模板名称")
+        name, ok = InputDialog.getText(self, "新增模板", "模板名称")
         if not ok or not name.strip():
             return
-        oid, ok = QInputDialog.getText(self, "新增模板", "数字 OID")
+        oid, ok = InputDialog.getText(self, "新增模板", "数字 OID")
         if ok and oid.strip():
-            self.center.global_repo.create_template(name=name.strip(), oid=oid.strip(), method="Get")
-            self.refresh()
+            self.center.start_data_action(
+                "create_template",
+                {"name": name.strip(), "oid": oid.strip(), "method": "Get"},
+                lambda _result: self.refresh(),
+            )
 
     def refresh(self) -> None:
+        self.center.start_data_refresh("templates", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
         rows = []
-        for item in self.center.global_repo.list_templates():
+        for item in result.get("global_rows") or []:
+            if not isinstance(item, dict):
+                continue
             rows.append(["全局", item.get("template_name"), item.get("module_name"), item.get("object_name"), item.get("numeric_oid"), item.get("query_method")])
-        for item in self.center.site_repo.list_site_templates():
+        for item in result.get("site_rows") or []:
+            if not isinstance(item, dict):
+                continue
             rows.append(["局点", item.get("template_name"), item.get("module_name"), item.get("object_name"), item.get("numeric_oid"), item.get("query_method")])
         fill_table(self.table, rows)
 
@@ -2523,7 +3058,7 @@ class SnmpMonitorPage(QWidget):
         self.center = center
         self.table = make_table(["任务", "设备", "模板", "间隔", "启用", "状态"])
         self.note = QLabel("周期监控任务已预留数据结构。第一阶段建议先通过 SNMP 查询和 OID 模板验证对象，再创建周期采集。")
-        refresh_button = QPushButton("刷新")
+        refresh_button = snmp_action_button("刷新", "SYNC")
         refresh_button.clicked.connect(self.refresh)
         layout = QVBoxLayout(self)
         layout.addWidget(self.note)
@@ -2531,7 +3066,10 @@ class SnmpMonitorPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def refresh(self) -> None:
-        fill_table(self.table, [[row.get("job_name"), row.get("device_id"), row.get("template_id"), row.get("interval_seconds"), yes_no(row.get("enabled")), row.get("status")] for row in SnmpPollService(self.center.site_repo).list_jobs()])
+        self.center.start_data_refresh("monitor_jobs", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
+        fill_table(self.table, [[row.get("job_name"), row.get("device_id"), row.get("template_id"), row.get("interval_seconds"), yes_no(row.get("enabled")), row.get("status")] for row in result.get("rows") or [] if isinstance(row, dict)])
 
 
 class SnmpTrapPage(QWidget):
@@ -2540,7 +3078,7 @@ class SnmpTrapPage(QWidget):
         self.center = center
         self.table = make_table(["时间", "来源IP", "来源设备", "Trap OID", "名称", "级别", "内容"])
         self.note = QLabel("Trap Receiver 默认建议端口 1162；Windows 下监听 162 可能需要管理员权限。")
-        refresh_button = QPushButton("刷新 Trap")
+        refresh_button = snmp_action_button("刷新 Trap", "SYNC")
         refresh_button.clicked.connect(self.refresh)
         layout = QVBoxLayout(self)
         layout.addWidget(self.note)
@@ -2548,7 +3086,10 @@ class SnmpTrapPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def refresh(self) -> None:
-        fill_table(self.table, [[row.get("trap_time"), row.get("source_ip"), row.get("source_device"), row.get("trap_oid"), row.get("trap_name"), row.get("severity"), row.get("content")] for row in SnmpTrapService(self.center.site_repo).list_traps()])
+        self.center.start_data_refresh("traps", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
+        fill_table(self.table, [[row.get("trap_time"), row.get("source_ip"), row.get("source_device"), row.get("trap_oid"), row.get("trap_name"), row.get("severity"), row.get("content")] for row in result.get("rows") or [] if isinstance(row, dict)])
 
 
 class TopologyPage(QWidget):
@@ -2558,8 +3099,8 @@ class TopologyPage(QWidget):
         self.worker: TopologyDiscoveryWorker | None = None
         self.node_table = make_table(["节点", "类型", "地址", "UUID"])
         self.edge_table = make_table(["本端", "对端", "类型", "本端接口", "对端接口", "来源", "可信度"])
-        discover_button = QPushButton("发现拓扑")
-        refresh_button = QPushButton("刷新")
+        discover_button = snmp_action_button("发现拓扑", "SEARCH")
+        refresh_button = snmp_action_button("刷新", "SYNC")
         discover_button.clicked.connect(self.discover)
         refresh_button.clicked.connect(self.refresh)
         buttons = QHBoxLayout()
@@ -2574,8 +3115,11 @@ class TopologyPage(QWidget):
         layout.addWidget(splitter, 1)
 
     def discover(self) -> None:
-        service = TopologyService(self.center.repository, self.center.site_repo)
-        self.worker = TopologyDiscoveryWorker(service, self)
+        self.worker = TopologyDiscoveryWorker(
+            self.center.paths.site_db_path(self.center.site_name),
+            self.center.paths.site_snmp_db_path(self.center.site_name),
+            self,
+        )
         self.worker.finished_with_result.connect(self._discovery_finished)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
@@ -2583,13 +3127,16 @@ class TopologyPage(QWidget):
     def _discovery_finished(self, result: object) -> None:
         self.worker = None
         if isinstance(result, Exception):
-            QMessageBox.warning(self, "拓扑发现", str(result))
+            MessageBox.warning(self, "拓扑发现", str(result))
             return
         self.refresh()
 
     def refresh(self) -> None:
-        fill_table(self.node_table, [[row.get("name"), row.get("node_type"), row.get("address"), row.get("device_uuid")] for row in self.center.site_repo.list_topology_nodes()])
-        fill_table(self.edge_table, [[row.get("source_id"), row.get("target_id"), row.get("edge_type"), row.get("local_interface"), row.get("remote_interface"), row.get("discovery_source"), row.get("confidence")] for row in self.center.site_repo.list_topology_edges()])
+        self.center.start_data_refresh("topology", self._apply_rows)
+
+    def _apply_rows(self, result: dict[str, object]) -> None:
+        fill_table(self.node_table, [[row.get("name"), row.get("node_type"), row.get("address"), row.get("device_uuid")] for row in result.get("nodes") or [] if isinstance(row, dict)])
+        fill_table(self.edge_table, [[row.get("source_id"), row.get("target_id"), row.get("edge_type"), row.get("local_interface"), row.get("remote_interface"), row.get("discovery_source"), row.get("confidence")] for row in result.get("edges") or [] if isinstance(row, dict)])
 
 
 def make_table(headers: list[str]) -> QTableWidget:
@@ -2607,16 +3154,49 @@ def make_table(headers: list[str]) -> QTableWidget:
     return table
 
 
+SNMP_UI_ROW_LIMIT = 500
+SNMP_UI_FILL_BATCH_SIZE = 100
+
+
 def fill_table(table: QTableWidget, rows: list[list[Any]]) -> None:
-    table.setRowCount(len(rows))
-    for row_index, row in enumerate(rows):
+    # visible_rows 已硬限制且通过 QTimer 分批填充；完整查询结果由后台缓存供导出读取。
+    visible_rows = rows[:SNMP_UI_ROW_LIMIT]
+    table.setRowCount(len(visible_rows))
+    generation = int(table.property("snmp_fill_generation") or 0) + 1
+    table.setProperty("snmp_fill_generation", generation)
+    table.clearContents()
+    limit_tip = f"当前仅显示前 {SNMP_UI_ROW_LIMIT} 条，请使用筛选缩小范围或导出完整结果。" if len(rows) > len(visible_rows) else ""
+    if len(visible_rows) <= SNMP_UI_FILL_BATCH_SIZE:
+        _fill_table_rows(table, visible_rows, 0, len(visible_rows))
+        auto_fit_table_columns(table, max_rows=200, default_min_width=90, default_max_width=520)
+        table.setToolTip(limit_tip)
+        return
+    table.setToolTip(f"正在分批填充 {len(visible_rows)} 行 SNMP 数据..." + (f"\n{limit_tip}" if limit_tip else ""))
+
+    def fill_next(start: int = 0) -> None:
+        try:
+            if int(table.property("snmp_fill_generation") or 0) != generation:
+                return
+            end = min(start + SNMP_UI_FILL_BATCH_SIZE, len(visible_rows))
+            _fill_table_rows(table, visible_rows, start, end)
+            if end < len(visible_rows):
+                QTimer.singleShot(0, lambda: fill_next(end))
+                return
+            table.setToolTip(limit_tip)
+            auto_fit_table_columns(table, max_rows=200, default_min_width=90, default_max_width=520)
+        except RuntimeError:
+            return
+
+    QTimer.singleShot(0, fill_next)
+
+
+def _fill_table_rows(table: QTableWidget, rows: list[list[Any]], start: int, end: int) -> None:
+    for row_index in range(start, end):
+        row = rows[row_index]
         for column, value in enumerate(row):
             item = QTableWidgetItem("" if value is None else str(value))
             item.setToolTip(item.text())
             table.setItem(row_index, column, item)
-    table.resizeColumnsToContents()
-    for column in range(table.columnCount()):
-        table.setColumnWidth(column, max(90, min(table.columnWidth(column), 520)))
 
 
 def _compare_table_row(row: dict[str, object]) -> list[Any]:
@@ -2665,13 +3245,13 @@ def configure_table_view(table: QTableView, width_by_header: dict[str, int] | No
 
 def auto_resize_table_view_columns(table: QTableView, width_by_header: dict[str, int] | None = None) -> None:
     configure_table_view(table, width_by_header)
-    table.resizeColumnsToContents()
-    if not width_by_header or table.model() is None:
+    if table.model() is None:
         return
     for column in range(table.model().columnCount()):
         header = str(table.model().headerData(column, Qt.Horizontal) or "")
-        minimum = int(width_by_header.get(header, 90))
-        table.setColumnWidth(column, max(minimum, min(table.columnWidth(column), 520)))
+        minimum = int((width_by_header or {}).get(header, 90))
+        header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header) + 32
+        table.setColumnWidth(column, min(max(minimum, header_width), 520))
 
 
 def configure_tree_widget(tree: QTreeWidget, width_by_column: dict[int, int] | None = None) -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import subprocess
+import time
+from threading import Event
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -21,12 +23,23 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output, _ping_args, parse_ping_output, run_single_ping, run_tcp_ping
 from netconsole.services.network_tools.toolbox.route_tools import normalize_routes, parse_powershell_routes_json
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, RouteInfo
-from netconsole.ui.pages.network_adapter_route_page import NetworkAdapterRoutePage
-from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, NetworkPingHostResult, NetworkToolboxPage, ToolResultPanel
+from netconsole.ui.pages.network_adapter_route_page import NetworkAdapterRoutePage, ROUTE_EDIT_WIDGET_ROW_LIMIT
+from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, NetworkPingHostResult, NetworkToolboxPage, TOOLBOX_RESULT_DISPLAY_LIMIT, ToolResultPanel
 
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _process_qt_until(predicate, *, timeout: float = 5.0) -> None:
+    app = _app()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Timed out waiting for Qt task")
 
 
 def test_feature_registry_includes_network_toolbox() -> None:
@@ -43,6 +56,14 @@ def test_ipv4_calculate_normalizes_host_address_and_special_prefixes() -> None:
     assert "/32" in ipv4_calculate("192.0.2.1/32")["note"]
 
 
+def test_ipv4_calculate_large_network_uses_math_without_expanding_hosts() -> None:
+    result = ipv4_calculate("0.0.0.0/0")
+
+    assert result["usable_hosts"] == 4294967294
+    assert result["first_usable"] == "0.0.0.1"
+    assert result["last_usable"] == "255.255.255.254"
+
+
 def test_wildcard_calculate_supports_default_values() -> None:
     result = wildcard_calculate("/24\n255.255.0.0\n192.168.0.0 255.255.0.0")
 
@@ -50,6 +71,13 @@ def test_wildcard_calculate_supports_default_values() -> None:
     assert result.rows[0]["wildcard"] == "0.0.0.255"
     assert result.rows[1]["wildcard"] == "0.0.255.255"
     assert result.rows[2]["wildcard"] == "0.0.255.255"
+
+
+def test_wildcard_calculate_large_network_uses_math_without_expanding_hosts() -> None:
+    result = wildcard_calculate("/0")
+
+    assert result.errors == []
+    assert result.rows[0]["usable_hosts"] == 4294967294
 
 
 def test_vlsm_allocates_by_host_requirement_and_reports_capacity_error() -> None:
@@ -86,6 +114,15 @@ def test_subnet_split_returns_expected_page() -> None:
         "192.168.2.0/24",
         "192.168.3.0/24",
     ]
+
+
+def test_subnet_split_large_network_returns_only_requested_page() -> None:
+    result = split_subnets("0.0.0.0/0", 32, page_size=3)
+
+    assert result.errors == []
+    assert result.summary["total"] == 4294967296
+    assert result.summary["pages"] == 1431655766
+    assert [row["cidr"] for row in result.rows] == ["0.0.0.0/32", "0.0.0.1/32", "0.0.0.2/32"]
 
 
 def test_route_summary_collapses_default_networks() -> None:
@@ -247,6 +284,75 @@ def test_tool_result_panel_state_is_not_shared(tmp_path) -> None:
     assert right.result_table.item(0, 0).text() == "192.0.2.2"
 
 
+def test_tool_result_panel_limits_visible_rows_and_caches_full_result(tmp_path) -> None:
+    _app()
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    panel = ToolResultPanel(paths, "demo", "large")
+    rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(5001)]
+
+    panel.show_rows(rows, "large")
+    _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
+
+    assert panel.result_table.rowCount() == TOOLBOX_RESULT_DISPLAY_LIMIT
+    assert panel.current_result_file is not None
+    assert panel.current_result_file.is_file()
+    assert len(panel.current_result_file.read_text(encoding="utf-8").splitlines()) == 5001
+    assert "导出将读取缓存文件" in panel.summary_text.toPlainText()
+
+
+def test_tool_result_panel_large_cache_write_is_backgrounded(tmp_path, monkeypatch) -> None:
+    import netconsole.ui.pages.network_toolbox_page as toolbox_page_module
+
+    _app()
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    panel = ToolResultPanel(paths, "demo", "large")
+    rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(250)]
+    original_writer = toolbox_page_module.write_result_cache_file
+    started: list[int] = []
+    release = Event()
+
+    def delayed_writer(cache_dir, prefix, payload):
+        started.append(len(payload))
+        release.wait(2)
+        return original_writer(cache_dir, prefix, payload)
+
+    monkeypatch.setattr(toolbox_page_module, "write_result_cache_file", delayed_writer)
+
+    panel.show_rows(rows, "large")
+    try:
+        _process_qt_until(lambda: bool(started))
+        assert started == [250]
+        assert panel._cache_pending is True
+        assert panel.current_result_file is None
+        assert not panel.export_csv_button.isEnabled()
+    finally:
+        release.set()
+
+    _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
+
+    assert panel._cache_pending is False
+    assert panel.export_csv_button.isEnabled()
+
+
+def test_tool_result_panel_export_uses_result_file_source(tmp_path, monkeypatch) -> None:
+    _app()
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    panel = ToolResultPanel(paths, "demo", "export")
+    panel.show_rows([{"target": "192.0.2.1", "status": "online"}], "export")
+    selected = tmp_path / "export.csv"
+    captured = {}
+
+    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.QFileDialog.getSaveFileName", lambda *_args, **_kwargs: (str(selected), "CSV (*.csv)"))
+    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.submit_export_task", lambda _parent, spec, **_kwargs: captured.setdefault("spec", spec))
+
+    panel.export_current("csv")
+
+    spec = captured["spec"]
+    assert spec.payload["source"]["type"] == "jsonl_rows"
+    assert spec.payload["source"]["result_file"] == str(panel.current_result_file)
+    assert "rows" not in spec.payload
+
+
 def test_network_ping_grid_initializes_24_hosts(tmp_path) -> None:
     _app()
     page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
@@ -325,6 +431,30 @@ def test_ping_output_decode_uses_local_codepage_without_replacement() -> None:
 
     assert decoded == text
     assert "\ufffd" not in decoded
+
+
+def test_ping_output_decode_prefers_utf8_and_marks_final_replacement() -> None:
+    text = "网络连通"
+
+    assert _decode_output(text.encode("utf-8")) == text
+    assert "\ufffd" in _decode_output(b"\x81")
+
+
+def test_route_edit_cell_widgets_have_explicit_row_limit(tmp_path, monkeypatch) -> None:
+    _app()
+    page = NetworkAdapterRoutePage(
+        I18n(),
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+        manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})(),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr("netconsole.ui.pages.network_adapter_route_page.MessageBox.warning", lambda _parent, _title, message: warnings.append(message))
+    page.route_edit_table.setRowCount(ROUTE_EDIT_WIDGET_ROW_LIMIT)
+
+    page.add_route_row()
+
+    assert page.route_edit_table.rowCount() == ROUTE_EDIT_WIDGET_ROW_LIMIT
+    assert warnings and str(ROUTE_EDIT_WIDGET_ROW_LIMIT) in warnings[0]
 
 
 def test_fping_discovery_prefers_environment_path(tmp_path, monkeypatch) -> None:

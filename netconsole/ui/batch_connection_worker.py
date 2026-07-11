@@ -35,13 +35,19 @@ def run_batch_connection_tests(
     tester: Tester = test_device_connection,
     max_workers: int = BATCH_CONNECTION_DEFAULT_CONCURRENCY,
     result_callback: Callable[[BatchConnectionTestItemResult], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[BatchConnectionTestItemResult]:
     results: list[BatchConnectionTestItemResult] = []
     worker_count = max(1, min(int(max_workers or 1), BATCH_CONNECTION_MAX_CONCURRENCY, len(devices) or 1))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    executor = ThreadPoolExecutor(max_workers=worker_count)
+    try:
         futures = {executor.submit(tester, device): device for device in devices}
         started_at = {future: monotonic() for future in futures}
         for future in as_completed(futures):
+            if should_cancel is not None and should_cancel():
+                for pending in futures:
+                    pending.cancel()
+                break
             device = futures[future]
             fallback_elapsed = int((monotonic() - started_at[future]) * 1000)
             try:
@@ -70,6 +76,8 @@ def run_batch_connection_tests(
             results.append(item)
             if result_callback is not None:
                 result_callback(item)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
     return results
 
 
@@ -90,6 +98,14 @@ class BatchConnectionTestWorker(QThread):
         self.site_name = site_name
         self.concurrency = max(1, min(int(max_workers if max_workers is not None else concurrency), BATCH_CONNECTION_MAX_CONCURRENCY))
         self.max_workers = self.concurrency
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+        self.requestInterruption()
+
+    def _should_cancel(self) -> bool:
+        return self._cancel_requested or self.isInterruptionRequested()
 
     def run(self) -> None:
         app_logger.log_info("BATCH_TEST_CONNECTION_STARTED", f"count={len(self.devices)}")
@@ -98,6 +114,8 @@ class BatchConnectionTestWorker(QThread):
 
         def on_result(item: BatchConnectionTestItemResult) -> None:
             nonlocal success_count, failed_count
+            if self._should_cancel():
+                return
             if item.success:
                 success_count += 1
                 app_logger.log_info("BATCH_TEST_CONNECTION_DEVICE_SUCCESS", f"device={item.device_name} primary_address={item.primary_address} protocol={item.protocol} method={item.method}")
@@ -106,6 +124,6 @@ class BatchConnectionTestWorker(QThread):
                 app_logger.log_error("BATCH_TEST_CONNECTION_DEVICE_FAILED", f"device={item.device_name} primary_address={item.primary_address} protocol={item.protocol} method={item.method} error={item.error_message or ''}")
             self.device_finished.emit(item)
 
-        run_batch_connection_tests(self.devices, max_workers=self.concurrency, result_callback=on_result)
+        run_batch_connection_tests(self.devices, max_workers=self.concurrency, result_callback=on_result, should_cancel=self._should_cancel)
         app_logger.log_info("BATCH_TEST_CONNECTION_FINISHED", f"success={success_count} failed={failed_count}")
         self.batch_finished.emit(success_count, failed_count)

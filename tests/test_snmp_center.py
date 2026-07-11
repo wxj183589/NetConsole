@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -9,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from openpyxl import Workbook
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTableWidget
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -27,11 +28,34 @@ from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services import snmp_client as snmp_client_module
 from netconsole.services.snmp_client import SnmpClient, _WireResponse, _WireVarBind, _encode_snmp_value, normalize_oid
 from netconsole.services.snmp_query_service import SnmpQueryService
-from netconsole.ui.pages.snmp_center_page import SnmpCenterPage, method_to_operation, normalize_h3c_module_display_name, operation_to_method
+from netconsole.ui.pages.snmp_center_page import SNMP_UI_ROW_LIMIT, SnmpCenterPage, fill_table, method_to_operation, normalize_h3c_module_display_name, operation_to_method
 
 
 def _qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _process_events_until(predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    app = _qt_app()
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for Qt event condition")
+
+
+def test_snmp_fill_table_limits_visible_rows_and_marks_tooltip() -> None:
+    _qt_app()
+    table = QTableWidget()
+    table.setColumnCount(1)
+
+    fill_table(table, [[index] for index in range(SNMP_UI_ROW_LIMIT + 5)])
+    _process_events_until(lambda: table.item(table.rowCount() - 1, 0) is not None)
+
+    assert table.rowCount() == SNMP_UI_ROW_LIMIT
+    assert "仅显示前" in table.toolTip()
 
 
 def test_snmp_center_initializes_global_and_site_databases(tmp_path: Path):
@@ -418,13 +442,16 @@ def test_mib_browser_group_change_does_not_keep_stale_device(tmp_path: Path):
     page = SnmpCenterPage(repository, I18n(), "demo", paths)
     browser = page.browser_page
     browser.refresh_device_groups()
+    _process_events_until(lambda: not browser._refreshing_devices)
     browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_a.id))
     browser.refresh_devices()
+    _process_events_until(lambda: not browser._refreshing_devices)
     assert browser.device_combo.findData(device_a.id) >= 0
     assert browser.device_combo.findData(device_b.id) < 0
 
     browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_b.id))
     browser.refresh_devices()
+    _process_events_until(lambda: not browser._refreshing_devices)
 
     assert browser.device_combo.findData(device_a.id) < 0
     assert browser.device_combo.findData(device_b.id) >= 0
@@ -432,6 +459,7 @@ def test_mib_browser_group_change_does_not_keep_stale_device(tmp_path: Path):
 
     browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_empty.id))
     browser.refresh_devices()
+    _process_events_until(lambda: not browser._refreshing_devices)
 
     assert browser.device_combo.count() == 1
     assert browser.device_combo.currentData() is None

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
 import re
+import socket
 from time import monotonic
 from typing import Any, Callable, Iterator, TypeVar
 
@@ -16,6 +18,21 @@ try:
     from netmiko import ConnectHandler
 except ImportError:  # pragma: no cover - exercised only when dependency is missing.
     ConnectHandler = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - exception imports depend on installed Netmiko/Paramiko versions.
+    from netmiko.exceptions import NetmikoAuthenticationException, NetmikoBaseException, NetmikoTimeoutException, ReadTimeout
+except Exception:  # pragma: no cover
+    NetmikoAuthenticationException = NetmikoBaseException = NetmikoTimeoutException = ReadTimeout = ()  # type: ignore[assignment]
+
+try:  # pragma: no cover
+    from paramiko.ssh_exception import AuthenticationException as ParamikoAuthenticationException
+    from paramiko.ssh_exception import NoValidConnectionsError, SSHException
+except Exception:  # pragma: no cover
+    ParamikoAuthenticationException = NoValidConnectionsError = SSHException = ()  # type: ignore[assignment]
+
+
+logging.getLogger("paramiko").setLevel(logging.WARNING)
+logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
 
 H3C_NETMIKO_DEVICE_TYPE = "hp_comware"
@@ -56,6 +73,22 @@ class ConnectionTestResult:
     prompt: str | None
     elapsed_ms: int | None
     method: str = ""
+    status: str = ""
+    error_type: str | None = None
+    suggestion: str | None = None
+
+
+@dataclass(frozen=True)
+class ConnectionCheckResult:
+    ok: bool
+    status: str
+    detail: str
+    protocol: str
+    host: str
+    port: int
+    latency_ms: float | None = None
+    error_type: str | None = None
+    suggestion: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +112,15 @@ class ConnectionAttemptLog:
     port: int
     success: bool
     error_message: str = ""
+
+
+@dataclass(frozen=True)
+class ConnectionErrorClassification:
+    status: str
+    detail: str
+    short_detail: str
+    error_type: str
+    suggestion: str
 
 
 def test_device_connection(device: Device) -> ConnectionTestResult:
@@ -118,11 +160,38 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
                     safe_send_command(connection, "display clock", read_timeout=10, encoding=prepared.encoding)
                 except Exception as exc:
                     message = f"Connection succeeded; display clock failed: {sanitize_sensitive_text(str(exc), device)}"
-                result = ConnectionTestResult(True, prepared.protocol, prepared.host, prepared.port, message, prompt, _elapsed_ms(started), prepared.method)
+                result = ConnectionTestResult(
+                    True,
+                    prepared.protocol,
+                    prepared.host,
+                    prepared.port,
+                    message,
+                    prompt,
+                    _elapsed_ms(started),
+                    prepared.method,
+                    "telnet_ok" if prepared.protocol.casefold() == "telnet" else "ok",
+                )
                 _log_result("TEST_CONNECTION_SUCCESS", device, result)
                 return result
         except Exception as exc:
-            last_result = ConnectionTestResult(False, target.protocol, target.host, target.port, sanitize_sensitive_text(str(exc), device), None, _elapsed_ms(started), target.method)
+            classification = classify_connection_exception(exc, target.protocol)
+            message = sanitize_sensitive_text(classification.detail, device)
+            raw_hint = sanitize_sensitive_text(str(exc), device)
+            if classification.status in {"auth_failed", "unknown_error"} and raw_hint and raw_hint not in message:
+                message = f"{message}（{raw_hint}）"
+            last_result = ConnectionTestResult(
+                False,
+                target.protocol,
+                target.host,
+                target.port,
+                message,
+                None,
+                _elapsed_ms(started),
+                target.method,
+                classification.status,
+                classification.error_type,
+                classification.suggestion,
+            )
             _log_result("TEST_CONNECTION_ATTEMPT_FAILED", device, last_result)
         finally:
             if connection is not None:
@@ -151,7 +220,7 @@ def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionT
                 failures.append(ConnectionAttemptLog(prepared.method, prepared.host, prepared.port, True))
                 return result
         except Exception as exc:
-            failures.append(ConnectionAttemptLog(target.method, target.host, target.port, False, str(exc)))
+            failures.append(ConnectionAttemptLog(target.method, target.host, target.port, False, classify_connection_exception(exc, target.protocol).detail))
         finally:
             if connection is not None:
                 try:
@@ -160,6 +229,37 @@ def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionT
                     pass
     detail = "; ".join(f"{item.method} {item.host}:{item.port} failed: {item.error_message}" for item in failures if not item.success)
     raise RuntimeError(detail or "All connection attempts failed.")
+
+
+def check_device_login_with_netmiko(device: Device) -> ConnectionCheckResult:
+    started = monotonic()
+    targets = connection_targets(device)
+    if not targets:
+        return ConnectionCheckResult(False, "tcp_failed", "未启用 SSH 或 Telnet 连接方式。", "", device.primary_address, 0, None, "no_connection_target", "请在设备管理中启用 SSH、Telnet 或同时启用两者作为 Auto。")
+    last_result: ConnectionCheckResult | None = None
+    for target in targets:
+        connection: Any | None = None
+        try:
+            if ConnectHandler is None:
+                raise RuntimeError("netmiko is not installed")
+            with prepared_connection_target(target) as prepared:
+                connection = ConnectHandler(**_netmiko_params(prepared))
+                _safe_find_prompt(connection)
+                status = "telnet_ok" if prepared.protocol.casefold() == "telnet" else "ok"
+                detail = "Telnet 登录成功" if status == "telnet_ok" else "SSH 登录成功"
+                return ConnectionCheckResult(True, status, detail, prepared.protocol, prepared.host, prepared.port, float(_elapsed_ms(started)), None, None)
+        except Exception as exc:
+            classification = classify_connection_exception(exc, target.protocol)
+            last_result = ConnectionCheckResult(False, classification.status, classification.detail, target.protocol, target.host, target.port, float(_elapsed_ms(started)), classification.error_type, classification.suggestion)
+            if classification.status == "auth_failed":
+                break
+        finally:
+            if connection is not None:
+                try:
+                    connection.disconnect()
+                except Exception:
+                    pass
+    return last_result or ConnectionCheckResult(False, "unknown_error", "未知连接异常。", "", device.primary_address, 0, float(_elapsed_ms(started)), "unknown_error", "请检查设备连接配置和运行日志。")
 
 
 @contextmanager
@@ -232,6 +332,59 @@ def connection_targets(device: Device) -> list[ConnectionTarget]:
 
 def build_netmiko_params(target: ConnectionTarget) -> dict[str, object]:
     return _netmiko_params(target)
+
+
+def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> ConnectionErrorClassification:
+    text = str(exc or "")
+    lowered = text.casefold()
+    proto = "Telnet" if str(protocol or "").casefold() == "telnet" else "SSH"
+    if "error reading ssh protocol banner" in lowered or "ssh protocol banner" in lowered:
+        return ConnectionErrorClassification(
+            "ssh_banner_failed",
+            "SSH握手失败：TCP连接可能已建立，但未收到SSH banner，疑似目标未启用SSH、端口不是SSH、设备只支持Telnet、会话数满或设备主动断开。",
+            "SSH握手失败：未收到SSH banner，疑似SSH未启用或端口不是SSH",
+            exc.__class__.__name__,
+            "检查MR是否启用SSH，确认端口号；如设备只支持Telnet，请在设备配置中启用Telnet或同时启用SSH/Telnet作为Auto。",
+        )
+    if _is_auth_exception(exc) or "authentication" in lowered or "auth failed" in lowered or "认证" in text:
+        return ConnectionErrorClassification(
+            "auth_failed",
+            f"{proto}认证失败：服务可达，但用户名、密码或认证方式不正确。",
+            f"{proto}认证失败：请检查账号密码",
+            exc.__class__.__name__,
+            f"检查{proto}用户名、密码、认证方式和设备 AAA/VTY 配置。",
+        )
+    if _is_timeout_exception(exc) or "timed out" in lowered or "timeout" in lowered or "超时" in text:
+        if "tcp connection to device failed" in lowered or "connection refused" in lowered or "no route to host" in lowered:
+            return ConnectionErrorClassification(
+                "tcp_failed",
+                f"{proto} TCP连接失败：目标不可达、端口未开放或被中间设备拒绝。",
+                "TCP连接失败：目标不可达或端口未开放",
+                exc.__class__.__name__,
+                f"检查目标地址、{proto}端口、防火墙/ACL、路由和设备服务状态。",
+            )
+        return ConnectionErrorClassification(
+            "timeout",
+            f"{proto}连接或握手超时：设备响应慢、会话数满或链路质量异常。",
+            f"{proto}连接超时：请检查链路或调大超时",
+            exc.__class__.__name__,
+            "检查设备负载、会话数和网络质量；老设备可适当调大 banner/auth/read timeout。",
+        )
+    if _is_tcp_exception(exc) or any(part in lowered for part in ("connection refused", "no route to host", "network is unreachable", "unable to connect to port", "tcp connection to device failed")):
+        return ConnectionErrorClassification(
+            "tcp_failed",
+            f"{proto} TCP连接失败：目标不可达、端口未开放或连接被拒绝。",
+            "TCP连接失败：目标不可达或端口未开放",
+            exc.__class__.__name__,
+            f"检查目标地址、{proto}端口、防火墙/ACL、路由和设备服务状态。",
+        )
+    return ConnectionErrorClassification(
+        "unknown_error",
+        f"{proto}未知连接异常：{text}" if text else f"{proto}未知连接异常。",
+        f"{proto}未知连接异常",
+        exc.__class__.__name__,
+        "请结合设备服务状态、账号配置和 NetConsole 运行日志继续排查。",
+    )
 
 
 def encoding_for_vendor(vendor: str | None) -> str:
@@ -324,13 +477,29 @@ def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
         "password": target.password,
         "port": target.port,
         "timeout": 10,
-        "conn_timeout": 10,
-        "auth_timeout": 10,
-        "banner_timeout": 10,
+        "conn_timeout": 5,
+        "auth_timeout": 8,
+        "banner_timeout": 8,
         "encoding": target.encoding,
         "session_log": None,
         "global_delay_factor": 1,
+        "fast_cli": False,
     }
+
+
+def _is_auth_exception(exc: BaseException) -> bool:
+    classes = tuple(cls for cls in (NetmikoAuthenticationException, ParamikoAuthenticationException) if isinstance(cls, type))
+    return bool(classes and isinstance(exc, classes))
+
+
+def _is_timeout_exception(exc: BaseException) -> bool:
+    classes = tuple(cls for cls in (NetmikoTimeoutException, ReadTimeout) if isinstance(cls, type))
+    return bool(classes and isinstance(exc, classes)) or isinstance(exc, (TimeoutError, socket.timeout))
+
+
+def _is_tcp_exception(exc: BaseException) -> bool:
+    classes = tuple(cls for cls in (NoValidConnectionsError,) if isinstance(cls, type))
+    return bool(classes and isinstance(exc, classes)) or isinstance(exc, OSError)
 
 
 def _send_with_encoding(method: Any, command: str, kwargs: dict[str, object], encoding: str) -> object:

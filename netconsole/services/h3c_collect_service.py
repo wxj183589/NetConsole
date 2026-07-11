@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from netconsole.core import app_logger
@@ -36,6 +37,7 @@ COLLECT_COMMANDS = (
     "display lldp neighbor-information list",
     "display lldp neighbor-information verbose",
 )
+ProgressCallback = Callable[[int, str, str, str], None]
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ def collect_h3c_device_details(
     site_name: str,
     repository: DeviceFactRepository | None = None,
     paths: PathResolver | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> CollectDeviceResult:
     paths = paths or PathResolver()
     repository = repository or DeviceFactRepository(Database(paths.site_db_path(site_name)))
@@ -98,6 +101,7 @@ def collect_h3c_device_details(
     target = choose_connection_target(device)
     if target is None:
         message = "未启用连接方式"
+        _emit_progress(progress_callback, 100, "batch_collect.stage.failed", message=message)
         _finalize_failed(repository, collect_run_uuid, message)
         app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
         _write_raw_files(raw_log_file, commands_file, device, "", collect_run_uuid, command_results, target_protocol="", disconnected_at=_now())
@@ -105,17 +109,23 @@ def collect_h3c_device_details(
 
     try:
         command_guard.validate_command_list(["screen-length disable", *COLLECT_COMMANDS], "device_collect")
+        _emit_progress(progress_callback, 5, "batch_collect.stage.connecting")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        _emit_progress(progress_callback, 10, "batch_collect.stage.login_success")
+        _emit_progress(progress_callback, 15, "batch_collect.stage.init_terminal", "screen-length disable")
         screen_result = _run_command(connection, "screen-length disable", device, collect_run_uuid)
         command_results.append(screen_result)
         outputs: dict[str, str] = {}
-        for command in COLLECT_COMMANDS:
+        total_commands = len(COLLECT_COMMANDS)
+        for index, command in enumerate(COLLECT_COMMANDS, start=1):
+            percent = 20 + int(index / total_commands * 60)
+            _emit_progress(progress_callback, percent, f"batch_collect.stage.collecting_command|{index}|{total_commands}", command)
             result = _run_command(connection, command, device, collect_run_uuid)
             command_results.append(result)
             if result.success:
                 outputs[command] = result.output
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol)
-        write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs)
+        write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs, progress_callback=progress_callback)
         command_failed = any(not result.success for result in command_results)
         status = "partial_success" if command_failed or write_result["parse_errors"] else "success"
         if not any((write_result["facts"], write_result["interfaces"], write_result["optical_modules"], write_result["lldp_neighbors"])):
@@ -128,6 +138,12 @@ def collect_h3c_device_details(
             app_logger.log_info("REAL_DEVICE_COLLECT_SUCCESS", _detail(device, collect_run_uuid, error=error_message or "", raw_log_path=relative_raw_log_path))
         else:
             app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(device, collect_run_uuid, error=error_message or "", raw_log_path=relative_raw_log_path))
+        _emit_progress(
+            progress_callback,
+            100,
+            "batch_collect.stage.completed" if status != "failed" else "batch_collect.stage.failed",
+            message=error_message or "",
+        )
         return CollectDeviceResult(
             status != "failed",
             str(device.device_uuid),
@@ -142,6 +158,7 @@ def collect_h3c_device_details(
         )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
+        _emit_progress(progress_callback, 100, "batch_collect.stage.failed", message=message)
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol, fatal_error=message, disconnected_at=_now())
         _finalize_failed(repository, collect_run_uuid, message)
         app_logger.log_error("COLLECT_FAILED", _detail(device, collect_run_uuid, error=message, raw_log_path=relative_raw_log_path))
@@ -179,13 +196,30 @@ def _run_command(connection, command: str, device: Device, collect_run_uuid: str
     return CommandResult(command=command, success=True, output=clean_h3c_device_text(output), started_at=started_at, ended_at=_now())
 
 
+def _emit_progress(
+    callback: ProgressCallback | None,
+    percent: int,
+    stage: str,
+    command: str = "",
+    message: str = "",
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(percent, stage, command, message)
+    except Exception:
+        pass
+
+
 def _parse_and_write(
     repository: DeviceFactRepository,
     device: Device,
     collect_run_uuid: str,
     raw_log_path: str,
     outputs: dict[str, str],
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
+    _emit_progress(progress_callback, 85, "batch_collect.stage.parsing")
     collected_at = _now()
     metadata = {"collected_at": collected_at, "updated_at": collected_at, "collect_run_uuid": collect_run_uuid, "raw_log_path": raw_log_path}
     parse_errors: list[str] = []
@@ -195,6 +229,14 @@ def _parse_and_write(
     lldp_neighbors_updated = 0
     interfaces_for_optical: list[dict[str, object | None]] = []
     parser = H3CParser()
+    writing_progress_emitted = False
+
+    def emit_writing_progress() -> None:
+        nonlocal writing_progress_emitted
+        if not writing_progress_emitted:
+            writing_progress_emitted = True
+            _emit_progress(progress_callback, 95, "batch_collect.stage.saving")
+
     try:
         facts = parse_device(outputs.get("display version", ""), outputs.get("display device", ""), outputs.get("display device manuinfo", ""))
         facts["sysname"] = (
@@ -204,6 +246,7 @@ def _parse_and_write(
         )
         facts["bootrom_version"] = parse_boot_loader(outputs.get("display boot-loader", "")) or facts.get("bootrom_version")
         if any(value for key, value in facts.items() if key != "vendor"):
+            emit_writing_progress()
             repository.upsert_device_fact({"device_uuid": device.device_uuid, **facts, **metadata})
             device_repository = DeviceRepository(repository.database)
             if facts.get("sysname"):
@@ -220,6 +263,7 @@ def _parse_and_write(
         if "display interface" in outputs:
             interfaces = [_with_metadata(item, metadata) for item in parser.parse_interfaces(outputs.get("display interface", ""))]
             interfaces_for_optical = interfaces
+            emit_writing_progress()
             repository.replace_device_interfaces(str(device.device_uuid), interfaces)
             interfaces_updated = len(interfaces)
             app_logger.log_info("COLLECT_SAVE_INTERFACES", _detail(device, collect_run_uuid, error=f"interface_count={interfaces_updated}, raw_log_path={raw_log_path}"))
@@ -240,6 +284,7 @@ def _parse_and_write(
             )
             interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces_for_optical}
             modules = [_with_metadata(item, metadata) for item in modules]
+            emit_writing_progress()
             repository.replace_optical_modules(str(device.device_uuid), modules)
             optical_modules_updated = len(modules)
             app_logger.log_info("COLLECT_SAVE_OPTICAL", _detail(device, collect_run_uuid, error=f"optical_count={optical_modules_updated}, raw_log_path={raw_log_path}"))
@@ -254,6 +299,7 @@ def _parse_and_write(
                 outputs.get("display lldp neighbor-information verbose", ""),
             )
             neighbors = [_with_metadata(item, metadata) for item in neighbors]
+            emit_writing_progress()
             repository.replace_lldp_neighbors(str(device.device_uuid), neighbors)
             lldp_neighbors_updated = len(neighbors)
             app_logger.log_info("COLLECT_SAVE_LLDP", _detail(device, collect_run_uuid, error=f"lldp_count={lldp_neighbors_updated}, raw_log_path={raw_log_path}"))
@@ -261,6 +307,7 @@ def _parse_and_write(
         message = f"lldp parse failed: {sanitize_sensitive_text(str(exc), device)}"
         parse_errors.append(message)
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
+    emit_writing_progress()
     return {
         "facts": facts_updated,
         "interfaces": interfaces_updated,

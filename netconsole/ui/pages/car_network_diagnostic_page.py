@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -11,17 +13,16 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QBoxLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QSpinBox,
     QTableWidget,
@@ -30,10 +31,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.rail_transit.car_network_diagnostic import (
     NODE_ORDER,
     POINT_TABLE_FIELDS,
@@ -62,10 +66,15 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     normalize_train_network_defaults,
     sort_car_network_trains,
 )
+from netconsole.services.export.export_task_builders import car_network_point_table_spec
 from netconsole.services.vehicle_mr_online import normalize_train_no
 from netconsole.ui.car_network_diagnostic_worker import CarNetworkDiagnosticWorker
+from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.theme.qt_theme_engine import current_theme_mode, current_theme_tokens
+from netconsole.ui.widgets.table_combo_delegate import ComboBoxItemDelegate, combo_item_value
+from netconsole.ui.window_popup_service import show_non_focus_window
 
 
 STATE_LABELS = {
@@ -124,14 +133,41 @@ SSH_SOURCE_LABELS = {
 SSH_SOURCE_OPTIONS = ("primary_address", "backup_address", "ip_vehicle", "ip_uplink", "empty")
 
 
+def _rail_communication_diag(message: str) -> None:
+    print(message)
+    app_logger.log_info("RAIL_COMMUNICATION_UI", message)
+
+
 class NoWheelComboBox(QComboBox):
     def wheelEvent(self, event) -> None:
         event.ignore()
 
 
 class NoWheelSpinBox(QSpinBox):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+
     def wheelEvent(self, event) -> None:
         event.ignore()
+
+
+def _car_network_nodes_from_payload(payload: object) -> list[CarNetworkNode]:
+    return [CarNetworkNode(**dict(row)) for row in payload or [] if isinstance(row, dict)]
+
+
+def _car_network_trains_from_payload(payload: object) -> list[CarNetworkTrain]:
+    trains: list[CarNetworkTrain] = []
+    for row in payload or []:
+        if not isinstance(row, dict):
+            continue
+        data = dict(row)
+        for key in ("tc1_device", "tc2_device"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                data[key] = Device.from_mapping(value)
+        trains.append(CarNetworkTrain(**data))
+    return trains
 
 
 class CarNetworkDiagnosticPage(QWidget):
@@ -155,6 +191,10 @@ class CarNetworkDiagnosticPage(QWidget):
         self.train_ac_status: TrainAcStatus | None = None
         self.last_result: CarNetworkDiagnosticResult | None = None
         self.worker: CarNetworkDiagnosticWorker | None = None
+        self.background_manager = BackgroundProcessManager(self, paths=paths)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self._background_job_context: dict[str, str] = {}
         self.car_network_point_table_window: PointTableDialog | None = None
         self.task_rows: dict[str, tuple[QTableWidget, int]] = {}
         self.log_lines: list[str] = []
@@ -183,7 +223,8 @@ class CarNetworkDiagnosticPage(QWidget):
         self.status_label = QLabel("未检测")
         self._set_status_badge_state("pending")
         self.toggle_left_button = QPushButton("收起 «")
-        self.toggle_left_button.setFixedWidth(76)
+        self.toggle_left_button.setMinimumWidth(76)
+        self.toggle_left_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -201,10 +242,13 @@ class CarNetworkDiagnosticPage(QWidget):
         self.node_buttons: dict[str, QPushButton] = {}
         self.vrrp_label = QLabel("VRRP\n-")
         self.cross_tc_label = QLabel("跨TC通信：未检测")
-        self.results_container = QWidget()
-        self.results_layout = QBoxLayout(QBoxLayout.LeftToRight, self.results_container)
-        self.results_layout.setContentsMargins(0, 0, 0, 0)
-        self.results_layout.setSpacing(8)
+        self.page_scroll_area: QScrollArea | None = None
+        self.content_widget: QWidget | None = None
+        self.topology_scroll: QScrollArea | None = None
+        self.topology_wrapper: QWidget | None = None
+        self.topology_canvas: QGroupBox | None = None
+        self.results_container = QSplitter(Qt.Horizontal)
+        self.results_container.setChildrenCollapsible(False)
         self.tc1_table = self._new_result_table("tc1")
         self.tc2_table = self._new_result_table("tc2")
         self.tc1_box = QGroupBox("TC1端 / CT车头 实时检测结果")
@@ -223,11 +267,12 @@ class CarNetworkDiagnosticPage(QWidget):
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMaximumBlockCount(200)
-        self.log_output.setMinimumHeight(80)
+        self.log_output.setMinimumHeight(100)
         self.log_output.setObjectName("carNetworkLogOutput")
 
         self._build_ui()
         self._connect_signals()
+        self._apply_button_icons()
         self.refresh_all()
 
     def set_repository(self, repository: DeviceRepository, site_name: str) -> None:
@@ -242,21 +287,27 @@ class CarNetworkDiagnosticPage(QWidget):
         self.refresh_all()
 
     def refresh_all(self) -> None:
-        stored_nodes = self.store.load()
-        self.trains = build_car_network_trains(self.repository, self.site_name)
-        if not self.trains:
-            self.trains = self._fallback_trains_from_nodes(stored_nodes)
-        self.trains = self._sorted_trains(self.trains)
-        self.nodes = self._view_nodes(stored_nodes)
-        if self.trains and self.current_train_id not in {train.train_id for train in self.trains}:
-            self.current_train_id = self.trains[0].train_id
-        self._fill_train_table()
-        self._refresh_topology()
-        self._fill_point_rows()
-        self._update_buttons()
+        self._start_background_job(
+            "car_network_refresh_all",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name},
+            "刷新车内通信点表",
+        )
 
     def retranslate(self) -> None:
         self.title_label.setText("车内通信检测系统")
+        self._apply_button_icons()
+
+    def _apply_button_icons(self) -> None:
+        start_icon = "CANCEL" if self.worker is not None else "PLAY"
+        for button, icon_name in (
+            (self.start_button, start_icon),
+            (self.refresh_button, "SYNC"),
+            (self.import_button, "DOWNLOAD"),
+            (self.export_button, "SHARE"),
+            (self.point_table_button, "FOLDER"),
+            (self.toggle_left_button, "DOWN" if self.left_collapsed else "UP"),
+        ):
+            apply_button_icon(button, icon_name)
 
     def apply_theme(self, force: bool = False) -> None:
         if self._applying_theme:
@@ -318,7 +369,7 @@ class CarNetworkDiagnosticPage(QWidget):
         train_nodes = self._current_nodes()
         train = self._current_train()
         if not train_nodes:
-            QMessageBox.warning(self, "车内通信检测", "当前列车没有点表数据。")
+            MessageBox.warning(self, "车内通信检测", "当前列车没有点表数据。")
             return
         self.node_states = {node.node_name: "running" for node in train_nodes}
         self.ping_results = {}
@@ -483,13 +534,64 @@ class CarNetworkDiagnosticPage(QWidget):
         path, _filter = QFileDialog.getOpenFileName(self, "导入车内通信点表", "", "Point Table (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            count = self.store.import_file(Path(path))
-        except Exception as exc:
-            QMessageBox.warning(self, "导入车内通信点表", str(exc))
+        self.background_manager.start_job(
+            BackgroundJob(
+                task_type="car_network_point_table_import",
+                params={
+                    "path": path,
+                    "site_name": self.site_name,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+            )
+        )
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        task_type = self._background_job_context.pop(job_id, "")
+        result = dict(event.get("result") or {})
+        if task_type == "car_network_refresh_all":
+            self._apply_background_point_table(result)
             return
-        QMessageBox.information(self, "导入车内通信点表", f"导入完成：{count} 条")
+        if task_type == "car_network_generate_point_table":
+            nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            if not nodes:
+                MessageBox.information(self, "从设备管理生成", "设备管理的车载分组中没有识别到可用节点。")
+                return
+            self.nodes = nodes
+            MessageBox.information(self, "从设备管理生成", f"已生成/刷新 {len({node.train_no for node in nodes if node.train_no})} 列车点表，已保留手工地址映射。")
+            self.refresh_all()
+            return
+        if "count" not in result:
+            return
+        MessageBox.information(self, "导入车内通信点表", f"导入完成：{int(result.get('count') or 0)} 条")
         self.refresh_all()
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        self._background_job_context.pop(job_id, None)
+        MessageBox.warning(self, "车内通信点表", str(event.get("message") or event.get("error") or "后台任务失败"))
+
+    def _start_background_job(self, task_type: str, params: dict[str, object], title: str) -> str:
+        params = {
+            **params,
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+        }
+        job_id = self.background_manager.start_job(BackgroundJob(task_type=task_type, params=params))
+        self._background_job_context[job_id] = task_type
+        self.status_label.setText(f"{title}中...")
+        return job_id
+
+    def _apply_background_point_table(self, result: dict[str, object]) -> None:
+        self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+        self.trains = _car_network_trains_from_payload(result.get("trains"))
+        if self.trains and self.current_train_id not in {train.train_id for train in self.trains}:
+            self.current_train_id = self.trains[0].train_id
+        self._fill_train_table()
+        self._refresh_topology()
+        self._fill_point_rows()
+        self._update_buttons()
 
     def export_points(self) -> None:
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
@@ -498,29 +600,31 @@ class CarNetworkDiagnosticPage(QWidget):
         path, _filter = QFileDialog.getSaveFileName(self, "导出车内通信点表", str(default), "Excel (*.xlsx);;CSV (*.csv)")
         if not path:
             return
-        self.store.export_file(Path(path), self.nodes)
-        QMessageBox.information(self, "导出车内通信点表", f"已导出：{path}")
+        output_path = Path(path)
+        spec = car_network_point_table_spec(output_path, site_name=self.site_name, title="导出车内通信点表", open_dir_on_success=True)
+        submit_export_task(self, spec, success_title="导出车内通信点表", paths=self.paths)
 
     def generate_from_devices(self) -> None:
-        generated = generate_point_table_from_devices(self.repository, self.site_name, self.store.load(), self.config_store.load())
-        if not generated:
-            QMessageBox.information(self, "从设备管理生成", "设备管理的车载分组中没有识别到可用节点。")
-            return
-        self.store.save(generated)
-        self.nodes = generated
-        QMessageBox.information(self, "从设备管理生成", f"已生成/刷新 {len({node.train_no for node in generated if node.train_no})} 列车点表，已保留手工地址映射。")
-        self.refresh_all()
+        self._start_background_job(
+            "car_network_generate_point_table",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self.nodes],
+                "save_result": True,
+            },
+            "从设备管理生成",
+        )
 
     def open_point_table(self) -> None:
         if self.car_network_point_table_window is not None and self.car_network_point_table_window.isVisible():
-            self.car_network_point_table_window.raise_()
-            self.car_network_point_table_window.activateWindow()
+            show_non_focus_window(self, self.car_network_point_table_window, key="car_network_point_table", activate=False, raise_window=False)
             return
         dialog = PointTableDialog(self.repository, self.site_name, self.store, self.config_store, self)
         dialog.accepted.connect(self.refresh_all)
         dialog.destroyed.connect(lambda _obj=None: setattr(self, "car_network_point_table_window", None))
         self.car_network_point_table_window = dialog
-        dialog.show()
+        show_non_focus_window(self, dialog, key="car_network_point_table", activate=False, raise_window=False)
 
     def on_train_selected(self, row: int, _column: int) -> None:
         item = self.train_table.item(row, 0)
@@ -573,10 +677,20 @@ class CarNetworkDiagnosticPage(QWidget):
                 f"诊断说明：{self.last_result.conclusion if self.last_result else '-'}",
             ]
         )
-        QMessageBox.information(self, node.node_name, message)
+        MessageBox.information(self, node.node_name, message)
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+        self.page_scroll_area = QScrollArea()
+        self.page_scroll_area.setObjectName("carNetworkPageScroll")
+        self.page_scroll_area.setWidgetResizable(True)
+        self.page_scroll_area.setFrameShape(QScrollArea.NoFrame)
+        self.page_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.page_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.content_widget = QWidget()
+        root = QVBoxLayout(self.content_widget)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
         root.addWidget(self.title_label)
@@ -603,6 +717,7 @@ class CarNetworkDiagnosticPage(QWidget):
         self.main_splitter = splitter
         left = QWidget()
         self.left_panel = left
+        left.setMinimumWidth(180)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.toggle_left_button)
@@ -614,32 +729,58 @@ class CarNetworkDiagnosticPage(QWidget):
         left_layout.addWidget(self.left_content, 1)
         splitter.addWidget(left)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(8)
-        topo_box = QGroupBox("固定拓扑")
-        topo_layout = QGridLayout(topo_box)
+        right_layout.setSpacing(10)
+        topology_canvas = QGroupBox("固定拓扑")
+        self.topology_canvas = topology_canvas
+        topology_canvas.setMinimumSize(1050, 620)
+        topology_canvas.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        topo_layout = QGridLayout(topology_canvas)
         self._build_topology(topo_layout)
-        right_layout.addWidget(topo_box)
+        topology_scroll = QScrollArea()
+        self.topology_scroll = topology_scroll
+        topology_scroll.setObjectName("carNetworkTopologyScroll")
+        topology_scroll.setWidgetResizable(True)
+        topology_scroll.setFrameShape(QScrollArea.NoFrame)
+        topology_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        topology_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        topology_scroll.setMinimumHeight(650)
+        topology_wrapper = QWidget()
+        self.topology_wrapper = topology_wrapper
+        topology_wrapper.setMinimumSize(topology_canvas.minimumSize())
+        wrapper_layout = QHBoxLayout(topology_wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.addStretch(1)
+        wrapper_layout.addWidget(topology_canvas, 0, Qt.AlignHCenter | Qt.AlignTop)
+        wrapper_layout.addStretch(1)
+        topology_scroll.setWidget(topology_wrapper)
+
+        result_panel = QWidget()
+        result_layout = QVBoxLayout(result_panel)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.setSpacing(8)
         self._arrange_result_tables()
-        right_layout.addWidget(self.results_container)
-        right_layout.addWidget(QLabel("检测日志"))
-        right_layout.addWidget(self.log_output)
-        right_layout.addWidget(QLabel("诊断输出 JSON"))
-        right_layout.addWidget(self.json_output)
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QScrollArea.NoFrame)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        right_scroll.setWidget(right)
-        splitter.addWidget(right_scroll)
+        result_layout.addWidget(self.results_container)
+        result_layout.addWidget(QLabel("检测日志"))
+        result_layout.addWidget(self.log_output)
+        result_layout.addWidget(QLabel("诊断输出 JSON"))
+        result_layout.addWidget(self.json_output)
+        result_panel.setMinimumHeight(500)
+
+        right_layout.addWidget(topology_scroll)
+        right_layout.addWidget(result_panel)
+        splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([max(220, min(260, self.left_expanded_width)), 1050])
         self._apply_left_panel_state()
         splitter.splitterMoved.connect(self._save_left_width)
-        root.addWidget(splitter, 1)
+        root.addWidget(splitter)
+        self.page_scroll_area.setWidget(self.content_widget)
+        page_layout.addWidget(self.page_scroll_area)
+        self._sync_topology_wrapper_size()
         self.apply_theme(force=True)
 
     def _apply_visual_style(self, tokens: dict[str, str], page_stylesheet: str, *, update_page_stylesheet: bool) -> None:
@@ -677,13 +818,13 @@ class CarNetworkDiagnosticPage(QWidget):
         if self.left_content is not None:
             self.left_content.setVisible(not self.left_collapsed)
         self.toggle_left_button.setText("列车列表 »" if self.left_collapsed else "收起 «")
-        self.toggle_left_button.setFixedWidth(34 if self.left_collapsed else 76)
+        self._apply_button_icons()
+        self.toggle_left_button.setMinimumWidth(34 if self.left_collapsed else 76)
         if self.left_panel is not None:
             self.left_panel.setMinimumWidth(34 if self.left_collapsed else 220)
-            self.left_panel.setMaximumWidth(36 if self.left_collapsed else 420)
         if self.main_splitter is not None:
-            left_width = 34 if self.left_collapsed else max(220, self.left_expanded_width)
-            self.main_splitter.setSizes([left_width, max(800, self.width() - left_width)])
+            left_width = 34 if self.left_collapsed else max(220, min(320, self.left_expanded_width))
+            self.main_splitter.setSizes([left_width, max(900, self.width() - left_width)])
 
     def _save_left_width(self, _pos: int, _index: int) -> None:
         if self.left_collapsed or self.main_splitter is None:
@@ -694,8 +835,9 @@ class CarNetworkDiagnosticPage(QWidget):
             self.settings.setValue("left_width", self.left_expanded_width)
 
     def _build_topology(self, layout: QGridLayout) -> None:
-        layout.setHorizontalSpacing(18)
-        layout.setVerticalSpacing(8)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setHorizontalSpacing(24)
+        layout.setVerticalSpacing(10)
         tc1_title = QLabel("TC1端 / CT车头")
         tc2_title = QLabel("TC2端 / CW车尾")
         self.topology_title_labels.extend((tc1_title, tc2_title))
@@ -711,7 +853,9 @@ class CarNetworkDiagnosticPage(QWidget):
         }
         for name, (row, column) in positions.items():
             button = QPushButton(name)
-            button.setMinimumSize(118, 64)
+            button.setObjectName("carNetworkTopologyNode")
+            button.setMinimumSize(128, 58)
+            button.setMaximumSize(128, 58)
             button.clicked.connect(lambda _checked=False, value=name: self.show_node_detail(value))
             self.node_buttons[name] = button
             layout.addWidget(button, row, column)
@@ -724,14 +868,21 @@ class CarNetworkDiagnosticPage(QWidget):
         right_line = QLabel("----------")
         for label in (left_line, right_line):
             label.setAlignment(Qt.AlignCenter)
+            label.setMinimumWidth(130)
             self.topology_line_labels.append(label)
         self.vrrp_label.setAlignment(Qt.AlignCenter)
+        self.vrrp_label.setMinimumWidth(160)
         layout.addWidget(left_line, 3, 2)
         layout.addWidget(self.vrrp_label, 3, 3)
         layout.addWidget(right_line, 3, 4)
         self.cross_tc_label.setAlignment(Qt.AlignCenter)
         self.cross_tc_label.setMinimumHeight(28)
+        self.cross_tc_label.setMinimumWidth(360)
         layout.addWidget(self.cross_tc_label, 4, 2, 1, 3)
+        for column, width in enumerate((80, 140, 130, 170, 130, 140, 80)):
+            layout.setColumnMinimumWidth(column, width)
+        for row in range(6):
+            layout.setRowMinimumHeight(row, 62 if row in {1, 3, 5} else 34)
 
     def _connect_signals(self) -> None:
         self.start_button.clicked.connect(self.start_diagnostic)
@@ -894,17 +1045,39 @@ class CarNetworkDiagnosticPage(QWidget):
 
     def _arrange_result_tables(self) -> None:
         horizontal = self.width() >= 1500
-        self.results_layout.setDirection(QBoxLayout.LeftToRight if horizontal else QBoxLayout.TopToBottom)
-        if self.results_layout.count() == 0:
-            self.results_layout.addWidget(self.tc1_box)
-            self.results_layout.addWidget(self.tc2_box)
+        orientation = Qt.Horizontal if horizontal else Qt.Vertical
+        if self.results_container.orientation() != orientation:
+            self.results_container.setOrientation(orientation)
+        if self.results_container.count() == 0:
+            self.results_container.addWidget(self.tc1_box)
+            self.results_container.addWidget(self.tc2_box)
+            self.results_container.setStretchFactor(0, 1)
+            self.results_container.setStretchFactor(1, 1)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         horizontal = self.width() >= 1500
-        current_horizontal = self.results_layout.direction() == QBoxLayout.LeftToRight
+        current_horizontal = self.results_container.orientation() == Qt.Horizontal
         if horizontal != current_horizontal:
             self._arrange_result_tables()
+        self._sync_topology_wrapper_size()
+
+    def _sync_topology_wrapper_size(self) -> None:
+        if self.topology_scroll is None or self.topology_wrapper is None or self.topology_canvas is None:
+            return
+        viewport = self.topology_scroll.viewport()
+        self.topology_wrapper.setMinimumWidth(max(viewport.width(), self.topology_canvas.minimumWidth()))
+        self.topology_wrapper.setMinimumHeight(max(viewport.height(), self.topology_canvas.minimumHeight()))
+
+    def on_enter(self) -> None:
+        self._sync_topology_wrapper_size()
+        self._arrange_result_tables()
+        canvas_size = self.topology_canvas.minimumSize() if self.topology_canvas is not None else self.minimumSize()
+        _rail_communication_diag("[Rail][Communication] page enter")
+        _rail_communication_diag(f"[Rail][Communication] topology canvas: {canvas_size.width()}x{canvas_size.height()}")
+        _rail_communication_diag("[Rail][Communication] scroll area enabled: yes")
+        visible = not any(widget.isHidden() for widget in (self.tc1_box, self.tc2_box, self.log_output, self.json_output))
+        _rail_communication_diag(f"[Rail][Communication] result panels visible: {'yes' if visible else 'no'}")
 
     def _current_train(self) -> CarNetworkTrain | None:
         return next((train for train in self.trains if train.train_id == self.current_train_id), None)
@@ -939,6 +1112,7 @@ class CarNetworkDiagnosticPage(QWidget):
         running = self.worker is not None
         self.start_button.setEnabled(True)
         self.start_button.setText("取消检测" if running else "开始检测")
+        self._apply_button_icons()
         self.start_button.setProperty("danger", running)
         self.start_button.style().unpolish(self.start_button)
         self.start_button.style().polish(self.start_button)
@@ -955,11 +1129,16 @@ class PointTableDialog(QDialog):
         self.site_name = site_name
         self.store = store
         self.config_store = config_store
-        self.global_config = merge_global_config(self.config_store.load())
-        self.nodes = self.store.load()
+        self.background_manager = BackgroundProcessManager(self, paths=store.paths)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self._background_job_context: dict[str, str] = {}
+        self.global_config = merge_global_config(DEFAULT_GLOBAL_CONFIG)
+        self.nodes: list[CarNetworkNode] = []
         self.setWindowTitle("车内通信点表")
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
-        self.resize(1380, 720)
+        self.resize(1280, 760)
+        self.setMinimumSize(900, 600)
 
         self.train_filter = NoWheelComboBox()
         self.node_type_filter = NoWheelComboBox()
@@ -976,6 +1155,16 @@ class PointTableDialog(QDialog):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.horizontalHeader().setFixedHeight(36)
+        for field, values in (
+            ("primary_address_role", MAPPING_ROLE_OPTIONS),
+            ("backup_address_role", MAPPING_ROLE_OPTIONS),
+            ("address_mapping_mode", MAPPING_MODE_OPTIONS),
+        ):
+            options = [(MAPPING_VALUE_LABELS[value], value) for value in values]
+            self.table.setItemDelegateForColumn(
+                POINT_TABLE_FIELDS.index(field),
+                ComboBoxItemDelegate(options, self.table),
+            )
 
         self.add_button = QPushButton("新增行")
         self.delete_button = QPushButton("删除行")
@@ -991,6 +1180,9 @@ class PointTableDialog(QDialog):
         self.cancel_button = QPushButton("取消")
 
         layout = QVBoxLayout(self)
+        config_content = QWidget(self)
+        config_layout = QVBoxLayout(config_content)
+        config_layout.setContentsMargins(0, 0, 0, 0)
         filters = QHBoxLayout()
         filters.addWidget(QLabel("列车"))
         filters.addWidget(self.train_filter)
@@ -999,11 +1191,19 @@ class PointTableDialog(QDialog):
         filters.addStretch(1)
         filters.addWidget(self.lock_hint_label)
         filters.addWidget(self.lock_button)
-        layout.addLayout(filters)
-        layout.addWidget(self._build_global_rules_box())
+        config_layout.addLayout(filters)
+        config_layout.addWidget(self._build_global_rules_box())
+        config_scroll = QScrollArea(self)
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        config_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        config_scroll.setFrameShape(QScrollArea.NoFrame)
+        config_scroll.setMaximumHeight(300)
+        config_scroll.setWidget(config_content)
+        layout.addWidget(config_scroll, 0)
         layout.addWidget(self.table, 1)
-        buttons = QHBoxLayout()
-        for button in (
+        buttons = QGridLayout()
+        action_buttons = (
             self.add_button,
             self.delete_button,
             self.apply_mapping_button,
@@ -1016,13 +1216,17 @@ class PointTableDialog(QDialog):
             self.export_button,
             self.save_button,
             self.cancel_button,
-        ):
-            buttons.addWidget(button)
-        buttons.addStretch(1)
+        )
+        for index, button in enumerate(action_buttons):
+            button.setMinimumHeight(32)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            buttons.addWidget(button, index // 4, index % 4)
+        buttons.setColumnStretch(3, 1)
         layout.addLayout(buttons)
 
         self.train_filter.currentIndexChanged.connect(self._apply_filter)
         self.node_type_filter.currentIndexChanged.connect(self._apply_filter)
+        self.table.itemChanged.connect(self._point_table_item_changed)
         self.lock_button.clicked.connect(self._toggle_locked)
         self.add_button.clicked.connect(self._add_row)
         self.delete_button.clicked.connect(self._delete_rows)
@@ -1041,6 +1245,8 @@ class PointTableDialog(QDialog):
         self._load_global_rule_widgets()
         self._fill_table()
         self._update_lock_state()
+        self.lock_hint_label.setText("正在加载点表...")
+        self._start_background_job("car_network_point_table_load", {"site_name": self.site_name})
 
     def _build_global_rules_box(self) -> QGroupBox:
         box = QGroupBox("全局规则")
@@ -1121,8 +1327,17 @@ class PointTableDialog(QDialog):
     def _toggle_locked(self) -> None:
         self.locked = not self.locked
         self.global_config = self._read_global_rule_widgets()
-        self.config_store.save(self.global_config)
         self._update_lock_state()
+        self._start_background_job(
+            "car_network_save_point_table",
+            {
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "overwrite_custom": False,
+            },
+            context="car_network_save_lock_state",
+        )
 
     def _update_lock_state(self) -> None:
         self.lock_button.setText("解锁编辑" if self.locked else "锁定编辑")
@@ -1149,16 +1364,11 @@ class PointTableDialog(QDialog):
         for combo in self.global_mapping_combos.values():
             combo.setEnabled(not self.locked)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers if self.locked else QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
-        for row in range(self.table.rowCount()):
-            for column in range(self.table.columnCount()):
-                widget = self.table.cellWidget(row, column)
-                if widget is not None:
-                    widget.setEnabled(not self.locked)
 
     def _guard_locked(self, action: str) -> bool:
         if not self.locked:
             return False
-        QMessageBox.information(self, "车内通信点表", f"当前点表已锁定，不能{action}。")
+        MessageBox.information(self, "车内通信点表", f"当前点表已锁定，不能{action}。")
         return True
 
     def _reload_filters(self) -> None:
@@ -1193,18 +1403,14 @@ class PointTableDialog(QDialog):
                 values["address_mapping_mode"] = "custom" if values["address_mapping_mode"] in {"custom", "manual"} else "global"
                 for column, field in enumerate(POINT_TABLE_FIELDS):
                     if field in combo_options:
-                        combo = NoWheelComboBox()
-                        combo.setMinimumHeight(30)
-                        for value in combo_options[field]:
-                            combo.addItem(MAPPING_VALUE_LABELS[value], value)
+                        value = values[field]
+                        item = QTableWidgetItem(MAPPING_VALUE_LABELS.get(value, value))
+                        item.setData(Qt.UserRole, value)
                         if field == "primary_address_role":
-                            combo.setToolTip("主用地址映射 = 全部：将主用地址同时作为车内IP、落地IP和SSH地址。")
+                            item.setToolTip("主用地址映射 = 全部：将主用地址同时作为车内IP、落地IP和SSH地址。")
                         elif field == "backup_address_role":
-                            combo.setToolTip("备用地址映射 = 全部：将备用地址同时作为车内IP、落地IP和SSH地址，一般仅用于特殊站点。")
-                        combo.setCurrentIndex(max(0, combo.findData(values[field])))
-                        if field in {"primary_address_role", "backup_address_role"}:
-                            combo.currentIndexChanged.connect(lambda _index, row=row: self._mark_row_custom(row))
-                        self.table.setCellWidget(row, column, combo)
+                            item.setToolTip("备用地址映射 = 全部：将备用地址同时作为车内IP、落地IP和SSH地址，一般仅用于特殊站点。")
+                        self.table.setItem(row, column, item)
                     else:
                         item = QTableWidgetItem(values[field])
                         item.setToolTip(values[field])
@@ -1221,24 +1427,27 @@ class PointTableDialog(QDialog):
         for row in range(self.table.rowCount()):
             data: dict[str, object] = {}
             for column, field in enumerate(POINT_TABLE_FIELDS):
-                widget = self.table.cellWidget(row, column)
-                if isinstance(widget, QComboBox):
-                    data[field] = widget.currentData() or ""
-                else:
-                    item = self.table.item(row, column)
-                    data[field] = item.text() if item is not None else ""
+                item = self.table.item(row, column)
+                data[field] = combo_item_value(item) if field in {"primary_address_role", "backup_address_role", "address_mapping_mode"} else item.text() if item is not None else ""
             nodes.append(node_from_mapping(data))
         return nodes
 
+    def _point_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() in {
+            POINT_TABLE_FIELDS.index("primary_address_role"),
+            POINT_TABLE_FIELDS.index("backup_address_role"),
+        }:
+            self._mark_row_custom(item.row())
+
     def _mark_row_custom(self, row: int) -> None:
         mode_column = POINT_TABLE_FIELDS.index("address_mapping_mode")
-        widget = self.table.cellWidget(row, mode_column)
-        if isinstance(widget, QComboBox):
-            index = widget.findData("custom")
-            if index >= 0 and widget.currentData() != "custom":
-                widget.blockSignals(True)
-                widget.setCurrentIndex(index)
-                widget.blockSignals(False)
+        item = self.table.item(row, mode_column)
+        if item is None or combo_item_value(item) == "custom":
+            return
+        blocked = self.table.blockSignals(True)
+        item.setText(MAPPING_VALUE_LABELS["custom"])
+        item.setData(Qt.UserRole, "custom")
+        self.table.blockSignals(blocked)
 
     def _apply_filter(self) -> None:
         train_no = str(self.train_filter.currentData() or "")
@@ -1285,16 +1494,31 @@ class PointTableDialog(QDialog):
         if self._guard_locked("从设备管理生成"):
             return
         self.global_config = self._read_global_rule_widgets()
-        self.nodes = generate_point_table_from_devices(self.repository, self.site_name, self._rows_to_nodes(), self.global_config)
-        self._reload_filters()
-        self._fill_table()
+        self._start_background_job(
+            "car_network_generate_point_table",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "save_result": False,
+            },
+        )
 
     def _save_global_rules(self) -> None:
         if self._guard_locked("保存全局规则"):
             return
         self.global_config = self._read_global_rule_widgets()
-        self.config_store.save(self.global_config)
-        QMessageBox.information(self, "车内通信点表", "全局规则已保存。")
+        self._start_background_job(
+            "car_network_save_point_table",
+            {
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "overwrite_custom": False,
+            },
+            context="car_network_save_global_rules",
+        )
 
     def _apply_global_rules(self, overwrite_custom: bool) -> None:
         if self._guard_locked("应用全局规则"):
@@ -1316,29 +1540,87 @@ class PointTableDialog(QDialog):
         path, _filter = QFileDialog.getOpenFileName(self, "导入车内通信点表", "", "Point Table (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            self.store.import_file(Path(path))
-            self.nodes = self.store.load()
-        except Exception as exc:
-            QMessageBox.warning(self, "导入车内通信点表", str(exc))
+        self.background_manager.start_job(
+            BackgroundJob(
+                task_type="car_network_point_table_import",
+                params={
+                    "path": path,
+                    "site_name": self.site_name,
+                    "app_root": str(self.store.paths.app_root),
+                    "data_root": str(self.store.paths.data_root),
+                },
+            )
+        )
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        task_type = self._background_job_context.pop(job_id, "")
+        result = dict(event.get("result") or {})
+        if task_type == "car_network_point_table_load":
+            self.global_config = merge_global_config(dict(result.get("global_config") or {}))
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            self.locked = bool(self.global_config.get("point_table_locked", False))
+            self._reload_filters()
+            self._load_global_rule_widgets()
+            self._fill_table()
+            self._update_lock_state()
             return
+        if task_type == "car_network_generate_point_table":
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            self._reload_filters()
+            self._fill_table()
+            return
+        if task_type == "car_network_save_point_table":
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            self.accept()
+            return
+        if task_type in {"car_network_save_global_rules", "car_network_save_lock_state"}:
+            self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
+            if task_type == "car_network_save_global_rules":
+                MessageBox.information(self, "车内通信点表", "全局规则已保存。")
+            return
+        if "count" not in result:
+            return
+        self.nodes = _car_network_nodes_from_payload(result.get("nodes"))
         self._reload_filters()
         self._fill_table()
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        self._background_job_context.pop(job_id, None)
+        MessageBox.warning(self, "车内通信点表", str(event.get("message") or event.get("error") or "后台任务失败"))
+
+    def _start_background_job(self, task_type: str, params: dict[str, object], *, context: str = "") -> str:
+        params = {
+            **params,
+            "app_root": str(self.store.paths.app_root),
+            "data_root": str(self.store.paths.data_root),
+        }
+        job_id = self.background_manager.start_job(BackgroundJob(task_type=task_type, params=params))
+        self._background_job_context[job_id] = context or task_type
+        return job_id
 
     def _export(self) -> None:
         default = Path.home() / "Desktop" / "车内通信点表.xlsx"
         path, _filter = QFileDialog.getSaveFileName(self, "导出车内通信点表", str(default), "Excel (*.xlsx);;CSV (*.csv)")
         if path:
-            self.store.export_file(Path(path), self._rows_to_nodes())
+            output_path = Path(path)
+            spec = car_network_point_table_spec(output_path, site_name=self.site_name, title="导出车内通信点表", open_dir_on_success=True)
+            submit_export_task(self, spec, success_title="导出车内通信点表")
 
     def _save(self) -> None:
         if self._guard_locked("保存点表"):
             return
         self.global_config = self._read_global_rule_widgets()
-        self.nodes = normalize_train_network_defaults(self._rows_to_nodes(), self.global_config, overwrite_custom=False)
-        self.config_store.save(self.global_config)
-        self.store.save(self.nodes)
-        self.accept()
+        self._start_background_job(
+            "car_network_save_point_table",
+            {
+                "site_name": self.site_name,
+                "nodes": [asdict(node) for node in self._rows_to_nodes()],
+                "global_config": self.global_config,
+                "overwrite_custom": False,
+            },
+        )
 
 
 def _node_ip_summary(node: CarNetworkNode | None) -> str:
@@ -1636,7 +1918,7 @@ def _status_cell_colors(status: str) -> tuple[str, str]:
         return "#DCFCE7", "#14532D"
     if any(word in text for word in ("检测中", "正在")):
         return "#FFFFFF", "#075985"
-    if any(word in text for word in ("丢包", "不稳定", "警告", "AC未发现")):
+    if any(word in text for word in ("丢包", "不稳定", "警告", "AC未发现", "握手失败", "认证失败")):
         return "#FEF3C7", "#713F12"
     if any(word in text for word in ("故障", "失败", "不通", "离线", "超时", "异常")):
         return "#FEE2E2", "#7F1D1D"
@@ -1672,6 +1954,7 @@ def _node_style(state: str) -> str:
         "QPushButton {"
         f"color: {fg}; background: {bg}; border: {border_width}px solid {border};"
         "border-radius: 6px; font-size: 12px; font-weight: 700; padding: 4px;"
+        "min-width: 128px; max-width: 128px; min-height: 58px; max-height: 58px;"
         "}"
     )
 

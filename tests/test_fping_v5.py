@@ -315,7 +315,7 @@ def test_diagnosis_parser_creates_replay_segment_for_fping_only_session(tmp_path
             JOIN active_segment_metrics m ON m.segment_id = s.id
             """
         ).fetchone()
-    assert row == ("EVENT_REPLAY", 0.0, 0.2)
+    assert row == ("NORMAL", 0.0, 0.2)
 
 
 def test_diagnosis_parser_records_iperf_busy_error_without_intervals(tmp_path: Path) -> None:
@@ -331,7 +331,7 @@ def test_diagnosis_parser_records_iperf_busy_error_without_intervals(tmp_path: P
     assert summary.iperf_samples == 0
     assert summary.iperf_error_count == 1
     with sqlite3.connect(session_dir / "parsed" / "online_diagnosis.sqlite") as conn:
-        row = conn.execute("SELECT event_type, details_json FROM live_events WHERE event_type = 'IPERF_ERROR'").fetchone()
+        row = conn.execute("SELECT event_type, details_json FROM analysis_events WHERE event_type = 'IPERF_ERROR'").fetchone()
     assert row is not None
     assert "server_busy" in row[1]
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 import getpass
 from time import perf_counter
 
@@ -13,16 +15,15 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,15 +44,18 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.dialogs.about_dialog import AboutRepositoryDialog
 from netconsole.ui.dialogs.changelog_dialog import ChangelogDialog
 from netconsole.ui.dialogs.shutdown_progress_dialog import ShutdownProgressDialog
+from netconsole.ui.dialogs.mesh_analysis_params_dialog import MeshAnalysisParamsEditor
 from netconsole.ui.navigation import Navigation
 from netconsole.ui.pages.device_management_page import DeviceManagementPage
+from netconsole.ui.shell import AppFramelessMainWindow
 from netconsole.ui.theme import apply_global_theme
 from netconsole.ui.widgets.loading_overlay import LoadingOverlay
 from netconsole.ui.window_manager import window_manager
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.ui.windowing import fit_default_window_size
 
 
-class MainWindow(QMainWindow):
+class MainWindow(AppFramelessMainWindow):
     def __init__(
         self,
         site: Site,
@@ -98,6 +102,7 @@ class MainWindow(QMainWindow):
         self.wifi_survey_page: QWidget | None = None
         self.ac_page: QWidget | None = None
         self.log_page: QWidget | None = None
+        self.settings_page: QWidget | None = None
         self.pages["devices"] = self.device_page
         self.stack.addWidget(self.device_page)
 
@@ -138,6 +143,7 @@ class MainWindow(QMainWindow):
         self.en_button.clicked.connect(lambda: self.switch_language("en_US"))
         self.light_theme_button.clicked.connect(lambda: self.set_theme("light"))
         self.dark_theme_button.clicked.connect(lambda: self.set_theme("dark"))
+        self.title_bar.theme_requested.connect(self.set_theme)
         self.about_button.clicked.connect(self.show_about_dialog)
         self.version_button.clicked.connect(self.show_changelog_dialog)
         self.data_disk_button.clicked.connect(self.show_data_disk_manager)
@@ -317,12 +323,25 @@ class MainWindow(QMainWindow):
         elif page_id == "logs":
             from netconsole.ui.pages.app_log_page import AppLogPage
 
-            page = AppLogPage(self.i18n, auto_refresh=False)
+            page = AppLogPage(self.i18n, auto_refresh=False, paths=self.paths)
             self.log_page = page
+        elif page_id == "system_settings":
+            from netconsole.ui.pages.settings_page import SettingsPage
+
+            page = SettingsPage(
+                self.settings,
+                self.site,
+                self.paths,
+                apply_theme_callback=self.set_theme,
+                apply_language_callback=self.switch_language,
+                create_site_callback=self.create_site,
+                switch_site_callback=self.switch_site_dialog,
+            )
+            self.settings_page = page
         elif page_id == "feature_flags":
             from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
 
-            page = FeatureFlagsPage(self.i18n, self.feature_gate)
+            page = FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
         else:
             return self.device_page
         self.pages[page_id] = page
@@ -375,11 +394,23 @@ class MainWindow(QMainWindow):
         if page_id == "logs":
             from netconsole.ui.pages.app_log_page import AppLogPage
 
-            return AppLogPage(self.i18n, auto_refresh=False)
+            return AppLogPage(self.i18n, auto_refresh=False, paths=self.paths)
+        if page_id == "system_settings":
+            from netconsole.ui.pages.settings_page import SettingsPage
+
+            return SettingsPage(
+                self.settings,
+                self.site,
+                self.paths,
+                apply_theme_callback=self.set_theme,
+                apply_language_callback=self.switch_language,
+                create_site_callback=self.create_site,
+                switch_site_callback=self.switch_site_dialog,
+            )
         if page_id == "feature_flags":
             from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
 
-            return FeatureFlagsPage(self.i18n, self.feature_gate)
+            return FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
         return DeviceManagementPage(self.repository, self.i18n, self.site.name)
 
     def detach_current_page(self) -> None:
@@ -392,11 +423,11 @@ class MainWindow(QMainWindow):
         try:
             page = self.create_detached_page(page_id)
         except FeatureDisabledError:
-            QMessageBox.information(self, self.i18n.t("app.title"), self.i18n.t("feature_flags.disabled_message"))
+            MessageBox.information(self, self.i18n.t("app.title"), self.i18n.t("feature_flags.disabled_message"))
             return
         except Exception as exc:
             app_logger.log_error("DETACHED_PAGE_CREATE_FAILED", f"page={page_id}, error={exc}")
-            QMessageBox.warning(self, self.i18n.t("app.title"), str(exc))
+            MessageBox.warning(self, self.i18n.t("app.title"), str(exc))
             return
         window = QMainWindow()
         window.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -407,7 +438,7 @@ class MainWindow(QMainWindow):
         self.detached_windows.append(window)
         window.destroyed.connect(lambda _=None, detached=window: self._remove_detached_window(detached))
         window_manager.register_child_window(window)
-        window.show()
+        show_non_focus_window(self, window, key=f"detached:{page_id}", activate=False, raise_window=False)
         QTimer.singleShot(0, lambda page_id=page_id, page=page: self.activate_detached_page(page_id, page))
 
     def activate_detached_page(self, page_id: str, page: QWidget) -> None:
@@ -420,12 +451,18 @@ class MainWindow(QMainWindow):
                 page.refresh()
             elif page_id == "file_management" and hasattr(page, "refresh_devices"):
                 page.refresh_devices()
-            elif page_id == "rail_transit" and hasattr(page, "refresh_current_async_or_lazy"):
-                page.refresh_current_async_or_lazy(force_if_empty=True)
+            elif page_id == "rail_transit":
+                enter = getattr(page, "on_enter", None)
+                if callable(enter):
+                    enter(force_if_empty=True)
+                elif hasattr(page, "refresh_current_async_or_lazy"):
+                    page.refresh_current_async_or_lazy(force_if_empty=True)
             elif page_id == "snmp_center" and hasattr(page, "start_snmp_service_async"):
                 page.start_snmp_service_async()
             elif page_id == "network_tools" and hasattr(page, "refresh_all"):
                 page.refresh_all()
+            elif page_id == "system_settings" and hasattr(page, "reload_settings"):
+                page.reload_settings()
         except Exception as exc:
             app_logger.log_warning("DETACHED_PAGE_ACTIVATE_FAILED", f"page={page_id}, error={exc}")
 
@@ -523,7 +560,11 @@ class MainWindow(QMainWindow):
             elif page_id == "file_management" and self.file_management_page is not None:
                 self.file_management_page.refresh_devices()
             elif page_id == "rail_transit" and self.rail_transit_page is not None:
-                self.rail_transit_page.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
+                enter = getattr(self.rail_transit_page, "on_enter", None)
+                if callable(enter):
+                    enter(force_if_empty=force_if_empty)
+                else:
+                    self.rail_transit_page.refresh_current_async_or_lazy(force_if_empty=force_if_empty)
             elif page_id == "snmp_center" and self.snmp_center_page is not None:
                 self.snmp_center_page.start_snmp_service_async()
             elif page_id == "network_tools" and self.network_tools_page is not None:
@@ -567,6 +608,12 @@ class MainWindow(QMainWindow):
         form.addRow("系统类型", system_combo)
         form.addRow("网络域", network_combo)
         form.addRow("备注", remark_input)
+        basic_page = QWidget()
+        basic_page.setLayout(form)
+        mesh_params_editor = MeshAnalysisParamsEditor()
+        tabs = QTabWidget()
+        tabs.addTab(basic_page, "基础信息")
+        tabs.addTab(mesh_params_editor, "MR / MESH 分析参数")
         buttons = QHBoxLayout()
         ok_button = QPushButton("确定")
         cancel_button = QPushButton("取消")
@@ -574,7 +621,7 @@ class MainWindow(QMainWindow):
         buttons.addWidget(ok_button)
         buttons.addWidget(cancel_button)
         layout = QVBoxLayout()
-        layout.addLayout(form)
+        layout.addWidget(tabs)
         layout.addLayout(buttons)
         dialog.setLayout(layout)
         ok_button.clicked.connect(dialog.accept)
@@ -590,21 +637,23 @@ class MainWindow(QMainWindow):
                 system_type=str(system_combo.currentText() or "").strip(),
                 network_domain=str(network_combo.currentText() or "default").strip(),
                 remark=remark_input.text().strip(),
+                mesh_analysis_params=mesh_params_editor.params().to_dict(),
             )
         except Exception as exc:
             app_logger.log_warning("SITE_CREATE_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("site.new"), self.i18n.t("site.invalid", error=str(exc)))
+            MessageBox.warning(self, self.i18n.t("site.new"), self.i18n.t("site.invalid", error=str(exc)))
             return
         app_logger.log_info("SITE_CREATED", site.name)
         self._switch_to_site(site)
-        QMessageBox.information(self, self.i18n.t("site.new"), self.i18n.t("site.create_success", site=site.name))
+        MessageBox.information(self, self.i18n.t("site.new"), self.i18n.t("site.create_success", site=site.name))
 
     def switch_site_dialog(self) -> None:
         sites = self.site_manager.list_sites()
         if not sites:
+            MessageBox.warning(self, self.i18n.t("site.switch"), "当前没有可切换的局点")
             return
         current_index = sites.index(self.site.name) if self.site.name in sites else 0
-        name, accepted = QInputDialog.getItem(
+        name, accepted = InputDialog.getItem(
             self,
             self.i18n.t("site.switch"),
             self.i18n.t("site.select"),
@@ -618,11 +667,11 @@ class MainWindow(QMainWindow):
             site = self.site_manager.switch_site(name)
         except Exception as exc:
             app_logger.log_warning("SITE_SWITCH_FAILED", str(exc))
-            QMessageBox.warning(self, self.i18n.t("site.switch"), str(exc))
+            MessageBox.warning(self, self.i18n.t("site.switch"), str(exc))
             return
         self._switch_to_site(site)
         app_logger.log_info("SITE_SWITCHED", site.name)
-        QMessageBox.information(self, self.i18n.t("site.switch"), self.i18n.t("site.switch_success", site=site.name))
+        MessageBox.information(self, self.i18n.t("site.switch"), self.i18n.t("site.switch_success", site=site.name))
 
     def _switch_to_site(self, site: Site) -> None:
         self.site = site
@@ -642,8 +691,11 @@ class MainWindow(QMainWindow):
             self.wifi_survey_page.set_site(site.name)
         if self.ac_page is not None:
             self.ac_page.set_repository(self.repository, site.name)
+        if self.settings_page is not None and hasattr(self.settings_page, "update_site"):
+            self.settings_page.update_site(site)
         self._sync_detached_pages_to_current_site()
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
+        self.set_title_bar_context(site_name=self.site.name, status="就绪")
 
     def refresh_group_filters(self) -> None:
         if self.config_collection_page is not None:
@@ -684,6 +736,7 @@ class MainWindow(QMainWindow):
         if self.rail_transit_page is not None:
             self.rail_transit_page.restyle_visible_link_rows()
         self._sync_theme_buttons()
+        self.set_title_bar_theme(theme)
         app_logger.log_info("THEME_CHANGED", theme)
         self._update_tray_text()
 
@@ -691,17 +744,13 @@ class MainWindow(QMainWindow):
         if self.about_dialog is None:
             self.about_dialog = AboutRepositoryDialog(self.i18n, self)
             self.about_dialog.destroyed.connect(lambda _=None: setattr(self, "about_dialog", None))
-        self.about_dialog.show()
-        self.about_dialog.raise_()
-        self.about_dialog.activateWindow()
+        show_non_focus_window(self, self.about_dialog, key="about_dialog", activate=False, raise_window=False)
 
     def show_changelog_dialog(self) -> None:
         if self.changelog_dialog is None:
             self.changelog_dialog = ChangelogDialog(self.i18n, self)
             self.changelog_dialog.destroyed.connect(lambda _=None: setattr(self, "changelog_dialog", None))
-        self.changelog_dialog.show()
-        self.changelog_dialog.raise_()
-        self.changelog_dialog.activateWindow()
+        show_non_focus_window(self, self.changelog_dialog, key="changelog_dialog", activate=False, raise_window=False)
 
     def show_data_disk_manager(self) -> None:
         if self.data_disk_dialog is None:
@@ -709,13 +758,11 @@ class MainWindow(QMainWindow):
 
             self.data_disk_dialog = DataDiskManagerDialog(self.i18n, self.paths, self)
             self.data_disk_dialog.destroyed.connect(lambda _=None: setattr(self, "data_disk_dialog", None))
-        self.data_disk_dialog.show()
-        self.data_disk_dialog.raise_()
-        self.data_disk_dialog.activateWindow()
+        show_non_focus_window(self, self.data_disk_dialog, key="data_disk_dialog", activate=False, raise_window=False)
 
     def show_admin_unlock_dialog(self) -> None:
         if not self.feature_gate.is_admin_unlock_configured():
-            QMessageBox.information(self, "内部调试解锁", "当前版本未启用内部解锁。")
+            MessageBox.information(self, "内部调试解锁", "当前版本未启用内部解锁。")
             self.feature_gate.verify_admin_unlock_password("")
             return
         dialog = QDialog(self)
@@ -735,11 +782,11 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         if not self.feature_gate.verify_admin_unlock_password(password_input.text()):
-            QMessageBox.warning(self, "内部调试解锁", "口令错误，未启用临时完整模式。")
+            MessageBox.warning(self, "内部调试解锁", "口令错误，未启用临时完整模式。")
             return
         self.feature_gate.enable_session_full_mode(reason="version_button_unlock", operator=getpass.getuser())
         self.refresh_feature_flags()
-        QMessageBox.information(self, "内部调试解锁", "已启用临时完整模式。本次启动有效，重启后恢复定制版。")
+        MessageBox.information(self, "内部调试解锁", "已启用临时完整模式。本次启动有效，重启后恢复定制版。")
 
     def toggle_sidebar(self) -> None:
         self.set_sidebar_collapsed(not self.sidebar_collapsed, persist=True)
@@ -851,6 +898,8 @@ class MainWindow(QMainWindow):
 
     def retranslate(self) -> None:
         self.setWindowTitle(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        self.set_title_bar_context(site_name=self.site.name, status="就绪")
+        self.set_title_bar_theme(self.current_theme)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
         self.new_site_button.setText(self.i18n.t("site.new"))
         self.switch_site_button.setText(self.i18n.t("site.switch"))
@@ -1053,15 +1102,15 @@ class MainWindow(QMainWindow):
         message = self.i18n.t("app.exit_message")
         if has_tasks:
             message = f"{message}\n\n{self.i18n.t('app.background_tasks_running')}"
-        box = QMessageBox(self)
+        box = MessageBox(self)
         box.setWindowTitle(self.i18n.t("app.exit_title"))
         box.setText(message)
-        box.setIcon(QMessageBox.Question)
+        box.setIcon(MessageBox.Question)
         minimize_button = None
         if self.tray_available:
-            minimize_button = box.addButton(self.i18n.t("app.minimize_to_tray"), QMessageBox.ActionRole)
-        exit_button = box.addButton(self.i18n.t("app.exit_app"), QMessageBox.DestructiveRole)
-        box.addButton(self.i18n.t("app.cancel"), QMessageBox.RejectRole)
+            minimize_button = box.addButton(self.i18n.t("app.minimize_to_tray"), MessageBox.ActionRole)
+        exit_button = box.addButton(self.i18n.t("app.exit_app"), MessageBox.DestructiveRole)
+        box.addButton(self.i18n.t("app.cancel"), MessageBox.RejectRole)
         remember = QCheckBox(self.i18n.t("app.remember_choice"))
         box.setCheckBox(remember)
         box.exec()
@@ -1106,8 +1155,8 @@ class MainWindow(QMainWindow):
     def confirm_stop_all_background_tasks(self) -> None:
         if not self.has_background_tasks():
             return
-        answer = QMessageBox.question(self, self.i18n.t("tray.stop_all_tasks"), self.i18n.t("tray.stop_all_confirm"))
-        if answer == QMessageBox.Yes:
+        answer = MessageBox.question(self, self.i18n.t("tray.stop_all_tasks"), self.i18n.t("tray.stop_all_confirm"))
+        if answer == MessageBox.Yes:
             background_task_manager.stop_all()
             self._update_tray_text()
 

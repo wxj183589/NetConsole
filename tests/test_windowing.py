@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QSystemTrayIcon, QTextEdit, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QScrollArea, QSystemTrayIcon, QTextEdit, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core import app_logger
@@ -22,7 +22,16 @@ from netconsole.ui.dialogs.device_detail_dialog import COLLECT_LOG_NOT_FOUND, Co
 from netconsole.ui.table_utils import make_text_selectable
 from netconsole.ui.widgets.loading_overlay import LoadingOverlay
 from netconsole.ui.widgets.startup_splash import StartupSplash
-from netconsole.ui.windowing import DeviceDialogRegistry, fit_default_window_size
+from netconsole.ui.windowing import (
+    DeviceDialogRegistry,
+    apply_startup_main_window_geometry,
+    calculate_default_main_window_geometry,
+    fit_default_window_size,
+    format_geometry,
+    main_window_geometry_issue,
+    normalize_restored_main_window_geometry,
+    should_save_main_window_geometry,
+)
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, clean_device_text, clean_h3c_device_text, decode_text_auto, fix_mojibake_text, read_text_auto
 
 
@@ -93,6 +102,67 @@ def test_window_size_does_not_exceed_ninety_percent_on_small_screen():
     assert size.height == int(768 * 0.9)
 
 
+def test_fluent_main_window_default_geometry_matches_common_desktop_sizes():
+    full_hd = calculate_default_main_window_geometry(QRect(0, 0, 1920, 1040))
+    large_desktop = calculate_default_main_window_geometry(QRect(0, 0, 2560, 1400))
+    small_desktop = calculate_default_main_window_geometry(QRect(0, 0, 1366, 728))
+
+    assert full_hd.size().width() == 1440
+    assert full_hd.size().height() == 780
+    assert full_hd.x() == 240
+    assert full_hd.y() == 130
+    assert large_desktop.size().width() == 1920
+    assert large_desktop.size().height() == 1050
+    assert large_desktop.x() == 320
+    assert large_desktop.y() == 175
+    assert small_desktop.size().width() == 1280
+    assert small_desktop.size().height() == 760
+
+
+def test_restored_main_window_geometry_falls_back_when_too_small_or_offscreen():
+    available = QRect(0, 0, 1920, 1040)
+    too_small = normalize_restored_main_window_geometry(QRect(100, 100, 900, 600), available)
+    offscreen = normalize_restored_main_window_geometry(QRect(3000, 3000, 1600, 900), available)
+    valid = normalize_restored_main_window_geometry(QRect(100, 100, 1600, 900), available)
+
+    assert too_small.status == "invalid-small"
+    assert too_small.rect.size().width() == 1440
+    assert offscreen.status == "invalid-offscreen"
+    assert valid.status == "restored"
+    assert valid.rect.topLeft().x() == 100
+
+
+def test_fluent_main_window_rejects_area_small_saved_geometry_on_large_screen():
+    available = QRect(0, 0, 2560, 1392)
+    too_small_for_screen = normalize_restored_main_window_geometry(QRect(320, 156, 1280, 760), available)
+
+    assert too_small_for_screen.status == "invalid-area-small"
+    assert format_geometry(too_small_for_screen.rect) == "1920x1044+320+174"
+
+
+def test_startup_main_window_geometry_is_applied_to_real_widget():
+    QApplication.instance() or QApplication([])
+    available = QRect(0, 0, 2560, 1392)
+    widget = QWidget()
+
+    decision = apply_startup_main_window_geometry(widget, QRect(0, 0, 640, 480), available)
+
+    assert decision.status == "invalid-small"
+    assert widget.minimumWidth() == 1280
+    assert widget.minimumHeight() == 760
+    assert format_geometry(widget.geometry()) == "1920x1044+320+174"
+    assert main_window_geometry_issue(widget.geometry(), available) is None
+
+
+def test_main_window_geometry_save_policy_rejects_abnormal_small_rect():
+    available = QRect(0, 0, 2560, 1392)
+    default_rect = calculate_default_main_window_geometry(available)
+
+    assert should_save_main_window_geometry(QRect(0, 0, 640, 480), available) == (False, "too-small")
+    assert should_save_main_window_geometry(QRect(320, 156, 1280, 760), available) == (False, "area-too-small")
+    assert should_save_main_window_geometry(default_rect, available) == (True, "ok")
+
+
 def test_device_dialog_registry_prevents_duplicate_keys_and_removes_on_close():
     registry = DeviceDialogRegistry()
     add_window = object()
@@ -140,7 +210,7 @@ def test_settings_store_persists_theme(tmp_path):
     paths = PathResolver(tmp_path)
     store = SettingsStore(paths)
 
-    assert store.theme == "dark"
+    assert store.theme == "light"
 
     store.set_theme("light")
 
@@ -170,6 +240,9 @@ def test_main_window_system_controls_persist_theme_and_show_version(tmp_path):
     window.show_changelog_dialog()
     assert isinstance(window.changelog_dialog, ChangelogDialog)
     assert "v1.0.0" in window.changelog_dialog.text.toPlainText()
+    assert window.changelog_dialog.scroll_area.widgetResizable() is True
+    assert window.changelog_dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert window.changelog_dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
     window._force_close = True
     window.close()
 
@@ -355,6 +428,8 @@ def test_startup_splash_updates_message_and_progress():
 
     assert splash.message_label.text() == "Opening main window..."
     assert splash.progress.value() == 80
+    assert splash.size().width() == 520
+    assert splash.size().height() == 300
     splash.close()
 
 
@@ -466,6 +541,7 @@ def test_lazy_page_activation_errors_are_logged_not_raised(tmp_path, monkeypatch
 
 def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
     import netconsole.app as app_module
+    from netconsole.ui import startup_preload as preload_module
 
     paths = PathResolver(tmp_path)
     paths.ensure_project_dirs()
@@ -512,6 +588,7 @@ def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
     class FakeSettingsStore:
         def __init__(self, paths):
             self.startup_mode = "preload_all"
+            self.language = "en_US"
 
     class FakePreloadManager:
         def __init__(self, i18n, splash, started_at):
@@ -527,14 +604,24 @@ def test_app_run_writes_startup_performance_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "QIcon", lambda path: object())
     monkeypatch.setattr(app_module, "icon_path", lambda name: tmp_path / name)
     monkeypatch.setattr(app_module, "SettingsStore", FakeSettingsStore)
-    monkeypatch.setattr(app_module, "StartupPreloadManager", FakePreloadManager)
+    monkeypatch.setattr(preload_module, "StartupPreloadManager", FakePreloadManager)
     monkeypatch.setattr(app_module, "StartupSplash", FakeSplash)
 
     assert app_module.run() == 0
 
     logs = app_logger.read_logs()
     events = [item["event"] for item in reversed(logs)]
-    assert events == ["APP_START", "STARTUP", "MAIN_WINDOW_CREATED", "MAIN_WINDOW_SHOWN"]
+    assert events == [
+        "APP_START",
+        "BOOT_START",
+        "BOOT_CONFIG_LOADED",
+        "STARTUP",
+        "MAIN_WINDOW_CREATED",
+        "BOOT_MAIN_WINDOW_CREATED",
+        "BOOT_BACKGROUND_TASKS_STARTED",
+        "MAIN_WINDOW_SHOWN",
+        "BOOT_MAIN_WINDOW_SHOWN",
+    ]
     assert shown == [True]
     assert all("elapsed_ms=" in item["detail"] for item in logs if item["event"] != "STARTUP")
 
@@ -583,6 +670,7 @@ def test_app_run_fast_start_uses_build_window(tmp_path, monkeypatch):
     class FakeSettingsStore:
         def __init__(self, paths):
             self.startup_mode = "fast_start"
+            self.language = "en_US"
 
     built: list[bool] = []
     monkeypatch.setattr(app_module, "QApplication", FakeApplication)
@@ -904,3 +992,60 @@ def test_collect_log_dialog_search_count_highlight_and_ctrl_f():
     dialog.focus_search()
     QApplication.processEvents()
     assert dialog.search_input.selectedText() == "error"
+    assert dialog.findChild(QScrollArea) is not None
+
+
+def test_collect_log_dialog_export_uses_text_file_source(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    raw_log = tmp_path / "raw.log"
+    raw_log.write_text("display interface\n中文日志", encoding="utf-8")
+    output = tmp_path / "collect_export.txt"
+    captured = {}
+    monkeypatch.setattr("netconsole.ui.dialogs.device_detail_dialog.QFileDialog.getSaveFileName", lambda *_args, **_kwargs: (str(output), "Text Files (*.txt)"))
+    monkeypatch.setattr("netconsole.ui.dialogs.device_detail_dialog.submit_export_task", lambda _parent, spec, **_kwargs: captured.setdefault("spec", spec))
+    dialog = CollectLogDialog("Log", str(raw_log), "display interface\n中文日志")
+
+    dialog.export_log()
+
+    assert captured["spec"].payload == {"text_file": str(raw_log)}
+
+
+def test_remaining_dialogs_install_scroll_area(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    from netconsole.ui.dialogs.ap_history_dialog import AP_RADIO_HISTORY_COLUMNS, ApHistoryDialog
+    from netconsole.ui.dialogs.batch_collect_progress_dialog import BatchCollectProgressDialog
+    from netconsole.ui.dialogs.batch_connection_test_progress_dialog import BatchConnectionTestProgressDialog
+    import netconsole.ui.dialogs.data_disk_manager_dialog as data_disk_module
+    from netconsole.ui.dialogs.disk_cleanup_dialog import DiskCleanupDialog
+    import netconsole.ui.dialogs.device_group_dialog as device_group_module
+    from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog
+
+    class FakeBackgroundManager:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.finished = FakeSignal()
+            self.failed = FakeSignal()
+
+        def start_job(self, _job) -> str:
+            return "job-1"
+
+    monkeypatch.setattr(data_disk_module.DataDiskManagerDialog, "refresh", lambda self: None)
+    monkeypatch.setattr(device_group_module, "BackgroundProcessManager", FakeBackgroundManager)
+
+    paths = PathResolver(tmp_path)
+    fake_repository = type("Repo", (), {"database": type("Db", (), {"path": tmp_path / "devices.db"})(), "site_id": "demo"})()
+    dialogs = [
+        ApHistoryDialog(I18n("en_US"), "ap-a", "Radio", [], AP_RADIO_HISTORY_COLUMNS),
+        TracksideInterfaceHistoryDialog(I18n("en_US"), [], "Interface History", SettingsStore(paths)),
+        DiskCleanupDialog(paths),
+        data_disk_module.DataDiskManagerDialog(I18n("en_US"), paths),
+        device_group_module.DeviceGroupDialog(I18n("en_US"), fake_repository),
+        BatchCollectProgressDialog(I18n("en_US"), 1),
+        BatchConnectionTestProgressDialog(I18n("en_US"), 1),
+    ]
+
+    try:
+        for dialog in dialogs:
+            assert dialog.findChild(QScrollArea) is not None
+    finally:
+        for dialog in dialogs:
+            dialog.close()

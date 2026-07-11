@@ -13,6 +13,7 @@ from typing import Any
 
 from netconsole.services.mesh_analysis_excel_report import MeshAnalysisExcelReportExporter
 from netconsole.services.mesh_analysis_report import MeshAnalysisReportService, MeshReportOptions
+from netconsole.models.mesh_analysis_params import MeshAnalysisParams, normalize_mesh_analysis_params
 
 
 @dataclass(frozen=True)
@@ -174,11 +175,19 @@ def _run_sequential_reports(
         emit("progress", _combined_progress(index, total, 0), "loading", output_dir=str(output_dir), file_index=index, file_total=total, file_name=file_label)
         report_path = _unique_report_path(output_dir, request.mr_name, source_file)
         temp_path = report_path.with_name(report_path.stem + ".tmp.xlsx")
+        params = _analysis_params_for_report(request.options, source_file)
         options = replace(
             request.options,
             source_file_id=int(source_file["id"]),
             source_file_name=file_label,
             report_name=request.options.report_name or f"{request.mr_name} {file_label}",
+            short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
+            main_link_switch_time_ms=params.main_link_switch_time_ms,
+            pingpong_tolerance_ms=params.pingpong_tolerance_ms,
+            pingpong_return_window_ms=params.effective_pingpong_return_window_ms,
+            flap_window_seconds=max(1, int(round(params.effective_pingpong_return_window_ms / 1000.0))),
+            business_type=params.service_type,
+            working_mode=params.wifi_type,
         )
         service = MeshAnalysisReportService(Path(request.db_path), request.mr_name)
 
@@ -230,11 +239,19 @@ def _build_report_jobs(output_dir: Path, request: MeshReportProcessRequest, sour
         file_label = str(source_file.get("original_filename") or source_file.get("archived_filename") or source_file.get("id") or "")
         report_path = _unique_report_path(output_dir, request.mr_name, source_file, reserved_paths)
         reserved_paths.add(report_path)
+        params = _analysis_params_for_report(request.options, source_file)
         options = replace(
             request.options,
             source_file_id=int(source_file["id"]),
             source_file_name=file_label,
             report_name=request.options.report_name or f"{request.mr_name} {file_label}",
+            short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
+            main_link_switch_time_ms=params.main_link_switch_time_ms,
+            pingpong_tolerance_ms=params.pingpong_tolerance_ms,
+            pingpong_return_window_ms=params.effective_pingpong_return_window_ms,
+            flap_window_seconds=max(1, int(round(params.effective_pingpong_return_window_ms / 1000.0))),
+            business_type=params.service_type,
+            working_mode=params.wifi_type,
         )
         jobs.append(
             {
@@ -284,7 +301,7 @@ def _list_source_files(db_path: Path, source_file_ids: tuple[int, ...] = ()) -> 
         rows = conn.execute(
             f"""
             SELECT id, original_filename, archived_filename, first_sample_time, last_sample_time,
-                   records_parsed, records_skipped, issue_count, sha256
+                   records_parsed, records_skipped, issue_count, sha256, analysis_params_json
             FROM source_files
             WHERE {" AND ".join(clauses)}
             ORDER BY COALESCE(first_sample_time, imported_at) ASC, id ASC
@@ -292,6 +309,14 @@ def _list_source_files(db_path: Path, source_file_ids: tuple[int, ...] = ()) -> 
             values,
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _analysis_params_for_report(options: MeshReportOptions, source_file: dict[str, object]) -> MeshAnalysisParams:
+    if options.analysis_params_override:
+        return normalize_mesh_analysis_params(options.analysis_params_override)
+    if str(source_file.get("analysis_params_json") or "").strip():
+        return normalize_mesh_analysis_params(source_file.get("analysis_params_json"))
+    return normalize_mesh_analysis_params(options.site_analysis_params)
 
 
 def _unique_report_path(output_dir: Path, mr_name: str, source_file: dict[str, object], reserved_paths: set[Path] | None = None) -> Path:

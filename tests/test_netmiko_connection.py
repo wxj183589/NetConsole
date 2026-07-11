@@ -247,12 +247,13 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
         "password": "Admin@123",
         "port": 22,
         "timeout": 10,
-        "conn_timeout": 10,
-        "auth_timeout": 10,
-        "banner_timeout": 10,
+        "conn_timeout": 5,
+        "auth_timeout": 8,
+        "banner_timeout": 8,
         "encoding": "gb2312",
         "session_log": None,
         "global_delay_factor": 1,
+        "fast_cli": False,
     }
     assert commands == ["screen-length disable", "display clock"]
     assert calls["read_timeout"] == 10
@@ -301,3 +302,82 @@ def test_disconnect_called_when_send_command_fails(monkeypatch):
     assert result.success is True
     assert "display clock" in result.message
     assert calls["disconnect"] is True
+
+
+def test_connection_banner_failure_is_structured_without_traceback(monkeypatch, capsys):
+    def fake_connect_handler(**_kwargs):
+        raise RuntimeError("Exception (client): Error reading SSH protocol banner")
+
+    monkeypatch.setattr(netmiko_connection, "ConnectHandler", fake_connect_handler)
+
+    result = test_device_connection(Device(ip_address="10.0.0.52", ssh_enabled=1, ssh_username="admin", ssh_password="pwd"))
+
+    captured = capsys.readouterr()
+    assert result.success is False
+    assert result.status == "ssh_banner_failed"
+    assert "SSH握手失败" in result.message
+    assert "Traceback" not in result.message
+    assert "Traceback" not in captured.err
+
+
+def test_connection_targets_include_telnet_after_ssh_when_both_enabled():
+    targets = connection_targets(
+        Device(
+            ip_address="10.0.0.52",
+            ssh_enabled=1,
+            ssh_port=22,
+            ssh_username="ssh",
+            ssh_password="ssh_pwd",
+            telnet_enabled=1,
+            telnet_port=23,
+            telnet_username="telnet",
+            telnet_password="telnet_pwd",
+        )
+    )
+
+    assert [target.protocol for target in targets[:2]] == ["SSH", "Telnet"]
+    assert targets[0].username == "ssh"
+    assert targets[1].username == "telnet"
+
+
+def test_auto_targets_fall_back_to_telnet_after_ssh_banner_failure(monkeypatch):
+    calls = []
+
+    class FakeConnection:
+        def find_prompt(self):
+            return "<SW01>"
+
+        def send_command_timing(self, command, **_kwargs):
+            return "screen-length disable\n<SW01>\n"
+
+        def send_command(self, command, **_kwargs):
+            return "clock"
+
+        def disconnect(self):
+            calls.append("disconnect")
+
+    def fake_connect_handler(**kwargs):
+        calls.append(kwargs["device_type"])
+        if kwargs["device_type"] == "hp_comware":
+            raise RuntimeError("Error reading SSH protocol banner")
+        return FakeConnection()
+
+    monkeypatch.setattr(netmiko_connection, "ConnectHandler", fake_connect_handler)
+
+    result = test_device_connection(
+        Device(
+            ip_address="10.0.0.52",
+            ssh_enabled=1,
+            ssh_username="ssh",
+            ssh_password="ssh_pwd",
+            telnet_enabled=1,
+            telnet_username="telnet",
+            telnet_password="telnet_pwd",
+        )
+    )
+
+    assert result.success is True
+    assert result.protocol == "Telnet"
+    assert result.status == "telnet_ok"
+    assert calls[:2] == ["hp_comware", "hp_comware_telnet"]
+    assert "disconnect" in calls

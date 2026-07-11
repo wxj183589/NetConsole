@@ -18,6 +18,7 @@ from netconsole.models.online_mr_models import (
     STATE_COLLECTING,
     STATE_CONNECTING,
     STATE_FAILED,
+    STATE_FORCED_STOPPED,
     STATE_INITIALIZING,
     STATE_RECONNECTING,
     STATE_STOPPED,
@@ -29,6 +30,7 @@ from netconsole.models.online_mr_models import (
     TASK_INTERFACE_RATE,
     TASK_MESH_LINK,
     TASK_SWITCH_HISTORY,
+    TASK_WIRELESS_STATUS,
     repeat_command_group,
     OnlineMrConnection,
     OnlineMrConnectionConfig,
@@ -37,6 +39,11 @@ from netconsole.models.online_mr_models import (
     OnlineMrStats,
 )
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text, summarize_active
+from netconsole.services.online_mr.collection_commands import (
+    NORMAL_DISPLAY_PREPARE_COMMANDS,
+    PROBE_STREAM_PREPARE_COMMANDS,
+    stream_prepare_commands,
+)
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
 from netconsole.services.netmiko_connection import (
     ConnectionTarget,
@@ -49,6 +56,7 @@ from netconsole.services.online_mr.core.event_model import (
     EVENT_BUSY_SAMPLE,
     EVENT_INTERFACE_SAMPLE,
     EVENT_MESH_SAMPLE,
+    EVENT_RAW_LINE,
     EVENT_STATS_SAMPLE,
     OnlineMrEvent,
 )
@@ -63,6 +71,15 @@ class ConnectionFactory(Protocol):
 
 class OnlineMrConnectionError(RuntimeError):
     pass
+
+
+STREAM_PREPARE_COMMANDS: tuple[str, ...] = NORMAL_DISPLAY_PREPARE_COMMANDS
+PREPARE_FAILURE_MARKERS: tuple[str, ...] = (
+    "% unrecognized command",
+    "% incomplete command",
+    "permission denied",
+    "error:",
+)
 
 
 class NetmikoShellConnection(OnlineMrConnection):
@@ -116,7 +133,7 @@ class NetmikoShellConnection(OnlineMrConnection):
 
         def write_loop() -> None:
             try:
-                with raw_path.open("a", encoding="utf-8", errors="replace") as file:
+                with raw_path.open("a", encoding="utf-8") as file:
                     while True:
                         line = write_queue.get()
                         if line is None:
@@ -308,6 +325,7 @@ class OnlineMrCollector:
         self._collector_output_writer_thread: Thread | None = None
         self._device_terminal_queue: Queue[str | None] = Queue(maxsize=20000)
         self._device_terminal_writer_thread: Thread | None = None
+        self._streaming_mode = False
 
     def start(self) -> OnlineMrSessionMeta:
         self.session = self.store.create_session(
@@ -326,6 +344,9 @@ class OnlineMrCollector:
             self.session.meta.connection_method = self.config.connection_method
             self.session.write_meta()
         self.initialize_connection()
+        if self.cancelled or self._stream_stop.is_set():
+            self._set_status(STATE_STOPPING)
+            return self.session.meta
         self._set_status(STATE_COLLECTING)
         return self.session.meta
 
@@ -376,16 +397,41 @@ class OnlineMrCollector:
     def initialize_connection(self) -> None:
         if self.connection is None:
             raise OnlineMrConnectionError("connection is not ready")
+        if self.cancelled or self._stream_stop.is_set():
+            return
         self._set_status(STATE_INITIALIZING)
+        self._run_init_commands(self.connection, record_meta=True)
+
+    def _run_init_commands(self, connection: OnlineMrConnection, *, record_meta: bool = False) -> None:
+        if self.cancelled or self._stream_stop.is_set():
+            return
+        session = self._session()
+        started_at = datetime.now()
+        status = "success"
+        errors: list[str] = []
         for command in INIT_COMMANDS:
+            if self.cancelled or self._stream_stop.is_set():
+                return
             try:
-                raw = self.connection.send_command(command, self.config.command_timeout)
+                connection.send_command(command, self.config.command_timeout)
             except Exception as exc:
+                if self.cancelled or self._stream_stop.is_set():
+                    return
+                status = "failed"
+                errors.append(f"{command}: {exc}")
                 self._record_command_failure("init", command, exc)
-                if self.connection is None:
-                    raise
                 continue
-            self._session().append_raw("init", command, raw)
+        ended_at = datetime.now()
+        error_message = "; ".join(errors) if errors else None
+        session.log("INFO" if status == "success" else "WARNING", f"init_status={status}" + (f" error={error_message}" if error_message else ""))
+        if record_meta:
+            session.update_init_status(
+                status=status,
+                started_at=started_at,
+                ended_at=ended_at,
+                commands=INIT_COMMANDS,
+                error_message=error_message,
+            )
 
     def run_due_tasks(self, now: float | None = None) -> list[str]:
         if self.session is None:
@@ -403,7 +449,7 @@ class OnlineMrCollector:
     def run_once(self, task_type: str) -> int:
         session = self._session()
         if self.connection is None:
-            self._reconnect()
+            self._ensure_task_connection(task_type)
         collected_at = datetime.now()
         raw_parts: list[str] = []
         commands = self._task_commands(task_type)
@@ -422,22 +468,26 @@ class OnlineMrCollector:
             self._record_command_failure(task_type, command_text, exc)
             self._update_meta()
             if self.config.auto_reconnect:
-                self._reconnect()
+                self._reconnect_task_connection(task_type)
             return -1
 
     def run_forever(
         self,
         snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
         stream_event_callback: Callable[[OnlineMrEvent], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         try:
             if self.session is None:
                 self.start()
             self._stream_event_callback = stream_event_callback
             if self._uses_default_connection_factory:
-                self._run_streaming_collectors(snapshot_callback)
+                self._run_streaming_collectors(snapshot_callback, should_cancel)
                 return
             while not self.cancelled:
+                if should_cancel is not None and should_cancel():
+                    self.request_stop()
+                    break
                 self.run_due_tasks()
                 if snapshot_callback and self.latest_snapshot is not None:
                     snapshot_callback(self.latest_snapshot)
@@ -448,7 +498,7 @@ class OnlineMrCollector:
             if self.session:
                 self.session.finish(STATE_FAILED, self.stats.as_dict())
         finally:
-            if self.status not in {STATE_STOPPED, STATE_FAILED}:
+            if self.status not in {STATE_STOPPED, STATE_FORCED_STOPPED, STATE_FAILED}:
                 self.stop()
 
     def stop(self) -> None:
@@ -469,6 +519,25 @@ class OnlineMrCollector:
         self._stream_stop.set()
         if self.session:
             self._set_status(STATE_STOPPING)
+
+    def force_stop(self, reason: str = "force_stop") -> None:
+        self.cancelled = True
+        self._stream_stop.set()
+        if self.session:
+            self.session.log("WARNING", f"STOP: force closing online MR collection reason={reason}")
+        for stream_connection in list(self._stream_connections):
+            self._interrupt_connection(stream_connection)
+        self._stream_connections.clear()
+        if self.connection is not None:
+            self._interrupt_connection(self.connection)
+            self.connection = None
+        self._collector_output_queue.put(None)
+        self._device_terminal_queue.put(None)
+        if self.session:
+            self.session.finish(STATE_FORCED_STOPPED, self.stats.as_dict())
+            if self.realtime_cache:
+                self.realtime_cache.close_session(self.session.meta.session_id)
+        self.status = STATE_FORCED_STOPPED
 
     def _join_stream_threads(self, timeout: float) -> None:
         for thread in list(self._stream_threads):
@@ -511,6 +580,7 @@ class OnlineMrCollector:
             + self.stats.ap_radio_statistics_success
             + self.stats.switch_history_success
             + self.stats.interface_rate_success
+            + self.stats.wireless_status_success
         )
         failed = (
             self.stats.mesh_link_failed
@@ -518,6 +588,7 @@ class OnlineMrCollector:
             + self.stats.ap_radio_statistics_failed
             + self.stats.switch_history_failed
             + self.stats.interface_rate_failed
+            + self.stats.wireless_status_failed
         )
         if self.latest_snapshot is not None:
             snapshot = replace(self.latest_snapshot)
@@ -606,6 +677,12 @@ class OnlineMrCollector:
             return ("display clock", f"display ar5drv {radio.channel_busy_radio} channelbusy")
         if task_type == TASK_AP_RADIO_STATISTICS:
             return ("display clock", f"display ar5drv {radio.ap_radio_statistics_radio} statistics")
+        if task_type == TASK_WIRELESS_STATUS:
+            return (
+                "display clock",
+                f"display ar5drv {radio.wireless_status_radio} client all rssi",
+                f"display ar5drv {radio.wireless_status_radio} client all status",
+            )
         return TASK_COMMANDS[task_type]
 
     def _repeat_commands(self, task_type: str) -> tuple[str, ...]:
@@ -615,27 +692,44 @@ class OnlineMrCollector:
             return repeat_command_group(task_type, interval=intervals.channel_busy, radio_id=radio.channel_busy_radio)
         if task_type == TASK_AP_RADIO_STATISTICS:
             return repeat_command_group(task_type, interval=intervals.ap_radio_statistics, radio_id=radio.ap_radio_statistics_radio)
+        if task_type == TASK_WIRELESS_STATUS:
+            return repeat_command_group(task_type, interval=intervals.wireless_status, radio_id=radio.wireless_status_radio)
         if task_type == TASK_INTERFACE_RATE:
             return repeat_command_group(task_type, interval=intervals.interface_rate)
         if task_type == TASK_MESH_LINK:
             return repeat_command_group(task_type, interval=intervals.mesh_link)
         return repeat_command_group(task_type, interval=intervals.switch_history)
 
-    def _run_streaming_collectors(self, snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None) -> None:
+    def _run_streaming_collectors(
+        self,
+        snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> None:
+        if self.cancelled or self._stream_stop.is_set():
+            return
+        self._streaming_mode = True
         stream_tasks = [
             TASK_MESH_LINK,
             TASK_CHANNEL_BUSY,
             TASK_AP_RADIO_STATISTICS,
             TASK_INTERFACE_RATE,
+            TASK_WIRELESS_STATUS,
         ]
         enabled = self.config.tasks.enabled_tasks()
         self._start_collector_output_writer()
         self._start_device_terminal_writer()
+        if TASK_SWITCH_HISTORY in enabled and not self._replace_main_connection_for_stream_task(TASK_SWITCH_HISTORY):
+            enabled.discard(TASK_SWITCH_HISTORY)
         self._start_terminal_monitor_thread()
         for task_type in stream_tasks:
+            if self.cancelled or self._stream_stop.is_set():
+                break
             if task_type in enabled:
                 self._start_repeat_thread(task_type)
         while not self.cancelled:
+            if should_cancel is not None and should_cancel():
+                self.request_stop()
+                break
             if TASK_SWITCH_HISTORY in enabled:
                 for task in self.scheduler.due_tasks(self.clock()):
                     if task == TASK_SWITCH_HISTORY:
@@ -645,29 +739,49 @@ class OnlineMrCollector:
                 snapshot_callback(self.snapshot())
             self.sleeper(0.2)
 
+    def _ensure_task_connection(self, task_type: str) -> None:
+        if self._streaming_mode and task_type == TASK_SWITCH_HISTORY:
+            if not self._replace_main_connection_for_stream_task(task_type):
+                raise OnlineMrConnectionError(f"{task_type} prepare failed")
+            return
+        self._reconnect()
+
+    def _reconnect_task_connection(self, task_type: str) -> None:
+        if self._streaming_mode and task_type == TASK_SWITCH_HISTORY:
+            self._replace_main_connection_for_stream_task(task_type)
+            return
+        self._reconnect()
+
     def _start_repeat_thread(self, task_type: str) -> None:
+        if self.cancelled or self._stream_stop.is_set():
+            return
         session = self._session()
-        connection = self.connection_factory(self.config)
-        self._stream_connections.append(connection)
-        for command in INIT_COMMANDS:
-            try:
-                raw = connection.send_command(command, self.config.command_timeout)
-                session.append_raw("init", command, raw)
-            except Exception as exc:
-                self._record_command_failure("init", command, exc)
         commands = self._repeat_commands(task_type)
-        self._enqueue_collector_output_raw(
-            f"[collector=repeat] START task={task_type}\n" + "\n".join(commands) + "\n"
-        )
         raw_path = session.session_dir / "raw" / {
             TASK_MESH_LINK: "mesh_link_raw.log",
             TASK_CHANNEL_BUSY: "channel_busy_raw.log",
             TASK_AP_RADIO_STATISTICS: "ap_radio_statistics_raw.log",
             TASK_INTERFACE_RATE: "interface_rate_raw.log",
+            TASK_WIRELESS_STATUS: "wireless_status_raw.log",
         }[task_type]
 
         def target() -> None:
+            connection: OnlineMrConnection | None = None
             try:
+                if self.cancelled or self._stream_stop.is_set():
+                    return
+                connection = self.connection_factory(self.config)
+                if self.cancelled or self._stream_stop.is_set():
+                    self._interrupt_connection(connection)
+                    return
+                self._stream_connections.append(connection)
+                if not self._prepare_stream_connection(connection, task_type):
+                    return
+                if self.cancelled or self._stream_stop.is_set():
+                    return
+                self._enqueue_collector_output_raw(
+                    f"[collector=repeat] START task={task_type}\n" + "\n".join(commands) + "\n"
+                )
                 runner = getattr(connection, "run_repeat_stream", None)
                 if not callable(runner):
                     raise OnlineMrConnectionError("interactive repeat stream is unavailable")
@@ -682,11 +796,75 @@ class OnlineMrCollector:
                 except TypeError:
                     runner(commands, raw_path, self._stream_stop, self.config.command_timeout)
             except Exception as exc:
-                self._record_command_failure(task_type, "\n".join(commands), exc)
+                if not self.cancelled and not self._stream_stop.is_set():
+                    self._record_command_failure(task_type, "\n".join(commands), exc)
 
         thread = Thread(target=target, name=f"online-mr-{task_type}", daemon=True)
         self._stream_threads.append(thread)
         thread.start()
+
+    def _replace_main_connection_for_stream_task(self, task_type: str) -> bool:
+        self._close_main_connection()
+        if self.cancelled or self._stream_stop.is_set():
+            return False
+        try:
+            self.connection = self.connection_factory(self.config)
+            if self.cancelled or self._stream_stop.is_set():
+                self._close_main_connection()
+                return False
+            if not self._prepare_stream_connection(self.connection, task_type):
+                self._close_main_connection()
+                return False
+            return True
+        except Exception as exc:
+            self._record_command_failure(task_type, "\n".join(stream_prepare_commands(task_type)), exc)
+            self._close_main_connection()
+            return False
+
+    def _prepare_stream_connection(self, connection: OnlineMrConnection, task_type: str) -> bool:
+        commands = stream_prepare_commands(task_type)
+        for command in commands:
+            if self.cancelled or self._stream_stop.is_set():
+                return False
+            try:
+                output = connection.send_command(command, self.config.command_timeout)
+            except Exception as exc:
+                if self.cancelled or self._stream_stop.is_set():
+                    return False
+                if self.session:
+                    self.session.log("WARNING", f"collector={task_type} prepare_status=failed reason={self._prepare_failure_reason(command)} command={command} error={exc}")
+                self._inc(task_type, False)
+                self._update_meta()
+                return False
+            reason = self._prepare_failure_from_output(command, output)
+            if reason:
+                if self.session:
+                    self.session.log(
+                        "WARNING",
+                        f"collector={task_type} prepare_status=failed reason={reason} command={command} output={self._compact_prepare_output(output)}",
+                    )
+                self._inc(task_type, False)
+                self._update_meta()
+                return False
+        if self.session:
+            self.session.log("INFO", f"collector={task_type} prepare_status=success commands={' | '.join(commands)}")
+        return True
+
+    def _prepare_failure_from_output(self, command: str, output: str) -> str | None:
+        normalized = output.lower()
+        if any(marker in normalized for marker in PREPARE_FAILURE_MARKERS):
+            return self._prepare_failure_reason(command)
+        return None
+
+    def _prepare_failure_reason(self, command: str) -> str:
+        if command == "probe":
+            return "probe_failed"
+        if command == "system-view":
+            return "system_view_failed"
+        return "prepare_failed"
+
+    def _compact_prepare_output(self, output: str) -> str:
+        return " ".join(output.split())[:300]
 
     def _publish_stream_line(self, task_type: str, timestamp: datetime, line: str) -> None:
         if self.session is None:
@@ -696,6 +874,7 @@ class OnlineMrCollector:
             TASK_CHANNEL_BUSY: ("busy", EVENT_BUSY_SAMPLE),
             TASK_AP_RADIO_STATISTICS: ("stats", EVENT_STATS_SAMPLE),
             TASK_INTERFACE_RATE: ("interface_rate", EVENT_INTERFACE_SAMPLE),
+            TASK_WIRELESS_STATUS: ("wireless_status", EVENT_RAW_LINE),
         }.get(task_type)
         if module_event is None:
             return
@@ -733,9 +912,14 @@ class OnlineMrCollector:
         def target() -> None:
             nonlocal connection
             while not self._stream_stop.is_set():
+                if self.cancelled:
+                    return
                 if connection is None:
                     try:
                         connection = self.connection_factory(self.config)
+                        if self.cancelled or self._stream_stop.is_set():
+                            self._interrupt_connection(connection)
+                            return
                         self._stream_connections.append(connection)
                     except Exception as exc:
                         session.log("WARNING", f"terminal monitor connection failed: {exc}")
@@ -744,6 +928,8 @@ class OnlineMrCollector:
                         self.sleeper(float(self.config.reconnect_interval))
                         continue
                 try:
+                    if self.cancelled or self._stream_stop.is_set():
+                        return
                     runner = getattr(connection, "run_terminal_monitor_stream", None)
                     if callable(runner):
                         runner(
@@ -754,6 +940,8 @@ class OnlineMrCollector:
                         )
                     else:
                         for command in TERMINAL_MONITOR_INIT_COMMANDS:
+                            if self.cancelled or self._stream_stop.is_set():
+                                return
                             connection.send_command(command, self.config.command_timeout)
                         session.log("WARNING", "terminal monitor stream unavailable on connection")
                     return
@@ -774,6 +962,8 @@ class OnlineMrCollector:
         thread.start()
 
     def _reconnect(self) -> None:
+        if self.cancelled or self._stream_stop.is_set():
+            raise OnlineMrConnectionError("collection is stopping")
         if not self.config.auto_reconnect:
             raise OnlineMrConnectionError("connection failed and auto reconnect disabled")
         if self.config.max_reconnect is not None and self.stats.reconnect_count >= self.config.max_reconnect:
@@ -793,6 +983,8 @@ class OnlineMrCollector:
         if self.config.connection_method:
             self._session().meta.connection_method = self.config.connection_method
             self._session().write_meta()
+        if self.cancelled or self._stream_stop.is_set():
+            return
         self.initialize_connection()
         self._set_status(STATE_COLLECTING)
 
@@ -810,6 +1002,7 @@ class OnlineMrCollector:
             TASK_AP_RADIO_STATISTICS: f"ap_radio_statistics_{suffix}",
             TASK_SWITCH_HISTORY: f"switch_history_{suffix}",
             TASK_INTERFACE_RATE: f"interface_rate_{suffix}",
+            TASK_WIRELESS_STATUS: f"wireless_status_{suffix}",
         }[task_type]
         setattr(self.stats, attr, getattr(self.stats, attr) + 1)
 

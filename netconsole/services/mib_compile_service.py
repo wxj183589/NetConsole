@@ -171,13 +171,7 @@ class MibCompileService:
 
 
 def _read_text(path: Path) -> str:
-    raw = Path(path).read_bytes()
-    for encoding in ("utf-8", "gb18030", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="ignore")
+    return read_text_with_fallback(Path(path))
 
 
 def _strip_comments(text: str) -> str:
@@ -226,3 +220,4 @@ def _dedupe_objects(objects: list[MibObjectRecord]) -> list[MibObjectRecord]:
         seen.add(key)
         result.append(item)
     return result
+from netconsole.utils.text_encoding import read_text_with_fallback

@@ -43,7 +43,11 @@ ACTIVE_LINK_SWITCH_RE = re.compile(
     re.IGNORECASE,
 )
 
-ENDPOINT_RE = re.compile(r"^(?P<peer_name>.+)_(?P<radio_mac>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})\((?P<rssi>-?\d+)\)$")
+ENDPOINT_RE = re.compile(
+    r"^(?:(?P<peer_name>.*?)_)?"
+    r"(?P<radio_mac>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})"
+    r"\((?P<rssi>-?\d+)\)$"
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,10 @@ class ActiveLinkSwitchLog:
     switch_reason_text: str
     from_station: str = "-"
     to_station: str = "-"
+    from_section: str = "-"
+    to_section: str = "-"
+    from_belong_type: str = "unknown"
+    to_belong_type: str = "unknown"
     from_serial_number: str = "-"
     to_serial_number: str = "-"
     from_resolve_rule: str = ""
@@ -144,7 +152,7 @@ def parse_active_link_endpoint(text: str) -> ActiveLinkEndpoint:
     match = ENDPOINT_RE.match(str(text or "").strip())
     if not match:
         return ActiveLinkEndpoint("", "", None)
-    peer_name = match.group("peer_name").strip()
+    peer_name = (match.group("peer_name") or "").strip()
     radio_mac = match.group("radio_mac").strip()
     rssi = int(match.group("rssi"))
     is_empty = peer_name.upper() == EMPTY_LINK_NAME and _normalize_mac(radio_mac) == "0" * 12
@@ -179,6 +187,10 @@ def parse_active_link_switch_logs(text: str, device_name: str | None = None, fal
                 switch_reason_text=switch_reason_text(reason_code),
                 from_station="-" if from_endpoint.is_empty_link else "",
                 to_station="-" if to_endpoint.is_empty_link else "",
+                from_section="-" if from_endpoint.is_empty_link else "",
+                to_section="-" if to_endpoint.is_empty_link else "",
+                from_belong_type="empty" if from_endpoint.is_empty_link else "unknown",
+                to_belong_type="empty" if to_endpoint.is_empty_link else "unknown",
                 from_serial_number="-" if from_endpoint.is_empty_link else "",
                 to_serial_number="-" if to_endpoint.is_empty_link else "",
                 from_resolve_rule="empty_link" if from_endpoint.is_empty_link else "",

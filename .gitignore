@@ -59,5 +59,8 @@ netconsole.zip
 tmp/
 tmp/*
 
-.agents
+# Project-level Codex Skills under .agents/skills are versioned with the repository.
 .codex
+
+.vs/*
+.vs

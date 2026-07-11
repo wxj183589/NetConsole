@@ -1,5 +1,7 @@
 # 构建与发布
 
+当前仓库核对环境为 Python 3.13.9、PySide6 6.11.1、PySide6-Fluent-Widgets 1.11.2；依赖约束仍以 `requirements.txt` 为准，不应把本机已安装版本写成最低支持版本。
+
 ## 当前构建入口
 
 根目录批处理：
@@ -81,6 +83,12 @@ Nuitka：
 - 最终目录也会准备 `data/`、`runtime/`、`tools/`。
 - 发布目录和 zip 均需通过白名单校验。
 
+## QFluentWidgets 打包要求
+
+- 只打包 `PySide6-Fluent-Widgets==1.11.2` 对应的 `qfluentwidgets`，不要混入 PyQt / PyQt6 / PySide2 版本。
+- 保留 `qfluentwidgets` 包内资源、图标和样式文件。
+- Mica / Acrylic / 毛玻璃效果默认关闭；打包后即使特效不可用，也必须降级为普通背景并正常启动。
+
 ## 内部版和客户版
 
 发布脚本支持：
@@ -113,6 +121,10 @@ Nuitka：
 ```
 
 实际发布前还应执行脚本自带 smoke test；非交互构建可按脚本参数显式跳过，但需要说明原因。
+
+还需验证冻结态内部入口：普通任务使用 `--background-worker --job`，导出使用 `--export-worker --job`；源码态分别使用 `python -m netconsole.background_worker` 和 `python -m netconsole.export_worker`。
+
+Windows Server 支持必须按 [Windows Server 测试清单](07-windows-server-test-checklist.md) 实机或虚机验证；构建成功本身不代表已覆盖所有 Server 版本、权限和图形环境。
 
 ## 禁止事项
 

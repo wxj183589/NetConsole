@@ -23,6 +23,7 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
@@ -152,6 +153,7 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
     assert page.has_loaded is False
     assert page.mr_table.rowCount() == 0
     page.refresh_all()
+    _wait_mesh_refresh(page)
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR2", "MR10"]
     assert page.create_mr_button.parent() is None
     assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2" / "raw").exists()
@@ -160,9 +162,30 @@ def test_mesh_page_syncs_vehicle_mr_group_profiles_in_natural_order(tmp_path):
 
     repository.update_group(int(mr2.id), station.id)
     page.refresh_all()
+    _wait_mesh_refresh(page)
 
     assert [page.mr_table.item(row, 0).text() for row in range(page.mr_table.rowCount())] == ["MR10"]
     assert Path(tmp_path / "data" / "sites" / "demo" / "files" / "rail_transit" / "mr_raw_mesh" / "MR2").exists()
+
+
+def test_mesh_page_first_show_empty_state_exits_loading(tmp_path):
+    qt_app = _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    page = MeshLogAnalysisPage(DeviceRepository(database), I18n("zh_CN"), "demo", PathResolver(tmp_path))
+
+    page.first_show_refresh(force=True)
+    deadline = time.time() + 1.0
+    while page.is_loading and time.time() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.01)
+
+    assert page.is_loading is False
+    assert page.page_state == "empty"
+    assert "暂无 MR 原始 MESH 日志" in page.progress_label.text()
 
 
 def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, monkeypatch):
@@ -180,33 +203,56 @@ def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, mon
     page.current_profile = profile
     target = paths.mesh_mr_export_dir("demo", profile.safe_folder_name) / "MR2_链路明细.xlsx"
     messages: list[str] = []
+    warnings: list[str] = []
     monkeypatch.setattr(page_module.QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (str(target), "Excel Files (*.xlsx)"))
     monkeypatch.setattr(page_module.QMessageBox, "information", lambda *_args: messages.append(str(_args[-1])) or None)
+    monkeypatch.setattr(page_module.QMessageBox, "warning", lambda *_args: warnings.append(str(_args[-1])) or None)
 
     page.export_link_details()
     deadline = time.time() + 5
-    while page.export_worker is not None and time.time() < deadline:
+    while page.link_export_job_id and time.time() < deadline:
         _app().processEvents()
         time.sleep(0.01)
+    _drain_qt_events()
 
+    assert not page.link_export_job_id, "Timed out waiting for Mesh link detail export process to finish"
+    assert not warnings
     assert target.exists()
     workbook = load_workbook(target)
-    assert set(workbook.sheetnames) >= {"链路明细", "主链路建链顺序"}
+    assert set(workbook.sheetnames) >= {"导出说明", "统计汇总", "链路明细", "主链路建链顺序", "事件明细", "分析参数"}
     sheet = workbook["链路明细"]
+    headers = [cell.value for cell in sheet[1]]
+    assert "归属来源" not in headers
+    assert "Peer Radio MAC" not in headers
+    assert headers[:8] == ["序号", "采样时间", "Radio", "链路状态", "Peer MAC", "对端AP MAC", "对端AP名称", "归属站点"]
     assert sheet["A1"].font.bold
     assert sheet["A2"].alignment.horizontal == "center"
     assert sheet["A2"].alignment.vertical == "center"
-    assert sheet["A2"].font.bold
-    assert sheet["A2"].font.color.rgb.endswith("15803D")
+    assert sheet["D2"].font.bold
+    assert sheet["D2"].font.color.rgb.endswith("15803D")
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref
+    assert sheet.column_dimensions["B"].width >= 24
+    assert sheet.column_dimensions["E"].width >= 20
     build_sheet = workbook["主链路建链顺序"]
     assert build_sheet["A1"].value == "序号"
-    assert build_sheet["Q2"].value == "短时建链"
+    assert workbook["分析参数"]["A1"].value == "统计项"
+    assert build_sheet["Q1"].value == "配置切换时间(ms)"
+    assert build_sheet["T1"].value == "建链结果"
+    assert build_sheet["T2"].value == "短时建链"
     headers = [cell.value for cell in sheet[1]]
-    for header in ("时间", "Radio", "PeerMac", "LinkState", "EstablishTime", "DurationTime", "LinkCnt", "L_Rssi", "P_Rssi", "L_Cpu", "P_Cpu", "L_Mem", "P_Mem", "L_TxBusy", "L_RxBusy", "P_TxBusy", "P_RxBusy"):
+    for header in ("采样时间", "Radio", "Peer MAC", "链路状态", "对端射频口", "建链时间", "链路时长", "链路数量", "MR侧RSSI", "对端RSSI", "MR侧CPU", "对端CPU", "MR侧噪声", "对端噪声", "发送繁忙度", "接收繁忙度", "总发送繁忙度", "总接收繁忙度", "备注"):
         assert header in headers
-    assert any("链路明细已导出" in message for message in messages)
+    assert "归属来源" not in headers
+    assert "Peer Radio MAC" not in headers
+    state_index = headers.index("链路状态") + 1
+    assert sheet.cell(2, state_index).value == "主链路"
+    assert "链路明细已导出" in page.progress_label.text()
+    assert not getattr(page, "_netconsole_export_controllers", [])
+    assert not target.with_name(f"{target.name}.tmp").exists()
+    export_job_dir = paths.runtime_cache_dir / "export_jobs"
+    assert not list(export_job_dir.glob("*.json"))
+    assert not list(export_job_dir.glob("*.cancel"))
 
 
 def test_mesh_page_state_filter_defaults_to_raw_and_filters_active_standby(tmp_path):
@@ -222,17 +268,21 @@ def test_mesh_page_state_filter_defaults_to_raw_and_filters_active_standby(tmp_p
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.current_profile = profile
 
+    page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
+    _wait_for_mesh_tab_load(page)
     assert page._current_link_filters()["state"] is None
     assert page.link_table.rowCount() == 2
 
     page.state_filter.setCurrentIndex(1)
     page.refresh_link_table()
+    _wait_for_mesh_tab_load(page)
     assert page._current_link_filters()["state"] == "ACTIVE"
     assert {page.link_table.item(row, 3).text() for row in range(page.link_table.rowCount())} == {"ACTIVE"}
 
     page.state_filter.setCurrentIndex(2)
     page.refresh_link_table()
+    _wait_for_mesh_tab_load(page)
     assert page._current_link_filters()["state"] == "STANDBY"
     assert {page.link_table.item(row, 3).text() for row in range(page.link_table.rowCount())} == {"STANDBY"}
 
@@ -253,6 +303,57 @@ def test_duplicate_sha_is_skipped(tmp_path):
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     assert duplicate.duplicate_count == 1
     assert len(repo.list_source_files()) == 1
+
+
+def test_mesh_import_creates_compact_schema_without_raw_payload_columns(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.579\n" + LINE_A + "\n", encoding="utf-8")
+
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+
+    with sqlite3.connect(repo.path) as conn:
+        schema_version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        assert schema_version == "meshlog_compact_v2_single_log"
+        parsed_db_path = Path(conn.execute("SELECT parsed_db_path FROM source_files").fetchone()[0])
+        assert parsed_db_path.name.endswith(".mesh.sqlite")
+        assert conn.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0] == 0
+    with sqlite3.connect(parsed_db_path) as conn:
+        schema_version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        assert schema_version == "meshlog_compact_v2_single_log"
+        table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()}
+        assert {"active_points", "active_segments", "switch_events", "rssi_stats", "diagnosis_events"} <= table_names
+        forbidden = {"raw_line", "raw_text", "raw_block", "raw_payload", "full_command_output", "debug_text", "metrics_json", "deltas_json", "raw_file"}
+        for table in ("mesh_links", "parse_issues", "samples", "active_points"):
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            assert not (columns & forbidden)
+        assert conn.execute("SELECT COUNT(*) FROM active_points").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM rssi_stats").fetchone()[0] >= 1
+
+
+def test_mesh_repository_recovers_when_schema_meta_table_is_missing(tmp_path):
+    db_path = tmp_path / "mesh.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE mesh_links(raw_line TEXT)")
+    conn.commit()
+    conn.close()
+
+    repo = MeshMrRepository(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP TABLE schema_meta")
+    conn.commit()
+    conn.close()
+
+    assert not repo.needs_derived_analysis_rebuild()
+    with sqlite3.connect(db_path) as conn:
+        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(mesh_links)").fetchall()}
+    assert version == "meshlog_compact_v2_single_log"
+    assert "raw_line" not in columns
+    assert list(tmp_path.glob("mesh.sqlite.legacy_*"))
 
 
 def test_multiple_mrs_use_isolated_databases(tmp_path):
@@ -303,7 +404,8 @@ def test_mesh_query_sorts_record_seq_as_integer(tmp_path):
 
     MeshImportService("demo", paths).import_files(profile, [source])
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
-    with sqlite3.connect(repo.path) as conn:
+    detail_path = Path(repo.list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(detail_path) as conn:
         ids = [row[0] for row in conn.execute("SELECT id FROM mesh_links ORDER BY id ASC").fetchall()]
         for link_id, seq in zip(ids, [1000, 10, 1, 100, 2], strict=True):
             conn.execute("UPDATE mesh_links SET record_seq = ? WHERE id = ?", (seq, link_id))
@@ -425,27 +527,36 @@ def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
     chart_first = repo.query_peer_chart_segments(int(first_links[0]["id"]), source_file_id=first_id)
     chart_all = repo.query_peer_chart_segments(int(first_links[0]["id"]))
     assert [row["sample_time"] for row in chart_first["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000"]
-    assert [row["sample_time"] for row in chart_all["run_segment"]["rows"]] == ["2025-12-03 10:00:00.000", "2025-12-03 10:00:01.000"]
+    assert chart_all["run_segment"]["rows"] == []
+    assert "source_file_id" in chart_all["message"]
 
-    with sqlite3.connect(repo.path) as conn:
+    first_db = Path(sources[0]["parsed_db_path"])
+    second_db = Path(sources[1]["parsed_db_path"])
+    conn = sqlite3.connect(first_db)
+    try:
         conn.execute(
             """
-            INSERT INTO mesh_events (
+            INSERT INTO switch_events (
                 event_type, event_time, radio, previous_sample_time, current_sample_time,
                 observed_window_ms, from_peer_mac, to_peer_mac, details_json, source_file_id, source_line_number
             ) VALUES
-                ('ACTIVE_SWITCH', '2025-12-03 10:00:00.000', 1, NULL, '2025-12-03 10:00:00.000', NULL, NULL, NULL, '{}', ?, 2),
-                ('ACTIVE_SWITCH', '2025-12-03 10:00:01.000', 1, NULL, '2025-12-03 10:00:01.000', NULL, NULL, NULL, '{}', ?, 2)
+                ('ACTIVE_SWITCH', '2025-12-03 10:00:00.000', 1, NULL, '2025-12-03 10:00:00.000', NULL, NULL, NULL, '{}', 1, 2)
             """,
-            (first_id, second_id),
         )
+        conn.commit()
+    finally:
+        conn.close()
+    conn = sqlite3.connect(second_db)
+    try:
         conn.execute(
             """
-            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line)
-            VALUES (?, 'first.log', 9, 'ERROR', 'x', 'x', 'first', 'bad'), (?, 'second.log', 9, 'ERROR', 'x', 'x', 'second', 'bad')
+            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line_start, raw_line_end)
+            VALUES (1, 'second.log', 9, 'ERROR', 'x', 'x', 'second', 9, 9)
             """,
-            (first_id, second_id),
         )
+        conn.commit()
+    finally:
+        conn.close()
 
     event_total, events = repo.query_events(100, 0, first_id)
     issue_total, issues = repo.query_issues(100, 0, second_id)
@@ -628,10 +739,10 @@ def test_mesh_repository_builds_downsampled_link_aggregates(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [source])
     repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     rows = repo.query_link_aggregates(bucket_seconds=10)
-    assert len(rows) == 1
-    assert rows[0]["bucket_seconds"] == 10
-    assert rows[0]["sample_count"] == 2
-    assert rows[0]["avg_local_rssi"] == 37
+    assert rows == []
+    detail_path = Path(repo.list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(detail_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'mesh_link_aggregates'").fetchone()[0] == 0
 
 
 def _app():
@@ -639,6 +750,37 @@ def _app():
     from PySide6.QtWidgets import QApplication
 
     return QApplication.instance() or QApplication([])
+
+
+def _wait_mesh_refresh(page) -> None:
+    qt_app = _app()
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        if not page._profiles_refresh_job_id:
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for Mesh Profile refresh")
+
+
+def _drain_qt_events(iterations: int = 10) -> None:
+    app = _app()
+    for _ in range(iterations):
+        app.processEvents()
+        time.sleep(0.01)
+
+
+def _wait_for_mesh_tab_load(page, timeout: float = 5.0) -> None:
+    app = _app()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        current_tab = page._current_tab_name()
+        overlay = getattr(page, "tab_overlays", {}).get(current_tab)
+        if getattr(page, "tab_load_worker", None) is None and (overlay is None or not overlay.isVisible()):
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for mesh tab load")
 
 
 def test_mesh_page_column_width_persists_and_active_style(tmp_path):
@@ -656,13 +798,214 @@ def test_mesh_page_column_width_persists_and_active_style(tmp_path):
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
     page.link_table.setColumnWidth(3, 260)
     page.refresh_all()
-    page.tabs.setCurrentWidget(page.link_table)
+    _wait_mesh_refresh(page)
+    page.tabs.setCurrentIndex(1)
     page.refresh_current_mr_data()
+    _wait_for_mesh_tab_load(page)
     assert page.link_table.columnWidth(3) == 260
     assert page.link_table.rowCount() == 2
     data = page.link_table.item(0, 0).data(Qt.UserRole)
     assert data["link_state"] == "ACTIVE"
     assert page.link_table.item(0, 0).font().bold()
+
+
+def test_mesh_link_table_auto_width_keeps_metric_headers_visible(tmp_path):
+    _app()
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QHeaderView
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.refresh_all()
+    _wait_mesh_refresh(page)
+    page.tabs.setCurrentIndex(1)
+    page.refresh_current_mr_data()
+    _wait_for_mesh_tab_load(page)
+
+    header = page.link_table.horizontalHeader()
+    assert header.sectionResizeMode(13) == QHeaderView.Interactive
+    assert page.link_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert page.link_table.wordWrap() is False
+    assert page.link_table.textElideMode() == Qt.TextElideMode.ElideRight
+    for column in range(13, 25):
+        header_text = page.link_table.horizontalHeaderItem(column).text()
+        expected = header.fontMetrics().horizontalAdvance(header_text) + 32
+        assert page.link_table.columnWidth(column) >= expected
+
+
+def test_active_build_order_headers_are_chinese_and_autosized(tmp_path):
+    _app()
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QHeaderView
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    page._render_active_build_order(repo)
+
+    headers = [page.active_build_order_table.horizontalHeaderItem(column).text() for column in range(page.active_build_order_table.columnCount())]
+    assert "mesh_analysis.min_rssi" not in headers
+    assert headers[2] == "主链路 PeerMac"
+    assert headers[12] == "MR侧最低RSSI"
+    assert headers[14] == "发送繁忙度"
+    assert headers[16] == "配置切换时间(ms)"
+    assert headers[18] == "是否同AP射频切换"
+    assert headers[20] == "判定原因"
+    assert headers[21] == "是否AP回切"
+    assert headers[23] == "乒乓类型"
+    assert headers[31] == "乒乓判定原因"
+    header = page.active_build_order_table.horizontalHeader()
+    assert header.sectionResizeMode(6) == QHeaderView.Interactive
+    assert page.active_build_order_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    for column in (6, 7, 31, 32):
+        header_text = page.active_build_order_table.horizontalHeaderItem(column).text()
+        expected = header.fontMetrics().horizontalAdvance(header_text) + 32
+        assert page.active_build_order_table.columnWidth(column) >= expected
+
+
+def test_active_build_order_uses_source_snapshot_before_site_fallback_and_temp_override(tmp_path):
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
+    _insert_mesh_samples(repo.path, first_count=2, second_count=0)
+    snapshot = mesh_analysis_params_to_json(
+        {
+            "main_link_switch_time_ms": 2500,
+            "short_link_tolerance_ms": 500,
+            "merge_same_physical_ap_dual_radio": True,
+        }
+    )
+    with sqlite3.connect(repo.path) as conn:
+        conn.execute("UPDATE source_files SET analysis_params_json = ?", (snapshot,))
+
+    rows = repo.query_active_link_build_order(
+        fallback_analysis_params={"main_link_switch_time_ms": 5000, "short_link_tolerance_ms": 500}
+    )
+    assert rows[0]["main_link_switch_time_ms"] == 2500
+    assert rows[0]["short_link_tolerance_ms"] == 500
+    assert rows[0]["build_result"] == "normal"
+    assert "容差范围" in rows[0]["judge_reason"]
+
+    override_rows = repo.query_active_link_build_order(
+        analysis_params={"main_link_switch_time_ms": 3000, "short_link_tolerance_ms": 500}
+    )
+    assert override_rows[0]["main_link_switch_time_ms"] == 3000
+    assert override_rows[0]["build_result"] == "short"
+
+
+def test_active_build_order_marks_ap_pingpong_by_physical_ap_sequence():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    rows = [
+        _active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:00:01.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:00:02.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+    result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
+
+    middle = result[1]
+    assert middle["is_ap_return_event"] is True
+    assert middle["is_pingpong_abnormal"] is True
+    assert middle["pingpong_type"] == "AP乒乓切换异常"
+    assert middle["middle_ap_dwell_ms"] == 1000
+    assert "明显小于配置切换时间 2500ms" in middle["pingpong_judgment_reason"]
+
+
+def test_active_build_order_rssi_stats_use_same_valid_samples():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    rows = [
+        {**_active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"), "local_rssi_db": 0},
+        {**_active_point("2025-12-03 10:00:01.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"), "local_rssi_db": 40},
+        {**_active_point("2025-12-03 10:00:02.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"), "local_rssi_db": 50},
+    ]
+    result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
+
+    segment = result[0]
+    assert segment["avg_mr_rssi"] == 30
+    assert segment["min_mr_rssi"] == 0
+    assert segment["max_mr_rssi"] == 50
+    assert segment["min_mr_rssi"] <= segment["avg_mr_rssi"] <= segment["max_mr_rssi"]
+
+
+def test_active_build_order_separates_critical_and_normal_return_events():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    critical_rows = [
+        _active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:00:01.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:00:02.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:00:03.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+    normal_rows = [
+        _active_point("2025-12-03 10:10:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:10:01.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:02.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:03.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:04.000", "30f5277a5a3f", "bbbb-0000-0001", "AP-B", "radio1"),
+        _active_point("2025-12-03 10:10:05.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+
+    critical = _active_build_order_rows_from_points(critical_rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})[1]
+    normal = _active_build_order_rows_from_points(normal_rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})[1]
+
+    assert critical["pingpong_type"] == "临界回切"
+    assert critical["is_pingpong_abnormal"] is False
+    assert normal["pingpong_type"] == "普通回切事件"
+    assert normal["is_pingpong_abnormal"] is False
+
+
+def test_active_build_order_marks_same_physical_ap_radio_roundtrip_not_ap_pingpong():
+    from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+
+    rows = [
+        _active_point("2025-12-03 10:00:00.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+        _active_point("2025-12-03 10:00:01.000", "30f5277a5a3f", "aaaa-0000-0001", "AP-A", "radio2"),
+        _active_point("2025-12-03 10:00:02.000", "30f5277a5a2f", "aaaa-0000-0001", "AP-A", "radio1"),
+    ]
+    result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
+
+    middle = result[1]
+    assert middle["pingpong_type"] == "同AP射频往返"
+    assert middle["is_ap_return_event"] is False
+    assert middle["is_pingpong_abnormal"] is False
+
+
+def test_peer_chart_run_context_includes_same_time_standby_from_other_session(tmp_path):
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n" + LINE_STANDBY + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repo = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    total, rows = repo.query_links(10, 0, {"state": "ACTIVE"})
+    assert total == 1
+    anchor = rows[0]
+
+    segments = repo.query_peer_chart_initial_segments(int(anchor["id"]), source_file_id=anchor["source_file_id"])
+    run_rows = segments["run_segment"]["rows"]
+    assert {row["link_state"] for row in run_rows} == {"ACTIVE", "STANDBY"}
+
+    payload = build_chart_payload(segments["peer_segment"], segments["run_segment"])
+    backups = [items for items in payload["backup_links_by_index"] if items]
+    assert backups
+    assert backups[0][0]["peer_mac"] == "30f5277a5a4f"
+    assert payload["main_links_by_index"][0]["peer_mac"] == "30f5277a5a2f"
 
 
 def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
@@ -690,6 +1033,7 @@ def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
     page.source_table.cellDoubleClicked.emit(row, 0)
     app.processEvents()
     app.processEvents()
+    _wait_for_mesh_tab_load(page)
 
     assert page.tabs.currentIndex() == 1
     assert page.current_source_file_id == target_source_id
@@ -704,6 +1048,39 @@ def test_mesh_page_double_click_source_opens_filtered_link_details(tmp_path):
         app.processEvents()
     assert page.tabs.currentIndex() == 1
     assert page.current_source_file_id == target_source_id
+
+
+def test_mesh_page_peer_dialog_uses_row_source_file_id_in_all_files_mode(tmp_path, monkeypatch):
+    _app()
+    from PySide6.QtCore import Qt
+
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    first = tmp_path / "first-meshlog.log"
+    second = tmp_path / "second-meshlog.log"
+    first.write_text("[1] 2025/12/03 10:00:00.000\n" + LINE_A + "\n", encoding="utf-8")
+    second.write_text("[1] 2025/12/03 10:00:01.000\n" + LINE_B + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [first, second])
+
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    page.current_source_file_id = None
+    page.tabs.setCurrentIndex(1)
+    page.refresh_link_table()
+    _wait_for_mesh_tab_load(page)
+    captured: list[tuple[str, int | None, str, int | None, int | None]] = []
+    monkeypatch.setattr(page, "_open_peer_dialog", lambda peer, radio, session, link_id=None, source_file_id=None: captured.append((peer, radio, session, link_id, source_file_id)))
+
+    row_data = page.link_table.item(0, 0).data(Qt.UserRole)
+    for column in (4, 5, 6, 8, 9):
+        page._open_peer_from_link_cell(0, column)
+
+    assert len(captured) == 5
+    assert {item[4] for item in captured} == {int(row_data["source_file_id"])}
+    assert {item[3] for item in captured} == {int(row_data["id"])}
 
 
 def test_mesh_page_double_click_source_without_links_shows_empty_detail(tmp_path):
@@ -865,7 +1242,7 @@ def test_anchor_dialog_signal_chart_uses_raw_positive_rssi(tmp_path):
 
 
 def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
-    repo = MeshMrRepository(tmp_path / "mesh.sqlite")
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
     _insert_mesh_samples(repo.path, first_count=10000, second_count=10000)
     segment = repo.query_run_context_segment(5000)
     sample_times = {row["sample_time"] for row in segment["rows"]}
@@ -877,7 +1254,7 @@ def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
 def test_full_active_chart_query_loads_beyond_link_detail_page_size(tmp_path):
     from netconsole.ui.mesh_chart_payload import build_chart_payload
 
-    repo = MeshMrRepository(tmp_path / "mesh.sqlite")
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
     _insert_mesh_samples(repo.path, first_count=1005, second_count=0)
 
     segment = repo.query_active_link_chart_segments()
@@ -910,12 +1287,14 @@ def test_worker_uses_single_chart_segment_query(monkeypatch, tmp_path):
             return {}
 
     monkeypatch.setattr(mesh_peer_series_worker, "MeshMrRepository", FakeRepo)
-    worker = MeshPeerSeriesWorker(tmp_path / "mesh.sqlite", "30f5277a5a2f", 1, anchor_link_id=1)
+    worker = MeshPeerSeriesWorker(tmp_path / "mesh.sqlite", "30f5277a5a2f", 1, anchor_link_id=1, source_file_id=1)
     received = []
-    worker.loaded.connect(received.append)
+    worker.loaded.connect(lambda payload: received.append(("loaded", payload)))
+    worker.loaded_full.connect(lambda payload: received.append(("loaded_full", payload)))
     worker.run()
     assert calls == {"chart": 1, "run": 0}
-    assert received and "chart_payload" in received[0]
+    assert [kind for kind, _payload in received] == ["loaded_full"]
+    assert "chart_payload" in received[0][1]
 
 
 def test_anchor_centering_for_middle_start_and_end(tmp_path):
@@ -1420,6 +1799,44 @@ def test_active_channel_load_payload_does_not_include_next_or_peer_side_metrics(
         assert key not in payload["active_series"]
 
 
+def test_chart_payload_uses_compact_v2_scalar_metrics_without_json_payload():
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    rows = [
+        {
+            "id": 1,
+            "sample_time": "2025-12-03 10:00:01.000",
+            "link_state": "ACTIVE",
+            "peer_mac_normalized": "30f5277a5a2f",
+            "peer_ap_name": "AP-01",
+            "peer_site": "Station-01",
+            "peer_radio": "radio1",
+            "local_rssi_db": 36,
+            "peer_rssi_db": 43,
+            "local_tx_busy": 3,
+            "local_rx_busy": 5,
+        },
+        {
+            "id": 2,
+            "sample_time": "2025-12-03 10:00:02.000",
+            "link_state": "ACTIVE",
+            "peer_mac_normalized": "30f5277a5a2f",
+            "peer_ap_name": "AP-01",
+            "peer_site": "Station-01",
+            "peer_radio": "radio1",
+            "local_rssi_db": 37,
+            "peer_rssi_db": 44,
+            "local_tx_busy": 4,
+            "local_rx_busy": 6,
+        },
+    ]
+    payload = build_chart_payload({"anchor": rows[0], "rows": rows}, {"anchor": rows[0], "rows": rows, "events": []})
+    assert payload["peer_series"]["local_rssi"].tolist() == [36, 37]
+    assert payload["active_series"]["active_local_rssi"].tolist() == [36, 37]
+    assert payload["active_series"]["active_local_tx_busy"].tolist() == [3, 4]
+    assert payload["active_series"]["active_local_rx_busy"].tolist() == [5, 6]
+
+
 def test_current_active_payload_excludes_next_active_fields():
     from netconsole.ui.mesh_chart_payload import build_chart_payload
 
@@ -1459,15 +1876,21 @@ def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path)
         _payload_row(2, "2025-12-03 10:00:00.000", "30f5-277a-5a3f", "STANDBY", 27, 37),
         _payload_row(3, "2025-12-03 10:00:00.000", "30f5-277a-5a4f", "STANDBY", 31, None),
         _payload_row(4, "2025-12-03 10:00:00.000", "30f5-277a-5a5f", "STANDBY", None, 39),
+        _payload_row(5, "2025-12-03 10:00:00.000", "30f5-277a-5a6f", "STANDBY", 33, 40),
+        _payload_row(6, "2025-12-03 10:00:00.000", "30f5-277a-5a7f", "STANDBY", 34, 41),
+        _payload_row(7, "2025-12-03 10:00:00.000", "30f5-277a-5a8f", "STANDBY", 35, 42),
     ]
     rows[0]["peer_ap_name"] = "AP-X_3111"
     rows[0]["peer_site"] = "31 Site"
     rows[1]["peer_ap_name"] = "AP-X_3110"
     rows[1]["peer_site"] = "31 Site"
+    rows[1]["peer_radio"] = "radio2"
     rows[2]["peer_ap_name"] = ""
     rows[2]["peer_site"] = ""
+    rows[2]["peer_radio"] = "radio2"
     rows[3]["peer_ap_name"] = "AP-X_3109"
     rows[3]["peer_site"] = "31 Site"
+    rows[3]["peer_radio"] = "radio2"
     payload = build_chart_payload({"anchor": rows[0], "rows": [rows[0]]}, {"anchor": rows[0], "rows": rows, "events": []})
 
     profile = MeshMrProfile("mr", "MR", "MR", datetime.now(), datetime.now())
@@ -1477,11 +1900,29 @@ def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path)
 
     assert "AP-X_3111 / 31 Site" in text
     assert "MR-AP_RSSI: 45/53" in text
-    assert "1. 30f5-277a-5a4f / - / MR-AP_RSSI 31/-" in text
-    assert "2. AP-X_3110 / 31 Site / MR-AP_RSSI 27/37" in text
-    assert "3. AP-X_3109 / 31 Site / MR-AP_RSSI -/39" in text
-    assert "4." not in text
-    assert "Peer Radio" not in text
+    assert "1. AP-X_3110 / 31 Site" in text
+    assert "PeerMac: 30f5-277a-5a3f" in text
+    assert "Peer Radio: radio2" in text
+    assert "MR-AP_RSSI: 27/37" in text
+    assert "State: STANDBY" in text
+    assert "2. 30f5-277a-5a4f" in text
+    assert "MR-AP_RSSI: 31/-" in text
+    assert "5. 30f5-277a-5a7f" in text
+    assert "6." not in text
+    assert "……另有 1 条备份链路" in text
+
+
+def test_active_payload_backup_links_are_isolated_by_source_and_allow_nearby_time():
+    from netconsole.ui.mesh_chart_payload import build_chart_payload
+
+    active = _payload_row(1, "2025-12-03 10:00:00.000", "30f5-277a-5a2f", "ACTIVE", 45, 53, source_file_id=1)
+    same_source = _payload_row(2, "2025-12-03 10:00:00.600", "30f5-277a-5a3f", "STANDBY", 27, 37, source_file_id=1)
+    other_source = _payload_row(3, "2025-12-03 10:00:00.000", "30f5-277a-5a4f", "STANDBY", 31, 39, source_file_id=2)
+    payload = build_chart_payload({"anchor": active, "rows": [active]}, {"anchor": active, "rows": [active, same_source, other_source], "events": []})
+
+    backups = payload["standby_links_by_index"][0]
+    assert [item["peer_mac"] for item in backups] == ["30f5277a5a3f"]
+    assert backups[0]["source_file_id"] == 1
 
 
 def test_aba_active_switch_preserves_three_runs_and_rapid_flap():
@@ -1816,14 +2257,15 @@ def test_mesh_repository_lists_pages_in_record_sequence_order(tmp_path):
     assert links[0]["sample_time"] == "2025-12-03 10:00:03.000"
     assert links[0]["source_file_order"] == 1
     _, events = repo.query_events(10, 0)
-    assert [event["event_time"] for event in events if event["event_type"] == EVENT_ACTIVE_SWITCH] == ["2025-12-03 10:00:03.000"]
+    assert [event["event_time"] for event in events if event["event_type"] == EVENT_ACTIVE_SWITCH] == []
     sources = repo.list_source_files()
     assert [source["first_sample_time"] for source in sources] == ["2025-12-03 10:00:01.000", "2025-12-03 10:00:03.000"]
-    with sqlite3.connect(repo.path) as conn:
+    first_detail = Path(sources[0]["parsed_db_path"])
+    with sqlite3.connect(first_detail) as conn:
         conn.execute(
             """
-            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line)
-            VALUES (NULL, 'z.log', 9, 'ERROR', 'x', 'x', 'x', 'x'), (NULL, 'a.log', 2, 'ERROR', 'x', 'x', 'x', 'x')
+            INSERT INTO parse_issues (source_file_id, source_file, line_number, severity, issue_type, field_name, message, raw_line_start, raw_line_end)
+            VALUES (1, 'z.log', 9, 'ERROR', 'x', 'x', 'x', 9, 9), (1, 'a.log', 2, 'ERROR', 'x', 'x', 'x', 2, 2)
             """
         )
     _, issues = repo.query_issues(10, 0)
@@ -1876,6 +2318,7 @@ def test_mesh_page_refresh_all_does_not_double_load_selected_mr(tmp_path, monkey
 
     monkeypatch.setattr(page, "_load_profile_by_id", load_profile)
     page.refresh_all(select_mr_id=profile.mr_id)
+    _wait_mesh_refresh(page)
     assert calls == [profile.mr_id]
 
 
@@ -1891,14 +2334,36 @@ def test_mesh_page_tab_lazy_loads_only_current_tab(tmp_path, monkeypatch):
     page.dirty_tabs = {"source", "link", "event", "issue"}
     calls = []
     monkeypatch.setattr(page, "_ensure_current_derived_analysis", lambda repo: None)
-    monkeypatch.setattr(page, "_render_sources", lambda repo: calls.append("source"))
-    monkeypatch.setattr(page, "_render_links", lambda repo: calls.append("link"))
-    monkeypatch.setattr(page, "_render_events", lambda repo: calls.append("event"))
-    monkeypatch.setattr(page, "refresh_parse_issues", lambda repo=None: calls.append("issue"))
+    monkeypatch.setattr(page, "_start_tab_load", lambda tab: calls.append(tab))
     page.tabs.setCurrentIndex(1)
     assert calls == ["link"]
     assert "source" in page.dirty_tabs
     assert "event" in page.dirty_tabs
+
+
+def test_mesh_page_link_tab_shows_loading_overlay_until_async_load_finishes(tmp_path):
+    _app()
+    from netconsole.core.i18n import I18n
+    from netconsole.ui.pages.mesh_log_analysis_page import MeshLogAnalysisPage
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(profile, [source])
+    page = MeshLogAnalysisPage(I18n("zh_CN"), "demo", paths)
+    page.current_profile = profile
+    page.dirty_tabs.add("link")
+
+    page.tabs.setCurrentIndex(1)
+
+    assert not page.tab_overlays["link"].isHidden()
+    assert page.tab_overlays["link"].spinner.timer.isActive()
+    assert "正在加载链路明细" in page.progress_label.text()
+    _wait_for_mesh_tab_load(page)
+    assert page.tab_overlays["link"].isHidden()
+    assert not page.tab_overlays["link"].spinner.timer.isActive()
+    assert page.link_table.rowCount() == 1
 
 
 def test_mesh_page_repository_cache_reuses_current_mr_repo(tmp_path):
@@ -1944,8 +2409,8 @@ def test_parse_issues_table_returns_when_issues_exist(tmp_path):
             """
             INSERT INTO parse_issues (
                 source_file_id, source_file, line_number, severity, issue_type,
-                field_name, message, raw_line
-            ) VALUES (NULL, 'bad.log', 7, 'ERROR', 'field_count', 'metrics', 'too few fields', 'bad line')
+                field_name, message, raw_line_start, raw_line_end
+            ) VALUES (NULL, 'bad.log', 7, 'ERROR', 'field_count', 'metrics', 'too few fields', 7, 7)
             """
         )
     page = MeshLogAnalysisPage(I18n("en_US"), "demo", paths)
@@ -1973,10 +2438,11 @@ def test_old_derived_events_upgrade_to_raw_positive_rssi(tmp_path):
     source.write_text("\n".join(["[1] 2025/12/03 10:00:01.000", first, "[1] 2025/12/03 10:00:02.000", second]), encoding="utf-8")
     MeshImportService("demo", paths).import_files(profile, [source])
     db_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
-    with sqlite3.connect(db_path) as conn:
+    detail_path = Path(MeshMrRepository(db_path).list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(detail_path) as conn:
         conn.execute("DELETE FROM schema_meta WHERE key = 'derived_analysis_version'")
         conn.execute(
-            "UPDATE mesh_events SET details_json = ? WHERE event_type = ?",
+            "UPDATE switch_events SET details_json = ? WHERE event_type = ?",
             (json.dumps({"from_local_signal_dbm": -65, "to_local_signal_dbm": -50, "from_peer_signal_dbm": -71, "to_peer_signal_dbm": -60}), EVENT_ACTIVE_SWITCH),
         )
     repo = MeshMrRepository(db_path)
@@ -2067,7 +2533,6 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
                             1,
                             link_id,
                             1,
-                            "raw",
                         1,
                         dt,
                         "Active",
@@ -2078,8 +2543,8 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
                         "0d 00h 00m 01s",
                         1,
                         "s1",
-                        '{"local_rssi_db": 36, "peer_rssi_db": 43}',
-                        "{}",
+                        36,
+                        43,
                         f"fp-{link_id}",
                     )
                 )
@@ -2088,13 +2553,41 @@ def _insert_mesh_samples(db_path, first_count: int, second_count: int) -> None:
         conn.executemany(
             """
                 INSERT INTO mesh_links (
-                    id, sample_id, source_file_id, source_file_order, record_seq, source_line_number, raw_line, radio, sample_time,
+                    id, sample_id, source_file_id, source_file_order, record_seq, source_line_number, radio, sample_time,
                     link_state_raw, link_state, peer_mac_raw, peer_mac_normalized, establish_time,
-                    duration_text, duration_seconds, session_id, metrics_json, deltas_json, record_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duration_text, duration_seconds, session_id, local_rssi_db, peer_rssi_db, record_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             links,
         )
+    MeshMrRepository(db_path).rebuild_derived_analysis()
+
+
+def _active_point(sample_time: str, peer: str, ap_mac: str, ap_name: str, peer_radio: str) -> dict[str, object]:
+    normalized = "".join(character for character in peer.lower() if character in "0123456789abcdef")
+    return {
+        "id": int(datetime.fromisoformat(sample_time).timestamp() * 1000),
+        "source_file_id": 1,
+        "radio": 1,
+        "sample_time": sample_time,
+        "peer_mac_raw": peer,
+        "peer_mac_normalized": normalized,
+        "peer_mac": normalized,
+        "peer_ap_name": ap_name,
+        "peer_site": "03横溪站",
+        "peer_radio": peer_radio,
+        "peer_radio_label": peer_radio,
+        "peer_ap_mac": ap_mac,
+        "peer_radio_mac": peer,
+        "duration_seconds": 1,
+        "local_rssi_db": 35,
+        "peer_rssi_db": 38,
+        "local_tx_busy": 1,
+        "local_rx_busy": 3,
+        "peer_tx_busy": 1,
+        "peer_rx_busy": 3,
+        "source_file": "mesh.log",
+    }
 
 
 def _chart_row(link_id: int, sample_time: str) -> dict[str, object]:
@@ -2111,10 +2604,23 @@ def _chart_row(link_id: int, sample_time: str) -> dict[str, object]:
     }
 
 
-def _payload_row(link_id: int, sample_time: str, peer_mac: str, state: str, local_rssi: int, peer_rssi: int, local_tx_busy: int = 3, local_rx_busy: int = 5) -> dict[str, object]:
+def _payload_row(
+    link_id: int,
+    sample_time: str,
+    peer_mac: str,
+    state: str,
+    local_rssi: int | None,
+    peer_rssi: int | None,
+    local_tx_busy: int = 3,
+    local_rx_busy: int = 5,
+    source_file_id: int = 1,
+    radio: int = 1,
+) -> dict[str, object]:
     normalized = "".join(character for character in peer_mac.lower() if character in "0123456789abcdef")
     return {
         "id": link_id,
+        "source_file_id": source_file_id,
+        "radio": radio,
         "sample_time": sample_time,
         "peer_mac_normalized": normalized,
         "peer_mac_raw": peer_mac,

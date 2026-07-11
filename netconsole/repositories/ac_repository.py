@@ -114,6 +114,12 @@ FIT_AP_METADATA_FIELDS = (
     "ap_uuid",
     "ap_name",
     "site_name",
+    "belong_type",
+    "belong_section",
+    "section_start_station",
+    "section_end_station",
+    "yard_name",
+    "area_name",
     "mileage",
     "location_note",
     "direction",
@@ -142,8 +148,13 @@ AP_EXTENSION_POINT_FIELDS = (
     "line_name",
     "system_type",
     "network_domain",
+    "belong_type",
     "station_name",
     "section_name",
+    "section_start_station",
+    "section_end_station",
+    "yard_name",
+    "area_name",
     "line_side",
     "direction",
     "mileage_text",
@@ -637,6 +648,12 @@ class AcRepository:
                 """
                 SELECT r.*,
                        COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
+                       COALESCE(m_uuid.belong_type, m_name.belong_type) AS metadata_belong_type,
+                       COALESCE(m_uuid.belong_section, m_name.belong_section) AS metadata_belong_section,
+                       COALESCE(m_uuid.section_start_station, m_name.section_start_station) AS metadata_section_start_station,
+                       COALESCE(m_uuid.section_end_station, m_name.section_end_station) AS metadata_section_end_station,
+                       COALESCE(m_uuid.yard_name, m_name.yard_name) AS metadata_yard_name,
+                       COALESCE(m_uuid.area_name, m_name.area_name) AS metadata_area_name,
                        COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
                        COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
                        COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
@@ -800,12 +817,18 @@ class AcRepository:
                 "ap_mac_norm LIKE ?",
                 "ap_name LIKE ?",
                 "ap_point_code LIKE ?",
+                "belong_type LIKE ?",
                 "station_name LIKE ?",
                 "section_name LIKE ?",
+                "section_start_station LIKE ?",
+                "section_end_station LIKE ?",
+                "yard_name LIKE ?",
+                "area_name LIKE ?",
                 "line_side LIKE ?",
                 "direction LIKE ?",
                 "mileage_text LIKE ?",
                 "CAST(mileage_m AS TEXT) LIKE ?",
+                "location_desc LIKE ?",
                 "remark LIKE ?",
             ]
             clauses.append(
@@ -916,6 +939,11 @@ class AcRepository:
                     stats["skipped_rows"] += 1
                     continue
                 if existing_id:
+                    if not payload.get("ap_mac_norm") and not payload.get("ap_mac_display"):
+                        existing = conn.execute("SELECT ap_mac_norm, ap_mac_display FROM ap_extension_points WHERE id = ?", (existing_id,)).fetchone()
+                        if existing is not None:
+                            payload["ap_mac_norm"] = existing["ap_mac_norm"]
+                            payload["ap_mac_display"] = existing["ap_mac_display"]
                     assignments = ", ".join(f"{field} = ?" for field in AP_EXTENSION_POINT_FIELDS if field != "created_at")
                     conn.execute(
                         f"UPDATE ap_extension_points SET {assignments} WHERE id = ?",
@@ -1165,6 +1193,28 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_fit_ap_history_page(
+        self,
+        history_kind: str,
+        ap_uuid: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, object | None]]:
+        table = _fit_ap_history_table(history_kind)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE ap_uuid = ? ORDER BY collected_at DESC, id DESC LIMIT ? OFFSET ?",
+                (ap_uuid, max(1, int(limit)), max(0, int(offset))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
+        table = _fit_ap_history_table(history_kind)
+        with self.database.connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE ap_uuid = ?", (ap_uuid,)).fetchone()
+        return int(row["total"] if row is not None else 0)
+
     def list_all_ap_optical_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             entity_rows = conn.execute(
@@ -1389,7 +1439,12 @@ class AcRepository:
         return next((row for row in rows if row.get("ap_uuid") == ap_uuid), None)
 
     def upsert_fit_ap_metadata(self, data: dict[str, object | None]) -> dict[str, object | None]:
-        payload = self._payload(FIT_AP_METADATA_FIELDS, data)
+        normalized_data = dict(data)
+        if not normalized_data.get("site_name"):
+            normalized_data["site_name"] = normalized_data.get("belong_station") or normalized_data.get("station_name")
+        if not normalized_data.get("belong_section"):
+            normalized_data["belong_section"] = normalized_data.get("section_name")
+        payload = self._payload(FIT_AP_METADATA_FIELDS, normalized_data)
         if not payload.get("ap_uuid") and payload.get("ap_name"):
             resource = self.get_fit_ap_resource_by_name_any_ac(str(payload["ap_name"]))
             if resource:
@@ -1441,7 +1496,18 @@ class AcRepository:
         return self.update_fit_ap_metadata_fields(ap_uuids, {"site_name": site_name})
 
     def update_fit_ap_metadata_fields(self, ap_uuids: list[str], fields: dict[str, object | None]) -> int:
-        allowed = {"site_name", "mileage", "location_note", "direction"}
+        allowed = {
+            "site_name",
+            "belong_type",
+            "belong_section",
+            "section_start_station",
+            "section_end_station",
+            "yard_name",
+            "area_name",
+            "mileage",
+            "location_note",
+            "direction",
+        }
         values = {key: value for key, value in fields.items() if key in allowed}
         count = 0
         now = self._now()
@@ -1677,25 +1743,36 @@ class AcRepository:
             conn.commit()
         return len(payload_rows)
 
-    def list_station_online_summary_history(self, site_name: str | None = None, limit: int = 500) -> list[dict[str, object | None]]:
+    def list_station_online_summary_history(self, site_name: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[str, object | None]]:
         clauses: list[str] = []
         params: list[object] = []
         if site_name:
             clauses.append("site_name = ?")
             params.append(site_name)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
+        params.extend((max(int(limit), 1), max(int(offset), 0)))
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM ac_station_online_summary_history
                 {where}
                 ORDER BY collected_at DESC, id DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_station_online_summary_history(self, site_name: str | None = None) -> int:
+        clauses: list[str] = []
+        params: list[object] = []
+        if site_name:
+            clauses.append("site_name = ?")
+            params.append(site_name)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) AS total FROM ac_station_online_summary_history {where}", params).fetchone()
+        return int(row["total"] if row is not None else 0)
 
     def _resolve_ap_uuid(self, value: str, ac_device_uuid: str | None = None) -> str | None:
         with self.database.connect() as conn:
@@ -2148,6 +2225,12 @@ class AcRepository:
                 """
                 SELECT r.*,
                        COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
+                       COALESCE(m_uuid.belong_type, m_name.belong_type) AS metadata_belong_type,
+                       COALESCE(m_uuid.belong_section, m_name.belong_section) AS metadata_belong_section,
+                       COALESCE(m_uuid.section_start_station, m_name.section_start_station) AS metadata_section_start_station,
+                       COALESCE(m_uuid.section_end_station, m_name.section_end_station) AS metadata_section_end_station,
+                       COALESCE(m_uuid.yard_name, m_name.yard_name) AS metadata_yard_name,
+                       COALESCE(m_uuid.area_name, m_name.area_name) AS metadata_area_name,
                        COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
                        COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
                        COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
@@ -2191,8 +2274,14 @@ class AcRepository:
                 match_status = "matched_by_name" if extension else ""
             if extension:
                 for field in (
+                    "belong_type",
                     "station_name",
                     "section_name",
+                    "section_start_station",
+                    "section_end_station",
+                    "yard_name",
+                    "area_name",
+                    "network_domain",
                     "line_side",
                     "direction",
                     "mileage_text",
@@ -2210,6 +2299,12 @@ class AcRepository:
                     "remark",
                 ):
                     item[f"extension_{field}"] = extension.get(field)
+                item["belong_type"] = item.get("belong_type") or extension.get("belong_type")
+                item["section_name"] = item.get("section_name") or extension.get("section_name")
+                item["section_start_station"] = item.get("section_start_station") or extension.get("section_start_station")
+                item["section_end_station"] = item.get("section_end_station") or extension.get("section_end_station")
+                item["yard_name"] = item.get("yard_name") or extension.get("yard_name")
+                item["area_name"] = item.get("area_name") or extension.get("area_name")
                 item["extension_id"] = extension.get("id")
                 item["extension_match_status"] = match_status
             else:
@@ -2220,6 +2315,12 @@ class AcRepository:
     @staticmethod
     def _resource_with_metadata(item: dict[str, object | None]) -> dict[str, object | None]:
         item["site"] = item.get("site_name") or item.get("site")
+        item["belong_type"] = item.get("metadata_belong_type") or item.get("belong_type")
+        item["section_name"] = item.get("metadata_belong_section") or item.get("section_name")
+        item["section_start_station"] = item.get("metadata_section_start_station") or item.get("section_start_station")
+        item["section_end_station"] = item.get("metadata_section_end_station") or item.get("section_end_station")
+        item["yard_name"] = item.get("metadata_yard_name") or item.get("yard_name")
+        item["area_name"] = item.get("metadata_area_name") or item.get("area_name")
         item["mileage"] = item.get("metadata_mileage") or item.get("mileage")
         item["location_note"] = item.get("metadata_location_note") or item.get("location_note")
         item["direction"] = item.get("metadata_direction") or item.get("direction")
@@ -2644,3 +2745,15 @@ def _int_value(value: object) -> int:
         return int(str(value or "0"))
     except ValueError:
         return 0
+
+
+def _fit_ap_history_table(history_kind: str) -> str:
+    tables = {
+        "radio": "ac_fit_ap_radio_history",
+        "lldp": "ac_fit_ap_lldp_history",
+        "optical": "ac_fit_ap_optical_history",
+    }
+    try:
+        return tables[str(history_kind or "").strip().casefold()]
+    except KeyError as exc:
+        raise ValueError(f"不支持的 FIT-AP 历史类型：{history_kind}") from exc

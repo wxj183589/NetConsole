@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
+from netconsole.ui.dialogs.input_dialog_service import InputDialog
 from datetime import datetime
 from pathlib import Path
+import uuid
 
-from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -14,13 +17,12 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
-    QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -30,27 +32,20 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
+from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate, apply_feature_to_widget, default_feature_gate
 from netconsole.core.i18n import I18n
-from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
+from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sources.ap_source import compute_ap_status
-from netconsole.core.sources.switch_source import (
-    build_switch_data_lookup,
-    compute_switch_status,
-)
-from netconsole.core.state_engine import STATUS_COLORS, compute_state, display_optical_status
+from netconsole.core.state_engine import STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
 from netconsole.services.trackside_ap_business import (
-    AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
-    NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
-    TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
     build_trackside_ap_business_rows,
     build_trackside_site_filter_items,
@@ -75,27 +70,48 @@ from netconsole.services.ap_online_overview import (
     ApOnlineOverviewService,
     build_ap_online_overview_rows,
     export_ap_online_overview_xlsx,
-    write_ap_online_overview_sheet as _write_ap_online_overview_sheet,
 )
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
+from netconsole.services.fit_ap_optical_export import (
+    evaluate_fit_ap_ap_status,
+    evaluate_fit_ap_row_status,
+    evaluate_fit_ap_switch_status,
+    export_fit_ap_optical_xlsx,
+)
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
+from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name
+from netconsole.models.omnipeek_name_table import OmniPeekDeviceItem
+from netconsole.services.export import ExportJob
+from netconsole.services.export.export_task_builders import (
+    ap_online_overview_xlsx_spec,
+    fit_ap_csv_spec,
+    fit_ap_optical_xlsx_spec,
+    fit_ap_extension_template_xlsx_spec,
+    fit_ap_extension_xlsx_spec,
+)
+from netconsole.services.export.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
-from netconsole.ui.ac_collect_worker import AcCommandActionThread, AcInfoCollectThread, AcResourceCollectThread, FitApOpticalCollectThread
+from netconsole.ui.ac_collect_worker import AcInfoCollectThread
 from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
+from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
+from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
 from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
 from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_table_style, set_table_column_fields
+from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
 from netconsole.ui.export_path import CSV_FILTER, EXCEL_FILTER, remember_export_path, select_export_path
-from netconsole.ui.table.table_autosize_engine import apply_worksheet_autofit
 from netconsole.ui.table_utils import auto_fit_table_columns, auto_resize_table_columns, create_table_context_menu, configure_readonly_table, make_text_selectable
-from netconsole.ui.trackside_optical_worker import TracksideApBusinessExportThread
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, invert_table_rows_checked, is_checked_value, set_all_table_rows_checked
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
+from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.utils.interface_sort import interface_sort_key
 from netconsole.utils.mileage import format_track_mileage, mileage_search_tokens, parse_mileage_to_meters
 
@@ -135,6 +151,8 @@ FIT_AP_RESOURCE_COLUMNS = (
     ("RID2频宽", "rid2_bandwidth"),
     ("RID2功率", "rid2_tx_power"),
     ("ac.site", "site"),
+    ("归属区间", "section_name"),
+    ("归属类型", "belong_type"),
     ("ac.mileage", "mileage"),
     ("ac.location_note", "location_note"),
     ("ac.direction", "direction"),
@@ -158,6 +176,8 @@ FIT_AP_RESOURCE_COLUMN_MIN_WIDTHS = {
     "rid2_bandwidth": 80,
     "rid2_tx_power": 80,
     "site": 130,
+    "section_name": 160,
+    "belong_type": 90,
     "mileage": 90,
     "location_note": 180,
     "direction": 70,
@@ -168,17 +188,25 @@ FIT_AP_RESOURCE_COLUMN_MAX_WIDTHS = {
     "select": 54,
     "ap_name": 320,
     "ap_mac": 170,
+    "section_name": 260,
     "location_note": 360,
     "updated_at": 240,
 }
 
 AP_EXTENSION_COLUMNS = (
     ("ID", "id"),
-    ("车站", "station_name"),
+    ("归属类型", "belong_type"),
+    ("归属站点", "station_name"),
     ("归属区间", "section_name"),
+    ("区间起点站", "section_start_station"),
+    ("区间终点站", "section_end_station"),
+    ("场段", "yard_name"),
+    ("区域", "area_name"),
+    ("网络", "network_domain"),
     ("线别", "line_side"),
     ("方向", "direction"),
     ("里程", "mileage_text"),
+    ("点位说明", "location_desc"),
     ("AP编号", "ap_point_code"),
     ("AP名称", "ap_name"),
     ("AP MAC", "ap_mac_display"),
@@ -244,16 +272,6 @@ FIT_AP_OPTICAL_DETAIL_COLUMNS = (
 )
 
 OPTICAL_STATUS_COLORS = STATUS_COLOR_MAP
-OPTICAL_EXPORT_COLOR_RGB = {
-    "normal": "DCFCE7",
-    "notice": "FEF9C3",
-    "warning": "FEF9C3",
-    "alarm": "FEE2E2",
-    "link_abnormal": "FFE4E6",
-    "link_down": "FFE4E6",
-    "no_light": "E5E7EB",
-    "skipped": "F3F4F6",
-}
 OPTICAL_STATUS_SEVERITY = {"unknown": 0, "not_collected": 0, "skipped": 1, "normal": 2, "notice": 3, "warning": 4, "alarm": 5, "link_abnormal": 6, "link_down": 6, "no_light": 7}
 AC_FEATURE_ORDER = (
     "ac.trackside_ap_plan",
@@ -264,23 +282,53 @@ AC_FEATURE_ORDER = (
 )
 
 
+def _set_button_icon(button: QPushButton, icon: object | None) -> None:
+    if icon is None:
+        return
+    icon_factory = getattr(icon, "icon", None)
+    resolved_icon = icon_factory() if callable(icon_factory) else icon
+    try:
+        button.setIcon(resolved_icon)
+    except TypeError:
+        pass
+AC_TAB_ACTION_LABELS = {
+    "ac.trackside_ap_plan": ("新增行", "删除选中", "保存", "导入", "导出", "下载模板", "更新"),
+    "ac.ap_online_overview": ("获取 AP 列表", "刷新", "导出", "清空结果"),
+    "ac.fit_ap_resources": ("获取 AP 列表", "获取 AP 地址", "获取 AP 射频", "更新", "批量删除", "导出 AP 信息", "导出 OmniPeek 名称表", "清空选择", "反选"),
+    "ac.fit_ap_optical": ("更新光衰", "并发数", "导出表格", "清除筛选"),
+    "ac.fit_ap_extensions": (
+        "标准模板导入",
+        "原始设计/布点表智能识别导入",
+        "下载标准模板",
+        "导出",
+        "新增",
+        "编辑",
+        "批量删除",
+        "清空当前局点扩展信息",
+        "刷新",
+    ),
+}
+
+
 class OfflineApLedgerLoadThread(QThread):
     load_finished = Signal(object)
     load_failed = Signal(str)
 
-    def __init__(self, device_repository: DeviceRepository, ac_device_uuid: str, cache_path: Path, parent=None) -> None:
+    def __init__(self, db_path: Path, ac_device_uuid: str, cache_path: Path, parent=None) -> None:
         super().__init__(parent)
-        self.device_repository = device_repository
+        self.db_path = Path(db_path)
         self.ac_device_uuid = ac_device_uuid
         self.cache_path = cache_path
 
     def run(self) -> None:
         try:
-            ac_repository = AcRepository(self.device_repository.database)
+            database = Database(self.db_path)
+            device_repository = DeviceRepository(database)
+            ac_repository = AcRepository(database)
             resources = ac_repository.list_ap_entities(self.ac_device_uuid)
             if not resources:
                 resources = ac_repository.list_fit_ap_resources_with_metadata(self.ac_device_uuid)
-            devices = self.device_repository.list()
+            devices = device_repository.list()
             latest_lldp, _latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
             stats, ledger = build_offline_ap_ledger(
                 fit_ap_resources=resources,
@@ -300,49 +348,6 @@ def sort_fit_ap_optical_rows(rows: list[dict[str, object | None]]) -> list[dict[
         return (missing_name, name.casefold(), interface_sort_key(row.get("neighbor_interface")), str(row.get("ap_name") or ""))
 
     return sorted(rows, key=key)
-
-
-def enrich_fit_ap_optical_rows(
-    rows: list[dict[str, object | None]],
-    resources: list[dict[str, object | None]],
-    device_optical_status_lookup: dict[tuple[str, str], dict[str, object | None]] | None = None,
-) -> list[dict[str, object | None]]:
-    resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
-    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
-    lookup = device_optical_status_lookup or {}
-    result: list[dict[str, object | None]] = []
-    for row in rows:
-        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
-        neighbor_name = None if _is_invalid_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name")
-        switch_status = _lookup_switch_status(neighbor_name, row.get("neighbor_interface"), lookup)
-        is_offline = is_fit_ap_offline(resource) or bool(row.get("is_ap_offline"))
-        result.append(
-            {
-                **row,
-                "ap_mac": row.get("ap_mac") or resource.get("ap_mac"),
-                "site": row.get("site") or resource.get("site_name") or resource.get("site") or "未归属",
-                "neighbor_device_name": neighbor_name,
-                "switch_optical_status": switch_status,
-                "is_ap_offline": is_offline,
-                "optical_alarm_status": OFFLINE_AP_STATUS_TEXT if is_offline else row.get("optical_alarm_status"),
-                "ap_optical_status": "offline" if is_offline else row.get("ap_optical_status"),
-                "data_source": "historical" if is_offline else row.get("data_source"),
-            }
-        )
-    return result
-
-
-def _lookup_switch_status(
-    neighbor_device_name: object,
-    neighbor_interface: object,
-    lookup: dict[tuple[str, str], dict[str, object | None]],
-) -> str:
-    """Compute switch-side status real-time from raw optical module data."""
-    return compute_switch_status(
-        device_name=neighbor_device_name,
-        interface_name=neighbor_interface,
-        lookup=lookup,
-    )
 
 
 def filter_fit_ap_optical_rows(rows: list[dict[str, object | None]], filters: dict[str, object | None]) -> list[dict[str, object | None]]:
@@ -399,117 +404,10 @@ def _resource_state_label(row: dict[str, object | None]) -> str:
     return str(row.get("state_display") or row.get("state_raw") or row.get("state") or "").strip()
 
 
-def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
-    """Return the overall optical status for a FIT-AP row via state_engine."""
-    if neighbor_optical:
-        ap_status = compute_ap_status(row)
-        switch_status = _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
-        return worse_optical_severity(switch_status, ap_status)
-    result = compute_state({
-        "switch_device_name": row.get("neighbor_device_name"),
-        "switch_interface_name": row.get("neighbor_interface"),
-        "fit_ap_row": row,
-    })
-    return result.optical_status
-
-
-def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
-    """Evaluate AP side optical alarm status — delegates to ``ap_source.compute_ap_status``."""
-    if bool(row.get("is_ap_offline")):
-        return "offline"
-    return _evaluate_ap_result(row).severity
-
-
-def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
-    """Evaluate switch side optical status real-time from raw data."""
-    if neighbor_optical:
-        return _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
-    return compute_state({
-        "switch_device_name": row.get("neighbor_device_name"),
-        "switch_interface_name": row.get("neighbor_interface"),
-        "fit_ap_row": row,
-    }).switch_status
-
-
-def export_fit_ap_optical_xlsx(
-    path: Path,
-    rows: list[dict[str, object | None]],
-    columns: tuple[tuple[str, str], ...],
-    headers: list[str],
-    legend: str,
-    overview_rows: list[dict[str, object | None]] | None = None,
-    overview_headers: list[str] | None = None,
-) -> None:
-    from openpyxl import Workbook
-
-    workbook = Workbook()
-    overview_sheet = workbook.active
-    overview_sheet.title = "AP上线情况概览"
-    _write_ap_online_overview_sheet(
-        overview_sheet,
-        overview_rows or [],
-        overview_headers or [key for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-    )
-    optical_sheet = workbook.create_sheet("FIT-AP光衰")
-    _write_fit_ap_optical_sheet(optical_sheet, rows, columns, headers)
-    workbook.save(path)
-
-
-def _write_fit_ap_optical_sheet(sheet, rows: list[dict[str, object | None]], columns: tuple[tuple[str, str], ...], headers: list[str]) -> None:
-    from openpyxl.styles import PatternFill
-
-    sheet.append(headers)
-    for row in rows:
-        status = evaluate_fit_ap_row_status(row)
-        sheet.append([_fit_ap_optical_export_value(row, field) for _key, field in columns])
-        color = OPTICAL_EXPORT_COLOR_RGB.get(status)
-        fill = PatternFill(fill_type="solid", fgColor=color) if color else None
-        for cell in sheet[sheet.max_row]:
-            if fill:
-                cell.fill = fill
-    _format_export_sheet(sheet)
-
-
 def make_fit_ap_optical_export_filename(site_name: str, now: datetime | None = None) -> str:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M")
     safe_site = "".join(char if char not in '<>:"/\\|?*' else "_" for char in site_name or "site")
     return f"{safe_site}_FIT-AP光衰_{stamp}.xlsx"
-
-
-def _evaluate_neighbor_status(rx_power: object, neighbor_optical: dict[str, object | None] | None) -> str:
-    if neighbor_optical:
-        return compute_optical_severity({
-            "switch_rx_power": neighbor_optical.get("rx_power"),
-            "switch_port_status": neighbor_optical.get("port_status"),
-            "alarm_low": neighbor_optical.get("rx_low_alarm"),
-            "alarm_high": neighbor_optical.get("rx_high_alarm"),
-            "warning_low": neighbor_optical.get("rx_low_warning"),
-            "device_type": "switch",
-        }).severity
-    value = _to_float(rx_power)
-    return compute_optical_severity({"switch_rx_power": value, "device_type": "switch"}).severity
-
-
-def _fit_ap_optical_export_value(row: dict[str, object | None], field: str) -> str:
-    if field == "switch_optical_status":
-        return display_optical_status(evaluate_fit_ap_switch_status(row))
-    if field == "optical_alarm_status":
-        if bool(row.get("is_ap_offline")):
-            return OFFLINE_AP_STATUS_TEXT
-        return display_optical_status(evaluate_fit_ap_ap_status(row))
-    return _display_link_value(row, field)
-
-
-def _to_float(value: object) -> float | None:
-    import re
-
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value or ""))
-    if not match:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
 
 
 def _normalize_mac_text(value: object) -> str:
@@ -539,6 +437,16 @@ def _display_mileage_for_row(row: dict[str, object | None], field: str) -> str:
         line_side=str(row.get("extension_line_side") or row.get("line_side") or ""),
         mileage_type=str(row.get("mileage_type") or row.get("line_type") or ""),
     )
+
+
+def _display_belong_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return {
+        "station": "站点",
+        "section": "区间",
+        "yard": "场段/库内",
+        "unknown": "未知",
+    }.get(text, str(value or "").strip())
 
 
 def _mileage_value_for_row(row: dict[str, object | None], field: str) -> object:
@@ -583,39 +491,12 @@ def _friendly_external_terminal_error(message: object) -> str:
     return text or "启动外部终端失败"
 
 
-def _evaluate_ap_result(row: dict[str, object | None]):
-    return compute_optical_severity(
-        {
-            "ap_rx_power": row.get("rx_power"),
-            "ap_port_status": row.get("ap_port_status"),
-            "alarm_low": row.get("rx_low_alarm"),
-            "alarm_high": row.get("rx_high_alarm"),
-            "warning_low": row.get("rx_low_warning"),
-            "device_type": "ap",
-        }
-    )
-
-
-def _ap_unique_key(row: dict[str, object | None]) -> str:
-    for field in ("ap_uuid", "serial_number", "ap_mac"):
-        value = str(row.get(field) or "").strip()
-        if value:
-            return f"{field}:{value.casefold()}"
-    return f"row:{id(row)}"
-
-
 def _capacity_total_remark(value: object, default_total: int) -> tuple[int, str]:
     if isinstance(value, dict):
         return int(value.get("ap_total") or value.get("total") or default_total), str(value.get("remark") or "")
     if value is None:
         return default_total, ""
     return int(value), ""
-
-
-def _is_invalid_neighbor_text(value: object) -> bool:
-    text = str(value or "")
-    lowered = text.casefold()
-    return any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr"))
 
 
 def _with_online_rate(row: dict[str, object | None]) -> dict[str, object | None]:
@@ -639,31 +520,6 @@ def _overview_row_fill(row: dict[str, object | None]):
     return None
 
 
-def _auto_width_sheet(sheet) -> None:
-    apply_worksheet_autofit(sheet, maximum=60)
-
-
-def _format_export_sheet(sheet) -> None:
-    from openpyxl.styles import Alignment, Border, Font, Side
-
-    alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
-    border = Border(
-        left=Side(style="thin", color="D1D5DB"),
-        right=Side(style="thin", color="D1D5DB"),
-        top=Side(style="thin", color="D1D5DB"),
-        bottom=Side(style="thin", color="D1D5DB"),
-    )
-    sheet.freeze_panes = "A2"
-    for row in sheet.iter_rows():
-        sheet.row_dimensions[row[0].row].height = 24 if row[0].row == 1 else 22
-        for cell in row:
-            cell.alignment = alignment
-            cell.border = border
-            if cell.row == 1:
-                cell.font = Font(bold=True)
-    _auto_width_sheet(sheet)
-
-
 class AcManagementPage(QWidget):
     def __init__(
         self,
@@ -682,24 +538,42 @@ class AcManagementPage(QWidget):
         self.site_name = site_name
         self.feature_gate = feature_gate or default_feature_gate()
         self.settings = SettingsStore(PathResolver())
+        self.background_manager = BackgroundProcessManager(self, paths=self.settings.paths)
+        self.background_manager.progress.connect(self._background_progress)
+        self.background_manager.log.connect(self._background_progress)
+        self.background_manager.finished.connect(self._background_finished)
+        self.background_manager.failed.connect(self._background_failed)
+        self.background_manager.cancelled.connect(self._background_cancelled)
+        self._background_jobs: dict[str, dict[str, object]] = {}
+        self._transient_https_ports: dict[str, int] = {}
+        self._status_after_resource_refresh = ""
         self.ac_devices: list[Device] = []
-        self.resource_thread: AcResourceCollectThread | None = None
+        self.resource_job_id: str | None = None
         self.ac_info_thread: AcInfoCollectThread | None = None
-        self.action_thread: AcCommandActionThread | None = None
-        self.optical_thread: FitApOpticalCollectThread | None = None
-        self.trackside_export_thread: TracksideApBusinessExportThread | None = None
+        self.action_job_id: str | None = None
+        self.optical_job_id: str | None = None
+        self.trackside_export_manager = ExportProcessManager(self, paths=PathResolver())
+        self.trackside_export_job_id: str | None = None
+        self.trackside_export_output_path: Path | None = None
+        self.trackside_export_manager.progress.connect(self._handle_trackside_export_progress)
+        self.trackside_export_manager.finished.connect(self._finish_trackside_export)
+        self.trackside_export_manager.failed.connect(self._fail_trackside_export)
+        self.trackside_export_manager.cancelled.connect(self._fail_trackside_export)
         app_events.ac_summary_changed.connect(self._handle_ac_summary_changed)
         self.detail_windows: list[FitApDetailDialog] = []
         self.optical_rows: list[dict[str, object | None]] = []
         self.trackside_rows: list[dict[str, object | None]] = []
         self.offline_ap_stats: dict[str, object | None] = {}
         self.offline_ap_ledger_rows: list[dict[str, object | None]] = []
+        self.overview_rows: list[dict[str, object | None]] = []
         self._offline_ap_context_loaded = False
         self._device_list_loaded = False
         self._loaded_feature_ids: set[str] = set()
         self.tab_by_feature_id: dict[str, QWidget] = {}
         self._ui_ready = False
         self._refreshing_current = False
+        self._loaded_once = False
+        self._last_loaded_site_name = ""
         self.offline_load_thread: OfflineApLedgerLoadThread | None = None
         self.offline_cache_path = PathResolver().offline_ap_cache_path
         self._overview_uses_trackside_plan = False
@@ -714,11 +588,19 @@ class AcManagementPage(QWidget):
         self.trackside_page_size = DEFAULT_PAGE_SIZE
         self._updating_online_summary = False
 
-        self.device_combo = QComboBox()
-        self.open_web_button = QPushButton()
-        self.update_ac_info_button = QPushButton()
-        self.persist_auto_ap_button = QPushButton()
-        self.enable_ap_remote_login_button = QPushButton()
+        self.device_combo = QComboBox(self)
+        self.open_web_button = QPushButton(self)
+        self.update_ac_info_button = QPushButton(self)
+        self.persist_auto_ap_button = QPushButton(self)
+        self.enable_ap_remote_login_button = QPushButton(self)
+        for moved_button in (
+            self.open_web_button,
+            self.update_ac_info_button,
+            self.persist_auto_ap_button,
+            self.enable_ap_remote_login_button,
+        ):
+            moved_button.hide()
+            moved_button.setVisible(False)
         self.refresh_button = QPushButton()
         self.cancel_update_button = QPushButton()
         self.cancel_update_button.setVisible(False)
@@ -737,6 +619,7 @@ class AcManagementPage(QWidget):
         self.export_extension_template_button = QPushButton()
         self.export_extension_template_button.setObjectName("exportApExtensionTemplateButton")
         self.export_button = QPushButton()
+        self.omnipeek_export_button = QPushButton()
         self.clear_selection_button = QPushButton()
         self.invert_selection_button = QPushButton()
         self.selection_label = make_text_selectable(QLabel())
@@ -836,13 +719,12 @@ class AcManagementPage(QWidget):
         self.trackside_table.customContextMenuRequested.connect(self.show_trackside_context_menu)
 
         top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
+        self.device_combo.setMinimumWidth(360)
         top.addWidget(self.device_combo, 1)
-        top.addWidget(self.open_web_button)
-        top.addWidget(self.update_ac_info_button)
-        top.addWidget(self.persist_auto_ap_button)
-        top.addWidget(self.enable_ap_remote_login_button)
-        top.addWidget(self.cancel_update_button)
         top.addWidget(self.status_label)
+        top.addWidget(self.cancel_update_button)
 
         summary = QGridLayout()
         for index, (key, field) in enumerate(SUMMARY_FIELDS):
@@ -860,6 +742,7 @@ class AcManagementPage(QWidget):
             self.refresh_button,
             self.batch_delete_button,
             self.export_button,
+            self.omnipeek_export_button,
             self.clear_selection_button,
             self.invert_selection_button,
         ):
@@ -965,6 +848,7 @@ class AcManagementPage(QWidget):
         self.batch_delete_button.clicked.connect(self.batch_delete_aps)
         self.export_extension_template_button.clicked.connect(self.export_ap_extension_template)
         self.export_button.clicked.connect(self.export_aps)
+        self.omnipeek_export_button.clicked.connect(self.export_omnipeek_name_table)
         self.extension_import_standard_button.clicked.connect(lambda: self.import_ap_extensions("standard_template"))
         self.extension_import_smart_button.clicked.connect(lambda: self.import_ap_extensions("smart_design"))
         self.extension_template_button.clicked.connect(self.export_ap_extension_template)
@@ -999,6 +883,7 @@ class AcManagementPage(QWidget):
         self.trackside_pagination.pageSizeChanged.connect(self.set_trackside_page_size)
         self.trackside_plan_page.plan_saved.connect(self._handle_trackside_plan_saved)
         self.retranslate()
+        self._parent_hidden_legacy_buttons()
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
         self._ui_ready = True
         if eager_load:
@@ -1008,6 +893,7 @@ class AcManagementPage(QWidget):
         self._reconcile_feature_tabs()
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.refresh_button)
         apply_feature_to_widget(self.feature_gate, "ac.fit_ap_resources", self.export_button)
+        apply_feature_to_widget(self.feature_gate, "ac.omnipeek_name_table_export", self.omnipeek_export_button)
         apply_feature_to_widget(self.feature_gate, "ac.ac_info_update", self.update_ac_info_button)
         apply_feature_to_widget(self.feature_gate, "ac.ac_actions", self.persist_auto_ap_button)
         apply_feature_to_widget(self.feature_gate, "ac.ac_actions", self.enable_ap_remote_login_button)
@@ -1065,6 +951,12 @@ class AcManagementPage(QWidget):
                 return feature_id
         return None
 
+    def current_tab_action_labels(self) -> list[str]:
+        feature_id = self._current_feature_id()
+        if feature_id is None:
+            return []
+        return list(AC_TAB_ACTION_LABELS.get(feature_id, ()))
+
     def _tab_index_for_feature(self, feature_id: str | None) -> int:
         if not feature_id:
             return -1
@@ -1088,11 +980,32 @@ class AcManagementPage(QWidget):
         self.site_name = site_name
         self._device_list_loaded = False
         self._loaded_feature_ids.clear()
+        self._loaded_once = False
+        self._last_loaded_site_name = ""
         self.trackside_plan_page.repository = self.repository
         self.trackside_plan_page.site_name = site_name
         self.trackside_plan_page.refresh()
         self.refresh_ap_extensions()
         self.refresh_devices()
+
+    def on_enter(self) -> None:
+        if not self._loaded_once or self._last_loaded_site_name != self.site_name:
+            self.load_initial_data()
+            return
+        self.refresh_current_async_or_lazy()
+
+    def load_initial_data(self) -> None:
+        if not self._ui_ready:
+            return
+        self._loaded_once = True
+        self._last_loaded_site_name = self.site_name
+        self.refresh_devices(load_current_only=False)
+        self.trackside_plan_page.refresh()
+        if not self.ac_devices:
+            self.status_label.setText("当前局点未配置 AC 设备")
+            app_logger.log_info("AC_INITIAL_LOAD_EMPTY", f"site={self.site_name}")
+        else:
+            app_logger.log_info("AC_INITIAL_LOAD_DONE", f"site={self.site_name} ac_count={len(self.ac_devices)}")
 
     def retranslate(self) -> None:
         self.open_web_button.setText(self.i18n.t("ac.open_web"))
@@ -1105,6 +1018,7 @@ class AcManagementPage(QWidget):
         self.import_button.setText(self.i18n.t("ap.import_metadata"))
         self.export_extension_template_button.setText(self.i18n.t("ap.export_extension_template"))
         self.export_button.setText(self.i18n.t("ap.export_info"))
+        self.omnipeek_export_button.setText("导出 OmniPeek 名称表")
         self.extension_import_standard_button.setText("标准模板导入")
         self.extension_import_smart_button.setText("原始设计/布点表智能识别导入")
         self.extension_template_button.setText("下载标准模板")
@@ -1114,7 +1028,7 @@ class AcManagementPage(QWidget):
         self.extension_delete_button.setText("批量删除")
         self.extension_clear_button.setText("清空当前局点扩展信息")
         self.extension_refresh_button.setText("刷新")
-        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、车站、归属区间、备注")
+        self.extension_search_input.setPlaceholderText("搜索 AP MAC、AP名称、AP编号、归属站点、归属区间、区间起止、方向、里程、点位说明、场段、区域、备注")
         self.clear_selection_button.setText(self.i18n.t("devices.clear_selection"))
         self.invert_selection_button.setText(self.i18n.t("devices.invert_selection"))
         self.refresh_optical_button.setText(self.i18n.t("ac.refresh_optical"))
@@ -1131,6 +1045,66 @@ class AcManagementPage(QWidget):
         self.trackside_pagination.retranslate()
         self.clear_optical_filters_button.setText(self.i18n.t("ac.clear_filters"))
         self.optical_ap_filter.setPlaceholderText(self.i18n.t("ac.ap_name"))
+        self._apply_button_icons()
+        self._refresh_translated_runtime_state()
+        self._hide_global_proxy_buttons()
+
+    def _apply_button_icons(self) -> None:
+        button_icons = (
+            (self.refresh_button, FIF.SYNC),
+            (self.cancel_update_button, FIF.CANCEL),
+            (self.batch_delete_button, FIF.DELETE),
+            (self.export_button, FIF.SHARE),
+            (self.omnipeek_export_button, FIF.SHARE),
+            (self.clear_selection_button, FIF.CLEAR_SELECTION),
+            (self.invert_selection_button, FIF.CHECKBOX),
+            (self.extension_import_standard_button, FIF.DOWNLOAD),
+            (self.extension_import_smart_button, FIF.DOWNLOAD),
+            (self.extension_template_button, FIF.CLOUD_DOWNLOAD),
+            (self.extension_export_button, FIF.SHARE),
+            (self.extension_add_button, FIF.ADD),
+            (self.extension_edit_button, FIF.EDIT),
+            (self.extension_delete_button, FIF.DELETE),
+            (self.extension_clear_button, FIF.BROOM),
+            (self.extension_refresh_button, FIF.SYNC),
+            (self.refresh_optical_button, FIF.UPDATE),
+            (self.optical_export_button, FIF.SHARE),
+            (self.clear_optical_filters_button, FIF.FILTER),
+            (self.import_button, FIF.DOWNLOAD),
+            (self.export_extension_template_button, FIF.CLOUD_DOWNLOAD),
+            (self.export_overview_button, FIF.SHARE),
+            (self.save_overview_history_button, FIF.SAVE),
+            (self.view_overview_history_button, FIF.HISTORY),
+            (self.trackside_export_button, FIF.SHARE),
+        )
+        for button, icon in button_icons:
+            _set_button_icon(button, icon)
+
+    def _hide_global_proxy_buttons(self) -> None:
+        for button in (
+            self.open_web_button,
+            self.update_ac_info_button,
+            self.persist_auto_ap_button,
+            self.enable_ap_remote_login_button,
+        ):
+            button.setParent(self)
+            button.hide()
+            button.setVisible(False)
+
+    def _parent_hidden_legacy_buttons(self) -> None:
+        for button in (
+            self.import_button,
+            self.export_extension_template_button,
+            self.export_overview_button,
+            self.save_overview_history_button,
+            self.view_overview_history_button,
+            self.trackside_export_button,
+        ):
+            button.setParent(self)
+            button.hide()
+            button.setVisible(False)
+
+    def _refresh_translated_runtime_state(self) -> None:
         current_concurrency = self.optical_concurrency_combo.currentData()
         self.optical_concurrency_combo.clear()
         for value in (50, 100, 200, 500, 1000):
@@ -1182,20 +1156,28 @@ class AcManagementPage(QWidget):
             item.setToolTip(self.i18n.t(tooltip_key) if tooltip_key else self.i18n.t("trackside.tooltip.default", label=label))
 
     def refresh_devices(self, *, load_current_only: bool = False) -> None:
-        current_uuid = self.current_device_uuid()
-        self.ac_devices = self.device_repository.list(vendor="H3C", device_type="AC")
-        self._device_list_loaded = True
-        self.device_combo.blockSignals(True)
-        self.device_combo.clear()
-        for device in self.ac_devices:
-            self.device_combo.addItem(f"{device.name} ({device.ip_address})", device.device_uuid)
-        index = self.device_combo.findData(current_uuid)
-        self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.ac_devices else -1))
-        self.device_combo.blockSignals(False)
-        if load_current_only:
-            self.refresh_current_tab_data()
-        else:
-            self.refresh_data()
+        self._start_background_job(
+            "ac_devices_refresh",
+            {"db_path": str(self.device_repository.database.path), "current_uuid": self.current_device_uuid(), "load_current_only": load_current_only},
+            title="加载 AC 设备",
+        )
+
+    def clear_results(self) -> None:
+        self._set_summary(None)
+        self.resource_rows = []
+        self.selected_ap_keys.clear()
+        self._set_resource_filter_items([])
+        self.apply_resource_pagination()
+        self.optical_rows = []
+        self._set_site_filter_items([])
+        self.apply_optical_filters()
+        self.offline_ap_stats = {}
+        self.offline_ap_ledger_rows = []
+        self._offline_ap_context_loaded = False
+        self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
+        self.status_label.setText("结果已清空")
 
     def refresh_current_async_or_lazy(self, force_if_empty: bool = False) -> None:
         if not self._ui_ready or self._refreshing_current:
@@ -1219,6 +1201,13 @@ class AcManagementPage(QWidget):
     def _on_current_tab_changed(self, index: int) -> None:
         if index < 0:
             return
+        if self.action_job_id is not None:
+            self.background_manager.cancel_job(self.action_job_id)
+            self.cancel_update_button.setEnabled(False)
+        feature_id = self._current_feature_id() or ""
+        tab_text = self.tabs.tabText(index)
+        actions = ", ".join(self.current_tab_action_labels())
+        app_logger.log_info("AC_TAB_ACTIONS", f"tab={tab_text} feature={feature_id} actions={actions}")
         self.refresh_current_async_or_lazy()
 
     def refresh_current_tab_data(self, feature_id: str | None = None) -> None:
@@ -1236,24 +1225,28 @@ class AcManagementPage(QWidget):
         if not ac_uuid:
             self.refresh_data()
             return
-        self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
         if feature_id == "ac.trackside_ap_plan":
             self.trackside_plan_page.refresh()
         elif feature_id == "ac.ap_online_overview":
-            resources = self._load_resource_rows(ac_uuid)
-            self.refresh_overview_table(resources)
+            self.refresh_overview_table()
         elif feature_id == "ac.fit_ap_resources":
             self._load_resource_rows(ac_uuid)
         elif feature_id == "ac.fit_ap_optical":
-            resources = self._load_resource_rows(ac_uuid)
-            self._load_optical_rows(ac_uuid, resources)
+            self._load_optical_rows(ac_uuid)
         elif feature_id == "ac.fit_ap_extensions":
             self.refresh_ap_extensions()
         if feature_id:
             self._loaded_feature_ids.add(feature_id)
 
     def _load_resource_rows(self, ac_uuid: str) -> list[dict[str, object | None]]:
-        resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        self._start_background_job(
+            "ac_fit_ap_resources_refresh",
+            {"db_path": str(self.repository.database.path), "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.fit_ap_resources"),
+        )
+        return list(self.resource_rows)
+
+    def _apply_resource_rows(self, resources: list[dict[str, object | None]]) -> None:
         self.resource_rows = resources
         valid_keys = {self._ap_selection_key(row) for row in resources}
         self.selected_ap_keys.intersection_update({key for key in valid_keys if key})
@@ -1261,12 +1254,16 @@ class AcManagementPage(QWidget):
         self.apply_resource_pagination()
         self.update_selection_state()
         self.update_open_web_button()
-        return resources
 
-    def _load_optical_rows(self, ac_uuid: str, resources: list[dict[str, object | None]]) -> None:
-        self._rebuild_device_optical_status_lookup()
-        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
-        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(current_optical_rows, resources, self._device_optical_status_lookup))
+    def _load_optical_rows(self, ac_uuid: str, resources: list[dict[str, object | None]] | None = None) -> None:
+        self._start_background_job(
+            "ac_fit_ap_optical_refresh",
+            {"db_path": str(self.repository.database.path), "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.fit_ap_optical"),
+        )
+
+    def _apply_optical_rows(self, rows: list[dict[str, object | None]]) -> None:
+        self.optical_rows = rows
         self._set_site_filter_items(self.optical_rows)
         self.apply_optical_filters()
 
@@ -1290,27 +1287,20 @@ class AcManagementPage(QWidget):
             self.refresh_ap_extensions()
             self.update_open_web_button()
             return
-        self._set_summary(self.repository.get_ac_ap_summary(ac_uuid))
-        resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
-        self.resource_rows = resources
-        valid_keys = {self._ap_selection_key(row) for row in resources}
-        self.selected_ap_keys.intersection_update({key for key in valid_keys if key})
-        self._set_resource_filter_items(resources)
-        self.apply_resource_pagination()
-        self._rebuild_device_optical_status_lookup()
-        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
         self.offline_ap_stats = {}
         self.offline_ap_ledger_rows = []
         self._offline_ap_context_loaded = False
         self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
         self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
-        self.optical_rows = sort_fit_ap_optical_rows(enrich_fit_ap_optical_rows(current_optical_rows, resources, self._device_optical_status_lookup))
-        self._set_site_filter_items(self.optical_rows)
-        self.apply_optical_filters()
-        self.refresh_overview_table(resources)
-        self.refresh_ap_extensions()
-        self.update_selection_state()
-        self.update_open_web_button()
+        feature_id = self._current_feature_id()
+        if feature_id == "ac.ap_online_overview":
+            self.refresh_overview_table()
+        elif feature_id == "ac.fit_ap_optical":
+            self._load_optical_rows(ac_uuid)
+        elif feature_id == "ac.fit_ap_extensions":
+            self.refresh_ap_extensions()
+        else:
+            self._load_resource_rows(ac_uuid)
 
     def handle_overview_inner_tab_changed(self, index: int) -> None:
         if index in {1, 2}:
@@ -1349,7 +1339,7 @@ class AcManagementPage(QWidget):
         self.offline_loading_label.setText("正在加载离线AP数据...")
         self.offline_loading_spinner.setVisible(True)
         self.offline_loading_label.setVisible(True)
-        thread = OfflineApLedgerLoadThread(self.device_repository, ac_uuid, self.offline_cache_path, self)
+        thread = OfflineApLedgerLoadThread(self.device_repository.database.path, ac_uuid, self.offline_cache_path, self)
         self.offline_load_thread = thread
         thread.load_finished.connect(self._finish_offline_ap_load)
         thread.load_failed.connect(self._fail_offline_ap_load)
@@ -1387,10 +1377,10 @@ class AcManagementPage(QWidget):
             return
         port, _source = effective_https_port(device.https_port)
         if not build_https_url(device.ip_address, port):
-            QMessageBox.information(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.https_port_not_collected"))
+            MessageBox.information(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.https_port_not_collected"))
             return
         if not open_https_url(device.ip_address, port):
-            QMessageBox.warning(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.open_web_failed"))
+            MessageBox.warning(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.open_web_failed"))
 
     def update_open_web_button(self) -> None:
         device = self.current_device()
@@ -1409,6 +1399,7 @@ class AcManagementPage(QWidget):
         self.update_ac_info_button.setEnabled(not running)
         self.persist_auto_ap_button.setEnabled(not running)
         self.enable_ap_remote_login_button.setEnabled(not running)
+        self._hide_global_proxy_buttons()
         self.refresh_button.setEnabled(not running)
         self.refresh_optical_button.setEnabled(not running)
         self.batch_delete_button.setEnabled(False if running else selected_count > 0)
@@ -1426,31 +1417,57 @@ class AcManagementPage(QWidget):
         self.status_label.setText(message)
 
     def cancel_current_update(self) -> None:
-        if self.resource_thread is not None and self.resource_thread.isRunning():
-            self.resource_thread.cancel()
+        if self.resource_job_id is not None:
+            self.background_manager.cancel_job(self.resource_job_id)
+        if self.optical_job_id is not None:
+            self.background_manager.cancel_job(self.optical_job_id)
+        if self.action_job_id is not None:
+            self.background_manager.cancel_job(self.action_job_id)
         if self.ac_info_thread is not None and self.ac_info_thread.isRunning():
             self.ac_info_thread.cancel()
-        if self.action_thread is not None and self.action_thread.isRunning():
-            self.action_thread.cancel()
-        if self.optical_thread is not None and self.optical_thread.isRunning():
-            self.optical_thread.cancel()
         self.cancel_update_button.setEnabled(False)
         self.status_label.setText(self.i18n.t("ac.update_cancelled"))
+
+    def shutdown(self) -> None:
+        self.cancel_current_update()
+        if self.trackside_export_job_id is not None:
+            self.trackside_export_manager.cancel_export(self.trackside_export_job_id)
+        for thread_name in ("offline_load_thread",):
+            thread = getattr(self, thread_name, None)
+            if thread is None:
+                continue
+            try:
+                if hasattr(thread, "requestInterruption"):
+                    thread.requestInterruption()
+                if hasattr(thread, "quit"):
+                    thread.quit()
+                if hasattr(thread, "wait") and thread.isRunning():
+                    thread.wait(500)
+            except Exception as exc:
+                app_logger.log_warning("AC_THREAD_SHUTDOWN_FAILED", f"{thread_name}: {exc}")
+        for window in list(self.detail_windows):
+            window.close()
+        self.detail_windows.clear()
 
     def refresh_ac_resources(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_resources")
         device = self.current_device()
         if device is None:
-            QMessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
+            MessageBox.information(self, self.i18n.t("ac.title"), self.i18n.t("devices.select_first"))
             return
         self._set_update_running(True, self.i18n.t("ac.updating_resources"))
-        self.resource_thread = AcResourceCollectThread(device, self.site_name, parent=self)
-        self.resource_thread.progress.connect(self._set_update_progress)
-        self.resource_thread.collect_finished.connect(self._finish_resource_collect)
-        self.resource_thread.collect_failed.connect(self._fail_resource_collect)
-        self.resource_thread.finished.connect(self.resource_thread.deleteLater)
-        self.resource_thread.finished.connect(lambda: setattr(self, "resource_thread", None))
-        self.resource_thread.start()
+        self.resource_job_id = self._start_background_job(
+            "ac_fit_ap_resources_refresh",
+            {
+                "mode": "collect",
+                "source": "auto",
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "_cancel_grace_ms": 15000,
+            },
+            title=self.i18n.t("ac.fit_ap_resources"),
+        )
 
     def refresh_ac_info(self) -> None:
         self.feature_gate.assert_enabled("ac.ac_info_update")
@@ -1477,16 +1494,26 @@ class AcManagementPage(QWidget):
         confirm_text = f"确认对当前AC执行以下命令？\n\n{command_text}"
         if action == "persist_auto_ap":
             confirm_text = f"该操作会将新上线 AP 固化，并执行 save force 保存配置。\n\n{confirm_text}"
-        if QMessageBox.question(self, title, confirm_text) != QMessageBox.Yes:
+        if MessageBox.question(self, title, confirm_text) != MessageBox.Yes:
             return
         self._set_update_running(True, f"正在执行：{title}...")
-        self.action_thread = AcCommandActionThread(device, self.site_name, action, parent=self)
-        self.action_thread.progress.connect(self._set_update_progress)
-        self.action_thread.action_finished.connect(lambda result, action_title=title: self._finish_ac_action(result, action_title))
-        self.action_thread.action_failed.connect(self._fail_resource_collect)
-        self.action_thread.finished.connect(self.action_thread.deleteLater)
-        self.action_thread.finished.connect(lambda: setattr(self, "action_thread", None))
-        self.action_thread.start()
+        self.action_job_id = self._start_background_job(
+            "ac_command_action_execute",
+            {
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "action": action,
+                "command_sequence": list(commands),
+                "confirm_required": True,
+                "timeout": 10,
+                "retry": 0,
+                "source": "auto",
+                "_cancel_grace_ms": 15000,
+                "_emit_log_events": True,
+            },
+            title=title,
+        )
 
     def refresh_fit_ap_optical(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_optical")
@@ -1494,13 +1521,22 @@ class AcManagementPage(QWidget):
         if device is None:
             return
         self._set_update_running(True, self.i18n.t("ac.updating_optical"))
-        self.optical_thread = FitApOpticalCollectThread(device, self.site_name, int(self.optical_concurrency_combo.currentData() or 200), self)
-        self.optical_thread.progress.connect(self._set_update_progress)
-        self.optical_thread.collect_finished.connect(self._finish_optical_collect)
-        self.optical_thread.collect_failed.connect(self._fail_optical_collect)
-        self.optical_thread.finished.connect(self.optical_thread.deleteLater)
-        self.optical_thread.finished.connect(lambda: setattr(self, "optical_thread", None))
-        self.optical_thread.start()
+        self.optical_job_id = self._start_background_job(
+            "ac_fit_ap_optical_refresh",
+            {
+                "mode": "collect",
+                "source": "auto",
+                "refresh_scope": "all",
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "concurrency": int(self.optical_concurrency_combo.currentData() or 200),
+                "timeout": 15,
+                "retry": 2,
+                "_cancel_grace_ms": 15000,
+            },
+            title=self.i18n.t("ac.fit_ap_optical"),
+        )
 
     def _finish_resource_collect(self, result) -> None:
         self._set_update_progress(self.i18n.t("ac.refreshing_page"))
@@ -1508,7 +1544,7 @@ class AcManagementPage(QWidget):
         if not result.success and result.error_message:
             self.status_label.setText(self.i18n.t("ac.status.failed"))
             if result.error_message != "用户已取消更新":
-                QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+                MessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
             else:
                 self.status_label.setText(self.i18n.t("ac.update_cancelled"))
             self.refresh_devices()
@@ -1539,6 +1575,7 @@ class AcManagementPage(QWidget):
             self.status_label.setText(f"{self.status_label.text()}；{extra}")
         device = self.current_device()
         app_logger.log_info("AC_HTTPS_PORT_UI_REFRESHED", f"device={device.name if device else ''}, ui_port={device.https_port if device else None}")
+        self._status_after_resource_refresh = self.status_label.text()
 
     def _finish_ac_info_collect(self, result) -> None:
         self._set_update_progress(self.i18n.t("ac.refreshing_page"))
@@ -1546,7 +1583,7 @@ class AcManagementPage(QWidget):
         if not result.success and result.error_message:
             self.status_label.setText(self.i18n.t("ac.status.failed"))
             if result.error_message != "用户已取消更新":
-                QMessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
+                MessageBox.warning(self, self.i18n.t("ac.title"), result.error_message)
             else:
                 self.status_label.setText(self.i18n.t("ac.update_cancelled"))
             self.refresh_devices()
@@ -1561,29 +1598,25 @@ class AcManagementPage(QWidget):
         else:
             self.status_label.setText("AC信息更新完成；HTTPS端口未解析，打开网页时将使用默认443")
 
-    def _finish_ac_action(self, result, title: str) -> None:
-        self._set_update_running(False)
-        if result.success:
-            if getattr(result, "action", "") == "persist_auto_ap":
-                self.status_label.setText("一键固化新上线AP完成，已执行 save force")
-                return
-            if getattr(result, "action", "") == "enable_ap_remote_login" and any(
-                item.success and str(item.error_message or "").startswith("warning: read timeout")
-                for item in getattr(result, "command_results", [])
-            ):
-                self.status_label.setText("一键开启AP远程登入完成；设备尾部回显读取超时，已按命令成功处理")
-                return
-            self.status_label.setText(f"{title}执行成功")
+    def _finish_ac_action(self, result: dict[str, object], title: str) -> None:
+        if str(result.get("action") or "") == "persist_auto_ap":
+            self.status_label.setText("一键固化新上线AP完成，已执行 save force")
             return
-        self.status_label.setText(f"{title}执行失败")
-        QMessageBox.warning(self, title, result.error_message or "命令执行失败")
+        if str(result.get("action") or "") == "enable_ap_remote_login" and any(
+            bool(item.get("success")) and str(item.get("error_message") or "").startswith("warning: read timeout")
+            for item in result.get("command_results") or []
+            if isinstance(item, dict)
+        ):
+            self.status_label.setText("一键开启AP远程登入完成；设备尾部回显读取超时，已按命令成功处理")
+            return
+        self.status_label.setText(f"{title}执行成功")
 
     def _ensure_h3c_ac_selected(self, device: Device | None) -> bool:
         if device is None:
-            QMessageBox.information(self, self.i18n.t("ac.title"), "请先选择 AC")
+            MessageBox.information(self, self.i18n.t("ac.title"), "请先选择 AC")
             return False
         if str(device.device_vendor or "").upper() != "H3C" or str(device.device_type or "").upper() != "AC":
-            QMessageBox.warning(self, self.i18n.t("ac.title"), "该功能只支持 H3C AC 设备")
+            MessageBox.warning(self, self.i18n.t("ac.title"), "该功能只支持 H3C AC 设备")
             return False
         return True
 
@@ -1592,26 +1625,14 @@ class AcManagementPage(QWidget):
         if device is None:
             return
         device.https_port = port
-        self._set_summary(self.repository.get_ac_ap_summary(str(device.device_uuid or "")))
+        self._transient_https_ports[str(device.device_uuid or "")] = port
+        self._load_resource_rows(str(device.device_uuid or ""))
         self.update_open_web_button()
 
     def _fail_resource_collect(self, message: str) -> None:
         self._set_update_running(False)
         self.status_label.setText(self.i18n.t("ac.status.failed"))
-        QMessageBox.warning(self, self.i18n.t("ac.title"), message)
-
-    def _finish_optical_collect(self, result) -> None:
-        self._set_update_progress(self.i18n.t("ac.refreshing_page"))
-        self._set_update_running(False)
-        self.status_label.setText(self.i18n.t("ac.status.done" if result.success else "ac.status.failed"))
-        if getattr(result, "error_message", None) == "用户已取消更新":
-            self.status_label.setText(self.i18n.t("ac.update_cancelled"))
-        self.refresh_data()
-
-    def _fail_optical_collect(self, message: str) -> None:
-        self._set_update_running(False)
-        self.status_label.setText(self.i18n.t("ac.status.failed"))
-        QMessageBox.warning(self, self.i18n.t("ac.title"), message)
+        MessageBox.warning(self, self.i18n.t("ac.title"), message)
 
     def current_device_uuid(self) -> str | None:
         value = self.device_combo.currentData()
@@ -1643,14 +1664,6 @@ class AcManagementPage(QWidget):
     def selected_ap_names(self) -> list[str]:
         self._sync_visible_resource_selection()
         return sorted(self.selected_ap_keys)
-
-    def checked_or_all_ap_rows(self) -> list[dict[str, object | None]]:
-        ac_uuid = self.current_device_uuid()
-        if not ac_uuid:
-            return []
-        rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
-        selected = set(self.selected_ap_names())
-        return [row for row in rows if not selected or self._ap_selection_key(row) in selected]
 
     def update_selection_state(self, *_args) -> None:
         self._sync_visible_resource_selection()
@@ -1711,29 +1724,36 @@ class AcManagementPage(QWidget):
         names = self.selected_ap_names()
         if not ac_uuid or not names:
             return
-        answer = QMessageBox.question(self, self.i18n.t("ac.title"), self.i18n.t("ap.batch_delete_confirm"))
-        if answer != QMessageBox.Yes:
+        answer = MessageBox.question(self, self.i18n.t("ac.title"), self.i18n.t("ap.batch_delete_confirm"))
+        if answer != MessageBox.Yes:
             return
-        count = self.repository.delete_fit_aps(ac_uuid, names)
-        app_logger.log_info("FIT_AP_BATCH_DELETE", f"ac={ac_uuid}, count={count}")
-        self.refresh_data()
+        self._start_background_job(
+            "ac_fit_ap_delete_many",
+            {"db_path": str(self.repository.database.path), "ac_uuid": ac_uuid, "names": names},
+            title="批量删除 FIT-AP",
+        )
 
     def import_metadata(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_resources")
         path, _ = QFileDialog.getOpenFileName(self, self.i18n.t("ap.import_metadata"), "", "Excel Files (*.xlsx);;CSV Files (*.csv)")
         if not path:
             return
-        try:
-            result = self.import_export_service.import_metadata_file(Path(path))
-        except ValueError:
-            QMessageBox.warning(self, self.i18n.t("ap.import_metadata"), self.i18n.t("ap.metadata_template_unsupported"))
-            return
-        app_logger.log_info("FIT_AP_IMPORT", f"updated={result.updated}, skipped={result.skipped}")
-        self.refresh_data()
+        self._start_background_job(
+            "fit_ap_metadata_import",
+            {"path": path, "db_path": str(self.repository.database.path)},
+            title=self.i18n.t("ap.import_metadata"),
+        )
 
     def refresh_ap_extensions(self) -> None:
         search = self.extension_search_input.text() if hasattr(self, "extension_search_input") else ""
-        self.extension_rows = self.repository.list_ap_extension_points(search=search)
+        self._start_background_job(
+            "ac_ap_extensions_refresh",
+            {"db_path": str(self.repository.database.path), "search": search},
+            title=self.i18n.t("ac.fit_ap_extensions"),
+        )
+
+    def _apply_ap_extension_rows(self, rows: list[dict[str, object | None]]) -> None:
+        self.extension_rows = rows
         self._set_rows(self.extension_table, AP_EXTENSION_COLUMNS, self.extension_rows)
         self._set_rows(self.extension_summary_table, AP_EXTENSION_SUMMARY_COLUMNS, self._extension_summary_rows(self.extension_rows))
         self._set_rows(self.extension_issue_table, AP_EXTENSION_ISSUE_COLUMNS, self._extension_issue_rows(self.extension_rows))
@@ -1744,43 +1764,262 @@ class AcManagementPage(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, title, "", "Excel/CSV Files (*.xlsx *.csv)")
         if not path:
             return
-        try:
-            preview = self.import_export_service.preview_ap_extension_import(Path(path), import_mode)
-        except Exception as exc:
-            QMessageBox.warning(self, title, str(exc))
-            return
-        lines = [
-            f"文件名：{preview.file_name}",
-            f"模板类型：{preview.template_type}",
-            f"识别置信度：{preview.confidence_score}",
-            f"工作表数：{len(preview.sheets)}",
-            f"预览数据行：{preview.summary.get('total_rows', 0)}",
-            f"未绑定 AP MAC 数量：{preview.summary.get('unbound_rows', 0)}",
-            f"无效 MAC 数量：{preview.summary.get('invalid_mac_rows', 0)}",
-        ]
-        if preview.low_confidence:
-            lines.append("识别置信度较低，请手动映射字段。")
-            QMessageBox.warning(self, title, "\n".join(lines))
-            return
-        if QMessageBox.question(self, title, "\n".join(lines) + "\n\n确认导入以上预览数据？") != QMessageBox.Yes:
-            return
-        stats = self.import_export_service.commit_ap_extension_import(preview)
-        QMessageBox.information(
-            self,
-            title,
-            f"新增：{stats.get('success_rows', 0)}\n更新：{stats.get('updated_rows', 0)}\n跳过：{stats.get('skipped_rows', 0)}\n错误：{stats.get('error_rows', 0)}",
+        self._start_background_job(
+            "fit_ap_extension_preview",
+            {"path": path, "db_path": str(self.repository.database.path), "import_mode": import_mode},
+            title=title,
         )
-        self.refresh_ap_extensions()
-        self.refresh_data()
+
+    def _start_background_job(self, task_type: str, params: dict[str, object], *, title: str) -> str:
+        write_tasks = {
+            "ac_fit_ap_delete_many",
+            "ac_ap_extension_save",
+            "ac_ap_extension_delete",
+            "ac_ap_extension_clear",
+            "ac_station_overview_value_save",
+        }
+        if task_type not in write_tasks:
+            for context in self._background_jobs.values():
+                same_mode = task_type not in {"ac_fit_ap_resources_refresh", "ac_fit_ap_optical_refresh"} or str(context.get("mode") or "load") == str(params.get("mode") or "load")
+                if str(context.get("task_type") or "") == task_type and same_mode:
+                    self.status_label.setText(f"{title}：后台处理中...")
+                    return str(context.get("job_id") or "")
+        job_id = uuid.uuid4().hex
+        params = {
+            **params,
+            "app_root": str(self.settings.paths.app_root),
+            "data_root": str(self.settings.paths.data_root),
+        }
+        self._background_jobs[job_id] = {"job_id": job_id, "task_type": task_type, "title": title, **params}
+        self.status_label.setText(f"{title}：后台处理中...")
+        self.background_manager.start_job(BackgroundJob(job_id=job_id, task_type=task_type, params=params))
+        return job_id
+
+    def _background_progress(self, event: dict) -> None:
+        message = str(event.get("message") or "")
+        if message:
+            self.status_label.setText(message)
+
+    def _background_finished(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self._background_jobs.pop(job_id, {})
+        task_type = str(context.get("task_type") or "")
+        title = str(context.get("title") or "后台任务")
+        result = dict(event.get("result") or {})
+        if task_type == "ac_devices_refresh":
+            current_uuid = str(context.get("current_uuid") or "")
+            self.ac_devices = [Device.from_mapping(dict(row)) for row in result.get("devices") or [] if isinstance(row, dict)]
+            for device in self.ac_devices:
+                device_uuid = str(device.device_uuid or "")
+                if device_uuid in self._transient_https_ports:
+                    device.https_port = self._transient_https_ports[device_uuid]
+            self._device_list_loaded = True
+            self.device_combo.blockSignals(True)
+            self.device_combo.clear()
+            for device in self.ac_devices:
+                self.device_combo.addItem(f"{device.name} ({device.ip_address})", device.device_uuid)
+            index = self.device_combo.findData(current_uuid)
+            self.device_combo.setCurrentIndex(index if index >= 0 else (0 if self.ac_devices else -1))
+            self.device_combo.blockSignals(False)
+            if bool(context.get("load_current_only")):
+                self.refresh_current_tab_data()
+            else:
+                self.refresh_data()
+            return
+        if task_type == "ac_fit_ap_delete_many":
+            count = int(result.get("count") or 0)
+            app_logger.log_info("FIT_AP_BATCH_DELETE", f"ac={context.get('ac_uuid')}, count={count}")
+            self.status_label.setText(f"{title}：完成，删除 {count} 条")
+            self.refresh_data()
+            return
+        if task_type in {"ac_ap_extension_save", "ac_ap_extension_delete", "ac_ap_extension_clear"}:
+            if task_type == "ac_ap_extension_clear":
+                MessageBox.information(self, title, f"已删除 {int(result.get('count') or 0)} 条。")
+            self.refresh_ap_extensions()
+            self.refresh_data()
+            return
+        if task_type == "ac_station_overview_value_save":
+            self.refresh_overview_table()
+            return
+        if task_type == "device_lookup":
+            payload = result.get("device")
+            if isinstance(payload, dict):
+                self._show_trackside_device_detail(Device.from_mapping(payload))
+            return
+        if task_type == "fit_ap_metadata_import":
+            app_logger.log_info("FIT_AP_IMPORT", f"updated={result.get('updated', 0)}, skipped={result.get('skipped', 0)}")
+            self.status_label.setText(f"{title}：完成，更新 {result.get('updated', 0)} 条，跳过 {result.get('skipped', 0)} 条")
+            self.refresh_data()
+            return
+        if task_type == "fit_ap_extension_preview":
+            self._confirm_ap_extension_import(title, context, result)
+            return
+        if task_type == "fit_ap_extension_commit":
+            MessageBox.information(
+                self,
+                title,
+                f"新增：{result.get('success_rows', 0)}\n更新：{result.get('updated_rows', 0)}\n跳过：{result.get('skipped_rows', 0)}\n错误：{result.get('error_rows', 0)}",
+            )
+            self.status_label.setText(f"{title}：完成")
+            self.refresh_ap_extensions()
+            self.refresh_data()
+            return
+        if task_type == "ac_overview_refresh":
+            self._finish_overview_refresh(result)
+            return
+        if task_type == "ac_fit_ap_resources_refresh":
+            is_collect = str(context.get("mode") or "load") == "collect"
+            if is_collect:
+                self.resource_job_id = None
+                self._set_update_running(False)
+            if str(result.get("ac_uuid") or "") != self.current_device_uuid():
+                return
+            self._set_summary(dict(result.get("summary") or {}) or None)
+            self._apply_resource_rows([dict(row) for row in result.get("resources") or [] if isinstance(row, dict)])
+            if is_collect:
+                collection = dict(result.get("collection") or {})
+                resource_count = int(collection.get("fit_ap_resources_updated") or 0)
+                unauth_count = int(collection.get("unauthenticated_rows_updated") or 0)
+                source = "SNMP" if str(collection.get("source") or "") == "snmp" else "CLI"
+                self._status_after_resource_refresh = f"FIT-AP资源更新完成（{source}）：资源 {resource_count} 条；新上线AP {unauth_count} 条"
+                self.status_label.setText(self._status_after_resource_refresh)
+                self.refresh_devices()
+                return
+            self.status_label.setText(f"{title}：完成，共 {len(self.resource_rows)} 条")
+            if self._status_after_resource_refresh:
+                self.status_label.setText(self._status_after_resource_refresh)
+                self._status_after_resource_refresh = ""
+            return
+        if task_type == "ac_fit_ap_optical_refresh":
+            is_collect = str(context.get("mode") or "load") == "collect"
+            if is_collect:
+                self.optical_job_id = None
+                self._set_update_running(False)
+            if str(result.get("ac_uuid") or "") != self.current_device_uuid():
+                return
+            self._set_summary(dict(result.get("summary") or {}) or None)
+            self._apply_resource_rows([dict(row) for row in result.get("resources") or [] if isinstance(row, dict)])
+            self._apply_optical_rows([dict(row) for row in result.get("optical_rows") or [] if isinstance(row, dict)])
+            if is_collect:
+                collection = dict(result.get("collection") or {})
+                updated = int(collection.get("optical_rows_updated") or 0)
+                failed = int(collection.get("failed_aps") or 0)
+                suffix = "（部分成功）" if bool(collection.get("partial_success")) else ""
+                self.status_label.setText(f"FIT-AP光衰更新完成{suffix}：更新 {updated} 条；失败 {failed} 条")
+            else:
+                self.status_label.setText(f"{title}：完成，共 {len(self.optical_rows)} 条")
+            return
+        if task_type == "ac_command_action_execute":
+            self.action_job_id = None
+            self._set_update_running(False)
+            self._finish_ac_action(result, title)
+            return
+        if task_type == "ac_ap_extensions_refresh":
+            rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+            self._apply_ap_extension_rows(rows)
+            self.status_label.setText(f"{title}：完成，共 {len(rows)} 条")
+            return
+        if task_type == "omnipeek_name_table_preview":
+            self._show_omnipeek_preview(
+                result,
+                {
+                    "db_path": str(self.repository.database.path),
+                    "site_name": self.site_name,
+                    "ac_uuid": str(context.get("ac_uuid") or ""),
+                    "device_filters": dict(context.get("device_filters") or {}),
+                    "selected_device_uuids": list(context.get("selected_device_uuids") or []),
+                },
+            )
+            return
+        if task_type == "ac_overview_history_snapshot":
+            count = int(result.get("count") or 0)
+            MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.history_snapshot_saved"))
+            app_logger.log_info("AP_ONLINE_OVERVIEW_HISTORY_SAVE", f"count={count}")
+            return
+        if task_type == "ac_trackside_business_refresh":
+            self._finish_trackside_refresh(result)
+            return
+
+    def _background_failed(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self._background_jobs.pop(job_id, {})
+        if str(context.get("task_type") or "") == "ac_fit_ap_resources_refresh" and str(context.get("mode") or "load") == "collect":
+            self.resource_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_fit_ap_optical_refresh" and str(context.get("mode") or "load") == "collect":
+            self.optical_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_command_action_execute":
+            self.action_job_id = None
+            self._set_update_running(False)
+        title = str(context.get("title") or "后台任务")
+        message = str(event.get("message") or event.get("error") or "后台任务失败")
+        if "Unsupported AP metadata template header" in message:
+            message = self.i18n.t("ap.metadata_template_unsupported")
+        self.status_label.setText(f"{title}：失败")
+        MessageBox.warning(self, title, message)
+
+    def _background_cancelled(self, event: dict) -> None:
+        job_id = str(event.get("job_id") or "")
+        context = self._background_jobs.pop(job_id, {})
+        if str(context.get("task_type") or "") == "ac_fit_ap_resources_refresh" and str(context.get("mode") or "load") == "collect":
+            self.resource_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_fit_ap_optical_refresh" and str(context.get("mode") or "load") == "collect":
+            self.optical_job_id = None
+            self._set_update_running(False)
+        if str(context.get("task_type") or "") == "ac_command_action_execute":
+            self.action_job_id = None
+            self._set_update_running(False)
+        self.status_label.setText(self.i18n.t("ac.update_cancelled"))
+
+    def _confirm_ap_extension_import(self, title: str, context: dict[str, object], preview: dict[str, object]) -> None:
+        summary = dict(preview.get("summary") or {})
+        lines = [
+            f"文件名：{preview.get('file_name') or '-'}",
+            f"模板类型：{preview.get('template_type') or '-'}",
+            f"识别置信度：{preview.get('confidence_score') or 0}",
+            f"工作表数：{preview.get('sheet_count') or 0}",
+            f"预览数据行：{summary.get('total_rows', 0)}",
+            f"未绑定 AP MAC 数量：{summary.get('unbound_rows', 0)}",
+            f"无效 MAC 数量：{summary.get('invalid_mac_rows', 0)}",
+        ]
+        if bool(preview.get("low_confidence")):
+            lines.append("识别置信度较低，请手动映射字段。")
+            MessageBox.warning(self, title, "\n".join(lines))
+            return
+        if MessageBox.question(self, title, "\n".join(lines) + "\n\n确认导入以上预览数据？") != MessageBox.Yes:
+            return
+        self._start_background_job(
+            "fit_ap_extension_commit",
+            {
+                "path": str(context.get("path") or ""),
+                "db_path": str(self.repository.database.path),
+                "import_mode": str(context.get("import_mode") or "standard_template"),
+            },
+            title=title,
+        )
 
     def export_ap_extensions(self) -> None:
         self.feature_gate.assert_enabled("ac.fit_ap_extensions")
         path = select_export_path(self, "导出FIT-AP扩展信息", f"{self.site_name}_FIT-AP扩展信息.xlsx", EXCEL_FILTER)
         if not path:
             return
-        self.import_export_service.export_standard_ap_extension_xlsx(Path(path), self.extension_rows)
+        search = self.extension_search_input.text().strip() if hasattr(self, "extension_search_input") else ""
+        submit_export_task(
+            self,
+            fit_ap_extension_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                ac_uuid=self.current_device_uuid(),
+                search=search,
+                title="导出FIT-AP扩展信息",
+                open_dir_on_success=True,
+            ),
+            success_title="导出FIT-AP扩展信息",
+            paths=self.settings.paths,
+        )
         remember_export_path(Path(path))
-        QMessageBox.information(self, "导出FIT-AP扩展信息", f"已导出 {len(self.extension_rows)} 条。")
 
     def add_ap_extension_point(self) -> None:
         self._edit_ap_extension_point({})
@@ -1793,13 +2032,23 @@ class AcManagementPage(QWidget):
     def _edit_ap_extension_point(self, row: dict[str, object | None]) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("FIT-AP扩展信息")
-        form = QFormLayout()
+        dialog.resize(720, 620)
+        dialog.setMinimumSize(640, 520)
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
         fields = (
-            ("station_name", "车站"),
+            ("belong_type", "归属类型"),
+            ("station_name", "归属站点"),
             ("section_name", "归属区间"),
+            ("section_start_station", "区间起点站"),
+            ("section_end_station", "区间终点站"),
+            ("yard_name", "场段"),
+            ("area_name", "区域"),
+            ("network_domain", "网络"),
             ("line_side", "线别"),
             ("direction", "方向"),
             ("mileage_text", "里程"),
+            ("location_desc", "点位说明"),
             ("ap_point_code", "AP编号"),
             ("ap_name", "AP名称"),
             ("ap_mac_display", "AP MAC"),
@@ -1822,7 +2071,10 @@ class AcManagementPage(QWidget):
         buttons.addWidget(save_button)
         buttons.addWidget(cancel_button)
         layout = QVBoxLayout()
-        layout.addLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_widget)
+        layout.addWidget(scroll, 1)
         layout.addLayout(buttons)
         dialog.setLayout(layout)
         save_button.clicked.connect(dialog.accept)
@@ -1832,34 +2084,39 @@ class AcManagementPage(QWidget):
         payload = {field: editor.text().strip() for field, editor in editors.items()}
         if row.get("id"):
             payload["id"] = row.get("id")
-        self.repository.upsert_ap_extension_point(payload)
-        self.refresh_ap_extensions()
-        self.refresh_data()
+        self._start_background_job(
+            "ac_ap_extension_save",
+            {"db_path": str(self.repository.database.path), "row": payload},
+            title="保存 FIT-AP 扩展信息",
+        )
 
     def delete_selected_ap_extension_points(self) -> None:
         selected_rows = sorted({index.row() for index in self.extension_table.selectionModel().selectedRows()})
         ids = [int(self.extension_rows[row].get("id") or 0) for row in selected_rows if 0 <= row < len(self.extension_rows)]
         if not ids:
             return
-        if QMessageBox.question(self, "批量删除", f"确认删除 {len(ids)} 条 FIT-AP扩展信息？") != QMessageBox.Yes:
+        if MessageBox.question(self, "批量删除", f"确认删除 {len(ids)} 条 FIT-AP扩展信息？") != MessageBox.Yes:
             return
-        self.repository.delete_ap_extension_points(ids)
-        self.refresh_ap_extensions()
-        self.refresh_data()
+        self._start_background_job(
+            "ac_ap_extension_delete",
+            {"db_path": str(self.repository.database.path), "ids": ids},
+            title="删除 FIT-AP 扩展信息",
+        )
 
     def clear_ap_extension_points(self) -> None:
-        if QMessageBox.question(self, "清空当前局点扩展信息", "该操作会删除当前局点全部 FIT-AP扩展信息，确认继续？") != QMessageBox.Yes:
+        if MessageBox.question(self, "清空当前局点扩展信息", "该操作会删除当前局点全部 FIT-AP扩展信息，确认继续？") != MessageBox.Yes:
             return
-        count = self.repository.clear_ap_extension_points()
-        QMessageBox.information(self, "清空当前局点扩展信息", f"已删除 {count} 条。")
-        self.refresh_ap_extensions()
-        self.refresh_data()
+        self._start_background_job(
+            "ac_ap_extension_clear",
+            {"db_path": str(self.repository.database.path)},
+            title="清空当前局点扩展信息",
+        )
 
     @staticmethod
     def _extension_summary_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
         summary: dict[str, dict[str, object | None]] = {}
         for row in rows:
-            station = str(row.get("station_name") or "未填写").strip()
+            station = str(row.get("station_name") or row.get("section_name") or row.get("yard_name") or "未填写").strip()
             item = summary.setdefault(station, {"station_name": station, "total": 0, "bound": 0, "unbound": 0, "left": 0, "right": 0, "curve": 0, "risk": 0})
             item["total"] = int(item["total"] or 0) + 1
             item["bound" if row.get("ap_mac_norm") else "unbound"] = int(item["bound" if row.get("ap_mac_norm") else "unbound"] or 0) + 1
@@ -1900,13 +2157,20 @@ class AcManagementPage(QWidget):
         path = self._select_ap_extension_template_path(filename)
         if not path:
             return
-        rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else []
-        ap_entities = self.repository.list_ap_entities(ac_uuid) if ac_uuid else []
-        self.import_export_service.export_ap_extension_template_xlsx(path, rows, ap_entities)
+        submit_export_task(
+            self,
+            fit_ap_extension_template_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                ac_uuid=ac_uuid or "",
+                title=self.i18n.t("ap.export_extension_template"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ap.export_extension_template"),
+            paths=self.settings.paths,
+        )
         remember_export_path(path)
-        message_key = "ap.extension_template_empty_exported" if not rows else "ap.extension_template_exported"
-        QMessageBox.information(self, self.i18n.t("ap.export_extension_template"), self.i18n.t(message_key, count=len(rows)))
-        app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("FIT_AP_EXTENSION_TEMPLATE_EXPORT", f"ac={ac_uuid or '-'}, file={path.name}")
 
     def _current_ac_export_name(self) -> str:
         device = self.current_device()
@@ -1930,10 +2194,57 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("ap.export_info"), make_fit_ap_export_filename(self.site_name), CSV_FILTER)
         if not path:
             return
-        rows = self.checked_or_all_ap_rows()
-        self.import_export_service.export_ap_csv(path, rows)
+        selected_keys = self.selected_ap_names()
+        submit_export_task(
+            self,
+            fit_ap_csv_spec(
+                path,
+                db_path=self.repository.database.path,
+                ac_uuid=self.current_device_uuid() or "",
+                filters={} if selected_keys else self.current_resource_filters(),
+                selected_ap_keys=selected_keys,
+                title=self.i18n.t("ap.export_info"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ap.export_info"),
+            paths=self.settings.paths,
+        )
         remember_export_path(path)
-        app_logger.log_info("FIT_AP_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("FIT_AP_EXPORT", f"selected={len(selected_keys)}, file={path.name}")
+
+    def export_omnipeek_name_table(self) -> None:
+        self.feature_gate.assert_enabled("ac.omnipeek_name_table_export")
+        ac_uuid = self.current_device_uuid()
+        self._start_background_job(
+            "omnipeek_name_table_preview",
+            {
+                "db_path": str(self.repository.database.path),
+                "site_name": self.site_name,
+                "ac_uuid": ac_uuid or "",
+                "include_ac_fit_ap": True,
+                "include_ap_extensions": True,
+                "include_device_mr": True,
+                "device_filters": {},
+                "preview_limit": 500,
+            },
+            title="导出 OmniPeek 名称表",
+        )
+
+    def _show_omnipeek_preview(self, result: dict[str, object], source: dict[str, object]) -> None:
+        items = [OmniPeekDeviceItem(**dict(row)) for row in result.get("items") or [] if isinstance(row, dict)]
+        if not items:
+            MessageBox.warning(self, "导出 OmniPeek 名称表", "当前没有可导出的轨旁 AP 或车载 MR 数据。")
+            return
+        dialog = OmniPeekExportDialog(
+            items,
+            {str(key): int(value) for key, value in dict(result.get("source_counts") or {}).items()},
+            source=source,
+            preview_stats={str(key): int(value) for key, value in dict(result.get("stats") or {}).items()},
+            default_line_name=default_omnipeek_line_name(self.site_name, self.settings.paths),
+            settings=self.settings,
+            parent=self,
+        )
+        show_non_focus_window(self, dialog, key="ac_omnipeek_export_dialog", activate=True, raise_window=True)
 
     def current_optical_filters(self) -> dict[str, object | None]:
         return {
@@ -2070,93 +2381,154 @@ class AcManagementPage(QWidget):
         path = select_export_path(self, self.i18n.t("ac.export_table"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        self.refresh_overview_table()
-        rows = self.filtered_optical_rows()
-        export_fit_ap_optical_xlsx(
-            path,
-            rows,
-            FIT_AP_OPTICAL_COLUMNS,
-            [self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS],
-            self.i18n.t("details.optical_color_legend"),
-            self.current_overview_rows(),
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+        submit_export_task(
+            self,
+            fit_ap_optical_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                ac_uuid=self.current_device_uuid() or "",
+                filters=self.current_optical_filters(),
+                columns=FIT_AP_OPTICAL_COLUMNS,
+                headers=[self.i18n.t(key) for key, _field in FIT_AP_OPTICAL_COLUMNS],
+                overview_headers=[self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+                app_root=self.settings.paths.app_root,
+                data_root=self.settings.paths.data_root,
+                title=self.i18n.t("ac.export_table"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ac.export_table"),
+            paths=self.settings.paths,
         )
         remember_export_path(path)
-        app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("FIT_AP_OPTICAL_EXPORT", f"ac={self.current_device_uuid() or '-'}, file={path.name}")
 
     def export_overview_table(self) -> None:
         path = select_export_path(self, self.i18n.t("ac.export_overview"), make_fit_ap_optical_export_filename(self.site_name), EXCEL_FILTER)
         if not path:
             return
-        self.refresh_overview_table()
-        self.ensure_offline_ap_context_loaded(force=True)
-        rows = self.current_overview_rows()
-        export_ap_online_overview_xlsx(
-            path,
-            rows,
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            self.offline_ap_stats,
-            self.offline_ap_ledger_rows,
-            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
-            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+        submit_export_task(
+            self,
+            ap_online_overview_xlsx_spec(
+                path,
+                db_path=self.repository.database.path,
+                site_name=self.site_name,
+                ac_uuid=self.current_device_uuid() or "",
+                headers=[self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+                offline_ap_stats_headers=offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
+                offline_ap_ledger_headers=offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+                app_root=self.settings.paths.app_root,
+                data_root=self.settings.paths.data_root,
+                title=self.i18n.t("ac.export_overview"),
+                open_dir_on_success=True,
+            ),
+            success_title=self.i18n.t("ac.export_overview"),
+            paths=self.settings.paths,
         )
         remember_export_path(path)
-        app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"count={len(rows)}, file={path.name}")
+        app_logger.log_info("AP_ONLINE_OVERVIEW_EXPORT", f"ac={self.current_device_uuid() or '-'}, file={path.name}")
 
     def export_trackside_table(self) -> None:
-        if self.trackside_export_thread is not None:
+        if self.trackside_export_job_id is not None:
             self.status_label.setText(self.i18n.t("trackside.export.progress_write"))
             return
         path = select_export_path(self, self.i18n.t("trackside.export"), f"{self.site_name}_trackside_ap_business_{datetime.now().strftime('%Y-%m-%d-%H%M')}.xlsx", EXCEL_FILTER)
         if not path:
             return
-        thread = TracksideApBusinessExportThread(
-            self.device_repository,
-            self.site_name,
-            path,
-            [self.i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
-            [self.i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
-            [self.i18n.t(key) for key, _field in NEW_ONLINE_AP_OVERVIEW_COLUMNS],
-            self.i18n.t("trackside.export.sheet_new_online_ap_overview"),
-            [self.i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS],
-            self.i18n.t("trackside.export.sheet_ap_optical_treatment"),
-            offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
-            offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
-            self,
-        )
-        self.trackside_export_thread = thread
+        job_id = uuid.uuid4().hex
+        self.trackside_export_job_id = job_id
+        self.trackside_export_output_path = Path(path)
         self._set_trackside_export_running(True, self.i18n.t("trackside.export.progress_load"))
-        thread.stage_changed.connect(lambda key: self.status_label.setText(self.i18n.t(key)))
-        thread.export_finished.connect(self._finish_trackside_export)
-        thread.export_failed.connect(self._fail_trackside_export)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda: self._clear_trackside_export_thread(thread))
-        thread.start()
+        job = ExportJob(
+            job_id=job_id,
+            job_type="trackside_ap_business",
+            site_name=self.site_name,
+            db_path=str(self.device_repository.database.path),
+            output_path=str(path),
+            params={"language": self.i18n.language},
+        )
+        try:
+            self.trackside_export_manager.start_export(job)
+        except Exception as exc:
+            self.trackside_export_job_id = None
+            self.trackside_export_output_path = None
+            self._set_trackside_export_running(False)
+            MessageBox.warning(self, self.i18n.t("trackside.export"), f"导出失败：{exc}")
 
     def _set_trackside_export_running(self, running: bool, message: str = "") -> None:
-        self.update_progress.setVisible(running or self.resource_thread is not None or self.optical_thread is not None)
+        self.update_progress.setVisible(running or self.resource_job_id is not None or self.optical_job_id is not None)
+        if running:
+            self.update_progress.setRange(0, 0)
+            self.update_progress.setValue(0)
         self.trackside_export_button.setEnabled(not running)
-        self.refresh_button.setEnabled(not running and self.resource_thread is None and self.optical_thread is None)
+        self.refresh_button.setEnabled(not running and self.resource_job_id is None and self.optical_job_id is None)
         if message:
             self.status_label.setText(message)
 
     def _finish_trackside_export(self, result: dict[str, object]) -> None:
+        if str(result.get("job_id") or "") != str(self.trackside_export_job_id or ""):
+            return
+        path = Path(result.get("output_path") or self.trackside_export_output_path or "")
+        self.trackside_export_job_id = None
+        self.trackside_export_output_path = None
         self._set_trackside_export_running(False)
-        path = Path(result.get("path") or "")
+        self.update_progress.setVisible(True)
+        self.update_progress.setRange(0, 1)
+        self.update_progress.setValue(1)
         if path:
             remember_export_path(path)
         count = int(result.get("row_count") or 0)
         self.status_label.setText(self.i18n.t("trackside.loaded_count", count=count))
         app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT", f"count={count}, file={path.name if path else ''}")
+        self._show_trackside_export_finished_dialog(path)
 
-    def _fail_trackside_export(self, message: str) -> None:
+    def _fail_trackside_export(self, payload: dict[str, object]) -> None:
+        if str(payload.get("job_id") or "") != str(self.trackside_export_job_id or ""):
+            return
+        cancelled = bool(payload.get("cancelled"))
+        message = str(payload.get("message") or payload.get("error") or ("已取消导出" if cancelled else "导出失败"))
+        self.trackside_export_job_id = None
+        self.trackside_export_output_path = None
         self._set_trackside_export_running(False)
+        self.update_progress.setVisible(False)
+        if cancelled:
+            self.status_label.setText("已取消导出")
+            app_logger.log_info("TRACKSIDE_AP_BUSINESS_EXPORT_CANCELLED", message)
+            return
         self.status_label.setText(self.i18n.t("trackside.export"))
-        QMessageBox.warning(self, self.i18n.t("trackside.export"), message)
+        app_logger.log_error("TRACKSIDE_AP_BUSINESS_EXPORT_FAILED", message)
+        MessageBox.warning(self, self.i18n.t("trackside.export"), message)
 
-    def _clear_trackside_export_thread(self, thread: TracksideApBusinessExportThread) -> None:
-        if self.trackside_export_thread is thread:
-            self.trackside_export_thread = None
+    def _handle_trackside_export_progress(self, event: dict[str, object]) -> None:
+        if str(event.get("job_id") or "") != str(self.trackside_export_job_id or ""):
+            return
+        current = int(event.get("current", event.get("done", 0)) or 0)
+        total = int(event.get("total") or 0)
+        if total > 0:
+            self.update_progress.setRange(0, total)
+            self.update_progress.setValue(min(current, total))
+        else:
+            self.update_progress.setRange(0, 0)
+        message = str(event.get("message") or event.get("stage") or "")
+        if message:
+            self.status_label.setText(f"正在导出轨旁AP业务：{message}")
+
+    def _show_trackside_export_finished_dialog(self, path: Path) -> None:
+        if not path:
+            return
+        box = MessageBox(self)
+        box.setIcon(MessageBox.Information)
+        box.setWindowTitle(self.i18n.t("trackside.export"))
+        box.setText(f"轨旁AP业务导出完成：\n{path}")
+        open_file_button = box.addButton("打开文件", MessageBox.ActionRole)
+        open_dir_button = box.addButton("打开目录", MessageBox.ActionRole)
+        box.addButton("关闭", MessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is open_file_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif clicked is open_dir_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def _handle_ac_summary_changed(self, site_name: str) -> None:
         if str(site_name or "") != str(self.site_name or ""):
@@ -2164,19 +2536,22 @@ class AcManagementPage(QWidget):
         self.refresh_devices()
 
     def save_overview_history_snapshot(self) -> None:
-        count = self.repository.save_station_online_summary_history(self.current_overview_rows())
-        QMessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.history_snapshot_saved"))
-        app_logger.log_info("AP_ONLINE_OVERVIEW_HISTORY_SAVE", f"count={count}")
+        ac_uuid = self.current_device_uuid()
+        if not ac_uuid:
+            MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), "请先选择 AC 设备。")
+            return
+        self._start_background_job(
+            "ac_overview_history_snapshot",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name, "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.ap_online_overview"),
+        )
 
     def open_overview_history(self) -> None:
         site_name = self.selected_overview_site()
-        rows = self.repository.list_station_online_summary_history(site_name=site_name)
-        dialog = StationOnlineHistoryDialog(self.i18n, rows, site_name)
+        dialog = StationOnlineHistoryDialog(self.i18n, site_name=site_name, db_path=self.repository.database.path)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"station_online_history:{site_name}", activate=False, raise_window=False)
 
     def selected_overview_site(self) -> str | None:
         selected = self.overview_table.selectionModel().selectedRows() if self.overview_table.selectionModel() else []
@@ -2187,66 +2562,58 @@ class AcManagementPage(QWidget):
             return None
         return item.text()
 
-    def current_overview_rows(self) -> list[dict[str, object | None]]:
-        return [self._table_row_to_dict(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, row) for row in range(self.overview_table.rowCount())]
+    def cached_overview_rows(self) -> list[dict[str, object | None]]:
+        return [dict(row) for row in self.overview_rows]
 
     def refresh_overview_table(self, resources: list[dict[str, object | None]] | None = None) -> None:
         ac_uuid = self.current_device_uuid()
         if not ac_uuid:
+            self.overview_rows = []
             self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, [])
             self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [])
             self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, [])
             return
-        source_rows = resources if resources is not None else self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
-        current_optical_rows = self.repository.list_fit_ap_optical(ac_uuid)
-        capacity_details = self.repository.list_active_trackside_plan_capacity_details()
-        self._overview_uses_trackside_plan = bool(capacity_details)
-        if not capacity_details:
-            capacity_details = self.repository.list_station_ap_capacity_details()
-        self._set_rows(
-            self.overview_table,
-            AP_ONLINE_OVERVIEW_COLUMNS,
-            ApOnlineOverviewService.build_rows(
-                metadata_rows=self.repository.list_fit_ap_metadata(),
-                fit_ap_resources=source_rows,
-                optical_rows=current_optical_rows,
-                capacity_details=capacity_details,
-            ),
+        self._start_background_job(
+            "ac_overview_refresh",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name, "ac_uuid": ac_uuid},
+            title=self.i18n.t("ac.ap_online_overview"),
         )
+
+    def _finish_overview_refresh(self, result: dict[str, object]) -> None:
+        overview_rows = [dict(row) for row in result.get("overview_rows") or [] if isinstance(row, dict)]
+        offline_stats = dict(result.get("offline_ap_stats") or {})
+        offline_ledger = [dict(row) for row in result.get("offline_ap_ledger_rows") or [] if isinstance(row, dict)]
+        self._overview_uses_trackside_plan = bool(result.get("uses_trackside_plan"))
+        self.overview_rows = overview_rows
+        self._set_rows(self.overview_table, AP_ONLINE_OVERVIEW_COLUMNS, overview_rows)
+        self.offline_ap_stats = offline_stats
+        self.offline_ap_ledger_rows = offline_ledger
+        self._offline_ap_context_loaded = True
+        self._set_rows(self.offline_stats_table, OFFLINE_AP_STATS_COLUMNS, [offline_stats] if offline_stats else [])
+        self._set_rows(self.offline_ledger_table, OFFLINE_AP_LEDGER_COLUMNS, offline_ledger)
+        self.offline_loading_spinner.setVisible(False)
+        self.offline_loading_label.setVisible(bool(offline_ledger))
+        if offline_ledger:
+            self.offline_loading_label.setText(f"离线AP数据已更新，共 {len(offline_ledger)} 条")
+        self.status_label.setText(f"{self.i18n.t('ac.ap_online_overview')}：完成，共 {len(overview_rows)} 条")
 
     def _handle_trackside_plan_saved(self) -> None:
         self.refresh_overview_table()
         self.refresh_trackside_table()
 
-    def _rebuild_device_optical_status_lookup(self) -> None:
-        """Rebuild the device optical status lookup from all devices and their optical modules.
-
-        This lookup maps (device_name, interface_name) -> optical module status,
-        which is the single source of truth from device detail.
-        """
-        devices = self.device_repository.list()
-        optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
-        self._device_optical_status_lookup = build_switch_data_lookup(devices, optical_by_device)
-
     def refresh_trackside_table(self) -> None:
-        devices = filter_station_switch_devices(self.device_repository.list(), self.device_repository.database, self.site_name)
-        interfaces_by_device = {str(device.device_uuid or ""): self.fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
-        optical_by_device = {str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
-        lldp_by_device = {str(device.device_uuid or ""): self.fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
-        lookup = self._device_optical_status_lookup or build_switch_data_lookup(devices, optical_by_device)
-        self.trackside_rows = build_trackside_ap_business_rows(
-            devices,
-            interfaces_by_device,
-            optical_by_device,
-            self.repository.list_all_fit_ap_optical(),
-            lldp_by_device,
-            self.repository.list_all_fit_ap_resources_with_metadata(),
-            lookup,
-            self.repository.get_active_trackside_pvid_plan(),
-            self.offline_ap_ledger_rows,
+        ac_uuid = self.current_device_uuid()
+        self._start_background_job(
+            "ac_trackside_business_refresh",
+            {"db_path": str(self.repository.database.path), "site_name": self.site_name, "ac_uuid": ac_uuid or ""},
+            title="轨旁AP业务",
         )
+
+    def _finish_trackside_refresh(self, result: dict[str, object]) -> None:
+        self.trackside_rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
         self._set_trackside_site_filter_items(self.trackside_rows)
         self.apply_trackside_filters()
+        self.status_label.setText(self.i18n.t("trackside.loaded_count", count=len(self.trackside_rows)))
 
     def _set_site_filter_items(self, rows: list[dict[str, object | None]]) -> None:
         current = self.optical_site_filter.currentData()
@@ -2314,7 +2681,7 @@ class AcManagementPage(QWidget):
             menu.addAction(refresh_ap)
             menu.addAction(open_terminal)
             menu.addAction(detail)
-        refresh_ap.setEnabled(row >= 0 and self.optical_thread is None and self.resource_thread is None)
+        refresh_ap.setEnabled(row >= 0 and self.optical_job_id is None and self.resource_job_id is None)
         open_terminal.setEnabled(row >= 0)
         detail.setEnabled(row >= 0)
         refresh_ap.triggered.connect(lambda: self.refresh_resource_ap_optical(row))
@@ -2332,7 +2699,7 @@ class AcManagementPage(QWidget):
         if not ap_ip:
             message = "当前 AP 没有 IP，无法打开外部终端"
             self.status_label.setText(message)
-            QMessageBox.information(self, "打开外部终端", message)
+            MessageBox.information(self, "打开外部终端", message)
             return
         config = self._select_external_terminal_config()
         if config is None:
@@ -2359,18 +2726,18 @@ class AcManagementPage(QWidget):
             return
         reason = _friendly_external_terminal_error(result.message)
         self.status_label.setText(f"打开外部终端失败：{reason}")
-        QMessageBox.warning(self, "打开外部终端", f"打开外部终端失败：{reason}")
+        MessageBox.warning(self, "打开外部终端", f"打开外部终端失败：{reason}")
 
     def _select_external_terminal_config(self):
         configs = available_external_terminal_configs(self.settings)
         if not configs:
-            QMessageBox.information(self, "打开外部终端", self.i18n.t("external_terminal.not_configured"))
+            MessageBox.information(self, "打开外部终端", self.i18n.t("external_terminal.not_configured"))
             self.status_label.setText("打开外部终端失败：未配置外部终端路径")
             return None
         if len(configs) == 1:
             return configs[0]
         labels = [TERMINAL_LABELS.get(config.terminal_type, config.terminal_type) for config in configs]
-        label, accepted = QInputDialog.getItem(self, self.i18n.t("external_terminal.select_terminal"), self.i18n.t("external_terminal.select_terminal"), labels, 0, False)
+        label, accepted = InputDialog.getItem(self, self.i18n.t("external_terminal.select_terminal"), self.i18n.t("external_terminal.select_terminal"), labels, 0, False)
         if not accepted:
             return None
         return configs[labels.index(label)]
@@ -2388,21 +2755,25 @@ class AcManagementPage(QWidget):
             return
         label = ap_name or ap_mac or ap_uuid
         self._set_update_running(True, self.i18n.t("ap.refreshing_current_optical", ap=label))
-        self.optical_thread = FitApOpticalCollectThread(
-            device,
-            self.site_name,
-            int(self.optical_concurrency_combo.currentData() or 200),
-            self,
-            target_ap_uuids=[ap_uuid] if ap_uuid else None,
-            target_ap_macs=[ap_mac] if ap_mac else None,
-            target_ap_names=[ap_name] if ap_name else None,
+        self.optical_job_id = self._start_background_job(
+            "ac_fit_ap_optical_refresh",
+            {
+                "mode": "collect",
+                "source": "auto",
+                "refresh_scope": "single",
+                "device_uuid": str(device.device_uuid or ""),
+                "site_name": self.site_name,
+                "db_path": str(self.repository.database.path),
+                "concurrency": int(self.optical_concurrency_combo.currentData() or 200),
+                "timeout": 15,
+                "retry": 2,
+                "ap_uuid": ap_uuid,
+                "ap_mac": ap_mac,
+                "ap_name": ap_name,
+                "_cancel_grace_ms": 15000,
+            },
+            title=self.i18n.t("ac.fit_ap_optical"),
         )
-        self.optical_thread.progress.connect(self._set_update_progress)
-        self.optical_thread.collect_finished.connect(self._finish_optical_collect)
-        self.optical_thread.collect_failed.connect(self._fail_optical_collect)
-        self.optical_thread.finished.connect(self.optical_thread.deleteLater)
-        self.optical_thread.finished.connect(lambda: setattr(self, "optical_thread", None))
-        self.optical_thread.start()
 
     def show_optical_context_menu(self, position) -> None:
         index = self.optical_table.indexAt(position)
@@ -2453,9 +2824,7 @@ class AcManagementPage(QWidget):
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"fit_ap_detail:{ap_uuid}", activate=False, raise_window=False)
 
     def open_ap_detail_from_optical(self, row: int) -> None:
         ac_uuid = self.current_device_uuid()
@@ -2466,7 +2835,7 @@ class AcManagementPage(QWidget):
         page_rows = self.current_optical_page_rows()
         current_row = page_rows[row] if 0 <= row < len(page_rows) else {}
         ap_uuid = str(current_row.get("ap_uuid") or "")
-        resource_rows = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        resource_rows = self.resource_rows
         resource_index = next((index for index, resource in enumerate(resource_rows) if resource.get("ap_uuid") == ap_uuid), -1)
         if resource_index >= 0:
             self.open_ap_detail(resource_index)
@@ -2474,22 +2843,26 @@ class AcManagementPage(QWidget):
             dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid or ap_name)
             self.detail_windows.append(dialog)
             dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-            dialog.show()
+            show_non_focus_window(self, dialog, key=f"fit_ap_detail:{ap_uuid or ap_name}", activate=False, raise_window=False)
 
     def open_device_detail_from_trackside(self, row: int) -> None:
         rows = self.current_trackside_page_rows()
         if row < 0 or row >= len(rows):
             return
         device_uuid = str(rows[row].get("device_uuid") or "")
-        device = next((item for item in self.device_repository.list() if item.device_uuid == device_uuid), None)
-        if device is None:
+        if not device_uuid:
             return
+        self._start_background_job(
+            "device_lookup",
+            {"db_path": str(self.device_repository.database.path), "device_uuid": device_uuid},
+            title="加载设备详情",
+        )
+
+    def _show_trackside_device_detail(self, device: Device) -> None:
         dialog = DeviceDetailDialog(self.i18n, self.fact_repository, device, self, self.site_name)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"device_detail:{device.device_uuid or device.id}", activate=False, raise_window=False)
 
     def open_ap_detail_from_offline_ledger(self, row: int) -> None:
         ac_uuid = self.current_device_uuid()
@@ -2508,15 +2881,13 @@ class AcManagementPage(QWidget):
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, target)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"fit_ap_detail:{target}", activate=False, raise_window=False)
 
     def _resolve_fit_ap_uuid(self, ac_uuid: str, *, ap_uuid: object = None, ap_mac: object = None, ap_name: object = None) -> str:
         uuid_text = str(ap_uuid or "").strip()
         mac_text = _normalize_mac_text(ap_mac)
         name_text = str(ap_name or "").strip()
-        for resource in self.repository.list_fit_ap_resources_with_metadata(ac_uuid):
+        for resource in self.resource_rows:
             if uuid_text and str(resource.get("ap_uuid") or "") == uuid_text:
                 return uuid_text
             if mac_text and _normalize_mac_text(resource.get("ap_mac")) == mac_text:
@@ -2533,14 +2904,12 @@ class AcManagementPage(QWidget):
         ac_uuid = str(current_row.get("ac_device_uuid") or self.current_device_uuid() or "")
         ap_uuid = str(current_row.get("ap_uuid") or "")
         if not ac_uuid or not ap_uuid:
-            QMessageBox.information(self, self.i18n.t("trackside.view_ap_detail"), self.i18n.t("trackside.ap_not_found"))
+            MessageBox.information(self, self.i18n.t("trackside.view_ap_detail"), self.i18n.t("trackside.ap_not_found"))
             return
         dialog = FitApDetailDialog(self.i18n, self.repository, ac_uuid, ap_uuid)
         self.detail_windows.append(dialog)
         dialog.destroyed.connect(lambda _=None, window=dialog: self._forget_detail_window(window))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_non_focus_window(self, dialog, key=f"fit_ap_detail:{ap_uuid}", activate=False, raise_window=False)
 
     def _forget_detail_window(self, window: FitApDetailDialog) -> None:
         self.detail_windows = [item for item in self.detail_windows if item is not window]
@@ -2585,6 +2954,8 @@ class AcManagementPage(QWidget):
                             value = display_optical_status(str(value or ""), self.i18n.language) if value else value
                         elif field in {"mileage", "mileage_text"}:
                             value = _display_mileage_for_row(row, field)
+                        elif field == "belong_type":
+                            value = _display_belong_type(value)
                         item = QTableWidgetItem(str(value) if value not in (None, "") else "-")
                         if field in {"mileage", "mileage_text"}:
                             meters = row.get("_mileage_meters") if field == "mileage" else _mileage_meters_for_row(row, field)
@@ -2667,14 +3038,17 @@ class AcManagementPage(QWidget):
             if remark == "-":
                 remark = ""
             if len(remark) > 500:
-                QMessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.remark_too_long"))
+                MessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.remark_too_long"))
                 self.refresh_overview_table()
                 return
-            self.repository.upsert_station_ap_remark(site_item.text(), remark)
-            self.refresh_overview_table()
+            self._start_background_job(
+                "ac_station_overview_value_save",
+                {"db_path": str(self.repository.database.path), "station": site_item.text(), "kind": "remark", "value": remark},
+                title="保存站点备注",
+            )
             return
         if self._overview_uses_trackside_plan:
-            QMessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.trackside_plan_total_locked"))
+            MessageBox.information(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.trackside_plan_total_locked"))
             self.refresh_overview_table()
             return
         try:
@@ -2682,8 +3056,11 @@ class AcManagementPage(QWidget):
             if total < 0:
                 raise ValueError
         except ValueError:
-            QMessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.ap_total_invalid"))
+            MessageBox.warning(self, self.i18n.t("ac.ap_online_overview"), self.i18n.t("ac.ap_total_invalid"))
             self.refresh_overview_table()
             return
-        self.repository.upsert_station_ap_capacity(site_item.text(), total)
-        self.refresh_overview_table()
+        self._start_background_job(
+            "ac_station_overview_value_save",
+            {"db_path": str(self.repository.database.path), "station": site_item.text(), "kind": "capacity", "value": total},
+            title="保存站点 AP 总数",
+        )

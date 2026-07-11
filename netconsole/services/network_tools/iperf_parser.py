@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import quantiles
 
+from netconsole.utils.text_encoding import decode_bytes_with_fallback
+
 
 NETCONSOLE_LOG_PREFIX_RE = re.compile(
     r"^\[(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)\]\s*(?P<rest>.*)$"
@@ -46,10 +48,8 @@ UDP_RE = re.compile(
 def read_iperf_text(path: Path) -> str:
     data = Path(path).read_bytes()
     if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
-        return data.decode("utf-16", errors="replace")
-    if data.startswith(b"\xef\xbb\xbf"):
-        return data.decode("utf-8-sig", errors="replace")
-    return data.decode("utf-8", errors="replace")
+        return decode_bytes_with_fallback(data, encodings=("utf-16",)).text
+    return decode_bytes_with_fallback(data).text
 
 
 def split_iperf_log_prefix(line: str) -> tuple[datetime | None, str]:
@@ -112,6 +112,10 @@ def format_iperf_log_header(context: dict[str, object], started_at: datetime) ->
         ("direction", context.get("direction")),
         ("bandwidth", context.get("bandwidth")),
         ("tcp_block_size", context.get("tcp_block_size")),
+        ("duration_mode", context.get("duration_mode")),
+        ("duration_seconds", context.get("duration_seconds")),
+        ("protection_duration_seconds", context.get("protection_duration_seconds")),
+        ("stop_policy", context.get("stop_policy")),
         ("started_at", started_at.isoformat(sep=" ", timespec="milliseconds")),
         ("command", context.get("command")),
     ]

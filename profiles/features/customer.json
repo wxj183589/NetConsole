@@ -4,139 +4,261 @@
   "features": {
     "module.devices": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.ac": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.rail_transit": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.wifi_survey": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "module.config_collection": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.file_management": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.snmp_center": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "module.network_tools": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "module.command_reference": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.logs": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "module.system_settings": {
-      "visible": false,
-      "enabled": false
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "module.feature_switch": {
+      "visible": true,
+      "enabled": true,
+      "client_package": false,
+      "internal_only": true
     },
     "devices.external_terminal": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "devices.securecrt_sessions": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "devices.omnipeek_name_table_export": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "rail.train_online": {
-      "visible": false,
-      "enabled": false
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "rail.car_network_diagnostic": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "rail.trackside_ap_business": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "rail.raw_mesh_log_analysis": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "rail.online_mr_collection": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "rail.online_mr_analysis": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "online_mr.analysis_link_details": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "online_mr.analysis_fping_1s": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "ac.trackside_ap_plan": {
-      "visible": true,
-      "enabled": true
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "ac.ap_online_overview": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "ac.fit_ap_resources": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "ac.ac_info_update": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "ac.ac_actions": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "ac.fit_ap_optical": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "ac.fit_ap_extensions": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ac.omnipeek_name_table_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "file.mesh_log_download": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "file.mesh_auto_import": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "file.external_winscp": {
       "visible": true,
-      "enabled": true
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "network_tools.toolbox": {
       "visible": true,
-      "enabled": true
-    },
-    "online_mr.collect_config_once": {
-      "visible": false,
-      "enabled": false
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "online_mr.advanced_ping": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "online_mr.iperf_test": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "online_mr.collection_notes": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
     },
     "mesh.generate_report": {
       "visible": false,
-      "enabled": false
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "system.disk_cleanup": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "system.changelog": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "system.open_source": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "system.feature_flags": {
-      "visible": false,
-      "enabled": false
+      "visible": true,
+      "enabled": true,
+      "client_package": false,
+      "internal_only": true
     }
   }
 }

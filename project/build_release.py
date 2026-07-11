@@ -221,8 +221,9 @@ def validate_embedded_feature_gate(destination: Path, *, edition: str, profile: 
 
 
 def validate_customer_feature_gate(gate: FeatureGate) -> None:
-    if gate.is_visible("system.feature_flags") or gate.is_enabled("system.feature_flags"):
-        raise BuildError("Customer build exposes system.feature_flags")
+    for feature_id in ("module.feature_switch", "system.feature_flags"):
+        if gate.is_visible(feature_id) or gate.is_enabled(feature_id):
+            raise BuildError(f"Customer build exposes {feature_id}")
     expected = load_profile(profiles_dir() / "customer.json", "customer")
     for feature_id, state in expected.items():
         if not state.get("visible", True) and gate.is_visible(feature_id):

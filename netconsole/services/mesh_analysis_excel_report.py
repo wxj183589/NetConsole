@@ -38,6 +38,7 @@ REPORT_FIELD_LABELS: dict[str, str] = {
     "strong_backup_count": "强备链数量",
     "best_backup_peer_mac": "最佳备链Peer MAC",
     "best_backup_rssi": "最佳备链RSSI",
+    "backup_judgment_reason": "备链判断原因",
     "active_tx_busy": "主链路TxBusy",
     "active_rx_busy": "主链路RxBusy",
     "max_tx_busy": "最大TxBusy",
@@ -64,10 +65,10 @@ REPORT_FIELD_LABELS: dict[str, str] = {
     "sample_count": "采样点数",
     "first_mr_rssi": "首个MR侧RSSI",
     "last_mr_rssi": "最后MR侧RSSI",
-    "avg_mr_rssi": "平均MR侧RSSI",
-    "min_mr_rssi": "最低MR侧RSSI",
-    "p10_mr_rssi": "P10 MR侧RSSI",
-    "max_mr_rssi": "最高MR侧RSSI",
+    "avg_mr_rssi": "MR侧平均RSSI",
+    "min_mr_rssi": "MR侧最低RSSI",
+    "p10_mr_rssi": "MR侧P10 RSSI",
+    "max_mr_rssi": "MR侧最高RSSI",
     "rssi_jitter": "RSSI抖动",
     "avg_peer_rssi": "平均对端RSSI",
     "min_peer_rssi": "最低对端RSSI",
@@ -125,6 +126,16 @@ REPORT_FIELD_LABELS: dict[str, str] = {
     "tx_busy_after_switch": "切换后TxBusy",
     "rx_busy_after_switch": "切换后RxBusy",
     "switch_type": "切换类型",
+    "is_ap_return_event": "是否AP回切",
+    "is_pingpong_abnormal": "是否乒乓异常",
+    "pingpong_type": "乒乓类型",
+    "pingpong_group_id": "乒乓组ID",
+    "pingpong_return_duration_ms": "乒乓返回耗时(ms)",
+    "middle_ap_dwell_ms": "中间AP驻留时长(ms)",
+    "previous_ap": "前一AP",
+    "middle_ap": "中间AP",
+    "return_ap": "返回AP",
+    "pingpong_judgment_reason": "乒乓判定原因",
     "severity": "严重级别",
     "diagnosis": "诊断",
     "evidence_id": "证据ID",
@@ -135,6 +146,7 @@ REPORT_FIELD_LABELS: dict[str, str] = {
     "active_rssi_min": "主链路最低RSSI",
     "active_rssi_avg": "主链路平均RSSI",
     "backup_count_min": "最小备链数量",
+    "standby_peer_count_min": "最小备链记录数",
     "tx_busy_max": "最大TxBusy",
     "rx_busy_max": "最大RxBusy",
     "source_line_number_start": "起始源行号",
@@ -226,17 +238,17 @@ REPORT_FIELD_LABELS.update(
         "peer_ap_name": "对端AP名称",
         "peer_ap_mac": "对端AP MAC",
         "peer_site": "对端站点",
-        "peer_radio": "对端Radio",
+        "peer_radio": "对端射频口",
         "start_time": "开始时间",
         "end_time": "结束时间",
         "duration_seconds": "持续秒数",
         "sample_count": "采样点数",
         "first_mr_rssi": "首个MR RSSI",
         "last_mr_rssi": "最后MR RSSI",
-        "avg_mr_rssi": "平均MR RSSI",
-        "min_mr_rssi": "最小MR RSSI",
-        "p10_mr_rssi": "P10 MR RSSI",
-        "max_mr_rssi": "最大MR RSSI",
+        "avg_mr_rssi": "MR侧平均RSSI",
+        "min_mr_rssi": "MR侧最低RSSI",
+        "p10_mr_rssi": "MR侧P10 RSSI",
+        "max_mr_rssi": "MR侧最高RSSI",
         "rssi_jitter": "RSSI抖动",
         "avg_peer_rssi": "平均对端RSSI",
         "min_peer_rssi": "最小对端RSSI",
@@ -267,9 +279,9 @@ REPORT_FIELD_LABELS.update(
         "active_total_seconds": "Active总秒数",
         "active_total_ratio": "Active占比",
         "avg_active_rssi": "Active平均RSSI",
-        "min_active_rssi": "Active最小RSSI",
+        "min_active_rssi": "Active最低RSSI",
         "p10_active_rssi": "Active P10 RSSI",
-        "max_active_rssi": "Active最大RSSI",
+        "max_active_rssi": "Active最高RSSI",
         "weak_active_seconds": "弱Active秒数",
         "no_backup_when_active_seconds": "Active时无备份秒数",
         "link_rebuild_count": "链路重建次数",
@@ -296,6 +308,16 @@ REPORT_FIELD_LABELS.update(
         "tx_busy_after_switch": "切换后TxBusy",
         "rx_busy_after_switch": "切换后RxBusy",
         "switch_type": "切换类型",
+        "is_ap_return_event": "是否AP回切",
+        "is_pingpong_abnormal": "是否乒乓异常",
+        "pingpong_type": "乒乓类型",
+        "pingpong_group_id": "乒乓组ID",
+        "pingpong_return_duration_ms": "乒乓返回耗时(ms)",
+        "middle_ap_dwell_ms": "中间AP驻留时长(ms)",
+        "previous_ap": "前一AP",
+        "middle_ap": "中间AP",
+        "return_ap": "返回AP",
+        "pingpong_judgment_reason": "乒乓判定原因",
         "severity": "严重程度",
         "diagnosis": "诊断",
         "evidence_id": "证据ID",
@@ -303,7 +325,7 @@ REPORT_FIELD_LABELS.update(
         "event_time_start": "事件开始时间",
         "event_time_end": "事件结束时间",
         "event_type": "事件类型",
-        "active_rssi_min": "Active最小RSSI",
+        "active_rssi_min": "主链路最低RSSI",
         "active_rssi_avg": "Active平均RSSI",
         "backup_count_min": "最小备份数量",
         "tx_busy_max": "最大TxBusy",
@@ -452,10 +474,11 @@ VALUE_TRANSLATIONS.update(
             "UNKNOWN_REBUILD": "未知重建",
         },
         "link_state": {
-            "ACTIVE": "主链路",
-            "BACKUP": "备份链路",
-            "STANDBY": "备用链路",
+            "ACTIVE": "ACTIVE 主链路",
+            "BACKUP": "STANDBY 备链",
+            "STANDBY": "STANDBY 备链",
             "DOWN": "Down",
+            "UNKNOWN": "UNKNOWN 未知",
         },
         "data_source_type": {
             "MR_RAW_MESH_LOG": "MR原始MESH日志",
@@ -468,12 +491,12 @@ SHEET_DEFINITIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("报告总览", ("key", "value"), "overview"),
     ("质量评分", ("dimension", "weight", "score", "diagnosis"), "score_rows"),
     ("原始文件清单", ("original_filename", "archived_filename", "file_size", "sha256", "encoding", "is_gzip", "first_sample_time", "last_sample_time", "lines_read", "records_parsed", "records_skipped", "duplicate_records", "issue_count", "parse_status", "error_message"), "source_files"),
-    ("采样点质量统计", ("sample_time", "radio", "total_peer_count", "active_peer_count", "active_peer_mac", "active_mr_rssi", "active_peer_rssi", "standby_peer_count", "available_backup_count", "strong_backup_count", "best_backup_peer_mac", "best_backup_rssi", "active_tx_busy", "active_rx_busy", "max_tx_busy", "max_rx_busy", "link_count", "active_establish_time", "active_duration_time", "source_file", "source_line_number", "quality_level", "quality_score", "quality_reasons", "fping_loss_rate"), "sample_quality"),
+    ("采样点质量统计", ("sample_time", "radio", "total_peer_count", "active_peer_count", "active_peer_mac", "active_mr_rssi", "active_peer_rssi", "standby_peer_count", "available_backup_count", "strong_backup_count", "best_backup_peer_mac", "best_backup_rssi", "backup_judgment_reason", "active_tx_busy", "active_rx_busy", "max_tx_busy", "max_rx_busy", "link_count", "active_establish_time", "active_duration_time", "source_file", "source_line_number", "quality_level", "quality_score", "quality_reasons", "fping_loss_rate"), "sample_quality"),
     ("Active主链路区段", ("sequence", "radio", "active_peer_mac", "peer_ap_name", "peer_ap_mac", "peer_site", "peer_radio", "start_time", "end_time", "duration_seconds", "sample_count", "first_mr_rssi", "last_mr_rssi", "avg_mr_rssi", "min_mr_rssi", "p10_mr_rssi", "max_mr_rssi", "rssi_jitter", "avg_peer_rssi", "min_peer_rssi", "avg_tx_busy", "max_tx_busy", "avg_rx_busy", "max_rx_busy", "available_backup_ratio", "strong_backup_ratio", "no_backup_seconds", "weak_rssi_seconds", "busy_seconds", "link_count_delta_count", "duration_reset_count", "establish_reset_count", "segment_quality_score", "segment_level", "segment_problem_tags", "source_files"), "active_segments"),
     ("Peer质量排名", ("radio", "peer_mac", "peer_ap_name", "peer_ap_mac", "peer_site", "peer_radio", "first_seen_time", "last_seen_time", "seen_sample_count", "active_sample_count", "standby_sample_count", "active_segment_count", "switch_in_count", "switch_out_count", "active_total_seconds", "active_total_ratio", "avg_active_rssi", "min_active_rssi", "p10_active_rssi", "max_active_rssi", "rssi_jitter", "weak_active_seconds", "no_backup_when_active_seconds", "avg_tx_busy", "max_tx_busy", "avg_rx_busy", "max_rx_busy", "link_rebuild_count", "short_segment_count", "flap_related_count", "peer_quality_score", "problem_tags", "suggestion"), "peer_ranking"),
-    ("切换事件分析", ("sequence", "radio", "switch_time", "from_peer", "from_peer_ap_name", "to_peer", "to_peer_ap_name", "previous_segment_duration", "new_segment_duration", "from_last_rssi", "from_avg_rssi_before_switch", "to_first_rssi", "to_avg_rssi_after_switch", "best_backup_peer_before_switch", "best_backup_rssi_before_switch", "tx_busy_before_switch", "rx_busy_before_switch", "tx_busy_after_switch", "rx_busy_after_switch", "switch_type", "severity", "diagnosis", "suggestion", "evidence_id"), "switch_events"),
+    ("切换事件分析", ("sequence", "radio", "switch_time", "from_peer", "from_peer_ap_name", "to_peer", "to_peer_ap_name", "previous_segment_duration", "new_segment_duration", "from_last_rssi", "from_avg_rssi_before_switch", "to_first_rssi", "to_avg_rssi_after_switch", "best_backup_peer_before_switch", "best_backup_rssi_before_switch", "tx_busy_before_switch", "rx_busy_before_switch", "tx_busy_after_switch", "rx_busy_after_switch", "switch_type", "is_ap_return_event", "is_pingpong_abnormal", "pingpong_type", "pingpong_group_id", "pingpong_return_duration_ms", "middle_ap_dwell_ms", "previous_ap", "middle_ap", "return_ap", "pingpong_judgment_reason", "severity", "diagnosis", "suggestion", "evidence_id"), "switch_events"),
     ("异常事件分析", ("event_sequence", "event_time_start", "event_time_end", "duration_seconds", "radio", "event_type", "severity", "active_peer", "peer_ap_name", "active_rssi_min", "active_rssi_avg", "backup_count_min", "tx_busy_max", "rx_busy_max", "source_file", "source_line_number_start", "source_line_number_end", "diagnosis", "suggestion", "evidence_id"), "anomaly_events"),
-    ("无备份链路风险", ("event_sequence", "event_time_start", "event_time_end", "duration_seconds", "radio", "active_peer", "backup_count_min", "diagnosis", "suggestion", "evidence_id"), "no_backup_risks"),
+    ("无备份链路风险", ("event_sequence", "event_time_start", "event_time_end", "duration_seconds", "radio", "active_peer", "standby_peer_count_min", "backup_count_min", "best_backup_peer_mac", "best_backup_rssi", "diagnosis", "suggestion", "evidence_id"), "no_backup_risks"),
     ("空口繁忙度分析", ("radio", "peer_mac", "peer_ap_name", "sample_count", "avg_tx_busy", "max_tx_busy", "p90_tx_busy", "avg_rx_busy", "max_rx_busy", "p90_rx_busy", "busy_warning_seconds", "busy_bad_seconds", "busy_ratio", "busy_level", "diagnosis"), "busy_analysis"),
     ("链路重建计数异常", ("sequence", "event_time", "radio", "peer_mac", "peer_ap_name", "previous_link_cnt", "current_link_cnt", "previous_duration_time", "current_duration_time", "previous_establish_time", "current_establish_time", "rebuild_type", "severity", "diagnosis", "source_file", "source_line_number", "raw_line"), "link_rebuild_events"),
     ("原始证据片段", ("evidence_id", "related_sheet", "related_sequence", "related_event_type", "radio", "sample_time", "source_file", "source_line_number", "link_state", "peer_mac", "peer_ap_name", "mr_rssi", "peer_rssi", "tx_busy", "rx_busy", "link_cnt", "establish_time", "duration_time", "raw_line"), "raw_evidence"),
@@ -501,7 +524,7 @@ ALL_LINK_COLUMNS: tuple[str, ...] = (
     "raw_line",
 )
 
-FIXED_WIDTH_FIELDS = {"raw_line", "diagnosis", "suggestion", "quality_reasons", "segment_problem_tags", "problem_tags", "source_files", "source_file", "error_message", "message", "sha256"}
+FIXED_WIDTH_FIELDS = {"raw_line", "diagnosis", "suggestion", "quality_reasons", "segment_problem_tags", "problem_tags", "source_files", "source_file", "error_message", "message", "sha256", "pingpong_judgment_reason"}
 FIXED_WIDTH_BY_FIELD = {
     "raw_line": 60,
     "diagnosis": 50,
@@ -541,6 +564,20 @@ FIXED_WIDTH_BY_FIELD = {
 }
 MAC_FIELDS = {"active_peer_mac", "peer_mac", "peer_mac_display", "peer_ap_mac", "from_peer", "to_peer", "best_backup_peer_mac", "best_backup_peer_before_switch", "active_peer"}
 LARGE_SHEET_ATTRS = {"sample_quality", "raw_evidence", "all_link_details", "active_segments", "peer_ranking", "anomaly_events", "switch_events"}
+RSSI_STAT_FIELDS = {
+    "first_mr_rssi",
+    "last_mr_rssi",
+    "avg_mr_rssi",
+    "min_mr_rssi",
+    "p10_mr_rssi",
+    "max_mr_rssi",
+    "avg_active_rssi",
+    "min_active_rssi",
+    "p10_active_rssi",
+    "max_active_rssi",
+    "active_rssi_min",
+    "active_rssi_avg",
+}
 SHEET_DEFINITIONS = tuple(
     (sheet_name, fields, attr_name)
     for sheet_name, fields, attr_name in (
@@ -566,6 +603,22 @@ STAGE_BY_ATTR = {
     "active_segments": "excel_active_segments",
     "peer_ranking": "excel_peer_ranking",
     "raw_evidence": "excel_raw_evidence",
+}
+
+EMPTY_SHEET_MESSAGES = {
+    "score_rows": "当前数据不足，未生成质量评分。",
+    "source_files": "未找到源文件清单。",
+    "sample_quality": "未生成采样点质量统计。",
+    "active_segments": "未生成 Active 主链路区段。",
+    "peer_ranking": "未生成 Peer 质量排名。",
+    "switch_events": "未发现切换事件。",
+    "anomaly_events": "未发现异常事件。",
+    "no_backup_risks": "未发现无备份链路风险。",
+    "busy_analysis": "未生成空口繁忙度分析。",
+    "link_rebuild_events": "未发现链路重建计数异常。",
+    "raw_evidence": "当前报告没有需要附带的原始证据片段。",
+    "parse_issues": EMPTY_PARSE_ISSUES_TEXT,
+    "all_link_details": "未导出全量链路明细；请确认报告设置和解析结果。",
 }
 
 
@@ -612,12 +665,14 @@ class MeshAnalysisExcelReportExporter:
         field_list = list(fields)
         sheet = workbook.create_sheet(sheet_name)
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:{get_column_letter(len(field_list))}{max(len(rows) + 1, 1)}"
         scan_limit = int(getattr(getattr(workbook, "_mesh_report_options", None), "autofit_scan_limit", 2000) or 2000)
         width_tracker = _WidthTracker(field_list, scan_limit=scan_limit if attr_name in LARGE_SHEET_ATTRS else 100000)
         width_tracker.feed([REPORT_FIELD_LABELS.get(field, field) for field in field_list])
         if attr_name == "parse_issues" and not rows:
             rows = [{"issue_sequence": 1, "issue_type": "N/A", "severity": "INFO", "message": EMPTY_PARSE_ISSUES_TEXT}]
+        elif not rows:
+            rows = [{field_list[0]: EMPTY_SHEET_MESSAGES.get(attr_name, f"{sheet_name}暂无可用数据。")}] if field_list else []
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(field_list))}{max(len(rows) + 1, 1)}"
         for index, row in enumerate(rows[: width_tracker.scan_limit], 1):
             width_tracker.feed(self._row_values(field_list, row, attr_name, index))
         width_tracker.apply(sheet)
@@ -651,6 +706,8 @@ class MeshAnalysisExcelReportExporter:
 
 
 def translate_report_value(field_name: str, value: object) -> object:
+    if field_name in RSSI_STAT_FIELDS and (value is None or value == ""):
+        return "N/A"
     if value is None or value == "":
         return "N/A" if field_name == "fping_loss_rate" else ""
     if field_name == "fping_loss_rate":

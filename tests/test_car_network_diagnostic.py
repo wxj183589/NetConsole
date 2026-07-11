@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -11,6 +12,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.background_tasks import run_background_task
 from netconsole.services.rail_transit import car_network_diagnostic as car_diag
 from netconsole.services.rail_transit.car_network_diagnostic import (
     AcApStatus,
@@ -63,6 +66,15 @@ NBL12-LC06-MR-CT       74ad-cb9d-3321 bc5a-3457-8ccf Forwarding 40   0/25
 """
 
 
+def _process_events_until(predicate, timeout: float = 8.0) -> None:
+    app = QApplication.instance() or QApplication([])
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert predicate()
+
+
 def _ok_ping(nodes: list[CarNetworkNode]) -> dict[str, PingResult]:
     return {ip: PingResult(ip, True, 0, 1.0) for ip in build_ping_targets(nodes)}
 
@@ -88,6 +100,21 @@ def _cross_ok() -> dict[str, SshResult]:
             },
         ),
     }
+
+
+def _apply_car_network_refresh(page: car_page.CarNetworkDiagnosticPage, paths: PathResolver, database: Database) -> None:
+    result = run_background_task(
+        BackgroundJob(
+            task_type="car_network_refresh_all",
+            params={
+                "db_path": str(database.path),
+                "site_name": "demo",
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+            },
+        )
+    )
+    page._apply_background_point_table(result)
 
 
 def _point_table_with_prefix(train_id: str = "LC06", train_no: str = "06", prefix: str = "10.122.6") -> list[CarNetworkNode]:
@@ -1059,15 +1086,40 @@ def test_point_table_dialog_uses_chinese_headers_and_keeps_internal_mapping_valu
     store.save([CarNetworkNode("LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT", primary_address_role="vehicle_ip")])
 
     dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
+    _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
     header_labels = [dialog.table.horizontalHeaderItem(column).text() for column in range(dialog.table.columnCount())]
     role_column = header_labels.index("主用地址映射")
-    combo = dialog.table.cellWidget(0, role_column)
+    role_item = dialog.table.item(0, role_column)
 
     assert "station" not in header_labels
     assert "primary_address" not in header_labels
     assert "归属站点" in header_labels
-    assert combo.currentText() == "车内IP"
+    assert dialog.table.cellWidget(0, role_column) is None
+    assert role_item.text() == "车内IP"
+    assert role_item.data(Qt.UserRole) == "vehicle_ip"
     assert dialog._rows_to_nodes()[0].primary_address_role == "vehicle_ip"
+
+
+def test_car_network_table_shows_ssh_banner_failure_detail() -> None:
+    nodes = [CarNetworkNode("LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT", ssh_host="10.122.6.249")]
+    ssh_results = {
+        "TC1-MR": SshResult(
+            "10.122.6.249",
+            False,
+            "TC1-MR",
+            error="SSH握手失败：未收到SSH banner，疑似SSH未启用或端口不是SSH",
+            status="ssh_banner_failed",
+            protocol="SSH",
+            port=22,
+            suggestion="检查MR是否启用SSH，确认端口号；如设备只支持Telnet，请启用Telnet。",
+        )
+    }
+
+    rows = car_diag.build_result_tables(nodes, {}, ssh_results, AcApStatus(selected=True))
+
+    ssh_row = next(row for row in rows["TC1"] if row["layer"] == "SSH地址 / MR管理")
+    assert ssh_row["status"] == "SSH握手失败"
+    assert "未收到SSH banner" in ssh_row["note"]
 
 
 def test_point_table_role_combo_supports_all_internal_value(tmp_path: Path) -> None:
@@ -1092,13 +1144,13 @@ def test_point_table_role_combo_supports_all_internal_value(tmp_path: Path) -> N
     ])
 
     dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
+    _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
     role_column = car_diag.POINT_TABLE_FIELDS.index("primary_address_role")
-    combo = dialog.table.cellWidget(0, role_column)
-    assert combo is not None
+    role_item = dialog.table.item(0, role_column)
 
-    labels = [combo.itemText(index) for index in range(combo.count())]
-    assert "全部" in labels
-    assert combo.currentText() == "全部"
+    assert dialog.table.cellWidget(0, role_column) is None
+    assert role_item.text() == "全部"
+    assert role_item.data(Qt.UserRole) == "all"
     assert dialog._rows_to_nodes()[0].primary_address_role == "all"
 
 
@@ -1113,6 +1165,7 @@ def test_point_table_lock_persists_and_blocks_edit_actions(tmp_path: Path) -> No
     config_store.save({"point_table_locked": True})
 
     dialog = PointTableDialog(repository, "demo", store, config_store)
+    _process_events_until(lambda: not dialog._background_job_context)
 
     assert dialog.locked is True
     assert dialog.add_button.isEnabled() is False
@@ -1135,9 +1188,41 @@ def test_rail_transit_contains_car_network_tab_and_train_from_devices(tmp_path: 
     page._ensure_feature_page("rail.car_network_diagnostic")
 
     assert page.tabs.tabText(1) == "车内通信检测"
+    _apply_car_network_refresh(page.car_network_page, paths, database)
     assert page.car_network_page.train_table.item(0, 0).text() == "06车"
     assert page.car_network_page.train_table.item(0, 1).text() == "未检测"
     assert not hasattr(page.car_network_page, "generate_button")
+
+
+def test_car_network_fixed_topology_uses_scrollable_canvas(tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QScrollArea, QSplitter
+
+    QApplication.instance() or QApplication([])
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    page = car_page.CarNetworkDiagnosticPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
+
+    page_scroll = page.findChild(QScrollArea, "carNetworkPageScroll")
+    topology_scroll = page.findChild(QScrollArea, "carNetworkTopologyScroll")
+
+    assert page_scroll is not None
+    assert page_scroll.widgetResizable() is True
+    assert page_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert topology_scroll is not None
+    assert topology_scroll.widgetResizable() is True
+    assert topology_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert topology_scroll.widget() is page.topology_wrapper
+    assert page.topology_wrapper.minimumWidth() >= 1050
+    assert page.topology_canvas.minimumHeight() >= 620
+    assert isinstance(page.results_container, QSplitter)
+    assert page.results_container.count() == 2
+    assert page.log_output.minimumHeight() >= 100
+    assert page.json_output.minimumHeight() >= 100
+    assert page.left_panel.minimumWidth() >= (34 if page.left_collapsed else 180)
+    assert page.left_panel.maximumWidth() > 10000
+    assert page.node_buttons["TC1-MR"].minimumWidth() >= 128
+    assert page.node_buttons["TC2-MR"].minimumHeight() >= 58
 
 
 def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Path) -> None:
@@ -1160,6 +1245,7 @@ def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Pat
     )
 
     page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
+    _apply_car_network_refresh(page, paths, database)
 
     assert [train.train_no for train in page.trains] == [f"{index:02d}" for index in range(1, 19)]
     assert [page.train_table.item(row, 0).data(Qt.UserRole) for row in range(page.train_table.rowCount())][5] == "ZZZ-LC06"

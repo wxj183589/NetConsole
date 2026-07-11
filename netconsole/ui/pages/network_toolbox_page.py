@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from netconsole.ui.dialogs.message_service import MessageBox
 import ipaddress
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QRect, QSize, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QRect, QSize, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -19,11 +21,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from netconsole.core.admin import is_admin
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
-from netconsole.services.network_tools.toolbox.export import export_rows_csv, export_rows_xlsx
+from netconsole.services.export.export_task_builders import result_file_rows_source, table_csv_source_spec, table_xlsx_source_spec
 from netconsole.services.network_tools.toolbox.fping_runner import discover_fping, scan_targets as scan_fping_targets
 from netconsole.services.network_tools.toolbox.ip_calc import (
     TableResult,
@@ -56,7 +56,9 @@ from netconsole.services.network_tools.toolbox.route_tools import (
     sort_route_rows,
 )
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
-from netconsole.ui.table_utils import configure_readable_table_columns, configure_readonly_table
+from netconsole.ui.components.button_icons import apply_button_icon
+from netconsole.ui.export_action_helper import submit_export_task
+from netconsole.ui.table_utils import auto_fit_table_columns, configure_readable_table_columns, configure_readonly_table
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 
 
@@ -113,6 +115,11 @@ DISPLAY_HEADERS = {
     "on_link": "在链路上",
     "persistent": "\u6301\u4e45",
 }
+
+TOOLBOX_DIRECT_FILL_LIMIT = 200
+TOOLBOX_FILL_BATCH_SIZE = 200
+TOOLBOX_RESULT_DISPLAY_LIMIT = 2000
+TOOLBOX_SYNC_CACHE_ROW_LIMIT = 200
 
 STATUS_LABELS = {
     "ready": "就绪",
@@ -332,6 +339,35 @@ class _Worker(QObject):
             self.finished.emit(None, str(exc), self.prefix)
 
 
+class ResultCacheWriteWorker(QThread):
+    completed = Signal(int, object, int)
+    failed = Signal(int, str)
+
+    def __init__(self, generation: int, cache_dir: Path, prefix: str, rows: list[dict[str, object]], parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.generation = generation
+        self.cache_dir = Path(cache_dir)
+        self.prefix = prefix
+        self.rows = rows
+
+    def run(self) -> None:
+        try:
+            path = write_result_cache_file(self.cache_dir, self.prefix, self.rows)
+            self.completed.emit(self.generation, path, len(self.rows))
+        except Exception as exc:
+            self.failed.emit(self.generation, str(exc))
+
+
+def write_result_cache_file(cache_dir: Path, prefix: str, rows: list[dict[str, object]]) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jsonl"
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, default=str))
+            handle.write("\n")
+    return path
+
+
 class ToolResultPanel(QGroupBox):
     def __init__(self, paths: PathResolver, site_name: str, export_prefix: str, parent: QWidget | None = None) -> None:
         super().__init__("结果", parent)
@@ -340,6 +376,16 @@ class ToolResultPanel(QGroupBox):
         self.export_prefix = export_prefix
         self.current_rows: list[dict[str, object]] = []
         self.current_headers: list[str] = []
+        self.current_result_file: Path | None = None
+        self._fill_generation = 0
+        self._cache_generation = 0
+        self._cache_worker: ResultCacheWriteWorker | None = None
+        self._cache_pending = False
+        self._cache_error = ""
+        self._summary_base_lines: list[str] = []
+        self._result_total_count = 0
+        self._result_display_count = 0
+        self._table_fill_pending = False
 
         self.status_label = QLabel()
         self.result_table = QTableWidget()
@@ -350,9 +396,13 @@ class ToolResultPanel(QGroupBox):
         self.export_csv_button = QPushButton("导出 CSV")
         self.export_xlsx_button = QPushButton("导出 XLSX")
         self.clear_button = QPushButton("清空")
+        apply_button_icon(self.export_csv_button, "SHARE")
+        apply_button_icon(self.export_xlsx_button, "SHARE")
+        apply_button_icon(self.clear_button, "DELETE")
 
         for button in (self.export_csv_button, self.export_xlsx_button, self.clear_button):
-            button.setFixedWidth(92)
+            button.setMinimumWidth(92)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         layout = QVBoxLayout(self)
         actions = QHBoxLayout()
@@ -368,6 +418,7 @@ class ToolResultPanel(QGroupBox):
         self.export_xlsx_button.clicked.connect(lambda: self.export_current("xlsx"))
         self.clear_button.clicked.connect(self.clear_results)
         self.set_status("ready")
+        self._sync_export_buttons()
 
     def set_site(self, site_name: str) -> None:
         self.site_name = site_name
@@ -394,20 +445,73 @@ class ToolResultPanel(QGroupBox):
         self.export_prefix = prefix
         normalized = [_display_row(row) for row in rows]
         self.current_rows = normalized
+        self._result_total_count = len(normalized)
         headers: list[str] = []
         for row in normalized:
             for key in row:
                 if key not in headers:
                     headers.append(key)
         self.current_headers = headers
+        self.current_result_file = None
+        self._prepare_result_cache(prefix, normalized) if headers else self._reset_result_cache_state()
+        display_rows = normalized[:TOOLBOX_RESULT_DISPLAY_LIMIT]
+        self._result_display_count = len(display_rows)
+        hidden_count = max(0, len(normalized) - len(display_rows))
+        self._fill_generation += 1
+        generation = self._fill_generation
 
         self.result_table.setUpdatesEnabled(False)
         try:
             self.result_table.clearContents()
             self.result_table.setColumnCount(len(headers))
-            self.result_table.setRowCount(len(normalized))
+            # UI 表格只承载硬上限内的可见结果；完整运行结果写入 JSONL 缓存供导出进程读取。
+            self.result_table.setRowCount(len(display_rows))
             self.result_table.setHorizontalHeaderLabels(headers)
-            for row_index, row in enumerate(normalized):
+        finally:
+            self.result_table.setUpdatesEnabled(True)
+
+        summary_lines = [summary_title] if summary_title else []
+        if summary:
+            summary_lines.extend(f"{key}: {_stringify(value)}" for key, value in summary.items())
+        if hidden_count:
+            summary_lines.append(f"表格仅显示前 {len(display_rows)} 条，导出将读取缓存文件中的 {len(normalized)} 条完整结果。")
+        self._summary_base_lines = summary_lines
+        self._update_summary_cache_status()
+        self.result_table.setToolTip(
+            f"当前表格仅显示前 {len(display_rows)} 条；如需完整数据，请直接导出。"
+            if hidden_count
+            else ""
+        )
+        if len(display_rows) <= TOOLBOX_DIRECT_FILL_LIMIT:
+            self._fill_table_rows(display_rows, headers, 0, len(display_rows))
+            auto_fit_table_columns(self.result_table, max_rows=200)
+            self._table_fill_pending = False
+            self._sync_result_status()
+            return
+
+        self._table_fill_pending = True
+        self.set_status("loading", f"正在填充 0/{len(display_rows)} 行")
+
+        def fill_next(start: int = 0) -> None:
+            if generation != self._fill_generation:
+                return
+            end = min(start + TOOLBOX_FILL_BATCH_SIZE, len(display_rows))
+            self._fill_table_rows(display_rows, headers, start, end)
+            self.set_status("loading", f"正在填充 {end}/{len(display_rows)} 行")
+            if end < len(display_rows):
+                QTimer.singleShot(0, lambda: fill_next(end))
+                return
+            auto_fit_table_columns(self.result_table, max_rows=200)
+            self._table_fill_pending = False
+            self._sync_result_status()
+
+        QTimer.singleShot(0, fill_next)
+
+    def _fill_table_rows(self, rows: list[dict[str, object]], headers: list[str], start: int, end: int) -> None:
+        self.result_table.setUpdatesEnabled(False)
+        try:
+            for row_index in range(start, end):
+                row = rows[row_index]
                 row_color = STATUS_VALUE_COLORS.get(str(row.get("状态", "")))
                 for column, header in enumerate(headers):
                     item = QTableWidgetItem(_stringify(row.get(header, "")))
@@ -417,18 +521,105 @@ class ToolResultPanel(QGroupBox):
         finally:
             self.result_table.setUpdatesEnabled(True)
 
-        if len(normalized) <= 200:
-            self.result_table.resizeColumnsToContents()
+    def _prepare_result_cache(self, prefix: str, rows: list[dict[str, object]]) -> None:
+        self._cache_generation += 1
+        generation = self._cache_generation
+        self._cache_pending = False
+        self._cache_error = ""
+        self.current_result_file = None
+        self._sync_export_buttons()
+        if len(rows) <= TOOLBOX_SYNC_CACHE_ROW_LIMIT:
+            try:
+                self.current_result_file = write_result_cache_file(self.paths.runtime_cache_dir / "toolbox_results", prefix, rows)
+            except Exception as exc:
+                self._cache_error = str(exc)
+            self._sync_export_buttons()
+            return
+        self._cache_pending = True
+        worker = ResultCacheWriteWorker(generation, self.paths.runtime_cache_dir / "toolbox_results", prefix, rows, self)
+        self._cache_worker = worker
+        worker.completed.connect(self._result_cache_written)
+        worker.failed.connect(self._result_cache_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda worker=worker: self._cache_worker_finished(worker))
+        worker.start()
+        self._sync_export_buttons()
 
-        summary_lines = [summary_title] if summary_title else []
-        if summary:
-            summary_lines.extend(f"{key}: {_stringify(value)}" for key, value in summary.items())
-        self.summary_text.setPlainText("\n".join(summary_lines))
-        self.set_status("done", f"{len(normalized)} 条")
+    def _reset_result_cache_state(self) -> None:
+        self._cache_generation += 1
+        self._cache_pending = False
+        self._cache_error = ""
+        self.current_result_file = None
+        self._sync_export_buttons()
+
+    def _result_cache_written(self, generation: int, path: object, _row_count: int) -> None:
+        if generation != self._cache_generation:
+            return
+        self.current_result_file = Path(path)
+        self._cache_pending = False
+        self._cache_error = ""
+        self._sync_export_buttons()
+        self._update_summary_cache_status()
+        self._sync_result_status()
+
+    def _result_cache_failed(self, generation: int, message: str) -> None:
+        if generation != self._cache_generation:
+            return
+        self.current_result_file = None
+        self._cache_pending = False
+        self._cache_error = message or "未知错误"
+        self._sync_export_buttons()
+        self._update_summary_cache_status()
+        self._sync_result_status()
+
+    def _cache_worker_finished(self, worker: ResultCacheWriteWorker) -> None:
+        if self._cache_worker is worker:
+            self._cache_worker = None
+
+    def _sync_export_buttons(self) -> None:
+        enabled = bool(self.current_headers) and not self._cache_pending and self.current_result_file is not None and self.current_result_file.is_file()
+        self.export_csv_button.setEnabled(enabled)
+        self.export_xlsx_button.setEnabled(enabled)
+
+    def _update_summary_cache_status(self) -> None:
+        lines = list(self._summary_base_lines)
+        if self._cache_pending:
+            lines.append("导出缓存正在后台写入，完成前导出按钮不可用。")
+        elif self._cache_error:
+            lines.append(f"缓存写入失败，无法导出完整结果：{self._cache_error}")
+        elif self.current_headers and self.current_result_file is not None:
+            lines.append(f"导出缓存已就绪：{len(self.current_rows)} 条。")
+        self.summary_text.setPlainText("\n".join(lines))
+
+    def _sync_result_status(self) -> None:
+        if self._table_fill_pending:
+            return
+        message = self._result_status_text(self._result_total_count, self._result_display_count)
+        if self._cache_pending:
+            self.set_status("loading", f"{message}，正在写入导出缓存")
+        elif self._cache_error:
+            self.set_status("failed", "缓存写入失败，无法导出完整结果")
+        else:
+            self.set_status("done", message)
+
+    @staticmethod
+    def _result_status_text(total_count: int, display_count: int) -> str:
+        if total_count > display_count:
+            return f"显示 {display_count}/{total_count} 条，导出读取完整缓存"
+        return f"{total_count} 条"
 
     def export_current(self, suffix: str) -> None:
         if not self.current_headers:
-            QMessageBox.information(self, "导出", "没有可导出的结果。")
+            MessageBox.information(self, "导出", "没有可导出的结果。")
+            return
+        if self._cache_pending:
+            MessageBox.warning(self, "导出", "结果缓存仍在写入，请稍后导出。")
+            return
+        if self._cache_error:
+            MessageBox.warning(self, "导出", "缓存写入失败，无法导出完整结果。")
+            return
+        if self.current_result_file is None or not self.current_result_file.is_file():
+            MessageBox.warning(self, "导出", "未找到运行结果缓存文件，请重新生成结果后再导出。")
             return
         export_dir = self.paths.toolbox_outputs_dir(self.site_name)
         default = export_dir / f"{self.export_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{suffix}"
@@ -437,15 +628,37 @@ class ToolResultPanel(QGroupBox):
         if not selected:
             return
         path = Path(selected)
+        columns = [{"key": header, "title": header, "text": True} for header in self.current_headers]
+        source = result_file_rows_source(self.current_result_file)
         if suffix == "xlsx":
-            export_rows_xlsx(path, self.current_headers, self.current_rows)
+            spec = table_xlsx_source_spec(
+                path,
+                columns=columns,
+                source=source,
+                sheet_name="结果",
+                title="导出结果",
+                open_dir_on_success=True,
+            )
         else:
-            export_rows_csv(path, self.current_headers, self.current_rows)
-        QMessageBox.information(self, "导出", f"已导出：{path}")
+            spec = table_csv_source_spec(
+                path,
+                columns=columns,
+                source=source,
+                title="导出结果",
+                open_dir_on_success=True,
+            )
+        submit_export_task(self, spec, success_title="导出结果", paths=self.paths)
 
     def clear_results(self) -> None:
         self.current_rows = []
         self.current_headers = []
+        self.current_result_file = None
+        self._fill_generation += 1
+        self._reset_result_cache_state()
+        self._summary_base_lines = []
+        self._result_total_count = 0
+        self._result_display_count = 0
+        self._table_fill_pending = False
         self.result_table.setUpdatesEnabled(False)
         try:
             self.result_table.clearContents()
@@ -584,7 +797,7 @@ class NetworkToolboxPage(QWidget):
     def _scrollable_tab(self) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setStyleSheet(
@@ -599,61 +812,48 @@ class NetworkToolboxPage(QWidget):
         grid.addWidget(QLabel(label), row, 0)
         grid.addWidget(widget, row, 1)
 
-    def _action_button(self, text: str, slot) -> QPushButton:
+    def _action_button(self, text: str, slot, icon_name: str | None = None) -> QPushButton:
         button = QPushButton(text)
         button.setMinimumSize(104, 32)
-        button.setMaximumWidth(150)
-        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        apply_button_icon(button, icon_name)
         button.clicked.connect(slot)
         return button
 
-    def _network_action_button(self, text: str, slot) -> QPushButton:
+    def _network_action_button(self, text: str, slot, icon_name: str | None = None) -> QPushButton:
         button = QPushButton(text)
         button.setObjectName("networkPingActionButton")
         button.setMinimumSize(100, 34)
-        button.setMaximumWidth(140)
-        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        apply_button_icon(button, icon_name)
         button.clicked.connect(slot)
         return button
 
     def _network_card(self, title: str) -> tuple[QWidget, QVBoxLayout]:
         card = QWidget()
-        card.setObjectName("networkPingCard")
+        card.setObjectName("ncCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 12)
         layout.setSpacing(8)
         title_label = QLabel(title)
         title_label.setObjectName("networkPingCardTitle")
         layout.addWidget(title_label)
-        card.setStyleSheet(
-            """
-            QWidget#networkPingCard {
-                border: 1px solid #334155;
-                border-radius: 6px;
-                background: rgba(15, 23, 42, 0.45);
-            }
-            QLabel#networkPingCardTitle {
-                font-weight: 600;
-            }
-            """
-        )
         return card, layout
 
     def _apply_network_form_control(self, widget: QWidget, *, spin: bool = False) -> None:
         widget.setMinimumHeight(34)
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         if spin and isinstance(widget, QAbstractSpinBox):
-            widget.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
+            widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             widget.setMinimumWidth(136)
-            widget.setMaximumWidth(170)
-            widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
     def _ipv4_tab(self) -> QWidget:
         page, grid, actions, panel = self._tool_page("ipv4_calc")
         self.ipv4_panel = panel
         self.ipv4_edit = QLineEdit("192.168.1.1/24")
         self._add_row(grid, 0, "网络地址", self.ipv4_edit)
-        actions.addWidget(self._action_button("计算", self.calculate_ipv4))
+        actions.addWidget(self._action_button("计算", self.calculate_ipv4, "SEARCH"))
         return page
 
     def _ipv6_tab(self) -> QWidget:
@@ -661,7 +861,7 @@ class NetworkToolboxPage(QWidget):
         self.ipv6_panel = panel
         self.ipv6_edit = QLineEdit("2408::1/64")
         self._add_row(grid, 0, "IPv6 地址/前缀", self.ipv6_edit)
-        actions.addWidget(self._action_button("计算", self.calculate_ipv6))
+        actions.addWidget(self._action_button("计算", self.calculate_ipv6, "SEARCH"))
         return page
 
     def _vlsm_tab(self) -> QWidget:
@@ -674,7 +874,7 @@ class NetworkToolboxPage(QWidget):
         self.vlsm_requests_edit.setMaximumHeight(112)
         self._add_row(grid, 0, "主网络", self.vlsm_parent_edit)
         self._add_row(grid, 1, "子网需求", self.vlsm_requests_edit)
-        actions.addWidget(self._action_button("规划 VLSM", self.calculate_vlsm))
+        actions.addWidget(self._action_button("规划 VLSM", self.calculate_vlsm, "EDIT"))
         return page
 
     def _subnet_split_tab(self) -> QWidget:
@@ -686,7 +886,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 0, "主网络", self.subnet_parent_edit)
         self._add_row(grid, 1, "目标前缀", self.subnet_prefix_spin)
         self._add_row(grid, 2, "每页数量", self.subnet_page_size_spin)
-        actions.addWidget(self._action_button("划分", self.calculate_subnets))
+        actions.addWidget(self._action_button("划分", self.calculate_subnets, "EDIT"))
         return page
 
     def _route_summary_tab(self) -> QWidget:
@@ -697,7 +897,7 @@ class NetworkToolboxPage(QWidget):
         self.summary_input.setPlainText("\n".join(["192.168.0.0/24", "192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"]))
         self.summary_input.setMaximumHeight(112)
         self._add_row(grid, 0, "每行一个网段", self.summary_input)
-        actions.addWidget(self._action_button("汇总", self.calculate_route_summary))
+        actions.addWidget(self._action_button("汇总", self.calculate_route_summary, "ACCEPT"))
         return page
 
     def _wildcard_tab(self) -> QWidget:
@@ -708,7 +908,7 @@ class NetworkToolboxPage(QWidget):
         self.wildcard_input.setPlainText("\n".join(["/24", "255.255.0.0", "192.168.0.0 255.255.0.0"]))
         self.wildcard_input.setMaximumHeight(112)
         self._add_row(grid, 0, "输入", self.wildcard_input)
-        actions.addWidget(self._action_button("计算反掩码", self.calculate_wildcard))
+        actions.addWidget(self._action_button("计算反掩码", self.calculate_wildcard, "SEARCH"))
         return page
 
     def _single_ping_tab(self) -> QWidget:
@@ -721,7 +921,8 @@ class NetworkToolboxPage(QWidget):
         quick_row = QHBoxLayout()
         for size in (32, 1024, 4096, 8192):
             quick = QPushButton(f"{size}B")
-            quick.setFixedWidth(76)
+            quick.setMinimumWidth(76)
+            quick.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             quick.clicked.connect(lambda _checked=False, value=size: self.single_ping_size.setValue(value))
             quick_row.addWidget(quick)
         quick_row.addStretch(1)
@@ -730,7 +931,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 2, "包大小", self.single_ping_size)
         grid.addLayout(quick_row, 2, 2)
         self._add_row(grid, 3, "超时(ms)", self.single_ping_timeout)
-        actions.addWidget(self._action_button("开始 Ping", self.run_single_ping))
+        actions.addWidget(self._action_button("开始 Ping", self.run_single_ping, "PLAY"))
         return page
 
     def _continuous_ping_tab(self) -> QWidget:
@@ -744,7 +945,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 1, "间隔(秒)", self.continuous_ping_interval)
         self._add_row(grid, 2, "包大小", self.continuous_ping_size)
         self._add_row(grid, 3, "超时(ms)", self.continuous_ping_timeout)
-        actions.addWidget(self._action_button("采样一次", self.run_continuous_sample))
+        actions.addWidget(self._action_button("采样一次", self.run_continuous_sample, "PLAY"))
         return page
 
     def _batch_ping_tab(self) -> QWidget:
@@ -761,7 +962,7 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 1, "超时(ms)", self.batch_ping_timeout)
         self._add_row(grid, 2, "并发数", self.batch_ping_concurrency)
         self._add_row(grid, 3, "模式", self.batch_ping_mode)
-        actions.addWidget(self._action_button("批量 Ping", self.run_batch_ping))
+        actions.addWidget(self._action_button("批量 Ping", self.run_batch_ping, "PLAY"))
         return page
 
     def _network_ping_tab(self) -> QWidget:
@@ -804,8 +1005,8 @@ class NetworkToolboxPage(QWidget):
 
         refresh = QPushButton("刷新网卡")
         refresh.setMinimumSize(112, 34)
-        refresh.setMaximumWidth(128)
-        refresh.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        refresh.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        apply_button_icon(refresh, "SYNC")
         refresh.clicked.connect(self.refresh_network_adapters)
         self.network_adapter_combo.currentIndexChanged.connect(self._network_adapter_changed)
 
@@ -841,11 +1042,11 @@ class NetworkToolboxPage(QWidget):
         actions.setSpacing(8)
         actions_layout.addLayout(actions)
         for button in (
-            self._network_action_button("扫描网段", self.run_network_ping),
-            self._network_action_button("停止", self.stop_network_ping),
-            self._network_action_button("导出 CSV", lambda: panel.export_current("csv")),
-            self._network_action_button("导出 XLSX", lambda: panel.export_current("xlsx")),
-            self._network_action_button("清空", self.clear_network_ping_results),
+            self._network_action_button("扫描网段", self.run_network_ping, "PLAY"),
+            self._network_action_button("停止", self.stop_network_ping, "CANCEL"),
+            self._network_action_button("导出 CSV", lambda: panel.export_current("csv"), "SHARE"),
+            self._network_action_button("导出 XLSX", lambda: panel.export_current("xlsx"), "SHARE"),
+            self._network_action_button("清空", self.clear_network_ping_results, "DELETE"),
         ):
             actions.addWidget(button)
         actions.addStretch(1)
@@ -906,7 +1107,8 @@ class NetworkToolboxPage(QWidget):
         quick_row = QHBoxLayout()
         for label, port in (("HTTP:80", 80), ("HTTPS:443", 443), ("SSH:22", 22), ("RDP:3389", 3389), ("MySQL:3306", 3306), ("Redis:6379", 6379)):
             button = QPushButton(label)
-            button.setFixedWidth(92)
+            button.setMinimumWidth(92)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             button.clicked.connect(lambda _checked=False, value=port: self.tcp_port.setValue(value))
             quick_row.addWidget(button)
         quick_row.addStretch(1)
@@ -915,7 +1117,7 @@ class NetworkToolboxPage(QWidget):
         grid.addLayout(quick_row, 1, 2)
         self._add_row(grid, 2, "测试次数", self.tcp_count)
         self._add_row(grid, 3, "超时(秒)", self.tcp_timeout)
-        actions.addWidget(self._action_button("TCP Ping", self.run_tcp_ping))
+        actions.addWidget(self._action_button("TCP Ping", self.run_tcp_ping, "PLAY"))
         return page
 
     def _routes_page(self) -> QWidget:
@@ -943,12 +1145,14 @@ class NetworkToolboxPage(QWidget):
         self._add_row(grid, 4, "\u63a5\u53e3\u7d22\u5f15", self.route_interface_index)
         self._add_row(grid, 5, "\u8dc3\u70b9\u6570", self.route_metric)
         grid.addWidget(self.route_persistent, 6, 1)
-        refresh = self._action_button("\u5237\u65b0\u8def\u7531", self.refresh_routes)
-        preview_add = self._action_button("\u6dfb\u52a0\u9884\u89c8", self.preview_add_route)
-        preview_delete = self._action_button("\u5220\u9664\u9884\u89c8", self.preview_delete_route)
-        preview_selected = self._action_button("\u9009\u4e2d\u5220\u9664\u9884\u89c8", self.preview_selected_route_delete)
-        execute_add = self._action_button("\u6267\u884c\u6dfb\u52a0", self.execute_add_route)
-        execute_delete = self._action_button("\u6267\u884c\u5220\u9664", self.execute_delete_route)
+        refresh = self._action_button("\u5237\u65b0\u8def\u7531", self.refresh_routes, "SYNC")
+        preview_add = self._action_button("\u6dfb\u52a0\u9884\u89c8", self.preview_add_route, "ADD")
+        preview_delete = self._action_button("\u5220\u9664\u9884\u89c8", self.preview_delete_route, "DELETE")
+        preview_selected = self._action_button("\u9009\u4e2d\u5220\u9664\u9884\u89c8", self.preview_selected_route_delete, "DELETE")
+        execute_add = self._action_button("\u6267\u884c\u6dfb\u52a0", self.execute_add_route, "ACCEPT")
+        execute_delete = self._action_button("\u6267\u884c\u5220\u9664", self.execute_delete_route, "DELETE")
+        self.route_execute_buttons = (execute_add, execute_delete)
+        self._refresh_routes_after_command = False
         for button in (execute_add, execute_delete):
             button.setEnabled(is_admin())
         for button in (refresh, preview_add, preview_delete, preview_selected, execute_add, execute_delete):
@@ -964,17 +1168,23 @@ class NetworkToolboxPage(QWidget):
         self.ipv6_panel.show_rows([ipv6_calculate(self.ipv6_edit.text())], "ipv6_calc", summary_title="IPv6 计算")
 
     def calculate_vlsm(self) -> None:
-        self.vlsm_panel.show_table_result(plan_vlsm(self.vlsm_parent_edit.text(), self.vlsm_requests_edit.toPlainText()), "vlsm")
+        parent_text = self.vlsm_parent_edit.text()
+        requests_text = self.vlsm_requests_edit.toPlainText()
+        self._run_async(self.vlsm_panel, lambda: plan_vlsm(parent_text, requests_text), "vlsm")
 
     def calculate_subnets(self) -> None:
-        result = split_subnets(self.subnet_parent_edit.text(), self.subnet_prefix_spin.value(), page_size=self.subnet_page_size_spin.value())
-        self.subnet_panel.show_table_result(result, "subnet_split")
+        parent_text = self.subnet_parent_edit.text()
+        target_prefix = self.subnet_prefix_spin.value()
+        page_size = self.subnet_page_size_spin.value()
+        self._run_async(self.subnet_panel, lambda: split_subnets(parent_text, target_prefix, page_size=page_size), "subnet_split")
 
     def calculate_route_summary(self) -> None:
-        self.route_summary_panel.show_table_result(summarize_routes(self.summary_input.toPlainText()), "route_summary")
+        text = self.summary_input.toPlainText()
+        self._run_async(self.route_summary_panel, lambda: summarize_routes(text), "route_summary")
 
     def calculate_wildcard(self) -> None:
-        self.wildcard_panel.show_table_result(wildcard_calculate(self.wildcard_input.toPlainText()), "wildcard")
+        text = self.wildcard_input.toPlainText()
+        self._run_async(self.wildcard_panel, lambda: wildcard_calculate(text), "wildcard")
 
     def run_single_ping(self) -> None:
         self._run_async(
@@ -1010,7 +1220,7 @@ class NetworkToolboxPage(QWidget):
         network = ipaddress.ip_network(self.network_ping_cidr.text(), strict=False)
         hosts = list(network.hosts()) if self.network_ping_usable_only.isChecked() else list(network)
         if len(hosts) > 4096:
-            QMessageBox.warning(self, "网段 Ping", "单次扫描最大地址数为 4096，请缩小范围。")
+            MessageBox.warning(self, "网段 Ping", "单次扫描最大地址数为 4096，请缩小范围。")
             return
         targets = [str(host) for host in hosts]
         self.network_ping_stop_requested = False
@@ -1239,15 +1449,18 @@ class NetworkToolboxPage(QWidget):
         self._execute_route_command(self.routes_panel.summary_text.toPlainText())
 
     def _execute_route_command(self, command: str) -> None:
+        if self.thread is not None:
+            self.routes_panel.show_error("已有任务正在执行，请等待完成。")
+            return
         if not is_admin():
-            QMessageBox.warning(self, "本机路由", "需要以管理员身份运行才能修改路由。")
+            MessageBox.warning(self, "本机路由", "需要以管理员身份运行才能修改路由。")
             return
-        if QMessageBox.question(self, "本机路由", f"确认执行：\n{command}") != QMessageBox.Yes:
+        if MessageBox.question(self, "本机路由", f"确认执行：\n{command}") != MessageBox.Yes:
             return
-        result = execute_powershell(command)
-        self.routes_panel.set_status("done" if result.returncode == 0 else "failed")
-        self.routes_panel.summary_text.setPlainText(result.stdout or result.stderr)
-        self.refresh_routes()
+        for button in self.route_execute_buttons:
+            button.setEnabled(False)
+        self.routes_panel.summary_text.setPlainText(f"正在执行：\n{command}")
+        self._run_async(self.routes_panel, lambda: execute_powershell(command), "route_modify")
 
     def _run_async(self, panel: ToolResultPanel, fn: Callable[[], object], prefix: str) -> None:
         if self.thread is not None:
@@ -1278,9 +1491,27 @@ class NetworkToolboxPage(QWidget):
         if error:
             panel.show_error(error)
             return
+        if prefix == "route_modify":
+            return_code = int(getattr(payload, "returncode", -1))
+            stdout = str(getattr(payload, "stdout", "") or "").strip()
+            stderr = str(getattr(payload, "stderr", "") or "").strip()
+            args = list(getattr(payload, "args", []) or [])
+            command = str(args[-1] if args else "")
+            lines = [f"命令：{command}", f"退出码：{return_code}"]
+            if stdout:
+                lines.extend(("", "标准输出：", stdout))
+            if stderr:
+                lines.extend(("", "错误输出：", stderr))
+            panel.summary_text.setPlainText("\n".join(lines))
+            panel.set_status("done" if return_code == 0 else "failed", "执行完成" if return_code == 0 else "执行失败")
+            self._refresh_routes_after_command = True
+            return
         if prefix == "network_ping" and self.network_ping_stop_requested:
             panel.set_status("stopped")
             self._refresh_network_ping_stats("已停止")
+            return
+        if isinstance(payload, TableResult):
+            panel.show_table_result(payload, prefix)
             return
         rows = list(payload or [])
         if prefix == "local_routes":
@@ -1291,9 +1522,16 @@ class NetworkToolboxPage(QWidget):
 
     @Slot()
     def _thread_finished(self) -> None:
+        finished_prefix = str(getattr(self.worker, "prefix", "") or "")
         self.thread = None
         self.worker = None
         self.active_panel = None
+        if finished_prefix == "route_modify":
+            for button in self.route_execute_buttons:
+                button.setEnabled(is_admin())
+            if self._refresh_routes_after_command:
+                self._refresh_routes_after_command = False
+                self.refresh_routes()
 
     def _init_network_ping_grid(self, network: ipaddress.IPv4Network, targets: list[str]) -> None:
         target_set = set(targets)
@@ -1438,11 +1676,11 @@ class NetworkToolboxPage(QWidget):
         return f"{adapter.name} / {ip_text} / {status}"
 
     @staticmethod
-    def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
+    def _spin(minimum: int, maximum: int, value: int) -> NoWheelSpinBox:
         spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
-        spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        spin.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         return spin
 
 

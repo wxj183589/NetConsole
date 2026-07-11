@@ -232,11 +232,20 @@ class ConfigLifecycleService:
                 archive.writestr("failed_devices.txt", "\n".join(failures) + "\n")
 
     def delete_snapshot(self, snapshot: ConfigSnapshot) -> None:
-        path = self._absolute_snapshot_path(snapshot)
-        if path.exists():
-            path.unlink()
+        paths: list[Path] = [self._absolute_snapshot_path(snapshot)]
+        if snapshot.raw_log_path:
+            raw_path = Path(snapshot.raw_log_path)
+            if not raw_path.is_absolute():
+                raw_path = self.paths.site_dir(self.site_name) / raw_path
+            paths.extend([raw_path, raw_path.with_suffix(".jsonl")])
         if snapshot.id is not None:
             self.repository.delete(int(snapshot.id))
+        for path in paths:
+            try:
+                if path.exists() and path.is_file():
+                    path.unlink()
+            except OSError as exc:
+                app_logger.log_warning("CONFIG_SNAPSHOT_FILE_DELETE_FAILED", f"path={path} error={exc}")
 
     def device_config_dir(self, device: Device) -> Path:
         return self._device_config_dir(device)

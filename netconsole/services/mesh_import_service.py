@@ -9,9 +9,11 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import ImportedLogFile, MeshMrProfile, MeshSwitchEvent, ParseIssue
 from netconsole.parsers.mesh_log_parser import MeshLogParser, make_imported_file, sha256_file
+from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
 from netconsole.services.mesh_log_analysis_service import (
     PARSER_VERSION,
 )
+from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
@@ -41,6 +43,9 @@ class MeshImportService:
         progress: Callable[[int, int, int, int, int], None] | None = None,
     ) -> MeshImportResult:
         repo = self.storage.mr_repository(profile)
+        analysis_params = load_site_mesh_analysis_params(self.paths, self.site_name)
+        analysis_params_json = mesh_analysis_params_to_json(analysis_params)
+        app_logger.log_info("MESH_IMPORT_ANALYSIS_PARAMS_SNAPSHOT", f"site={self.site_name} params={analysis_params_json}")
         result = MeshImportResult()
         total = len(files)
         next_record_seq = 1
@@ -99,6 +104,7 @@ class MeshImportService:
                 records,
                 [],
                 issues,
+                analysis_params_json=analysis_params_json,
             )
             result.imported_count += 1
             result.parsed_record_count += len(records)

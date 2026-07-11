@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from netconsole.models.device import Device
@@ -22,6 +23,14 @@ SNMP_STATUS_LABELS = {
     "library_unavailable": "SNMP 库不可用",
     "failed": "失败",
 }
+
+
+class SnmpOperation(str, Enum):
+    GET = "GET"
+    GETNEXT = "GETNEXT"
+    GETBULK = "GETBULK"
+    WALK = "WALK"
+    SET = "SET"
 
 
 @dataclass(frozen=True)
@@ -88,11 +97,16 @@ class SnmpQueryRequest:
     method: str
     oid: str
     max_repetitions: int = 10
+    non_repeaters: int = 0
     max_rows: int = 200
     decode: bool = True
     save_history: bool = True
     device_id: str = ""
     device_name: str = ""
+    object_name: str = ""
+    module_name: str = ""
+    base_oid: str = ""
+    source: str = "device"
     started_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
@@ -129,6 +143,68 @@ class SnmpSetResult:
     status: str = "success"
     error_message: str = ""
     elapsed_ms: int = 0
+
+
+@dataclass(frozen=True)
+class SnmpCollectionTarget:
+    device_id: str
+    device_name: str
+    profile: SnmpProfile
+
+
+@dataclass(frozen=True)
+class SnmpCollectionRequest:
+    devices: list[SnmpCollectionTarget]
+    oids: list[str]
+    operation: str = SnmpOperation.GET.value
+    concurrency: int = 10
+    timeout_ms: int = 2000
+    retries: int = 1
+    max_repetitions: int = 10
+    non_repeaters: int = 0
+    max_rows: int = 200
+    stop_on_failure: bool = False
+    started_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+
+@dataclass(frozen=True)
+class SnmpCollectionItemResult:
+    device_id: str
+    device_name: str
+    host: str
+    oid: str
+    operation: str
+    rows: list[SnmpVarBind] = field(default_factory=list)
+    status: str = "success"
+    error_message: str = ""
+    attempts: int = 1
+    elapsed_ms: int = 0
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+
+@dataclass(frozen=True)
+class SnmpCollectionDeviceResult:
+    device_id: str
+    device_name: str
+    host: str
+    items: list[SnmpCollectionItemResult] = field(default_factory=list)
+    status: str = "success"
+    error_message: str = ""
+    elapsed_ms: int = 0
+
+
+@dataclass(frozen=True)
+class SnmpCollectionResult:
+    request: SnmpCollectionRequest
+    device_results: list[SnmpCollectionDeviceResult] = field(default_factory=list)
+    total_devices: int = 0
+    success_devices: int = 0
+    failed_devices: int = 0
+    pending_devices: int = 0
+    cancelled: bool = False
+    stopped_early: bool = False
+    elapsed_ms: int = 0
+    completed_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
 @dataclass(frozen=True)

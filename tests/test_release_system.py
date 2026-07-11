@@ -20,7 +20,7 @@ from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
 
 
 def test_version_file_exposes_release_metadata():
-    assert APP_VERSION == "v1.3.6"
+    assert APP_VERSION == "v1.3.8"
     assert BUILD_TIME
     assert GIT_COMMIT
 
@@ -510,6 +510,13 @@ def test_changelog_path_prefers_packaged_assets_and_keeps_source_fallback(tmp_pa
     fallback = get_changelog_path(base_dir)
 
     assert fallback == base_dir / "netconsole" / "docs" / "changelog.md"
+
+    source_base = tmp_path / "source"
+    source_changelog = source_base / "docs" / "CHANGELOG.md"
+    source_changelog.parent.mkdir(parents=True)
+    source_changelog.write_text("source changes", encoding="utf-8")
+
+    assert get_changelog_path(source_base) == source_changelog
 
     packaged_base = tmp_path / "_internal"
     packaged = packaged_base / "netconsole" / "assets" / "changelog.md"

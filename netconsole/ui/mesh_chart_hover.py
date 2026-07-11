@@ -269,6 +269,24 @@ class MeshChartHoverController(QObject):
         return [field for field in self.series_fields if field not in hidden]
 
     def _main_link_lines(self, index: int) -> list[str]:
+        context = self._main_link_context(index)
+        if context:
+            peer_mac = str(context.get("peer_mac") or "")
+            ap_name = str(context.get("ap_name") or "").strip() or (format_mac_h3c(peer_mac) if peer_mac else "-")
+            site = str(context.get("station_name") or context.get("site") or "").strip()
+            header = ap_name if not site else f"{ap_name} / {site}"
+            peer_radio = str(context.get("peer_radio") or context.get("peer_radio_mac") or context.get("radio") or "").strip() or "-"
+            mr_rssi = self._format_raw_value(context.get("mr_rssi"))
+            ap_rssi = self._format_raw_value(context.get("ap_rssi"))
+            status = str(context.get("status") or "ACTIVE").strip().upper() or "ACTIVE"
+            return [
+                f"{self.i18n.t('mesh_analysis.hover_active_link')}:",
+                header,
+                f"PeerMac: {format_mac_h3c(peer_mac) if peer_mac else '-'}",
+                f"Peer Radio: {peer_radio}",
+                f"{self.i18n.t('mesh_analysis.hover_mr_ap_rssi')}: {mr_rssi}/{ap_rssi}",
+                f"{self.i18n.t('mesh_analysis.state')}: {status}",
+            ]
         peer = self._peer_for_index(index)
         mr_rssi, ap_rssi = self._main_rssi_pair(index)
         return [
@@ -278,6 +296,14 @@ class MeshChartHoverController(QObject):
             f"{self.i18n.t('mesh_analysis.hover_mr_ap_rssi')}: {mr_rssi}/{ap_rssi}",
             f"{self.i18n.t('mesh_analysis.state')}: {self._state_text(self._state_for_index(index))}",
         ]
+
+    def _main_link_context(self, index: int) -> dict[str, object]:
+        rows_by_index = self.payload.get("main_links_by_index")
+        if isinstance(rows_by_index, list) and 0 <= index < len(rows_by_index):
+            row = rows_by_index[index]
+            if isinstance(row, dict) and row:
+                return row
+        return {}
 
     def _main_peer_name(self, index: int, peer: str) -> str:
         key = "active_peer_ap_names" if self.chart_key.startswith("active_") else "peer_ap_names"
@@ -323,36 +349,66 @@ class MeshChartHoverController(QObject):
         return lines
 
     def _standby_link_lines(self, index: int) -> list[str]:
-        rows_by_index = self.payload.get("standby_links_by_index")
+        rows_by_index = self.payload.get("backup_links_by_index") or self.payload.get("standby_links_by_index")
         rows = rows_by_index[index] if isinstance(rows_by_index, list) and 0 <= index < len(rows_by_index) else []
         title = self.i18n.t("mesh_analysis.hover_standby_links")
         if not rows:
+            self._log_empty_backup_links(index)
             return [self.i18n.t("mesh_analysis.hover_no_standby_links")]
         lines = [f"{title}:"]
-        for number, row in enumerate(rows[:3], start=1):
+        selected_peer = self._peer_for_index(index)
+        selected_state = self._state_for_index(index).upper()
+        for number, row in enumerate(rows[:5], start=1):
             if not isinstance(row, dict):
                 continue
             peer_mac = str(row.get("peer_mac") or "")
             ap_name = str(row.get("ap_name") or "").strip() or (format_mac_h3c(peer_mac) if peer_mac else "-")
-            site = str(row.get("site") or "").strip() or "-"
+            site = str(row.get("station_name") or row.get("site") or "").strip()
+            header = f"{number}. {ap_name}"
+            if site:
+                header += f" / {site}"
+            if selected_state == "STANDBY" and self._canonical_mac(peer_mac) == self._canonical_mac(selected_peer):
+                header += "（当前选中）"
+            peer_radio = str(row.get("peer_radio") or row.get("peer_radio_mac") or row.get("radio") or "").strip() or "-"
             mr_rssi = self._format_raw_value(row.get("mr_rssi"))
             ap_rssi = self._format_raw_value(row.get("ap_rssi"))
-            lines.append(f"{number}. {ap_name} / {site} / {self.i18n.t('mesh_analysis.hover_mr_ap_rssi')} {mr_rssi}/{ap_rssi}")
+            status = str(row.get("status") or "STANDBY").strip().upper() or "STANDBY"
+            lines.extend(
+                [
+                    header,
+                    f"   PeerMac: {format_mac_h3c(peer_mac) if peer_mac else '-'}",
+                    f"   Peer Radio: {peer_radio}",
+                    f"   {self.i18n.t('mesh_analysis.hover_mr_ap_rssi')}: {mr_rssi}/{ap_rssi}",
+                    f"   {self.i18n.t('mesh_analysis.state')}: {status}",
+                ]
+            )
+            if number < min(len(rows), 5):
+                lines.append("")
+        if len(rows) > 5:
+            lines.append(f"……另有 {len(rows) - 5} 条备份链路")
         return lines
-        title = self.i18n.t("mesh_analysis.standby_links")
-        if not rows:
-            return [f"{title}: {self.i18n.t('mesh_analysis.no_standby_links')}"]
-        lines = [f"{title}:"]
-        for number, row in enumerate(rows[:3], start=1):
-            if not isinstance(row, dict):
-                continue
-            ap_name = str(row.get("ap_name") or "-")
-            site = str(row.get("site") or "-")
-            mr_rssi = self._format_raw_value(row.get("mr_rssi"))
-            ap_rssi = self._format_raw_value(row.get("ap_rssi"))
-            peer_radio = str(row.get("peer_radio") or "-")
-            lines.append(f"{number}. {ap_name} / {site} / MR侧RSSI {mr_rssi} / AP侧RSSI {ap_rssi} / Peer Radio {peer_radio}")
-        return lines
+
+    def _log_empty_backup_links(self, index: int) -> None:
+        labels = self.payload.get("timestamp_labels") or []
+        sample_time = labels[index] if 0 <= index < len(labels) else ""
+        source_ids = self.payload.get("active_source_file_ids") or []
+        source_file_id = source_ids[index] if isinstance(source_ids, list) and 0 <= index < len(source_ids) else ""
+        if not source_file_id:
+            context = self._main_link_context(index)
+            source_file_id = context.get("source_file_id") if context else ""
+        metadata = self.payload.get("metadata") if isinstance(self.payload.get("metadata"), dict) else {}
+        event = "MESH_ACTIVE_PATH_TOOLTIP_BACKUP_EMPTY" if self.chart_key.startswith("active_") else "MESH_PEER_CHART_TOOLTIP_BACKUP_EMPTY"
+        app_logger.log_warning(
+            event,
+            (
+                f"source_file_id={source_file_id}, mr_name={metadata.get('mr_name') or ''}, "
+                f"sample_time={sample_time}, peer_mac={self._peer_for_index(index)}"
+            ),
+        )
+
+    @staticmethod
+    def _canonical_mac(value: object) -> str:
+        return "".join(character for character in str(value or "").lower() if character in "0123456789abcdef")
 
     def _active_peer_rssi(self, index: int) -> str:
         values = self.payload.get("active_peer_rssi")

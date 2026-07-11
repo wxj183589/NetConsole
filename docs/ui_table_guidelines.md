@@ -66,17 +66,29 @@ set_all_table_rows_checked(table, True)
 invert_table_rows_checked(table)
 ```
 
-## 3. 表格列宽规范
+## 3. 表格列宽自适应规则
 
 所有表格必须优先保证内容可读，不允许为了塞进窗口而强行压缩字段。
 
-表格列宽必须根据表头和内容自动初始化。
+表格列宽必须根据表头和内容自动初始化。默认先按表头计算列宽，保证字段名完整显示；当当前页内容宽度大于表头宽度时，列宽按内容扩展；当内容宽度小于表头宽度时，不收窄到内容宽度，保持字段名完整。
+
+列宽计算必须使用 Qt 字体度量，例如 `QFontMetrics.horizontalAdvance()`，同时考虑中文字符、排序箭头、checkbox 和左右 padding。禁止用 `len(text) * 固定像素` 作为唯一依据。
+
+最终列宽应使用：
+
+```text
+max(表头推荐宽度, 当前页内容推荐宽度) + 合理 padding
+```
+
+并按字段类型设置最小/最大宽度。普通字段建议最小宽度 72px～90px，普通字段最大宽度 260px～360px，路径、错误信息、原始内容等长文本字段可放宽到约 420px～520px。
 
 按内容自动列宽不能无限放大超长文本列。错误信息、路径、备注、描述、命令输出等长文本列必须设置合理最大宽度；超过列宽时使用省略号显示，完整内容通过 tooltip、复制单元格或详情弹窗查看。
 
 如果总列宽超过当前界面宽度，必须显示横向滚动条。
 
 用户必须可以手动拖动调整列宽。
+
+大数据表格禁止为了计算列宽扫描全部数据。分页表格只根据当前页或当前加载批次计算；模型懒加载表格只根据可见行或采样行计算，采样数量建议 200～500 行。
 
 禁止：
 
@@ -106,6 +118,16 @@ from netconsole.ui.table_utils import auto_resize_table_columns_to_contents
 
 auto_resize_table_columns_to_contents(table)
 ```
+
+对于带分页或大数据量的业务表格，推荐在当前页数据填充完成后调用统一自动列宽逻辑，例如 `apply_table_autosize(table, max_rows=500)`，并确保 `QHeaderView.Interactive`、`setStretchLastSection(False)` 和横向滚动条保持启用。
+
+适用范围包括：
+
+- AC 管理表格
+- SNMP 中心表格
+- MR原始MESH日志分析表格
+- 车载MR实时收集/分析表格
+- 网络工具结果表格
 
 ## 4. 横向滚动条规范
 
@@ -180,3 +202,20 @@ FIT-AP 资源主列表默认不显示：
 - BSSID 高级字段
 
 这些数据可以保留在数据库、详情页和高级导出中，但不要污染主列表。
+
+## 9. 当前公共 helper 与状态要求
+
+- 普通只读表优先使用 `configure_readonly_table`，分析型表格使用 `apply_analysis_table_style`。
+- 首次有真实数据时可调用 `auto_fit_table_columns`；它只抽样有限行并限制长文本宽度。禁止在每次刷新或 progress 事件中调用 `resizeColumnsToContents()`。
+- 首次自适应后，Header 保持 Interactive，尊重用户拖动；支持的页面通过列状态工具持久化宽度和顺序。
+- 表格使用像素级滚动并保留横向滚动条；长文本通过 Tooltip/详情承载，不用无限拉宽列。
+- ComboBox/SpinBox 等数值控件禁止无焦点滚轮误改值；主题切换必须同时刷新文字、背景、边框和状态色，不能只改背景。
+- loading、empty、success、error、cancelled 状态均需有可见反馈；后台任务运行时禁用冲突动作，终态统一恢复。
+
+## 10. 1080p 与复杂页面
+
+- 1920×1080 是最低完整性验证视口；不得只在开发机大屏验证。
+- 工具栏过宽时使用可横向滚动容器、分组或合理换行，不通过压缩按钮文字解决。
+- 大页面用 splitter 和 scroll area 管理区域；Online MR 在窄于 1250 px 时改为垂直 splitter，宽屏恢复水平布局。
+- 弹窗内容可能超高时使用自适应/滚动对话框，确保确认、取消和错误信息始终可见。
+- 表格选择列使用 delegate/item 绘制，不为每行创建 QCheckBox QWidget，避免大数据下布局和主题开销。
