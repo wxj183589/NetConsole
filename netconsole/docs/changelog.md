@@ -1,3 +1,11 @@
+v1.3.8
+- 架构：建立统一 Job Center、Worker Process 与 Export Process，后台任务使用结构化 JSONL 事件、进度、取消和单一终态。
+- 车载 MR：实时 SSH 采集、解析和报告分别收敛到长运行 Job、后台解析 Job 与 Export Process；完善启动确认、Ping/iPerf 参数、Busy 解析和状态展示。
+- SNMP 中心：GET、GETNEXT、GETBULK、WALK、SET 和多设备批量采集进入统一后台任务，保留 MIB、Trap、Poll 和 H3C 映射现有边界。
+- AC 管理：资源刷新、FIT-AP 光衰和安全命令动作进入 AC Domain Service 与 Job Center，保留既有 H3C CLI、解析和业务判断规则。
+- AP Identity：完成只读 shadow/diagnostics 与安全摘要评估，默认不展示且不接管生产匹配；可见 UI 阶段继续暂停。
+- 稳定性：修复配置采集数据库路径和快照清理，优化设备批量采集进度，并删除架构迁移后确认无引用的旧 Worker/helper。
+
 v1.3.7
 - 日志中心：APP 运行日志事件、详情和级别改为中文展示，保留原始事件码和原始详情，支持中文/原始详情复制与中文字段导出。
 - 日志中心：分页查询改为按条件读取当前页，默认只加载最近记录，避免大量 APP 日志一次性进入表格造成卡顿。

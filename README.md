@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通车地无线、SNMP/MIB、网络测试、配置采集、文件管理和日志诊断。
 
-当前版本：`v1.3.7`。版本唯一来源为 `netconsole/core/version.py`；本文不单独维护版本号。
+当前版本：`v1.3.8`。版本唯一来源为 `netconsole/core/version.py`；本文不单独维护版本号。
 
 当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets（PySide6-Fluent-Widgets）、SQLite、Netmiko、openpyxl，以及基于 QProcess/QThread 的后台执行。依赖下限与固定版本以 `requirements.txt` 为准。
 
@@ -72,6 +72,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 - 运行数据默认位于应用根目录下的 `data/`，临时协议、缓存和应用日志位于顶层 `runtime/`。
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
 - H3C 私有 MIB 不随仓库分发，需由用户导入合法取得的官方归档或参考资料。
+- 发布包必须保留 `_internal`、`data`、`runtime` 目录，以及 PySide6、网络工具和 VC++ 运行库等运行依赖。
 - 构建入口、版本来源、外部工具和 Windows 验证要求见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
 
 ## 重点专题
