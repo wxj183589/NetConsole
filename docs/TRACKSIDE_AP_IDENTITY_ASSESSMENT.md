@@ -174,29 +174,31 @@ MAC 和名称双击测试会创建真实 `BackgroundProcessManager` 任务，并
 
 发现的误匹配、过期缓存或测试超时只先记录，不在 identity 接入阶段顺手修复。
 
-## 9. 推荐阶段 4.1 只读 shadow 接入方案
+## 9. 阶段 4.1 只读 shadow 接入
+
+阶段 4.1 已按本节边界完成。实现位于 `services/rail_transit/trackside_ap_identity_shadow.py`，旧聚合器、旧 detail matches、页面、缓存和业务规则保持不变。
 
 ### 9.1 适配器边界
 
-建议新增纯 Python `services/rail_transit/trackside_identity_adapter.py`：
+当前新增纯 Python `services/rail_transit/trackside_ap_identity_shadow.py`：
 
 ```text
-TracksideIdentityAdapter
-  - build_trackside_observation(row)
-  - build_fit_ap_candidates(resource_rows)
-  - shadow_compare_trackside_rows(rows, resource_rows)
-  - shadow_compare_detail_lookup(params, old_matches, resource_rows)
-  - summarize_shadow_report(items)
+TracksideApIdentityShadowService
+  - build_observation_from_trackside_row(row)
+  - build_candidates_from_fit_ap_resources(resource_rows)
+  - shadow_rows(rows, resource_rows)
+  - shadow_detail_matches(old_matches, resource_rows, request)
+  - summarize_report(items)
 ```
 
 适配器只接收普通 Mapping，不导入 UI、Repository、Worker、Qt，不写数据库，不执行采集，也不计算轨旁状态。
 
 ### 9.2 第一批接入点
 
-阶段 4.1 只建议接两个旁路点：
+阶段 4.1 只接入两个旁路点：
 
-1. `load_trackside_ap_business_snapshot()` 和 `ac_trackside_business_refresh` 在旧聚合完成后，对相同 rows/resources 生成 shadow 摘要；原 rows 原样返回。
-2. `trackside_fit_ap_detail_resolve` 在旧 `matches` 已生成后附加 detail shadow；原 matches、无匹配、多匹配选择行为保持不变。
+1. `load_trackside_ap_business_snapshot()` 和 `ac_trackside_business_refresh` 在旧聚合完成后，对相同 rows/resources 生成 `identity_shadow`；原 rows 原样返回。
+2. `trackside_fit_ap_detail_resolve` 在旧 `matches` 已生成后附加 `detail_identity_shadow`；原 matches、UUID快速路径、MAC/name fallback、无匹配和多匹配选择行为保持不变。
 
 主页面当前使用 dataclass result，兼容 Job 使用 dict result。两条路径应复用同一 adapter，但分别附加可选诊断字段，不能为了统一返回结构重构加载线程。
 
@@ -226,11 +228,11 @@ items[]:
   warnings
 ```
 
-报告不得写入 `trackside_ap_view_cache`、FIT-AP 主表或历史表。shadow 异常统一 `available=false`，旧加载/详情任务继续成功。
+报告不得写入 `trackside_ap_view_cache`、FIT-AP 主表或历史表。shadow 异常统一 `available=false`，旧加载/详情任务继续成功。页面不读取或展示 shadow，因此排序、筛选、分页、双击和导出字段不受影响。
 
 ## 10. 测试策略
 
-阶段 4.1 至少建立以下回归：
+阶段 4.1 已建立以下回归：
 
 1. 删除 `identity_shadow` 后，轨旁聚合 rows 与当前 golden rows 完全一致。
 2. AP UUID、MAC、name-only、跨 AC 重复、同名、无候选、多候选。
@@ -253,4 +255,4 @@ items[]:
 - 不写 shadow 缓存或数据库，因此无需数据回滚。
 - adapter import 或运行失败时返回 unavailable，不影响用户流程。
 
-满足以上边界后，可以进入阶段 4.1；在 shadow 数据证明旧/new 结果稳定前，不进入轨旁生产 resolver 接管。
+阶段 4.1 已满足上述回滚边界。后续在真实局点观察 shadow 统计前，不进入轨旁生产 resolver 接管；下一阶段只评估 MR/Mesh resolver shadow。

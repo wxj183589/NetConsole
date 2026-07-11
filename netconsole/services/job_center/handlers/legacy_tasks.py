@@ -1291,19 +1291,28 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     )
     _emit(progress, "ac_trackside_business_refresh", 4, 5, "正在构建轨旁 AP 业务行")
     _check_cancel(should_cancel)
+    all_resources = ac_repository.list_all_fit_ap_resources_with_metadata()
     rows = build_trackside_ap_business_rows(
         devices,
         interfaces_by_device,
         optical_by_device,
         ac_repository.list_all_fit_ap_optical(),
         lldp_by_device,
-        ac_repository.list_all_fit_ap_resources_with_metadata(),
+        all_resources,
         lookup,
         ac_repository.get_active_trackside_pvid_plan(),
         ledger,
     )
+    try:
+        from netconsole.services.rail_transit.trackside_ap_identity_shadow import TracksideApIdentityShadowService
+
+        identity_shadow = TracksideApIdentityShadowService().shadow_rows(rows, all_resources).to_payload()
+    except Exception as exc:
+        from netconsole.services.rail_transit.trackside_ap_identity_shadow import unavailable_trackside_identity_shadow
+
+        identity_shadow = unavailable_trackside_identity_shadow(len(rows), exc)
     _emit(progress, "ac_trackside_business_refresh", 5, 5, "轨旁 AP 业务刷新完成")
-    return {"rows": rows}
+    return {"rows": rows, "identity_shadow": identity_shadow}
 
 
 def _config_compare_latest_running_between_devices(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1987,15 +1996,26 @@ def _trackside_fit_ap_detail_resolve(params: dict[str, Any], progress: ProgressC
     ap_uuid = str(params.get("ap_uuid") or "").strip()
     ap_mac = normalize_mac(params.get("ap_mac"))
     ap_name = str(params.get("ap_name") or "").strip()
+    resources: list[dict[str, object | None]] | None = None
     if ac_uuid and ap_uuid:
-        return {"matches": [{"ac_device_uuid": ac_uuid, "ap_uuid": ap_uuid, "ap_name": ap_name}]}
-    resources = repository.list_all_fit_ap_resources_with_metadata()
-    matches: list[dict[str, object | None]] = []
-    if ap_mac:
-        matches = [item for item in resources if normalize_mac(item.get("ap_mac")) == ap_mac]
-    if not matches and ap_name:
-        matches = [item for item in resources if str(item.get("ap_name") or "").strip().casefold() == ap_name.casefold()]
-    return {"matches": matches}
+        matches: list[dict[str, object | None]] = [{"ac_device_uuid": ac_uuid, "ap_uuid": ap_uuid, "ap_name": ap_name}]
+    else:
+        resources = repository.list_all_fit_ap_resources_with_metadata()
+        matches = []
+        if ap_mac:
+            matches = [item for item in resources if normalize_mac(item.get("ap_mac")) == ap_mac]
+        if not matches and ap_name:
+            matches = [item for item in resources if str(item.get("ap_name") or "").strip().casefold() == ap_name.casefold()]
+    try:
+        from netconsole.services.rail_transit.trackside_ap_identity_shadow import TracksideApIdentityShadowService
+
+        candidates = resources if resources is not None else repository.list_all_fit_ap_resources_with_metadata()
+        detail_identity_shadow = TracksideApIdentityShadowService().shadow_detail_matches(matches, candidates, params).to_payload()
+    except Exception as exc:
+        from netconsole.services.rail_transit.trackside_ap_identity_shadow import unavailable_trackside_identity_shadow
+
+        detail_identity_shadow = unavailable_trackside_identity_shadow(1, exc)
+    return {"matches": matches, "detail_identity_shadow": detail_identity_shadow}
 
 
 def _network_profile_store(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

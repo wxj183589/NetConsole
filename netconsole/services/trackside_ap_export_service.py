@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Callable
@@ -35,6 +35,10 @@ from netconsole.services.trackside_ap_business import (
     filter_station_switch_devices,
     is_trackside_ap_interface,
 )
+from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
+    TracksideApIdentityShadowService,
+    unavailable_trackside_identity_shadow,
+)
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCheck = Callable[[], bool]
@@ -56,6 +60,7 @@ class TracksideApBusinessLoadResult:
     candidate_ap_interface_count: int = 0
     row_count: int = 0
     empty_reason: str = ""
+    identity_shadow: dict[str, object] = field(default_factory=dict)
 
 
 def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name: str, generation: int) -> TracksideApBusinessLoadResult:
@@ -102,6 +107,10 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
         offline_ledger_rows,
         historical_lldp_rows,
     )
+    try:
+        identity_shadow = TracksideApIdentityShadowService().shadow_rows(rows, fit_ap_resource_rows).to_payload()
+    except Exception as exc:
+        identity_shadow = unavailable_trackside_identity_shadow(len(rows), exc)
     build_ms = int((perf_counter() - build_start) * 1000)
     row_count = len(rows)
     empty_reason = ""
@@ -130,6 +139,7 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
         candidate_ap_interface_count,
         row_count,
         empty_reason,
+        identity_shadow,
     )
 
 

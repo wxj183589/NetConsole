@@ -142,6 +142,8 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 阶段 4 轨旁评估以 [TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md) 为准；交换机接口是 topology identity，站点/区间/里程只作位置证据。
 - 阶段 4.1 只能在旧轨旁聚合 rows 和旧详情 matches 生成后附加只读 shadow；不得改变候选端口、LLDP/光衰 fallback、行去重、采集范围、缓存、双击定位、状态、导出或历史。
 - 轨旁 shadow adapter 只接收普通 row，不导入 UI/Repository/Worker、不写数据库；shadow 失败必须 unavailable 且不得改变加载或详情任务终态。
+- 阶段 4.1 统一使用 `services/rail_transit/trackside_ap_identity_shadow.py`；聚合使用 `identity_shadow`，详情使用 `detail_identity_shadow`，页面不得消费这些字段改变显示或选择。
+- LLDP neighbor MAC 只能作为 peer observation evidence；interface/port 是 topology evidence，station/section/mileage 是位置 evidence，Radio/BSSID 不作为轨旁 AP MAC 匹配输入。
 
 ## 提交前检查
 
