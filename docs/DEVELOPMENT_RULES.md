@@ -139,7 +139,9 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 阶段 3 只能在光衰 Domain 内增加 identity shadow，不得改变光衰阈值、AP 离线关联、交换机无光规则、Repository 写入或页面字段。
 - 阶段 3 光衰 shadow 统一通过 `services/ac/ac_optical_identity_adapter.py`；仅有交换机接口的记录不得解析为 AP，Radio/BSSID/Peer MAC 不得作为光衰 AP 写入匹配依据。
 - 光衰 `identity_shadow` 只附加到 Job result；诊断异常必须返回 `available=false` 且不得改变原任务终态。旧 `AcOpticalService` UUID/name 关联和业务分类结果始终是生产结果与回滚路径。
-- 阶段 4 只能先做轨旁业务只读接入评估，不得直接替换轨旁 lookup、缓存、双击定位或业务规则。
+- 阶段 4 轨旁评估以 [TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md) 为准；交换机接口是 topology identity，站点/区间/里程只作位置证据。
+- 阶段 4.1 只能在旧轨旁聚合 rows 和旧详情 matches 生成后附加只读 shadow；不得改变候选端口、LLDP/光衰 fallback、行去重、采集范围、缓存、双击定位、状态、导出或历史。
+- 轨旁 shadow adapter 只接收普通 row，不导入 UI/Repository/Worker、不写数据库；shadow 失败必须 unavailable 且不得改变加载或详情任务终态。
 
 ## 提交前检查
 

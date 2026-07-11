@@ -29,6 +29,9 @@
 - 完成 AP identity 阶段 3，新增 AC 光衰只读 identity adapter；区分 AP 侧、交换机侧、合并和离线记录，统计 matched、unresolved、ambiguous、identity_changed、interface-only 和缺失 AC 作用域。
 - `ac_fit_ap_optical_refresh` 的 load/collect、all/single 只附加 `identity_shadow`；仅交换机接口、Radio/BSSID 和 Peer MAC 不会被当作 AP identity，shadow 失败不改变原光衰任务结果。
 - 原 AP 在线/离线、交换机无光、阈值、H3C 采集/解析、历史合并、Repository SQL、schema、UI 和导出字段保持不变。
+- 完成 AP identity 阶段 4 轨旁业务只读接入评估，梳理主页面与兼容 Job、FIT-AP/扩展/LLDP/光衰/离线台账聚合、双击详情、缓存和历史链路。
+- 评估确认轨旁行必须同时保留 AP identity 与交换机 UUID+接口 topology identity；当前 serial/MAC/name 和全量详情 fallback 缺少显式 AC 作用域，阶段 4.1 只能旁路记录差异。
+- 本阶段未修改轨旁生产代码、lookup、缓存、双击定位、页面/导出字段、Repository SQL、数据库 schema、光衰规则或 MR/Mesh 规则。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。
