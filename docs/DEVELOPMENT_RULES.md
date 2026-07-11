@@ -163,6 +163,8 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - diagnostics disabled/unavailable/failed只影响诊断区域，不得改变原Job/Export终态、成功提示或旧业务结果；全局kill switch关闭展示时不得停止生产任务或删除业务数据。
 - 阶段8.1统一使用`ui/diagnostics/diagnostics_summary_view_model.py`消费普通mapping；该模块不得导入PySide6、业务Service、Repository、parser、网络、数据库或文件IO，不得保留原始result引用。
 - 阶段8.1的全局/UI逻辑开关缺失时视为关闭；samples开关即使为真也不得暴露明细。当前无统一Job详情宿主，禁止在多个业务页面临时接线；阶段8.2必须另行批准单一宿主。
+- 阶段8.2宿主评审以 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) 为准。当前 manager/helper 只发出瞬时终态，不得为诊断展示在 Job Center 保存完整 result、建立原始事件持久化或反向导入 UI。
+- 阶段8.3在统一任务详情启动点获批前保持hold。未来dialog只能接收`DiagnosticsSummaryViewModel`，不得接收raw result；入口必须显式、非模态、默认关闭，关闭后不得保留跨Job/局点引用。
 
 ## 提交前检查
 

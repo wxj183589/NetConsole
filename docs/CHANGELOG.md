@@ -52,6 +52,8 @@
 - 阶段8确认当前没有独立Job Center任务详情或通用诊断中心；阶段8.1必须等待真实局点观测准入并只选一个维护宿主。本阶段未实现UI、feature flag、报告、数据库、sidecar或生产逻辑。
 - 完成AP identity阶段8.1最小实现，新增默认关闭的纯Python `DiagnosticsSummaryViewModel`；只读取三类既有result metadata的允许列表聚合，过滤明细、身份、路径和未知字段，并将异常安全降级。
 - 当前没有统一Job详情宿主，因此未新增Qt组件、页面入口或持久化；风险等级只提供只读建议，不改变Job/Export终态、resolver、数据库、导出文件或业务规则。
+- 完成AP identity阶段8.2 Job详情宿主接入评审，梳理普通Job、Export、Online MR长任务、AC资源/光衰、轨旁和MR/Mesh七类终态result流转，并比较六类候选宿主。
+- 评审确认当前没有任务详情/历史/统一结果面板或诊断中心；未来首选只接收ViewModel的显式非模态任务详情弹窗，但统一启动点批准前阶段8.3保持hold。本阶段未修改生产Python、Qt UI、feature flag、数据库、导出或业务结果。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。

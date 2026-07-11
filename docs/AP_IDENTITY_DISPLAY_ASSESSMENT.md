@@ -422,3 +422,9 @@ tests/test_ap_identity_diagnostics_display.py
 - 异常、字段不足、schema 不支持和诊断不可用均降级为安全状态，不向调用方抛出诊断异常。
 
 当前仓库仍没有统一 Job 详情或通用诊断中心，因此阶段 8.1 **未接入真实 Qt 宿主**，也未新增 widget/dialog、页面入口或集中任务持久化。可见 UI 接线延后到阶段 8.2，并继续受真实局点准入、单宿主批准和默认关闭约束。
+
+## 16. 阶段 8.2 Job 详情宿主评审结论
+
+阶段 8.2 已完成当前 Job/Export UI 宿主、七类任务结果流和六类候选入口的只读评审，详见 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。
+
+当前没有 Job 详情页、任务历史页、统一结果面板或诊断中心。两个通用 helper 都会在终态关闭 `QProgressDialog` 并释放 controller；各业务页面只在本地 slot 中瞬时消费 result。新增任务详情弹窗是未来首选，但当前缺少统一启动点和安全结果缝隙，因此阶段 8.3 可见 UI 实现状态为 `hold`，不得改多个业务页面或保存完整 result 绕过该缺口。
