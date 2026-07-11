@@ -35,6 +35,9 @@
 - 完成 AP identity 阶段 4.1，新增纯 Python 轨旁 identity shadow service；统计 matched、unresolved、ambiguous、identity_changed、name-only、缺失 AC 作用域、interface-only、LLDP-only 和 optical fallback。
 - 轨旁主 snapshot 与兼容 Job 仅在旧 rows 后附加 `identity_shadow`；详情 resolver 仅在旧 matches 后附加 `detail_identity_shadow`，shadow 失败不改变 finished 和原结果。
 - 双击详情、候选端口、当前/历史 LLDP、光衰接口 fallback、采集范围、行排序/分页、缓存、导出、Repository SQL和数据库 schema保持不变。
+- 完成 AP identity阶段5 MR/Mesh resolver shadow评估，梳理离线MESH、Online MR、Vehicle MR的数据来源、Peer/AP/Radio字段语义、lookup差异、主备链依赖与阶段5.1接入点。
+- 评估确认离线/Online仅部分复用`MeshPeerMappingService`，Online页面和Vehicle MR仍有独立缓存/旧lookup；Peer MAC、Peer Radio、BSSID和AP MAC不得折叠。
+- 记录Online MR报告重复MAC列、离线section持久化不完整、无作用域名称和Vehicle lookup副作用等现有风险；本阶段未修改生产代码、parser、mapping/cache、schema、业务规则、页面或导出。
 
 ### 测试
 - 新增可按测试模块启用的 Qt 页面生命周期 fixture，修复 Vehicle MR 测试全部通过后在 pytest 最终 GC 阶段触发 `0xc0000374` 的问题。

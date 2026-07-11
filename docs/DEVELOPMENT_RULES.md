@@ -144,6 +144,10 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 轨旁 shadow adapter 只接收普通 row，不导入 UI/Repository/Worker、不写数据库；shadow 失败必须 unavailable 且不得改变加载或详情任务终态。
 - 阶段 4.1 统一使用 `services/rail_transit/trackside_ap_identity_shadow.py`；聚合使用 `identity_shadow`，详情使用 `detail_identity_shadow`，页面不得消费这些字段改变显示或选择。
 - LLDP neighbor MAC 只能作为 peer observation evidence；interface/port 是 topology evidence，station/section/mileage 是位置 evidence，Radio/BSSID 不作为轨旁 AP MAC 匹配输入。
+- 阶段 5 MR/Mesh评估以 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md) 为准；`peer_mac` 是日志观测，Peer Radio、Radio MAC和BSSID/BBSSID不得直接折叠为AP MAC。
+- 阶段 5.1 只能在旧 mapping、parse/load Job或导出查询完成后附加只读诊断；不得修改 raw parser、mapping/cache、数据库、ACTIVE/STANDBY、主备链、同AP双Radio、短链、乒乓、RSSI或Busy规则。
+- MR/Mesh shadow adapter只接收普通row，不导入UI/Repository/Worker/网络或parser，不写parsed DB；shadow失败必须unavailable且不得改变原任务终态。
+- Mesh链路明细继续不导出“归属来源”和“Peer Radio MAC”；任何重复MAC诊断不得在阶段5.1改变页面列、报告SQL或导出表头/值。
 
 ## 提交前检查
 

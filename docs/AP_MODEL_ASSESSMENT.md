@@ -311,7 +311,8 @@ CanonicalApProfile
 | 3：光衰 identity shadow（已完成） | 光衰 Job result 附加 old/new AP 关联诊断；旧 service 仍决定最终结果 | 离线/光衰规则被误改、接口被误当 AP | 批量/单 AP、离线关联、无光不误判、作用域、接口/Radio/Peer 边界与 Job 兼容测试 | 否 | 删除 `identity_shadow`；原 UUID/name fallback 始终保留 |
 | 4：轨旁只读接入评估（已完成） | 梳理页面、聚合、详情、缓存、历史、字段风险和阶段 4.1 旁路点；未改生产代码 | 遗漏旧 fallback 或误把 topology 当 AP identity | 静态搜索、调用链核对、Markdown/UTF-8 检查 | 否 | 删除评估文档增量 |
 | 4.1：轨旁只读 shadow（已完成） | 旧聚合 rows 和旧详情 matches 生成后附加 shadow，生产结果原样保留 | AP/端口误关联、跨 AC 歧义、Qt 时序受影响 | row/detail shadow、双击代表用例、接口/LLDP/Radio边界和失败隔离 | 否 | 删除 shadow 字段并保留全部旧 helper |
-| 5：MR/Mesh 匹配增强 | resolver 返回 canonical identity、radio identity 和证据；不改分析判定 | 解析结果变化导致切换/乒乓结论漂移 | 同一日志旧/新结果 shadow compare；source_file 隔离；双 Radio 和多候选样例 | 默认否；如需持久化新字段，另立 additive migration | 关闭新 resolver，继续使用旧映射缓存/字段 |
+| 5：MR/Mesh resolver shadow 评估（已完成） | 梳理离线/Online/Vehicle lookup、Peer/Radio语义、主备链和导出风险；未改生产代码 | 遗漏页面缓存或让 identity 影响分析结论 | 静态调用链、字段矩阵、UTF-8/Markdown/diff检查 | 否 | 删除评估文档增量 |
+| 5.1：MR/Mesh 只读 shadow（待实施） | 在旧 mapping/parse Job完成后附加诊断，不写 parsed DB或导出 | 解析结果、physical AP key、短链/乒乓结论漂移 | 同日志 old/new compare、source file/session隔离、双 Radio和导出 golden | 否 | 删除附加字段和纯 adapter，保留旧 mapping/cache |
 | 6：导出命名与去重 | 统一展示别名；Peer/Peer Radio 相同只展示一次；保持兼容表头策略 | 下游模板依赖、列含义变化 | Golden XLSX/CSV、WPS/Excel 打开、表头和行值对比 | 否 | 使用旧 formatter/兼容导出模板 |
 
 阶段 1～6 都不应顺带拆 `legacy_tasks.py`、替换页面模型或调整数据库 schema。只有前述 shadow comparison 表明确认现有 `ap_entities` 无法承载需求后，才单独评估 additive schema migration。
@@ -343,7 +344,7 @@ CanonicalApProfile
 9. 导出：表头兼容、重复 MAC 展示抑制、原始证据仍可追溯。
 10. 每次接入都执行旧/新 resolver shadow compare，并记录 unmatched、ambiguous、identity-changed 数量；任何非预期变化阻止迁移。
 
-## 15. 阶段 1～4 完成状态与阶段 4.1 准入
+## 15. 阶段 1～5 完成状态与阶段 5.1 准入
 
 阶段 1 已完成并满足：
 
@@ -361,4 +362,6 @@ CanonicalApProfile
 
 阶段 4.1 已完成：主 snapshot 与兼容 Job 在旧 rows 生成后附加 `identity_shadow`，详情 resolver 在旧 matches 生成后附加 `detail_identity_shadow`。interface/port/location 只作 evidence，LLDP neighbor MAC 使用 observation 语义，Radio/BSSID 不作为轨旁 AP MAC 输入。候选端口、采集范围、旧 lookup/去重、双击选择、缓存、状态、导出和历史均未改变。
 
-下一阶段只能进入 MR/Mesh resolver shadow 评估，不得直接让 resolver 接管轨旁或 MR/Mesh 结果。
+阶段 5 评估已完成。离线 MESH 和 Online MR 部分复用 `MeshPeerMappingService`，但 Online 实时页面另有名称/MAC缓存，Vehicle MR 使用多表旧 lookup；`peer_mac`、Peer Radio、BSSID和 AP MAC 语义不能折叠。详细证据见 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)。
+
+可以进入阶段 5.1，但只能在旧 mapping、解析或加载结果完成后附加可失败隔离的诊断字段。不得修改 parser、mapping/cache、数据库、主备链、同 AP双 Radio、短链、乒乓、RSSI、页面或导出。
