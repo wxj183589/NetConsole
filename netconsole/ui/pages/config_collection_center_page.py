@@ -447,7 +447,18 @@ class ConfigCollectionCenterPage(QWidget):
         )
 
     def _background_path_params(self) -> dict[str, str]:
-        return {"app_root": str(self.paths.app_root), "data_root": str(self.paths.data_root)}
+        return {
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+            "site_name": self.site_name,
+            "db_path": str(self._background_db_path()),
+        }
+
+    def _background_db_path(self) -> Path:
+        db_path = Path(self.repository.database.path)
+        if db_path.is_absolute() and db_path.exists():
+            return db_path.resolve()
+        return self.paths.site_db_path(self.site_name).resolve()
 
     def _start_background_compare(self, task_type: str, params: dict[str, object]) -> None:
         self._start_background_io(task_type, params, "正在后台计算配置差异...")
@@ -497,6 +508,7 @@ class ConfigCollectionCenterPage(QWidget):
 
     def _background_failed(self, event: dict) -> None:
         message = str(event.get("message") or event.get("error") or "后台任务失败")
+        task_type = self.background_job_type
         self.background_job_id = None
         self.background_job_type = ""
         self.background_job_context = {}
@@ -504,7 +516,18 @@ class ConfigCollectionCenterPage(QWidget):
         if "需要先采集 running 和 saved 配置" in message:
             self._show_info("config_center.msg.need_snapshots")
             return
+        if "unable to open database file" in message.lower() or "无法打开局点数据库" in message:
+            MessageBox.warning(self, self._title(), self._database_open_error_message(message, task_type))
+            return
         MessageBox.warning(self, self._title(), message)
+
+    def _database_open_error_message(self, original_message: str, task_type: str = "") -> str:
+        action = "删除快照失败" if task_type == "config_snapshot_delete_many" else "后台任务失败"
+        return (
+            f"无法打开当前局点数据库，{action}。请检查数据目录、局点路径或是否被杀毒/权限限制占用。\n\n"
+            f"db_path: {self._background_db_path()}\n\n"
+            f"原始错误：{original_message}"
+        )
 
     def _apply_background_diff(self, result: dict[str, object]) -> None:
         left_label = str(result.get("left_label") or self.t("config_center.tab.running"))
@@ -726,6 +749,14 @@ class ConfigCollectionCenterPage(QWidget):
             return
         answer = MessageBox.question(self, self.t("config_center.btn.delete_snapshot"), self.t("config_center.msg.confirm_delete_snapshot", count=len(snapshots)))
         if answer == MessageBox.Yes:
+            db_path = self._background_db_path()
+            if not db_path.exists():
+                MessageBox.warning(
+                    self,
+                    self._title(),
+                    f"局点数据库不存在/不可访问，无法删除配置快照。\n\ndb_path: {db_path}",
+                )
+                return
             self._start_background_io(
                 "config_snapshot_delete_many",
                 {

@@ -1,9 +1,10 @@
 import os
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
@@ -185,3 +186,75 @@ def test_config_collection_left_panel_does_not_duplicate_main_actions(tmp_path):
         assert text not in left_buttons
     for text in ("打开目录", "下载快照", "导出当前批次", "导出差异", "删除快照"):
         assert text in left_buttons
+
+
+def test_background_path_params_include_resolved_site_database(tmp_path):
+    app()
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = DeviceRepository(db)
+    page = ConfigCollectionCenterPage(repository, I18n("zh_CN"), "demo", paths)
+    process_qt_until(lambda: page.device_list_job_id is None)
+
+    params = page._background_path_params()
+
+    assert params["site_name"] == "demo"
+    assert Path(params["db_path"]) == paths.site_db_path("demo").resolve()
+    assert Path(params["db_path"]).is_absolute()
+
+
+def test_delete_snapshot_checks_database_path_before_starting_background_job(tmp_path, monkeypatch):
+    app()
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = DeviceRepository(db)
+    page = ConfigCollectionCenterPage(repository, I18n("zh_CN"), "demo", paths)
+    process_qt_until(lambda: page.device_list_job_id is None)
+    page.repository.database.path = Path("missing.db")
+    page.site_name = "missing-site"
+    page.snapshots = [
+        ConfigSnapshot(
+            1,
+            None,
+            "device-uuid",
+            "20260618_101200",
+            "diff",
+            "files/config_center/snapshots/device/diff/20260618_101200.diff",
+            "",
+        )
+    ]
+    page.checked_snapshot_ids = {1}
+    warnings: list[str] = []
+    started: list[object] = []
+    monkeypatch.setattr("netconsole.ui.pages.config_collection_center_page.MessageBox.question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr("netconsole.ui.pages.config_collection_center_page.MessageBox.warning", lambda _parent, _title, text: warnings.append(text))
+    monkeypatch.setattr(page.background_manager, "start_job", lambda job: started.append(job))
+
+    page.delete_selected_snapshot()
+
+    assert started == []
+    assert warnings
+    assert "局点数据库不存在/不可访问" in warnings[0]
+    assert str(paths.site_db_path("missing-site").resolve()) in warnings[0]
+
+
+def test_background_database_open_failure_is_reworded_with_db_path(tmp_path, monkeypatch):
+    app()
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = DeviceRepository(db)
+    page = ConfigCollectionCenterPage(repository, I18n("zh_CN"), "demo", paths)
+    process_qt_until(lambda: page.device_list_job_id is None)
+    warnings: list[str] = []
+    monkeypatch.setattr("netconsole.ui.pages.config_collection_center_page.MessageBox.warning", lambda _parent, _title, text: warnings.append(text))
+    page.background_job_id = "job-1"
+    page.background_job_type = "config_snapshot_delete_many"
+
+    page._background_failed({"message": "unable to open database file"})
+
+    assert warnings
+    assert "无法打开当前局点数据库，删除快照失败" in warnings[0]
+    assert "db_path:" in warnings[0]

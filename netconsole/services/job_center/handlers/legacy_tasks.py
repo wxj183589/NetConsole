@@ -186,6 +186,51 @@ def _path_resolver_from_params(params: dict[str, Any]):
     return PathResolver(app_root=Path(app_root) if app_root else None, data_root=Path(data_root) if data_root else None)
 
 
+def _site_database_from_params(params: dict[str, Any]):
+    from netconsole.core.database import Database
+
+    resolver = _path_resolver_from_params(params)
+    site_name = str(params.get("site_name") or "demo").strip() or "demo"
+    raw_db_path = str(params.get("db_path") or "").strip()
+    candidates: list[Path] = []
+
+    if raw_db_path:
+        candidate = Path(raw_db_path)
+        if not candidate.is_absolute():
+            candidate = resolver.data_root / candidate
+        candidates.append(candidate.resolve())
+    candidates.append(resolver.site_db_path(site_name).resolve())
+
+    unique_candidates: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique_candidates:
+            unique_candidates.append(candidate)
+
+    last_error: Exception | None = None
+    for db_path in unique_candidates:
+        try:
+            if not db_path.exists():
+                continue
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            database = Database(db_path)
+            connection = database.connect()
+            try:
+                connection.execute("SELECT 1").fetchone()
+            finally:
+                connection.close()
+            return database
+        except Exception as exc:
+            last_error = exc
+
+    paths_text = "\n".join(str(path) for path in unique_candidates)
+    raise RuntimeError(
+        f"无法打开局点数据库，配置快照后台任务失败。\n"
+        f"site={site_name}\n"
+        f"候选数据库路径：\n{paths_text}\n"
+        f"原始错误：{last_error or 'database file not found'}"
+    )
+
+
 def _online_mr_mark_stale_sessions(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 
@@ -1331,13 +1376,12 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
 
 
 def _config_compare_latest_running_between_devices(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    from netconsole.core.database import Database
     from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
     from netconsole.services.config_lifecycle_service import ConfigLifecycleService, compare_named_config_text, structure_diff
 
     _emit(progress, "config_compare", 0, 1, "正在比较两台设备最新 running 配置")
     _check_cancel(should_cancel)
-    database = Database(Path(str(params.get("db_path") or "")))
+    database = _site_database_from_params(params)
     repository = ConfigSnapshotRepository(database)
     service = ConfigLifecycleService(str(params.get("site_name") or ""), database, _path_resolver_from_params(params), repository)
     device_a = _device_by_uuid(database, str(params.get("device_uuid_a") or ""))
@@ -1366,13 +1410,12 @@ def _config_compare_latest_running_between_devices(params: dict[str, Any], progr
 
 
 def _config_compare_latest_snapshots(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    from netconsole.core.database import Database
     from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
     from netconsole.services.config_lifecycle_service import ConfigLifecycleService
 
     _emit(progress, "config_compare", 0, 1, "正在比较最新 running/saved 配置")
     _check_cancel(should_cancel)
-    database = Database(Path(str(params.get("db_path") or "")))
+    database = _site_database_from_params(params)
     repository = ConfigSnapshotRepository(database)
     service = ConfigLifecycleService(str(params.get("site_name") or ""), database, _path_resolver_from_params(params), repository)
     device = _device_by_uuid(database, str(params.get("device_uuid") or ""))
@@ -1388,13 +1431,12 @@ def _config_compare_latest_snapshots(params: dict[str, Any], progress: ProgressC
 
 
 def _config_compare_snapshot_pair(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    from netconsole.core.database import Database
     from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
     from netconsole.services.config_lifecycle_service import ConfigLifecycleService
 
     _emit(progress, "config_compare", 0, 1, "正在比较配置快照")
     _check_cancel(should_cancel)
-    database = Database(Path(str(params.get("db_path") or "")))
+    database = _site_database_from_params(params)
     repository = ConfigSnapshotRepository(database)
     service = ConfigLifecycleService(str(params.get("site_name") or ""), database, _path_resolver_from_params(params), repository)
     left = repository.get(int(params.get("left_snapshot_id") or 0))
@@ -1407,11 +1449,10 @@ def _config_compare_snapshot_pair(params: dict[str, Any], progress: ProgressCall
 
 
 def _config_snapshot_service(params: dict[str, Any]) -> tuple[Any, Any]:
-    from netconsole.core.database import Database
     from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
     from netconsole.services.config_lifecycle_service import ConfigLifecycleService
 
-    database = Database(Path(str(params.get("db_path") or "")))
+    database = _site_database_from_params(params)
     repository = ConfigSnapshotRepository(database)
     service = ConfigLifecycleService(str(params.get("site_name") or ""), database, _path_resolver_from_params(params), repository)
     return repository, service
