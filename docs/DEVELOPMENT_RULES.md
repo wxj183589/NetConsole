@@ -112,6 +112,22 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 固化新上线 AP 必须保留 `wlan auto-ap persistent all + save force`；开启 AP 远程登入必须保留 `probe + wlan ap-execute all exec-console enable`，不得改成 SNMP。
 - 页面提交的 command_sequence 必须由 Domain 与既有 command profile 再校验。自定义序列只能复用已验证固定序列，不开放任意配置命令。
 
+## 数据库与路径规则
+
+- Repository 是 SQLite 访问入口；UI 不直接拼接复杂 SQL，不跨线程/进程共享 connection。
+- 使用统一 SQLite helper、busy timeout 和受控 WAL 初始化；并发 worker 各自打开并关闭连接。
+- 普通新增表、字段和索引必须提供安全升级与兼容读取路径。设备管理、FIT AP 等主应用库禁止静默删除、重建或丢字段。
+- schema 严重不匹配需要重建时，先创建可识别备份并由用户选择；会话 parsed 数据库可重建，但 raw 事实来源必须保留。
+- 路径统一通过 `PathResolver`；生产代码和文档不得写开发机绝对路径。自动清理只处理白名单日志、缓存和临时目录。
+
+## UI、i18n 与日志规则
+
+- 1920×1080 下核心字段和终态操作不可遮挡；复杂页面使用 scroll area/splitter，收起后必须能恢复。
+- 表格支持横向滚动和手工列宽；数字框/下拉框无焦点时不得被滚轮误改；勾选列使用统一 delegate，不创建大量单元格 QCheckBox。
+- 状态同时提供文字与颜色，并覆盖 loading、empty、success、error、cancelled；不能只用颜色表达。
+- 用户可见文案优先进入 i18n；设备密码、community、认证密钥和未经脱敏的身份样本不得写普通日志。
+- 外部命令输出在来源 Adapter 处按明确编码解码；终端乱码不得触发删除中文或改写原始文件。
+
 ## Qt 测试生命周期
 
 - 需要创建顶层 QWidget/QDialog 的测试模块可通过 `pytestmark = pytest.mark.usefixtures("qt_page_lifecycle")` 显式启用 `tests/conftest.py` 中的生命周期隔离。
@@ -129,11 +145,10 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - `site_id` 数据作用域、业务站点 station 和区间 section 分开；section 可以存在而 station 为空。PIS 默认不强制红/蓝网，信号系统按既有规则处理。
 - 轨旁业务同时引用 AP identity 与交换机 device_uuid+interface 拓扑 identity；光衰同时引用 AC、AP、接口和在线状态，任何 identity 工具不得承载或改写业务判定。
 - MR/Mesh、无线扫描、历史查询、页面展示和导出只能读取统一 identity 结果，写入各自的观测/派生数据，不能回写 AP 主身份。
-- 阶段 1 只允许纯 Python identity 工具和 characterization tests，不接生产写流程、不改 schema；后续领域接入必须先做旧/新 shadow comparison 并提供回滚适配器。
-- 阶段 1 工具固定在 `services/ap_identity`，不得导入 PySide6、UI、Repository、Job Center、网络连接或光衰/轨旁业务规则。
+- AP Identity 基础工具保持纯 Python，不接生产写流程、不改 schema；领域接入必须先做旧/新 shadow comparison 并保留旧生产路径作为回滚。
+- 基础工具固定在 `services/ap_identity`，不得导入 PySide6、UI、Repository、Job Center、网络连接或光衰/轨旁业务规则。
 - Radio/BSSID resolver 默认只使用 Candidate 显式映射；复用 H3C 派生规则时必须通过后续具名适配器和 shadow comparison，不能在通用 resolver 中隐式推导。
-- 阶段 2 验收前，生产模块不得导入 `services.ap_identity`；阶段 2 也只能先接 FIT-AP/extension 只读或兼容适配，不得连带迁移光衰、轨旁、MR/Mesh 或导出。
-- 阶段 2 统一通过 `services/ac/ac_identity_adapter.py` 接入，adapter 只接收普通 row，不导入 Repository/UI/Worker，不写数据库。
+- AC/FIT-AP 统一通过 `services/ac/ac_identity_adapter.py` 只读接入；adapter 只接收普通 row，不导入 Repository/UI/Worker，不写数据库。
 - AP 扩展 preview/commit/refresh/save 的 `identity_shadow` 仅是诊断附加字段；commit/save 必须继续使用旧 service/legacy 写入路径，shadow unavailable、unresolved 或 ambiguous 都不得阻断原流程。
 - `identity_changed` 只表示 old/new 状态或候选差异，不授权新 resolver 覆盖旧 key；旧 helper 必须保留为回滚路径。
 - 阶段 3 只能在光衰 Domain 内增加 identity shadow，不得改变光衰阈值、AP 离线关联、交换机无光规则、Repository 写入或页面字段。

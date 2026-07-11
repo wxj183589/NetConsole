@@ -205,3 +205,9 @@ tests/test_job_result_detail_host.py
 当前项目没有统一 Job 详情页、任务历史页、统一结果面板或诊断中心。Manager 和两个 helper 都只管理运行期与瞬时终态，不能安全提供跨任务详情。
 
 未来首选是“显式打开的单次任务详情诊断摘要弹窗”，且 dialog 只接收阶段 8.1 ViewModel；但在统一任务详情启动点获批前，阶段 8.3 可见 UI 实现应继续暂停。阶段编号推进不授权改业务页面、保存完整 result 或默认展示 diagnostics。
+
+## 11. 2026-07-11 同步复核
+
+本轮重新核对普通 Background Job、Export Process、Online MR 长会话、AC/FIT AP、轨旁和 MR/Mesh 调用链，未发现新增的统一任务详情/历史/诊断中心或安全结果保留层。各页面仍主要消费瞬时 progress/finished/error/cancelled 回调，Export finished metadata 也不构成跨任务详情存储。
+
+因此阶段 8.3 结论保持 hold：未来入口若获批，只能显式、非模态地接收 `DiagnosticsSummaryViewModel`，不得接收或持久化 raw result；关闭后不得保留跨 Job、跨局点引用。本结论不授权新增 Qt 页面、Feature key、数据库或业务字段。

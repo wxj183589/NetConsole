@@ -1,136 +1,173 @@
-# NetConsole 分层架构
+# NetConsole 架构
 
-本文定义 NetConsole 当前推荐架构。新功能必须遵守本文；存量功能按 [迁移地图](REFACTOR_MAP.md) 渐进收敛，不以大规模移动文件破坏现有导入。
+## 1. 架构目标
 
-## 总体结构
+NetConsole 是 Windows Qt6 桌面应用。架构的首要目标是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
 
-```text
-Qt6 UI
-  ↓ 只负责显示、按钮、表格、进度、弹窗和页面状态
-Job Center / Task Manager
-  ↓ 统一提交、调度、取消、进度、日志和终态
-Worker Process
-  ↓ 采集、解析、导出和批量操作在独立进程执行
-Domain Services
-  ↓ AC / SNMP / MR / iperf / Export / Agent
-Repositories / Data Store
-  ↓ SQLite / 文件 / 缓存 / 报告
+## 2. 启动与运行形态
+
+`main.py` 是唯一程序入口。它先识别工作进程参数，再进入桌面应用：
+
+```mermaid
+flowchart TD
+    MAIN["main.py"] --> MODE{"启动参数"}
+    MODE -->|"--background-worker --job"| BJ["netconsole.background_worker"]
+    MODE -->|"--export-worker / --export-worker-job"| EW["netconsole.export_worker"]
+    MODE -->|"smoke 参数"| SMOKE["构建验证入口"]
+    MODE -->|"普通启动"| APP["netconsole.app.run"]
+    APP --> QT["QApplication + Settings + PathResolver"]
+    QT --> SPLASH["启动页 / schema 检查"]
+    SPLASH --> WIN["主窗口与页面"]
 ```
 
-依赖只能自上而下。Domain Service、Repository、Parser、Adapter 和 Worker 不得反向导入 UI 页面。
+开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。
 
-## 各层职责
+## 3. 分层与依赖方向
 
-### UI Layer
-
-- 创建和更新 QWidget / QFluentWidgets 控件。
-- 收集用户输入，构造 `JobSpec`、`BackgroundJob` 或 `ExportJob`。
-- 订阅 `progress / log / finished / error / cancelled`，刷新页面状态。
-- 使用 ViewModel / Presenter 将结构化结果转换为可展示数据。
-- 不持有跨线程、跨进程复用的 SQLite connection 或 repository。
-
-UI 可以依赖 Job Center、ViewModel 和轻量 UI helper。页面文件只保留布局、信号绑定、轻量校验和状态刷新。
-
-### Job Center / Task Manager
-
-- 以 `job_id + task_type + params` 描述普通后台任务。
-- 通过注册表将 `task_type` 路由到领域 handler。
-- 管理任务进程、取消文件、JSONL 事件、错误和临时文件。
-- 为 UI 提供 `start_job / cancel_job / is_running` 与 Qt signals。
-- 不包含 AC、SNMP、MR 等具体业务规则。
-
-### Worker Process
-
-- 在自己的进程内创建 service、repository、数据库连接和临时状态。
-- 定期检查取消标志。
-- stdout 只输出 UTF-8 JSONL；stderr 只输出诊断信息。
-- 只返回结构化结果，不访问 QWidget，不导入 UI page。
-
-重 CPU、重 IO、重网络、批量采集、大日志解析和所有导出必须进入独立进程或项目已有的受治理独立进程机制。
-
-### Domain Services
-
-- 承载 AC、SNMP、MR、网络工具、轨道交通、Agent 等业务用例和规则。
-- 可以依赖 Repository、Parser 和 Adapter。
-- 不依赖 Qt UI，不弹窗，不读取表格控件。
-- 不把持久化 SQL、设备输出解码或 Excel 样式散落到页面。
-
-### Repositories / Data Store
-
-- Repository 只负责 SQLite、文件、缓存等数据读写。
-- 每个线程/进程创建自己的连接，不跨线程或进程共享。
-- 路径通过 `PathResolver` 解析，不硬编码局点或用户路径。
-- 主应用数据库保持稳定；解析分析输出按对应业务文档治理。
-
-### Parser / Adapter
-
-- Parser 只把原始输入转换为结构化数据，不访问 UI、不写报告。
-- Adapter 负责 SSH、Telnet、SNMP、外部命令和编码边界。
-- 设备输出优先 `utf-8-sig / utf-8`，失败后尝试 `gb18030 / gbk`；内部 worker 协议固定 UTF-8。
-
-### Export Layer
-
-- `ExportJob` 只携带可序列化的数据源、筛选条件、目标路径和样式参数。
-- `ExportProcessManager` 管理独立导出进程。
-- 导出 handler 负责生成本地 CSV/XLSX/PDF 等报告。
-- 临时文件成功后原子替换目标文件；失败和取消清理不完整文件。
-- 本地 XLSX 保持列宽、筛选、冻结和文本格式，兼容 WPS Office / Microsoft Office；不引入 WPS 云服务。
-
-### Agent Boundary
-
-- Agent 可以规划和调用受控 Domain Service / Job，但不能绕过 Job Center 操作 UI 或长任务。
-- Agent 输入必须转换为可审计的 `task_type + params`，输出走同一事件协议。
-- Agent 不直接持有 QWidget、数据库连接、凭据对象或未序列化 model。
-- Agent 自动化必须遵守功能开关、权限、取消、日志和现场数据边界。
-
-## 强制依赖规则
-
-- UI → Job Center / ViewModel / 轻量 UI helper。
-- Job Center → Domain Service handler。
-- Domain Service → Repository / Parser / Adapter。
-- Repository → 数据存储。
-- Parser → 纯解析依赖。
-- Export → 数据源和报告生成依赖。
-- Domain Service 禁止依赖 UI。
-- Worker Process 禁止导入 `netconsole.ui.pages`。
-
-## 明确禁止
-
-- 页面内直接 SSH、Telnet、Netmiko、SNMP Walk 或外部网络请求。
-- 页面内直接生成 Excel/CSV/PDF、写 `Workbook.save()` 或 `to_excel()`。
-- 页面内直接解析大文件日志、递归扫描目录、压缩打包。
-- 页面内执行长时间数据库扫描、大批量 SQL 或数据转换。
-- 页面内继续新增零散 QThread/QProcess；仅明确的实时 UI 采样展示可例外，且必须有退出治理。
-- 向单个无限增长的 if/elif dispatcher 追加任务。
-
-## 明确允许
-
-- UI 创建 `JobSpec / BackgroundJob / ExportJob`。
-- UI 调用 `submit_background_job()` 或 `submit_export_task()`。
-- UI 订阅进度和终态事件。
-- UI 使用 ViewModel / Presenter 展示结构化结果。
-- 小于 300ms、无网络/重 IO、结果规模明确的轻量校验和状态变更留在 UI。
-
-## 新功能模板
-
-```text
-netconsole/
-  ui/pages/<feature>_page.py           # 布局、信号、状态
-  ui/<feature>_view_model.py           # 可选，展示转换
-  services/job_center/handlers/<domain>_jobs.py
-  services/<domain>/<feature>_service.py
-  repositories/<feature>_repository.py
-  parsers/<feature>_parser.py          # 如需要
-  tests/test_<feature>.py
+```mermaid
+flowchart LR
+    UI["UI\n页面、对话框、widgets"] --> SVC["Services\n业务编排、解析、导出模型"]
+    UI --> VM["Models / ViewModels\n稳定数据与展示模型"]
+    SVC --> REPO["Repositories\n数据访问与查询"]
+    SVC --> PARSER["Parsers / Adapters\n外部格式与设备边界"]
+    REPO --> STORE["SQLite / JSON / 日志 / 原始文件"]
+    UI --> CORE["Core\n路径、设置、Feature、日志、版本"]
+    SVC --> CORE
+    REPO --> CORE
+    JOB["Background Job Process"] --> SVC
+    EXP["Export Process"] --> SVC
 ```
 
-开发步骤：
+约束：
 
-1. 判断任务是否可能超过 300ms，或是否包含网络、磁盘、大查询、解析、批量处理。
-2. 在领域 handler 注册新的 `task_type`，禁止修改兼容 dispatcher。
-3. handler 通过 `JobContext` 获取 params、路径、进度和取消。
-4. Worker 内创建 service/repository，输出结构化 result。
-5. UI 只提交 Job 并处理五类事件。
-6. 导出另建 `ExportJob`，不得把全量表格行从 UI 传入进程。
-7. 补成功、空数据、失败、取消和冻结模式验证。
+- UI 负责输入、状态、轻量 ViewModel 和结果呈现，不承载长任务或大规模业务计算。
+- Services 不依赖具体页面；需要向 UI 通知时使用结果对象、事件或回调。
+- Repositories 负责数据库连接、事务、查询和数据映射，不放页面文案。
+- `core/paths.py` 是路径事实来源；业务模块不得散落硬编码的本机绝对路径。
+- `resources/` 存放只读资源和规则；运行数据不得写入源码、`docs/` 或 `tests/`。
+- 用户可见文案通过 i18n 资源/服务管理；日志通过 core logger 记录稳定事件，设备密码和认证材料不得进入普通日志。
 
+## 4. 后台任务架构
+
+### 4.1 普通 Background Job
+
+```mermaid
+sequenceDiagram
+    participant P as UI Page
+    participant M as BackgroundProcessManager
+    participant W as background_worker
+    participant R as JobRunner/Registry
+    participant H as Domain Handler
+    P->>M: start_job(JobSpec)
+    M->>M: 写 runtime/cache/background_jobs/*.json
+    M->>W: QProcess 启动
+    W->>R: 加载任务并运行
+    R->>H: handler(JobContext)
+    H-->>R: progress / result
+    R-->>W: JobResult
+    W-->>M: UTF-8 JSONL 事件
+    M-->>P: progress / finished / error / cancelled
+```
+
+关键契约：
+
+- `JobSpec` 包含 `job_id`、`task_type`、`params` 和取消文件路径。
+- worker 的 stdout 只允许输出 JSONL 协议；普通诊断输出重定向到 stderr。
+- 取消先写 `.cancel`，handler 通过 `JobContext.check_cancelled()` 协作退出；超时后进程管理器 terminate，再在 3 秒后 kill。
+- Job 文件位于 `runtime/cache/background_jobs/`，终态后清理。
+- Job Registry 当前注册 83 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测 10 个领域模块。
+- 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
+
+设备批量连接测试（默认 50、上限 200）和批量详情采集（默认 20、上限 50）目前仍是专用线程/线程池路径。它们有取消、逐设备进度和错误隔离，但不属于上述进程 Job 协议。
+
+### 4.2 Export Process
+
+```mermaid
+sequenceDiagram
+    participant P as UI Page
+    participant M as ExportProcessManager
+    participant W as export_worker
+    participant E as Export Handler
+    P->>M: start_export(ExportJob)
+    M->>M: 写 runtime/cache/export_jobs/*.json
+    M->>W: QProcess 启动
+    W->>E: 读取 repository/file/jsonl 数据
+    E->>E: 写 output.tmp
+    E-->>W: 成功
+    W->>W: os.replace(tmp, output)
+    W-->>M: UTF-8 JSONL 终态
+    M-->>P: finished / error / cancelled
+```
+
+正式导出必须进入独立进程。当前通用注册导出类型 27 个，另有 `trackside_ap_business` 和 `mesh_link_detail` 两个专用入口。默认优先传递数据库路径、文件路径、查询条件或 JSONL，而不是把大数据行塞进 Job JSON；兼容 inline rows 仅显式启用且上限 5000 行。
+
+失败或取消时删除临时文件，只有完整成功才原子替换目标文件。页面不得先创建一个看似成功的半成品；WPS/Excel 占用目标文件时，应提示用户关闭占用后重试。
+
+## 5. 数据与 SQLite
+
+```mermaid
+flowchart TD
+    ROOT["应用根目录"] --> DATA["data/ 持久业务数据"]
+    ROOT --> RUN["runtime/ 临时协议、缓存、应用日志"]
+    DATA --> GLOBAL["global/ 全局 MIB 等"]
+    DATA --> SITES["sites/<site>/ 局点数据"]
+    SITES --> DB["db/ 主应用数据库"]
+    SITES --> RAIL["rail_transit/ 原始、解析、输出"]
+    SITES --> SNMP["snmp/ 原始、导出、Trap"]
+```
+
+- 通用 SQLite 连接默认 timeout 30 秒、`busy_timeout` 10 秒；需要 WAL 的 repository 显式调用 WAL 初始化，并采用 `synchronous=NORMAL`。
+- 并发 worker 各自创建连接，不跨线程共享 SQLite connection。
+- 设备管理、FIT AP 资源等主应用数据库默认保持兼容；会话解析数据库和可重建分析表可在明确范围内重构。
+- 自动清理只针对受控的运行日志、缓存和临时目录；局点业务文件、数据库、配置和备份不得自动删除。
+
+完整目录见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
+
+## 6. Feature 与 UI
+
+- 一级模块和子能力以 `core/feature_registry.py` 为唯一注册表。
+- 新页面、Tab、动作或按钮必须登记 Feature key，通过 `FeatureGate` 统一控制可见性和可用性。
+- 表格必须使用 item/delegate，不为每个单元格创建 QWidget；首屏可自动列宽，之后尊重用户拖动并持久化。
+- 对话框和复杂页面要覆盖 1920×1080，工具栏可滚动或换行，内容使用 splitter/scroll area，深浅主题同时保证文本和状态颜色可辨认。
+
+详见 [FEATURE_MODULES.md](FEATURE_MODULES.md) 和 [ui_table_guidelines.md](ui_table_guidelines.md)。
+
+## 7. 关键业务边界
+
+- Online MR：原始日志是事实来源；实时解析用于视图，正式离线解析由 `online_mr_parse` Job 完成，报告由 Export Process 输出。
+- SNMP：单次查询与批量采集有正式 Job handler；MIB 资源、产品参考等部分中心动作仍经过 legacy 薄适配。
+- AP Identity：只读 shadow/diagnostics，不改旧 resolver、数据库 schema、workbook 字段或业务统计；阶段 8.3 可见 UI 继续暂缓。
+- MR/Mesh：目录数据库可仅作索引，源文件明细应解析到 `source_files.parsed_db_path` 指向的数据库；大样本图表按可见窗口或保留关键点的下采样结果绘制。
+
+Online MR 会话生命周期：
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> CONNECTING
+    CONNECTING --> INITIALIZING
+    INITIALIZING --> COLLECTING
+    COLLECTING --> RECONNECTING: 连接中断且允许重连
+    RECONNECTING --> COLLECTING: 重连成功
+    COLLECTING --> STOPPING: 用户停止
+    STOPPING --> STOPPED: 协作停止并打包
+    STOPPING --> FORCED_STOPPED: 强制停止
+    CONNECTING --> FAILED: 启动失败
+    INITIALIZING --> FAILED: 初始化失败
+    COLLECTING --> FAILED: 不可恢复错误
+    CREATED --> ABORTED: 启动前中止
+    STOPPED --> [*]
+    FORCED_STOPPED --> [*]
+    FAILED --> [*]
+    ABORTED --> [*]
+```
+
+## 8. 关停与清理
+
+`ShutdownManager` 负责登记内部任务和子进程。关闭应用时应请求协作取消，必要时终止内部进程；按策略标记为外部工具的进程不由应用盲目 kill。自动清理在主窗口启动后延时执行，不应阻塞首屏。
+
+## 9. 架构变更准入
+
+新增功能至少回答：运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
+
+打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。当前没有完整 Go Agent、CentOS Agent 或远程控制端生产路径，这些只能标记为规划中。

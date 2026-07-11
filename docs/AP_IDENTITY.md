@@ -109,9 +109,10 @@ Resolver 使用第一个有候选的精确策略，不用位置字段给重复 i
 | 4 | `ap_mac` 精确 | 92 |
 | 5 | `ac_uuid + ap_name` 精确 | 85 |
 | 6 | `ap_name` 精确 | 75 |
-| 7 | 显式 `radio_mac` 或 `bssid/bbssid` | 90 |
-| 8 | Peer observation 命中显式 Radio/BSSID | 80 |
-| 证据 | Peer observation 只命中 AP MAC | 55，不产生 matched |
+| 7 | 显式 `radio_mac` | 90 |
+| 8 | 显式 `bssid/bbssid` | 90 |
+| 9 | `peer_radio_mac`，再以 `peer_mac` 命中显式 Radio/BSSID | 80 |
+| 10（证据） | Peer observation 只命中 AP MAC | 55，不产生 matched |
 | 辅助 | site/station/section/mileage 一致 | 10，只追加证据 |
 
 AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作用域返回 ambiguous；不会选择第一条。
@@ -197,3 +198,12 @@ MR/Mesh、Online MR、Vehicle MR 的数据来源、Peer/Radio语义、lookup差�
 阶段 7 真实局点运行步骤、统一指标、HMAC 脱敏、采样范围、风险分级和保守决策门见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。观测只提取聚合，不保存完整 items/evidence/raw log/xlsx；达到阈值也只允许进入阶段 8 的只读展示评估，不授权生产接管。
 
 阶段 8 可展示字段允许列表、禁止字段、UI/报告候选、默认关闭策略、不可用状态和阶段 8.1 实现见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。阶段 8.2 Job/Export 宿主现状、七类结果流、候选矩阵和阶段 8.3 准入结论见 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。当前没有统一 Job 详情启动点或安全结果保留层；阶段 8.3 可见 UI 暂缓，不得改业务页面或持久化完整 result。
+
+## 13. 2026-07-11 代码同步结论
+
+- 统一模型仍为 `CanonicalApIdentity`、`CanonicalApRadioIdentity`、`CanonicalApLocation`、`ApObservation`、`ApIdentityCandidate`、`ApMatchEvidence`、`ApMatchResult`。
+- resolver 仍按显式 UUID、AC 作用域 ID/MAC、全局 AP MAC、作用域名称/名称、Radio/BSSID、peer observation 的保守顺序解析；唯一候选才 matched，多候选 ambiguous，无候选 unresolved。位置只作辅助证据，不单独决定身份。
+- peer 到 AP MAC 的低置信 fallback 仍只形成 unresolved 诊断，不允许伪装成 matched。
+- 当前接入仍只附加 `identity_shadow`、`detail_identity_shadow` 或 `export_identity_diagnostics`；没有替换旧 matcher、数据库写入、页面字段或报表统计。
+- `online_mr_parse` 可附加 shadow，但 Online MR 实时生产匹配不接管；Mesh 链路明细 diagnostics 只随 finished result 返回 metadata。
+- 阶段 8.3 继续 hold。没有真实局点准入结果、统一 Job 详情宿主和安全结果生命周期之前，不新增可见 UI。

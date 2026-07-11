@@ -1,6 +1,12 @@
 # NetConsole 更新日志
 
-## 未发布 - 2026-07-10
+## 未发布 - 2026-07-11
+
+### 文档
+
+- 以当前代码、测试和近期提交为基线，全面同步根 README、架构、Job/Export、重构地图、Feature、数据路径、构建、UI 表格和业务专题文档。
+- 新增 Online MR 实时采集与 SNMP Center 专题，明确实际状态、命令、并发、缓存、数据目录、查询/导出路径和功能限制。
+- 明确 Job Registry 当前注册 83 个任务但领域迁移未完成，设备批量线程仍未进入 Job Center；AP Identity 继续只读 shadow/diagnostics，阶段 8.3 可见宿主保持 hold。
 
 ### 架构
 - 已建立 NetConsole 分层架构规范。

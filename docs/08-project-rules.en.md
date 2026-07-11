@@ -4,7 +4,7 @@ This document captures durable NetConsole project conventions. Read it before ad
 
 ## Scope
 
-- Applies to code, documentation, tests, and packaging work under `D:\study\NetConsole`.
+- Applies to code, documentation, tests, and packaging work in the current NetConsole repository.
 - Applies to the local Windows desktop application shape of NetConsole.
 - Applies to rail-transit PIS / DCS train-ground wireless WLAN subsystem operations, diagnostics, data processing, and reporting features.
 - Applies to H3C device commissioning, collection, analysis, and operations-assistance scenarios.

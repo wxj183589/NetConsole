@@ -2,6 +2,8 @@
 
 本文定义 NetConsole 所有导出类任务的强制规范，是 [UI 线程全局规范](ui_thread_policy.md) 的配套文档。
 
+> 2026-07-11 代码核对：当前通用 registry 有 27 个导出类型，另有 `trackside_ap_business` 和 `mesh_link_detail` 两个专用类型。兼容直接 exporter 仍可能存在，但正式 UI 路径必须使用 Export Process。
+
 核心规则：
 
 ```text
@@ -67,7 +69,7 @@ UI 线程只负责创建导出任务描述文件，例如：
   "site_name": "demo",
   "database_path": "data/sites/demo/db/site.sqlite",
   "filters": {},
-  "output_path": "D:/export/report.xlsx",
+  "output_path": "<output_dir>/report.xlsx",
   "created_at": "2026-07-09T12:00:00"
 }
 ```
@@ -105,7 +107,7 @@ repository 实例
 {"event":"started","stage":"prepare","message":"开始导出"}
 {"event":"progress","stage":"query","current":100,"total":1000,"message":"正在读取数据"}
 {"event":"progress","stage":"write","current":5,"total":10,"message":"正在写入工作表"}
-{"event":"finished","output_path":"D:/export/report.xlsx","elapsed_ms":1234}
+{"event":"finished","output_path":"<output_dir>/report.xlsx","elapsed_ms":1234}
 ```
 
 失败：
@@ -162,6 +164,7 @@ ExportProcessManager
 - 复用 UI 线程数据库连接。
 - 依赖 WPS 云服务、WPS API、KDocs 或在线同步能力。
 - 在 UI 线程中预先读取全量数据再传给导出进程。
+- 默认把大数据 inline rows 写入 Job JSON；兼容 inline 模式必须显式启用且不超过当前 5000 行上限。
 - 导出失败静默，或只写控制台不反馈 UI。
 
 ## 七、日志事件
@@ -198,3 +201,5 @@ EXPORT_JOB_CANCELLED
 5. 是否影响导出模板、列宽、筛选、冻结、文本格式。
 6. 是否触碰数据库结构。
 7. 开发环境和打包环境下如何启动导出 worker。
+
+当前 worker 的 Job 描述位于 `runtime/cache/export_jobs/`。输出先写目标旁 `.tmp`，成功时 `os.replace`；失败、取消或进程异常时 manager/worker 必须清理临时文件。页面显示的行数上限不得截断 repository、JSONL 或缓存文件中的完整导出数据。

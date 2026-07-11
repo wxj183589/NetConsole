@@ -1,97 +1,80 @@
-# Job Center 架构迁移地图
+# 后台任务重构地图
 
-本文记录本轮已完成、兼容保留和后续优先级。它不代表所有存量页面已经完成迁移。
+## 1. 当前结论
 
-## 已完成
+截至 2026-07-11，NetConsole 已建立统一 Background Job 协议、独立 worker、进程管理器、Job Registry 和 10 个领域 handler 模块；Registry 当前注册 83 个任务类型。但多数领域 handler 仍通过 `legacy_handler(...)` 调用 `netconsole/services/job_center/handlers/legacy_tasks.py`，因此重构状态是“入口与协议统一，领域实现迁移中”，不是“已完成”。
 
-| 能力 | 当前状态 |
+## 2. 状态定义
+
+| 状态 | 判定标准 |
 | --- | --- |
-| 统一模型 | 已建立 `JobSpec / JobResult / JobProgress / JobError`，`BackgroundJob` 保持兼容 |
-| 统一事件 | 已建立 progress/log/finished/error/cancelled 事件 |
-| JSONL | 普通 worker 与 export worker 共用 `worker_protocol.py` |
-| 注册表 | 77 个兼容 task_type、3 个在线 MR 实时采集 task_type 与 2 个 SNMP task_type 已按领域注册，正式分发不再使用 if/elif |
-| 领域分区 | 已建立 AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测 handler 模块 |
-| Runner | background worker 统一通过 JobRunner 捕获取消、异常和 traceback |
-| Task Manager | 新实现位于 `job_center/task_manager.py`，支持 start/cancel/is_running 和四类终态 signal |
-| Export | ExportProcessManager 复用统一 JSONL 解析，保留 frozen、临时文件、取消和 WPS/Excel 占用提示 |
-| Mesh 链路明细导出 | 已移除页面内重导出 QThread/subprocess，改为 ExportJob + submit_export_task |
-| 在线 MR 实时采集 | SSH 采集、命令序列、原始日志、停止清理和打包已迁入长运行 Job / Worker Process；解析与报告也通过 Job / ExportJob 执行 |
-| SNMP 查询执行 | GET / GETNEXT / GETBULK / WALK / SET 统一提交 `snmp_query_execute`，Worker 内创建 Domain Service、Repository 与 Client，并回传进度、结果、异常和取消事件 |
-| SNMP 批量采集 | 多设备、多 OID 的只读采集统一提交 `snmp_collection_execute`；Worker 内按设备并发、独立 Client、部分失败汇总，并写入去敏结果缓存 |
-| AC 资源刷新（第一阶段） | 页面“刷新资源”复用 `ac_fit_ap_resources_refresh` 进入 Worker；`services/ac` facade 统一选择已验证的 H3C CLI 或显式 SNMP 策略，AP/Radio/LLDP parser 和 repository 保持原规则 |
-| AC 光衰刷新（第一阶段） | FIT-AP 全量和单 AP 光衰复用 `ac_fit_ap_optical_refresh` 进入 Worker；`AcOpticalService` 复用既有 H3C collector，并在 Domain 层完成 AP 离线和交换机光模块状态关联 |
-| AC 命令动作（第一阶段） | 固化新上线 AP、开启 AP 远程登入等现有动作统一提交 `ac_command_action_execute`；Worker 内通过 `AcCommandService` 复用既有命令 profile、白名单、连接和 raw log 逻辑 |
-| AP 统一模型评估（阶段 0） | 已完成数据来源、标识/字段矩阵、消费者、不可破坏规则和阶段 1～6 路线评估；本阶段只更新文档，未替换生产模型或修改 schema |
-| AP identity 工具（阶段 1） | 已新增 frozen identity/observation/candidate/evidence 模型、MAC/名称/里程 normalizer、保守 resolver 和只读 adapters；36 个 characterization tests 通过，尚未接入生产流程 |
-| AC AP identity 适配（阶段 2） | FIT-AP 资源与 AP 扩展 preview/commit/refresh/save 已增加 old/new shadow comparison；只附加诊断字段，旧 helper、Repository 写入、schema、UI 和导出保持不变 |
-| AC 光衰 identity shadow（阶段 3） | `ac_fit_ap_optical_refresh` 的 load/collect、all/single 已附加 AP 关联诊断；仅接口记录不解析 AP，旧光衰关联、离线/无光/阈值规则和写入保持不变 |
-| 轨旁 AP identity 评估（阶段 4） | 已梳理主页面/兼容 Job、serial/MAC/name 与 LLDP/接口 fallback、双击详情、缓存/历史和阶段 4.1 接入点；未修改生产代码 |
-| 轨旁 AP identity shadow（阶段 4.1） | 主 snapshot/兼容 Job 在旧 rows 后附加 `identity_shadow`，详情 resolver 在旧 matches 后附加 `detail_identity_shadow`；页面、lookup、双击、缓存和规则保持不变 |
-| MR/Mesh identity 评估（阶段 5） | 已梳理离线 MESH、Online MR、Vehicle MR 的 Peer/AP/Radio来源、lookup差异、主备链依赖和导出风险；未修改生产代码 |
-| MR/Mesh identity shadow（阶段 5.1） | `mesh_log_import`、`online_mr_parse`、`vehicle_mr_mapping_load`只附加`identity_shadow`；parser、mapping/cache、DB、链路规则、UI和导出不变 |
-| 导出字段去重诊断评估（阶段 6） | 已盘点 MR/Mesh、Online/Vehicle MR、轨旁、AC/FIT-AP、OmniPeek和无线扫描导出；只设计阶段6.1只读diagnostics，未改表头、SQL、formatter或页面 |
-| 导出只读 diagnostics（阶段 6.1 P0） | Mesh 链路明细 finished result 与 Online MR兼容详细 exporter metadata 已附加有限诊断；失败隔离，workbook/SQL/表头/行值不变，默认无 sidecar |
-| 真实局点只读观测方案（阶段 7） | 已定义六类接入点、运行步骤、聚合口径、HMAC脱敏、采样范围、保守阈值和回滚；未新增脚本、UI、sidecar或生产逻辑 |
-| 观察结果只读展示评估（阶段 8） | 已定义安全聚合允许列表、禁止字段、UI/报告候选、默认关闭、不可用状态、权限边界和阶段8.1最小设计；未实现UI、flag、报告或生产逻辑 |
-| 只读诊断摘要 ViewModel（阶段 8.1） | 已新增默认关闭、纯 Python、严格聚合白名单的结果适配；当前无统一 Job 详情宿主，未新增 Qt UI、持久化、业务页面接线或生产规则 |
-| Job 详情宿主接入评审（阶段 8.2） | 已确认 manager/helper 只提供瞬时终态、当前无任务详情/历史/结果面板/诊断中心；未来首选单次只读任务详情弹窗，但统一启动点明确前阶段8.3保持hold |
-| UI helper | 已新增 `ui/job_action_helper.py`，普通任务可复用非模态进度、取消和回调 |
+| 已完成 | 生产调用链使用正式领域 handler/service；有取消、进度、终态和测试；旧实现已收口 |
+| 部分完成 | 已进入 Registry/worker，但领域 handler 仍薄适配 legacy，或同类页面仍有专用线程路径 |
+| 未开始 | 仍在 UI 主线程执行长任务，或没有统一任务/导出协议 |
+| 保留兼容 | 旧入口仍存在但不再是当前主要 UI 路径，删除前需验证外部调用者 |
 
-## 兼容保留
+## 3. 生产路径状态表
 
-- `services/background_job.py`：重导出新模型。
-- `services/background_process_manager.py`：重导出新 Task Manager。
-- `services/background_tasks.py`：只保留 `BackgroundTaskCancelled` 与 registry dispatch。
-- `services/job_center/handlers/legacy_tasks.py`：原 77 个任务的业务实现暂时原样保留，领域 handler 以薄适配调用，防止本轮结构调整改变业务规则；新增的在线 MR 实时采集与 SNMP 查询任务不进入该文件。
-- `services/export/export_job.py`、`ExportProcessManager` 和旧 `export_type` 兼容名称继续有效。
-- 未在本轮完全迁移的页面可继续调用旧 manager API，但新增任务不得进入 legacy 文件。
+| 领域 | 当前生产入口 | 新架构入口 | 当前状态 | 是否已接管 | 遗留路径 | 下一步 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 设备管理 CRUD/分组 | 页面提交后台 mutation/list Job | device domain handlers | 部分迁移 | 部分 | 若干 handler 仍 thin legacy | 逐任务下沉 service 并收口旧函数 |
+| 设备批量连接 | `BatchConnectionTestWorker` | 尚无进程 Job | 尚未迁移 | 否 | QThread + 线程池 | 先保留逐设备进度/取消再评估迁移 |
+| 设备批量采集 | `BatchCollectWorker` | 尚无进程 Job | 尚未迁移 | 否 | QThread + 线程池 | 保留失败隔离与阶段进度后再评估 |
+| AC/FIT AP 资源 | 页面提交 AC Job | ac domain handlers/service | 部分迁移 | 部分 | 资源、历史等 legacy 适配 | 按 task type 搬出纯领域实现 |
+| FIT AP 光衰 | `ac_fit_ap_optical_refresh` Job | AC domain handler | 已迁移但保留兼容层 | 是 | 旧 service/helper 是回滚路径 | 先验证调用者再清兼容入口 |
+| AP 扩展信息 | preview/commit/refresh/save Job | AC domain + identity adapter | 影子验证 | 旧业务已接管；identity 否 | 原写入 service + shadow metadata | 保持只读，等待观测结论 |
+| 轨旁 AP 业务 | 轨旁聚合/详情 Job 与导出 | rail transit handler +专用 export | 部分迁移/影子验证 | 业务部分；identity 否 | lookup、缓存、legacy 聚合/详情 | 不改变旧结果前提下逐项拆分 |
+| 配置采集 | snapshot/compare/collect Job | config domain handlers | 部分迁移 | 部分 | 多个任务 thin legacy | 补 handler 单测后迁出 legacy |
+| 文件管理 | 页面后台导航/动作 | file domain handlers | 部分迁移 | 部分 | 导航与动作 legacy 适配 | 收敛路径与取消契约 |
+| SNMP 查询/采集 | `snmp_query_execute` / `snmp_collection_execute` | snmp domain 正式 handler | 已完成 | 是 | 兼容 service/export 方法 | 保持请求/缓存契约，验证 frozen |
+| SNMP MIB/产品数据 | 中心后台刷新/动作 | snmp domain handlers | 部分迁移 | 部分 | MIB/resource/product/data legacy | 分离资源库与请求采集后迁移 |
+| 无线扫描/勘测 | 页面提交 wifi survey Job | wifi domain handlers | 部分迁移 | 部分 | 扫描/勘测动作 legacy | 核对设备/平台边界后拆分 |
+| MR 原始日志分析 | import/rebuild/profile Job | mesh domain + parser/repository | 部分迁移 | 部分 | domain handler 仍有 legacy | 保留单文件 parsed DB 契约迁移 |
+| Online MR 实时采集 | 页面会话 manager/worker | collection start/status/package handler +专用 runner | 部分迁移 | 部分 | 多会话/外部进程生命周期 | 不将长会话误改为一次性 Job |
+| Online MR 离线解析 | `online_mr_parse` Job | online_mr domain handler/service | 已迁移但保留兼容层 | 是 | 映射/历史相关 legacy | 收口兼容入口，锁定 raw/parsed 契约 |
+| 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
+| Job Center | 页面 manager + worker/registry | 统一协议与 10 个 domain modules | 部分迁移 | 协议是；领域逻辑否 | `legacy_tasks.py` 2348 行级兼容区 | 只迁出、不新增；按领域小步收口 |
+| Export Center | ExportJob + manager + worker | 27 通用 + 2 专用类型 | 已完成主路径 | 是 | 兼容直接导出入口 | 继续保证 tmp/原子替换/占用提示 |
+| AP Identity | Job/Export finished metadata | canonical resolver + adapters + ViewModel | 影子验证 | 禁止接管 | 旧 matcher/lookup/写入仍生产使用 | 真实局点观测与单宿主批准前 hold |
+| Feature Gate | 主窗口/页面 `FeatureGate` | `feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | 新用户可见能力默认登记 |
+| 日志分页 | 日志页面/Repository 查询 | 现有分页入口 | 已完成当前需求 | 是 | 大日志策略需随数据量复核 | 保持查询分页，不回 UI 全量加载 |
+| 自动清理 | 延时 `AppCleanupService` | 白名单日志/缓存/临时目录 | 已完成受控范围 | 是 | 手工磁盘清理是另一入口 | 不扩大到业务数据和数据库 |
+| Go/CentOS/远程 Agent | 无生产入口 | 仅规划概念 | 规划中 | 否 | 无完整生产代码 | 落地后另行设计与文档化 |
 
-legacy_tasks 是只迁出、不迁入的兼容区。后续维护某一领域时，将对应实现和辅助函数移动到正式 Domain Service/handler，并保持 task_type 不变。
+## 4. 当前非 Job Center 路径
 
-## 新增功能强制路径
+以下路径并非遗漏，而是尚未统一：
 
-```text
-UI page
-  -> ui/job_action_helper.py 或 ui/export_action_helper.py
-  -> Job Center registry / ExportProcessManager
-  -> Worker Process
-  -> Domain Service
-  -> Repository / Parser / Adapter
-```
+- 单设备连接测试：`DeviceConnectionTestThread`。
+- 批量连接测试：`BatchConnectionTestWorker`，默认并发 50、上限 200。
+- 批量设备详情采集：`BatchCollectWorker`，默认并发 20、上限 50。
+- Online MR 实时采集：页面编排多个会话 worker、fping/iPerf 外部进程和终端连接；生命周期不能简单替换成一次性 Job。
+- 少量兼容导出 service 仍可直接写文件，但当前正式页面导出应走 Export Process。
 
-禁止新增页面内 SSH/SNMP/Excel/大日志解析/大查询；禁止向兼容 dispatcher 或 legacy_tasks 增加任务。
+这些路径若要迁移，必须先保留逐设备/逐会话进度、取消、失败隔离和现有用户交互，不能只替换类名。
 
-## 重点页面优先级
+## 5. 迁移顺序
 
-| 优先级 | 页面 | 当前情况 | 目标状态 |
-| --- | --- | --- | --- |
-| P0 | `ui/pages/mesh_log_analysis_page.py` | 链路明细导出已迁；仍有导入、派生分析和报告等存量 worker | 所有重任务只提交 Job/ExportJob，页面只消费事件 |
-| 已迁移 | `ui/pages/online_mr_collection_page.py` | SSH 实时采集已改为长运行 Job，解析和报告分别使用 Job / ExportJob；页面只轻量跟踪已落盘日志 | 保留现有 fping/iperf 专用运行时和实时显示策略，不改业务规则；后续仅按明确需求收敛 |
-| 已迁移（第一阶段） | `ui/pages/snmp_center_page.py` | 查询执行链路已迁入 Job Center；页面仅收集参数、提交任务并绑定结构化结果 | MIB 浏览/搜索、全局 MIB 仓库、H3C 映射、Trap 与 Poll 保持原状；后续单独迁移批量采集 |
-| 已迁移（第三阶段） | `ui/pages/ac_management_page.py` | FIT-AP 资源、光衰和现有 AC 命令动作均已改为 Job + AC Domain；identity 阶段 2～4.1 只附加 shadow，页面流程未改 | 阶段 5/5.1、阶段6评估和6.1 P0 diagnostics已完成；不接管生产结果 |
-| P1 | `ui/pages/network_toolbox_page.py` | 多种外部工具和结果导出 | 工具进程归 Job Center，服务端/客户端状态保持隔离 |
-| P1 | `ui/pages/file_management_page.py` | 导航已后台化，传输有专用 worker | 扫描、传输、批量操作统一任务事件和退出治理 |
-| P2 | `ui/pages/config_collection_center_page.py` | 已使用 BackgroundProcessManager 和 export helper | 采集、diff、快照、导出全部只通过 Job |
+1. 按领域从 `legacy_tasks.py` 搬移纯业务函数，保持 task type 和结果契约不变。
+2. 为每个迁移 handler 补齐取消检查、阶段进度、错误 code 和直接单元测试。
+3. 核对页面只依赖 `BackgroundProcessManager` 与稳定结果，不读取 worker 私有文件。
+4. 验证冻结态 `--background-worker --job` 与源码态 `python -m netconsole.background_worker --job`。
+5. 搜索并删除已无生产调用者的 compatibility re-export/legacy 函数；无法证明无调用者时保留并标记。
+6. 最后评估专用线程是否值得迁移，不能与领域 handler 拆分混成一次高风险改动。
 
-每个页面的最终验收一致：
+## 6. 完成标准
 
-- 页面不直接执行长任务。
-- 页面只提交 Job / ExportJob。
-- 页面只消费 progress/log/result/error/cancelled 并刷新 UI。
-- 页面关闭、局点切换、应用退出有明确任务治理。
+一个任务只有同时满足以下条件才可标记“已完成”：
 
-## 后续拆分建议
+- Registry 中 task type 唯一且领域归属清晰；
+- handler 不再反向调用对应 legacy 实现；
+- 生产页面走统一 manager；
+- 进度、取消、失败、异常退出和清理经过测试；
+- stdout JSONL 协议未被普通 print 污染；
+- 数据/临时文件位于 PathResolver 管理目录；
+- 文档、变更记录和代码搜索结果同步；
+- 冻结态 smoke 验证通过。
 
-1. 以页面实际维护需求为触发点，从 `legacy_tasks.py` 逐领域迁出，不做一次性大爆炸重写。
-2. AC 资源、光衰和命令动作 Domain Service 第一阶段已完成；AP identity 阶段 0～8.1 见 [AP_MODEL_ASSESSMENT.md](AP_MODEL_ASSESSMENT.md)、[AP_IDENTITY.md](AP_IDENTITY.md)、[TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md)、[MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)、[EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md) 与 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。下一阶段只能在批准的单一 Job 详情宿主接入默认关闭的只读摘要。
-3. 为每个领域增加 handler 注册完整性和业务回归测试。
-4. 逐页替换重复 manager signal 绑定为 `submit_background_job`。
-5. 完成领域迁出后删除 legacy 中已无引用的函数；`services/background_tasks.py` 兼容入口长期保留。
+## 7. 明确不在本轮文档同步中执行
 
-## AP 统一模型迁移边界
-
-- 现有 `ap_entities` 是统一 identity 的基础，不新增第二张 AP 主表。
-- `ap_uuid` 用于站点数据库内已落表对象；跨模块优先规范化 AP MAC；名称和 AC APID 只作带作用域降级匹配。
-- Radio MAC、BSSID/BBSSID、Peer MAC、Peer Radio MAC 保持 radio/观测层语义，不折叠为 AP MAC。
-- 推荐路线固定为：identity工具（已完成）→ AC/extension shadow（已完成）→ 光衰shadow（已完成）→ 轨旁评估/shadow（已完成）→ MR/Mesh评估/shadow（已完成）→ 导出字段去重诊断评估（已完成）→ 导出只读 diagnostics P0（已完成）→ 真实局点只读观测方案（已完成）→ 观察结果只读展示评估（已完成）→ 默认关闭的安全 ViewModel（已完成）→ Job详情宿主评审（已完成）→ 单一任务详情启动点批准后再实施只读UI（hold）。
-- 每一阶段先做旧/新 shadow comparison，保持数据库、业务规则、页面字段和导出兼容；不得从 identity 工具直接跳到轨旁业务迁移。
+本轮只同步文档，没有拆 `legacy_tasks.py`、迁移专用线程、修改数据库 schema、调整页面调用链或删除兼容入口。上述表格是后续重构地图，不是已授权的实现计划。

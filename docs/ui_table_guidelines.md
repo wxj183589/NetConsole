@@ -202,3 +202,20 @@ FIT-AP 资源主列表默认不显示：
 - BSSID 高级字段
 
 这些数据可以保留在数据库、详情页和高级导出中，但不要污染主列表。
+
+## 9. 当前公共 helper 与状态要求
+
+- 普通只读表优先使用 `configure_readonly_table`，分析型表格使用 `apply_analysis_table_style`。
+- 首次有真实数据时可调用 `auto_fit_table_columns`；它只抽样有限行并限制长文本宽度。禁止在每次刷新或 progress 事件中调用 `resizeColumnsToContents()`。
+- 首次自适应后，Header 保持 Interactive，尊重用户拖动；支持的页面通过列状态工具持久化宽度和顺序。
+- 表格使用像素级滚动并保留横向滚动条；长文本通过 Tooltip/详情承载，不用无限拉宽列。
+- ComboBox/SpinBox 等数值控件禁止无焦点滚轮误改值；主题切换必须同时刷新文字、背景、边框和状态色，不能只改背景。
+- loading、empty、success、error、cancelled 状态均需有可见反馈；后台任务运行时禁用冲突动作，终态统一恢复。
+
+## 10. 1080p 与复杂页面
+
+- 1920×1080 是最低完整性验证视口；不得只在开发机大屏验证。
+- 工具栏过宽时使用可横向滚动容器、分组或合理换行，不通过压缩按钮文字解决。
+- 大页面用 splitter 和 scroll area 管理区域；Online MR 在窄于 1250 px 时改为垂直 splitter，宽屏恢复水平布局。
+- 弹窗内容可能超高时使用自适应/滚动对话框，确保确认、取消和错误信息始终可见。
+- 表格选择列使用 delegate/item 绘制，不为每行创建 QCheckBox QWidget，避免大数据下布局和主题开销。

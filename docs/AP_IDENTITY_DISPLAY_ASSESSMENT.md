@@ -428,3 +428,9 @@ tests/test_ap_identity_diagnostics_display.py
 阶段 8.2 已完成当前 Job/Export UI 宿主、七类任务结果流和六类候选入口的只读评审，详见 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。
 
 当前没有 Job 详情页、任务历史页、统一结果面板或诊断中心。两个通用 helper 都会在终态关闭 `QProgressDialog` 并释放 controller；各业务页面只在本地 slot 中瞬时消费 result。新增任务详情弹窗是未来首选，但当前缺少统一启动点和安全结果缝隙，因此阶段 8.3 可见 UI 实现状态为 `hold`，不得改多个业务页面或保存完整 result 绕过该缺口。
+
+## 17. 2026-07-11 同步复核
+
+当前代码仍要求 `ap_identity_diagnostics_enabled` 与 `ap_identity_diagnostics_ui_enabled` 同时显式为 true；缺失按 false。`ap_identity_diagnostics_samples_enabled` 不授权 ViewModel 暴露 samples。允许来源键仍为 `identity_shadow`、`detail_identity_shadow`、`export_identity_diagnostics`，原始 items/samples/evidence/warnings/error/traceback、身份明文和路径继续被拒绝。
+
+风险排序仍为：`identity_changed > 0` 为 critical；ambiguous 或 duplicate 为 high；unresolved、missing scope、name-only 为 medium；其余 low。critical/high/medium 只提供 `blocks_takeover` 的保守建议，不改变原 Job/Export 终态或业务成功提示。由于统一宿主仍不存在，本评估结论不升级为可见产品能力。

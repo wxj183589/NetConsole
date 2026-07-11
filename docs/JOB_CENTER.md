@@ -2,6 +2,8 @@
 
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
+> 2026-07-11 代码核对：Registry 当前注册 83 个 task type，分布于 10 个领域 handler 模块。注册与进程协议已统一，但多数 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。
+
 ## 代码组成
 
 - `job_models.py`：`JobSpec / BackgroundJob / JobResult / JobProgress / JobError`。
@@ -137,7 +139,7 @@ submit_export_task(
 - `online_mr_collection_start` 是持续运行的本地 Worker Process 任务，而不是一次性查询；任务建立 SSH 会话后持续采集并把状态作为 JSONL progress 事件返回。
 - 页面只提交可序列化配置。设备连接目标由 Worker 使用自己的 repository/数据库连接重建，页面不携带 Netmiko 会话对象。
 - terminal monitor、隐藏 probe 模式和 ar5drv 命令序列集中在 `services/online_mr/collection_commands.py`，原始设备回显只写 session 的 UTF-8 raw log。
-- 用户停止由 `TaskManager.cancel_job()` 写取消文件。在线 MR 使用可配置的清理宽限期，让 handler 协作取消采集循环、关闭 SSH 和文件句柄、更新会话状态并完成打包；超时仍由 manager 强制结束，避免孤儿进程。
+- 用户停止由 `BackgroundProcessManager.cancel_job()` 写取消文件。在线 MR 使用可配置的清理宽限期，让 handler 协作取消采集循环、关闭 SSH 和文件句柄、更新会话状态并完成打包；超时仍由 manager 强制结束，避免孤儿进程。
 - 停止后的压缩包原子写入 session 的 `outputs` 目录；失败时删除临时包但保留完整 session/raw 目录。
 - 页面可用 QTimer 轻量跟踪已落盘日志尾部，但不得读取后在 UI 线程做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
 - 当前执行端仍是本地 Worker Process，未实现 Windows/CentOS Agent；命令、配置、路径、会话与打包均已脱离 UI，为后续替换执行端保留边界。
@@ -220,6 +222,16 @@ submit_export_task(
 1. 标记页面内 worker 的输入、进度、结果、错误和取消。
 2. 将重逻辑移到 Domain Service 或 Export handler。
 3. 用 Job/ExportJob 表达可序列化输入。
+
+迁移完成不能只以“已注册 task type”为依据。还需确认生产页面已切换、handler 不再调用对应 legacy 逻辑、取消/失败/冻结态经过验证，并清理或明确保留旧入口。当前状态和逐领域清单见 [REFACTOR_MAP.md](REFACTOR_MAP.md)。
+
+## 禁止事项
+
+- Worker/handler 不得操作 QWidget 或持有页面对象。
+- Job params 不得传 SQLite connection、Repository/Client 实例、Qt 对象或不可 JSON 序列化对象。
+- 子进程协议 stdout 不得混入普通 print、设备回显或第三方库输出；诊断统一进入 stderr/日志。
+- 不得绕开 `.cancel` 和 manager 生命周期另造取消语义，也不得同时发出 finished/failed/cancelled 多个终态。
+- 不得在 UI 线程执行大型 Excel/CSV/PDF/图片导出；正式文件导出统一走 Export Process。
 4. 用统一 manager/helper 替代页面内进程创建和 JSON 解析。
 5. 保留旧入口 shim，先更新调用方，再删除不再使用的页面 worker。
 6. 回归成功、失败、取消、页面关闭和应用冻结模式。

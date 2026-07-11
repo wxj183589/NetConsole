@@ -1,57 +1,42 @@
-# NetConsole 文档入口
+# NetConsole 文档索引
 
-本文档目录面向后续人工开发和 Codex 维护。开始任何非简单改动前，优先阅读本页列出的约定文档。
+本文档集以当前生产代码、测试和构建脚本为事实来源。代码行为变化后，应在同一改动中更新对应 Markdown；若文档与代码冲突，以代码和测试为准并修正文档。
 
-## 必读顺序
+## 核心文档
 
-1. [项目概览](PROJECT_OVERVIEW.md)
-2. [分层架构](ARCHITECTURE.md)
-3. [开发规则](DEVELOPMENT_RULES.md)
-4. [Job Center](JOB_CENTER.md)
-5. [架构迁移地图](REFACTOR_MAP.md)
-6. [AP Identity 工具](AP_IDENTITY.md)
-7. [轨旁 AP Identity 只读接入评估](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md)
-8. [MR/Mesh AP Identity Resolver Shadow 评估](MR_MESH_AP_IDENTITY_ASSESSMENT.md)
-9. [导出字段去重评估与阶段 6.1 只读诊断](EXPORT_FIELD_DEDUP_ASSESSMENT.md)
-10. [AP Identity 真实局点只读观测方案](AP_IDENTITY_OBSERVATION_PLAN.md)
-11. [AP Identity 只读展示方案与阶段 8.1 ViewModel](AP_IDENTITY_DISPLAY_ASSESSMENT.md)
-12. [AP Identity 阶段 8.2 Job 详情宿主接入评审](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)
-13. [开发约定](DEVELOPMENT_CONVENTIONS.md)
-14. [UI 线程全局规范](ui_thread_policy.md)
-15. [存量例外与新增代码约束](ui_governance_guardrails.md)
-16. [后台任务规范](background_task_policy.md)
-17. [导出进程规范](export_process_policy.md)
-18. [Codex 工作流](CODEX_WORKFLOW.md)
-   - [项目级 Codex Skills](CODEX_SKILLS.md)
-19. [UI 表格与全选框规范](ui_table_guidelines.md)
-20. [MR 原始 MESH 日志分析规则](mr_mesh_log_analysis_rules.md)
-21. [功能模块说明](FEATURE_MODULES.md)
-22. [数据目录规范](DATA_LAYOUT.md)
-23. [轨道交通业务规则](RAIL_TRANSIT_RULES.md)
-24. [构建与发布](BUILD_AND_RELEASE.md)
-25. [第三方依赖说明](THIRD_PARTY_DEPENDENCIES.md)
-26. [开发历史](DEVELOPMENT_HISTORY.md)
+| 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
+| --- | --- | --- | --- | --- |
+| [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | `main.py`、`netconsole/app.py`、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
+| [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `netconsole/core`、`services`、`repositories`、`ui` | 新增跨层依赖、后台执行模型或核心服务 |
+| [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
+| [项目级 Codex Skills](CODEX_SKILLS.md) | Skill 清单、路由、组合和维护 | Codex/Skill 维护者 | `.agents/skills`、`AGENTS.md` | Skill 新增、升级、改名或边界变化 |
+| [Job Center](JOB_CENTER.md) | 普通后台任务协议、生命周期、取消和迁移规则 | 后台任务开发 | `job_models.py`、`job_runner.py`、`job_registry.py`、`background_*` | Job 协议、事件、handler 或 manager 变化 |
+| [导出进程规范](export_process_policy.md) | Export Process、临时文件、取消和 writer 约束 | 报告/导出开发 | `services/export`、`export_worker.py`、export UI helper | 导出类型、协议或文件提交策略变化 |
+| [重构地图](REFACTOR_MAP.md) | 当前接管状态、遗留入口和下一步 | 架构维护者 | Registry、domain handlers、生产调用点 | 任务迁移、兼容层或 legacy 收口 |
+| [数据与路径](DATA_LAYOUT.md) | 全局/局点/会话/运行时目录和清理边界 | Repository/存储开发 | `core/paths.py`、cleanup、disk manager | 路径、数据库或清理策略变化 |
+| [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
+| [表格与 UI 规范](ui_table_guidelines.md) | 表格、列宽、滚动、主题和 1080p | Qt UI 开发 | UI helpers/widgets、相关测试 | 公共控件、页面布局或主题规则变化 |
+| [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `project/build_release.py`、构建脚本、`core/version.py` | 依赖、打包、版本或发布目录变化 |
+| [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 
-## 现有编号文档
+## 业务专题
 
-仓库还保留了早期编号文档：
+| 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
+| --- | --- | --- | --- | --- |
+| [Online MR 实时采集](ONLINE_MR_COLLECTION.md) | 多 MR、命令、fping/iPerf、会话、停止与恢复 | 轨道交通采集开发 | `online_mr_*`、`vehicle_mr_online.py`、UI/测试 | 命令、状态、周期、目录或交互变化 |
+| [MR/Mesh 日志分析](mr_mesh_log_analysis_rules.md) | 导入、解析、阈值、切换/乒乓、报表 | Mesh 分析开发 | `mesh_*`、规则 JSON、页面/测试 | parser、阈值、图表或报告变化 |
+| [SNMP Center](SNMP_CENTER.md) | MIB/OID、查询、批量采集、Trap 和拓扑 | SNMP/MIB 开发 | SNMP models/services/repositories/UI/测试 | 操作、参数、MIB、缓存或 Tab 变化 |
+| [AP Identity 总览](AP_IDENTITY.md) | Canonical 模型、resolver、只读接入边界 | AP Identity/接入域开发 | `ap_identity*`、domain handlers、测试 | 模型、优先级、接入点或接管结论变化 |
+| [AP Identity 展示评估](AP_IDENTITY_DISPLAY_ASSESSMENT.md) | 允许字段、风险、flag 和不可用状态 | 诊断展示评估 | diagnostics ViewModel、评估测试 | ViewModel、flag、脱敏或展示准入变化 |
+| [AP Identity Job 宿主评估](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 结果流、宿主缺口和阶段 8.3 决策 | Job/诊断宿主评估 | UI 调用链、结果生命周期、测试 | 新增统一详情/历史宿主或结果保留层 |
+| [命令参考规范](软件使用命令说明.md) | 命令资源字段、风险和消费者 | 命令/parser 开发 | `resources/command_reference.json`、解析器 | 命令、参数、风险或消费者变化 |
 
-- `01-product.md`
-- `02-architecture.md`
-- `03-device-management.md`
-- `04-database.md`
-- `05-runtime-paths.md`
-- `06-roadmap.md`
-- `07-windows-server-test-checklist.md`
-- `08-project-rules.zh.md`
-- `08-project-rules.en.md`
+## 规则与兼容资料
 
-这些文档可作为历史和补充参考。若与本次新增专题文档冲突，优先以当前代码和专题文档中的“当前实现”说明为准，并在后续任务中统一更新旧编号文档。
+- `01`～`08` 编号文档保留中英文项目约束和历史兼容要求；新增实现优先遵守本索引中的核心文档。
+- 同一主题只维护一个主文档：数据路径用 `DATA_LAYOUT.md`，导出用 `export_process_policy.md`，Mesh 用 `mr_mesh_log_analysis_rules.md`，变更记录用 `CHANGELOG.md`。
+- 评估类文档不等于上线授权；尤其 AP Identity 阶段推进不得解释为生产接管许可。
 
-## 文档维护原则
+## 文档维护检查
 
-- 只把已确认的长期规则写成约定。
-- 一次性修复说明不要沉淀成永久规则，除非用户明确确认。
-- 不写真实账号、密码、现场专有数据或截图里的样例作为规则。
-- 内网 IP 如需示例，必须标注为示例或调试环境。
-- 当代码和历史文档冲突时，先标注“当前实现与待统一事项”，不要在文档任务里顺手改业务代码。
+提交前确认：相对链接可解析、无开发机绝对路径、Feature key 与注册表一致、任务数量/状态来自当前代码、命令与文件名大小写准确、Markdown 为 UTF-8、文档改动未夹带生产代码或配置变化。
