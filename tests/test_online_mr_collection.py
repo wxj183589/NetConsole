@@ -70,11 +70,14 @@ from netconsole.services.online_mr.collection_models import collection_config_fr
 from netconsole.ui.pages.online_mr_collection_page import (
     COLLECT_STATUS_MIN_HEIGHT,
     DEVICE_LIST_COLLAPSED_HEIGHT,
+    INPUT_PANEL_COLLAPSED_HEIGHT,
     ONLINE_MR_LEFT_PANEL_MIN_WIDTH,
     ONLINE_MR_DEVICE_DISPLAY_LIMIT,
     ONLINE_MR_PAGE_MIN_WIDTH,
     ONLINE_MR_RIGHT_PANEL_MIN_WIDTH,
     ONLINE_MR_WORK_PANEL_MIN_WIDTH,
+    OUTPUT_PANEL_MIN_HEIGHT,
+    REALTIME_WORKSPACE_MIN_HEIGHT,
     OnlineMrCollectionPage,
     SUMMARY_COL_ACTIVE_PEER,
     SUMMARY_COL_BUSY_TIME,
@@ -1404,8 +1407,10 @@ def test_online_mr_start_confirmation_cancel_does_not_start_worker(tmp_path: Pat
     assert page.session_dirs == {}
     assert int(device.id) not in page.workers_by_device_id
     assert page.status_value == initial_status
+    assert page.is_input_panel_collapsed() is False
     assert page.is_device_list_collapsed() is False
     assert page.device_filter_container.isHidden() is False
+    assert page.main_splitter.isHidden() is False
 
 
 def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1426,13 +1431,13 @@ def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monke
 
     assert preflight_calls == [True]
     assert len(started) == 1
-    assert page.parameter_panel_collapsed is True
+    assert page.is_input_panel_collapsed() is True
+    assert page.main_splitter.isHidden() is True
     assert page.right_control_scroll.isHidden() is True
-    assert page.is_device_list_collapsed() is True
     assert page.device_filter_container.isHidden() is True
     assert page.device_table_container.isHidden() is True
-    assert page.device_list_summary_label.isVisibleTo(page) is True
-    assert page.vertical_splitter.sizes()[0] <= 260
+    assert page.input_panel_summary_label.isVisibleTo(page) is True
+    assert page.vertical_splitter.sizes()[0] <= INPUT_PANEL_COLLAPSED_HEIGHT + 30
 
 
 def test_online_mr_device_list_collapse_toggles_without_losing_selection(tmp_path: Path) -> None:
@@ -1464,6 +1469,87 @@ def test_online_mr_device_list_collapse_toggles_without_losing_selection(tmp_pat
     assert page.device_list_summary_label.isHidden() is True
     assert int(device.id) in page.selected_device_ids
     assert page.device_table.item(row, 0).checkState() == Qt.Checked
+
+
+def test_online_mr_input_panel_collapse_hides_device_and_params_without_losing_selection(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Input")
+    page.refresh_all()
+
+    row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
+    page.device_table.item(row, 0).setCheckState(Qt.Checked)
+    page.mesh_interval.setValue(3)
+
+    page.set_input_panel_collapsed(True)
+
+    assert page.is_input_panel_collapsed() is True
+    assert page.main_splitter.isHidden() is True
+    assert page.device_search_input.isHidden() is True
+    assert page.device_table.isHidden() is True
+    assert page.right_control_scroll.isHidden() is True
+    assert page.input_panel_summary_label.isVisibleTo(page) is True
+    assert "Input panel collapsed" in page.input_panel_summary_label.text()
+    assert page.main_work_panel.maximumHeight() <= INPUT_PANEL_COLLAPSED_HEIGHT + 10
+    assert int(device.id) in page.selected_device_ids
+
+    page.toggle_input_panel_collapsed()
+
+    assert page.is_input_panel_collapsed() is False
+    assert page.main_splitter.isHidden() is False
+    assert page.device_search_input.isHidden() is False
+    assert page.device_table.isHidden() is False
+    assert page.right_control_scroll.isHidden() is False
+    assert page.input_panel_summary_label.isHidden() is True
+    assert int(device.id) in page.selected_device_ids
+    assert page.mesh_interval.value() == 3
+
+
+def test_online_mr_collection_note_without_running_session_logs_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    messages: list[str] = []
+    monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.MessageBox.information", lambda *_args: messages.append(str(_args[-1])))
+
+    page.collection_note_edit.setText("属于 xx站 上行")
+    page.add_collection_note()
+
+    assert page.collection_note_edit.text() == ""
+    assert page.collection_note_table.rowCount() == 1
+    assert page.collection_note_table.item(0, 3).text() == "属于 xx站 上行"
+    assert "No running session" in messages[0]
+    assert "NOTE: [页面] 属于 xx站 上行" in page.log_text.toPlainText()
+
+
+def test_online_mr_collection_note_writes_running_session_files(tmp_path: Path) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Note")
+    page.refresh_all()
+    session_id = "session-note-1"
+    session_dir = tmp_path / "manual-note-session"
+    page.session_dirs[session_id] = session_dir
+    page.session_to_device_id[session_id] = int(device.id)
+    page.workers[session_id] = object()  # only the running-session marker is needed for note targeting
+
+    page.collection_note_edit.setText("属于 xx站 上行")
+    page.add_collection_note()
+
+    assert page.collection_note_edit.text() == ""
+    jsonl_path = session_dir / "manual_notes.jsonl"
+    txt_path = session_dir / "manual_notes.txt"
+    assert jsonl_path.exists()
+    assert txt_path.exists()
+    payload = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["session_id"] == session_id
+    assert payload["device_id"] == int(device.id)
+    assert payload["device_name"] == "MR-Note"
+    assert payload["note"] == "属于 xx站 上行"
+    assert payload["local_time"]
+    assert payload["device_aligned_time"] is None
+    assert "[MR-Note] 属于 xx站 上行" in txt_path.read_text(encoding="utf-8")
+    assert page.collection_note_table.rowCount() == 1
+    assert page.collection_note_table.item(0, 3).text() == "属于 xx站 上行"
+    assert "NOTE: [MR-Note] 属于 xx站 上行" in page.log_text.toPlainText()
 
 
 def test_online_mr_start_confirmation_summary_includes_ping_details(tmp_path: Path) -> None:
@@ -2424,7 +2510,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.collect_card_2.parentWidget() is page.collect_status_box
     assert not page.collect_progress_1.isVisible()
     assert page.device_table.minimumHeight() >= 120
-    assert page.device_table.maximumHeight() > 10000
+    assert 260 <= page.device_table.maximumHeight() <= 320
     assert page.device_table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
     assert page.device_table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel
     assert isinstance(page.device_table.itemDelegateForColumn(0), CheckBoxOnlyDelegate)
@@ -2433,13 +2519,21 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.main_splitter.widget(0) is page.device_panel
     assert page.main_splitter.widget(1) is page.right_control_scroll
     assert page.main_work_panel.minimumWidth() >= ONLINE_MR_WORK_PANEL_MIN_WIDTH
+    assert page.main_work_panel.maximumHeight() <= 420
     assert page.device_panel.minimumWidth() >= ONLINE_MR_LEFT_PANEL_MIN_WIDTH
     assert page.device_panel.minimumHeight() >= 180
     assert page.device_list_toggle_button.text() == "收起设备列表"
+    assert page.params_toggle_button.text() == "收起输入区"
     assert page.device_list_toggle_button.parentWidget() is not None
     assert page.right_control_scroll.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
-    assert page.right_control_scroll.maximumWidth() > 10000
+    assert page.right_control_scroll.maximumHeight() <= 340
     assert page.right_control_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert page.realtime_workspace.minimumHeight() >= REALTIME_WORKSPACE_MIN_HEIGHT
+    assert page.tabs.minimumHeight() >= OUTPUT_PANEL_MIN_HEIGHT
+    assert page.collection_note_widget.parentWidget() is page.realtime_workspace
+    assert page.collection_note_edit.placeholderText()
+    assert page.add_note_button.text() == "记录备注"
+    assert page.tabs.indexOf(page.collection_note_table) >= 0
     assert page.ping_box.minimumHeight() >= 430
     assert page.ping_box.maximumHeight() > 10000
     assert page.fping_preset_combo.currentData() == "pis_high_ping_acceptance"
@@ -2490,10 +2584,11 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.summary_table.minimumHeight() >= 120
     assert page.summary_table.maximumHeight() > 1000
     assert page.tabs.minimumHeight() >= 180
-    assert page.tabs.count() == 3
+    assert page.tabs.count() == 4
     assert page.tabs.tabText(0) == "采集输出"
     assert page.tabs.tabText(1) == "采集日志"
     assert page.tabs.tabText(2) == "打流测试"
+    assert page.tabs.tabText(3) == "采集备注"
     expected_summary_widths = {
         0: 180,
         1: 130,
@@ -5136,7 +5231,11 @@ def test_online_mr_realtime_page_hides_offline_parse_controls(tmp_path: Path) ->
     assert page.analysis_only is False
     assert page.view_row.parentWidget() is None
     assert page.parse_session_button.parentWidget() is page.view_row
-    assert page.tabs.count() == 3
+    tab_names = [page.tabs.tabText(index) for index in range(page.tabs.count())]
+    assert "采集输出" in tab_names or "Collection Output" in tab_names
+    assert "采集日志" in tab_names or "Collection Log" in tab_names
+    assert "打流测试" in tab_names or "Traffic Test" in tab_names
+    assert "采集备注" in tab_names or "Collection Notes" in tab_names
 
     from netconsole.ui.pages.online_mr_collection_analysis_page import OnlineMrCollectionAnalysisPage
 

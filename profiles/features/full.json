@@ -194,6 +194,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "online_mr.collection_notes": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "mesh.generate_report": {
       "visible": true,
       "enabled": true,

@@ -224,6 +224,12 @@
       "client_package": false,
       "internal_only": false
     },
+    "online_mr.collection_notes": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
     "mesh.generate_report": {
       "visible": false,
       "enabled": false,
@@ -249,8 +255,8 @@
       "internal_only": false
     },
     "system.feature_flags": {
-      "visible": false,
-      "enabled": false,
+      "visible": true,
+      "enabled": true,
       "client_package": false,
       "internal_only": true
     }

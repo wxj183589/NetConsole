@@ -150,13 +150,19 @@ ONLINE_MR_TABLE_DISPLAY_LIMIT = 2000
 ONLINE_MR_DEVICE_DISPLAY_LIMIT = 1000
 SPLITTER_SIZES_KEY = "online_mr/realtime_vertical_splitter_sizes"
 PARAM_PANEL_COLLAPSED_KEY = "online_mr/parameter_panel_collapsed"
+INPUT_PANEL_COLLAPSED_KEY = "online_mr/input_panel_collapsed"
 FORCE_STOP_DELAY_SECONDS = 5
 BATCH_STOP_TIMEOUT_SECONDS = 30
-DEFAULT_REALTIME_SPLITTER_SIZES = [380, 150, 160, 320]
+DEFAULT_REALTIME_SPLITTER_SIZES = [340, 220, 220, 300]
 DEVICE_LIST_EXPANDED_MIN_HEIGHT = 180
 DEVICE_LIST_COLLAPSED_HEIGHT = 76
-COLLECT_STATUS_MIN_HEIGHT = 150
-COLLAPSED_COLLECTION_SPLITTER_SIZES = [DEVICE_LIST_COLLAPSED_HEIGHT, COLLECT_STATUS_MIN_HEIGHT, 240, 520]
+INPUT_PANEL_COLLAPSED_HEIGHT = 60
+INPUT_PANEL_EXPANDED_MAX_HEIGHT = 380
+COLLECT_STATUS_MIN_HEIGHT = 160
+REALTIME_WORKSPACE_MIN_HEIGHT = 220
+SUMMARY_TABLE_MIN_HEIGHT = 180
+OUTPUT_PANEL_MIN_HEIGHT = 220
+COLLAPSED_COLLECTION_SPLITTER_SIZES = [INPUT_PANEL_COLLAPSED_HEIGHT, REALTIME_WORKSPACE_MIN_HEIGHT, 260, 300]
 
 STATUS_I18N_KEYS = {
     "CREATED": "online_mr.status_created",
@@ -539,6 +545,7 @@ class OnlineMrCollectionPage(QWidget):
         self._force_stop_in_progress = False
         self.parameter_panel_collapsed = False
         self.device_list_collapsed = False
+        self.input_panel_collapsed = False
         self._bind_runtime_site(site_name)
 
         self.site_label = QLabel()
@@ -558,7 +565,7 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_selected_button = QPushButton()
         self.stop_all_button = QPushButton()
         self.force_stop_button = QPushButton("强制停止")
-        self.params_toggle_button = QPushButton("收起参数")
+        self.params_toggle_button = QPushButton("收起输入区")
         self.device_list_toggle_button = QPushButton("收起设备列表")
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
@@ -693,6 +700,14 @@ class OnlineMrCollectionPage(QWidget):
         self.output_splitter = QSplitter(Qt.Horizontal)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
+        self.collection_note_widget = QWidget()
+        self.collection_note_label = QLabel()
+        self.collection_note_edit = QLineEdit()
+        self.add_note_button = QPushButton()
+        self.clear_note_button = QPushButton()
+        self.collection_note_table = QTableWidget(0, 4)
+        configure_readonly_table(self.collection_note_table)
+        self._configure_note_table()
         self.tabs = QTabWidget()
         self.analysis_charts = QTabWidget()
         self.analysis_chart_pages: dict[str, QWidget] = {}
@@ -724,6 +739,8 @@ class OnlineMrCollectionPage(QWidget):
         self.advanced_toggle = QToolButton()
         self.advanced_summary_label = QLabel()
         self.advanced_detail = QWidget()
+        self.input_panel_title_label = QLabel()
+        self.input_panel_summary_label = QLabel()
         self.device_list_title_label = QLabel()
         self.device_list_summary_label = QLabel()
         self.device_filter_container: QWidget | None = None
@@ -1065,6 +1082,8 @@ class OnlineMrCollectionPage(QWidget):
         splitter = getattr(self, "main_splitter", None)
         if self.analysis_only or splitter is None:
             return
+        if self.input_panel_collapsed:
+            return
         if hasattr(self, "page_scroll"):
             viewport_width = max(self.page_scroll.viewport().width(), self.page_scroll.width(), self.width())
         else:
@@ -1075,6 +1094,68 @@ class OnlineMrCollectionPage(QWidget):
         elif viewport_width >= 1250 and splitter.orientation() != Qt.Horizontal:
             splitter.setOrientation(Qt.Horizontal)
             splitter.setSizes([760, 460])
+
+    def is_input_panel_collapsed(self) -> bool:
+        return bool(self.input_panel_collapsed)
+
+    def toggle_input_panel_collapsed(self) -> None:
+        self.set_input_panel_collapsed(not self.input_panel_collapsed)
+
+    def set_input_panel_collapsed(self, collapsed: bool, *, persist: bool = True) -> None:
+        if self.analysis_only:
+            return
+        self.input_panel_collapsed = bool(collapsed)
+        if not self.input_panel_collapsed:
+            self.parameter_panel_collapsed = False
+            self.device_list_collapsed = False
+        self._apply_input_panel_collapsed()
+        self._update_input_panel_summary()
+        if persist:
+            self.settings.set_value(INPUT_PANEL_COLLAPSED_KEY, self.input_panel_collapsed)
+
+    def _apply_input_panel_collapsed(self) -> None:
+        collapsed = bool(self.input_panel_collapsed)
+        self.params_toggle_button.setText(
+            self.i18n.t("online_mr.expand_input_panel" if collapsed else "online_mr.collapse_input_panel")
+        )
+        self.params_toggle_button.setToolTip(self.params_toggle_button.text())
+        self.input_panel_summary_label.setVisible(collapsed)
+        if self.main_splitter is not None:
+            self.main_splitter.setVisible(not collapsed)
+        for widget in (
+            self.device_filter_container,
+            self.device_table_container,
+            self.device_search_input,
+            self.device_table,
+            self.filter_hint_label,
+            self.right_control_scroll if hasattr(self, "right_control_scroll") else None,
+        ):
+            if widget is not None:
+                widget.setVisible(not collapsed)
+        self.device_list_summary_label.setVisible(False if collapsed else self.device_list_collapsed)
+        if self.main_work_panel is not None:
+            self.main_work_panel.setMinimumHeight(INPUT_PANEL_COLLAPSED_HEIGHT if collapsed else 260)
+            self.main_work_panel.setMaximumHeight(INPUT_PANEL_COLLAPSED_HEIGHT if collapsed else INPUT_PANEL_EXPANDED_MAX_HEIGHT)
+            self.main_work_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed if collapsed else QSizePolicy.Preferred)
+            self.main_work_panel.updateGeometry()
+        device_panel = getattr(self, "device_panel", None)
+        if device_panel is not None:
+            device_panel.setMinimumHeight(0 if collapsed else DEVICE_LIST_EXPANDED_MIN_HEIGHT)
+            device_panel.setMaximumHeight(0 if collapsed else 16777215)
+            device_panel.updateGeometry()
+        if self.main_splitter is not None:
+            self.main_splitter.setMinimumHeight(0 if collapsed else 220)
+            if not collapsed:
+                self._update_realtime_responsive_layout()
+        if hasattr(self, "vertical_splitter"):
+            if collapsed:
+                self._apply_collapsed_realtime_splitter_sizes()
+            else:
+                self._restore_vertical_splitter_sizes()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None and parent.layout() is not None:
+            parent.layout().invalidate()
 
     def is_device_list_collapsed(self) -> bool:
         return bool(self.device_list_collapsed)
@@ -1091,6 +1172,9 @@ class OnlineMrCollectionPage(QWidget):
 
     def _apply_device_list_collapsed(self) -> None:
         collapsed = bool(self.device_list_collapsed)
+        if self.input_panel_collapsed:
+            self._update_device_list_summary()
+            return
         for widget in (
             self.device_filter_container,
             self.device_table_container,
@@ -1137,14 +1221,37 @@ class OnlineMrCollectionPage(QWidget):
             )
         )
 
+    def _update_input_panel_summary(self) -> None:
+        if not hasattr(self, "input_panel_summary_label"):
+            return
+        ping1 = self.fping_target_label_1.text().strip()
+        if not ping1 and self.fping_device_combo_1.currentData() is not None:
+            device = self._device_by_id(int(self.fping_device_combo_1.currentData()))
+            ping1 = str(device.primary_address or "").strip() if device is not None else ""
+        iperf_text = self.i18n.t("online_mr.enabled" if self.enable_iperf_check.isChecked() else "online_mr.not_enabled")
+        self.input_panel_summary_label.setText(
+            self.i18n.t(
+                "online_mr.input_panel_collapsed_summary",
+                available=self._available_device_count,
+                selected=self._selected_device_count,
+                running=self._running_count,
+                ping1=ping1 or "-",
+                iperf=iperf_text,
+            )
+        )
+
     def _toggle_parameter_panel(self) -> None:
-        self._apply_parameter_panel_collapsed(not self.parameter_panel_collapsed, persist=True)
+        self.toggle_input_panel_collapsed()
 
     def _apply_parameter_panel_collapsed(self, collapsed: bool, *, persist: bool = True) -> None:
         self.parameter_panel_collapsed = bool(collapsed)
+        if self.input_panel_collapsed:
+            return
         if hasattr(self, "right_control_scroll") and self.right_control_scroll is not None:
             self.right_control_scroll.setVisible(not self.parameter_panel_collapsed)
-        self.params_toggle_button.setText("展开参数" if self.parameter_panel_collapsed else "收起参数")
+        self.params_toggle_button.setText(
+            self.i18n.t("online_mr.expand_input_panel" if self.input_panel_collapsed else "online_mr.collapse_input_panel")
+        )
         self.params_toggle_button.setToolTip(self.params_toggle_button.text())
         if self.main_splitter is not None:
             if self.parameter_panel_collapsed:
@@ -1263,7 +1370,9 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_selected_button.setText(self.i18n.t("online_mr.stop_selected"))
         self.stop_all_button.setText(self.i18n.t("online_mr.stop_all"))
         self.force_stop_button.setText("强制停止")
-        self.params_toggle_button.setText("展开参数" if self.parameter_panel_collapsed else "收起参数")
+        self.params_toggle_button.setText(
+            self.i18n.t("online_mr.expand_input_panel" if self.input_panel_collapsed else "online_mr.collapse_input_panel")
+        )
         self.device_list_title_label.setText(self.i18n.t("online_mr.device_list"))
         self.device_list_toggle_button.setText(
             self.i18n.t("online_mr.expand_device_list" if self.device_list_collapsed else "online_mr.collapse_device_list")
@@ -1311,6 +1420,7 @@ class OnlineMrCollectionPage(QWidget):
         self._update_iperf_controls_visibility()
         self._set_status(self.status_value)
         self._refresh_top_metrics()
+        self._update_input_panel_summary()
         self._update_advanced_summary()
         self.device_table.setHorizontalHeaderLabels(
             [
@@ -1410,6 +1520,14 @@ class OnlineMrCollectionPage(QWidget):
             ]
         )
         self.iperf_table.setHorizontalHeaderLabels([self.i18n.t("online_mr.time"), "Mbps", self.i18n.t("iperf.retransmits"), self.i18n.t("iperf.transfer"), self.i18n.t("online_mr.raw")])
+        self.collection_note_table.setHorizontalHeaderLabels(
+            [
+                self.i18n.t("online_mr.note_time"),
+                self.i18n.t("online_mr.note_device"),
+                self.i18n.t("online_mr.note_session"),
+                self.i18n.t("online_mr.note_content"),
+            ]
+        )
         self.diagnosis_table.setHorizontalHeaderLabels(
             [
                 self.i18n.t("online_mr.start_time"),
@@ -1452,11 +1570,18 @@ class OnlineMrCollectionPage(QWidget):
                 self.i18n.t("online_mr.raw_output"),
                 self.i18n.t("online_mr.collection_log"),
                 self.i18n.t("online_mr.traffic_test"),
+                self.i18n.t("online_mr.note_tab"),
             )
         for index, label in enumerate(labels):
             if index < self.tabs.count():
                 self.tabs.setTabText(index, label)
         self.output_toggle.setText(self.i18n.t("online_mr.hide_output"))
+        self.input_panel_title_label.setText(self.i18n.t("online_mr.input_panel"))
+        self.input_panel_summary_label.setToolTip(self.input_panel_summary_label.text())
+        self.collection_note_label.setText(self.i18n.t("online_mr.collection_note"))
+        self.collection_note_edit.setPlaceholderText(self.i18n.t("online_mr.note_placeholder"))
+        self.add_note_button.setText(self.i18n.t("online_mr.add_note"))
+        self.clear_note_button.setText(self.i18n.t("online_mr.clear_note"))
         self._retranslate_output_titles()
 
     def _apply_button_icons(self) -> None:
@@ -1528,7 +1653,7 @@ class OnlineMrCollectionPage(QWidget):
             content_layout.addWidget(controls)
 
         self.device_table.setMinimumHeight(120)
-        self.device_table.setMaximumHeight(16777215)
+        self.device_table.setMaximumHeight(300)
         self.device_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._configure_online_table(self.device_table)
         install_checkbox_only_delegate(self.device_table, 0)
@@ -1543,7 +1668,19 @@ class OnlineMrCollectionPage(QWidget):
         self.main_work_panel = main_work_panel
         main_layout = QVBoxLayout(main_work_panel)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(8)
+        input_header = QWidget()
+        self.input_panel_header = input_header
+        input_header_layout = QHBoxLayout(input_header)
+        input_header_layout.setContentsMargins(0, 0, 0, 0)
+        input_header_layout.setSpacing(8)
+        self.input_panel_title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.input_panel_summary_label.setWordWrap(True)
+        self.input_panel_summary_label.setVisible(False)
+        self.input_panel_summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        input_header_layout.addWidget(self.input_panel_title_label)
+        input_header_layout.addWidget(self.input_panel_summary_label, 1)
+        main_layout.addWidget(input_header)
         device_panel = QWidget()
         self.device_panel = device_panel
         device_panel.setMinimumWidth(ONLINE_MR_LEFT_PANEL_MIN_WIDTH)
@@ -1617,6 +1754,7 @@ class OnlineMrCollectionPage(QWidget):
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         right_scroll.setMinimumWidth(ONLINE_MR_RIGHT_PANEL_MIN_WIDTH)
+        right_scroll.setMaximumHeight(320)
         right_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_scroll.setWidget(control_panel)
         self._install_no_wheel_filter_for_controls(control_panel)
@@ -1630,15 +1768,26 @@ class OnlineMrCollectionPage(QWidget):
         main_splitter.setSizes([760, 460])
         main_splitter.setMinimumHeight(220)
         main_layout.addWidget(main_splitter, 1)
-        main_work_panel.setMinimumHeight(240)
+        main_work_panel.setMinimumHeight(260)
+        main_work_panel.setMaximumHeight(INPUT_PANEL_EXPANDED_MAX_HEIGHT)
         main_work_panel.setMinimumWidth(ONLINE_MR_WORK_PANEL_MIN_WIDTH)
 
         vertical_splitter = QSplitter(Qt.Vertical)
         self.vertical_splitter = vertical_splitter
-        self.summary_table.setMinimumHeight(120)
+        self.summary_table.setMinimumHeight(SUMMARY_TABLE_MIN_HEIGHT)
         if not self.analysis_only:
+            realtime_workspace = QWidget()
+            self.realtime_workspace = realtime_workspace
+            realtime_workspace.setMinimumHeight(REALTIME_WORKSPACE_MIN_HEIGHT)
+            realtime_workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+            realtime_layout = QVBoxLayout(realtime_workspace)
+            realtime_layout.setContentsMargins(0, 0, 0, 0)
+            realtime_layout.setSpacing(6)
+            realtime_layout.addWidget(self.collect_status_box)
+            self._build_collection_note_bar()
+            realtime_layout.addWidget(self.collection_note_widget)
             vertical_splitter.addWidget(main_work_panel)
-            vertical_splitter.addWidget(self.collect_status_box)
+            vertical_splitter.addWidget(realtime_workspace)
             vertical_splitter.addWidget(self.summary_table)
         view_row = QWidget()
         self.view_row = view_row
@@ -1700,7 +1849,8 @@ class OnlineMrCollectionPage(QWidget):
             self.tabs.addTab(self.output_panel, "")
             self.tabs.addTab(self.log_text, "")
             self.tabs.addTab(self.iperf_table, "")
-        self.tabs.setMinimumHeight(220)
+            self.tabs.addTab(self.collection_note_table, "")
+        self.tabs.setMinimumHeight(OUTPUT_PANEL_MIN_HEIGHT)
         detail = QWidget()
         detail.setMinimumHeight(180)
         detail_layout = QVBoxLayout(detail)
@@ -1726,8 +1876,10 @@ class OnlineMrCollectionPage(QWidget):
         self._apply_feature_gate()
         self._load_all_table_widths()
         if not self.analysis_only:
-            self.parameter_panel_collapsed = bool(self.settings.get_value(PARAM_PANEL_COLLAPSED_KEY, False))
-            self._apply_parameter_panel_collapsed(self.parameter_panel_collapsed, persist=False)
+            self.input_panel_collapsed = bool(self.settings.get_value(INPUT_PANEL_COLLAPSED_KEY, False))
+            self.parameter_panel_collapsed = False
+            self._apply_input_panel_collapsed()
+            self._update_input_panel_summary()
 
     def _connect_signals(self) -> None:
         self.device_table.itemChanged.connect(self._device_item_changed)
@@ -1766,6 +1918,9 @@ class OnlineMrCollectionPage(QWidget):
         self.iperf_check_server_button.clicked.connect(self.check_iperf_server)
         self.iperf_retry_button.clicked.connect(self.retry_iperf_for_running_sessions)
         self.analysis_charts.currentChanged.connect(self._analysis_chart_tab_changed)
+        self.collection_note_edit.returnPressed.connect(self.add_collection_note)
+        self.add_note_button.clicked.connect(self.add_collection_note)
+        self.clear_note_button.clicked.connect(self.collection_note_edit.clear)
 
     def _build_analysis_chart_pages(self) -> None:
         if self.analysis_charts.count() > 0:
@@ -1800,6 +1955,38 @@ class OnlineMrCollectionPage(QWidget):
         self.output_splitter.setChildrenCollapsible(False)
         layout.addWidget(self.output_splitter, 1)
         self._ensure_placeholder_output()
+
+    def _build_collection_note_bar(self) -> None:
+        layout = QHBoxLayout(self.collection_note_widget)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(8)
+        self.collection_note_label.setMinimumWidth(72)
+        self.collection_note_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.collection_note_edit.setMinimumHeight(30)
+        self.collection_note_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.add_note_button.setMinimumHeight(30)
+        self.add_note_button.setMinimumWidth(96)
+        self.clear_note_button.setMinimumHeight(30)
+        self.clear_note_button.setMinimumWidth(72)
+        layout.addWidget(self.collection_note_label)
+        layout.addWidget(self.collection_note_edit, 1)
+        layout.addWidget(self.add_note_button)
+        layout.addWidget(self.clear_note_button)
+        self.collection_note_widget.setMinimumHeight(42)
+        self.collection_note_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def _configure_note_table(self) -> None:
+        apply_analysis_table_style(self.collection_note_table)
+        self.collection_note_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.collection_note_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.collection_note_table.setMinimumHeight(160)
+        self.collection_note_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.collection_note_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        header = self.collection_note_table.horizontalHeader()
+        for column in range(4):
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+        for column, width in enumerate((180, 180, 220, 520)):
+            self.collection_note_table.setColumnWidth(column, width)
 
     @staticmethod
     def _configure_output_editor(editor: QTextEdit) -> None:
@@ -1888,17 +2075,20 @@ class OnlineMrCollectionPage(QWidget):
 
     def _set_output_area_collapsed(self, collapsed: bool) -> None:
         self.output_splitter.setVisible(not collapsed)
+        self.output_panel.setMinimumHeight(54 if collapsed else OUTPUT_PANEL_MIN_HEIGHT)
         self.output_panel.setMaximumHeight(54 if collapsed else 16777215)
         if not self.analysis_only and hasattr(self, "vertical_splitter"):
             if collapsed:
                 self.vertical_splitter.setSizes(
                     [
-                        DEVICE_LIST_COLLAPSED_HEIGHT if self.device_list_collapsed else 420,
-                        COLLECT_STATUS_MIN_HEIGHT,
-                        240,
+                        INPUT_PANEL_COLLAPSED_HEIGHT if self.input_panel_collapsed else 320,
+                        REALTIME_WORKSPACE_MIN_HEIGHT,
+                        300,
                         56,
                     ]
                 )
+            elif self.input_panel_collapsed:
+                self._apply_collapsed_realtime_splitter_sizes()
             else:
                 self._restore_vertical_splitter_sizes()
 
@@ -1911,6 +2101,109 @@ class OnlineMrCollectionPage(QWidget):
         self.tabs.setCurrentWidget(self.output_panel)
         editor.setFocus()
 
+    def _apply_collapsed_realtime_splitter_sizes(self) -> None:
+        if self.analysis_only or not hasattr(self, "vertical_splitter"):
+            return
+        if not self.output_render_enabled:
+            self.vertical_splitter.setSizes([INPUT_PANEL_COLLAPSED_HEIGHT, REALTIME_WORKSPACE_MIN_HEIGHT, 320, 56])
+        else:
+            self.vertical_splitter.setSizes(COLLAPSED_COLLECTION_SPLITTER_SIZES)
+
+    def add_collection_note(self) -> None:
+        note_text = self.collection_note_edit.text().strip()
+        if not note_text:
+            MessageBox.warning(self, self.i18n.t("online_mr.collection_note"), self.i18n.t("online_mr.note_empty"))
+            return
+        targets = self._current_note_targets()
+        local_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
+        if not targets:
+            self._append_note_table_row(
+                {
+                    "local_time": local_time,
+                    "session_id": "",
+                    "device_name": "-",
+                    "note": note_text,
+                }
+            )
+            self._append_runtime_log(f"{self.i18n.t('online_mr.note_no_running_session')}；NOTE: [页面] {note_text}")
+            self.collection_note_edit.clear()
+            MessageBox.information(
+                self,
+                self.i18n.t("online_mr.collection_note"),
+                self.i18n.t("online_mr.note_no_running_session"),
+            )
+            return
+        try:
+            saved_payloads = [
+                self._write_collection_note(session_id, device_id, note_text)
+                for session_id, device_id, _session_dir in targets
+            ]
+        except Exception as exc:
+            MessageBox.warning(
+                self,
+                self.i18n.t("online_mr.collection_note"),
+                f"{self.i18n.t('online_mr.note_save_failed')}: {exc}",
+            )
+            return
+        for payload in saved_payloads:
+            self._append_note_table_row(payload)
+            self._append_runtime_log(f"NOTE: [{payload.get('device_name') or '-'}] {note_text}")
+        self.collection_note_edit.clear()
+        self.log_text.append(self.i18n.t("online_mr.note_saved"))
+
+    def _current_note_targets(self) -> list[tuple[str, int | None, Path]]:
+        running: list[tuple[str, int | None, Path]] = []
+        for session_id, session_dir in list(self.session_dirs.items()):
+            device_id = self.session_to_device_id.get(session_id)
+            if session_id not in self.workers and (device_id is None or int(device_id) not in self.workers_by_device_id):
+                continue
+            if session_dir is None:
+                continue
+            running.append((session_id, int(device_id) if device_id is not None else None, Path(session_dir)))
+        selected_running_ids = {int(device_id) for device_id in self.selected_device_ids if int(device_id) in self.workers_by_device_id}
+        if selected_running_ids:
+            return [target for target in running if target[1] in selected_running_ids]
+        return running
+
+    def _write_collection_note(self, session_id: str, device_id: int | None, note_text: str) -> dict[str, object]:
+        session_dir = self.session_dirs.get(session_id)
+        if session_dir is None:
+            raise RuntimeError(f"session_dir not found for {session_id}")
+        session_path = Path(session_dir)
+        session_path.mkdir(parents=True, exist_ok=True)
+        local_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
+        payload: dict[str, object] = {
+            "local_time": local_time,
+            "device_aligned_time": None,
+            "session_id": session_id,
+            "device_id": device_id,
+            "device_name": self._device_name_for_id(device_id) or "-",
+            "note": note_text,
+        }
+        jsonl_path = session_path / "manual_notes.jsonl"
+        txt_path = session_path / "manual_notes.txt"
+        with jsonl_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        with txt_path.open("a", encoding="utf-8") as file:
+            file.write(f"[{local_time}] [{payload['device_name']}] {note_text}\n")
+        return payload
+
+    def _append_note_table_row(self, payload: dict[str, object]) -> None:
+        row = self.collection_note_table.rowCount()
+        self.collection_note_table.insertRow(row)
+        values = [
+            payload.get("local_time") or "-",
+            payload.get("device_name") or "-",
+            payload.get("session_id") or "-",
+            payload.get("note") or "",
+        ]
+        for column, value in enumerate(values):
+            item = make_table_item(str(value))
+            item.setToolTip(str(value))
+            self.collection_note_table.setItem(row, column, item)
+        while self.collection_note_table.rowCount() > 500:
+            self.collection_note_table.removeRow(0)
+
     def _restore_vertical_splitter_sizes(self) -> None:
         if self.analysis_only or not hasattr(self, "vertical_splitter"):
             return
@@ -1921,10 +2214,10 @@ class OnlineMrCollectionPage(QWidget):
             sizes = DEFAULT_REALTIME_SPLITTER_SIZES
         try:
             minimums = [
-                DEVICE_LIST_COLLAPSED_HEIGHT if self.device_list_collapsed else 90,
-                COLLECT_STATUS_MIN_HEIGHT,
-                120,
-                180,
+                INPUT_PANEL_COLLAPSED_HEIGHT if self.input_panel_collapsed else 260,
+                REALTIME_WORKSPACE_MIN_HEIGHT,
+                SUMMARY_TABLE_MIN_HEIGHT,
+                OUTPUT_PANEL_MIN_HEIGHT,
             ]
             self.vertical_splitter.setSizes([max(minimums[index], int(size)) for index, size in enumerate(sizes)])
         except (TypeError, ValueError):
@@ -1932,6 +2225,8 @@ class OnlineMrCollectionPage(QWidget):
 
     def _save_vertical_splitter_sizes(self, _pos: int | None = None, _index: int | None = None) -> None:
         if self.analysis_only or not hasattr(self, "vertical_splitter"):
+            return
+        if self.input_panel_collapsed or not self.output_render_enabled:
             return
         sizes = self.vertical_splitter.sizes()
         self.settings.set_value(SPLITTER_SIZES_KEY, sizes)
@@ -2277,10 +2572,7 @@ class OnlineMrCollectionPage(QWidget):
     def _collapse_collection_inputs_after_start(self) -> None:
         if self.analysis_only:
             return
-        self.set_device_list_collapsed(True)
-        self._apply_parameter_panel_collapsed(True, persist=False)
-        if hasattr(self, "vertical_splitter"):
-            self.vertical_splitter.setSizes(COLLAPSED_COLLECTION_SPLITTER_SIZES)
+        self.set_input_panel_collapsed(True)
 
     def check_iperf_server(self) -> None:
         ok, message = self._run_current_iperf_preflight()
@@ -4129,6 +4421,12 @@ class OnlineMrCollectionPage(QWidget):
     def _device_name_for_id(self, device_id: int | None) -> str:
         if device_id is None:
             return ""
+        worker = self.workers_by_device_id.get(int(device_id))
+        if worker is not None:
+            config = getattr(getattr(worker, "collector", None), "config", None)
+            name = str(getattr(config, "device_name", "") or "").strip()
+            if name:
+                return name
         for device in self.devices:
             if device.id == device_id:
                 return device.name
@@ -5052,6 +5350,12 @@ class OnlineMrCollectionPage(QWidget):
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.enable_iperf_check)
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.iperf_check_server_button)
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.iperf_retry_button)
+        apply_feature_to_widget(self.feature_gate, "online_mr.collection_notes", self.collection_note_widget)
+        note_tab_index = self.tabs.indexOf(self.collection_note_table)
+        if note_tab_index >= 0:
+            if hasattr(self.tabs, "setTabVisible"):
+                self.tabs.setTabVisible(note_tab_index, self.feature_gate.is_visible("online_mr.collection_notes"))
+            self.tabs.setTabEnabled(note_tab_index, self.feature_gate.is_enabled("online_mr.collection_notes"))
 
     def _reconcile_collection_state(self) -> None:
         if not self._can_update_ui():
@@ -5099,6 +5403,7 @@ class OnlineMrCollectionPage(QWidget):
         self.selected_metric_label.setText(f"{self.i18n.t('online_mr.selected_devices')}: {self._selected_device_count}")
         self.running_metric_label.setText(f"{self.i18n.t('online_mr.running_collectors')}: {self._running_count}")
         self._update_device_list_summary()
+        self._update_input_panel_summary()
 
     def _refresh_fping_device_choices(self) -> None:
         selected = [device for device in self._selected_devices() if device.id is not None]
