@@ -9,14 +9,12 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import SnmpQueryRequest, SnmpSetRequest
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
 from netconsole.services.mib_product_reference_compare_service import MibProductReferenceCompareService
 from netconsole.services.mib_resource_service import MibResourceService
-from netconsole.services.snmp_query_service import SnmpQueryService
 from netconsole.services.topology_service import TopologyService
 
 
@@ -244,40 +242,6 @@ class SnmpInitWorker(CancellableThread):
                 result = service.initialize_builtin_resources(rebuild_h3c=True, progress=self.progress.emit)
             else:
                 result = service.initialize_builtin_resources(progress=self.progress.emit)
-        except Exception as exc:
-            result = exc
-        self.finished_with_result.emit(result)
-
-
-class SnmpQueryWorker(CancellableThread):
-    finished_with_result = Signal(object)
-
-    def __init__(self, site_db_path, request: SnmpQueryRequest, parent=None) -> None:
-        super().__init__(parent)
-        self.site_db_path = site_db_path
-        self.request = request
-
-    def run(self) -> None:
-        try:
-            self.progress.emit("正在执行 SNMP 查询...")
-            result = SnmpQueryService(SiteSnmpRepository(Path(self.site_db_path))).run(self.request, cancel_checker=self.is_cancelled)
-        except Exception as exc:
-            result = exc
-        self.finished_with_result.emit(result)
-
-
-class SnmpSetWorker(CancellableThread):
-    finished_with_result = Signal(object)
-
-    def __init__(self, site_db_path, request: SnmpSetRequest, parent=None) -> None:
-        super().__init__(parent)
-        self.site_db_path = site_db_path
-        self.request = request
-
-    def run(self) -> None:
-        try:
-            self.progress.emit("正在执行 SNMP Set...")
-            result = SnmpQueryService(SiteSnmpRepository(Path(self.site_db_path))).set_value(self.request)
         except Exception as exc:
             result = exc
         self.finished_with_result.emit(result)

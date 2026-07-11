@@ -6799,18 +6799,6 @@ def _format_in_out_rssi(in_rssi: object, out_rssi: object) -> str:
     return f"{left or '-'}/{right or '-'}"
 
 
-def _format_duration_value(value: object) -> str:
-    if value is None or str(value).strip() == "":
-        return "-"
-    try:
-        seconds = int(float(value))
-    except (TypeError, ValueError):
-        return str(value).strip() or "-"
-    hours, remainder = divmod(max(0, seconds), 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours}h {minutes:02d}m {secs:02d}s"
-
-
 def _display_belong_type(value: object) -> str:
     text = str(value or "").strip().casefold()
     return {

@@ -491,26 +491,12 @@ def _friendly_external_terminal_error(message: object) -> str:
     return text or "启动外部终端失败"
 
 
-def _ap_unique_key(row: dict[str, object | None]) -> str:
-    for field in ("ap_uuid", "serial_number", "ap_mac"):
-        value = str(row.get(field) or "").strip()
-        if value:
-            return f"{field}:{value.casefold()}"
-    return f"row:{id(row)}"
-
-
 def _capacity_total_remark(value: object, default_total: int) -> tuple[int, str]:
     if isinstance(value, dict):
         return int(value.get("ap_total") or value.get("total") or default_total), str(value.get("remark") or "")
     if value is None:
         return default_total, ""
     return int(value), ""
-
-
-def _is_invalid_neighbor_text(value: object) -> bool:
-    text = str(value or "")
-    lowered = text.casefold()
-    return any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr"))
 
 
 def _with_online_rate(row: dict[str, object | None]) -> dict[str, object | None]:

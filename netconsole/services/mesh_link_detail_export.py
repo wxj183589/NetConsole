@@ -921,24 +921,6 @@ def _excel_time_text(value: object) -> str:
         return text
 
 
-def _sample_group_indexes(rows: list[dict[str, object]]) -> list[int]:
-    result: list[int] = []
-    group_indexes: dict[tuple[object, object], int] = {}
-    for row in rows:
-        raw_group = row.get("sample_group_index")
-        if raw_group not in (None, ""):
-            try:
-                result.append(int(raw_group))
-                continue
-            except (TypeError, ValueError):
-                pass
-        key = (row.get("sample_time"), row.get("radio"))
-        if key not in group_indexes:
-            group_indexes[key] = len(group_indexes)
-        result.append(group_indexes[key])
-    return result
-
-
 def _json_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return value

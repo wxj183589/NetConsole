@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 import sqlite3
 
 from PySide6.QtCore import QThread, Signal
@@ -9,44 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from netconsole.services.vehicle_mr_offline_analysis import build_vehicle_mr_analysis_chart_payload
 from netconsole.core.paths import PathResolver
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
-from netconsole.ui.background_process_bridge import BackgroundProcessBridgeCancelled, run_background_job_process
 
-
-class OnlineMrParseWorker(QThread):
-    completed = Signal(object)
-    failed = Signal(str)
-    progress = Signal(str, int, int, str)
-
-    def __init__(self, session_dir: Path, parent=None, *, force_reparse: bool = True) -> None:
-        super().__init__(parent)
-        self.session_dir = Path(session_dir)
-        self.force_reparse = force_reparse
-        self._cancel_requested = False
-
-    def cancel(self) -> None:
-        self._cancel_requested = True
-
-    def _progress(self, stage: str, current: int, total: int, message: str) -> None:
-        self.progress.emit(stage, int(current), int(total), str(message or stage))
-
-    def run(self) -> None:
-        try:
-            result = run_background_job_process(
-                task_type="online_mr_parse",
-                params={"session_dir": str(self.session_dir), "force_reparse": self.force_reparse},
-                progress_handler=lambda event: self._progress(
-                    str(event.get("stage") or ""),
-                    int(event.get("current") or 0),
-                    int(event.get("total") or 0),
-                    str(event.get("message") or ""),
-                ),
-                should_cancel=lambda: self._cancel_requested,
-            )
-            self.completed.emit(SimpleNamespace(**result))
-        except BackgroundProcessBridgeCancelled as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(str(exc))
 
 class OnlineMrAnalysisLoadWorker(QThread):
     completed = Signal(object)
