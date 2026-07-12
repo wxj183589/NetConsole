@@ -1,0 +1,26 @@
+{
+  "targets": [
+    {
+      "id": "mr-ct-001",
+      "name": "列车07-MR-CT",
+      "type": "mr",
+      "host": "192.168.10.11",
+      "protocol": "ssh",
+      "port": 22,
+      "username": "admin",
+      "password": "",
+      "remark": "车头MR"
+    },
+    {
+      "id": "iperf-ground-001",
+      "name": "地面iperf服务端",
+      "type": "iperf",
+      "host": "127.0.0.1",
+      "protocol": "local",
+      "port": 5201,
+      "username": "",
+      "password": "",
+      "remark": "Windows本机测试"
+    }
+  ]
+}

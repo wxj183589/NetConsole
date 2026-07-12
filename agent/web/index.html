@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NetConsole Agent</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header><h1>NetConsole Agent</h1><div class="auth"><input id="token" type="password" placeholder="X-Agent-Token（按需）"><button id="save-token">保存 Token</button></div></header>
+  <nav><button data-page="status" class="active">状态</button><button data-page="targets">目标设备</button><button data-page="control">任务控制</button><button data-page="tasks">任务与日志</button><button data-page="packages">采集包</button></nav>
+  <main>
+    <section id="page-status" class="page active">
+      <h2>Agent 状态</h2><div id="status-cards" class="cards"></div>
+      <h3>工具检测</h3><div id="tools-cards" class="cards"></div>
+      <button data-refresh="status">刷新</button>
+    </section>
+    <section id="page-targets" class="page">
+      <h2>目标设备</h2>
+      <form id="target-form" class="grid-form">
+        <input name="id" placeholder="ID" required><input name="name" placeholder="名称" required>
+        <select name="type"><option value="mr">MR</option><option value="iperf">iPerf</option></select>
+        <input name="host" placeholder="主机/IP" required><select name="protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="local">Local</option></select>
+        <input name="port" type="number" value="22" placeholder="端口"><input name="username" placeholder="用户名"><input name="password" type="password" placeholder="密码（留空表示清空）"><input name="remark" placeholder="备注">
+        <div><button type="submit">保存</button><button type="button" id="target-reset">清空</button></div>
+      </form>
+      <div class="toolbar"><input id="target-import" type="file" accept="application/json"><button id="target-export">导出 JSON</button><button data-refresh="targets">刷新</button></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>地址</th><th>协议</th><th>备注</th><th>操作</th></tr></thead><tbody id="targets-body"></tbody></table></div>
+    </section>
+    <section id="page-control" class="page">
+      <h2>任务控制</h2>
+      <div class="task-grid">
+        <form id="iperf-server-form" class="panel"><h3>iPerf Server</h3><label>绑定地址<input name="bind" value="0.0.0.0"></label><label>端口<input name="port" type="number" value="5201"></label><button>启动</button><button type="button" data-stop-type="iperf/server">停止</button></form>
+        <form id="iperf-client-form" class="panel"><h3>iPerf Client</h3><label>服务端<input name="server_host" required></label><label>端口<input name="server_port" type="number" value="5201"></label><label>协议<select name="protocol"><option>tcp</option><option>udp</option></select></label><label>时长（0=持续）<input name="duration_sec" type="number" value="0"></label><label>并发<input name="parallel" type="number" value="1"></label><label>UDP Mbps<input name="bandwidth_mbps" type="number" value="0"></label><label>阈值 Mbps<input name="threshold_mbps" type="number" value="300"></label><label><input name="reverse" type="checkbox">反向</label><button>启动</button><button type="button" data-stop-type="iperf/client">停止</button></form>
+        <form id="ping-form" class="panel"><h3>ping_probe（TCP fallback）</h3><label>目标（逗号/换行）<textarea name="targets" required></textarea></label><label>TCP 端口<input name="tcp_port" type="number" value="80"></label><label>间隔 ms<input name="interval_ms" type="number" value="200"></label><label>超时 ms<input name="timeout_ms" type="number" value="500"></label><label>包大小<input name="packet_size" type="number" value="64"></label><label>次数（0=持续）<input name="count" type="number" value="0"></label><button>启动</button><button type="button" data-stop-type="ping-probe">停止</button></form>
+        <form id="mr-form" class="panel"><h3>MR 在线收集</h3><label>MR 目标<select name="target_id" id="mr-targets" required></select></label><label>周期秒<input name="interval_sec" type="number" value="3"></label><label><input name="terminal_monitor" type="checkbox" checked>Terminal Monitor</label><label><input name="channel_busy" type="checkbox" checked>Channel Busy</label><label><input name="ap_radio_statistics" type="checkbox" checked>Radio Statistics</label><label><input name="wireless_rssi" type="checkbox" checked>Wireless RSSI</label><label><input name="wireless_status" type="checkbox" checked>Wireless Status</label><button>启动</button><button type="button" data-stop-type="mr/collect">停止</button></form>
+      </div>
+    </section>
+    <section id="page-tasks" class="page"><h2>任务与日志</h2><button data-refresh="tasks">刷新</button><div class="table-wrap"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>开始</th><th>结束</th><th>包</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div><h3>日志 tail</h3><pre id="task-log">选择任务查看日志</pre></section>
+    <section id="page-packages" class="page"><h2>采集包</h2><button data-refresh="packages">刷新</button><div class="table-wrap"><table><thead><tr><th>包 ID</th><th>类型</th><th>时间</th><th>大小</th><th>操作</th></tr></thead><tbody id="packages-body"></tbody></table></div></section>
+  </main>
+  <div id="notice" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

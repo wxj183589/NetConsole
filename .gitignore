@@ -79,7 +79,6 @@ agent/tools/windows-x64/iperf3/*.exe
 agent/tools/windows-x64/iperf3/*.dll
 agent/tools/windows-x64/fping/*.exe
 agent/tools/windows-x64/fping/*.dll
-agent/tools/windows-x64/ipop/*.exe
 
 # IPOP v4.1 is a locally supplied unsigned third-party binary. Keep only its
 # placement/licensing notice in Git until redistribution permission is proven.

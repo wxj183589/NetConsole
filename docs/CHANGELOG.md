@@ -24,7 +24,7 @@
 - 已将车载 MR 在线 SSH 实时采集迁入长运行 Job / Worker Process，页面不再执行 SSH、采集循环、大日志解析或停止后打包。
 - 已集中在线 MR 命令序列与会话路径，停止时协作取消并清理 SSH/文件句柄，压缩失败保留原始日志；Worker stdout 仅输出 UTF-8 JSONL。
 - 在线 MR 手动/实时解析与分析报告分别接入 Job Center 和 Export Process，主程序侧保留可替换执行端边界。
-- 新增独立 Windows x64 Go Agent V1：提供 HTTP/Web 目标管理、iPerf server/client、并发 TCP 探测、MR SSH 原始采集、统一任务状态、Token 鉴权和原子 ZIP 打包；Windows 工具统一由 ToolManager 读取 `windows-x64/{iperf3,fping,ipop}` 配置路径，并通过 API/Web 展示检测结果，不扫描旧目录。Agent 不主动注册/上传，Python 主程序的多 Agent 管理页面尚未接入。
+- 新增独立 Windows x64 Go Agent V1：提供 HTTP/Web 目标管理、iPerf server/client、并发 TCP 探测、MR SSH 原始采集、统一任务状态、Token 鉴权和原子 ZIP 打包；Windows 工具统一由 ToolManager 读取 `windows-x64/{iperf3,fping}` 配置路径，并通过 API/Web 展示检测结果，不扫描旧目录。Agent 不主动注册/上传，Python 主程序的多 Agent 管理页面尚未接入。
 - SNMP GET、GETNEXT、GETBULK、WALK、SET 查询执行链路已接入 `snmp_query_execute`；Worker 负责创建查询服务、格式化结果和写入兼容缓存，页面不再直连 SNMP Client 或查询 QThread。
 - SNMP 查询支持统一进度、异常与协作取消事件；MIB 浏览/搜索、全局 MIB 仓库、H3C 映射、Trap、Poll 和产品参考库保持原状。
 - 新增 `snmp_collection_execute` 与 `SnmpCollectionService`，支持多设备、多 OID、5～50 并发、失败重试、部分成功汇总和协作取消；每设备使用独立 SNMP Client。
