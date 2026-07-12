@@ -1744,10 +1744,12 @@ def test_fping_v5_version_detects_json_support(tmp_path: Path, monkeypatch: pyte
 
 
 def test_fping_command_args_are_list_with_expected_parameters(tmp_path: Path) -> None:
-    args = build_fping_v5_args(tmp_path / "fping.exe", "127.0.0.1", 10, 100)
+    args = build_fping_v5_args(tmp_path / "fping.exe", "127.0.0.1", 10, 100, 1256)
     assert args == [
         str(tmp_path / "fping.exe"),
         "-J",
+        "-b",
+        "1256",
         "-l",
         "-p",
         "10",

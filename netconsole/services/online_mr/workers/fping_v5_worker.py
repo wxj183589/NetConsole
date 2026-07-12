@@ -60,6 +60,7 @@ class FpingV5ProbeWorker(QThread):
                 target=self.config.target,
                 period_ms=self.config.interval_ms,
                 timeout_ms=self.config.loss_threshold_ms,
+                packet_size=self.config.packet_size,
                 count_json=None,
                 output_jsonl_path=jsonl,
                 output_raw_log_path=raw_log,

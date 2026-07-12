@@ -48,14 +48,32 @@ def check_fping_v5_available(project_root: Path | None = None, fping_path: Path 
     return FpingV5CheckResult(available, str(paths.fping_path), version_output.strip(), json_supported, error)
 
 
-def build_fping_v5_args(fping_path: Path, target: str, period_ms: int, timeout_ms: int) -> list[str]:
-    return [str(fping_path), "-J", "-l", "-p", str(max(1, int(period_ms))), "-t", str(max(1, int(timeout_ms))), target]
+def build_fping_v5_args(
+    fping_path: Path,
+    target: str,
+    period_ms: int,
+    timeout_ms: int,
+    packet_size: int = 64,
+) -> list[str]:
+    return [
+        str(fping_path),
+        "-J",
+        "-b",
+        str(max(1, min(65_507, int(packet_size)))),
+        "-l",
+        "-p",
+        str(max(1, int(period_ms))),
+        "-t",
+        str(max(1, int(timeout_ms))),
+        target,
+    ]
 
 
 def run_fping_v5_json(
     target: str,
     period_ms: int = 100,
     timeout_ms: int = 100,
+    packet_size: int = 64,
     count_json: int | None = 20,
     output_jsonl_path: Path | None = None,
     output_raw_log_path: Path | None = None,
@@ -64,13 +82,15 @@ def run_fping_v5_json(
     fping_path: Path | None = None,
 ) -> Iterator[FpingV5Sample]:
     paths = resolve_fping_v5_paths(project_root, fping_path)
-    args = build_fping_v5_args(paths.fping_path, target, period_ms, timeout_ms)
+    args = build_fping_v5_args(paths.fping_path, target, period_ms, timeout_ms, packet_size)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     raw_file = _open_text(output_raw_log_path)
     jsonl_file = _open_text(output_jsonl_path)
     process: subprocess.Popen[str] | None = None
     parsed_count = 0
     stop_event = stop_event or threading.Event()
+    process_done = threading.Event()
+    stop_watcher: threading.Thread | None = None
     try:
         process = subprocess.Popen(
             args,
@@ -85,6 +105,13 @@ def run_fping_v5_json(
             creationflags=creationflags,
         )
         shutdown_manager.register_process(process, "fping", kind="internal_tool", shutdown_policy="terminate")
+        stop_watcher = threading.Thread(
+            target=_watch_stop_event,
+            args=(process, stop_event, process_done),
+            name="fping-stop-watcher",
+            daemon=True,
+        )
+        stop_watcher.start()
         if process.stdout is None:
             return
         for line in process.stdout:
@@ -104,9 +131,12 @@ def run_fping_v5_json(
                 if count_json is not None and parsed_count >= int(count_json):
                     break
     finally:
+        process_done.set()
         if process is not None:
             _stop_process(process)
             shutdown_manager.unregister_process(process)
+        if stop_watcher is not None:
+            stop_watcher.join(timeout=1)
         if raw_file is not None:
             raw_file.close()
         if jsonl_file is not None:
@@ -133,3 +163,14 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=2)
+
+
+def _watch_stop_event(
+    process: subprocess.Popen[str],
+    stop_event: threading.Event,
+    process_done: threading.Event,
+) -> None:
+    while not process_done.wait(0.05):
+        if stop_event.is_set():
+            _stop_process(process)
+            return
