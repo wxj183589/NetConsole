@@ -833,8 +833,20 @@ class AppFluentWindow(SplitFluentWindow):
     def _create_network_tools_page(self) -> QWidget:
         from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
-        self.network_tools_page = NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
+        self.network_tools_page = NetworkToolsPage(
+            self.i18n,
+            self.site.name,
+            self.paths,
+            self.feature_gate,
+            open_external_tools_settings_callback=self.open_external_tools_settings,
+        )
         return self.network_tools_page
+
+    def open_external_tools_settings(self) -> None:
+        self.activate_page("system_settings")
+        page = self._ensure_real_page("system_settings")
+        if isinstance(page, SettingsPage):
+            QTimer.singleShot(0, page.focus_external_tools)
 
     def _create_command_reference_page(self) -> QWidget:
         from netconsole.ui.pages.command_reference_page import CommandReferencePage
@@ -1209,7 +1221,13 @@ class AppFluentWindow(SplitFluentWindow):
         if page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
-            return NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
+            return NetworkToolsPage(
+                self.i18n,
+                self.site.name,
+                self.paths,
+                self.feature_gate,
+                open_external_tools_settings_callback=self.open_external_tools_settings,
+            )
         if page_id == "command_reference":
             from netconsole.ui.pages.command_reference_page import CommandReferencePage
 

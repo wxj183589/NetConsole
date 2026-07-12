@@ -11,6 +11,8 @@ from typing import Callable, Iterable
 
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output
 from netconsole.core.shutdown_manager import shutdown_manager
+from netconsole.core.paths import PathResolver
+from netconsole.services.tool_path_resolver import candidate_tool_paths
 
 
 ProgressCallback = Callable[[PingResult], None]
@@ -40,7 +42,7 @@ def discover_fping(root: Path | None = None, env: dict[str, str] | None = None) 
             return check
         if check.error:
             return check
-    return FpingAvailability(False, error="未找到 tools/fping_v5/fping.exe")
+    return FpingAvailability(False, error="未找到 tools/windows-x64/fping/fping.exe")
 
 
 def scan_targets(
@@ -176,23 +178,15 @@ def parse_fping_json_line(line: str) -> PingResult | None:
 
 
 def _candidate_paths(root: Path | None, env: dict[str, str]) -> list[Path]:
-    candidates: list[Path] = []
     env_path = env.get("NETCONSOLE_FPING_EXE", "").strip()
-    if env_path:
-        candidates.append(Path(env_path))
-    roots = []
-    if root:
-        roots.append(Path(root))
+    project_root = Path(root).resolve() if root else None
+    if project_root is not None:
+        candidates = ([Path(env_path)] if env_path else []) + [
+            project_root / "tools" / "windows-x64" / "fping" / "fping.exe",
+            project_root / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe",
+        ]
     else:
-        roots.append(Path.cwd())
-        roots.append(Path(__file__).resolve().parents[4])
-    for base in roots:
-        candidates.extend(
-            [
-                base / "tools" / "fping_v5" / "fping.exe",
-                base / "_internal" / "tools" / "fping_v5" / "fping.exe",
-            ]
-        )
+        candidates = candidate_tool_paths("fping", PathResolver(), custom_path=env_path or None)
     unique: list[Path] = []
     seen: set[Path] = set()
     for item in candidates:

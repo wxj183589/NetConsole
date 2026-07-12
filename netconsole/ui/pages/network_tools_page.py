@@ -36,7 +36,15 @@ class NetworkToolsPage(QWidget):
         ("network_tools.toolbox", "network_tools.toolbox", "toolbox_page"),
     )
 
-    def __init__(self, i18n: I18n, site_name: str, paths: PathResolver, feature_gate: FeatureGate | None = None) -> None:
+    def __init__(
+        self,
+        i18n: I18n,
+        site_name: str,
+        paths: PathResolver,
+        feature_gate: FeatureGate | None = None,
+        *,
+        open_external_tools_settings_callback=None,
+    ) -> None:
         super().__init__()
         self.i18n = i18n
         self.site_name = site_name
@@ -45,7 +53,13 @@ class NetworkToolsPage(QWidget):
         self.tabs = QTabWidget()
         self.iperf_page = IperfBandwidthPage(i18n, site_name, paths)
         self.wireless_scan_page = WirelessScanPage(i18n, site_name, paths)
-        self.toolbox_page = NetworkToolboxPage(i18n, site_name, paths, feature_gate=self.feature_gate)
+        self.toolbox_page = NetworkToolboxPage(
+            i18n,
+            site_name,
+            paths,
+            feature_gate=self.feature_gate,
+            open_external_tools_settings_callback=open_external_tools_settings_callback,
+        )
         self.loading_label = QLabel("网络工具正在后台初始化...")
         self.loading_progress = QProgressBar()
         self.loading_progress.setRange(0, 0)

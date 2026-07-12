@@ -31,9 +31,8 @@ ROOT = Path(__file__).resolve().parent
 
 ALLOWED_DATA = [
     ("netconsole", "netconsole"),
-    ("tools/fping_v5", "tools/fping_v5"),
-    ("tools/iperf", "tools/iperf"),
-    ("tools/IPOP_v4.1/README.md", "tools/IPOP_v4.1"),
+    ("tools/windows-x64/fping", "tools/windows-x64/fping"),
+    ("tools/windows-x64/iperf3", "tools/windows-x64/iperf3"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
     ("netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
@@ -50,17 +49,16 @@ EXCLUDE_DIRS = [
 ]
 EXCLUDE_FILES = {"*.pyc", "*.pyo"}
 REQUIRED_TOOL_FILES = (
-    Path("tools") / "fping_v5" / "fping.exe",
-    Path("tools") / "fping_v5" / "cygwin1.dll",
-    Path("tools") / "iperf" / "iperf3.exe",
-    Path("tools") / "iperf" / "cygcrypto-3.dll",
-    Path("tools") / "iperf" / "cygwin1.dll",
-    Path("tools") / "iperf" / "cygz.dll",
-    Path("tools") / "IPOP_v4.1" / "README.md",
+    Path("tools") / "windows-x64" / "fping" / "fping.exe",
+    Path("tools") / "windows-x64" / "fping" / "cygwin1.dll",
+    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe",
+    Path("tools") / "windows-x64" / "iperf3" / "cygcrypto-3.dll",
+    Path("tools") / "windows-x64" / "iperf3" / "cygwin1.dll",
+    Path("tools") / "windows-x64" / "iperf3" / "cygz.dll",
 )
 REQUIRED_TOOL_EXECUTABLES = (
-    Path("tools") / "fping_v5" / "fping.exe",
-    Path("tools") / "iperf" / "iperf3.exe",
+    Path("tools") / "windows-x64" / "fping" / "fping.exe",
+    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe",
 )
 REQUIRED_VC_RUNTIME_DLLS = (
     "VCRUNTIME140.dll",
@@ -71,8 +69,8 @@ REQUIRED_VC_RUNTIME_DLLS = (
     "msvcp140_2.dll",
 )
 TOOL_VERSION_MARKERS = {
-    Path("tools") / "fping_v5" / "fping.exe": ("Version 5.5", "fping"),
-    Path("tools") / "iperf" / "iperf3.exe": ("iperf 3.",),
+    Path("tools") / "windows-x64" / "fping" / "fping.exe": ("Version 5.5", "fping"),
+    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe": ("iperf 3.",),
 }
 VERSION_INFO_FILE = BUILD_ROOT / "version_info.txt"
 
@@ -389,8 +387,12 @@ def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: boo
     if run_version_check and _same_path(app_dist, DIST_ROOT / "NetConsole"):
         source_files = sorted(
             path.relative_to(ROOT)
-            for path in (ROOT / "tools").glob("**/*")
-            if path.is_file() and not _is_excluded_tool_artifact(path)
+            for tool_dir in (
+                ROOT / "tools" / "windows-x64" / "fping",
+                ROOT / "tools" / "windows-x64" / "iperf3",
+            )
+            for path in tool_dir.glob("**/*")
+            if path.is_file()
         )
         missing_packaged = [relative for relative in source_files if not (app_dist / "_internal" / relative).is_file()]
         if missing_packaged:
@@ -429,7 +431,7 @@ def _same_path(left: Path, right: Path) -> bool:
 
 def _is_excluded_tool_artifact(path: Path) -> bool:
     relative_parts = path.relative_to(ROOT / "tools").parts
-    if tuple(part.casefold() for part in relative_parts) == ("ipop_v4.1", "ipop.exe"):
+    if "ipop" in {part.casefold() for part in relative_parts}:
         return True
     if path.suffix.casefold() == ".py":
         return True

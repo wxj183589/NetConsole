@@ -17,6 +17,7 @@
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
 | [表格与 UI 规范](ui_table_guidelines.md) | 表格、列宽、滚动、主题和 1080p | Qt UI 开发 | UI helpers/widgets、相关测试 | 公共控件、页面布局或主题规则变化 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `project/build_release.py`、构建脚本、`core/version.py` | 依赖、打包、版本或发布目录变化 |
+| [独立 Agent](AGENT.md) | Windows Go Agent 的边界、能力和集成状态 | 现场采集/远程执行开发 | `agent/`、Agent API/测试 | Agent 能力、协议、命令或发布方式变化 |
 | [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 
 ## 业务专题

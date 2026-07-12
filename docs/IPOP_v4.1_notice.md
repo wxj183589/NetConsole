@@ -1,25 +1,16 @@
-# IPOP v4.1 第三方组件说明
+# IPOP v4.1 可选外部工具说明
 
-## 组件信息
+IPOP v4.1 为第三方可选外部工具，不随 NetConsole 分发。NetConsole 仅启动用户自行取得并在“系统设置 → 外部工具”中配置的本地程序；相关软件的著作权及其他权利归其权利人所有。
 
-- 组件名称：IPOP
-- 版本：v4.1（本地样本文件版本 `4.1.0.0`）
-- 文件路径：`tools/IPOP_v4.1/IPOP.EXE`
-- 用途：由用户在“网络工具 → 小工具”中手动请求 Windows 管理员权限后启动
-- 本地样本 SHA-256：`9021C54902A0BC8EE49A25E57DE9BA299FC463A09EA550293786D89F0660B6B8`
-- 本地样本签名状态：未签名
+仓库没有可核验的 IPOP LICENSE、NOTICE、来源授权书或再分发许可，因此不声明其属于 MIT、GPL 或 NetConsole 的授权范围，也不声明项目已经取得官方授权。
 
 ## 运行边界
 
-NetConsole 不自动启动 IPOP，不让其自动后台运行，不修改 IPOP，也不等待或接管该程序的生命周期。用户同意 UAC 后，IPOP 作为独立外部程序运行；主程序退出时不会结束 IPOP。用户取消 UAC、平台不支持或文件缺失时，NetConsole 只显示明确提示，不继续启动且不崩溃。
+- 用户配置存储在现有设置文件的 `external_tools/ipop_path` 键。
+- 有效用户配置优先；未配置时可检查用户手动放置的 `tools/windows-x64/ipop/IPOP.EXE`。
+- NetConsole 不下载、复制、解压、修改、嵌入或后台获取 IPOP。
+- IPOP 通过 Qt `QProcess.startDetached` 启动，NetConsole 不等待或接管其生命周期，主程序退出不会结束它。
 
-## 授权与发布边界
+## 发布边界
 
-仓库当前没有 IPOP 的 LICENSE、NOTICE、来源授权书或其他可核验的再分发许可。因此授权状态为：**需用户确认再分发授权**。本文只是风险披露，不代表项目已获得授权。
-
-对外分发前必须满足以下任一条件：
-
-1. 补齐并审核允许再分发的 IPOP LICENSE/NOTICE 或书面授权，再按授权要求发布；
-2. 从发布包移除 `IPOP.EXE`。
-
-当前默认发布策略采用第二项：普通开源包、内部包和客户包不内置 `IPOP.EXE`。工程师包可从构建机本地 `tools/IPOP_v4.1/IPOP.EXE` 显式带入，但发布负责人仍须独立确认其分发范围和授权。未带入文件时，程序仅提示用户按指定路径放置，不报错。
+PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。构建脚本仅白名单复制 `fping` 和 `iperf3`；最终目录或 ZIP 检测到 IPOP 时会中止构建，但不会删除开发机或用户磁盘上的文件。

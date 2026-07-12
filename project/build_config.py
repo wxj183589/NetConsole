@@ -21,14 +21,6 @@ class BuildConfig:
     release_dir: Path = ROOT / "release"
 
     @property
-    def ipop_executable(self) -> Path:
-        return self.tools_dir / "IPOP_v4.1" / "IPOP.EXE"
-
-    @property
-    def ipop_readme(self) -> Path:
-        return self.tools_dir / "IPOP_v4.1" / "README.md"
-
-    @property
     def ipop_notice(self) -> Path:
         return self.root / "docs" / "IPOP_v4.1_notice.md"
 
@@ -48,10 +40,9 @@ class BuildConfig:
     @property
     def required_tool_files(self) -> tuple[Path, ...]:
         return (
-            self.tools_dir / "fping_v5" / "fping.exe",
-            self.tools_dir / "fping_v5" / "cygwin1.dll",
-            self.tools_dir / "iperf" / "iperf3.exe",
-            self.ipop_readme,
+            self.tools_dir / "windows-x64" / "fping" / "fping.exe",
+            self.tools_dir / "windows-x64" / "fping" / "cygwin1.dll",
+            self.tools_dir / "windows-x64" / "iperf3" / "iperf3.exe",
             self.ipop_notice,
         )
 

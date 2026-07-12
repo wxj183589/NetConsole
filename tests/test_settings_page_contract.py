@@ -57,3 +57,44 @@ def test_settings_save_only_persists_effective_controls(tmp_path: Path) -> None:
     reloaded = SettingsStore(settings.paths)
     assert reloaded.get_value("default_concurrency") == 17
     assert reloaded.get_value("network_tools/iperf_path") == r"C:\tools\iperf3.exe"
+
+
+def test_ipop_path_is_normalized_persisted_and_clear_does_not_delete_file(tmp_path: Path) -> None:
+    page, settings = _page(tmp_path)
+    executable = tmp_path / "中文 工具" / "IPOP.EXE"
+    executable.parent.mkdir()
+    executable.write_bytes(b"MZ")
+    page.ipop_path_edit.setText(f'  "{executable}"  ')
+
+    page.save_settings()
+
+    assert SettingsStore(settings.paths).get_value("external_tools/ipop_path") == str(executable.resolve())
+    assert page.ipop_status_label.text() == "已配置"
+    page._clear_ipop_configuration()
+    assert SettingsStore(settings.paths).get_value("external_tools/ipop_path") == ""
+    assert executable.exists()
+    assert page.ipop_status_label.text() == "未配置"
+
+
+def test_ipop_invalid_path_can_be_saved_and_shows_invalid_status(tmp_path: Path) -> None:
+    page, settings = _page(tmp_path)
+    missing = tmp_path / "moved" / "IPOP.EXE"
+    page.ipop_path_edit.setText(str(missing))
+
+    page.save_settings()
+
+    assert SettingsStore(settings.paths).get_value("external_tools/ipop_path") == str(missing.resolve())
+    assert page.ipop_status_label.text().startswith("路径无效")
+
+
+def test_ipop_settings_section_is_scrollable_and_path_does_not_force_unbounded_width(tmp_path: Path) -> None:
+    page, _settings = _page(tmp_path)
+
+    assert page.settings_scroll.widgetResizable()
+    assert page.ipop_path_edit.minimumWidth() == 280
+    assert page.external_tools_section is not None
+    page.show()
+    _app().processEvents()
+    page.focus_external_tools()
+    _app().processEvents()
+    assert page.ipop_path_edit.hasFocus()

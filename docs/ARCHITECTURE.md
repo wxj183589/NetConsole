@@ -170,4 +170,4 @@ stateDiagram-v2
 
 新增功能至少回答：运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
 
-打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。当前没有完整 Go Agent、CentOS Agent 或远程控制端生产路径，这些只能标记为规划中。
+打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，提供现场 HTTP/Web 控制、iPerf、TCP 探测、MR SSH 原始采集和本地打包，但尚未接入 Python 主程序的多 Agent 管理页面，也未实现 CentOS Agent、主动注册或上传；边界见 [独立 Agent](AGENT.md)。

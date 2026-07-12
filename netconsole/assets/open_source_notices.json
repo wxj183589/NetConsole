@@ -12,6 +12,5 @@
   {"name": "cryptography", "purpose": "SSH 与安全通信相关加密能力", "license": "Apache-2.0 OR BSD-3-Clause", "homepage": "https://cryptography.io/"},
   {"name": "requests", "purpose": "HTTP 请求能力预留", "license": "Apache-2.0", "homepage": "https://requests.readthedocs.io/"},
   {"name": "pytest", "purpose": "自动化测试", "license": "MIT", "homepage": "https://docs.pytest.org/"},
-  {"name": "PyInstaller", "purpose": "Windows 发布包构建", "license": "GPL-2.0-or-later with bootloader exception", "homepage": "https://pyinstaller.org/"},
-  {"name": "IPOP v4.1", "purpose": "用户明确点击后以管理员权限启动的外部网络工具", "license": "仓库未提供许可证文本，需用户确认再分发授权", "homepage": "", "note": "普通开源包、内部包和客户包不内置 IPOP.EXE；工程师包仅允许从构建机本地显式带入。"}
+  {"name": "PyInstaller", "purpose": "Windows 发布包构建", "license": "GPL-2.0-or-later with bootloader exception", "homepage": "https://pyinstaller.org/"}
 ]

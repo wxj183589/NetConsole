@@ -48,7 +48,13 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
     wildcard_calculate,
 )
 from netconsole.services.network_tools.toolbox.ping_tools import run_batch_ping, run_single_ping, run_tcp_ping
-from netconsole.services.external_tool_launcher import launch_ipop_as_admin
+from netconsole.core.settings import SettingsStore
+from netconsole.services.external_tool_service import (
+    get_configured_ipop_path,
+    launch_ipop,
+    save_ipop_path,
+    validate_ipop_executable,
+)
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.export_action_helper import submit_export_task
@@ -697,6 +703,7 @@ class NetworkToolboxPage(QWidget):
         paths: PathResolver,
         network_manager: WindowsNetworkManager | None = None,
         feature_gate: FeatureGate | None = None,
+        open_external_tools_settings_callback: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self.i18n = i18n
@@ -704,6 +711,7 @@ class NetworkToolboxPage(QWidget):
         self.paths = paths
         self.feature_gate = feature_gate or default_feature_gate()
         self.network_manager = network_manager or WindowsNetworkManager()
+        self.open_external_tools_settings_callback = open_external_tools_settings_callback
         self.thread: QThread | None = None
         self.worker: _Worker | None = None
         self.active_panel: ToolResultPanel | None = None
@@ -732,18 +740,69 @@ class NetworkToolboxPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        self.ipop_button = QPushButton("管理员启动 IPOP v4.1")
+        self.ipop_button = QPushButton("启动 IPOP v4.1")
         self.ipop_button.setVisible(self.feature_gate.is_visible("network_tools.ipop"))
         self.ipop_button.setEnabled(self.feature_gate.is_enabled("network_tools.ipop"))
         self.ipop_button.clicked.connect(self.launch_ipop)
         apply_button_icon(self.ipop_button, "PLAY")
         root.addWidget(self.ipop_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.ipop_hint_label = QLabel("第三方可选工具，需在系统设置中配置本机程序路径。")
+        self.ipop_hint_label.setObjectName("settingRowDescription")
+        self.ipop_hint_label.setWordWrap(True)
+        self.ipop_hint_label.setVisible(self.feature_gate.is_visible("network_tools.ipop"))
+        root.addWidget(self.ipop_hint_label)
         root.addWidget(self.tabs)
         self.tabs.addTab(self._ip_page(), "IP 计算")
         self.tabs.addTab(self._connectivity_page(), "连通性检测")
 
     def launch_ipop(self) -> None:
-        result = launch_ipop_as_admin(self.paths)
+        result = launch_ipop(self.paths)
+        if result.success:
+            MessageBox.information(self, "IPOP v4.1", result.message)
+        elif result.error_code in {"not_configured", "not_found", "is_directory", "not_file", "not_exe"}:
+            self._show_ipop_setup_prompt()
+        else:
+            MessageBox.warning(self, "IPOP v4.1", result.message)
+
+    def _show_ipop_setup_prompt(self) -> None:
+        box = MessageBox(self)
+        box.setWindowTitle("IPOP v4.1")
+        box.setIcon(MessageBox.Information)
+        box.setText(
+            "未配置或未找到 IPOP v4.1。\n\n"
+            "IPOP 是第三方可选工具，不随 NetConsole 提供。\n"
+            "请在“系统设置 → 外部工具”中选择本机已有的 IPOP.EXE。"
+        )
+        settings_button = box.addButton("前往设置", MessageBox.AcceptRole)
+        select_button = box.addButton("选择文件", MessageBox.ActionRole)
+        box.addButton("取消", MessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is settings_button:
+            if callable(self.open_external_tools_settings_callback):
+                self.open_external_tools_settings_callback()
+            return
+        if clicked is select_button:
+            self._select_and_launch_ipop()
+
+    def _select_and_launch_ipop(self) -> None:
+        settings = SettingsStore(self.paths)
+        configured = get_configured_ipop_path(settings, paths=self.paths)
+        initial = configured.parent if configured is not None else Path.home()
+        value, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 IPOP v4.1",
+            str(initial),
+            "IPOP.EXE (IPOP.EXE);;Windows 可执行文件 (*.exe);;所有文件 (*.*)",
+        )
+        if not value:
+            return
+        validation = validate_ipop_executable(value)
+        if not validation.success:
+            MessageBox.warning(self, "IPOP v4.1", validation.message)
+            return
+        executable = save_ipop_path(value, settings, paths=self.paths)
+        result = launch_ipop(self.paths, settings=settings, executable_path=executable)
         if result.success:
             MessageBox.information(self, "IPOP v4.1", result.message)
         else:

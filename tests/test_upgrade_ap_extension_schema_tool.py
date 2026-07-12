@@ -1,7 +1,7 @@
 import sqlite3
 
 from netconsole.core.database import CURRENT_SCHEMA_VERSION, Database
-from tools.upgrade_ap_extension_schema import upgrade_database
+from scripts.upgrade_ap_extension_schema import upgrade_database
 
 
 OLD_VERSION = "2026.06.23.device_ap_rebuild_mac"

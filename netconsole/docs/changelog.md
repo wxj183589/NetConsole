@@ -1,6 +1,6 @@
 v1.3.8
 - 文件导入：新增统一 XLSX/CSV/JSON/ZIP 文件契约与强校验，错误模块、版本、字段、空文件、损坏文件和不安全 ZIP 在写入前拒绝。
-- 网络工具：移除本地网卡配置和工具箱“本机路由”入口，新增受功能开关控制的 IPOP v4.1 管理员启动按钮。
+- 网络工具：移除本地网卡配置和工具箱“本机路由”入口；IPOP v4.1 改为用户配置的可选外部工具，正式发布包不携带其二进制。
 - UI：标题统一增加 `by WXJ`，修复弹出模块归属；三处业务表格统一全局交互，日志中心首次进入异步加载，Online MR 移除独立设备列表收起按钮。
 - 发布：功能开关配置仅源码开发态可见，新增可持久化工程师打包选项及 engineer edition。
 - 架构：建立统一 Job Center、Worker Process 与 Export Process，后台任务使用结构化 JSONL 事件、进度、取消和单一终态。
@@ -123,7 +123,7 @@ v1.2.0
 - 在线诊断存储：将在线采集会话统一保存到 rail_transit/online_mr 目录，使用 online_diagnosis.sqlite 保存 Ping、接口速率、终端事件和最新切换历史。
 - 网络工具：新增 IPERF 带宽测试与无线扫描功能，无线扫描支持轨旁 AP BSSID 反查、频宽/MIMO 解析、主表导出和扫描源选择保存。
 - 启动体验：新增启动预加载和加载动画，删除启动页 Net Tools 副标题，统一 Splash、更新日志、主窗口和关于窗口的版本显示。
-- 打包：修复 tools 目录未进入发布包的问题，将 tools/fping_v3/Fping_v3.exe 和 tools/iperf/iperf3.exe 统一放入 _internal/tools，并更新清理打包白名单。
+- 打包：修复 tools 目录未进入发布包的问题；当时使用的旧路径 `tools/fping_v3/Fping_v3.exe`、`tools/iperf/iperf3.exe` 已在后续版本迁移，并同步更新清理打包白名单。
 - 稳定性：完善后台 Worker、取消任务、异常恢复、缓存、列宽保存、多语言显示和全量回归测试覆盖。
 
 v1.1.0

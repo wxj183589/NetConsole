@@ -28,6 +28,12 @@ class AboutRepositoryDialog(QDialog):
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
         layout.addWidget(QLabel(f"{self.i18n.t('about.author')}: {version_info.APP_AUTHOR}"))
+        external_tool_notice = QLabel(
+            "IPOP v4.1 为第三方可选外部工具，不随 NetConsole 分发。"
+            "NetConsole 仅启动用户自行取得并配置的本地程序，相关权利归其权利人所有。"
+        )
+        external_tool_notice.setWordWrap(True)
+        layout.addWidget(external_tool_notice)
         layout.addWidget(QLabel(self.i18n.t("about.repositories")))
 
         grid = QGridLayout()

@@ -20,7 +20,7 @@ class FpingToolStatus:
 
 
 def find_fping_tool(paths: PathResolver, settings: SettingsStore | None = None) -> Path | None:
-    return resolve_tool_path("fping_v5", paths, settings=settings)
+    return resolve_tool_path("fping", paths, settings=settings)
 
 
 def detect_fping_version(path: Path) -> FpingToolStatus:

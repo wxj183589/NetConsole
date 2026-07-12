@@ -33,21 +33,20 @@ FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "sp
 ALLOWED_RUNTIME = (
     "netconsole",
     "tools",
-    "tools/fping_v5",
-    "tools/fping_v5/fping.exe",
-    "tools/fping_v5/cygwin1.dll",
-    "tools/fping_v5/COPYING",
-    "tools/fping_v5/CYGWIN_LICENSE",
-    "tools/fping_v5/CYGWIN_LICENSE_NOTE.txt",
-    "tools/fping_v5/README.txt",
-    "tools/fping_v5/VERSION.txt",
-    "tools/iperf",
-    "tools/iperf/cygcrypto-3.dll",
-    "tools/iperf/cygwin1.dll",
-    "tools/iperf/cygz.dll",
-    "tools/iperf/iperf3.exe",
-    "tools/ipop_v4.1",
-    "tools/ipop_v4.1/readme.md",
+    "tools/windows-x64",
+    "tools/windows-x64/fping",
+    "tools/windows-x64/fping/fping.exe",
+    "tools/windows-x64/fping/cygwin1.dll",
+    "tools/windows-x64/fping/COPYING",
+    "tools/windows-x64/fping/CYGWIN_LICENSE",
+    "tools/windows-x64/fping/CYGWIN_LICENSE_NOTE.txt",
+    "tools/windows-x64/fping/README.txt",
+    "tools/windows-x64/fping/VERSION.txt",
+    "tools/windows-x64/iperf3",
+    "tools/windows-x64/iperf3/cygcrypto-3.dll",
+    "tools/windows-x64/iperf3/cygwin1.dll",
+    "tools/windows-x64/iperf3/cygz.dll",
+    "tools/windows-x64/iperf3/iperf3.exe",
     "netconsole/ui/icons",
     "netconsole/assets",
     "netconsole/assets/changelog.md",
@@ -126,6 +125,14 @@ def validate_dist_output(app_dist: Path | None = None) -> None:
         raise CleanBuildLockError("CleanBuildLock violation: netconsole must not exist outside _internal")
     if not (app_dist / INTERNAL_DIR / "netconsole").exists():
         raise CleanBuildLockError("CleanBuildLock violation: netconsole must exist inside _internal")
+
+    forbidden_ipop = [
+        path
+        for path in app_dist.rglob("*")
+        if path.name.casefold() == "ipop.exe" or "ipop" in {part.casefold() for part in path.parts}
+    ]
+    if forbidden_ipop:
+        raise CleanBuildLockError("检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。")
 
     for forbidden in FORBIDDEN_DIST_DIRS:
         if (app_dist / forbidden).exists():

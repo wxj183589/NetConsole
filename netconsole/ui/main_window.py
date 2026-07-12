@@ -313,7 +313,13 @@ class MainWindow(AppFramelessMainWindow):
         elif page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
-            page = NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
+            page = NetworkToolsPage(
+                self.i18n,
+                self.site.name,
+                self.paths,
+                self.feature_gate,
+                open_external_tools_settings_callback=self.open_external_tools_settings,
+            )
             self.network_tools_page = page
         elif page_id == "wifi_survey":
             from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
@@ -386,7 +392,13 @@ class MainWindow(AppFramelessMainWindow):
         if page_id == "network_tools":
             from netconsole.ui.pages.network_tools_page import NetworkToolsPage
 
-            return NetworkToolsPage(self.i18n, self.site.name, self.paths, self.feature_gate)
+            return NetworkToolsPage(
+                self.i18n,
+                self.site.name,
+                self.paths,
+                self.feature_gate,
+                open_external_tools_settings_callback=self.open_external_tools_settings,
+            )
         if page_id == "wifi_survey":
             from netconsole.ui.pages.wifi_survey_page import WifiSurveyPage
 
@@ -573,10 +585,24 @@ class MainWindow(AppFramelessMainWindow):
                 pass
         except Exception as exc:
             app_logger.log_error(f"PAGE_ACTIVATE_FAILED:{page_id}", str(exc))
+
         finally:
             elapsed_ms = int((perf_counter() - task_started_at) * 1000)
             app_logger.log_info("BACKGROUND_TASK_FINISHED", f"task={task_name} elapsed_ms={elapsed_ms}")
             self.hide_page_loading()
+
+    def open_external_tools_settings(self) -> None:
+        for row in range(self.navigation.count()):
+            item = self.navigation.item(row)
+            if str(item.data(256) or "") != "system_settings":
+                continue
+            self.navigation.setCurrentRow(row)
+            self.open_current_page(row)
+            page = self.get_or_create_page("system_settings")
+            self.stack.setCurrentWidget(page)
+            if hasattr(page, "focus_external_tools"):
+                QTimer.singleShot(0, page.focus_external_tools)
+            break
 
     def show_page_loading(self, page_id: str) -> None:
         message_key = {

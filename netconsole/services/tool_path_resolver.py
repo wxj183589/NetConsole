@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -18,22 +19,67 @@ class ToolDefinition:
 
 
 TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
-    "fping_v5": ToolDefinition(
-        relative_path=Path("fping_v5") / "fping.exe",
+    "fping": ToolDefinition(
+        relative_path=Path("fping") / "fping.exe",
         setting_keys=("online_mr.fping_path",),
         path_names=("fping.exe", "fping"),
     ),
     "iperf3": ToolDefinition(
-        relative_path=Path("iperf") / "iperf3.exe",
+        relative_path=Path("iperf3") / "iperf3.exe",
         setting_keys=("network_tools/iperf_path",),
         path_names=("iperf3.exe", "iperf3"),
     ),
     "ipop": ToolDefinition(
-        relative_path=Path("IPOP_v4.1") / "IPOP.EXE",
-        setting_keys=(),
+        relative_path=Path("ipop") / "IPOP.EXE",
+        setting_keys=("external_tools/ipop_path",),
         path_names=(),
     ),
 }
+
+TOOL_NAME_ALIASES = {"fping": "fping", "fping_v5": "fping", "iperf": "iperf3", "iperf3": "iperf3", "ipop": "ipop"}
+
+
+def get_tools_root(paths: PathResolver | None = None) -> Path:
+    return (paths or PathResolver()).app_root / "tools"
+
+
+def platform_tools_dir_name(*, system_name: str | None = None, machine: str | None = None) -> str:
+    system = (system_name or platform.system()).strip().casefold()
+    architecture = (machine or platform.machine()).strip().casefold()
+    if system == "windows" and architecture in {"amd64", "x86_64", "x64"}:
+        return "windows-x64"
+    raise RuntimeError(f"不支持当前工具平台：{system or 'unknown'} / {architecture or 'unknown'}")
+
+
+def get_platform_tools_dir(
+    paths: PathResolver | None = None,
+    *,
+    system_name: str | None = None,
+    machine: str | None = None,
+) -> Path:
+    return get_tools_root(paths) / platform_tools_dir_name(system_name=system_name, machine=machine)
+
+
+def get_tool_dir(tool_name: str, paths: PathResolver | None = None) -> Path:
+    definition = _tool_definition(tool_name)
+    return get_platform_tools_dir(paths) / definition.relative_path.parent
+
+
+def get_tool_executable(
+    tool_name: str,
+    paths: PathResolver | None = None,
+    *,
+    settings: SettingsStore | None = None,
+    custom_path: str | Path | None = None,
+    project_root: Path | None = None,
+) -> Path | None:
+    return resolve_tool_path(
+        tool_name,
+        paths,
+        settings=settings,
+        custom_path=custom_path,
+        project_root=project_root,
+    )
 
 
 def resolve_tool_path(
@@ -44,9 +90,7 @@ def resolve_tool_path(
     custom_path: str | Path | None = None,
     project_root: Path | None = None,
 ) -> Path | None:
-    definition = TOOL_DEFINITIONS.get(tool_name)
-    if definition is None:
-        raise ValueError(f"Unsupported external tool: {tool_name}")
+    definition = _tool_definition(tool_name)
 
     paths = paths or PathResolver()
     for candidate in candidate_tool_paths(
@@ -76,9 +120,7 @@ def candidate_tool_paths(
     custom_path: str | Path | None = None,
     project_root: Path | None = None,
 ) -> list[Path]:
-    definition = TOOL_DEFINITIONS.get(tool_name)
-    if definition is None:
-        raise ValueError(f"Unsupported external tool: {tool_name}")
+    definition = _tool_definition(tool_name)
 
     candidates: list[Path] = []
     if custom_path:
@@ -100,27 +142,36 @@ def candidate_tool_paths(
                 candidates.append(Path(value))
 
     app_root = paths.app_root
-    for tools_root in _internal_tool_roots(app_root):
+    for tools_root in _platform_tool_roots(app_root):
         candidates.append(tools_root / definition.relative_path)
 
     if not _is_compiled_runtime():
-        candidates.append((project_root or _development_project_root(app_root)) / "tools" / definition.relative_path)
-        candidates.append(app_root / "tools" / definition.relative_path)
+        development_root = project_root or _development_project_root(app_root)
+        candidates.append(development_root / "tools" / platform_tools_dir_name() / definition.relative_path)
     return _deduplicate_paths(candidates)
 
 
-def _internal_tool_roots(app_root: Path) -> Iterable[Path]:
-    yield app_root / "_internal" / "tools"
-    yield app_root / "tools"
+def _platform_tool_roots(app_root: Path) -> Iterable[Path]:
+    platform_dir = platform_tools_dir_name()
+    yield app_root / "tools" / platform_dir
+    yield app_root / "_internal" / "tools" / platform_dir
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        yield Path(meipass) / "tools"
+        yield Path(meipass) / "tools" / platform_dir
     try:
         package_root = Path(__file__).resolve().parents[2]
-        yield package_root / "tools"
-        yield package_root / "_internal" / "tools"
+        yield package_root / "tools" / platform_dir
+        yield package_root / "_internal" / "tools" / platform_dir
     except OSError:
         return
+
+
+def _tool_definition(tool_name: str) -> ToolDefinition:
+    normalized = TOOL_NAME_ALIASES.get(str(tool_name).strip().casefold(), str(tool_name).strip().casefold())
+    definition = TOOL_DEFINITIONS.get(normalized)
+    if definition is None:
+        raise ValueError(f"Unsupported external tool: {tool_name}")
+    return definition
 
 
 def _is_compiled_runtime() -> bool:

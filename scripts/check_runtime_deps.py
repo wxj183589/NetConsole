@@ -18,9 +18,9 @@ REQUIRED_VC_RUNTIME_DLLS = (
     "msvcp140_2.dll",
 )
 REQUIRED_TOOLS = (
-    Path("tools") / "fping_v5" / "fping.exe",
-    Path("tools") / "fping_v5" / "cygwin1.dll",
-    Path("tools") / "iperf" / "iperf3.exe",
+    Path("tools") / "windows-x64" / "fping" / "fping.exe",
+    Path("tools") / "windows-x64" / "fping" / "cygwin1.dll",
+    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe",
 )
 
 

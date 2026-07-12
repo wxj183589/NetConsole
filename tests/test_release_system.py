@@ -175,9 +175,9 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
-    assert ("tools/fping_v5", "tools/fping_v5") in clean_build_spec.ALLOWED_DATA
-    assert ("tools/iperf", "tools/iperf") in clean_build_spec.ALLOWED_DATA
-    assert ("tools/IPOP_v4.1/README.md", "tools/IPOP_v4.1") in clean_build_spec.ALLOWED_DATA
+    assert ("tools/windows-x64/fping", "tools/windows-x64/fping") in clean_build_spec.ALLOWED_DATA
+    assert ("tools/windows-x64/iperf3", "tools/windows-x64/iperf3") in clean_build_spec.ALLOWED_DATA
+    assert not any(source.casefold().startswith("tools/windows-x64/ipop") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
@@ -220,8 +220,8 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert all("project" not in path.parts for path in staged_relative)
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
-    assert any(destination == "tools/fping_v5" and Path(source).name == "fping_v5" for source, destination in datas)
-    assert any(destination == "tools/iperf" and Path(source).name == "iperf" for source, destination in datas)
+    assert any(destination == "tools/windows-x64/fping" and Path(source).name == "fping" for source, destination in datas)
+    assert any(destination == "tools/windows-x64/iperf3" and Path(source).name == "iperf3" for source, destination in datas)
     assert not any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
     assert all(destination != "data" for _source, destination in datas)
 
@@ -255,10 +255,10 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "binaries=pyside_binaries + VC_RUNTIME_BINARIES" in text
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
-    assert "tools/fping_v5" in text
-    assert "tools/iperf" in text
-    assert "tools/IPOP_v4.1/README.md" in text
-    assert "tools/IPOP_v4.1/IPOP.EXE" not in text
+    assert "tools/windows-x64/fping" in text
+    assert "tools/windows-x64/iperf3" in text
+    assert "tools/windows-x64/ipop" not in text
+    assert "tools/windows-x64/ipop/IPOP.EXE" not in text
     assert "main.py" in text
     assert "('.', '.')" not in text
     assert "('project', 'project')" not in text
@@ -352,17 +352,15 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
 def test_clean_build_packaged_tools_validation(tmp_path):
     app_dist = tmp_path / "NetConsole"
     (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "fping_v5").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "IPOP_v4.1").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "fping_v5" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "IPOP_v4.1" / "README.md").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
     for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
-        (app_dist / "_internal" / "tools" / "iperf" / dll_name).write_text("", encoding="utf-8")
+        (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
 
     clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
 
@@ -380,12 +378,23 @@ def test_engineer_edition_is_selected_by_explicit_request_or_customer_option(mon
 
 def test_clean_build_packaged_tools_validation_rejects_missing_tool(tmp_path):
     app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal" / "tools" / "fping_v5").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "fping_v5" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
 
     with pytest.raises(CleanBuildLockError, match="packaged runtime tool is missing"):
         clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
+
+
+def test_clean_build_lock_rejects_ipop_in_final_dist(tmp_path):
+    app_dist = tmp_path / "NetConsole"
+    (app_dist / "_internal" / "netconsole").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "ipop").mkdir(parents=True)
+    (app_dist / "NetConsole.exe").write_bytes(b"MZ")
+    (app_dist / "tools" / "windows-x64" / "ipop" / "IPOP.EXE").write_bytes(b"MZ")
+
+    with pytest.raises(CleanBuildLockError, match="检测到未经确认可再分发"):
+        validate_dist_output(app_dist)
 
 
 def test_collect_vc_runtime_dlls_finds_required_files(tmp_path):
@@ -415,9 +424,8 @@ def _make_packaged_runtime(tmp_path: Path) -> Path:
     app_dist = tmp_path / "NetConsole"
     internal = app_dist / "_internal"
     (internal / "PySide6" / "plugins" / "platforms").mkdir(parents=True)
-    (internal / "tools" / "fping_v5").mkdir(parents=True)
-    (internal / "tools" / "iperf").mkdir(parents=True)
-    (internal / "tools" / "IPOP_v4.1").mkdir(parents=True)
+    (internal / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (internal / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
     (app_dist / "data").mkdir(parents=True)
     (app_dist / "runtime" / "logs").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
@@ -426,11 +434,9 @@ def _make_packaged_runtime(tmp_path: Path) -> Path:
     for name in ("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "CONCRT140.dll", "msvcp140_1.dll", "msvcp140_2.dll"):
         (internal / name).write_text("", encoding="utf-8")
     (internal / "PySide6" / "plugins" / "platforms" / "qwindows.dll").write_text("", encoding="utf-8")
-    (internal / "tools" / "fping_v5" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (internal / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (internal / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
-    (internal / "tools" / "IPOP_v4.1" / "IPOP.EXE").write_text("", encoding="utf-8")
+    (internal / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (internal / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (internal / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
     return app_dist
 
 
@@ -478,8 +484,8 @@ def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
     assert "[OK] VCRUNTIME140.dll found" in result.messages
     assert "[OK] MSVCP140.dll found" in result.messages
     assert "[OK] CONCRT140.dll found" in result.messages
-    assert "[OK] tools/fping_v5/fping.exe found" in result.messages
-    assert "[OK] tools/iperf/iperf3.exe found" in result.messages
+    assert "[OK] tools/windows-x64/fping/fping.exe found" in result.messages
+    assert "[OK] tools/windows-x64/iperf3/iperf3.exe found" in result.messages
     assert "[OK] runtime/logs directory found" in result.messages
 
 
@@ -510,15 +516,13 @@ def test_readme_documents_complete_folder_and_vc_runtime():
 
 def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_path, monkeypatch):
     app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal" / "tools" / "fping_v5").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "IPOP_v4.1").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "fping_v5" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "IPOP_v4.1" / "README.md").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
     for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
-        (app_dist / "_internal" / "tools" / "iperf" / dll_name).write_text("", encoding="utf-8")
+        (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
 
     def fake_run(args, **kwargs):
         if str(args[0]).endswith("fping.exe"):
@@ -587,8 +591,8 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     assert (app_dist / "data").exists()
     assert (app_dist / "runtime" / "logs").exists()
     assert (app_dist / "_internal" / "netconsole").exists()
-    assert (app_dist / "_internal" / "tools" / "fping_v5" / "fping.exe").exists()
-    assert (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").exists()
+    assert (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").exists()
+    assert (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").exists()
     assert (app_dist / "_internal" / "netconsole" / "assets" / "changelog.md").exists()
     assert not (app_dist / "_internal" / "netconsole" / "docs").exists()
 

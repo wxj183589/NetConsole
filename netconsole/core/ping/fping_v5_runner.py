@@ -11,11 +11,20 @@ from typing import Iterator
 from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.ping.fping_v5_models import FpingV5CheckResult, FpingV5Paths, FpingV5Sample
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
+from netconsole.core.paths import PathResolver
+from netconsole.services.tool_path_resolver import get_tool_dir, get_tool_executable
 
 
 def resolve_fping_v5_paths(project_root: Path | None = None, fping_path: Path | None = None) -> FpingV5Paths:
-    root = (project_root or Path.cwd()).resolve()
-    exe = (fping_path or root / "tools" / "fping_v5" / "fping.exe").resolve()
+    if fping_path is not None:
+        exe = Path(fping_path).resolve()
+    elif project_root is not None:
+        paths = PathResolver(Path(project_root).resolve())
+        exe = get_tool_dir("fping", paths) / "fping.exe"
+    else:
+        paths = PathResolver()
+        exe = get_tool_executable("fping", paths) or get_tool_dir("fping", paths) / "fping.exe"
+    exe = exe.resolve()
     dll = exe.parent / "cygwin1.dll"
     if not exe.exists():
         raise FileNotFoundError(f"fping v5 executable was not found: {exe}")

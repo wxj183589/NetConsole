@@ -94,8 +94,6 @@ def validate_config(config: BuildConfig, *, editions: tuple[str, ...] = ()) -> N
     ]
     if missing:
         raise BuildError("Missing required build input:\n" + "\n".join(str(path) for path in missing))
-    if "engineer" in editions and not config.ipop_executable.is_file():
-        raise BuildError(f"Engineer build requires locally supplied IPOP executable: {config.ipop_executable}")
     if not config.app_version.startswith("v"):
         raise BuildError(f"APP_VERSION must keep the existing v prefix: {config.app_version}")
 
@@ -185,16 +183,12 @@ def create_edition_releases(
         remove_tree(destination)
         copy_tree(payload, destination)
         remove_copied_zip_files(destination)
-        if edition == "engineer":
-            copy_engineer_ipop(config, destination)
-        else:
-            remove_packaged_ipop_binary(destination)
         unlock_password = admin_unlock_password if edition == "customer" else None
         install_runtime_feature_files(destination, edition=edition, profile=profile, admin_unlock_password=unlock_password)
         validate_embedded_feature_gate(destination, edition=edition, profile=profile)
         validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
         validate_release_fping(destination)
-        validate_ipop_distribution(config, destination, edition)
+        validate_no_ipop_artifacts(destination)
         run_packaged_release_contract(destination / f"{config.app_name}.exe", destination)
         if make_zip:
             zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
@@ -289,9 +283,8 @@ def nuitka_command(config: BuildConfig, jobs: str, package_config: Path) -> list
         f"--output-dir={config.backend_build_dir('nuitka')}",
         f"--output-filename={config.app_name}.exe",
         f"--windows-icon-from-ico={config.icon_file}",
-        f"--include-raw-dir={config.tools_dir / 'fping_v5'}=tools/fping_v5",
-        f"--include-raw-dir={config.tools_dir / 'iperf'}=tools/iperf",
-        f"--include-data-file={config.ipop_readme}=tools/IPOP_v4.1/README.md",
+        f"--include-raw-dir={config.tools_dir / 'windows-x64' / 'fping'}=tools/windows-x64/fping",
+        f"--include-raw-dir={config.tools_dir / 'windows-x64' / 'iperf3'}=tools/windows-x64/iperf3",
         f"--include-data-dir={config.root / 'netconsole' / 'ui' / 'icons'}=netconsole/ui/icons",
         f"--include-data-file={config.changelog_file}=netconsole/assets/changelog.md",
         f"--include-data-file={config.root / 'netconsole' / 'assets' / 'open_source_notices.json'}=netconsole/assets/open_source_notices.json",
@@ -310,8 +303,8 @@ def write_nuitka_package_config(config: BuildConfig, build_root: Path) -> Path:
                 "- module-name: 'netconsole'",
                 "  data-files:",
                 "    dirs:",
-                f"      - '{(config.tools_dir / 'fping_v5').as_posix()}'",
-                f"      - '{(config.tools_dir / 'iperf').as_posix()}'",
+                f"      - '{(config.tools_dir / 'windows-x64' / 'fping').as_posix()}'",
+                f"      - '{(config.tools_dir / 'windows-x64' / 'iperf3').as_posix()}'",
                 "      - 'netconsole/ui/icons'",
                 "    patterns:",
                 "      - 'netconsole/assets/changelog.md'",
@@ -358,48 +351,37 @@ def copy_tree(source: Path, destination: Path) -> None:
 
 
 def copy_release_tools(config: BuildConfig, release_root: Path) -> None:
-    destination = release_root / "tools"
+    destination = release_root / "tools" / "windows-x64"
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(config.tools_dir, destination, ignore=_ignore_unlicensed_ipop)
+    destination.mkdir(parents=True, exist_ok=True)
+    for tool_name in ("fping", "iperf3"):
+        shutil.copytree(
+            config.tools_dir / "windows-x64" / tool_name,
+            destination / tool_name,
+            ignore=shutil.ignore_patterns("__pycache__", "*.py", "*.pyc", "*.pyo"),
+        )
+    validate_no_ipop_artifacts(release_root)
 
 
-def _ignore_unlicensed_ipop(directory: str, names: list[str]) -> set[str]:
-    ignored = {name for name in names if name == "__pycache__" or Path(name).suffix.casefold() in {".py", ".pyc", ".pyo"}}
-    if Path(directory).name.casefold() == "ipop_v4.1":
-        ignored.update(name for name in names if name.casefold() == "ipop.exe")
-    return ignored
-
-
-def copy_engineer_ipop(config: BuildConfig, release_root: Path) -> None:
-    destination = release_root / "tools" / "IPOP_v4.1" / "IPOP.EXE"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config.ipop_executable, destination)
-
-
-def remove_packaged_ipop_binary(release_root: Path) -> None:
-    for candidate in (
-        release_root / "tools" / "IPOP_v4.1" / "IPOP.EXE",
-        release_root / "_internal" / "tools" / "IPOP_v4.1" / "IPOP.EXE",
-    ):
-        if candidate.exists():
-            candidate.unlink()
-
-
-def validate_ipop_distribution(config: BuildConfig, release_root: Path, edition: str) -> None:
-    if not config.ipop_notice.is_file() or not config.ipop_readme.is_file():
-        raise BuildError("IPOP licensing notice is missing")
-    external = release_root / "tools" / "IPOP_v4.1" / "IPOP.EXE"
-    embedded = release_root / "_internal" / "tools" / "IPOP_v4.1" / "IPOP.EXE"
-    if edition == "engineer":
-        if not external.is_file():
-            raise BuildError(f"Engineer release is missing IPOP.EXE: {external}")
-    elif external.exists() or embedded.exists():
-        raise BuildError(f"{edition} release must not redistribute IPOP.EXE")
+def validate_no_ipop_artifacts(root: Path) -> None:
+    if not root.exists():
+        return
+    forbidden: list[Path] = []
+    for directory, dir_names, file_names in os.walk(root):
+        base = Path(directory)
+        for name in (*dir_names, *file_names):
+            path = base / name
+            relative_parts = {part.casefold() for part in path.relative_to(root).parts}
+            if path.name.casefold() == "ipop.exe" or "ipop" in relative_parts:
+                forbidden.append(path)
+    if forbidden:
+        detail = "\n".join(str(path) for path in forbidden[:20])
+        raise BuildError(f"检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。\n{detail}")
 
 
 def validate_release_fping(release_root: Path) -> None:
-    fping_dir = release_root / "tools" / "fping_v5"
+    fping_dir = release_root / "tools" / "windows-x64" / "fping"
     exe = fping_dir / "fping.exe"
     dlls = list(fping_dir.glob("*.dll"))
     if not exe.is_file():
@@ -484,6 +466,7 @@ def validate_release_app_dir(app_dir: Path, allowed_items: frozenset[str]) -> No
     unexpected = sorted(path.name for path in app_dir.iterdir() if path.name not in allowed_items and not path.name.endswith(".zip"))
     if unexpected:
         raise BuildError(f"Unexpected release items in {app_dir}: {unexpected}")
+    validate_no_ipop_artifacts(app_dir)
     forbidden = find_forbidden_release_dirs(app_dir)
     if forbidden:
         raise BuildError("Forbidden release directories found:\n" + "\n".join(str(path) for path in forbidden))
@@ -492,6 +475,7 @@ def validate_release_app_dir(app_dir: Path, allowed_items: frozenset[str]) -> No
 def validate_release_version_tree(version_dir: Path) -> None:
     if not version_dir.exists():
         return
+    validate_no_ipop_artifacts(version_dir)
     forbidden = find_forbidden_release_dirs(version_dir)
     if forbidden:
         raise BuildError("Forbidden release directories found under release version directory:\n" + "\n".join(str(path) for path in forbidden))
@@ -527,6 +511,8 @@ def validate_zip_file(zip_path: Path) -> None:
         for name in archive.namelist():
             parts = tuple(part for part in Path(name).parts if part not in {"", "."})
             lowered = tuple(part.lower() for part in parts)
+            if "ipop" in lowered or (lowered and lowered[-1] == "ipop.exe"):
+                raise BuildError("检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。")
             effective = _strip_zip_app_root(lowered)
             if any(part in FORBIDDEN_RELEASE_DIR_NAMES for part in effective):
                 if _is_under_internal_netconsole(effective) and not any(part in {"docs", "tests", "project"} for part in effective):

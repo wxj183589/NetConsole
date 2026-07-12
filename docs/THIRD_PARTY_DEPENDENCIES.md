@@ -43,8 +43,8 @@
 
 ## IPOP v4.1
 
-- 文件位置：`tools/IPOP_v4.1/IPOP.EXE`。
-- 用途：由网络工具箱按钮请求 Windows 管理员权限后启动；程序不自动启动、不自动后台运行、不随 NetConsole 退出而结束。
-- 授权状态：仓库当前未提供可核验的许可证文本，明确标记为“需用户确认再分发授权”。制作对外发布包前必须补齐并审核 IPOP 的 LICENSE/NOTICE 或移除该二进制。
-- 发布策略：普通开源包、内部包和客户包不内置 `IPOP.EXE`；工程师包可从构建机本地工具目录显式带入，但仍不代表已取得再分发授权。
+- 分类：用户自行提供的可选外部工具，不属于 NetConsole 内置工具或开源依赖。
+- 配置：在“系统设置 → 外部工具”选择本机 `IPOP.EXE`；未配置时可检查用户手动放置的 `tools/windows-x64/ipop/IPOP.EXE`。
+- 授权状态：仓库没有可核验的许可证或再分发授权，不声明 IPOP 属于 MIT、GPL 或 NetConsole 的授权范围。
+- 发布策略：PyInstaller、Nuitka、内部版、客户版和工程师版均不携带 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。
 - 完整说明：[IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。

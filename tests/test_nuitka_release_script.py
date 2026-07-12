@@ -40,9 +40,9 @@ def test_nuitka_command_uses_onefile_and_required_resources() -> None:
     assert "main.py" in command_text
     assert "netconsole/ui/icons" in command_text
     assert "netconsole/assets/changelog.md" in command_text
-    assert "tools/fping_v5" in command_text
-    assert "tools/iperf" in command_text
-    assert "tools/IPOP_v4.1/README.md" in command_text
+    assert "tools/windows-x64/fping" in command_text
+    assert "tools/windows-x64/iperf3" in command_text
+    assert "tools/windows-x64/ipop" not in command_text
     assert "tools=tools" not in command_text
     assert "open_source_notices.json" in command_text
     assert "THIRD_PARTY_COMPONENTS.md" in command_text
@@ -118,6 +118,54 @@ def test_release_zip_validation_rejects_forbidden_entries(tmp_path: Path) -> Non
         archive.writestr("docs/readme.md", "")
 
     with pytest.raises(BuildError, match="Forbidden release zip entries"):
+        validate_zip_file(zip_path)
+
+
+def test_release_validation_rejects_ipop_but_keeps_other_tools(tmp_path: Path) -> None:
+    from project.build_release import validate_no_ipop_artifacts
+
+    release_dir = tmp_path / "release"
+    (release_dir / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (release_dir / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
+    (release_dir / "tools" / "windows-x64" / "fping" / "fping.exe").write_bytes(b"MZ")
+    (release_dir / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_bytes(b"MZ")
+    validate_no_ipop_artifacts(release_dir)
+
+    forbidden = release_dir / "tools" / "windows-x64" / "ipop" / "IPOP.EXE"
+    forbidden.parent.mkdir(parents=True)
+    forbidden.write_bytes(b"MZ")
+    with pytest.raises(BuildError, match="检测到未经确认可再分发"):
+        validate_no_ipop_artifacts(release_dir)
+
+    assert (release_dir / "tools" / "windows-x64" / "fping" / "fping.exe").exists()
+    assert (release_dir / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").exists()
+
+
+def test_release_tool_copy_uses_allowlist_and_never_copies_ipop(tmp_path: Path) -> None:
+    from project.build_config import BuildConfig
+    from project.build_release import copy_release_tools
+
+    tools = tmp_path / "tools"
+    for relative in ("windows-x64/fping/fping.exe", "windows-x64/iperf3/iperf3.exe", "windows-x64/ipop/IPOP.EXE"):
+        path = tools / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"MZ")
+    config = BuildConfig("NetConsole", "v1.3.8", "WXJ", root=tmp_path, tools_dir=tools, release_dir=tmp_path / "release")
+    destination = tmp_path / "output"
+
+    copy_release_tools(config, destination)
+
+    assert (destination / "tools" / "windows-x64" / "fping" / "fping.exe").exists()
+    assert (destination / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").exists()
+    assert not (destination / "tools" / "windows-x64" / "ipop").exists()
+
+
+def test_release_zip_validation_rejects_ipop_binary(tmp_path: Path) -> None:
+    zip_path = tmp_path / "bad-ipop.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("NetConsole/tools/windows-x64/ipop/IPOP.EXE", "binary")
+
+    with pytest.raises(BuildError, match="检测到未经确认可再分发"):
         validate_zip_file(zip_path)
 
 

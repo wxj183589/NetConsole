@@ -4,6 +4,7 @@ import os
 import sys
 import faulthandler
 import traceback
+from pathlib import Path
 
 
 if os.environ.get("NETCONSOLE_SMOKE_TEST") == "1":
@@ -66,12 +67,13 @@ def _verify_release_contract() -> None:
     for feature_id in ("module.feature_switch", "system.feature_flags"):
         if gate.is_visible(feature_id) or gate.is_enabled(feature_id):
             raise RuntimeError(f"打包版暴露了开发功能：{feature_id}")
-    edition = str(gate.build_info.get("edition") or "")
-    ipop = os.path.join(BASE_DIR, "tools", "IPOP_v4.1", "IPOP.EXE")
-    if edition == "engineer" and not os.path.isfile(ipop):
-        raise RuntimeError(f"工程师包缺少 IPOP：{ipop}")
-    if edition in {"internal", "customer"} and os.path.exists(ipop):
-        raise RuntimeError(f"{edition} 包不得包含未确认授权的 IPOP：{ipop}")
+    forbidden_ipop = [
+        path
+        for path in Path(BASE_DIR).rglob("*")
+        if path.name.casefold() == "ipop.exe" or "ipop" in {part.casefold() for part in path.relative_to(BASE_DIR).parts}
+    ]
+    if forbidden_ipop:
+        raise RuntimeError("发布包不得包含 IPOP.EXE 或 tools/windows-x64/ipop 目录")
 
 
 if __name__ == "__main__":

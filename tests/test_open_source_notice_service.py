@@ -38,3 +38,10 @@ def test_open_source_notice_service_merges_requirements_and_overrides(tmp_path: 
     assert by_name["pytest"].purpose == "自动化测试"
     assert by_name["missing-demo-package"].version == ""
     assert by_name["missing-demo-package"].license == "Custom"
+
+
+def test_ipop_is_not_listed_as_open_source_dependency() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for relative in ("docs/open_source_notices.json", "netconsole/assets/open_source_notices.json"):
+        payload = json.loads((root / relative).read_text(encoding="utf-8"))
+        assert all(str(item.get("name") or "").casefold() != "ipop v4.1" for item in payload)

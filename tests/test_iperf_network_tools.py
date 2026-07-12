@@ -47,7 +47,7 @@ class FakeWheelEvent:
 
 
 def test_iperf_tool_discovery_from_project_tools(tmp_path: Path) -> None:
-    exe = tmp_path / "tools" / "iperf" / "iperf3.exe"
+    exe = tmp_path / "tools" / "windows-x64" / "iperf3" / "iperf3.exe"
     exe.parent.mkdir(parents=True)
     exe.write_text("fake", encoding="utf-8")
     assert find_iperf_tool(PathResolver(tmp_path)) == exe.resolve()

@@ -11,6 +11,14 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
 from netconsole.core.sites import Site
+from netconsole.services.external_tool_service import (
+    clear_ipop_path,
+    get_configured_ipop_path,
+    get_local_ipop_path,
+    launch_ipop,
+    save_ipop_path,
+    validate_ipop_executable,
+)
 from netconsole.ui.shell.fluent_bridge import ComboBox, InfoBar, InfoBarPosition, SpinBox, SwitchButton
 
 
@@ -104,6 +112,12 @@ class SettingsPage(QWidget):
         self.report_dir_edit = QLineEdit(str(self.settings.get_value("report_dir", "")))
         self.iperf3_path_edit = QLineEdit(str(self.settings.get_value("network_tools/iperf_path", "")))
         self.fping_path_edit = QLineEdit(str(self.settings.get_value("online_mr.fping_path", "")))
+        self.ipop_path_edit = QLineEdit(str(self.settings.get_value("external_tools/ipop_path", "")))
+        self.ipop_path_edit.setPlaceholderText("请选择本机已有的 IPOP.EXE")
+        self.ipop_path_edit.setToolTip(self.ipop_path_edit.text())
+        self.ipop_status_label = QLabel()
+        self.ipop_status_label.setObjectName("settingRowDescription")
+        self.ipop_status_label.setWordWrap(True)
         self.mib_dir_edit = QLineEdit(str(self.settings.get_value("mib_dir", "")))
         self.external_terminal_type_combo = self._combo()
         self.external_terminal_type_combo.addItems(list(EXTERNAL_TERMINAL_LABELS))
@@ -134,6 +148,11 @@ class SettingsPage(QWidget):
             self.settings.set_theme_color(THEME_COLOR_LABELS.get(self.theme_color_combo.currentText(), "#0078D4"))
             self.settings.set_value("network_tools/iperf_path", self.iperf3_path_edit.text().strip())
             self.settings.set_value("online_mr.fping_path", self.fping_path_edit.text().strip())
+            if self.ipop_path_edit.text().strip():
+                normalized_ipop = save_ipop_path(self.ipop_path_edit.text(), self.settings, paths=self.paths)
+                self.ipop_path_edit.setText(str(normalized_ipop))
+            else:
+                clear_ipop_path(self.settings, paths=self.paths)
             terminal_type = self._external_terminal_type()
             terminal_path = self.external_terminal_path_edit.text().strip()
             self.settings.set_value("external_terminal/type", terminal_type)
@@ -150,6 +169,7 @@ class SettingsPage(QWidget):
             if self.apply_language_callback is not None:
                 QTimer.singleShot(0, lambda selected_language=language: self.apply_language_callback(selected_language))
             self.dirty = False
+            self._update_ipop_status()
             self._show_success("设置已保存", f"配置已写入：{self.settings.path}")
         except Exception as exc:
             detail = traceback.format_exc()
@@ -175,6 +195,8 @@ class SettingsPage(QWidget):
             edit.clear()
         self.external_terminal_type_combo.setCurrentText("SecureCRT")
         self.external_terminal_path_edit.clear()
+        self.ipop_path_edit.clear()
+        self.ipop_status_label.setText("未配置（保存后生效）")
         self._mark_dirty()
 
     def open_config_dir(self) -> None:
@@ -186,6 +208,7 @@ class SettingsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         scroll = QScrollArea()
+        self.settings_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -225,6 +248,14 @@ class SettingsPage(QWidget):
             ("默认 Telnet 端口", "新设备外部终端默认 Telnet 端口", self.telnet_port_spin),
             ("生成 CRT 会话编码", "SecureCRT 会话配置编码", self.crt_encoding_combo),
         ]))
+        self.external_tools_section = self._section("外部工具", [
+            (
+                "IPOP v4.1",
+                "第三方可选工具，不随 NetConsole 提供；请选择用户自行取得的本地程序。",
+                self._ipop_control(),
+            ),
+        ])
+        layout.addWidget(self.external_tools_section)
         layout.addWidget(self._maintenance_section())
         layout.addStretch(1)
         scroll.setWidget(content)
@@ -355,6 +386,33 @@ class SettingsPage(QWidget):
         layout.addWidget(browse)
         return row
 
+    def _ipop_control(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        self.ipop_path_edit.setMinimumWidth(280)
+        self.ipop_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.ipop_select_button = QPushButton("选择文件")
+        self.ipop_test_button = QPushButton("测试启动")
+        self.ipop_clear_button = QPushButton("清除配置")
+        for button in (self.ipop_select_button, self.ipop_test_button, self.ipop_clear_button):
+            button.setMinimumWidth(88)
+        self.ipop_select_button.clicked.connect(self._select_ipop_file)
+        self.ipop_test_button.clicked.connect(self._test_ipop_launch)
+        self.ipop_clear_button.clicked.connect(self._clear_ipop_configuration)
+        row_layout.addWidget(self.ipop_path_edit, 1)
+        row_layout.addWidget(self.ipop_select_button)
+        row_layout.addWidget(self.ipop_test_button)
+        row_layout.addWidget(self.ipop_clear_button)
+        layout.addWidget(row)
+        layout.addWidget(self.ipop_status_label)
+        return container
+
     def _disable_unimplemented_controls(self) -> None:
         for control in (
             self.mica_switch,
@@ -387,6 +445,7 @@ class SettingsPage(QWidget):
             self.report_dir_edit,
             self.iperf3_path_edit,
             self.fping_path_edit,
+            self.ipop_path_edit,
             self.mib_dir_edit,
             self.external_terminal_type_combo,
             self.external_terminal_path_edit,
@@ -421,6 +480,9 @@ class SettingsPage(QWidget):
         self.ssh_port_spin.setValue(self.settings.int_value("external_terminal/default_ssh_port", 22, 1, 65535))
         self.telnet_port_spin.setValue(self.settings.int_value("external_terminal/default_telnet_port", 23, 1, 65535))
         self.crt_encoding_combo.setCurrentText(str(self.settings.get_value("external_terminal/crt_encoding", "UTF-8") or "UTF-8"))
+        configured_ipop = get_configured_ipop_path(self.settings, paths=self.paths)
+        self.ipop_path_edit.setText(str(configured_ipop) if configured_ipop is not None else "")
+        self._update_ipop_status()
 
     def _on_theme_changed(self, text: str) -> None:
         theme = THEME_LABELS.get(text, "light")
@@ -441,6 +503,60 @@ class SettingsPage(QWidget):
             value, _ = QFileDialog.getOpenFileName(self, "选择文件", edit.text() or str(Path.cwd()))
         if value:
             edit.setText(value)
+
+    def _select_ipop_file(self) -> None:
+        configured = get_configured_ipop_path(self.settings, paths=self.paths)
+        initial = configured.parent if configured is not None else Path.home()
+        value, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 IPOP v4.1",
+            str(initial),
+            "IPOP.EXE (IPOP.EXE);;Windows 可执行文件 (*.exe);;所有文件 (*.*)",
+        )
+        if not value:
+            return
+        normalized = save_ipop_path(value, self.settings, paths=self.paths)
+        self.ipop_path_edit.setText(str(normalized))
+        self._update_ipop_status()
+        self._show_success("外部工具", "IPOP 路径已保存。")
+
+    def _test_ipop_launch(self) -> None:
+        try:
+            if self.ipop_path_edit.text().strip():
+                normalized = save_ipop_path(self.ipop_path_edit.text(), self.settings, paths=self.paths)
+                self.ipop_path_edit.setText(str(normalized))
+            else:
+                clear_ipop_path(self.settings, paths=self.paths)
+            self._update_ipop_status()
+            result = launch_ipop(self.paths, settings=self.settings)
+        except Exception as exc:
+            self._show_error("外部工具", f"IPOP v4.1 启动失败：{exc}")
+            return
+        if result.success:
+            self._show_success("外部工具", result.message)
+        else:
+            self._show_error("外部工具", f"IPOP v4.1 启动失败：{result.message}")
+
+    def _clear_ipop_configuration(self) -> None:
+        clear_ipop_path(self.settings, paths=self.paths)
+        self.ipop_path_edit.clear()
+        self._update_ipop_status()
+        self._show_success("外部工具", "IPOP 路径配置已清除。")
+
+    def _update_ipop_status(self) -> None:
+        configured = get_configured_ipop_path(self.settings, paths=self.paths)
+        self.ipop_path_edit.setToolTip(str(configured or ""))
+        if configured is None:
+            local_file = validate_ipop_executable(get_local_ipop_path(self.paths))
+            text = "未配置（检测到本地工具文件）" if local_file.success else "未配置"
+        else:
+            validation = validate_ipop_executable(configured)
+            text = "已配置" if validation.success else f"路径无效：{validation.message}"
+        self.ipop_status_label.setText(text)
+
+    def focus_external_tools(self) -> None:
+        self.settings_scroll.ensureWidgetVisible(self.external_tools_section, 24, 24)
+        self.ipop_path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _open_site_dir(self) -> None:
         path = self.paths.site_dir(self.site.name)

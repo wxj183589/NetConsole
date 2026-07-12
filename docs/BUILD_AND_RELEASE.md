@@ -27,21 +27,32 @@ project/release.py
 
 `BuildConfig` 从 `netconsole/core/version.py` 读取应用名、版本和作者。
 
+## Windows Go Agent
+
+独立 Agent 不进入上述 PyInstaller/Nuitka 发布链，使用 Go 1.26.5 单独构建：
+
+```bat
+agent\scripts\build_windows.bat
+```
+
+输出为 `agent/bin/windows-x64/netconsole-agent.exe`。脚本先执行 Go 模块下载和 `go test ./...`，再以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；主程序与 Agent 都采用 `tools/windows-x64/{fping,iperf3,ipop}` 命名，但各自工具由各自的构建或部署流程管理，不隐式互相复制。
+
+当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 `agent/data`、`agent/logs` 或 `agent/packages` 打入发布包。
+
 ## 外部工具要求
 
 构建前会检查工具源文件。当前 `project/build_config.py` 要求：
 
 ```text
-tools/fping_v5/fping.exe
-tools/fping_v5/cygwin1.dll
-tools/iperf/iperf3.exe
-tools/IPOP_v4.1/README.md
+tools/windows-x64/fping/fping.exe
+tools/windows-x64/fping/cygwin1.dll
+tools/windows-x64/iperf3/iperf3.exe
 docs/IPOP_v4.1_notice.md
 ```
 
-运行时工具路径由代码解析，不允许写死用户本机路径。IPOP 由用户从网络工具箱明确点击后通过 Windows `runas` 请求管理员权限启动，NetConsole 不等待该外部程序退出；缺文件、非 Windows 平台、UAC 拒绝或系统启动失败必须给出明确提示。
+运行时工具路径由统一解析器处理，不依赖当前工作目录。IPOP 是用户自行提供的可选外部工具，配置保存在现有 `settings.json` 的 `external_tools/ipop_path` 键；有效配置优先，未配置时可检查 `<应用目录>/tools/windows-x64/ipop/IPOP.EXE`。启动使用 Qt `QProcess.startDetached`，不拼接 shell 命令，也不等待该外部程序退出。
 
-IPOP 二进制不属于普通构建的必需输入。仓库没有可核验的 IPOP 再分发许可，因此普通开源包、内部包和客户包均排除 `IPOP.EXE`。只有显式构建工程师包时，打包前检查才要求构建机本地存在 `tools/IPOP_v4.1/IPOP.EXE`，并将其复制到工程师包；此行为不代表授权已确认。对外分发前必须补齐 LICENSE/NOTICE 或移除二进制，详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
+仓库没有可核验的 IPOP 再分发许可。PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。发布脚本只白名单复制 `tools/windows-x64/fping` 和 `tools/windows-x64/iperf3`；最终目录或 ZIP 检测到 IPOP 时以“检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。”中止，不删除开发机上的本地文件。详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
 
 ## 发布目录约束
 
@@ -109,7 +120,7 @@ Nuitka：
 
 - internal 默认 full。
 - customer 默认 customer。
-- engineer 默认 full；客户 profile 中“工程师打包”开启时，`both` 构建会额外生成 engineer 包。
+- engineer 默认 full；客户 profile 中“工程师打包”开启时，`both` 构建会额外生成 engineer 包，但工程师包同样不携带 IPOP。
 - 客户版可嵌入功能隐藏配置。
 - 客户版内部调试解锁口令只作为构建期 PBKDF2 哈希写入，不写明文密码。
 - 功能开关配置页只允许源码开发态显示，任何冻结/安装包运行态（包括 internal/engineer）都不注册该入口。
