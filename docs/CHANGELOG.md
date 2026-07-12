@@ -4,6 +4,10 @@
 
 ### 本次修复
 
+- 完成 Web 演进阶段 4B-2：新增 `TrafficTestApplicationService`、本地/Agent 执行适配、远端 Supervisor、Controller/Agent Task 映射、持久事件流和 Controller 重启恢复；尚未创建 Traffic REST/WebSocket 或 Vue 页面。
+- 新增每局点 `traffic_runs.sqlite`，只保存 Traffic Run 索引、Agent 映射和独立高频 Ping 样本；iPerf interval 继续只写既有 `iperf_results.sqlite`，Agent 事件重放使用远端事件键幂等去重。
+- 新增纯 Python `LocalProcessAdapter` 和三个 Traffic Job handler；高频样本不进入全局 Task Event 表。本地 fping `packet_size` 已传入 `-b`，多目标 Ping 批量落库，timeout 不再伪造 RTT=0。
+- Agent Token 继续只保存在会话级 Vault；Agent Traffic 启动、轮询和停止留在 Controller 进程内。无 Token 恢复标记 `CREDENTIAL_REQUIRED`，Controller 停止轮询不会停止远端任务。
 - 完成 Web 演进阶段 4B-1：Windows Go Agent 新增真实 `fping` 任务、每任务增量事件游标、结果描述和 iPerf 3.20 强类型参数；`ping_probe` 继续明确为 TCP Connect，不伪装为 ICMP Ping。
 - Python `AgentHttpClient` 新增 fping/iPerf 启动、任务查询/停止、事件和结果的强类型 DTO/方法；本阶段未创建 Traffic 数据库、应用服务、Controller 轮询、FastAPI Traffic API 或 Vue 页面。
 - 完成 Web 演进阶段 3：新增每局点 `agents.db`、Agent 配置/运行快照分离、`AgentControllerService`、会话级凭据、健康检查调度、Agent REST API、`/ws/agents` 与 Vue Agent 管理页面；本阶段不提供任何业务任务启动接口。
@@ -18,7 +22,7 @@
 
 - 以当前代码、测试和近期提交为基线，全面同步根 README、架构、Job/Export、重构地图、Feature、数据路径、构建、UI 表格和业务专题文档。
 - 新增 Online MR 实时采集与 SNMP Center 专题，明确实际状态、命令、并发、缓存、数据目录、查询/导出路径和功能限制。
-- 明确 Job Registry 当前注册 83 个任务但领域迁移未完成，设备批量线程仍未进入 Job Center；AP Identity 继续只读 shadow/diagnostics，阶段 8.3 可见宿主保持 hold。
+- 明确 Job Registry 当前注册 86 个任务、分属 11 个 handler 模块但领域迁移未完成，设备批量线程仍未进入 Job Center；AP Identity 继续只读 shadow/diagnostics，阶段 8.3 可见宿主保持 hold。
 
 ### 架构
 - 完成 Web 演进阶段 2：每局点 `tasks.db` 正式保存任务快照和结构化事件，新增 `TaskRepository`、`TaskEventHub`、恢复核对、任务 REST API 与 `/ws/tasks`；Qt 继续通过兼容 signals 使用原 Job/Worker 协议。

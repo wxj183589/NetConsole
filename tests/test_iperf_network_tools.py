@@ -498,7 +498,31 @@ def test_iperf_result_store_creates_required_tables(tmp_path: Path) -> None:
             "clock_offset_ms",
             "offset_source",
             "time_source",
+            "source_event_key",
         } <= columns
+
+
+def test_iperf_result_store_deduplicates_agent_event_key(tmp_path: Path) -> None:
+    store = IperfResultStore(tmp_path / "iperf_results.sqlite")
+    store.start_run(
+        "agent-run",
+        mode="agent_client",
+        command=["agent", "iperf_client"],
+        log_file=tmp_path / "agent.log",
+        started_at=datetime(2025, 1, 1),
+        config=IperfClientConfig("10.0.0.1"),
+    )
+    row = parse_iperf_line(
+        "[  5]   0.00-1.00   sec  10.5 MBytes  88.1 Mbits/sec  0   256 KBytes",
+        datetime(2025, 1, 1),
+    )
+    assert row is not None
+
+    assert store.append_interval("agent-run", row, source_event_key="agent-task:7") is True
+    assert store.append_interval("agent-run", row, source_event_key="agent-task:7") is False
+
+    with sqlite3.connect(tmp_path / "iperf_results.sqlite") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM iperf_intervals").fetchone()[0] == 1
 
 
 def test_iperf_result_store_migrates_old_interval_table(tmp_path: Path) -> None:
@@ -524,6 +548,7 @@ def test_iperf_result_store_migrates_old_interval_table(tmp_path: Path) -> None:
         "clock_offset_ms",
         "offset_source",
         "time_source",
+        "source_event_key",
     } <= columns
 
 

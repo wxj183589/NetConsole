@@ -2,7 +2,7 @@
 
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
-> 2026-07-11 代码核对：Registry 当前注册 83 个 task type，分布于 10 个领域 handler 模块。注册与进程协议已统一，但多数 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。
+> 2026-07-12 代码核对：Registry 当前注册 86 个 task type，分布于 11 个领域 handler 模块。新增三个本地 Traffic handler；注册与进程协议已统一，但多数既有 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。
 
 ## 代码组成
 
@@ -18,7 +18,8 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
-- `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测领域分区。
+- `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。
+- `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测、Traffic 领域分区。
 
 ## Worker Process 约束
 
@@ -35,14 +36,14 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `ExportJob` 是导出专用模型，增加 output/tmp/db/filter/context 等字段。
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
-- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；阶段 3 Agent Controller 只管理 Agent 资源，不创建业务任务，也不是独立 Controller daemon。
+- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；阶段 4B-2 允许 `TaskApplicationService.create_external_task/record_external_event` 将 Agent Traffic 映射到同一任务中心，但它仍不是独立 Controller daemon。
 
 ## Task Center API
 
 - `GET /api/tasks`：任务列表，可按七状态过滤；
 - `GET /api/tasks/{id}`：任务详情；
 - `GET /api/tasks/{id}/events`：结构化状态、进度和日志事件；
-- `POST /api/tasks/{id}/cancel`：写协作取消并进入 `STOPPING`；
+- `POST /api/tasks/{id}/cancel`：只对本地 Runtime-backed 任务写协作取消并进入 `STOPPING`；Agent Traffic 必须由后续 Traffic API 调用 `TrafficTestApplicationService.cancel()`，通用任务 API 不会伪造远端停止成功；
 - `/ws/tasks`：初始快照与 Event Hub/SQLite 增量事件。
 
 本地 Worker 由宿主进程持有。正常关闭宿主会走既有取消/清理；崩溃后重启会将失去 PID 宿主的活动快照核对为 `FAILED`。任务中心不得仅依据旧数据库状态显示伪 `RUNNING`。
@@ -150,6 +151,15 @@ submit_export_task(
 - manager 写入 UTF-8 取消文件并请求进程退出；超时后 kill。
 - handler 应在批次边界检查取消文件，返回 cancelled 终态。
 - 失败/取消后 manager 清理 Job、cancel 和临时输出文件。
+
+## 统一 Traffic Job
+
+- 本地类型固定为 `traffic_local_iperf_server / traffic_local_iperf_client / traffic_local_fping`，handler 只调用 `LocalTrafficAdapter`；
+- Controller 侧 `LocalProcessAdapter` 只负责 `Popen`、双管道读取、等待、Job Object 进程树回收和 terminate/kill，状态仍由既有 `TaskApplicationService/TaskRuntime` 管理；Traffic 只订阅完成回调同步自身 Run 终态；
+- Worker stdout 只返回低频进度、摘要和唯一终态；iPerf interval、RTT、丢包和原始区间直接写 `TrafficEventStore`/业务 Repository，不进入全局 Task Event 表；
+- Agent Traffic 不进入 Worker Process。`AgentTrafficSupervisor` 在持有会话凭据的 Controller 进程内轮询，并通过外部任务入口持久化状态；
+- Agent Task 使用 `source=agent, owner_pid=0`，因此不会被本地 orphan 核对误判；本地 Traffic 继续沿用宿主 PID 退出后标记 `FAILED` 的规则；
+- `sync_state` 只表示远端同步健康度，不是第八个 Task 生命周期状态。完整边界见 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。
 
 ## 在线 MR 长运行 Job
 

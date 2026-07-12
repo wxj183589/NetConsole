@@ -142,6 +142,57 @@ def test_task_rest_api_lists_details_events_and_cancel(tmp_path: Path) -> None:
     assert (service.paths.runtime_cache_dir / "background_jobs" / "task-running.cancel").exists()
 
 
+def test_external_task_persists_before_broadcast_and_rejects_generic_cancel(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    observed: list[TaskState] = []
+
+    def observe(event: dict[str, object]) -> None:
+        task_id = str(event.get("task_id") or "")
+        snapshot = service.get_task(task_id)
+        if snapshot is not None:
+            observed.append(snapshot.status)
+
+    service.events.subscribe(observe)
+    service.create_external_task(
+        task_id="agent-traffic",
+        task_type="traffic_agent_iperf_client",
+        task_name="Agent iPerf 客户端",
+        source="agent",
+        agent="agent-1",
+    )
+    service.record_external_event(
+        "agent-traffic",
+        "state",
+        {"state": TaskState.RUNNING.value, "message": "Agent 已开始执行"},
+        source="agent",
+    )
+
+    assert observed[-1] is TaskState.RUNNING
+    assert service.get_task("agent-traffic").owner_pid == 0
+    assert service.cancel_task("agent-traffic") is False
+    assert not (service.paths.runtime_cache_dir / "background_jobs" / "agent-traffic.cancel").exists()
+
+
+def test_task_api_marks_external_task_not_cancellable(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.create_external_task(
+        task_id="agent-traffic",
+        task_type="traffic_agent_fping",
+        task_name="Agent 高频 Ping",
+        source="agent",
+        agent="agent-1",
+    )
+    app = create_app(RuntimeMode.SERVER, paths=service.paths, task_service=service, frontend_dist=tmp_path / "missing-dist")
+
+    with TestClient(app) as client:
+        detail = client.get("/api/tasks/agent-traffic")
+        cancelled = client.post("/api/tasks/agent-traffic/cancel")
+
+    assert detail.status_code == 200
+    assert detail.json()["cancellable"] is False
+    assert cancelled.status_code == 409
+
+
 def test_task_websocket_sends_snapshot_and_hub_event(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.prepare(BackgroundJob(job_id="socket-task", task_type="demo_task", params={"task_name": "Socket任务"}))

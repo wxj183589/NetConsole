@@ -263,6 +263,30 @@ class PathResolver:
     def iperf_outputs_dir(self, site_name: str = "demo") -> Path:
         return self.iperf_root(site_name) / "outputs"
 
+    def traffic_root(self, site_name: str = "demo") -> Path:
+        return self.network_tools_root(site_name) / "traffic"
+
+    def traffic_runs_root(self, site_name: str = "demo") -> Path:
+        return self.traffic_root(site_name) / "runs"
+
+    def traffic_run_dir(self, site_name: str, traffic_run_id: str) -> Path:
+        value = str(traffic_run_id or "").strip()
+        if not value or value in {".", ".."} or Path(value).name != value or "/" in value or "\\" in value:
+            raise ValueError("invalid traffic_run_id")
+        return self.traffic_runs_root(site_name) / value
+
+    def traffic_runs_db_path(self, site_name: str = "demo") -> Path:
+        return self.traffic_root(site_name) / "parsed" / "traffic_runs.sqlite"
+
+    def traffic_run_events_path(self, site_name: str, traffic_run_id: str) -> Path:
+        return self.traffic_run_dir(site_name, traffic_run_id) / "events.jsonl"
+
+    def traffic_run_summary_path(self, site_name: str, traffic_run_id: str) -> Path:
+        return self.traffic_run_dir(site_name, traffic_run_id) / "summary.json"
+
+    def traffic_run_remote_result_path(self, site_name: str, traffic_run_id: str) -> Path:
+        return self.traffic_run_dir(site_name, traffic_run_id) / "remote_result.json"
+
     def wireless_scan_root(self, site_name: str = "demo") -> Path:
         return self.network_tools_root(site_name) / "wireless_scan"
 

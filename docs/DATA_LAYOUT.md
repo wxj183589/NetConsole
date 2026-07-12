@@ -74,8 +74,15 @@ data/sites/<site>/
 │  │  ├─ raw/server/
 │  │  ├─ raw/client/
 │  │  ├─ parsed/
-│  │  ├─ iperf_results.sqlite
+│  │  │  └─ iperf_results.sqlite
 │  │  └─ outputs/
+│  ├─ traffic/
+│  │  ├─ parsed/traffic_runs.sqlite
+│  │  └─ runs/<traffic_run_id>/
+│  │     ├─ events.jsonl
+│  │     ├─ summary.json
+│  │     ├─ remote_result.json
+│  │     └─ raw/
 │  └─ wireless_scan/
 └─ rail_transit/
 ```
@@ -141,6 +148,9 @@ sessions/<session>/
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
 - `tasks.db` 由 `TaskRepository` 幂等初始化，使用 WAL/busy timeout；任务快照与单条事件在同一事务提交，不自动删除业务结果或原始日志。
 - `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
+- `files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。
+- iPerf interval 的唯一事实源仍是 `files/network_tools/iperf/parsed/iperf_results.sqlite`；Traffic 库只用 `local_iperf_run_id` 关联，不复制 interval。Agent 事件重放通过远端事件键幂等写入既有 interval 表。
+- 每个 Traffic Run 的 `events.jsonl` 使用 Controller 单调序号并单独保留 `remote_sequence`；事件、摘要和远端结果只保存相对引用，绝对路径与敏感字段在写入前脱敏。原始 Traffic 文件和正式摘要不属于自动清理范围。
 - `online_diagnosis.sqlite`、单文件 Mesh parsed SQLite 等会话解析产物可重建，可在明确需求内调整结构，但必须保留 raw 事实来源并同步 parser/report。
 - 不允许把完整 AP Identity shadow items/evidence 或敏感原始字段写入新持久层；当前只允许受控聚合 metadata。
 - 导出目标位于用户选择路径或业务 `outputs/`；生成时先写 `.tmp`，成功后原子替换。

@@ -2,7 +2,7 @@
 
 ## 1. 当前范围
 
-阶段 3 将 Windows Go Agent 接入 Python 主程序的多 Agent 控制面。阶段 4B-1 已在底层 `AgentHttpClient` 增加 iPerf、真实 fping、任务事件和结果的强类型方法，但当前 `AgentControllerService` 与 Web 仍只支持配置、健康探测、版本、平台、架构、能力和实时状态，不会调度业务任务，也不支持 Online MR 或任意命令。
+阶段 3 将 Windows Go Agent 接入 Python 主程序的多 Agent 控制面。阶段 4B-2 已由 `TrafficTestApplicationService`、`AgentTrafficAdapter` 和 `AgentTrafficSupervisor` 在 Controller 进程内接入 iPerf/真实 fping 的强类型调度、任务映射和恢复同步；Agent 管理 Web 仍只负责配置与健康状态，尚无浏览器 Traffic 启动入口，也不支持 Online MR 或任意命令。
 
 ```mermaid
 flowchart LR
@@ -12,6 +12,9 @@ flowchart LR
     CTRL --> CLIENT["AgentHttpClient"]
     CLIENT --> GO["Windows Go Agent /api/v1"]
     CTRL --> HUB["AgentEventHub /ws/agents"]
+    TRAFFIC["TrafficTestApplicationService"] --> ADAPTER["AgentTrafficAdapter"]
+    ADAPTER --> CTRL
+    SUP["AgentTrafficSupervisor"] --> ADAPTER
 ```
 
 浏览器不直接访问 Agent。Desktop Mode 和 Server Mode 都由 FastAPI 所在主机发起网络连接，因此页面明确提示连接测试的网络视角。
@@ -28,6 +31,8 @@ flowchart LR
 阶段 4B-1 在保持旧接口兼容的前提下新增 Agent fping、任务事件游标和结果接口，并补齐 iPerf 强类型参数。旧 Agent 对新路由返回 404 时，Typed Client 映射为 `AGENT_TRAFFIC_UNSUPPORTED`；能力探测仍将缺失的 capabilities 保留为未知。
 
 `AgentHttpClient` 统一处理 URL、连接/读取超时、HTTP/HTTPS、Token Header、JSON 契约、401、版本兼容和错误映射；禁止自动跟随重定向，也不记录 Header 或 Token。
+
+阶段 4B-2 的流量执行每次请求前重新从当前 Agent 配置和 `SessionCredentialVault` 获取连接信息；Token 不被缓存到 Supervisor、Traffic DTO、JobSpec、SQLite、事件、日志或命令行。启动新任务严格要求 Runtime Snapshot 为 `ONLINE` 且对应 capability、`task_events`、`task_result` 都为 `true`，不根据操作系统猜测能力。
 
 ## 3. 数据模型
 
@@ -86,13 +91,15 @@ DELETE /api/agents/{agent_id}
 WS     /ws/agents
 ```
 
-这里仍没有面向浏览器的 iPerf、Ping、MR、任意命令、包管理或升级接口。`AgentHttpClient` 的底层流量方法只供阶段 4B-2 应用服务复用，浏览器不能直接访问 Agent。
+这里仍没有面向浏览器的 iPerf、Ping、MR、任意命令、包管理或升级接口。底层流量方法当前只供 `TrafficTestApplicationService` 复用，浏览器不能直接访问 Agent；阶段 4C 再新增受控 Traffic API。
 
 ## 7. 已知限制与后续
 
 - Controller 不是 Windows Service 或独立守护进程；桌面退出后的本地 Worker 生命周期没有改变。
 - 凭据只在会话内保存。
+- `AgentTrafficSupervisor` 不是 Windows Service；其 `stop()` 只停止轮询并标记 `STALE`，不会停止 Agent 上仍在运行的任务。
+- Controller 重启后，有 Token 时可从 `traffic_agent_tasks` 恢复同步；无 Token 时标记 `CREDENTIAL_REQUIRED` 并保留最后 Task 状态。
 - 仅适配 Windows Go Agent V1；CentOS Agent 尚未实现。
 - 正式发布脚本尚未确认打包 `frontend/dist`。
 
-阶段 4B-2 才能设计 `TrafficTestApplicationService`、Agent 执行端选择、任务中心关联、轮询、实时指标和图表；必须继续复用当前 Agent 配置、凭据引用和状态事实来源。协议细节见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md)。
+阶段 4B-2 已完成 `TrafficTestApplicationService`、执行端选择、任务中心关联和轮询恢复；阶段 4C 才实现 Traffic REST/WebSocket、实时指标和图表。协议细节见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。

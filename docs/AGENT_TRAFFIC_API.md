@@ -2,7 +2,7 @@
 
 ## 1. 当前状态
 
-Web 演进阶段 4B-1 只扩展 Windows Go Agent 协议和 Python `AgentHttpClient`。当前没有 `TrafficTestApplicationService`、Agent 后台轮询、Controller/Agent 任务映射、Traffic 数据库、FastAPI Traffic 路由、WebSocket 或 Vue 流量测试页面。
+Web 演进阶段 4B-1 扩展了 Windows Go Agent 协议和 Python `AgentHttpClient`；阶段 4B-2 已增加 `TrafficTestApplicationService`、Agent 轮询、Controller/Agent 任务映射和 Traffic 数据库。当前仍没有 FastAPI Traffic 路由、独立 Traffic WebSocket 或 Vue 流量测试页面。
 
 `ping-probe` 始终表示 TCP Connect Probe，不是 ICMP Ping。真实 ICMP 高频 Ping 使用独立任务类型 `fping`，两者不能互换或合并统计。
 
@@ -82,7 +82,7 @@ events.jsonl
 result.json
 ```
 
-停止、失败和异常退出会尽力提交当前摘要。`packet_size` 在 Agent 参数中实际传给 `-b`；本地 Python fping Runner 尚未传递该字段，留到阶段 4B-2 修复。
+停止、失败和异常退出会尽力提交当前摘要。`packet_size` 在 Agent 和本地 Python fping Runner 中都实际传给 `-b`；本地默认与 Agent 使用相同的 1～65507 字节业务约束。
 
 ## 5. iPerf 3.20
 
@@ -123,8 +123,12 @@ get_task_events
 get_task_result
 ```
 
-DTO 位于 `netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。当前 `AgentControllerService` 尚未调用这些方法，也没有后台轮询。
+DTO 位于 `netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。阶段 4B-2 由 `AgentTrafficAdapter` 调用这些方法，`AgentTrafficSupervisor` 使用排他游标批量轮询；浏览器路由仍未接入。
 
-## 8. 下一阶段边界
+## 8. Controller 接入边界
 
-阶段 4B-2 才允许实现 `TrafficTestApplicationService`、Local/Agent Adapter、Traffic Event Hub、Controller Task/Agent Task 映射、本地 `packet_size` 修复和数据存储。现有 `iperf_results.sqlite` 继续作为 iPerf 区间事实源；不得在 4B-1 创建 `traffic_tests.sqlite` 或重复保存相同 iPerf 样本。
+阶段 4B-2 已实现 `TrafficTestApplicationService`、Local/Agent Adapter、Traffic Event Hub、Controller Task/Agent Task 映射、本地 `packet_size` 修复和数据存储。现有 `iperf_results.sqlite` 继续作为 iPerf 区间事实源；`traffic_runs.sqlite` 不复制 iPerf interval，只保存运行索引、远端映射和独立 Ping 样本。
+
+远端状态映射固定为 `created→STARTING / running→RUNNING / stopping→STOPPING / completed→COMPLETED / failed→FAILED / cancelled→CANCELLED`。未知状态只进入同步错误，不伪造 Task 终态；Controller 已进入 `STOPPING` 时不会被远端 `running` 回退。Agent 完成必须先取得最终 result，失败/取消在 Agent 重启导致 result 缺失时可使用任务快照收口。
+
+下一阶段 4C 只增加受控 REST/WebSocket 与 Vue 页面，不修改本协议，也不新增任意 Shell/命令执行接口。

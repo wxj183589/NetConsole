@@ -41,7 +41,8 @@ def task_dto(snapshot: TaskSnapshot) -> TaskDTO:
         error_message=snapshot.error_message,
         result=snapshot.result,
         source=snapshot.source,
-        cancellable=snapshot.status in {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
+        cancellable=snapshot.source == "local"
+        and snapshot.status in {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
     )
 
 

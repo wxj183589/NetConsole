@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from netconsole.core.shutdown_manager import shutdown_manager
+from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
 from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_error_lines, parse_iperf_line
 
 
@@ -270,8 +271,10 @@ class IperfResultStore:
         self.initialize()
 
     def initialize(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.executescript(
+        def operation() -> None:
+            with connect_sqlite(self.db_path) as conn:
+                initialize_sqlite_wal(conn)
+                conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS iperf_runs (
                     run_id TEXT PRIMARY KEY,
@@ -318,8 +321,21 @@ class IperfResultStore:
                 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_time ON iperf_intervals(interval_center_time);
                 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_run ON iperf_intervals(run_id);
                 """
-            )
-            self._ensure_interval_alignment_columns(conn)
+                )
+                self._ensure_interval_alignment_columns(conn)
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(iperf_intervals)").fetchall()}
+                if "source_event_key" not in columns:
+                    conn.execute("ALTER TABLE iperf_intervals ADD COLUMN source_event_key TEXT NOT NULL DEFAULT ''")
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_iperf_intervals_source_event
+                    ON iperf_intervals(run_id, source_event_key)
+                    WHERE source_event_key <> ''
+                    """
+                )
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
 
     @staticmethod
     def _ensure_interval_alignment_columns(conn: sqlite3.Connection) -> None:
@@ -336,15 +352,17 @@ class IperfResultStore:
 
     def start_run(self, run_id: str, *, mode: str, command: list[str], log_file: Path, started_at: datetime, session_id: str = "", device_id: int | None = None, config: IperfClientConfig | None = None) -> None:
         cfg = config.normalized() if config else None
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+        def operation() -> None:
+            with connect_sqlite(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
                 """
                 INSERT OR REPLACE INTO iperf_runs (
                     run_id, session_id, device_id, mode, protocol, server_ip, port, direction, parallel,
                     target_bandwidth, started_at, status, command_json, log_file, raw_file
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
+                    (
                     run_id,
                     session_id,
                     device_id,
@@ -360,28 +378,46 @@ class IperfResultStore:
                     json.dumps(command, ensure_ascii=False),
                     str(log_file),
                     str(log_file),
-                ),
-            )
+                    ),
+                )
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
 
     def finish_run(self, run_id: str, status: str, ended_at: datetime | None = None) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE iperf_runs SET status = ?, ended_at = ? WHERE run_id = ?",
-                (status, (ended_at or datetime.now()).isoformat(sep=" ", timespec="milliseconds"), run_id),
-            )
+        def operation() -> None:
+            with connect_sqlite(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE iperf_runs SET status = ?, ended_at = ? WHERE run_id = ?",
+                    (status, (ended_at or datetime.now()).isoformat(sep=" ", timespec="milliseconds"), run_id),
+                )
+                conn.commit()
 
-    def append_interval(self, run_id: str, row: dict[str, object], session_id: str = "") -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+        run_sqlite_with_retry(operation)
+
+    def append_interval(
+        self,
+        run_id: str,
+        row: dict[str, object],
+        session_id: str = "",
+        *,
+        source_event_key: str = "",
+    ) -> bool:
+        def operation() -> bool:
+            with connect_sqlite(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute(
                 """
                 INSERT INTO iperf_intervals (
                     run_id, session_id, collector_time, interval_start_sec, interval_end_sec, interval_center_time,
                     device_aligned_time, device_interval_center_time, clock_offset_ms, offset_source, time_source,
                     transfer_bytes, bitrate_mbps, retransmits, cwnd, role, jitter_ms, lost_packets,
-                    total_packets, loss_percent, raw_line
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_packets, loss_percent, raw_line, source_event_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, source_event_key) WHERE source_event_key <> '' DO NOTHING
                 """,
-                (
+                    (
                     run_id,
                     session_id,
                     row.get("collector_time"),
@@ -402,9 +438,14 @@ class IperfResultStore:
                     row.get("lost_packets"),
                     row.get("total_packets"),
                     row.get("loss_percent"),
-                    row.get("raw_line"),
-                ),
-            )
+                        row.get("raw_line"),
+                        str(source_event_key or ""),
+                    ),
+                )
+                conn.commit()
+                return cursor.rowcount == 1
+
+        return run_sqlite_with_retry(operation)
 
 
 class IperfProcessRunner:

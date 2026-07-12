@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 from netconsole.core import app_logger
@@ -80,6 +79,87 @@ class TaskApplicationService:
             self._job_sites.pop(job_id, None)
             raise
 
+    def create_external_task(
+        self,
+        *,
+        task_id: str,
+        task_type: str,
+        task_name: str,
+        source: str,
+        site_name: str | None = None,
+        owner: str = "controller",
+        agent: str = "",
+        device: str = "",
+    ) -> TaskSnapshot:
+        """创建不由本地 Worker 承载、但仍进入统一任务中心的任务。"""
+
+        selected_site = str(site_name or self.site_name or "demo")
+        repository = self.repository(selected_site)
+        if repository.get(task_id) is not None:
+            raise ValueError(f"任务已存在：{task_id}")
+        now = utc_now_iso()
+        snapshot = TaskSnapshot(
+            task_id=task_id,
+            task_type=task_type,
+            task_name=task_name,
+            status=TaskState.PENDING,
+            created_time=now,
+            updated_time=now,
+            owner=owner,
+            device=device,
+            agent=agent,
+            source=str(source or "external"),
+            site_name=selected_site,
+            owner_pid=0,
+        )
+        event = TaskEvent(
+            event_id=uuid.uuid4().hex,
+            task_id=task_id,
+            type="state",
+            time=now,
+            source="service",
+            payload={"state": TaskState.PENDING.value, "task_type": task_type},
+        )
+        repository.record(snapshot, event)
+        self._job_sites[task_id] = selected_site
+        self.events.publish(event.to_dict())
+        return snapshot
+
+    def record_external_event(
+        self,
+        task_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        source: str = "service",
+        site_name: str | None = None,
+        event_id: str = "",
+        event_time: str = "",
+    ) -> TaskSnapshot:
+        """先持久化外部任务事件，再广播同一事件；持久化失败会直接上抛。"""
+
+        selected_site = str(site_name or self._job_sites.get(task_id) or self.site_name or "demo")
+        repository = self.repository(selected_site)
+        snapshot = repository.get(task_id)
+        if snapshot is None:
+            raise KeyError(task_id)
+        selected_time = event_time or utc_now_iso()
+        event = TaskEvent(
+            event_id=event_id or uuid.uuid4().hex,
+            task_id=task_id,
+            type=str(event_type or "log"),
+            time=selected_time,
+            source=source,
+            payload=dict(payload or {}),
+        )
+        updated = self._apply_event(snapshot, event.type, event.payload, selected_time)
+        repository.record(updated, event)
+        self._job_sites[task_id] = selected_site
+        self.events.publish(event.to_dict())
+        if updated.status in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
+            self._job_sites.pop(task_id, None)
+        return updated
+
     def mark_running(self, job_id: str) -> None:
         self.runtime.mark_running(job_id)
 
@@ -95,6 +175,8 @@ class TaskApplicationService:
     def cancel_task(self, job_id: str) -> bool:
         snapshot = self.get_task(job_id)
         if snapshot is None or snapshot.status in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
+            return False
+        if snapshot.source != "local":
             return False
         if self.runtime.is_running(job_id):
             self.runtime.request_cancel(job_id)
