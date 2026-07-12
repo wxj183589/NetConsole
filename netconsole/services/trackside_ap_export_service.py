@@ -259,6 +259,14 @@ def export_trackside_ap_business_from_database(
     )
     check_cancel()
     emit("save_file", len(rows), len(rows), "正在保存Excel文件")
+    from netconsole.services.file_contract import attach_export_metadata
+
+    attach_export_metadata(
+        tmp,
+        effective_suffix=output.suffix,
+        export_type="trackside_ap_business",
+        payload={"source_module": "rail.trackside_ap_business"},
+    )
     os.replace(tmp, output)
     emit("done", len(rows), len(rows), "完成")
     app_logger.log_info("TRACKSIDE_AP_EXPORT_COMPLETED", f"site={site_name} rows={len(rows)} output={output}")

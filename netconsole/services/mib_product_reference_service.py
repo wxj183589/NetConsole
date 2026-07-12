@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
+from netconsole.services.file_contract import ImportValidationError, validate_excel_import
 
 
 @dataclass(frozen=True)
@@ -222,9 +223,15 @@ class MibProductReferenceService:
         software_version: str = "",
         reference_name: str = "",
     ) -> ProductReferenceImportReport:
+        source_path = Path(source)
+        validate_excel_import(
+            source_path,
+            expected_module="snmp.mib_product_reference",
+            allow_legacy=True,
+        )
+        self._validate_reference_content(source_path)
         self.paths.ensure_global_mib_dirs()
         self.repository.initialize()
-        source_path = Path(source)
         file_hash = _sha256_file(source_path)
         duplicate = self.repository.get_product_reference_by_hash(file_hash)
         if duplicate is not None:
@@ -329,6 +336,18 @@ class MibProductReferenceService:
             )
         finally:
             workbook.close()
+
+    @staticmethod
+    def _validate_reference_content(source_path: Path) -> None:
+        workbook = load_workbook(source_path, read_only=True, data_only=True)
+        try:
+            for sheet in workbook.worksheets:
+                objects, traps = _parse_sheet(sheet.title, sheet.iter_rows(values_only=True))
+                if objects or traps:
+                    return
+        finally:
+            workbook.close()
+        raise ImportValidationError("不是 NetConsole 支持的导入文件：产品参考表未识别到对象或告警字段")
 
 
 def _parse_sheet(sheet_name: str, rows: Iterable[tuple[object, ...]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:

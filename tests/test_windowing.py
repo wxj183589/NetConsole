@@ -438,7 +438,7 @@ def test_startup_splash_uses_product_name_without_net_tools():
     splash = StartupSplash(I18n("en_US"))
     texts = [label.text() for label in splash.findChildren(QLabel)]
 
-    assert "NetConsole" in texts
+    assert "NetConsole v1.3.8 by WXJ" in texts
     assert "Net Tools" not in texts
     assert all("Net Tools" not in text for text in texts)
     splash.close()
@@ -449,8 +449,9 @@ def test_startup_splash_version_label_is_localized():
     zh_splash = StartupSplash(I18n("zh_CN"))
     en_splash = StartupSplash(I18n("en_US"))
 
-    assert zh_splash.version_label.text() == f"版本：{version_info.APP_VERSION_DISPLAY}"
-    assert en_splash.version_label.text() == f"Version: {version_info.APP_VERSION_DISPLAY}"
+    display = f"{version_info.APP_VERSION_DISPLAY} {version_info.APP_BYLINE}"
+    assert zh_splash.version_label.text() == f"版本：{display}"
+    assert en_splash.version_label.text() == f"Version: {display}"
     zh_splash.close()
     en_splash.close()
 
@@ -476,16 +477,17 @@ def test_ui_version_text_uses_shared_version_source(tmp_path, monkeypatch):
     monkeypatch.setattr(version_info, "APP_NAME", "NetConsole")
     monkeypatch.setattr(version_info, "APP_VERSION", "v9.9.9")
     monkeypatch.setattr(version_info, "APP_VERSION_DISPLAY", "v9.9.9")
+    monkeypatch.setattr(version_info, "APP_TITLE_DISPLAY", "NetConsole v9.9.9 by WXJ")
     context = create_demo_context(PathResolver(tmp_path))
 
     splash = StartupSplash(I18n("en_US"))
     window = MainWindow(context.site, context.repository, I18n("en_US"), context.paths)
     changelog = ChangelogDialog(I18n("en_US"))
 
-    assert splash.version_label.text() == "Version: v9.9.9"
-    assert window.windowTitle() == "NetConsole v9.9.9"
+    assert splash.version_label.text() == "Version: v9.9.9 by WXJ"
+    assert window.windowTitle() == "NetConsole v9.9.9 by WXJ"
     assert window.version_button.text() == "v9.9.9"
-    assert window.version_button.toolTip() == "NetConsole v9.9.9"
+    assert window.version_button.toolTip() == "NetConsole v9.9.9 by WXJ"
     assert changelog.windowTitle() == "Changelog v9.9.9"
     splash.close()
     changelog.close()

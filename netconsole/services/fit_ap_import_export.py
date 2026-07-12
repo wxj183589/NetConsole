@@ -13,6 +13,7 @@ from netconsole.services.ap_extension_import import (
     standard_template_headers,
 )
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.services.file_contract import read_validated_csv_rows, validate_csv_import, validate_excel_import, validate_optional_contract_metadata
 from netconsole.utils.mileage import format_track_mileage, mileage_storage_text, parse_track_mileage
 from netconsole.utils.station_normalize import normalize_station_value
 
@@ -116,7 +117,11 @@ class FitApImportExportService:
         self.ap_extension_import_service = ApExtensionImportService()
 
     def preview_ap_extension_import(self, path: Path, import_mode: str) -> ImportPreview:
-        return self.ap_extension_import_service.preview_file(path, import_mode=import_mode)
+        validate_optional_contract_metadata(path, expected_module="ac.ap_extension")
+        preview = self.ap_extension_import_service.preview_file(path, import_mode=import_mode)
+        if int(preview.summary.get("total_rows") or 0) <= 0 or preview.confidence_score <= 0:
+            raise ValueError("不是 NetConsole 支持的导入文件：未识别到 AP 扩展信息")
+        return preview
 
     def commit_ap_extension_import(
         self,
@@ -131,8 +136,8 @@ class FitApImportExportService:
         )
 
     def import_metadata_csv(self, path: Path) -> ApMetadataImportResult:
-        with Path(path).open("r", newline="", encoding="utf-8-sig") as file:
-            rows = list(csv.reader(file))
+        validate_csv_import(path, expected_module="ac.ap_extension", required_headers=("AP_MAC",), allow_legacy=True)
+        rows, _metadata, _encoding = read_validated_csv_rows(path)
         if not rows:
             return ApMetadataImportResult(0, 0, [])
         return self.import_metadata_rows([header.strip() for header in rows[0]], rows[1:])
@@ -140,6 +145,12 @@ class FitApImportExportService:
     def import_metadata_file(self, path: Path) -> ApMetadataImportResult:
         suffix = Path(path).suffix.casefold()
         if suffix == ".xlsx":
+            validate_excel_import(
+                path,
+                expected_module="ac.ap_extension",
+                required_headers={"AP扩展信息": ("AP_MAC",)},
+                allow_legacy=True,
+            )
             sheet = load_workbook_without_unsupported_image_warning(path, data_only=True).active
             rows = list(sheet.iter_rows(values_only=True))
             if not rows:

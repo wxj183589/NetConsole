@@ -278,13 +278,13 @@ def wrap_dialog_content_if_needed(dialog: QDialog, content: QWidget) -> QScrollA
 class _DialogStyleEventFilter(QObject):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() != QEvent.Show or not isinstance(watched, QWidget):
-            return super().eventFilter(watched, event)
+            return False
         if isinstance(watched, QDialog):
             apply_dialog_style(watched)
         elif _looks_like_popup_window(watched):
             apply_popup_window_style(watched)
             window_registry.register(watched)
-        return super().eventFilter(watched, event)
+        return False
 
 
 def _polish_button(button: QPushButton) -> None:

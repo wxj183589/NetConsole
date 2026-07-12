@@ -35,9 +35,13 @@ project/release.py
 tools/fping_v5/fping.exe
 tools/fping_v5/cygwin1.dll
 tools/iperf/iperf3.exe
+tools/IPOP_v4.1/README.md
+docs/IPOP_v4.1_notice.md
 ```
 
-运行时工具路径由代码解析，不允许写死用户本机路径。
+运行时工具路径由代码解析，不允许写死用户本机路径。IPOP 由用户从网络工具箱明确点击后通过 Windows `runas` 请求管理员权限启动，NetConsole 不等待该外部程序退出；缺文件、非 Windows 平台、UAC 拒绝或系统启动失败必须给出明确提示。
+
+IPOP 二进制不属于普通构建的必需输入。仓库没有可核验的 IPOP 再分发许可，因此普通开源包、内部包和客户包均排除 `IPOP.EXE`。只有显式构建工程师包时，打包前检查才要求构建机本地存在 `tools/IPOP_v4.1/IPOP.EXE`，并将其复制到工程师包；此行为不代表授权已确认。对外分发前必须补齐 LICENSE/NOTICE 或移除二进制，详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
 
 ## 发布目录约束
 
@@ -96,21 +100,26 @@ Nuitka：
 ```text
 --build-editions internal
 --build-editions customer
+--build-editions engineer
 --build-editions both
+--build-editions all
 ```
 
 功能 profile：
 
 - internal 默认 full。
 - customer 默认 customer。
+- engineer 默认 full；客户 profile 中“工程师打包”开启时，`both` 构建会额外生成 engineer 包。
 - 客户版可嵌入功能隐藏配置。
 - 客户版内部调试解锁口令只作为构建期 PBKDF2 哈希写入，不写明文密码。
+- 功能开关配置页只允许源码开发态显示，任何冻结/安装包运行态（包括 internal/engineer）都不注册该入口。
 
 ## 进程退出约定
 
 - 主程序明确退出时，应等待或回收内置子任务/进程。
 - 内置 fping / iperf 等工具需要随主程序明确收尾。
 - 外部 WinSCP 属于用户启动的外部进程，主程序退出时不强制处理。
+- 外部 IPOP 同样属于用户明确启动的独立程序，主程序退出时不强制结束。
 
 ## 验证
 

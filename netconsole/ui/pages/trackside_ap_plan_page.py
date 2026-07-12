@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -40,6 +40,7 @@ from netconsole.services.trackside_ap_plan_io import (
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.shell.fluent_bridge import FIF
+from netconsole.ui.table_utils import attach_table_context_menu, auto_fit_table_columns, configure_readable_table_columns
 
 
 def _set_button_icon(button: QPushButton, icon: object | None) -> None:
@@ -87,10 +88,11 @@ class TracksideApPlanPage(QWidget):
 
         self.table.setColumnCount(len(TRACKSIDE_PLAN_COLUMNS))
         set_table_column_fields(self.table, [field for _key, field in TRACKSIDE_PLAN_COLUMNS])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         apply_table_style(self.table)
+        configure_readable_table_columns(self.table)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        attach_table_context_menu(self.table, self.i18n.language, include_history=False)
         self._apply_column_layout()
 
         layout = QVBoxLayout(self)
@@ -266,23 +268,20 @@ class TracksideApPlanPage(QWidget):
                 f"加载轨旁AP规划：station={row.get('station_name')}, ap_count={row.get('ap_count')}, vlan={row.get('ap_management_vlans')}",
             )
         self.table.blockSignals(False)
-        self._apply_column_layout()
-        QTimer.singleShot(0, self._apply_column_layout)
+        auto_fit_table_columns(
+            self.table,
+            min_widths={index: min(120, width) for index, width in enumerate(TRACKSIDE_PLAN_COLUMN_WIDTHS.values())},
+            max_widths={index: max(220, width) for index, width in enumerate(TRACKSIDE_PLAN_COLUMN_WIDTHS.values())},
+        )
 
     def _apply_column_layout(self) -> None:
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.Interactive)
         fields = [field for _key, field in TRACKSIDE_PLAN_COLUMNS]
-        fixed_width = sum(TRACKSIDE_PLAN_COLUMN_WIDTHS[field] for field in fields if field != "station_name")
-        available = max(self.table.viewport().width(), 0)
-        station_width = TRACKSIDE_PLAN_COLUMN_WIDTHS["station_name"]
-        if available > fixed_width + station_width:
-            station_width = available - fixed_width
         for column, field in enumerate(fields):
-            width = station_width if field == "station_name" else TRACKSIDE_PLAN_COLUMN_WIDTHS[field]
             header.setSectionResizeMode(column, QHeaderView.Interactive)
-            self.table.setColumnWidth(column, width)
+            self.table.setColumnWidth(column, TRACKSIDE_PLAN_COLUMN_WIDTHS[field])
 
     def _read_table_rows(self) -> list[dict[str, object | None]]:
         rows = []

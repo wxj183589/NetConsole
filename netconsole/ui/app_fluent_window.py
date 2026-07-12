@@ -125,7 +125,7 @@ class AppFluentWindow(SplitFluentWindow):
 
         self.apply_app_theme(self.settings.theme, persist=False)
         self.setMicaEffectEnabled(False)
-        self.setWindowTitle(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY} - 网络设备采集工具")
+        self.setWindowTitle(f"{version_info.APP_TITLE_DISPLAY} - 网络设备采集工具")
         self.resize_for_screen()
 
         self._register_real_pages()
@@ -369,7 +369,6 @@ class AppFluentWindow(SplitFluentWindow):
 
     def _emit_startup_geometry_line(self, line: str) -> None:
         print(line)
-        app_logger.log_info("UI_STARTUP_GEOMETRY", line)
 
     def _log_main_window_geometry_save_policy(self) -> None:
         rect = QRect(self.normalGeometry() if self.isMaximized() else self.geometry())
@@ -388,7 +387,7 @@ class AppFluentWindow(SplitFluentWindow):
             ("config_collection", "配置采集中心", "保存配置、下载配置和差异比较", FIF.SYNC, self._create_config_collection_page, self._config_actions()),
             ("file_management", "文件管理", "本地/设备双窗格文件下载和 Mesh 快选", FIF.FOLDER, self._create_file_management_page, self._file_actions()),
             ("snmp_center", "SNMP 中心", "MIB 浏览、OID 查询、SNMP 采集和监控", FIF.SEARCH, self._create_snmp_center_page, self._snmp_actions()),
-            ("network_tools", "网络工具", "Ping、fping、iperf、本机网卡和路由工具", FIF.COMMAND_PROMPT, self._create_network_tools_page, self._network_actions()),
+            ("network_tools", "网络工具", "Ping、fping、iperf、无线扫描和常用小工具", FIF.COMMAND_PROMPT, self._create_network_tools_page, self._network_actions()),
             ("command_reference", "命令说明", "软件使用命令、接口说明和中兴适配参考", FIF.DOCUMENT, self._create_command_reference_page, self._command_reference_actions()),
             ("logs", "日志中心", "运行日志、筛选、导出和打开日志目录", FIF.DOCUMENT, self._create_log_page, self._log_actions()),
             ("system_settings", "系统设置", "外观、局点、采集、文件和工具路径", FIF.SETTING, self._settings_page, self._settings_actions()),
@@ -591,7 +590,7 @@ class AppFluentWindow(SplitFluentWindow):
         return button
 
     def _top_bar_title(self) -> QLabel:
-        title_label = QLabel(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        title_label = QLabel(version_info.APP_TITLE_DISPLAY)
         title_label.setObjectName("appTopBarTitle")
         title_label.setToolTip("网络设备采集工具")
         title_label.setMinimumWidth(142)
@@ -954,6 +953,10 @@ class AppFluentWindow(SplitFluentWindow):
         page = self.stackedWidget.widget(index)
         for page_id, widget in self.pages.items():
             if widget is page:
+                for row, item in enumerate(self._nav_items):
+                    if str(item.data(256) or "") == page_id:
+                        self._current_row = row
+                        break
                 self._enter_page(page_id)
                 return
 
@@ -1167,7 +1170,8 @@ class AppFluentWindow(SplitFluentWindow):
     def _current_page_id(self) -> str | None:
         if not 0 <= self._current_row < len(self._nav_items):
             return None
-        return str(self._nav_items[self._current_row].data(256) or "devices")
+        page_id = str(self._nav_items[self._current_row].data(256) or "").strip()
+        return page_id or None
 
     def _create_detached_page(self, page_id: str) -> QWidget:
         feature_id = PAGE_FEATURE_BY_PAGE_ID.get(page_id)
@@ -1365,7 +1369,7 @@ class AppFluentWindow(SplitFluentWindow):
             f"[UI] Current language: {self.i18n.language}",
             "[UI] TopBar event handling: safe",
             f"[UI] Window title: {self.windowTitle()}",
-            f"[UI] Visible title line: {version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}",
+            f"[UI] Visible title line: {version_info.APP_TITLE_DISPLAY}",
             *self._window_geometry_log,
             "[UI] Theme source: SettingsStore",
             f"[UI] Settings theme: {self.settings.theme}",
@@ -1389,7 +1393,10 @@ class AppFluentWindow(SplitFluentWindow):
         ]
         for line in lines:
             print(line)
-            app_logger.log_info("UI_STARTUP", line)
+        app_logger.log_info(
+            "UI_STARTUP_SUMMARY",
+            f"pages={len(self._nav_items)} site={self.site.name} theme={self.current_theme} window={self.windowTitle()}",
+        )
 
     def _window_chrome_mode(self) -> str:
         return "qfluentwidgets-custom-titlebar" if getattr(self, "titleBar", None) is not None else "native-titlebar"

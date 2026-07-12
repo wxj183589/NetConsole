@@ -890,6 +890,11 @@ class MeshLogAnalysisPage(QWidget):
 
     def closeEvent(self, event) -> None:
         self._stop_tab_load_worker()
+        if self._profiles_refresh_job_id:
+            self.background_manager.force_stop_job(self._profiles_refresh_job_id)
+            self._profiles_refresh_job_id = ""
+            self._profiles_refresh_selection = None
+            self.is_loading = False
         if self.link_export_job_id:
             cancel_export_task(self, self.link_export_job_id)
         super().closeEvent(event)

@@ -46,9 +46,14 @@ ALLOWED_RUNTIME = (
     "tools/iperf/cygwin1.dll",
     "tools/iperf/cygz.dll",
     "tools/iperf/iperf3.exe",
+    "tools/ipop_v4.1",
+    "tools/ipop_v4.1/readme.md",
     "netconsole/ui/icons",
     "netconsole/assets",
     "netconsole/assets/changelog.md",
+    "netconsole/assets/open_source_notices.json",
+    "netconsole/assets/third_party_components.md",
+    "netconsole/assets/ipop_v4.1_notice.md",
 )
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "runtime", "tools")
 REQUIRED_PYINSTALLER_ARGS = (

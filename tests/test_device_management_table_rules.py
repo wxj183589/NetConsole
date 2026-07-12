@@ -45,11 +45,13 @@ def app():
 @pytest.fixture(autouse=True)
 def _stub_device_management_background_jobs(monkeypatch):
     monkeypatch.setattr("netconsole.ui.pages.device_management_page.DeviceManagementPage.refresh", lambda *_args, **_kwargs: None)
+    application = QApplication.instance()
+    existing_widgets = set(application.topLevelWidgets()) if application is not None else set()
     yield
     application = QApplication.instance()
     if application is None:
         return
-    for widget in list(application.topLevelWidgets()):
+    for widget in set(application.topLevelWidgets()) - existing_widgets:
         widget.close()
         widget.deleteLater()
     application.processEvents()

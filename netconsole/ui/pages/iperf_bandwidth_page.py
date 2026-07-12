@@ -291,12 +291,18 @@ class IperfBandwidthPage(QWidget):
     def refresh_tool_status(self) -> None:
         tool = find_iperf_tool(self.paths)
         if tool is None:
+            self.apply_tool_status(None, None)
+            return
+        status = detect_iperf_version(tool)
+        self.apply_tool_status(tool, status)
+
+    def apply_tool_status(self, tool: Path | None, status: object | None) -> None:
+        if tool is None or status is None:
             self.tool_label.setText(self.i18n.t("iperf.tool_missing"))
             self.server_start_button.setEnabled(False)
             self.server_stop_button.setEnabled(False)
             self.client_start_button.setEnabled(False)
             return
-        status = detect_iperf_version(tool)
         self.tool_label.setText(f"{self.i18n.t('iperf.tool_found')}: iperf {status.version or self.i18n.t('iperf.unknown_version')} ({tool})")
         self._set_server_state(self.server_state)
         self.client_start_button.setEnabled(True)

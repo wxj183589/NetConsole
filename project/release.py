@@ -15,6 +15,8 @@ VERSION_FILE = ROOT / "netconsole" / "core" / "version.py"
 VERSION_INFO_FILE = ROOT / "release" / "_build" / "release" / "version_info.txt"
 INTERNAL_REMOTE = "ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git"
 GITHUB_REMOTE = "git@github.com:wxj183589/NetConsole.git"
+INTERNAL_WEB_URL = "https://nas.love-ok.com:3021/mengyou/NetConsole.git"
+GITHUB_WEB_URL = "https://github.com/wxj183589/NetConsole.git"
 REMOTE_URLS = {
     "github": GITHUB_REMOTE,
     "nas": INTERNAL_REMOTE,
@@ -104,13 +106,20 @@ def render_version_py(version: str, build_time: str, git_commit: str) -> str:
 APP_NAME = "NetConsole"
 APP_VERSION = "{version}"
 APP_VERSION_DISPLAY = APP_VERSION
+APP_BYLINE = "by WXJ"
+APP_TITLE_DISPLAY = f"{{APP_NAME}} {{APP_VERSION_DISPLAY}} {{APP_BYLINE}}"
 BUILD_TIME = "{build_time}"
 GIT_COMMIT = "{git_commit}"
 APP_AUTHOR = "{APP_AUTHOR}"
-REPOSITORY_URLS = (
+REPOSITORY_PUSH_URLS = (
     "{INTERNAL_REMOTE}",
     "{GITHUB_REMOTE}",
 )
+REPOSITORY_WEB_URLS = (
+    "{GITHUB_WEB_URL}",
+    "{INTERNAL_WEB_URL}",
+)
+REPOSITORY_URLS = REPOSITORY_WEB_URLS
 '''
 
 

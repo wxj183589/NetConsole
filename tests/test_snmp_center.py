@@ -24,6 +24,7 @@ from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.comware_version_service import parse_comware_version
 from netconsole.services.mib_product_reference_compare_service import MibProductReferenceCompareService
 from netconsole.services.mib_resource_service import MibResourceService
+from netconsole.services.file_contract import ImportValidationError
 from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services import snmp_client as snmp_client_module
 from netconsole.services.snmp_client import SnmpClient, _WireResponse, _WireVarBind, _encode_snmp_value, normalize_oid
@@ -344,7 +345,9 @@ def test_snmp_center_hides_reference_compare_and_standalone_query_tabs(tmp_path:
     _qt_app()
     paths = PathResolver(tmp_path)
     paths.ensure_site_dirs("demo")
-    repository = DeviceRepository(paths.site_db_path("demo"))
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
 
     page = SnmpCenterPage(repository, I18n(), "demo", paths)
     titles = [page.tabs.tabText(index) for index in range(page.tabs.count())]
@@ -410,7 +413,9 @@ END
     module = next(row for row in global_repo.list_modules() if row["module_name"] == "TEST-MIB")
     rows = global_repo.list_objects(module_id=int(module["id"]), limit=100)
 
-    page = SnmpCenterPage(DeviceRepository(paths.site_db_path("demo")), I18n(), "demo", paths)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    page = SnmpCenterPage(DeviceRepository(database), I18n(), "demo", paths)
     page.browser_page.module_filter.addItem("TEST-MIB", int(module["id"]))
     page.browser_page.module_filter.setCurrentIndex(0)
     page.browser_page._build_module_tree(int(module["id"]), rows)
@@ -470,7 +475,9 @@ def test_mib_browser_base_tree_starts_at_iso_and_filters_invalid_oid(tmp_path: P
     _qt_app()
     paths = PathResolver(tmp_path)
     paths.ensure_site_dirs("demo")
-    page = SnmpCenterPage(DeviceRepository(paths.site_db_path("demo")), I18n(), "demo", paths)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    page = SnmpCenterPage(DeviceRepository(database), I18n(), "demo", paths)
     browser = page.browser_page
 
     browser.tree.clear()
@@ -498,7 +505,9 @@ def test_mib_browser_filters_are_simplified(tmp_path: Path):
     paths.ensure_site_dirs("demo")
     GlobalMibRepository(paths.global_mib_db_path()).initialize()
 
-    page = SnmpCenterPage(DeviceRepository(paths.site_db_path("demo")), I18n(), "demo", paths)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    page = SnmpCenterPage(DeviceRepository(database), I18n(), "demo", paths)
     browser = page.browser_page
 
     assert [browser.tree_mode_combo.itemData(index) for index in range(browser.tree_mode_combo.count())] == ["general", "h3c_product"]
@@ -720,3 +729,14 @@ def test_snmp_set_value_encoder_validates_basic_types():
     assert _encode_snmp_value("IpAddress", "192.168.1.1") == b"\x40\x04\xc0\xa8\x01\x01"
     with pytest.raises(ValueError):
         _encode_snmp_value("Gauge32", "-1")
+
+
+def test_mib_import_rejects_unrelated_text_before_creating_database(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    unrelated = tmp_path / "notes.txt"
+    unrelated.write_text("这只是普通说明文件，不是 MIB。", encoding="utf-8")
+
+    with pytest.raises(ImportValidationError, match="不是 NetConsole 支持的导入文件"):
+        MibResourceService(paths).import_paths([unrelated])
+
+    assert not paths.global_mib_db_path().exists()

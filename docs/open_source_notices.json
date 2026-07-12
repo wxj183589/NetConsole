@@ -83,5 +83,12 @@
     "purpose": "Windows 发布包构建",
     "license": "GPL-2.0-or-later with bootloader exception",
     "homepage": "https://pyinstaller.org/"
+  },
+  {
+    "name": "IPOP v4.1",
+    "purpose": "用户明确点击后以管理员权限启动的外部网络工具",
+    "license": "仓库未提供许可证文本，发布前必须核实再分发授权",
+    "homepage": "",
+    "note": "NetConsole 不嵌入、不修改且不接管该程序生命周期；授权无法确认时不得随客户包分发。"
   }
 ]

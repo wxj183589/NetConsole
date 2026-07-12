@@ -414,6 +414,8 @@ def test_ac_management_offline_tab_starts_loader_without_ui_thread_build(tmp_pat
     monkeypatch.setattr(page_module, "build_latest_ap_history_indexes", fail_if_called)
     monkeypatch.setattr(page_module, "OfflineApLedgerLoadThread", FakeOfflineThread)
     page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
+    page.ac_devices = [ac]
+    page.device_combo.addItem(ac.name, ac.device_uuid)
 
     page.handle_overview_inner_tab_changed(1)
 
@@ -434,6 +436,8 @@ def test_offline_ledger_double_click_opens_ap_detail_by_mac(tmp_path, monkeypatc
         [{"ap_uuid": "ap-idle", "ap_name": "AP-IDLE", "ap_mac": "0011-2233-4455", "serial_number": "SN-IDLE", "state": "I"}],
     )
     page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
+    page.ac_devices = [ac]
+    page.device_combo.addItem(ac.name, ac.device_uuid)
     page.offline_ap_ledger_rows = [{"ap_name": "AP-IDLE", "ap_mac": "0011-2233-4455"}]
 
     opened = {}
@@ -458,6 +462,7 @@ def test_offline_ledger_double_click_opens_ap_detail_by_mac(tmp_path, monkeypatc
             pass
 
     monkeypatch.setattr("netconsole.ui.pages.ac_management_page.FitApDetailDialog", FakeDialog)
+    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
 
     page.open_ap_detail_from_offline_ledger(0)
 

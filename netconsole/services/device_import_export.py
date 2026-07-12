@@ -10,6 +10,7 @@ from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
+from netconsole.services.file_contract import ImportValidationError, read_validated_csv_rows, validate_csv_import
 
 
 SNMPV3_SECURITY_LEVELS = ("noAuthNoPriv", "AuthNoPriv", "AuthPriv")
@@ -104,6 +105,17 @@ class DeviceImportExportService:
         self.group_repository = group_repository
 
     def import_csv(self, path: Path) -> ImportResult:
+        try:
+            validate_csv_import(
+                path,
+                expected_module="devices",
+                required_headers=TEMPLATE_FIELDS,
+                allow_legacy=True,
+            )
+        except ImportValidationError as exc:
+            if "编码" in str(exc):
+                raise ValueError(CSV_ENCODING_ERROR) from exc
+            raise
         rows = self._read_csv_rows(Path(path))
         if not rows:
             return ImportResult(created=0, skipped=0, errors=[])
@@ -114,17 +126,26 @@ class DeviceImportExportService:
             (line_number, self._map_row(headers, values, mode))
             for line_number, values in enumerate(rows[1:], start=2)
         ]
+        self._validate_all_rows(mapped_rows)
         return self._import_rows(mapped_rows)
+
+    def _validate_all_rows(self, rows: list[tuple[int, dict[str, object | None]]]) -> None:
+        seen_addresses: set[str] = set()
+        for line_number, payload in rows:
+            if not payload.get("name") or not payload.get("primary_address"):
+                raise ValueError(f"缺少必要字段：第 {line_number} 行设备名称和主用地址必填")
+            address = str(payload.get("primary_address") or "").strip().casefold()
+            if address in seen_addresses:
+                raise ValueError(f"第 {line_number} 行主用地址重复：{address}")
+            seen_addresses.add(address)
+            compact = {key: value for key, value in payload.items() if value is not None and key != "group_name"}
+            self._apply_defaults(compact)
+            self._validate_payload(compact)
 
     @staticmethod
     def _read_csv_rows(path: Path) -> list[list[str]]:
-        for encoding in CSV_IMPORT_ENCODINGS:
-            try:
-                with path.open("r", newline="", encoding=encoding) as file:
-                    return list(csv.reader(file))
-            except UnicodeError:
-                continue
-        raise ValueError(CSV_ENCODING_ERROR)
+        rows, _metadata, _encoding = read_validated_csv_rows(path)
+        return rows
 
     def export_csv(self, path: Path, devices: Iterable[Device] | None = None) -> None:
         devices = list(devices if devices is not None else self.repository.list())

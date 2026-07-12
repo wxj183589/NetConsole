@@ -343,7 +343,7 @@ class MainWindow(AppFramelessMainWindow):
 
             page = FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
         else:
-            return self.device_page
+            raise ValueError(f"未知模块：{page_id}")
         self.pages[page_id] = page
         self.stack.addWidget(page)
         app_logger.log_info(f"PAGE_CREATED:{page_id}", self._startup_elapsed_detail())
@@ -411,7 +411,7 @@ class MainWindow(AppFramelessMainWindow):
             from netconsole.ui.pages.feature_flags_page import FeatureFlagsPage
 
             return FeatureFlagsPage(self.i18n, self.feature_gate, on_profile_saved=self.refresh_feature_flags)
-        return DeviceManagementPage(self.repository, self.i18n, self.site.name)
+        raise ValueError(f"未知模块：{page_id}")
 
     def detach_current_page(self) -> None:
         row = self.navigation.currentRow()
@@ -897,7 +897,7 @@ class MainWindow(AppFramelessMainWindow):
         self.move(frame.topLeft())
 
     def retranslate(self) -> None:
-        self.setWindowTitle(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        self.setWindowTitle(version_info.APP_TITLE_DISPLAY)
         self.set_title_bar_context(site_name=self.site.name, status="就绪")
         self.set_title_bar_theme(self.current_theme)
         self.site_label.setText(f"{self.i18n.t('site.current')}: {self.site.name}")
@@ -914,7 +914,7 @@ class MainWindow(AppFramelessMainWindow):
         self.about_button.setIcon(QIcon(str(icon_path("love.png"))))
         self.about_button.setToolTip(self.i18n.t("about.title"))
         self.version_button.setText(version_info.APP_VERSION_DISPLAY)
-        self.version_button.setToolTip(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        self.version_button.setToolTip(version_info.APP_TITLE_DISPLAY)
         self.data_disk_button.setText(self.i18n.t("data_disk.button"))
         self.data_disk_button.setToolTip(self.i18n.t("data_disk.title"))
         self._sync_theme_buttons()

@@ -389,7 +389,7 @@ def test_powershell_empty_and_single_object_json_results(monkeypatch) -> None:
     assert manager_module._ensure_list(rows)[0]["Name"] == "Ethernet"
 
 
-def test_admin_network_manager_arg_switches_to_network_manager_tab() -> None:
+def test_admin_network_manager_arg_opens_network_tools_without_removed_tab() -> None:
     from netconsole.app import open_admin_network_manager
 
     class FakeNavigation:
@@ -431,7 +431,7 @@ def test_admin_network_manager_arg_switches_to_network_manager_tab() -> None:
     open_admin_network_manager(window)
     assert window.navigation.current_row == 6
     assert window.stack.current is window.page
-    assert window.page.tabs.current_index == 2
+    assert window.page.tabs.current_index is None
 
 
 def test_admin_launch_success_updates_log_without_success_modal(monkeypatch, tmp_path: Path) -> None:

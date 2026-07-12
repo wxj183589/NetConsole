@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -52,8 +53,8 @@ def test_build_window_starts_app_fluent_window():
 
     assert isinstance(window, AppFluentWindow)
     assert window.__class__.__name__ == "AppFluentWindow"
-    assert window.windowTitle() == "NetConsole v1.3.8 - 网络设备采集工具"
-    assert any(label.text() == "NetConsole v1.3.8" for label in window.findChildren(QLabel, "appTopBarTitle"))
+    assert window.windowTitle() == "NetConsole v1.3.8 by WXJ - 网络设备采集工具"
+    assert any(label.text() == "NetConsole v1.3.8 by WXJ" for label in window.findChildren(QLabel, "appTopBarTitle"))
     assert not any(label.text() == "网络设备采集工具" for label in window.findChildren(QLabel, "appTopBarTitle"))
     assert not window.findChildren(QLabel, "fluentTitleSub")
     assert not any(not label.isHidden() and label.text() == window.windowTitle() for label in window.findChildren(QLabel, "titleLabel"))
@@ -157,6 +158,7 @@ def test_fluent_detach_current_page_opens_non_focus_window(monkeypatch):
     detached = window.detached_windows.get("devices")
     assert isinstance(detached, QMainWindow)
     assert detached.isVisible()
+    assert detached.windowTitle() == "NetConsole - 设备管理"
     assert detached.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
     assert detached.windowModality() == Qt.WindowModality.NonModal
 
@@ -164,6 +166,22 @@ def test_fluent_detach_current_page_opens_non_focus_window(monkeypatch):
     assert window.detached_windows.get("devices") is detached
 
     detached.close()
+    expected_titles = {
+        "ac": "AC 管理",
+        "rail_transit": "轨道交通",
+        "network_tools": "网络工具",
+        "logs": "日志中心",
+        "system_settings": "系统设置",
+        "snmp_center": "SNMP 中心",
+        "file_management": "文件管理",
+    }
+    for page_id, title in expected_titles.items():
+        window.switchTo(window.pages[page_id])
+        window.detach_current_page()
+        detached_window = window.detached_windows.get(page_id)
+        assert isinstance(detached_window, QMainWindow)
+        assert detached_window.windowTitle() == f"NetConsole - {title}"
+        detached_window.close()
     window.close()
 
 
@@ -221,6 +239,10 @@ def test_ac_page_loads_local_data_on_first_enter():
 
     assert not ac_page._device_list_loaded
     window.switchTo(window.pages["ac"])
+    deadline = time.time() + 5
+    while not ac_page._device_list_loaded and time.time() < deadline:
+        app().processEvents()
+        time.sleep(0.01)
 
     assert ac_page._loaded_once
     assert ac_page._last_loaded_site_name == window.site.name
@@ -266,6 +288,7 @@ def test_file_management_fluent_connect_action_clicks_raw_connect_button():
 
     file_page.connect_button.clicked.disconnect()
     file_page.connect_button.clicked.connect(lambda: calls.append("connect"))
+    file_page.connect_button.setEnabled(True)
     connect_button = next(button for button in command_bar.findChildren(QPushButton) if button.text() == "连接")
     connect_button.click()
 
@@ -289,6 +312,13 @@ def test_rail_transit_uses_only_tab_local_actions():
     window.switchTo(rail_page)
     raw_rail_page._ensure_feature_page("rail.train_online")
     raw_rail_page._ensure_feature_page("rail.car_network_diagnostic")
+    raw_rail_page._ensure_feature_page("rail.trackside_ap_business")
+    raw_rail_page._ensure_feature_page("rail.online_mr_collection")
+    raw_rail_page._ensure_feature_page("rail.online_mr_analysis")
+
+    assert raw_rail_page.trackside_page is not None
+    assert raw_rail_page.online_mr_page is not None
+    assert raw_rail_page.online_mr_analysis_page is not None
 
     train_buttons = [
         raw_rail_page.vehicle_mr_online_page.start_button,
@@ -374,9 +404,8 @@ def test_snmp_center_uses_only_tab_local_actions():
 
 
 def test_visible_fluent_window_close_requires_confirmation(monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     from netconsole.app import build_window
+    from netconsole.ui.app_fluent_window import MessageBox
 
     app()
     window = build_window()
@@ -384,9 +413,9 @@ def test_visible_fluent_window_close_requires_confirmation(monkeypatch):
 
     def fake_question(*args, **kwargs):
         prompts.append((args, kwargs))
-        return QMessageBox.No
+        return MessageBox.No
 
-    monkeypatch.setattr(QMessageBox, "question", fake_question)
+    monkeypatch.setattr(MessageBox, "question", fake_question)
     window.show()
 
     assert window.close() is False
@@ -560,6 +589,10 @@ def test_settings_page_saves_real_controls(tmp_path):
     assert isinstance(page.theme_combo, NoWheelSettingsComboBox)
     assert isinstance(page.ssh_port_spin, NoWheelSettingsSpinBox)
     assert isinstance(page.telnet_port_spin, NoWheelSettingsSpinBox)
+    assert not page.default_concurrency_spin.isEnabled()
+    assert not page.command_timeout_spin.isEnabled()
+    assert not page.log_retention_spin.isEnabled()
+    assert not page.download_dir_edit.isEnabled()
 
     page.theme_combo.setCurrentText("深色")
     page.language_combo.setCurrentText("English")
@@ -580,10 +613,10 @@ def test_settings_page_saves_real_controls(tmp_path):
     assert reloaded.theme == "dark"
     assert reloaded.language == "en_US"
     assert reloaded.theme_color == "#2563EB"
-    assert reloaded.int_value("default_concurrency", 0) == 32
-    assert reloaded.int_value("command_timeout", 0) == 45
-    assert reloaded.int_value("log_retention_days", 0) == 90
-    assert reloaded.get_value("download_dir") == str(tmp_path / "downloads")
+    assert reloaded.int_value("default_concurrency", 0) == 10
+    assert reloaded.int_value("command_timeout", 0) == 30
+    assert reloaded.int_value("log_retention_days", 0) == 30
+    assert reloaded.get_value("download_dir") == ""
     assert reloaded.get_value("external_terminal/type") == "securecrt"
     assert reloaded.get_value("external_terminal/securecrt_path") == str(tmp_path / "SecureCRT.exe")
     assert reloaded.get_value("external_terminal/securecrt_sessions_root") == str(tmp_path / "crt_sessions")

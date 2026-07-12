@@ -21,6 +21,7 @@ from netconsole.services.job_center.job_events import log_event
 from netconsole.services.job_center.worker_protocol import write_event
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
 from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_database
+from netconsole.services.file_contract import attach_export_metadata
 
 
 def _emit(event: dict[str, Any]) -> None:
@@ -121,6 +122,12 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
     if _should_cancel(job):
         raise MeshLinkDetailExportCancelled("导出已取消")
     _emit_progress(job, total, total, "mesh_analysis.export_progress_save", "正在保存链路明细 Excel")
+    attach_export_metadata(
+        tmp_path,
+        effective_suffix=output_path.suffix,
+        export_type=job.job_type,
+        payload={"source_module": "rail.mesh_link_detail"},
+    )
     os.replace(tmp_path, output_path)
     event = finished_event(job.job_id, str(output_path), row_count=total)
     result = event.get("result")

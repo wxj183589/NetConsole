@@ -46,8 +46,15 @@ def read_logs(keyword: str | None = None, level: str | None = None) -> list[dict
     return get_logs(1, 1000, keyword, level).rows
 
 
-def get_logs(page: int = 1, page_size: int = 200, keyword: str | None = None, level: str | None = None) -> LogPage:
-    return paginate_log_file(_log_path(), page=page, page_size=page_size, keyword=keyword, level=level, parser=_parse_line)
+def get_logs(
+    page: int = 1,
+    page_size: int = 200,
+    keyword: str | None = None,
+    level: str | None = None,
+    *,
+    log_path: Path | None = None,
+) -> LogPage:
+    return paginate_log_file(log_path or _log_path(), page=page, page_size=page_size, keyword=keyword, level=level, parser=_parse_line)
 
 
 def iter_logs(keyword: str | None = None, level: str | None = None):

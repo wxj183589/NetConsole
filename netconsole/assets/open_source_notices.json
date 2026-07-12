@@ -1,0 +1,17 @@
+[
+  {"name": "Python", "purpose": "应用运行时", "license": "PSF License", "homepage": "https://www.python.org/"},
+  {"name": "PySide6", "purpose": "Qt6 Python 绑定，用于桌面 UI", "license": "LGPL-3.0 / GPL-3.0 / commercial", "homepage": "https://doc.qt.io/qtforpython-6/"},
+  {"name": "PySide6-Fluent-Widgets", "purpose": "Fluent 风格 Qt 控件库", "license": "GPL-3.0", "homepage": "https://github.com/zhiyiYo/PyQt-Fluent-Widgets", "note": "项目使用 PySide6-Fluent-Widgets 免费版，不使用 Pro 组件。"},
+  {"name": "matplotlib", "purpose": "分析图表绘制", "license": "PSF-based", "homepage": "https://matplotlib.org/"},
+  {"name": "numpy", "purpose": "数值计算和图表数据处理", "license": "BSD-3-Clause", "homepage": "https://numpy.org/"},
+  {"name": "openpyxl", "purpose": "Excel 文件导入导出", "license": "MIT", "homepage": "https://openpyxl.readthedocs.io/"},
+  {"name": "XlsxWriter", "purpose": "大数据量 Excel 文件流式导出", "license": "BSD-2-Clause", "homepage": "https://xlsxwriter.readthedocs.io/"},
+  {"name": "netmiko", "purpose": "网络设备 SSH/Telnet 连接与命令采集", "license": "MIT", "homepage": "https://github.com/ktbyers/netmiko"},
+  {"name": "paramiko", "purpose": "SSH 连接底层能力", "license": "LGPL-2.1", "homepage": "https://www.paramiko.org/"},
+  {"name": "pysnmp", "purpose": "SNMP 查询和 MIB 能力预留", "license": "BSD-2-Clause", "homepage": "https://github.com/etingof/pysnmp"},
+  {"name": "cryptography", "purpose": "SSH 与安全通信相关加密能力", "license": "Apache-2.0 OR BSD-3-Clause", "homepage": "https://cryptography.io/"},
+  {"name": "requests", "purpose": "HTTP 请求能力预留", "license": "Apache-2.0", "homepage": "https://requests.readthedocs.io/"},
+  {"name": "pytest", "purpose": "自动化测试", "license": "MIT", "homepage": "https://docs.pytest.org/"},
+  {"name": "PyInstaller", "purpose": "Windows 发布包构建", "license": "GPL-2.0-or-later with bootloader exception", "homepage": "https://pyinstaller.org/"},
+  {"name": "IPOP v4.1", "purpose": "用户明确点击后以管理员权限启动的外部网络工具", "license": "仓库未提供许可证文本，需用户确认再分发授权", "homepage": "", "note": "普通开源包、内部包和客户包不内置 IPOP.EXE；工程师包仅允许从构建机本地显式带入。"}
+]

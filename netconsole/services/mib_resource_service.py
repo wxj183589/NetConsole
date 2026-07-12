@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import tarfile
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,7 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.services.mib_compile_service import MibCompileService
+from netconsole.services.file_contract import ImportValidationError, safe_extract_zip, validate_zip_import
 
 
 SUPPORTED_MIB_SUFFIXES = {".mib", ".txt", ".my", ".smi", ".sm2"}
@@ -77,8 +79,10 @@ class MibResourceService:
         self.repository.initialize()
 
     def import_paths(self, source_paths: list[str | Path], *, vendor: str = "", source_name: str = "用户手动导入", source_url: str = "", product_line: str = "", product_name: str = "", software_version: str = "", builtin: bool = False) -> MibImportReport:
+        normalized_paths = [Path(path) for path in source_paths]
+        self._validate_import_paths(normalized_paths)
         self.initialize()
-        candidates, reference_paths = self._prepare_batch([Path(path) for path in source_paths], vendor=vendor, source_name=source_name, source_url=source_url, product_line=product_line, product_name=product_name, software_version=software_version, builtin=builtin)
+        candidates, reference_paths = self._prepare_batch(normalized_paths, vendor=vendor, source_name=source_name, source_url=source_url, product_line=product_line, product_name=product_name, software_version=software_version, builtin=builtin)
         known_modules = {str(item["module_name"]) for item in self.repository.list_modules()}
         known_modules.update(candidate.module_name for candidate in candidates)
         oid_paths = [Path(row["raw_path"]) for row in self.repository.list_module_paths() if row.get("raw_path")]
@@ -102,6 +106,66 @@ class MibResourceService:
         report = self._write_report(items)
         app_logger.log_info("SNMP_MIB_IMPORT", f"total={len(items)} imported={report.imported} duplicated={report.duplicated} failed={report.failed}")
         return report
+
+    def _validate_import_paths(self, source_paths: list[Path]) -> None:
+        if not source_paths:
+            raise ImportValidationError("未选择导入文件")
+        supported = SUPPORTED_MIB_SUFFIXES | SUPPORTED_REFERENCE_SUFFIXES | SUPPORTED_ARCHIVE_SUFFIXES
+        for source in source_paths:
+            if not source.exists():
+                raise ImportValidationError(f"文件不存在或无法读取：{source}")
+            if source.is_file() and source.stat().st_size <= 0:
+                raise ImportValidationError(f"文件为空：{source.name}")
+            if source.is_file() and source.suffix.casefold() not in supported:
+                raise ImportValidationError(f"文件类型不匹配：{source.suffix}")
+            if source.is_file() and source.suffix.casefold() == ".zip":
+                validate_zip_import(
+                    source,
+                    expected_module="snmp.mib_resource",
+                    allow_external=True,
+                    allowed_external_suffixes=SUPPORTED_MIB_SUFFIXES | SUPPORTED_REFERENCE_SUFFIXES,
+                )
+            if not self._source_contains_supported_content(source):
+                raise ImportValidationError(f"不是 NetConsole 支持的导入文件：{source.name}")
+
+    def _source_contains_supported_content(self, source: Path) -> bool:
+        if source.is_dir():
+            return any(self._is_recognized_import_file(path) for path in self._scan_source_files(source))
+        suffix = source.suffix.casefold()
+        if suffix in SUPPORTED_MIB_SUFFIXES | SUPPORTED_REFERENCE_SUFFIXES:
+            return self._is_recognized_import_file(source)
+        if suffix not in SUPPORTED_ARCHIVE_SUFFIXES:
+            return False
+        try:
+            with tempfile.TemporaryDirectory(prefix="netconsole_mib_validate_") as temp_dir:
+                temp_root = Path(temp_dir)
+                if zipfile.is_zipfile(source):
+                    with zipfile.ZipFile(source) as archive:
+                        safe_extract_zip(archive, temp_root)
+                elif tarfile.is_tarfile(source):
+                    with tarfile.open(source) as archive:
+                        archive.extractall(temp_root, filter="data")
+                else:
+                    return False
+                return any(self._is_recognized_import_file(path) for path in self._scan_source_files(temp_root))
+        except ImportValidationError:
+            raise
+        except Exception as exc:
+            raise ImportValidationError(f"文件已损坏或无法读取：{source.name}，{exc}") from exc
+
+    @staticmethod
+    def _is_recognized_import_file(path: Path) -> bool:
+        if path.suffix.casefold() in SUPPORTED_MIB_SUFFIXES:
+            return bool(identify_module_name(path))
+        if path.suffix.casefold() in SUPPORTED_REFERENCE_SUFFIXES:
+            from netconsole.services.mib_product_reference_service import MibProductReferenceService
+
+            try:
+                MibProductReferenceService._validate_reference_content(path)
+            except Exception:
+                return False
+            return True
+        return False
 
     def initialize_builtin_resources(self, *, rebuild_h3c: bool = False, progress=None) -> MibImportReport:
         if progress:
@@ -290,12 +354,13 @@ class MibResourceService:
         try:
             if zipfile.is_zipfile(path):
                 with zipfile.ZipFile(path) as archive:
-                    archive.extractall(extract_root)
+                    safe_extract_zip(archive, extract_root)
             elif tarfile.is_tarfile(path):
                 with tarfile.open(path) as archive:
-                    archive.extractall(extract_root)
+                    archive.extractall(extract_root, filter="data")
         except Exception as exc:
             app_logger.log_error("SNMP_MIB_ARCHIVE_EXTRACT_FAILED", f"path={path}, error={exc}")
+            raise ImportValidationError(f"文件已损坏或无法读取：{path.name}，{exc}") from exc
         return extract_root
 
     def _store_mib_file(self, source: Path, *, package_id: int | None) -> Path:

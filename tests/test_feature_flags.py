@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from netconsole.core.feature_flags import FeatureDisabledError, FeatureGate, default_profile, install_runtime_feature_files, load_profile
+from netconsole.core.feature_flags import (
+    FeatureDisabledError,
+    FeatureGate,
+    default_profile,
+    engineer_package_enabled,
+    install_runtime_feature_files,
+    load_profile,
+    save_profile,
+)
 from netconsole.core.feature_registry import FEATURE_BY_ID, list_features
 from project.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
@@ -46,6 +54,30 @@ def test_feature_gate_full_profile_defaults_visible(tmp_path: Path) -> None:
     assert all(gate.is_visible(item.feature_id) for item in list_features())
     assert gate.is_visible("module.feature_switch")
     assert gate.is_visible("system.feature_flags")
+
+
+def test_packaged_runtime_never_exposes_feature_switch_page(tmp_path: Path, monkeypatch) -> None:
+    from netconsole.core import feature_flags
+
+    write_runtime(tmp_path, "engineer", "full", {})
+    monkeypatch.setattr(feature_flags, "is_packaged_runtime", lambda: True)
+
+    gate = FeatureGate(tmp_path)
+
+    assert not gate.is_visible("module.feature_switch")
+    assert not gate.is_enabled("module.feature_switch")
+    assert not gate.is_visible("system.feature_flags")
+    assert not gate.is_enabled("system.feature_flags")
+
+
+def test_engineer_package_option_persists_in_customer_profile(tmp_path: Path) -> None:
+    profile_path = tmp_path / "customer.json"
+
+    save_profile(profile_path, "customer", {}, build_options={"engineer_package": True})
+
+    assert engineer_package_enabled(profile_path)
+    payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert payload["build_options"] == {"engineer_package": True}
 
 
 def test_feature_gate_customer_profile_hides_config_and_disabled_feature(tmp_path: Path) -> None:

@@ -21,6 +21,18 @@ class BuildConfig:
     release_dir: Path = ROOT / "release"
 
     @property
+    def ipop_executable(self) -> Path:
+        return self.tools_dir / "IPOP_v4.1" / "IPOP.EXE"
+
+    @property
+    def ipop_readme(self) -> Path:
+        return self.tools_dir / "IPOP_v4.1" / "README.md"
+
+    @property
+    def ipop_notice(self) -> Path:
+        return self.root / "docs" / "IPOP_v4.1_notice.md"
+
+    @property
     def release_version_dir(self) -> Path:
         return self.release_dir / self.app_version
 
@@ -39,6 +51,8 @@ class BuildConfig:
             self.tools_dir / "fping_v5" / "fping.exe",
             self.tools_dir / "fping_v5" / "cygwin1.dll",
             self.tools_dir / "iperf" / "iperf3.exe",
+            self.ipop_readme,
+            self.ipop_notice,
         )
 
 

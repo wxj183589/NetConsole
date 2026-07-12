@@ -171,7 +171,7 @@ def test_template_import_rejects_old_headers(tmp_path):
         headers[1] = alias
         write_rows(csv_path, [headers, template_row(**{TEMPLATE_FIELDS[0]: f"SW-{alias}", TEMPLATE_FIELDS[1]: "192.168.10.1"})])
 
-        with pytest.raises(ValueError, match="最新模板"):
+        with pytest.raises(ValueError, match="缺少必要字段"):
             service.import_csv(csv_path)
         assert repository.list() == []
 
@@ -284,8 +284,8 @@ def test_csv_import_supports_current_template_fields(tmp_path):
     assert imported.ssh_password == "ssh-pwd"
 
 
-def test_import_rejects_invalid_device_type(tmp_path):
-    _repository, service = make_service(tmp_path)
+def test_import_rejects_invalid_device_type_without_modifying_data(tmp_path):
+    repository, service = make_service(tmp_path)
     csv_path = tmp_path / "bad.csv"
     write_dict_rows(
         csv_path,
@@ -295,11 +295,10 @@ def test_import_rejects_invalid_device_type(tmp_path):
         ],
     )
 
-    result = service.import_csv(csv_path)
+    with pytest.raises(ValueError, match="Invalid device_type"):
+        service.import_csv(csv_path)
 
-    assert result.created == 0
-    assert result.skipped == 1
-    assert "Invalid device_type" in result.errors[0]
+    assert repository.list() == []
 
 
 def test_snmpv3_dropdown_options_do_not_include_blank_items():

@@ -10,6 +10,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent, QObject
 from PySide6.QtWidgets import QApplication
 
 from netconsole.core.paths import PathResolver
@@ -172,6 +173,45 @@ def test_export_process_manager_emits_single_cancelled_event_and_cleans_files(tm
     job_dir = paths.runtime_cache_dir / "export_jobs"
     assert not (job_dir / f"{job_id}.json").exists()
     assert not (job_dir / f"{job_id}.cancel").exists()
+    application.processEvents()
+
+
+def test_background_process_manager_stops_worker_when_parent_is_destroyed(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    parent = QObject()
+    manager = BackgroundProcessManager(parent, paths=PathResolver(tmp_path))
+    manager._worker_command = lambda _job_path: (sys.executable, ["-c", "import time; time.sleep(30)"])
+    job_id = manager.start_job(BackgroundJob(task_type="parent_destroy_test"))
+    process = manager._jobs[job_id].process
+    assert process.waitForStarted(3000)
+    cleaned: list[bool] = []
+    parent.destroyed.connect(lambda: cleaned.append(not manager._jobs))
+
+    parent.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    assert cleaned == [True]
+    assert not (tmp_path / "runtime" / "cache" / "background_jobs" / f"{job_id}.json").exists()
+    application.processEvents()
+
+
+def test_export_process_manager_stops_worker_when_parent_is_destroyed(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    parent = QObject()
+    manager = ExportProcessManager(parent, paths=PathResolver(tmp_path))
+    manager._export_worker_command = lambda _job_path: (sys.executable, ["-c", "import time; time.sleep(30)"])
+    output_path = tmp_path / "parent-destroy.txt"
+    job_id = manager.start_export(ExportJob(job_id="parent-destroy-export", job_type="parent_destroy_test", output_path=str(output_path)))
+    process = manager._jobs[job_id].process
+    assert process.waitForStarted(3000)
+    cleaned: list[bool] = []
+    parent.destroyed.connect(lambda: cleaned.append(not manager._jobs))
+
+    parent.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    assert cleaned == [True]
+    assert not (tmp_path / "runtime" / "cache" / "export_jobs" / f"{job_id}.json").exists()
     application.processEvents()
 
 

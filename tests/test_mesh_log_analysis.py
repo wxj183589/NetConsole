@@ -177,15 +177,22 @@ def test_mesh_page_first_show_empty_state_exits_loading(tmp_path):
     database.initialize()
     page = MeshLogAnalysisPage(DeviceRepository(database), I18n("zh_CN"), "demo", PathResolver(tmp_path))
 
-    page.first_show_refresh(force=True)
-    deadline = time.time() + 1.0
-    while page.is_loading and time.time() < deadline:
-        qt_app.processEvents()
-        time.sleep(0.01)
+    try:
+        page.first_show_refresh(force=True)
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            qt_app.processEvents()
+            if page.has_loaded and not page.is_loading and not page._profiles_refresh_job_id:
+                break
+            time.sleep(0.01)
 
-    assert page.is_loading is False
-    assert page.page_state == "empty"
-    assert "暂无 MR 原始 MESH 日志" in page.progress_label.text()
+        assert page.is_loading is False
+        assert page.has_loaded is True
+        assert page.page_state == "empty"
+        assert "暂无 MR 原始 MESH 日志" in page.progress_label.text()
+    finally:
+        page.close()
+        qt_app.processEvents()
 
 
 def test_mesh_link_detail_export_writes_xlsx_with_centered_content(tmp_path, monkeypatch):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import shutil
 from dataclasses import asdict
 from datetime import datetime
@@ -829,7 +830,11 @@ def _vehicle_mr_mapping_import(params: dict[str, Any], progress: ProgressCallbac
     _emit(progress, "vehicle_mr_mapping_import", 0, 1, "正在导入车载 MR 映射表")
     _check_cancel(should_cancel)
     site_name = str(params.get("site_name") or "")
-    rows = _read_named_table_file(Path(str(params.get("path") or "")))
+    rows = _read_named_table_file(
+        Path(str(params.get("path") or "")),
+        expected_module="rail.vehicle_mr_mapping",
+        required_headers=("车次", "TC1", "TC2"),
+    )
     store = VehicleMrOnlineStore(_path_resolver_from_params(params), site_name)
     count = store.import_mapping_rows(rows)
     mappings = store.list_mappings()
@@ -1790,16 +1795,13 @@ def _wifi_survey_refresh(params: dict[str, Any], progress: ProgressCallback | No
 
 
 def _wifi_survey_floor_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    from PySide6.QtGui import QImageReader
+    from netconsole.services.file_contract import validate_image_import
 
     source = Path(str(params.get("source_path") or ""))
     target_dir = Path(str(params.get("target_dir") or ""))
-    if not source.is_file():
-        raise FileNotFoundError(source)
-    reader = QImageReader(str(source))
-    size = reader.size()
-    if not size.isValid():
-        raise ValueError("无法读取图纸文件")
+    validation = validate_image_import(source, expected_module="wifi_survey.floor_plan")
+    width = int(validation.metadata["width"])
+    height = int(validation.metadata["height"])
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / source.name
     counter = 1
@@ -1809,7 +1811,7 @@ def _wifi_survey_floor_import(params: dict[str, Any], progress: ProgressCallback
     _check_cancel(should_cancel)
     shutil.copy2(source, target)
     repository = _wifi_survey_repository(params.get("db_path"))
-    plan = repository.create_floor_plan(source.stem, str(target), size.width(), size.height())
+    plan = repository.create_floor_plan(source.stem, str(target), width, height)
     return {"floor": plan}
 
 
@@ -2211,20 +2213,44 @@ def _network_profile_store(params: dict[str, Any], progress: ProgressCallback | 
 
 
 TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]
+TRACKSIDE_PLAN_REQUIRED_HEADERS = TRACKSIDE_PLAN_HEADERS[:-1]
 TRACKSIDE_PLAN_FIELDS = ["station_name", "ap_count", "ap_start_address", "mask_length", "ap_gateway", "ap_management_vlans", "remark"]
 MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
 
 
 def _read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
-    return [{field: row.get(header, "") for header, field in zip(TRACKSIDE_PLAN_HEADERS, TRACKSIDE_PLAN_FIELDS, strict=False)} for row in _read_named_table_file(path)]
+    return [
+        {field: row.get(header, "") for header, field in zip(TRACKSIDE_PLAN_HEADERS, TRACKSIDE_PLAN_FIELDS, strict=False)}
+        for row in _read_named_table_file(
+            path,
+            expected_module="ac.trackside_ap_plan",
+            required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS,
+        )
+    ]
 
 
-def _read_named_table_file(path: Path) -> list[dict[str, object]]:
+def _read_named_table_file(
+    path: Path,
+    *,
+    expected_module: str,
+    required_headers: tuple[str, ...] | list[str],
+) -> list[dict[str, object]]:
+    from netconsole.services.file_contract import read_validated_csv_rows, validate_csv_import, validate_excel_import
+
     if path.suffix.casefold() == ".csv":
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            return [dict(row) for row in csv.DictReader(handle)]
+        validate_csv_import(path, expected_module=expected_module, required_headers=required_headers, allow_legacy=True)
+        rows, _metadata, _encoding = read_validated_csv_rows(path)
+        output = io.StringIO(newline="")
+        csv.writer(output).writerows(rows)
+        return [dict(row) for row in csv.DictReader(io.StringIO(output.getvalue()))]
     from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
+    validate_excel_import(
+        path,
+        expected_module=expected_module,
+        required_headers={"data": required_headers},
+        allow_legacy=True,
+    )
     workbook = load_workbook_without_unsupported_image_warning(path, read_only=True, data_only=True)
     sheet = workbook.active
     rows = list(sheet.iter_rows(values_only=True))

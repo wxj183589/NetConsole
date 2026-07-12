@@ -4,6 +4,15 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 当前版本：`v1.3.8`。版本唯一来源为 `netconsole/core/version.py`；本文不单独维护版本号。
 
+## 仓库地址
+
+| 仓库 | Git 推送地址 | 浏览器地址 |
+| --- | --- | --- |
+| GitHub | `git@github.com:wxj183589/NetConsole.git` | `https://github.com/wxj183589/NetConsole.git` |
+| NAS | `ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git` | `https://nas.love-ok.com:3021/mengyou/NetConsole.git` |
+
+关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
+
 当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets（PySide6-Fluent-Widgets）、SQLite、Netmiko、openpyxl，以及基于 QProcess/QThread 的后台执行。依赖下限与固定版本以 `requirements.txt` 为准。
 
 ## 当前能力
@@ -17,7 +26,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 | 配置采集 | `module.config_collection` | 配置快照、比较、批量采集 |
 | 文件管理 | `module.file_management` | 局点文件、下载、复制和整理 |
 | SNMP Center | `module.snmp_center` | MIB 资源、OID 浏览、查询、批量采集、监控、Trap 记录和拓扑 |
-| 网络工具 | `module.network_tools` | Ping/fping、iPerf3、工具箱和测试配置 |
+| 网络工具 | `module.network_tools` | Ping/fping、iPerf3、工具箱和管理员启动 IPOP v4.1 |
 | 命令参考 | `module.command_reference` | 命令、参数、解析器与消费者索引 |
 | 日志 | `module.logs` | 应用日志查看与导出 |
 | 系统设置 | `module.system_settings` | 局点、主题、工具路径、磁盘清理和版本信息 |
@@ -42,6 +51,7 @@ flowchart LR
 - UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
 - 普通后台任务走 `BackgroundProcessManager -> background_worker -> JobRegistry -> handler`。
 - 所有正式导出走独立 Export Process，使用临时文件完成后原子替换目标文件。
+- 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
 - `JobRegistry` 当前注册 83 个任务类型，已按 10 个领域 handler 模块分区；多数领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集仍使用专用 `QThread`/线程池，不应误写成 Job Center 已接管。
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。

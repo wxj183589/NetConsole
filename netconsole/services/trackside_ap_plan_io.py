@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import io
 import re
 from pathlib import Path
 
 from netconsole.services.export.common_exporters import export_table_xlsx
+from netconsole.services.file_contract import read_validated_csv_rows, validate_csv_import, validate_excel_import
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
 TRACKSIDE_PLAN_COLUMNS = (
@@ -17,6 +19,7 @@ TRACKSIDE_PLAN_COLUMNS = (
     ("field.remark", "remark"),
 )
 TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]
+TRACKSIDE_PLAN_REQUIRED_HEADERS = TRACKSIDE_PLAN_HEADERS[:-1]
 TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "station_name": 260,
     "ap_count": 90,
@@ -31,8 +34,15 @@ MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
 
 def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
     if path.suffix.casefold() == ".csv":
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            return [_row_from_named(row) for row in csv.DictReader(handle)]
+        validate_csv_import(path, expected_module="ac.trackside_ap_plan", required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS, allow_legacy=True)
+        rows, _metadata, _encoding = read_validated_csv_rows(path)
+        return [_row_from_named(row) for row in csv.DictReader(io.StringIO(_rows_to_csv(rows)))]
+    validate_excel_import(
+        path,
+        expected_module="ac.trackside_ap_plan",
+        required_headers={"轨旁AP规划": TRACKSIDE_PLAN_REQUIRED_HEADERS},
+        allow_legacy=True,
+    )
     workbook = load_workbook_without_unsupported_image_warning(path, data_only=True)
     sheet = workbook[workbook.sheetnames[0]]
     headers = [str(cell.value or "").strip() for cell in sheet[1]]
@@ -42,6 +52,12 @@ def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
         if any(value not in (None, "") for value in raw.values()):
             rows.append(_row_from_named(raw))
     return rows
+
+
+def _rows_to_csv(rows: list[list[str]]) -> str:
+    output = io.StringIO(newline="")
+    csv.writer(output).writerows(rows)
+    return output.getvalue()
 
 
 def export_trackside_plan_xlsx(path: Path, rows: list[dict[str, object | None]]) -> None:

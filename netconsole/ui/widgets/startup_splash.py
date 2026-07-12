@@ -44,7 +44,7 @@ class StartupSplash(QWidget):
             }
             """
         )
-        self.title_label = QLabel(version_info.APP_NAME)
+        self.title_label = QLabel(version_info.APP_TITLE_DISPLAY)
         title_font = QFont()
         title_font.setPointSize(22)
         title_font.setBold(True)
@@ -59,7 +59,7 @@ class StartupSplash(QWidget):
         self.progress.setTextVisible(True)
         self.progress.setMinimumWidth(380)
         self.progress.setMaximumWidth(440)
-        self.version_label = QLabel(self.i18n.t("app.version_label", version=version_info.APP_VERSION_DISPLAY))
+        self.version_label = QLabel(self.i18n.t("app.version_label", version=f"{version_info.APP_VERSION_DISPLAY} {version_info.APP_BYLINE}"))
         self.version_label.setAlignment(Qt.AlignCenter)
 
         layout = QVBoxLayout(self)

@@ -370,7 +370,10 @@ class SnmpCenterPage(QWidget):
         layout.addWidget(self.tabs)
         self._set_tabs_enabled(False)
         self.overview_page.show_startup_message("正在启动 SNMP 服务...", 0)
-        QTimer.singleShot(0, self.start_snmp_service_async)
+        self.startup_timer = QTimer(self)
+        self.startup_timer.setSingleShot(True)
+        self.startup_timer.timeout.connect(self.start_snmp_service_async)
+        self.startup_timer.start(0)
 
     def start_data_refresh(self, view: str, callback: Callable[[dict[str, object]], None], *, limit: int = 500, params: dict[str, object] | None = None) -> str | None:
         job_id = self.background_manager.start_job(

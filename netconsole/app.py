@@ -46,9 +46,6 @@ def open_admin_network_manager(window: MainWindow) -> None:
         index = find_page("network_tools")
         if index >= 0:
             navigation.setCurrentRow(index)
-    tabs = getattr(page, "tabs", None)
-    if tabs is not None and tabs.count() >= 3:
-        tabs.setCurrentIndex(2)
 
 
 def _start_app_auto_cleanup(window: object, paths: PathResolver) -> None:

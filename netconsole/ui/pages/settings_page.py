@@ -116,6 +116,7 @@ class SettingsPage(QWidget):
         self.site_name_label = QLabel(site.name)
         self.site_dir_label = QLabel(str(paths.site_dir(site.name)))
 
+        self._disable_unimplemented_controls()
         self._build_ui()
         self._load_values()
         self._connect_signals()
@@ -131,18 +132,8 @@ class SettingsPage(QWidget):
             language = LANGUAGE_LABELS.get(self.language_combo.currentText(), "zh_CN")
             self.settings.set_language(language)
             self.settings.set_theme_color(THEME_COLOR_LABELS.get(self.theme_color_combo.currentText(), "#0078D4"))
-            self.settings.set_mica_enabled(self._is_checked(self.mica_switch))
-            self.settings.set_compact_table(self._is_checked(self.compact_table_switch))
-            self.settings.set_int_value("default_concurrency", self.default_concurrency_spin.value(), 1, 500)
-            self.settings.set_int_value("command_timeout", self.command_timeout_spin.value(), 1, 600)
-            self.settings.set_int_value("log_retention_days", self.log_retention_spin.value(), 1, 3650)
-            self.settings.set_value("raw_echo_log", self._is_checked(self.raw_echo_log_switch))
-            self.settings.set_value("download_dir", self.download_dir_edit.text().strip())
-            self.settings.set_value("backup_dir", self.backup_dir_edit.text().strip())
-            self.settings.set_value("report_dir", self.report_dir_edit.text().strip())
             self.settings.set_value("network_tools/iperf_path", self.iperf3_path_edit.text().strip())
             self.settings.set_value("online_mr.fping_path", self.fping_path_edit.text().strip())
-            self.settings.set_value("mib_dir", self.mib_dir_edit.text().strip())
             terminal_type = self._external_terminal_type()
             terminal_path = self.external_terminal_path_edit.text().strip()
             self.settings.set_value("external_terminal/type", terminal_type)
@@ -208,25 +199,25 @@ class SettingsPage(QWidget):
             ("主题", "浅色 / 深色 / 跟随系统", self.theme_combo),
             ("语言", "中文 / English，部分界面重启后生效", self.language_combo),
             ("主题色", "Fluent 强调色", self.theme_color_combo),
-            ("Mica 效果", "默认关闭，不支持时自动降级", self.mica_switch),
-            ("紧凑表格模式", "降低表格行高，适合大数据浏览", self.compact_table_switch),
+            ("Mica 效果（未实现）", "当前运行链未应用该参数，已禁用", self.mica_switch),
+            ("紧凑表格模式（未实现）", "当前表格使用全局可读性规范，已禁用", self.compact_table_switch),
         ]))
         layout.addWidget(self._site_section())
         layout.addWidget(self._section("采集", [
-            ("默认并发数", "后续接入现有采集参数", self.default_concurrency_spin),
-            ("命令超时(秒)", "SSH/Telnet 命令读取超时", self.command_timeout_spin),
-            ("日志保留天数", "历史日志清理策略", self.log_retention_spin),
-            ("原始回显日志", "保存设备原始回显，便于排障", self.raw_echo_log_switch),
+            ("默认并发数（未实现）", "各采集模块当前使用自身参数，已禁用", self.default_concurrency_spin),
+            ("全局命令超时（未实现）", "各采集模块当前使用自身超时参数，已禁用", self.command_timeout_spin),
+            ("日志保留天数（未实现）", "自动清理当前使用受控固定策略，已禁用", self.log_retention_spin),
+            ("原始回显日志（未实现）", "现场原始日志按业务规则强制保护，已禁用", self.raw_echo_log_switch),
         ]))
         layout.addWidget(self._section("文件", [
-            ("默认下载目录", "文件管理下载默认位置", self._path_row(self.download_dir_edit, directory=True)),
-            ("配置备份目录", "配置采集备份目录", self._path_row(self.backup_dir_edit, directory=True)),
-            ("报告导出目录", "分析报告导出目录", self._path_row(self.report_dir_edit, directory=True)),
+            ("默认下载目录（未实现）", "文件管理仍使用局点受控目录，已禁用", self._path_row(self.download_dir_edit, directory=True)),
+            ("配置备份目录（未实现）", "备份仍使用局点受控目录，已禁用", self._path_row(self.backup_dir_edit, directory=True)),
+            ("报告导出目录（未实现）", "导出路径由每次文件选择确定，已禁用", self._path_row(self.report_dir_edit, directory=True)),
         ]))
         layout.addWidget(self._section("工具路径 / 外部终端", [
             ("iperf3.exe", "iperf 带宽测试工具路径", self._path_row(self.iperf3_path_edit, directory=False)),
             ("Fping_v3.exe", "高频 Ping 工具路径", self._path_row(self.fping_path_edit, directory=False)),
-            ("MIB 目录", "SNMP MIB 资源目录", self._path_row(self.mib_dir_edit, directory=True)),
+            ("MIB 目录（未实现）", "MIB 资源使用全局受控目录，已禁用", self._path_row(self.mib_dir_edit, directory=True)),
             ("外部终端类型", "设备外部登录工具", self.external_terminal_type_combo),
             ("外部终端程序路径", "PuTTY / SecureCRT / Xshell 程序路径", self._path_row(self.external_terminal_path_edit, directory=False)),
             ("CRT 会话目录", "生成 SecureCRT 会话文件的根目录", self._path_row(self.crt_session_dir_edit, directory=True)),
@@ -355,6 +346,7 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         browse = QPushButton("浏览")
+        browse.setEnabled(edit.isEnabled())
         browse.setMinimumWidth(72)
         browse.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         edit.setMinimumWidth(480)
@@ -362,6 +354,22 @@ class SettingsPage(QWidget):
         layout.addWidget(edit, 1)
         layout.addWidget(browse)
         return row
+
+    def _disable_unimplemented_controls(self) -> None:
+        for control in (
+            self.mica_switch,
+            self.compact_table_switch,
+            self.default_concurrency_spin,
+            self.command_timeout_spin,
+            self.log_retention_spin,
+            self.raw_echo_log_switch,
+            self.download_dir_edit,
+            self.backup_dir_edit,
+            self.report_dir_edit,
+            self.mib_dir_edit,
+        ):
+            control.setEnabled(False)
+            control.setToolTip("当前参数尚未接入运行逻辑，已禁用以避免产生假配置。")
 
     def _connect_signals(self) -> None:
         self.theme_combo.currentTextChanged.connect(self._on_theme_changed)

@@ -23,7 +23,7 @@ class AboutRepositoryDialog(QDialog):
 
         content = QWidget()
         layout = QVBoxLayout(content)
-        title = QLabel(f"{version_info.APP_NAME} {version_info.APP_VERSION_DISPLAY}")
+        title = QLabel(version_info.APP_TITLE_DISPLAY)
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
@@ -31,7 +31,7 @@ class AboutRepositoryDialog(QDialog):
         layout.addWidget(QLabel(self.i18n.t("about.repositories")))
 
         grid = QGridLayout()
-        for row, url in enumerate(version_info.REPOSITORY_URLS):
+        for row, url in enumerate(version_info.REPOSITORY_WEB_URLS):
             line = QLineEdit(url)
             line.setReadOnly(True)
             copy_button = QPushButton(self.i18n.t("about.copy_link"))

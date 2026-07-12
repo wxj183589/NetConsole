@@ -29,16 +29,21 @@ def qt_application() -> Iterator[QApplication]:
 def qt_page_lifecycle(qt_application: QApplication) -> Iterator[None]:
     """逐条清理顶层窗口和 deleteLater 队列，隔离 Qt 页面测试生命周期。"""
 
+    for widget in list(qt_application.topLevelWidgets()):
+        try:
+            widget.hide()
+            widget.deleteLater()
+        except RuntimeError:
+            continue
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     yield
     application = qt_application
-    application.processEvents()
     widgets = list(application.topLevelWidgets())
     for widget in widgets:
         try:
             widget.close()
         except RuntimeError:
             continue
-    application.processEvents()
     for widget in widgets:
         try:
             widget.deleteLater()

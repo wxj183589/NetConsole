@@ -39,6 +39,8 @@ class ExportProcessManager(QObject):
         super().__init__(parent)
         self.paths = paths or PathResolver()
         self._jobs: dict[str, _RunningExport] = {}
+        if parent is not None:
+            parent.destroyed.connect(self.shutdown)
 
     def start_export(self, job: ExportJob) -> str:
         job_id = job.job_id or uuid.uuid4().hex
@@ -94,6 +96,23 @@ class ExportProcessManager(QObject):
 
     def is_running(self, job_id: str) -> bool:
         return job_id in self._jobs
+
+    def shutdown(self) -> None:
+        """父页面销毁前终止内部导出 worker，并清理临时文件。"""
+
+        for job_id, state in list(self._jobs.items()):
+            state.cancel_requested = True
+            try:
+                state.cancel_path.parent.mkdir(parents=True, exist_ok=True)
+                state.cancel_path.write_text("cancelled", encoding="utf-8")
+                if state.process.state() != QProcess.NotRunning:
+                    state.process.kill()
+                    state.process.waitForFinished(1000)
+            except (OSError, RuntimeError):
+                pass
+            self._jobs.pop(job_id, None)
+            self._cleanup_tmp_file(state)
+            self._cleanup_job_files(state)
 
     def _export_worker_command(self, job_path: Path) -> tuple[str, list[str]]:
         if getattr(sys, "frozen", False):

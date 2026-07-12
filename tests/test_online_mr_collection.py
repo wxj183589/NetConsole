@@ -2522,9 +2522,8 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.main_work_panel.maximumHeight() <= 420
     assert page.device_panel.minimumWidth() >= ONLINE_MR_LEFT_PANEL_MIN_WIDTH
     assert page.device_panel.minimumHeight() >= 180
-    assert page.device_list_toggle_button.text() == "收起设备列表"
+    assert not hasattr(page, "device_list_toggle_button")
     assert page.params_toggle_button.text() == "收起输入区"
-    assert page.device_list_toggle_button.parentWidget() is not None
     assert page.right_control_scroll.minimumWidth() >= ONLINE_MR_RIGHT_PANEL_MIN_WIDTH
     assert page.right_control_scroll.maximumHeight() <= 340
     assert page.right_control_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded

@@ -44,6 +44,36 @@ def _write_runtime_smoke_log(context) -> None:
         pass
 
 
+def _verify_release_contract() -> None:
+    from netconsole.core.feature_flags import FeatureGate
+    from netconsole.core.resources import runtime_base_dir
+    from netconsole.core.version import APP_TITLE_DISPLAY, REPOSITORY_WEB_URLS
+
+    if APP_TITLE_DISPLAY != "NetConsole v1.3.8 by WXJ":
+        raise RuntimeError(f"发布标题不正确：{APP_TITLE_DISPLAY}")
+    if not REPOSITORY_WEB_URLS or any(not url.startswith("https://") for url in REPOSITORY_WEB_URLS):
+        raise RuntimeError(f"关于页仓库地址必须全部使用 HTTPS：{REPOSITORY_WEB_URLS}")
+    assets = runtime_base_dir() / "netconsole" / "assets"
+    required_assets = (
+        assets / "open_source_notices.json",
+        assets / "THIRD_PARTY_COMPONENTS.md",
+        assets / "IPOP_v4.1_notice.md",
+    )
+    missing_assets = [str(path) for path in required_assets if not path.is_file()]
+    if missing_assets:
+        raise RuntimeError("发布包缺少第三方说明：" + ", ".join(missing_assets))
+    gate = FeatureGate(BASE_DIR)
+    for feature_id in ("module.feature_switch", "system.feature_flags"):
+        if gate.is_visible(feature_id) or gate.is_enabled(feature_id):
+            raise RuntimeError(f"打包版暴露了开发功能：{feature_id}")
+    edition = str(gate.build_info.get("edition") or "")
+    ipop = os.path.join(BASE_DIR, "tools", "IPOP_v4.1", "IPOP.EXE")
+    if edition == "engineer" and not os.path.isfile(ipop):
+        raise RuntimeError(f"工程师包缺少 IPOP：{ipop}")
+    if edition in {"internal", "customer"} and os.path.exists(ipop):
+        raise RuntimeError(f"{edition} 包不得包含未确认授权的 IPOP：{ipop}")
+
+
 if __name__ == "__main__":
     _enable_faulthandler()
     try:
@@ -75,6 +105,9 @@ if __name__ == "__main__":
             for result in run_tool_smoke_tests():
                 first_line = next((line.strip() for line in result.output.splitlines() if line.strip()), "OK")
                 print(f"[OK] {result.name}: {result.path} :: {first_line}")
+            raise SystemExit(0)
+        if os.environ.get("NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST") == "1":
+            _verify_release_contract()
             raise SystemExit(0)
         from netconsole.app import run
 

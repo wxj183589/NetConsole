@@ -86,7 +86,7 @@ def resolve_build_info(root: Path | None = None) -> BuildInfoResolution:
 
 
 def is_internal_edition(root: Path | None = None) -> bool:
-    return load_build_info(root).get("edition") in {"dev", "internal"}
+    return load_build_info(root).get("edition") in {"dev", "internal", "engineer"}
 
 
 class FeatureGate:
@@ -95,7 +95,7 @@ class FeatureGate:
         self.resolution = resolve_build_info(self.root)
         self.build_info = self.resolution.info
         self.edition = str(self.build_info.get("edition") or "dev")
-        self.allow_local_override = self.edition in {"dev", "internal"} if allow_local_override is None else allow_local_override
+        self.allow_local_override = self.edition in {"dev", "internal", "engineer"} if allow_local_override is None else allow_local_override
         if self.edition == "customer":
             self.allow_local_override = False
         self.base_profile = str(self.build_info.get("feature_profile") or "full")
@@ -119,7 +119,7 @@ class FeatureGate:
         if (
             not self.is_session_override_active()
             and not self.is_customer_preview_active()
-            and (self.resolution.source == "external_runtime" or self.edition in {"dev", "internal"})
+            and (self.resolution.source == "external_runtime" or self.edition in {"dev", "internal", "engineer"})
         ):
             self._merge_file(runtime_dir(self.root) / "feature_flags.json")
         if not self.is_session_override_active() and not self.is_customer_preview_active() and self.allow_local_override:
@@ -263,7 +263,7 @@ class FeatureGate:
         return self._session_override_profile or self.base_profile
 
     def _internal_only_allowed(self) -> bool:
-        return self.edition in {"dev", "internal"} or self.is_session_override_active()
+        return self.edition in {"dev", "internal", "engineer"} or self.is_session_override_active()
 
     def _is_protected_internal_feature(self, feature_id: str) -> bool:
         return feature_id in PROTECTED_INTERNAL_FEATURE_IDS and self._internal_only_allowed()
@@ -274,8 +274,11 @@ class FeatureGate:
     def _effective_state(self, feature_id: str, seen: set[str] | None = None) -> dict[str, bool]:
         item = FEATURE_BY_ID[feature_id]
         state = normalize_feature_state(item, self.features.get(feature_id))
+        if feature_id in PROTECTED_INTERNAL_FEATURE_IDS and is_packaged_runtime():
+            state.update({"visible": False, "enabled": False, "client_package": False, "internal_only": True})
         if self._is_protected_internal_feature(feature_id) and not self._is_customer_mode():
-            state.update({"visible": True, "enabled": True, "client_package": False, "internal_only": True})
+            if not is_packaged_runtime():
+                state.update({"visible": True, "enabled": True, "client_package": False, "internal_only": True})
         if item.parent_id:
             seen = set(seen or ())
             if item.parent_id in seen:
@@ -416,17 +419,35 @@ def load_profile(path: Path, profile: str) -> dict[str, dict[str, bool]]:
     return features
 
 
-def save_profile(path: Path, profile: str, features: dict[str, dict[str, bool]]) -> None:
+def save_profile(
+    path: Path,
+    profile: str,
+    features: dict[str, dict[str, bool]],
+    *,
+    build_options: dict[str, bool] | None = None,
+) -> None:
     normalized = normalize_feature_states(features)
     error = validate_feature_states(normalized)
     if error:
         _feature_switch_log(f"validation error: {error}")
         raise ValueError(error)
     _feature_switch_log("validation passed")
-    payload = {"schema_version": 1, "profile": profile, "features": normalized}
+    payload = {
+        "schema_version": 1,
+        "profile": profile,
+        "build_options": {"engineer_package": bool(dict(build_options or {}).get("engineer_package", False))},
+        "features": normalized,
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _feature_switch_log(f"saved customer config: {path}")
+
+
+def engineer_package_enabled(path: Path | None = None) -> bool:
+    source = path or (project_root() / "profiles" / "features" / "customer.json")
+    data = _read_json(source) if source.exists() else {}
+    options = data.get("build_options") if isinstance(data.get("build_options"), dict) else {}
+    return bool(options.get("engineer_package", False))
 
 
 def install_runtime_feature_files(root: Path, *, edition: str, profile: str, admin_unlock_password: str | None = None) -> None:

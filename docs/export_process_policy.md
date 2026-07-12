@@ -124,7 +124,18 @@ repository 实例
 
 UI 线程只解析进度事件并更新界面。
 
-## 五、ExportProcessManager
+## 五、结构化文件契约与导入校验
+
+可再次导入的正式结构化导出必须由 `netconsole.services.file_contract` 写入统一标识：
+
+- XLSX：隐藏 sheet `_netconsole_meta`，记录 format、type、module、schema version、应用版本、导出时间、sheet 和字段。
+- CSV：首行 `#NETCONSOLE_META`，其后为 JSON metadata，再写业务表头和数据。
+- JSON：顶层 `_netconsole_meta`，列表输出统一包入 `data`。
+- ZIP：根目录 `_netconsole_manifest.json`，记录模块、类型、schema 和内部文件清单。
+
+业务导入函数必须在任何数据库、缓存或正式文件写入前调用统一 validator。校验至少覆盖扩展名、可读性、模块/类型/schema、必要 sheet/manifest/字段、列数量、业务结构和非空数据；ZIP 同时拒绝绝对路径、盘符和 `..` 路径穿越。无 metadata 的历史 XLSX/CSV 只能由明确声明 `allow_legacy=True` 且具备唯一表头/结构识别规则的入口兼容，无法识别的任意文件一律拒绝。
+
+## 六、ExportProcessManager
 
 推荐新增或复用统一导出进程管理器：
 
@@ -149,7 +160,7 @@ ExportProcessManager
 
 所有页面应复用统一管理器，不要每个页面单独写一套 subprocess/QProcess 逻辑。
 
-## 六、数据库和文件规则
+## 七、数据库和文件规则
 
 必须：
 
@@ -167,7 +178,7 @@ ExportProcessManager
 - 默认把大数据 inline rows 写入 Job JSON；兼容 inline 模式必须显式启用且不超过当前 5000 行上限。
 - 导出失败静默，或只写控制台不反馈 UI。
 
-## 七、日志事件
+## 八、日志事件
 
 导出类任务必须写日志中心事件：
 
@@ -190,7 +201,7 @@ EXPORT_JOB_CANCELLED
 错误摘要
 ```
 
-## 八、交付说明
+## 九、交付说明
 
 涉及导出的改动，交付时必须说明：
 

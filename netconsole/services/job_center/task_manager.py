@@ -39,6 +39,8 @@ class BackgroundProcessManager(QObject):
         super().__init__(parent)
         self.paths = paths or PathResolver()
         self._jobs: dict[str, _RunningBackgroundJob] = {}
+        if parent is not None:
+            parent.destroyed.connect(self.shutdown)
 
     def start_job(self, job: BackgroundJob) -> str:
         job_id = job.job_id or uuid.uuid4().hex
@@ -90,6 +92,21 @@ class BackgroundProcessManager(QObject):
                 state.process.kill()
         except RuntimeError:
             pass
+
+    def shutdown(self) -> None:
+        """父页面销毁前终止内部 worker，避免遗留子进程。"""
+
+        for job_id, state in list(self._jobs.items()):
+            state.cancel_requested = True
+            self._write_cancel_file(state)
+            try:
+                if state.process.state() != QProcess.NotRunning:
+                    state.process.kill()
+                    state.process.waitForFinished(1000)
+            except RuntimeError:
+                pass
+            self._jobs.pop(job_id, None)
+            self._cleanup_job_files(state)
 
     def _write_cancel_file(self, state: _RunningBackgroundJob) -> None:
         try:

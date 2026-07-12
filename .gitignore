@@ -64,3 +64,7 @@ tmp/*
 
 .vs/*
 .vs
+
+# IPOP v4.1 is a locally supplied unsigned third-party binary. Keep only its
+# placement/licensing notice in Git until redistribution permission is proven.
+tools/IPOP_v4.1/IPOP.EXE

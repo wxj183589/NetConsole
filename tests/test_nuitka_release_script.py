@@ -40,7 +40,14 @@ def test_nuitka_command_uses_onefile_and_required_resources() -> None:
     assert "main.py" in command_text
     assert "netconsole/ui/icons" in command_text
     assert "netconsole/assets/changelog.md" in command_text
-    assert "tools=tools" in command_text
+    assert "tools/fping_v5" in command_text
+    assert "tools/iperf" in command_text
+    assert "tools/IPOP_v4.1/README.md" in command_text
+    assert "tools=tools" not in command_text
+    assert "open_source_notices.json" in command_text
+    assert "THIRD_PARTY_COMPONENTS.md" in command_text
+    assert "IPOP_v4.1_notice.md" in command_text
+    assert "IPOP.EXE" not in command_text
     assert "--report=" in command_text
     assert "data\\sites" not in command_text
     assert "data\\runtime" not in command_text

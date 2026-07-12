@@ -4,7 +4,9 @@ import ipaddress
 import subprocess
 import time
 from threading import Event
+from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QScrollArea
@@ -239,7 +241,7 @@ def test_network_ping_tab_uses_page_scroll_area(tmp_path) -> None:
     assert all(button.minimumHeight() >= 32 for button in action_buttons)
 
 
-def test_toolbox_route_page_is_scrollable_and_uses_route_columns(tmp_path) -> None:
+def test_toolbox_removes_local_route_tab_and_exposes_ipop_launcher(tmp_path) -> None:
     _app()
 
     class FakeManager:
@@ -250,12 +252,95 @@ def test_toolbox_route_page_is_scrollable_and_uses_route_columns(tmp_path) -> No
             return [RouteInfo("0.0.0.0/0", next_hop="192.168.1.1", interface_index=1, route_metric=1, policy_store="ActiveStore")]
 
     page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=FakeManager())
-    rows = page._route_rows_for_display()
+    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == ["IP 计算", "连通性检测"]
+    assert not hasattr(page, "routes_panel")
+    assert page.ipop_button.text() == "管理员启动 IPOP v4.1"
 
-    assert isinstance(page.tabs.widget(2), QScrollArea)
-    assert list(rows[0]) == ["order_index", "destination_prefix", "next_hop", "interface_alias", "metric", "policy_store", "persistent", "source", "_interface_index"]
-    assert rows[0]["metric"] == 1
-    assert page.routes_panel.result_table.minimumHeight() >= 480
+
+def test_ipop_launcher_uses_windows_run_as_without_waiting(tmp_path, monkeypatch) -> None:
+    from netconsole.services import external_tool_launcher as launcher
+
+    executable = tmp_path / "IPOP.EXE"
+    executable.write_bytes(b"MZ")
+    calls: list[tuple] = []
+    shell32 = SimpleNamespace(ShellExecuteW=lambda *args: calls.append(args) or 33)
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "resolve_tool_path", lambda *_args: executable)
+    monkeypatch.setattr(launcher.ctypes, "windll", SimpleNamespace(shell32=shell32))
+
+    result = launcher.launch_ipop_as_admin(PathResolver(app_root=tmp_path, data_root=tmp_path))
+
+    assert result.success
+    assert calls[0][1] == "runas"
+    assert calls[0][2] == str(executable)
+
+
+def test_ipop_launcher_reports_missing_file(tmp_path, monkeypatch) -> None:
+    from netconsole.services import external_tool_launcher as launcher
+
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "resolve_tool_path", lambda *_args: None)
+
+    result = launcher.launch_ipop_as_admin(PathResolver(app_root=tmp_path, data_root=tmp_path))
+
+    assert not result.success
+    assert "未找到 IPOP.EXE" in result.message
+
+
+def test_ipop_launcher_reports_unsupported_platform(tmp_path, monkeypatch) -> None:
+    from netconsole.services import external_tool_launcher as launcher
+
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
+
+    result = launcher.launch_ipop_as_admin(PathResolver(app_root=tmp_path, data_root=tmp_path))
+
+    assert not result.success
+    assert result.message == "不支持当前平台"
+
+
+@pytest.mark.parametrize("shell_result", [5, 31])
+def test_ipop_launcher_reports_shell_execute_failure(tmp_path, monkeypatch, shell_result) -> None:
+    from netconsole.services import external_tool_launcher as launcher
+
+    executable = tmp_path / "IPOP.EXE"
+    executable.write_bytes(b"MZ")
+    shell32 = SimpleNamespace(ShellExecuteW=lambda *_args: shell_result)
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "resolve_tool_path", lambda *_args: executable)
+    monkeypatch.setattr(launcher.ctypes, "windll", SimpleNamespace(shell32=shell32))
+
+    result = launcher.launch_ipop_as_admin(PathResolver(app_root=tmp_path, data_root=tmp_path))
+
+    assert not result.success
+    if shell_result == 5:
+        assert "用户取消" in result.message
+    else:
+        assert "系统错误码：31" in result.message
+
+
+def test_ipop_launcher_reports_uac_cancelled_os_error(tmp_path, monkeypatch) -> None:
+    from netconsole.services import external_tool_launcher as launcher
+
+    executable = tmp_path / "IPOP.EXE"
+    executable.write_bytes(b"MZ")
+    error = OSError("The operation was canceled by the user")
+    error.winerror = 1223
+
+    def raise_cancelled(*_args):
+        raise error
+
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "resolve_tool_path", lambda *_args: executable)
+    monkeypatch.setattr(
+        launcher.ctypes,
+        "windll",
+        SimpleNamespace(shell32=SimpleNamespace(ShellExecuteW=raise_cancelled)),
+    )
+
+    result = launcher.launch_ipop_as_admin(PathResolver(app_root=tmp_path, data_root=tmp_path))
+
+    assert not result.success
+    assert "用户取消" in result.message
 
 
 def test_local_adapter_config_page_does_not_expose_route_tab(tmp_path) -> None:

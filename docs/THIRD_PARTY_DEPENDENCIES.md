@@ -40,3 +40,11 @@
 - `xlsxwriter`：用于 10 万行级别大表高速 `.xlsx` 导出，启用 `constant_memory` 以降低内存占用，并配合独立导出进程避免抢占 Qt 主 UI 进程。
 
 本地 `.xlsx` 导出只面向 WPS Office / Microsoft Office 可打开的文件格式，不引入 WPS 云、KDocs 或在线文档同步能力。
+
+## IPOP v4.1
+
+- 文件位置：`tools/IPOP_v4.1/IPOP.EXE`。
+- 用途：由网络工具箱按钮请求 Windows 管理员权限后启动；程序不自动启动、不自动后台运行、不随 NetConsole 退出而结束。
+- 授权状态：仓库当前未提供可核验的许可证文本，明确标记为“需用户确认再分发授权”。制作对外发布包前必须补齐并审核 IPOP 的 LICENSE/NOTICE 或移除该二进制。
+- 发布策略：普通开源包、内部包和客户包不内置 `IPOP.EXE`；工程师包可从构建机本地工具目录显式带入，但仍不代表已取得再分发授权。
+- 完整说明：[IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。

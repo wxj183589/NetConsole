@@ -16,6 +16,7 @@ from netconsole.services.mesh_log_analysis_service import (
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.file_contract import ImportValidationError
 
 
 @dataclass
@@ -42,6 +43,7 @@ class MeshImportService:
         should_cancel: Callable[[], bool] | None = None,
         progress: Callable[[int, int, int, int, int], None] | None = None,
     ) -> MeshImportResult:
+        self._validate_files(files)
         repo = self.storage.mr_repository(profile)
         analysis_params = load_site_mesh_analysis_params(self.paths, self.site_name)
         analysis_params_json = mesh_analysis_params_to_json(analysis_params)
@@ -66,6 +68,8 @@ class MeshImportService:
                     progress(file_index, total, lines, parsed, skipped)
 
             info, records, issues = self.parser.parse_file(path, source_label=profile.display_name, precomputed_hash=digest, should_cancel=should_cancel, progress=on_file_progress)
+            if not records:
+                raise ImportValidationError(f"不是 NetConsole 支持的导入文件：{path.name} 未识别到 MESH 记录")
             info.file_hash = digest
             first_sample = min((record.sample_time for record in records), default=None)
             archived_path = self.storage.archive_raw_file(profile, path, first_sample)
@@ -119,6 +123,19 @@ class MeshImportService:
         repo.rebuild_derived_analysis(should_cancel=should_cancel)
         self.storage.refresh_catalog_summary(profile)
         return result
+
+    def _validate_files(self, files: list[Path]) -> None:
+        if not files:
+            raise ImportValidationError("未选择导入文件")
+        for path in files:
+            if path.suffix.casefold() not in {".log", ".txt"}:
+                raise ImportValidationError(f"文件类型不匹配：{path.name}")
+            if not path.is_file():
+                raise ImportValidationError(f"文件不存在或无法读取：{path}")
+            if path.stat().st_size <= 0:
+                raise ImportValidationError(f"文件为空：{path.name}")
+            if not self.parser.is_supported_file(path):
+                raise ImportValidationError(f"不是 NetConsole 支持的导入文件：{path.name} 未识别到 MESH 记录")
 
     def discover_mesh_logs(self, folder: Path, include_txt: bool = False) -> list[Path]:
         if not folder.exists():

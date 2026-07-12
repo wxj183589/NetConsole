@@ -28,6 +28,11 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         setting_keys=("network_tools/iperf_path",),
         path_names=("iperf3.exe", "iperf3"),
     ),
+    "ipop": ToolDefinition(
+        relative_path=Path("IPOP_v4.1") / "IPOP.EXE",
+        setting_keys=(),
+        path_names=(),
+    ),
 }
 
 

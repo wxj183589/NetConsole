@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import uuid
 
-from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QSignalBlocker, QStandardPaths, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1549,7 +1549,6 @@ class AcManagementPage(QWidget):
                 self.status_label.setText(self.i18n.t("ac.update_cancelled"))
             self.refresh_devices()
             return
-        self.refresh_devices()
         if getattr(result, "https_port_collected", False) and result.https_port is not None:
             if not getattr(result, "https_port_persisted", False):
                 self._apply_transient_https_port(result.https_port)
@@ -1576,6 +1575,8 @@ class AcManagementPage(QWidget):
         device = self.current_device()
         app_logger.log_info("AC_HTTPS_PORT_UI_REFRESHED", f"device={device.name if device else ''}, ui_port={device.https_port if device else None}")
         self._status_after_resource_refresh = self.status_label.text()
+        self.refresh_devices()
+        self._schedule_status_restore()
 
     def _finish_ac_info_collect(self, result) -> None:
         self._set_update_progress(self.i18n.t("ac.refreshing_page"))
@@ -1800,6 +1801,18 @@ class AcManagementPage(QWidget):
         if message:
             self.status_label.setText(message)
 
+    def _schedule_status_restore(self) -> None:
+        QTimer.singleShot(0, self._restore_status_when_background_idle)
+
+    def _restore_status_when_background_idle(self) -> None:
+        if not self._status_after_resource_refresh:
+            return
+        if self._background_jobs:
+            QTimer.singleShot(25, self._restore_status_when_background_idle)
+            return
+        self.status_label.setText(self._status_after_resource_refresh)
+        self._status_after_resource_refresh = ""
+
     def _background_finished(self, event: dict) -> None:
         job_id = str(event.get("job_id") or "")
         context = self._background_jobs.pop(job_id, {})
@@ -1884,11 +1897,12 @@ class AcManagementPage(QWidget):
                 self._status_after_resource_refresh = f"FIT-AP资源更新完成（{source}）：资源 {resource_count} 条；新上线AP {unauth_count} 条"
                 self.status_label.setText(self._status_after_resource_refresh)
                 self.refresh_devices()
+                self._schedule_status_restore()
                 return
             self.status_label.setText(f"{title}：完成，共 {len(self.resource_rows)} 条")
             if self._status_after_resource_refresh:
                 self.status_label.setText(self._status_after_resource_refresh)
-                self._status_after_resource_refresh = ""
+                self._schedule_status_restore()
             return
         if task_type == "ac_fit_ap_optical_refresh":
             is_collect = str(context.get("mode") or "load") == "collect"
@@ -2887,7 +2901,15 @@ class AcManagementPage(QWidget):
         uuid_text = str(ap_uuid or "").strip()
         mac_text = _normalize_mac_text(ap_mac)
         name_text = str(ap_name or "").strip()
-        for resource in self.resource_rows:
+        resources = list(self.resource_rows)
+        if not resources or not any(
+            (uuid_text and str(resource.get("ap_uuid") or "") == uuid_text)
+            or (mac_text and _normalize_mac_text(resource.get("ap_mac")) == mac_text)
+            or (name_text and str(resource.get("ap_name") or "") == name_text)
+            for resource in resources
+        ):
+            resources = self.repository.list_fit_ap_resources_with_metadata(ac_uuid)
+        for resource in resources:
             if uuid_text and str(resource.get("ap_uuid") or "") == uuid_text:
                 return uuid_text
             if mac_text and _normalize_mac_text(resource.get("ap_mac")) == mac_text:

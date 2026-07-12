@@ -117,7 +117,7 @@ from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, Onl
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.dialog_style import apply_dialog_style
-from netconsole.ui.table_utils import apply_analysis_table_style, auto_fit_table_columns, configure_readonly_table, make_table_item
+from netconsole.ui.table_utils import apply_analysis_table_style, attach_table_context_menu, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate, is_checked_value, set_table_row_checked
@@ -566,7 +566,6 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_all_button = QPushButton()
         self.force_stop_button = QPushButton("强制停止")
         self.params_toggle_button = QPushButton("收起输入区")
-        self.device_list_toggle_button = QPushButton("收起设备列表")
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
         self.action_bar: QWidget | None = None
@@ -684,6 +683,7 @@ class OnlineMrCollectionPage(QWidget):
         for table in (self.summary_table, self.mesh_table, self.mesh_detail_table, self.channel_table, self.events_table, self.switch_history_table, self.active_link_switch_table, self.interface_rate_table, self.fping_1s_table, self.iperf_table, self.diagnosis_table, self.history_table):
             configure_readonly_table(table)
             self._configure_online_table(table)
+            attach_table_context_menu(table, self.i18n.language, include_history=False)
         self.statistics_text.setReadOnly(True)
         self.switch_history_text.setReadOnly(True)
         self.switch_history_text.setMaximumHeight(72)
@@ -1185,10 +1185,6 @@ class OnlineMrCollectionPage(QWidget):
             if widget is not None:
                 widget.setVisible(not collapsed)
         self.device_list_summary_label.setVisible(collapsed)
-        self.device_list_toggle_button.setText(
-            self.i18n.t("online_mr.expand_device_list" if collapsed else "online_mr.collapse_device_list")
-        )
-        self.device_list_toggle_button.setToolTip(self.device_list_toggle_button.text())
         panel = getattr(self, "device_panel", None)
         if panel is not None:
             panel.setMinimumHeight(DEVICE_LIST_COLLAPSED_HEIGHT if collapsed else DEVICE_LIST_EXPANDED_MIN_HEIGHT)
@@ -1374,9 +1370,6 @@ class OnlineMrCollectionPage(QWidget):
             self.i18n.t("online_mr.expand_input_panel" if self.input_panel_collapsed else "online_mr.collapse_input_panel")
         )
         self.device_list_title_label.setText(self.i18n.t("online_mr.device_list"))
-        self.device_list_toggle_button.setText(
-            self.i18n.t("online_mr.expand_device_list" if self.device_list_collapsed else "online_mr.collapse_device_list")
-        )
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
@@ -1591,7 +1584,6 @@ class OnlineMrCollectionPage(QWidget):
             (self.stop_all_button, "CANCEL"),
             (self.force_stop_button, "CANCEL"),
             (self.params_toggle_button, "MENU"),
-            (self.device_list_toggle_button, "MENU"),
             (self.open_button, "FOLDER"),
             (self.refresh_devices_button, "SYNC"),
             (self.parse_session_button, "PLAY"),
@@ -1697,11 +1689,8 @@ class OnlineMrCollectionPage(QWidget):
         self.device_list_summary_label.setWordWrap(True)
         self.device_list_summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.device_list_summary_label.setVisible(False)
-        self.device_list_toggle_button.setMinimumWidth(116)
-        self.device_list_toggle_button.setMinimumHeight(30)
         device_header_layout.addWidget(self.device_list_title_label)
         device_header_layout.addWidget(self.device_list_summary_label, 1)
-        device_header_layout.addWidget(self.device_list_toggle_button)
         device_layout.addWidget(device_header)
         device_layout.addWidget(self.filter_hint_label)
         self.device_filter_container = QWidget()
@@ -1893,7 +1882,6 @@ class OnlineMrCollectionPage(QWidget):
         self.stop_all_button.clicked.connect(self.stop_all)
         self.force_stop_button.clicked.connect(self.force_stop_collection)
         self.params_toggle_button.clicked.connect(self._toggle_parameter_panel)
-        self.device_list_toggle_button.clicked.connect(self.toggle_device_list_collapsed)
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
         self.parse_session_button.clicked.connect(self.parse_selected_session)

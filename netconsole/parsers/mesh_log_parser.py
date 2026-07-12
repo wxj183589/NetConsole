@@ -31,6 +31,43 @@ MIN_RECORD_FIELDS = 23
 
 
 class MeshLogParser:
+    def is_supported_file(self, path: Path) -> bool:
+        current_radio: int | None = None
+        current_sample_time: datetime | None = None
+        current_tag: str | None = None
+        try:
+            for line_number, raw_offset_start, raw_offset_end, line in _iter_decoded_lines(path):
+                raw_line = line.rstrip("\r\n")
+                stripped = raw_line.strip()
+                ts_match = TIMESTAMP_RE.match(stripped)
+                if ts_match:
+                    try:
+                        current_radio = int(ts_match.group("radio"))
+                        current_sample_time = _parse_sample_time(ts_match.group("date"), ts_match.group("time"))
+                        current_tag = ts_match.group("tag")
+                    except ValueError:
+                        current_sample_time = None
+                    continue
+                if not stripped.startswith("["):
+                    continue
+                parsed, _issues = self._parse_record_line(
+                    stripped,
+                    raw_line,
+                    path,
+                    line_number,
+                    raw_offset_start,
+                    raw_offset_end,
+                    path.stem,
+                    current_radio,
+                    current_sample_time,
+                    current_tag,
+                )
+                if parsed is not None:
+                    return True
+        except (OSError, UnicodeDecodeError, gzip.BadGzipFile):
+            return False
+        return False
+
     def parse_file(
         self,
         path: Path,

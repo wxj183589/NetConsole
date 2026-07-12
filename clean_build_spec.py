@@ -31,8 +31,13 @@ ROOT = Path(__file__).resolve().parent
 
 ALLOWED_DATA = [
     ("netconsole", "netconsole"),
-    ("tools", "tools"),
+    ("tools/fping_v5", "tools/fping_v5"),
+    ("tools/iperf", "tools/iperf"),
+    ("tools/IPOP_v4.1/README.md", "tools/IPOP_v4.1"),
     ("netconsole/ui/icons", "netconsole/ui/icons"),
+    ("netconsole/assets/open_source_notices.json", "netconsole/assets"),
+    ("netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
+    ("netconsole/assets/IPOP_v4.1_notice.md", "netconsole/assets"),
 ]
 FORBIDDEN_DATA = [
     (item, item) for item in FORBIDDEN_DATAS
@@ -51,6 +56,7 @@ REQUIRED_TOOL_FILES = (
     Path("tools") / "iperf" / "cygcrypto-3.dll",
     Path("tools") / "iperf" / "cygwin1.dll",
     Path("tools") / "iperf" / "cygz.dll",
+    Path("tools") / "IPOP_v4.1" / "README.md",
 )
 REQUIRED_TOOL_EXECUTABLES = (
     Path("tools") / "fping_v5" / "fping.exe",
@@ -110,7 +116,7 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
         datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
         source_path = ROOT / source
-        if (source == "tools" and source_path.is_dir()) or source_path.is_file():
+        if (source.startswith("tools/") and source_path.is_dir()) or source_path.is_file():
             if (str(source_path), destination) in datas:
                 continue
             datas.append((str(source_path), destination))
@@ -423,6 +429,10 @@ def _same_path(left: Path, right: Path) -> bool:
 
 def _is_excluded_tool_artifact(path: Path) -> bool:
     relative_parts = path.relative_to(ROOT / "tools").parts
+    if tuple(part.casefold() for part in relative_parts) == ("ipop_v4.1", "ipop.exe"):
+        return True
+    if path.suffix.casefold() == ".py":
+        return True
     if any(part == "__pycache__" for part in relative_parts):
         return True
     return any(path.match(pattern) for pattern in EXCLUDE_FILES)

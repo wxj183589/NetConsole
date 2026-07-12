@@ -4,7 +4,7 @@ from netconsole.ui.dialogs.message_service import MessageBox
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,6 +42,42 @@ def make_app_log_export_filename(now: datetime | None = None) -> str:
     return f"app_log_{(now or datetime.now()).strftime('%Y-%m-%d-%H%M')}.csv"
 
 
+class AppLogLoadWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        keyword: str | None,
+        level: str | None,
+        log_path: Path,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.page = page
+        self.page_size = page_size
+        self.keyword = keyword
+        self.level = level
+        self.log_path = log_path
+
+    def run(self) -> None:
+        try:
+            self.completed.emit(
+                app_logger.get_logs(
+                    page=self.page,
+                    page_size=self.page_size,
+                    keyword=self.keyword,
+                    level=self.level,
+                    log_path=self.log_path,
+                )
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class AppLogPage(QWidget):
     def __init__(self, i18n: I18n, auto_refresh: bool = True, paths: PathResolver | None = None) -> None:
         super().__init__()
@@ -57,12 +93,18 @@ class AppLogPage(QWidget):
         self.export_current_button = QPushButton()
         self.export_button = QPushButton()
         self.cleanup_status_label = QLabel()
+        self.empty_label = QLabel("暂无日志记录")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.hide()
         self.table = QTableWidget(0, 4)
         self.pagination = PaginationWidget(self.i18n)
         self.page = 1
         self.page_size = DEFAULT_PAGE_SIZE
         self.current_rows: list[dict[str, str]] = []
         self.cleanup_thread: AppAutoCleanupThread | None = None
+        self.load_worker: AppLogLoadWorker | None = None
+        self._first_show_loaded = False
+        self._refresh_pending = False
         configure_readonly_table(self.table)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
@@ -83,6 +125,7 @@ class AppLogPage(QWidget):
         layout = QVBoxLayout()
         layout.addWidget(make_horizontal_scroll_area(filters_widget))
         layout.addWidget(self.cleanup_status_label)
+        layout.addWidget(self.empty_label)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.pagination)
         self.setLayout(layout)
@@ -135,12 +178,26 @@ class AppLogPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        page = app_logger.get_logs(
+        if self.load_worker is not None and self.load_worker.isRunning():
+            self._refresh_pending = True
+            return
+        self.refresh_button.setEnabled(False)
+        self.empty_label.setText("正在加载日志...")
+        self.empty_label.show()
+        self.load_worker = AppLogLoadWorker(
             page=self.page,
             page_size=self.page_size,
             keyword=self.search_input.text().strip() or None,
             level=self.level_filter.currentData(),
+            log_path=self.paths.app_log_path,
+            parent=self,
         )
+        self.load_worker.completed.connect(self._logs_loaded)
+        self.load_worker.failed.connect(self._logs_failed)
+        self.load_worker.finished.connect(self._log_load_finished)
+        self.load_worker.start()
+
+    def _logs_loaded(self, page: object) -> None:
         self.page = page.state.current_page
         self.page_size = page.state.page_size
         self.pagination.set_state(page.state)
@@ -151,6 +208,30 @@ class AppLogPage(QWidget):
             for column, key in enumerate(("time", "display_level", "display_event", "display_detail")):
                 self._set_log_item(row, column, item, key)
         auto_resize_table_columns(self.table)
+        self.empty_label.setText("暂无日志记录")
+        self.empty_label.setVisible(not logs)
+
+    def _logs_failed(self, message: str) -> None:
+        self.current_rows = []
+        self.table.setRowCount(0)
+        self.empty_label.setText(f"日志加载失败：{message}")
+        self.empty_label.show()
+
+    def _log_load_finished(self) -> None:
+        worker = self.load_worker
+        self.load_worker = None
+        self.refresh_button.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self.refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        if not self._first_show_loaded:
+            self._first_show_loaded = True
+            self.refresh()
 
     def set_page(self, page: int) -> None:
         self.page = page

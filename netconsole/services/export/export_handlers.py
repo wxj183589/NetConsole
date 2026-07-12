@@ -34,6 +34,7 @@ from netconsole.services.export.common_exporters import (
     replace_output,
 )
 from netconsole.services.export.export_job import ExportJob
+from netconsole.services.file_contract import attach_export_metadata
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
@@ -135,6 +136,12 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         raise ValueError(f"不支持的通用导出任务类型：{job.job_type}")
     if should_cancel and should_cancel():
         raise ExportCancelled("导出已取消")
+    attach_export_metadata(
+        tmp_path,
+        effective_suffix=output_path.suffix,
+        export_type=job.job_type,
+        payload=payload,
+    )
     replace_output(tmp_path, output_path)
     if job.job_type == "securecrt_sessions":
         return {"path": str(result.get("path") or output_path), "row_count": row_count}

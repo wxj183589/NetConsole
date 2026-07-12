@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import os
@@ -1136,7 +1137,9 @@ class CarNetworkPointTableStore:
 
     def save(self, nodes: Iterable[CarNetworkNode]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps([asdict(node) for node in _sort_nodes(list(nodes))], ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        temp_path.write_text(json.dumps([asdict(node) for node in _sort_nodes(list(nodes))], ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.path)
 
     def import_file(self, path: Path) -> int:
         nodes = [node_from_mapping(row) for row in read_point_table_file(path)]
@@ -1229,9 +1232,25 @@ def node_from_mapping(row: dict[str, object]) -> CarNetworkNode:
 
 
 def read_point_table_file(path: Path) -> list[dict[str, object]]:
+    from netconsole.services.file_contract import read_validated_csv_rows, validate_csv_import, validate_excel_import
+
     if path.suffix.casefold() == ".csv":
-        with path.open("r", encoding="utf-8-sig", newline="") as file:
-            return [dict(row) for row in csv.DictReader(file)]
+        validate_csv_import(
+            path,
+            expected_module="rail.car_network_point_table",
+            required_headers=POINT_TABLE_FIELDS,
+            allow_legacy=True,
+        )
+        rows, _metadata, _encoding = read_validated_csv_rows(path)
+        output = io.StringIO(newline="")
+        csv.writer(output).writerows(rows)
+        return [dict(row) for row in csv.DictReader(io.StringIO(output.getvalue()))]
+    validate_excel_import(
+        path,
+        expected_module="rail.car_network_point_table",
+        required_headers={"car_network_point_table": POINT_TABLE_FIELDS},
+        allow_legacy=True,
+    )
     workbook = load_workbook_without_unsupported_image_warning(path, read_only=True, data_only=True)
     sheet = workbook.active
     rows = list(sheet.iter_rows(values_only=True))

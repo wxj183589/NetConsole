@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from netconsole.core.admin import is_admin
+from netconsole.core.feature_flags import FeatureGate, default_feature_gate
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.export.export_task_builders import result_file_rows_source, table_csv_source_spec, table_xlsx_source_spec
@@ -48,13 +48,7 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
     wildcard_calculate,
 )
 from netconsole.services.network_tools.toolbox.ping_tools import run_batch_ping, run_single_ping, run_tcp_ping
-from netconsole.services.network_tools.toolbox.route_tools import (
-    build_add_route_command,
-    build_delete_route_command,
-    execute_powershell,
-    list_local_routes,
-    sort_route_rows,
-)
+from netconsole.services.external_tool_launcher import launch_ipop_as_admin
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, WindowsNetworkManager
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.export_action_helper import submit_export_task
@@ -702,11 +696,13 @@ class NetworkToolboxPage(QWidget):
         site_name: str,
         paths: PathResolver,
         network_manager: WindowsNetworkManager | None = None,
+        feature_gate: FeatureGate | None = None,
     ) -> None:
         super().__init__()
         self.i18n = i18n
         self.site_name = site_name
         self.paths = paths
+        self.feature_gate = feature_gate or default_feature_gate()
         self.network_manager = network_manager or WindowsNetworkManager()
         self.thread: QThread | None = None
         self.worker: _Worker | None = None
@@ -736,10 +732,22 @@ class NetworkToolboxPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        self.ipop_button = QPushButton("管理员启动 IPOP v4.1")
+        self.ipop_button.setVisible(self.feature_gate.is_visible("network_tools.ipop"))
+        self.ipop_button.setEnabled(self.feature_gate.is_enabled("network_tools.ipop"))
+        self.ipop_button.clicked.connect(self.launch_ipop)
+        apply_button_icon(self.ipop_button, "PLAY")
+        root.addWidget(self.ipop_button, 0, Qt.AlignmentFlag.AlignLeft)
         root.addWidget(self.tabs)
         self.tabs.addTab(self._ip_page(), "IP 计算")
         self.tabs.addTab(self._connectivity_page(), "连通性检测")
-        self.tabs.addTab(self._routes_page(), "本机路由")
+
+    def launch_ipop(self) -> None:
+        result = launch_ipop_as_admin(self.paths)
+        if result.success:
+            MessageBox.information(self, "IPOP v4.1", result.message)
+        else:
+            MessageBox.warning(self, "IPOP v4.1", result.message)
 
     def _ip_page(self) -> QWidget:
         page = QWidget()
@@ -1120,47 +1128,6 @@ class NetworkToolboxPage(QWidget):
         actions.addWidget(self._action_button("TCP Ping", self.run_tcp_ping, "PLAY"))
         return page
 
-    def _routes_page(self) -> QWidget:
-        page, grid, actions, panel = self._tool_page("local_routes")
-        self.routes_panel = panel
-        panel.setMinimumHeight(640)
-        panel.result_table.setMinimumHeight(480)
-        panel.summary_text.setMaximumHeight(72)
-        configure_readable_table_columns(panel.result_table)
-        self.current_route_rows: list[dict[str, object]] = []
-        self.route_status = QLabel("\u7ba1\u7406\u5458\u6743\u9650\uff1a\u662f" if is_admin() else "\u7ba1\u7406\u5458\u6743\u9650\uff1a\u5426\uff0c\u4ec5\u53ef\u67e5\u770b\u8def\u7531\u548c\u751f\u6210\u547d\u4ee4\u9884\u89c8")
-        self.route_filter = QComboBox()
-        self.route_filter.addItems(["\u5168\u90e8\u8def\u7531", "\u9ed8\u8ba4\u8def\u7531", "\u9759\u6001/\u6301\u4e45\u8def\u7531", "\u5728\u94fe\u8def\u4e0a", "\u4e3b\u673a\u8def\u7531"])
-        self.route_destination = QLineEdit()
-        self.route_destination.setPlaceholderText("\u4f8b\u5982 192.168.10.0/24")
-        self.route_gateway = QLineEdit()
-        self.route_gateway.setPlaceholderText("\u4f8b\u5982 192.168.10.1")
-        self.route_interface_index = self._spin(0, 99999, 0)
-        self.route_metric = self._spin(0, 99999, 10)
-        self.route_persistent = QCheckBox("\u6301\u4e45\u8def\u7531")
-        self._add_row(grid, 0, "\u6743\u9650", self.route_status)
-        self._add_row(grid, 1, "\u7b5b\u9009", self.route_filter)
-        self._add_row(grid, 2, "\u76ee\u6807\u7f51\u7edc", self.route_destination)
-        self._add_row(grid, 3, "\u7f51\u5173", self.route_gateway)
-        self._add_row(grid, 4, "\u63a5\u53e3\u7d22\u5f15", self.route_interface_index)
-        self._add_row(grid, 5, "\u8dc3\u70b9\u6570", self.route_metric)
-        grid.addWidget(self.route_persistent, 6, 1)
-        refresh = self._action_button("\u5237\u65b0\u8def\u7531", self.refresh_routes, "SYNC")
-        preview_add = self._action_button("\u6dfb\u52a0\u9884\u89c8", self.preview_add_route, "ADD")
-        preview_delete = self._action_button("\u5220\u9664\u9884\u89c8", self.preview_delete_route, "DELETE")
-        preview_selected = self._action_button("\u9009\u4e2d\u5220\u9664\u9884\u89c8", self.preview_selected_route_delete, "DELETE")
-        execute_add = self._action_button("\u6267\u884c\u6dfb\u52a0", self.execute_add_route, "ACCEPT")
-        execute_delete = self._action_button("\u6267\u884c\u5220\u9664", self.execute_delete_route, "DELETE")
-        self.route_execute_buttons = (execute_add, execute_delete)
-        self._refresh_routes_after_command = False
-        for button in (execute_add, execute_delete):
-            button.setEnabled(is_admin())
-        for button in (refresh, preview_add, preview_delete, preview_selected, execute_add, execute_delete):
-            actions.addWidget(button)
-        actions.addStretch(1)
-        self.route_filter.currentIndexChanged.connect(self.refresh_routes)
-        return page
-
     def calculate_ipv4(self) -> None:
         self.ipv4_panel.show_rows([ipv4_calculate(self.ipv4_edit.text())], "ipv4_calc", summary_title="IPv4 计算")
 
@@ -1346,61 +1313,6 @@ class NetworkToolboxPage(QWidget):
 
         self._run_async(self.tcp_ping_panel, task, "tcp_ping")
 
-    def refresh_routes(self) -> None:
-        self._run_async(self.routes_panel, self._route_rows_for_display, "local_routes")
-
-    def _route_rows_for_display(self) -> list[dict[str, object]]:
-        rows = sort_route_rows(list_local_routes(self.network_manager))
-        filtered = self._filter_route_rows(rows)
-        return [self._route_payload_for_display(row, index + 1) for index, row in enumerate(filtered)]
-
-    def _filter_route_rows(self, rows):
-        if not hasattr(self, "route_filter"):
-            return list(rows)
-        mode = self.route_filter.currentIndex()
-        if mode == 1:
-            return [row for row in rows if row.prefix_length == 0]
-        if mode == 2:
-            return [row for row in rows if row.persistent or "manual" in row.source.lower() or "static" in row.source.lower()]
-        if mode == 3:
-            return [row for row in rows if row.on_link]
-        if mode == 4:
-            return [row for row in rows if row.prefix_length == 32]
-        return list(rows)
-
-    @staticmethod
-    def _route_payload_for_display(row, index: int) -> dict[str, object]:
-        return {
-            "order_index": index,
-            "destination_prefix": row.destination_prefix,
-            "next_hop": row.next_hop,
-            "interface_alias": row.interface_alias or row.interface_ip or str(row.interface_index),
-            "metric": row.metric,
-            "policy_store": row.policy_store or "-",
-            "persistent": row.persistent,
-            "source": row.source or "-",
-            "_interface_index": row.interface_index,
-        }
-
-    def _selected_route_payload(self) -> dict[str, object] | None:
-        table = self.routes_panel.result_table
-        selected = table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        if 0 <= row < len(self.current_route_rows):
-            return self.current_route_rows[row]
-        return None
-
-    def _set_route_form_from_payload(self, payload: dict[str, object]) -> None:
-        self.route_destination.setText(str(payload.get("destination_prefix") or ""))
-        next_hop = str(payload.get("next_hop") or "")
-        self.route_gateway.setText("" if next_hop == "\u5728\u94fe\u8def\u4e0a" else next_hop)
-        try:
-            self.route_interface_index.setValue(int(payload.get("_interface_index") or 0))
-        except (TypeError, ValueError):
-            self.route_interface_index.setValue(0)
-
     def refresh_network_adapters(self) -> None:
         try:
             self.adapters = self.network_manager.list_adapters()
@@ -1415,52 +1327,6 @@ class NetworkToolboxPage(QWidget):
                 self.network_adapter_combo.addItem(self._adapter_label(adapter))
         finally:
             self.network_adapter_combo.blockSignals(False)
-
-    def preview_add_route(self) -> None:
-        command = build_add_route_command(
-            self.route_destination.text(),
-            self.route_gateway.text(),
-            interface_index=self.route_interface_index.value() or None,
-            metric=self.route_metric.value() or None,
-            persistent=self.route_persistent.isChecked(),
-        )
-        self.routes_panel.summary_text.setPlainText(command)
-        self.routes_panel.set_status("ready", "命令已生成")
-
-    def preview_delete_route(self) -> None:
-        command = build_delete_route_command(self.route_destination.text(), self.route_gateway.text(), interface_index=self.route_interface_index.value() or None)
-        self.routes_panel.summary_text.setPlainText(command)
-        self.routes_panel.set_status("ready", "\u547d\u4ee4\u5df2\u751f\u6210")
-
-    def preview_selected_route_delete(self) -> None:
-        payload = self._selected_route_payload()
-        if not payload:
-            self.routes_panel.show_error("\u8bf7\u5148\u5728\u7ed3\u679c\u8868\u683c\u4e2d\u9009\u4e2d\u4e00\u6761\u8def\u7531\u3002")
-            return
-        self._set_route_form_from_payload(payload)
-        self.preview_delete_route()
-
-    def execute_add_route(self) -> None:
-        self.preview_add_route()
-        self._execute_route_command(self.routes_panel.summary_text.toPlainText())
-
-    def execute_delete_route(self) -> None:
-        self.preview_delete_route()
-        self._execute_route_command(self.routes_panel.summary_text.toPlainText())
-
-    def _execute_route_command(self, command: str) -> None:
-        if self.thread is not None:
-            self.routes_panel.show_error("已有任务正在执行，请等待完成。")
-            return
-        if not is_admin():
-            MessageBox.warning(self, "本机路由", "需要以管理员身份运行才能修改路由。")
-            return
-        if MessageBox.question(self, "本机路由", f"确认执行：\n{command}") != MessageBox.Yes:
-            return
-        for button in self.route_execute_buttons:
-            button.setEnabled(False)
-        self.routes_panel.summary_text.setPlainText(f"正在执行：\n{command}")
-        self._run_async(self.routes_panel, lambda: execute_powershell(command), "route_modify")
 
     def _run_async(self, panel: ToolResultPanel, fn: Callable[[], object], prefix: str) -> None:
         if self.thread is not None:
@@ -1491,21 +1357,6 @@ class NetworkToolboxPage(QWidget):
         if error:
             panel.show_error(error)
             return
-        if prefix == "route_modify":
-            return_code = int(getattr(payload, "returncode", -1))
-            stdout = str(getattr(payload, "stdout", "") or "").strip()
-            stderr = str(getattr(payload, "stderr", "") or "").strip()
-            args = list(getattr(payload, "args", []) or [])
-            command = str(args[-1] if args else "")
-            lines = [f"命令：{command}", f"退出码：{return_code}"]
-            if stdout:
-                lines.extend(("", "标准输出：", stdout))
-            if stderr:
-                lines.extend(("", "错误输出：", stderr))
-            panel.summary_text.setPlainText("\n".join(lines))
-            panel.set_status("done" if return_code == 0 else "failed", "执行完成" if return_code == 0 else "执行失败")
-            self._refresh_routes_after_command = True
-            return
         if prefix == "network_ping" and self.network_ping_stop_requested:
             panel.set_status("stopped")
             self._refresh_network_ping_stats("已停止")
@@ -1514,24 +1365,15 @@ class NetworkToolboxPage(QWidget):
             panel.show_table_result(payload, prefix)
             return
         rows = list(payload or [])
-        if prefix == "local_routes":
-            self.current_route_rows = rows
         panel.show_rows(rows, prefix)
         if prefix == "network_ping":
             self._refresh_network_ping_stats()
 
     @Slot()
     def _thread_finished(self) -> None:
-        finished_prefix = str(getattr(self.worker, "prefix", "") or "")
         self.thread = None
         self.worker = None
         self.active_panel = None
-        if finished_prefix == "route_modify":
-            for button in self.route_execute_buttons:
-                button.setEnabled(is_admin())
-            if self._refresh_routes_after_command:
-                self._refresh_routes_after_command = False
-                self.refresh_routes()
 
     def _init_network_ping_grid(self, network: ipaddress.IPv4Network, targets: list[str]) -> None:
         target_set = set(targets)

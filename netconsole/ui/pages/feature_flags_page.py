@@ -7,6 +7,7 @@ import traceback
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
-from netconsole.core.feature_flags import FeatureGate, default_profile, load_profile, normalize_feature_state, project_root, save_profile, validate_feature_states
+from netconsole.core.feature_flags import FeatureGate, default_profile, engineer_package_enabled, load_profile, normalize_feature_state, project_root, save_profile, validate_feature_states
 from netconsole.core.feature_registry import list_features
 from netconsole.core.i18n import I18n
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
@@ -45,11 +46,14 @@ class FeatureFlagsPage(QWidget):
         self.save_button = QPushButton()
         self.reload_button = QPushButton()
         self.preview_button = QPushButton()
+        self.engineer_package_switch = QCheckBox("工程师打包")
+        self.engineer_package_switch.setToolTip("构建 internal/customer 时额外生成工程师版；工程师版显示诊断和开发辅助功能，但不显示功能开关配置页。")
 
         actions = QHBoxLayout()
         actions.addWidget(self.save_button)
         actions.addWidget(self.reload_button)
         actions.addWidget(self.preview_button)
+        actions.addWidget(self.engineer_package_switch)
         actions.addStretch(1)
 
         layout = QVBoxLayout(self)
@@ -73,6 +77,9 @@ class FeatureFlagsPage(QWidget):
         else:
             self.session_label.setText("当前为临时完整模式，本次启动有效。")
             self.preview_button.setText(self.i18n.t("feature_flags.preview_customer"))
+        self.engineer_package_switch.setChecked(
+            engineer_package_enabled(project_root() / "profiles" / "features" / "customer.json")
+        )
         features = self.feature_gate.features if self.feature_gate.is_customer_preview_active() else self._saved_customer_features()
         self._reload_table(features)
 
@@ -126,6 +133,7 @@ class FeatureFlagsPage(QWidget):
         if answer != MessageBox.Yes:
             return
         self._reload_table(default_profile("customer")["features"])
+        self.engineer_package_switch.setChecked(False)
 
     def save_customer_profile(self) -> None:
         features = self._customer_features()
@@ -136,7 +144,12 @@ class FeatureFlagsPage(QWidget):
             MessageBox.warning(self, self.i18n.t("feature_flags.title"), error)
             return
         try:
-            save_profile(project_root() / "profiles" / "features" / "customer.json", "customer", features)
+            save_profile(
+                project_root() / "profiles" / "features" / "customer.json",
+                "customer",
+                features,
+                build_options={"engineer_package": self.engineer_package_switch.isChecked()},
+            )
             self.feature_gate.reload()
             if callable(self.on_profile_saved):
                 self.on_profile_saved()

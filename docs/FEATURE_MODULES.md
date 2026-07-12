@@ -4,7 +4,7 @@
 
 用户可见模块、页面、Tab、动作和按钮统一登记在 `netconsole/core/feature_registry.py`。Feature key 使用点号分层；页面通过 `FeatureGate` 和 `apply_feature_to_widget` 控制，而不是散落读取配置。
 
-内部功能开关页面使用 `module.feature_switch`，标记为 internal-only，不应出现在客户版普通导航中。
+内部功能开关页面使用 `module.feature_switch`。该页面只在源码开发态注册；所有冻结/安装包运行态（包括 internal、customer、engineer）都强制隐藏并禁用，不能通过 profile 或本地覆盖重新开启。
 
 ## 2. 一级模块
 
@@ -24,7 +24,7 @@
 
 ## 3. 已登记的子功能与内部能力
 
-Registry 当前显式登记的主要子功能包括：设备外部终端/SecureCRT/OmniPeek 导出；轨道交通 train online、车载网络、轨旁 AP、MR/Mesh、Online MR 采集与分析；Online MR 链路详情、fping 汇总、备注、高级 Ping 和 iPerf；AC 轨旁计划、在线概览、FIT AP 资源/光衰/扩展及动作；文件管理 Mesh 下载/自动导入/WinSCP；网络工具 toolbox；Mesh 报告；系统磁盘清理、变更记录、开源信息和内部 Feature 页面。
+Registry 当前显式登记的主要子功能包括：设备外部终端/SecureCRT/OmniPeek 导出；轨道交通 train online、车载网络、轨旁 AP、MR/Mesh、Online MR 采集与分析；Online MR 链路详情、fping 汇总、备注、高级 Ping 和 iPerf；AC 轨旁计划、在线概览、FIT AP 资源/光衰/扩展及动作；文件管理 Mesh 下载/自动导入/WinSCP；网络工具 toolbox 与 `network_tools.ipop`；Mesh 报告；系统磁盘清理、变更记录、开源信息和开发态 Feature 页面。
 
 SNMP Center 的 MIB 资源、Browser、OID 模板、监控、Trap/告警和拓扑目前作为 `module.snmp_center` 内部 Tab，尚未分别登记子 Feature key。单次查询和推荐页面是中心内部工作流，不是独立可见 Tab。若未来需要 edition 级单独控制，必须先在 Registry 增加明确 key，不能在页面另造配置。
 
@@ -38,7 +38,7 @@ SNMP Center 的 MIB 资源、Browser、OID 模板、监控、Trap/告警和拓�
 
 ## 5. Edition 与运行时配置
 
-构建配置可按 internal/customer edition 或 profile 生成默认功能集合，但运行时仍由统一 Registry/Gate 判定。不得在页面用 edition 名称硬编码同一能力的第二套开关。
+构建配置可按 internal/customer/engineer edition 或 profile 生成默认功能集合，但运行时仍由统一 Registry/Gate 判定。客户 profile 的 `build_options.engineer_package` 只决定 `both` 是否附加工程师包，不是运行时功能开关。不得在页面用 edition 名称硬编码同一能力的第二套开关。
 
 ## 6. AP Identity 特例
 

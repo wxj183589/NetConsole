@@ -51,7 +51,7 @@ def test_old_template_address_fields_are_rejected(tmp_path):
     path = tmp_path / "old.csv"
     path.write_text("设备名称,IP,用户名,密码\nSW1,10.0.0.1,admin,pwd\n", encoding="utf-8-sig")
 
-    with pytest.raises(ValueError, match="最新模板"):
+    with pytest.raises(ValueError, match="缺少必要字段"):
         service.import_csv(path)
     assert repository.list() == []
 

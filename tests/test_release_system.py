@@ -175,7 +175,10 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
-    assert ("tools", "tools") in clean_build_spec.ALLOWED_DATA
+    assert ("tools/fping_v5", "tools/fping_v5") in clean_build_spec.ALLOWED_DATA
+    assert ("tools/iperf", "tools/iperf") in clean_build_spec.ALLOWED_DATA
+    assert ("tools/IPOP_v4.1/README.md", "tools/IPOP_v4.1") in clean_build_spec.ALLOWED_DATA
+    assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
     assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
@@ -217,7 +220,9 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert all("project" not in path.parts for path in staged_relative)
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
-    assert any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
+    assert any(destination == "tools/fping_v5" and Path(source).name == "fping_v5" for source, destination in datas)
+    assert any(destination == "tools/iperf" and Path(source).name == "iperf" for source, destination in datas)
+    assert not any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
     assert all(destination != "data" for _source, destination in datas)
 
 
@@ -250,7 +255,10 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "binaries=pyside_binaries + VC_RUNTIME_BINARIES" in text
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
-    assert "('tools', 'tools')" in text or '("tools", "tools")' in text
+    assert "tools/fping_v5" in text
+    assert "tools/iperf" in text
+    assert "tools/IPOP_v4.1/README.md" in text
+    assert "tools/IPOP_v4.1/IPOP.EXE" not in text
     assert "main.py" in text
     assert "('.', '.')" not in text
     assert "('project', 'project')" not in text
@@ -346,15 +354,28 @@ def test_clean_build_packaged_tools_validation(tmp_path):
     (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
     (app_dist / "_internal" / "tools" / "fping_v5").mkdir(parents=True)
     (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "IPOP_v4.1").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "fping_v5" / "fping.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "IPOP_v4.1" / "README.md").write_text("", encoding="utf-8")
     for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
         (app_dist / "_internal" / "tools" / "iperf" / dll_name).write_text("", encoding="utf-8")
 
     clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
+
+
+def test_engineer_edition_is_selected_by_explicit_request_or_customer_option(monkeypatch):
+    from project import build_release
+
+    monkeypatch.setattr(build_release, "engineer_package_enabled", lambda: False)
+    assert build_release.selected_editions("engineer") == ("engineer",)
+    assert build_release.selected_editions("both") == ("internal", "customer")
+
+    monkeypatch.setattr(build_release, "engineer_package_enabled", lambda: True)
+    assert build_release.selected_editions("both") == ("internal", "customer", "engineer")
 
 
 def test_clean_build_packaged_tools_validation_rejects_missing_tool(tmp_path):
@@ -396,6 +417,7 @@ def _make_packaged_runtime(tmp_path: Path) -> Path:
     (internal / "PySide6" / "plugins" / "platforms").mkdir(parents=True)
     (internal / "tools" / "fping_v5").mkdir(parents=True)
     (internal / "tools" / "iperf").mkdir(parents=True)
+    (internal / "tools" / "IPOP_v4.1").mkdir(parents=True)
     (app_dist / "data").mkdir(parents=True)
     (app_dist / "runtime" / "logs").mkdir(parents=True)
     (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
@@ -408,6 +430,7 @@ def _make_packaged_runtime(tmp_path: Path) -> Path:
     (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
     (internal / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
     (internal / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+    (internal / "tools" / "IPOP_v4.1" / "IPOP.EXE").write_text("", encoding="utf-8")
     return app_dist
 
 
@@ -489,9 +512,11 @@ def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_p
     app_dist = tmp_path / "NetConsole"
     (app_dist / "_internal" / "tools" / "fping_v5").mkdir(parents=True)
     (app_dist / "_internal" / "tools" / "iperf").mkdir(parents=True)
+    (app_dist / "_internal" / "tools" / "IPOP_v4.1").mkdir(parents=True)
     (app_dist / "_internal" / "tools" / "fping_v5" / "fping.exe").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "fping_v5" / "cygwin1.dll").write_text("", encoding="utf-8")
     (app_dist / "_internal" / "tools" / "iperf" / "iperf3.exe").write_text("", encoding="utf-8")
+    (app_dist / "_internal" / "tools" / "IPOP_v4.1" / "README.md").write_text("", encoding="utf-8")
     for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
         (app_dist / "_internal" / "tools" / "iperf" / dll_name).write_text("", encoding="utf-8")
 

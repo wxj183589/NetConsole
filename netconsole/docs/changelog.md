@@ -1,4 +1,8 @@
 v1.3.8
+- 文件导入：新增统一 XLSX/CSV/JSON/ZIP 文件契约与强校验，错误模块、版本、字段、空文件、损坏文件和不安全 ZIP 在写入前拒绝。
+- 网络工具：移除本地网卡配置和工具箱“本机路由”入口，新增受功能开关控制的 IPOP v4.1 管理员启动按钮。
+- UI：标题统一增加 `by WXJ`，修复弹出模块归属；三处业务表格统一全局交互，日志中心首次进入异步加载，Online MR 移除独立设备列表收起按钮。
+- 发布：功能开关配置仅源码开发态可见，新增可持久化工程师打包选项及 engineer edition。
 - 架构：建立统一 Job Center、Worker Process 与 Export Process，后台任务使用结构化 JSONL 事件、进度、取消和单一终态。
 - 车载 MR：实时 SSH 采集、解析和报告分别收敛到长运行 Job、后台解析 Job 与 Export Process；完善启动确认、Ping/iPerf 参数、Busy 解析和状态展示。
 - SNMP 中心：GET、GETNEXT、GETBULK、WALK、SET 和多设备批量采集进入统一后台任务，保留 MIB、Trap、Poll 和 H3C 映射现有边界。

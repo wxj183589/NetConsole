@@ -230,7 +230,9 @@ def test_app_log_export_applies_page_offset_and_limit_in_export_process(tmp_path
     result = run_generic_export_handler(job)
 
     assert result["row_count"] == 1
-    assert len(output.read_text(encoding="utf-8-sig").splitlines()) == 2
+    lines = output.read_text(encoding="utf-8-sig").splitlines()
+    assert len(lines) == 3
+    assert lines[0].startswith("#NETCONSOLE_META,")
 
 
 def test_trackside_xlsx_export_reports_progress(tmp_path) -> None:

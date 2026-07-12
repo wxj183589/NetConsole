@@ -14,13 +14,13 @@ if str(ROOT) not in sys.path:
 
 import clean_build_spec
 from project.build_config import BuildConfig, load_config
-from netconsole.core.feature_flags import FeatureGate, install_runtime_feature_files, load_profile, profiles_dir
+from netconsole.core.feature_flags import FeatureGate, engineer_package_enabled, install_runtime_feature_files, load_profile, profiles_dir
 from netconsole.core.feature_registry import list_features
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 
 
 BACKENDS = ("pyinstaller", "nuitka")
-BUILD_EDITIONS = ("internal", "customer", "both")
+BUILD_EDITIONS = ("internal", "customer", "engineer", "both", "all")
 NUITKA_ALLOWED_RELEASE_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime", "tools"})
 PYINSTALLER_ALLOWED_APP_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime", "tools"})
 FORBIDDEN_RELEASE_DIR_NAMES = frozenset({"docs", "tests", "project", "netconsole"})
@@ -45,7 +45,8 @@ def main() -> int:
 
     try:
         config = load_config()
-        validate_config(config)
+        editions = selected_editions(args.build_editions)
+        validate_config(config, editions=editions)
         print(f"APP_NAME={config.app_name}")
         print(f"APP_VERSION={config.app_version}")
         print(f"BACKEND={args.backend}")
@@ -76,14 +77,25 @@ def main() -> int:
         return 1
 
 
-def validate_config(config: BuildConfig) -> None:
+def validate_config(config: BuildConfig, *, editions: tuple[str, ...] = ()) -> None:
     missing = [
         path
-        for path in (config.entry_file, config.icon_file, config.changelog_file, config.tools_dir, *config.required_tool_files)
+        for path in (
+            config.entry_file,
+            config.icon_file,
+            config.changelog_file,
+            config.tools_dir,
+            config.root / "netconsole" / "assets" / "open_source_notices.json",
+            config.root / "netconsole" / "assets" / "THIRD_PARTY_COMPONENTS.md",
+            config.root / "netconsole" / "assets" / "IPOP_v4.1_notice.md",
+            *config.required_tool_files,
+        )
         if not path.exists()
     ]
     if missing:
         raise BuildError("Missing required build input:\n" + "\n".join(str(path) for path in missing))
+    if "engineer" in editions and not config.ipop_executable.is_file():
+        raise BuildError(f"Engineer build requires locally supplied IPOP executable: {config.ipop_executable}")
     if not config.app_version.startswith("v"):
         raise BuildError(f"APP_VERSION must keep the existing v prefix: {config.app_version}")
 
@@ -168,16 +180,22 @@ def create_edition_releases(
     admin_unlock_password: str | None = None,
 ) -> None:
     for edition in selected_editions(build_editions):
-        profile = feature_profile or ("full" if edition == "internal" else "customer")
+        profile = feature_profile or ("full" if edition in {"internal", "engineer"} else "customer")
         destination = config.release_version_dir / edition
         remove_tree(destination)
         copy_tree(payload, destination)
         remove_copied_zip_files(destination)
+        if edition == "engineer":
+            copy_engineer_ipop(config, destination)
+        else:
+            remove_packaged_ipop_binary(destination)
         unlock_password = admin_unlock_password if edition == "customer" else None
         install_runtime_feature_files(destination, edition=edition, profile=profile, admin_unlock_password=unlock_password)
         validate_embedded_feature_gate(destination, edition=edition, profile=profile)
         validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
         validate_release_fping(destination)
+        validate_ipop_distribution(config, destination, edition)
+        run_packaged_release_contract(destination / f"{config.app_name}.exe", destination)
         if make_zip:
             zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
             zip_directory(destination, zip_path, destination, NUITKA_ALLOWED_RELEASE_ITEMS)
@@ -187,8 +205,13 @@ def create_edition_releases(
 
 
 def selected_editions(value: str) -> tuple[str, ...]:
+    if value == "all":
+        return ("internal", "customer", "engineer")
     if value == "both":
-        return ("internal", "customer")
+        editions = ["internal", "customer"]
+        if engineer_package_enabled():
+            editions.append("engineer")
+        return tuple(editions)
     return (value,)
 
 
@@ -266,9 +289,14 @@ def nuitka_command(config: BuildConfig, jobs: str, package_config: Path) -> list
         f"--output-dir={config.backend_build_dir('nuitka')}",
         f"--output-filename={config.app_name}.exe",
         f"--windows-icon-from-ico={config.icon_file}",
-        f"--include-raw-dir={config.tools_dir}=tools",
+        f"--include-raw-dir={config.tools_dir / 'fping_v5'}=tools/fping_v5",
+        f"--include-raw-dir={config.tools_dir / 'iperf'}=tools/iperf",
+        f"--include-data-file={config.ipop_readme}=tools/IPOP_v4.1/README.md",
         f"--include-data-dir={config.root / 'netconsole' / 'ui' / 'icons'}=netconsole/ui/icons",
         f"--include-data-file={config.changelog_file}=netconsole/assets/changelog.md",
+        f"--include-data-file={config.root / 'netconsole' / 'assets' / 'open_source_notices.json'}=netconsole/assets/open_source_notices.json",
+        f"--include-data-file={config.root / 'netconsole' / 'assets' / 'THIRD_PARTY_COMPONENTS.md'}=netconsole/assets/THIRD_PARTY_COMPONENTS.md",
+        f"--include-data-file={config.root / 'netconsole' / 'assets' / 'IPOP_v4.1_notice.md'}=netconsole/assets/IPOP_v4.1_notice.md",
         str(config.entry_file),
     ]
 
@@ -282,10 +310,14 @@ def write_nuitka_package_config(config: BuildConfig, build_root: Path) -> Path:
                 "- module-name: 'netconsole'",
                 "  data-files:",
                 "    dirs:",
-                f"      - '{config.tools_dir.as_posix()}'",
+                f"      - '{(config.tools_dir / 'fping_v5').as_posix()}'",
+                f"      - '{(config.tools_dir / 'iperf').as_posix()}'",
                 "      - 'netconsole/ui/icons'",
                 "    patterns:",
                 "      - 'netconsole/assets/changelog.md'",
+                "      - 'netconsole/assets/open_source_notices.json'",
+                "      - 'netconsole/assets/THIRD_PARTY_COMPONENTS.md'",
+                "      - 'netconsole/assets/IPOP_v4.1_notice.md'",
                 "",
             ]
         ),
@@ -329,7 +361,41 @@ def copy_release_tools(config: BuildConfig, release_root: Path) -> None:
     destination = release_root / "tools"
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(config.tools_dir, destination)
+    shutil.copytree(config.tools_dir, destination, ignore=_ignore_unlicensed_ipop)
+
+
+def _ignore_unlicensed_ipop(directory: str, names: list[str]) -> set[str]:
+    ignored = {name for name in names if name == "__pycache__" or Path(name).suffix.casefold() in {".py", ".pyc", ".pyo"}}
+    if Path(directory).name.casefold() == "ipop_v4.1":
+        ignored.update(name for name in names if name.casefold() == "ipop.exe")
+    return ignored
+
+
+def copy_engineer_ipop(config: BuildConfig, release_root: Path) -> None:
+    destination = release_root / "tools" / "IPOP_v4.1" / "IPOP.EXE"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(config.ipop_executable, destination)
+
+
+def remove_packaged_ipop_binary(release_root: Path) -> None:
+    for candidate in (
+        release_root / "tools" / "IPOP_v4.1" / "IPOP.EXE",
+        release_root / "_internal" / "tools" / "IPOP_v4.1" / "IPOP.EXE",
+    ):
+        if candidate.exists():
+            candidate.unlink()
+
+
+def validate_ipop_distribution(config: BuildConfig, release_root: Path, edition: str) -> None:
+    if not config.ipop_notice.is_file() or not config.ipop_readme.is_file():
+        raise BuildError("IPOP licensing notice is missing")
+    external = release_root / "tools" / "IPOP_v4.1" / "IPOP.EXE"
+    embedded = release_root / "_internal" / "tools" / "IPOP_v4.1" / "IPOP.EXE"
+    if edition == "engineer":
+        if not external.is_file():
+            raise BuildError(f"Engineer release is missing IPOP.EXE: {external}")
+    elif external.exists() or embedded.exists():
+        raise BuildError(f"{edition} release must not redistribute IPOP.EXE")
 
 
 def validate_release_fping(release_root: Path) -> None:
@@ -356,6 +422,13 @@ def run_packaged_smoke(exe: Path, cwd: Path) -> None:
     run([str(exe)], cwd=cwd, env=env, timeout=30)
     env = os.environ.copy()
     env["NETCONSOLE_TOOL_SMOKE_TEST"] = "1"
+    run([str(exe)], cwd=cwd, env=env, timeout=30)
+    run_packaged_release_contract(exe, cwd)
+
+
+def run_packaged_release_contract(exe: Path, cwd: Path) -> None:
+    env = os.environ.copy()
+    env["NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST"] = "1"
     run([str(exe)], cwd=cwd, env=env, timeout=30)
 
 
@@ -464,7 +537,7 @@ def validate_zip_file(zip_path: Path) -> None:
 
 
 def _strip_zip_app_root(parts: tuple[str, ...]) -> tuple[str, ...]:
-    if len(parts) >= 2 and parts[0] == "netconsole" and parts[1] in {"netconsole.exe", "_internal", "data", "runtime"}:
+    if len(parts) >= 2 and parts[0] == "netconsole" and parts[1] in {"netconsole.exe", "_internal", "data", "runtime", "tools"}:
         return parts[1:]
     return parts
 
