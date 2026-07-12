@@ -40,7 +40,16 @@ def test_runtime_mode_and_api_dtos_are_stable() -> None:
 
 def test_fastapi_skeleton_exposes_health_and_openapi() -> None:
     app = create_app(RuntimeMode.SERVER)
-    routes = {route.path for route in app.routes}
+    routes = set(app.openapi()["paths"])
+    pending = list(app.routes)
+    while pending:
+        route = pending.pop()
+        path = getattr(route, "path", None)
+        if path:
+            routes.add(path)
+        original_router = getattr(route, "original_router", None)
+        if original_router is not None:
+            pending.extend(original_router.routes)
 
     assert health().model_dump() == {"status": "ok", "version": "1.3.8"}
     assert app.state.runtime_mode is RuntimeMode.SERVER
@@ -78,7 +87,7 @@ def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -
 
 
 def test_task_runtime_package_has_no_qt_dependency() -> None:
-    runtime_root = Path(__file__).resolve().parents[1] / "netconsole" / "services" / "job_center" / "runtime"
+    runtime_root = Path(__file__).resolve().parents[1] / "src" / "netconsole" / "services" / "job_center" / "runtime"
     source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_root.glob("*.py"))
 
     assert "PySide6" not in source

@@ -31,7 +31,7 @@
 | 车载 MR 映射 | `VehicleMrTrainMapping` | 车端身份 | 把 Peer Name 映射到列车号和 TC1/TC2，不是轨旁 AP identity |
 | 离线解析结果 | 每个 MR detail DB 的 `mesh_links`、mapping/cache、active 派生表 | 历史派生数据 | 页面、质量分析、图表和导出读取；`source_file_id` 是隔离边界 |
 | Online MR 解析结果 | `parsed/online_diagnosis.sqlite` | 会话派生数据 | 保存主链路、切换、Busy、Radio、接口、Ping、iPerf 和融合结果 |
-| 导出运行缓存 | `runtime/cache/export_jobs` | 任务运行文件 | 只保存 Export Job 运行材料；未发现独立的 AP identity 导出缓存，导出直接读取 detail DB/parsed DB |
+| 导出运行缓存 | `.local/runtime/cache/export_jobs` | 任务运行文件 | 只保存 Export Job 运行材料；未发现独立的 AP identity 导出缓存，导出直接读取 detail DB/parsed DB |
 
 原始日志始终是证据源。后续 shadow 不得改写、裁剪或用 identity 结果替代 raw line、raw file、offset 和 source file 信息。
 

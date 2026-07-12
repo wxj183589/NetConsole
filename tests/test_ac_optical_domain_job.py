@@ -332,9 +332,9 @@ def test_ac_page_optical_refreshes_submit_jobs_and_terminal_events_restore_state
 
 def test_ac_optical_task_registration_and_static_boundaries() -> None:
     assert "ac_fit_ap_optical_refresh" in registered_task_types()
-    page_source = (PROJECT_ROOT / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
-    domain_source = (PROJECT_ROOT / "netconsole" / "services" / "ac" / "ac_optical_service.py").read_text(encoding="utf-8")
-    worker_source = (PROJECT_ROOT / "netconsole" / "background_worker.py").read_text(encoding="utf-8")
+    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
+    domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_optical_service.py").read_text(encoding="utf-8")
+    worker_source = (PROJECT_ROOT / "src" / "netconsole" / "background_worker.py").read_text(encoding="utf-8")
 
     assert "FitApOpticalCollectThread" not in page_source
     assert "collect_h3c_fit_ap_optical" not in page_source

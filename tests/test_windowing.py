@@ -904,13 +904,13 @@ def test_about_repository_dialog_copies_and_opens_links(monkeypatch):
 
 def test_release_resources_and_build_script_are_configured():
     root = Path(__file__).resolve().parents[1]
-    script = (root / "build_release.bat").read_text(encoding="utf-8")
+    script = (root / "scripts" / "build" / "build_release.bat").read_text(encoding="utf-8")
 
     assert icon_path("love.ico").exists()
     assert icon_path("love.png").exists()
     assert changelog_path().exists()
-    assert "clean_build_spec.py\" --prepare --write-spec" in script
-    assert "project\\build_release.py\" --backend pyinstaller --build-editions both %*" in script
+    assert "-m scripts.build.clean_build_spec --prepare --write-spec" in script
+    assert "scripts.build.build_release --backend pyinstaller --build-editions both %*" in script
     assert "--finalize" not in script
     assert "--add-data" not in script
     assert "PROJECT_ROOT=%ROOT%\\project" not in script

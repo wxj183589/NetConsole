@@ -67,7 +67,7 @@ UI 线程只负责创建导出任务描述文件，例如：
 {
   "job_type": "trackside_ap_export",
   "site_name": "demo",
-  "database_path": "data/sites/demo/db/site.sqlite",
+  "database_path": ".local/data/sites/demo/db/site.sqlite",
   "filters": {},
   "output_path": "<output_dir>/report.xlsx",
   "created_at": "2026-07-09T12:00:00"
@@ -213,4 +213,4 @@ EXPORT_JOB_CANCELLED
 6. 是否触碰数据库结构。
 7. 开发环境和打包环境下如何启动导出 worker。
 
-当前 worker 的 Job 描述位于 `runtime/cache/export_jobs/`。输出先写目标旁 `.tmp`，成功时 `os.replace`；失败、取消或进程异常时 manager/worker 必须清理临时文件。页面显示的行数上限不得截断 repository、JSONL 或缓存文件中的完整导出数据。
+当前 worker 的 Job 描述位于 `.local/runtime/cache/export_jobs/`。输出先写目标旁 `.tmp`，成功时 `os.replace`；失败、取消或进程异常时 manager/worker 必须清理临时文件。页面显示的行数上限不得截断 repository、JSONL 或缓存文件中的完整导出数据。

@@ -266,7 +266,7 @@ def test_online_mr_job_types_are_registered() -> None:
 
 
 def test_online_mr_page_has_no_direct_ssh_or_packaging_implementation() -> None:
-    source = (PROJECT_ROOT / "netconsole" / "ui" / "pages" / "online_mr_collection_page.py").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "online_mr_collection_page.py").read_text(encoding="utf-8")
     assert "netconsole.services.netmiko_connection" not in source
     assert "OnlineMrCollector(" not in source
     assert "OnlineMrParseWorker(" not in source

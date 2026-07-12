@@ -12,9 +12,9 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `job_registry.py`：`task_type → handler` 注册和分发。
 - `job_runner.py`：统一捕获取消、异常和 traceback。
 - `worker_protocol.py`：UTF-8 JSONL 编码、解析和分块缓冲。
-- `runtime/task_state.py`：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED` 状态契约。
-- `runtime/task_event_hub.py`：统一任务 Worker/Service 事件，提供 Qt callback 与 WebSocket stream；Agent 配置和健康状态使用独立 `AgentEventHub`。
-- `runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
+- `services/job_center/runtime/task_state.py`：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED` 状态契约。
+- `services/job_center/runtime/task_event_hub.py`：统一任务 Worker/Service 事件，提供 Qt callback 与 WebSocket stream；Agent 配置和健康状态使用独立 `AgentEventHub`。
+- `services/job_center/runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
@@ -234,12 +234,12 @@ submit_export_task(
 - 开发模式导出 worker：`python -m netconsole.export_worker --job <job.json>`。
 - frozen 普通 worker：`NetConsole.exe --background-worker --job <job.json>`。
 - frozen 导出 worker：`NetConsole.exe --export-worker --job <job.json>`。
-- `main.py` 和 `project/main.py` 必须在加载 UI 前处理 worker 参数。
+- `main.py` 必须在加载 UI 前处理 worker 参数。
 - manager 在开发模式补充项目代码根到 PYTHONPATH；冻结模式使用应用根。
 
 ## 临时文件与取消文件
 
-- Job JSON 和 cancel 文件位于 `runtime/cache/background_jobs` 或 `runtime/cache/export_jobs`。
+- Job JSON 和 cancel 文件位于 `.local/runtime/cache/background_jobs` 或 `.local/runtime/cache/export_jobs`。
 - 导出先写目标旁的 `.tmp` 文件。
 - 成功后使用原子替换；异常、取消、启动失败和进程退出均执行清理。
 - 占用错误保留“关闭 WPS/Excel 后重试”的用户提示。

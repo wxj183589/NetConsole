@@ -19,7 +19,7 @@ PySide6 MainWindow
 DeviceRepository
   |
   v
-SQLite data/sites/<site_name>/db/devices.db
+SQLite .local/data/sites/<site_name>/db/devices.db
 ```
 
 Main layers:
@@ -35,7 +35,7 @@ Main layers:
 The built-in demonstration site is named `demo`. Its database is:
 
 ```text
-data/sites/demo/db/devices.db
+.local/data/sites/demo/db/devices.db
 ```
 
 When this database file is missing, the app creates the latest `devices` table and inserts demo devices. When it already exists, the app uses it directly and does not change its table structure automatically.

@@ -5,14 +5,14 @@ NetConsole uses SQLite for local management data.
 Main database path:
 
 ```text
-data/sites/<site_name>/db/devices.db
+.local/data/sites/<site_name>/db/devices.db
 ```
 
 The schema in code is the current source of truth for a new database.
 
-The built-in demonstration site is `demo`. If `data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
+The built-in demonstration site is `demo`. If `.local/data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
 
-If the database already exists, the application uses it directly and does not change its table structure or add missing demo fact data automatically. For development testing, delete `data/sites/demo/db/devices.db` manually and restart the application to regenerate the current demo database. No database upgrade or demo backfill logic is used.
+If the database already exists, the application uses it directly and does not change its table structure or add missing demo fact data automatically. For development testing, delete `.local/data/sites/demo/db/devices.db` manually and restart the application to regenerate the current demo database. No database upgrade or demo backfill logic is used.
 
 Current local tables:
 
@@ -76,7 +76,7 @@ Legacy CSV files with `协议` and `端口` headers are still accepted as import
 High-frequency collection data is reserved for future files under:
 
 ```text
-data/sites/<site_name>/metrics/YYYY-MM.db
+.local/data/sites/<site_name>/metrics/YYYY-MM.db
 ```
 
 No metrics database is created in this stage.

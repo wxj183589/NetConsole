@@ -7034,7 +7034,7 @@ def test_ac_log_event_names_do_not_contain_password():
 
 
 def test_database_runtime_has_no_legacy_migration_chain():
-    text = (Path(__file__).parents[1] / "netconsole" / "core" / "database.py").read_text(encoding="utf-8")
+    text = (Path(__file__).parents[1] / "src" / "netconsole" / "core" / "database.py").read_text(encoding="utf-8")
 
     assert text.count("ALTER TABLE") == 1
     assert "ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT" in text

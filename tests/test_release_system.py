@@ -3,10 +3,11 @@ import os
 import subprocess
 import sys
 
-import clean_build_spec
+from scripts.build import clean_build_spec
 import pytest
-from project import release
-from scripts.check_runtime_deps import check_runtime_deps
+from scripts.build import release
+from scripts.build import build_release
+from scripts.build.check_runtime_deps import check_runtime_deps
 from netconsole.build.clean_build_lock import (
     CleanBuildLockError,
     validate_allowed_runtime,
@@ -47,7 +48,7 @@ def test_render_version_py_contains_single_version_source_fields():
 
 def test_release_script_documents_gitea_https_authentication():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "project" / "release.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
 
     assert not (root / "release.py").exists()
     assert "self-hosted Gitea repository" in text
@@ -58,7 +59,7 @@ def test_release_script_documents_gitea_https_authentication():
 
 def test_release_script_pushes_two_remotes_and_tags():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "project" / "release.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
 
     assert "def safe_run(cmd: list[str])" in text
     assert 'def check_git_remote(remote: str = "nas")' in text
@@ -136,19 +137,19 @@ def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
 
 def test_build_release_script_uses_project_output_and_release_zip():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "build_release.bat").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "build_release.bat").read_text(encoding="utf-8")
 
-    assert "project\\build_release.py" in text
+    assert "scripts.build.build_release" in text
     assert "--backend pyinstaller --build-editions both %*" in text
     assert "project\\release.py" not in text
     assert "PROJECT_ROOT=%ROOT%\\project" not in text
     assert "--add-data" not in text
-    assert "project\\build_release.py\" --backend pyinstaller --build-editions both %*" in text
+    assert "scripts.build.build_release --backend pyinstaller --build-editions both %*" in text
 
 
 def test_changelog_source_is_chinese_for_zh_ui():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "netconsole" / "docs" / "changelog.md").read_text(encoding="utf-8")
+    text = (root / "src" / "netconsole" / "docs" / "changelog.md").read_text(encoding="utf-8")
     forbidden_fragments = [
         "Onboard MR Online Collection",
         "Packaging",
@@ -161,7 +162,7 @@ def test_changelog_source_is_chinese_for_zh_ui():
 
 def test_release_script_uses_chinese_auto_commit_message():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "project" / "release.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
 
     assert "auto release build" not in text
     assert 'git", "commit", "--allow-empty", "-m"' in text
@@ -173,15 +174,15 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("project", "project") in clean_build_spec.FORBIDDEN_DATA
     assert ("tests", "tests") in clean_build_spec.FORBIDDEN_DATA
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
-    assert ("netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
+    assert ("src/netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
     assert ("tools/windows-x64/fping", "tools/windows-x64/fping") in clean_build_spec.ALLOWED_DATA
     assert ("tools/windows-x64/iperf3", "tools/windows-x64/iperf3") in clean_build_spec.ALLOWED_DATA
     assert not any(source.casefold().startswith("tools/windows-x64/ipop") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
-    assert ("netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
-    assert ("netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
-    assert ("netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
+    assert ("src/netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
+    assert ("src/netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
+    assert ("src/netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
     assert "docs" in clean_build_spec.EXCLUDE_DIRS
     assert "project" in clean_build_spec.EXCLUDE_DIRS
@@ -198,7 +199,7 @@ def test_clean_build_spec_scans_runtime_import_graph():
 
 def test_clean_build_import_graph_is_entry_file_driven():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "clean_build_spec.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "clean_build_spec.py").read_text(encoding="utf-8")
 
     assert "pending_sources = [ENTRY_FILE]" in text
     assert ".rglob(" not in text
@@ -228,7 +229,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
 
 def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "clean_build_spec.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "clean_build_spec.py").read_text(encoding="utf-8")
 
     assert "copytree" not in text
     assert "_copy_runtime_package" not in text
@@ -300,11 +301,11 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
         "--name",
         "NetConsole",
         "--icon",
-        str(root / "netconsole" / "ui" / "icons" / "love.ico"),
+        str(root / "src" / "netconsole" / "ui" / "icons" / "love.ico"),
         "--distpath",
-        str(root / "release" / "_build" / "pyinstaller" / "dist"),
+        str(root / "dist" / "_build" / "pyinstaller" / "dist"),
         "--workpath",
-        str(root / "release" / "_build" / "pyinstaller" / "build"),
+        str(root / "dist" / "_build" / "pyinstaller" / "build"),
     ]
 
     validate_pyinstaller_command(args)
@@ -366,8 +367,6 @@ def test_clean_build_packaged_tools_validation(tmp_path):
 
 
 def test_engineer_edition_is_selected_by_explicit_request_or_customer_option(monkeypatch):
-    from project import build_release
-
     monkeypatch.setattr(build_release, "engineer_package_enabled", lambda: False)
     assert build_release.selected_editions("engineer") == ("engineer",)
     assert build_release.selected_editions("both") == ("internal", "customer")
@@ -494,7 +493,7 @@ def test_check_packaged_runtime_script_runs_from_repo_root(tmp_path):
     app_dist = _make_packaged_runtime(tmp_path)
 
     completed = subprocess.run(
-        [sys.executable, "scripts/check_packaged_runtime.py", str(app_dist)],
+        [sys.executable, "-m", "scripts.build.check_packaged_runtime", str(app_dist)],
         cwd=root,
         capture_output=True,
         text=True,
@@ -557,12 +556,12 @@ def test_changelog_path_prefers_packaged_assets_and_keeps_source_fallback(tmp_pa
 
 def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     root = Path(__file__).resolve().parents[1]
-    dist_root = root / "release" / "_build" / "pyinstaller" / "dist"
-    build_root = root / "release" / "_build" / "pyinstaller" / "build"
-    spec_root = root / "release" / "_build" / "pyinstaller" / "spec"
+    dist_root = root / "dist" / "_build" / "pyinstaller" / "dist"
+    build_root = root / "dist" / "_build" / "pyinstaller" / "build"
+    spec_root = root / "dist" / "_build" / "pyinstaller" / "spec"
     app_dist = dist_root / "NetConsole"
 
-    subprocess.run([sys.executable, "clean_build_spec.py", "--prepare", "--write-spec"], cwd=root, check=True)
+    subprocess.run([sys.executable, "-m", "scripts.build.clean_build_spec", "--prepare", "--write-spec"], cwd=root, check=True)
     subprocess.run(
         [
             sys.executable,
@@ -581,7 +580,7 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     )
     (app_dist / "data").mkdir(exist_ok=True)
     (app_dist / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
-    subprocess.run([sys.executable, "clean_build_spec.py", "--validate"], cwd=root, check=True)
+    subprocess.run([sys.executable, "-m", "scripts.build.clean_build_spec", "--validate"], cwd=root, check=True)
 
     validate_dist_output(app_dist)
     assert not (app_dist / "docs").exists()

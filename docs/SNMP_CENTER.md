@@ -44,8 +44,8 @@ flowchart LR
     UI["SNMP Center UI"] --> JOB["BackgroundProcessManager"]
     JOB --> Q["snmp_query_execute"]
     JOB --> C["snmp_collection_execute"]
-    Q --> CACHE1["runtime/cache/snmp_query_results/*.json"]
-    C --> CACHE2["runtime/cache/snmp_collection_results/*.json"]
+    Q --> CACHE1[".local/runtime/cache/snmp_query_results/*.json"]
+    C --> CACHE2[".local/runtime/cache/snmp_collection_results/*.json"]
     UI --> EXP["Export Process"]
     CACHE1 --> EXP
     CACHE2 --> EXP
@@ -63,7 +63,7 @@ flowchart LR
 
 ## 5. MIB 资源与 H3C 目录
 
-全局 MIB 库位于 `data/global/mibs/global_mib.db`，原始归档、原始文件、references、compiled、index 和 reports 分开保存；局点 SNMP 数据位于 `data/sites/<site>/db/snmp.db` 与 `snmp/{raw,exports,traps}`。
+全局 MIB 库位于 `.local/data/global/mibs/global_mib.db`，原始归档、原始文件、references、compiled、index 和 reports 分开保存；局点 SNMP 数据位于 `.local/data/sites/<site>/db/snmp.db` 与 `snmp/{raw,exports,traps}`。
 
 导入器解析 `IMPORTS` 依赖并报告缺失模块；批量归档中可在候选模块间解析依赖。模块名会去除文件名前置数字序号，例如 `01-HH3C...` 归一为 `HH3C...`，但 `13-WLAN` 等产品分类仍作为目录/类别信息保留。
 

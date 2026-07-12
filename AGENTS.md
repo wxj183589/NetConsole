@@ -34,6 +34,17 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 重要架构或状态变化同步 docs；区分已完成、兼容层、shadow/diagnostics、部分迁移和规划。
 - 完成后运行适用验证并如实报告；提交/推送说明使用中文，未经用户要求不自动提交。
 
+## 仓库目录约束
+
+- 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](docs/development/repository-layout.md) 并说明唯一职责。
+- Desktop、Web、Agent 分别进入 `apps/desktop`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。
+- 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。
+- 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。
+- 移动文件后必须同步检查 Python import、测试、构建参数、批处理、前端工作目录、Agent 入口、文档和资源定位。
+- 禁止使用 `Path.cwd()` 定位源码、资源、配置或运行数据；禁止用临时 `sys.path` 修改掩盖包结构问题。
+- 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/builtin_mibs` 中明确版本化的 MIB 归档和 `tools/windows-x64` 中允许打包的 fping/iPerf 运行依赖是已审计例外。
+- 目录职责不明确时先审计内容、Git 跟踪状态和引用关系，不得先新建目录或静默删除数据。
+
 ## Skill 路由
 
 项目级 Skills 位于 `.agents/skills/`，完整说明见 `docs/CODEX_SKILLS.md`。

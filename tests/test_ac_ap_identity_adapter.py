@@ -332,7 +332,7 @@ def test_save_job_calls_legacy_writer_and_shadow_does_not_replace_result(monkeyp
 
 
 def test_ac_identity_adapter_has_no_ui_database_or_repository_dependency():
-    path = Path(__file__).parents[1] / "netconsole" / "services" / "ac" / "ac_identity_adapter.py"
+    path = Path(__file__).parents[1] / "src" / "netconsole" / "services" / "ac" / "ac_identity_adapter.py"
     text = path.read_text(encoding="utf-8")
 
     assert "PySide6" not in text

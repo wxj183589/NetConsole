@@ -139,9 +139,9 @@ netconsole/models/api/           # Pydantic API DTO
 netconsole/services/job_center/runtime/  # 纯 Python 任务运行时
 netconsole/services/job_center/task_application_service.py
 netconsole/repositories/task_repository.py
-netconsole/services/agent/       # Agent Controller、HTTP Adapter、凭据和事件
+src/netconsole/services/agent/   # Agent Controller、HTTP Adapter、凭据和事件
 netconsole/repositories/agent_repository.py
-frontend/                        # Vue 3 / TypeScript / Vite 任务与 Agent 管理
+apps/web/                        # Vue 3 / TypeScript / Vite 任务与 Agent 管理
 netconsole/services/traffic/     # 统一 Traffic 应用层、执行适配、事件与 Supervisor
 netconsole/repositories/traffic_run_repository.py
 ```
@@ -168,7 +168,7 @@ cd ..
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 ```
 
-实验服务默认仅绑定 `127.0.0.1`。`frontend/dist` 是忽略提交的构建产物；缺失时后端保留阶段 1 占位页。当前正式发布脚本尚未打包 `frontend/dist`，发布接入需单独验证。
+实验服务默认仅绑定 `127.0.0.1`。`apps/web/dist` 是忽略提交的构建产物；缺失时后端保留阶段 1 占位页。当前正式发布脚本尚未打包 `apps/web/dist`，发布接入需单独验证。
 
 ## 9. 下一阶段
 

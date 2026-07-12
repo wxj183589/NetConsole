@@ -2,14 +2,14 @@
 
 ## 1. 路径原则
 
-`netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。默认 `PathResolver.data_root` 等于应用根目录，持久业务目录为其下的 `data/`，临时运行目录为其下的 `runtime/`；测试、工具或嵌入场景可通过显式构造参数覆盖。业务代码应调用 PathResolver 方法，不应拼接本机绝对路径。
+`src/netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。开发态默认 `PathResolver.data_root` 为仓库 `.local/`，持久业务目录为 `.local/data/`，临时运行目录为 `.local/runtime/`；打包态优先使用 `%LOCALAPPDATA%\NetConsole\`。测试、工具或嵌入场景可通过显式构造参数覆盖。业务代码应调用 PathResolver 方法，不应拼接本机绝对路径。
 
 运行时写入路径不得落入 `docs/`、`tests/` 或项目源码目录。所有源码、JSON、Markdown 和新导出文本使用 UTF-8；外部 H3C/MIB/历史日志读取时允许按明确顺序回退编码。
 
 ## 2. 顶层目录
 
 ```text
-<app_root>/
+<data_root>/
 ├─ data/                         # 持久业务数据
 │  ├─ global/                    # 跨局点资源
 │  ├─ runtime/                   # 持久运行配置，如网络/路由 profile
@@ -23,12 +23,12 @@
       └─ snmp_collection_results/
 ```
 
-注意 `data/runtime/` 与顶层 `runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
+注意 `.local/data/runtime/` 与 `.local/runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
 
 ## 3. 全局资源
 
 ```text
-data/global/mibs/
+.local/data/global/mibs/
 ├─ global_mib.db
 ├─ raw_archives/
 ├─ raw_files/
@@ -43,7 +43,7 @@ H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、�
 ## 4. 局点目录
 
 ```text
-data/sites/<site>/
+.local/data/sites/<site>/
 ├─ db/                           # 局点数据库
 │  ├─ devices.db                 # 设备、AC/FIT-AP 等主应用数据
 │  ├─ tasks.db                   # 任务快照与结构化事件历史
@@ -148,7 +148,7 @@ sessions/<session>/
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
 - `tasks.db` 由 `TaskRepository` 幂等初始化，使用 WAL/busy timeout；任务快照与单条事件在同一事务提交，不自动删除业务结果或原始日志。
 - `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
-- `files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。
+- `.local/data/sites/<site>/files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。
 - iPerf interval 的唯一事实源仍是 `files/network_tools/iperf/parsed/iperf_results.sqlite`；Traffic 库只用 `local_iperf_run_id` 关联，不复制 interval。Agent 事件重放通过远端事件键幂等写入既有 interval 表。
 - 每个 Traffic Run 的 `events.jsonl` 使用 Controller 单调序号并单独保留 `remote_sequence`；事件、摘要和远端结果只保存相对引用，绝对路径与敏感字段在写入前脱敏。原始 Traffic 文件和正式摘要不属于自动清理范围。
 - `online_diagnosis.sqlite`、单文件 Mesh parsed SQLite 等会话解析产物可重建，可在明确需求内调整结构，但必须保留 raw 事实来源并同步 parser/report。
@@ -159,9 +159,9 @@ sessions/<session>/
 
 自动清理在主窗口启动后延时执行，默认保留 3 天，只处理：
 
-- 顶层 `runtime/logs/` 中受认可的运行日志；
-- 顶层 `runtime/` 中受认可的 cache/runtime cache、缩略图、图表/预览缓存；
-- 受认可的 `tmp`、`temp`、`export_tmp`、`download_tmp` 临时目录。
+- `.local/runtime/logs/` 中受认可的运行日志；
+- `.local/runtime/` 中受认可的 cache/runtime cache、缩略图、图表/预览缓存；
+- `.local/tmp/` 及受认可的 `temp`、`export_tmp`、`download_tmp` 临时目录。
 
 自动清理必须验证解析后的真实路径位于允许目录内，只删除文件并清理空目录。它不得删除局点数据库、配置、业务 raw、outputs 或备份。
 

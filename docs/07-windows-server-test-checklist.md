@@ -20,9 +20,9 @@
 
 ## 日志与数据
 
-1. 检查 `data/logs/app.log` 是否生成日志。
-2. 检查 `data/sites/demo/raw/collect` 是否生成采集日志。
-3. 检查 `data/sites/demo/raw/ac` 是否生成 AC 采集日志。
+1. 检查 `.local/runtime/logs/app.log` 是否生成日志。
+2. 检查 `.local/data/sites/demo/raw/collect` 是否生成采集日志。
+3. 检查 `.local/data/sites/demo/raw/ac` 是否生成 AC 采集日志。
 
 ## 系统环境
 

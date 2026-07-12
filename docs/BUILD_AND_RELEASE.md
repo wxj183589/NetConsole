@@ -4,20 +4,20 @@
 
 ## 当前构建入口
 
-根目录批处理：
+构建脚本位于 `scripts/build/`：
 
 ```powershell
-.\build_release.bat
-.\build_nuitka_release.bat
+.\scripts\build\build_release.bat
+.\scripts\build\build_nuitka_release.bat
 ```
 
 核心脚本：
 
 ```text
-project/build_release.py
-project/build_nuitka_release.py
-project/build_config.py
-project/release.py
+scripts/build/build_release.py
+scripts/build/build_nuitka_release.py
+scripts/build/build_config.py
+scripts/build/release.py
 ```
 
 当前支持后端：
@@ -25,23 +25,23 @@ project/release.py
 - PyInstaller
 - Nuitka
 
-`BuildConfig` 从 `netconsole/core/version.py` 读取应用名、版本和作者。
+`BuildConfig` 从 `src/netconsole/core/version.py` 读取应用名、版本和作者；构建临时文件和发布包统一写入 `dist/`。
 
 ## Windows Go Agent
 
 独立 Agent 不进入上述 PyInstaller/Nuitka 发布链，使用 Go 1.26.5 单独构建：
 
 ```bat
-agent\scripts\build_windows.bat
+apps\agent\scripts\build_windows.bat
 ```
 
-输出为 `agent/dist/netconsole-agent-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并复制 sidecar、fping/iPerf 工具和运行目录。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；Agent 不携带或检测 IPOP。
+输出为 `apps/agent/dist/netconsole-agent-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并复制 sidecar、fping/iPerf 工具。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，Agent 不携带或检测 IPOP。
 
-当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 `agent/data`、`agent/logs` 或 `agent/packages` 打入发布包。
+当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 Agent 运行数据打入发布包。
 
 ## 外部工具要求
 
-构建前会检查工具源文件。当前 `project/build_config.py` 要求：
+构建前会检查工具源文件。当前 `scripts/build/build_config.py` 要求：
 
 ```text
 tools/windows-x64/fping/fping.exe
@@ -56,7 +56,7 @@ docs/IPOP_v4.1_notice.md
 
 ## 发布目录约束
 
-构建输出必须进入 `release/` 下的版本目录，不污染项目根目录。
+构建输出必须进入 `dist/` 下的版本目录，不污染项目根目录。
 
 当前发布白名单：
 
@@ -79,7 +79,7 @@ netconsole
 
 说明：
 
-- `docs/`、`tests/`、`project/` 不应进入用户发布包。
+- `docs/`、`tests/`、`scripts/` 不应进入用户发布包。
 - `netconsole/` 源码目录不应以源码形式进入发布包。
 - 发布 zip 使用白名单枚举。
 - 打包后有发布目录和 zip 校验，防止开发目录进入包。

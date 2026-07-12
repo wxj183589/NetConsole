@@ -288,7 +288,7 @@ def test_export_events_reuse_common_protocol() -> None:
     [
         [sys.executable, "-m", "netconsole.background_worker"],
         [sys.executable, str(PROJECT_ROOT / "main.py"), "--background-worker"],
-        [sys.executable, str(PROJECT_ROOT / "project" / "main.py"), "--background-worker"],
+        [sys.executable, str(PROJECT_ROOT / "src" / "netconsole" / "entrypoint.py"), "--background-worker"],
     ],
     ids=["module", "main-entry", "frozen-entry"],
 )
@@ -364,7 +364,7 @@ def test_background_worker_emits_cancelled_jsonl(tmp_path: Path) -> None:
     [
         [sys.executable, "-m", "netconsole.export_worker"],
         [sys.executable, str(PROJECT_ROOT / "main.py"), "--export-worker"],
-        [sys.executable, str(PROJECT_ROOT / "project" / "main.py"), "--export-worker"],
+        [sys.executable, str(PROJECT_ROOT / "src" / "netconsole" / "entrypoint.py"), "--export-worker"],
     ],
     ids=["module", "main-entry", "frozen-entry"],
 )

@@ -366,9 +366,9 @@ def test_ac_command_worker_stdout_is_jsonl_and_cancel_has_one_terminal(
 
 def test_ac_command_registration_and_static_ui_boundaries() -> None:
     assert "ac_command_action_execute" in registered_task_types()
-    page_source = (PROJECT_ROOT / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
-    domain_source = (PROJECT_ROOT / "netconsole" / "services" / "ac" / "ac_command_service.py").read_text(encoding="utf-8")
-    worker_source = (PROJECT_ROOT / "netconsole" / "background_worker.py").read_text(encoding="utf-8")
+    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
+    domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_command_service.py").read_text(encoding="utf-8")
+    worker_source = (PROJECT_ROOT / "src" / "netconsole" / "background_worker.py").read_text(encoding="utf-8")
 
     assert "AcCommandActionThread" not in page_source
     assert "run_h3c_ac_action" not in page_source

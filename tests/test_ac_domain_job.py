@@ -284,8 +284,8 @@ def test_ac_page_resource_refresh_submits_job_without_resource_qthread() -> None
 def test_ac_domain_task_registration_and_ui_static_boundaries() -> None:
     task_types = registered_task_types()
     assert {"ac_fit_ap_resources_refresh", "ac_overview_refresh", "ac_devices_refresh"}.issubset(task_types)
-    page_source = (PROJECT_ROOT / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
-    domain_source = (PROJECT_ROOT / "netconsole" / "services" / "ac" / "ac_resource_service.py").read_text(encoding="utf-8")
+    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
+    domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_resource_service.py").read_text(encoding="utf-8")
     assert "AcResourceCollectThread" not in page_source
     assert "collect_h3c_fit_ap_resources" not in page_source
     assert "SnmpClient" not in page_source

@@ -46,6 +46,15 @@ Do not review or persist:
 - Documentation cleanup should normally modify only `README.md` and `docs/`; do not include opportunistic business-code changes.
 - When historical numbered docs conflict with current topic docs or code, document the "current implementation and items to unify" first instead of adding business migration in a docs-only task.
 
+## Repository Layout and Package Structure
+
+- Do not place new business code directly in the repository root; before adding a new top-level directory, update `docs/development/repository-layout.md` and explain its single responsibility.
+- Desktop, Web, and Agent code live under `apps/desktop`, `apps/web`, and `apps/agent`; shared Python business code lives under `src/netconsole`, while the import name remains `netconsole`.
+- Configuration templates and feature profiles live under `config/`; build, development, and maintenance scripts live under `scripts/build`, `scripts/dev`, and `scripts/maintenance`.
+- Development runtime data lives under `.local/`; packaged builds prefer `%LOCALAPPDATA%\NetConsole\` and must not depend on the current working directory or write runtime data back into the source tree.
+- Resolve paths through `PathResolver`, resource helpers, or the script's own location; do not use `Path.cwd()` or temporary `sys.path` edits to mask package-structure problems.
+- After moving directories, check Python imports, pytest configuration, build scripts, batch files, frontend working directories, Agent entry points, README/docs links, and resource resolution.
+
 ## Chinese Text and Encoding Rules
 
 - Source files, Markdown, JSON, TOML, YAML, CSV, and exported logs use UTF-8 by default.
@@ -53,7 +62,7 @@ Do not review or persist:
 - On Windows / PowerShell, initialize UTF-8 terminal encoding before commands involving Chinese text, paths, logs, H3C output, MIB files, CSV, or XLSX.
 - Do not treat mojibake in PowerShell / Codex terminal output as proof that a file is corrupted; inspect raw bytes and the actual read encoding when needed.
 - For H3C device output, historical logs, MIB files, and external CSV input, try `utf-8-sig` / `utf-8` first, then `gb18030` / `gbk`.
-- Prefer the shared helpers in `netconsole/utils/text_encoding.py` for reading and cleanup instead of scattering fallback encoding loops across modules.
+- Prefer the shared helpers in `src/netconsole/utils/text_encoding.py` for reading and cleanup instead of scattering fallback encoding loops across modules.
 - Do not delete Chinese descriptions, MIB Chinese fields, or Chinese UI copy to avoid decoding issues.
 
 ## Feature and Optimization Rules
@@ -64,7 +73,7 @@ New user-facing modules, pages, tabs, actions, buttons, or entry points should u
 
 Requirements:
 
-- Register the new feature ID in `netconsole/core/feature_registry.py`.
+- Register the new feature ID in `src/netconsole/core/feature_registry.py`.
 - Expose the setting through the existing feature-flag configuration page and profile flow.
 - Use `FeatureGate` to control UI creation, entry visibility, or action handling.
 - Avoid scattered one-off `if` checks inside pages.
@@ -167,6 +176,20 @@ Requirements:
 
 Validation should cover A/B network recognition, section/yard inference, standard template headers, legacy-template rejection, and resource matching results.
 
+### AP Identity Read-Only Boundary
+
+AP Identity is currently only a shadow/diagnostics observation capability. It must not take over production matching, page display, or business conclusions.
+
+Requirements:
+
+- Resolvers, adapters, shadow code, and diagnostics must not write back to the primary AP identity, business databases, repository results, exported workbooks, or page fields.
+- `identity_shadow`, `detail_identity_shadow`, and `export_identity_diagnostics` are diagnostic metadata only; unavailable, failed, unresolved, or ambiguous diagnostics must not change the original Job/Export terminal state or success message.
+- `identity_changed` only means the old/new result or candidate differs; it blocks future takeover evaluation but does not authorize overwriting legacy production keys.
+- Visible UI must be off by default, internal-only, and consume only a redacted aggregate ViewModel. Before a unified Job-detail host exists, do not modify multiple business pages or persist full results just to show diagnostics.
+- Without real-site observation, independent review, and explicit user approval, AP Identity resolvers must not take over production matching.
+
+Validation should cover unchanged legacy business fields, diagnostics-only failure degradation, unchanged export/page contracts, and sensitive details staying out of UI and logs.
+
 ### Online MR Collection and Analysis Rules
 
 Vehicle MR online collection, raw logs, realtime cache, parser cache, and chart timelines must stay traceable.
@@ -209,6 +232,22 @@ Requirements:
 - TCP low-bandwidth cases without an explicit block size use the existing `16K` fallback.
 - IPERF logs should record `duration_mode=follow_collection` and the protection duration so later analysis can explain the run.
 
+### Web / Agent / Traffic Phase Boundary
+
+NetConsole Web evolution is incremental. Do not rebuild a second Python Core or move business execution into browser pages or router layers.
+
+Requirements:
+
+- The Qt application remains the formal production entry point. Server Mode, Web Shell, Task Center, and Agent management must not be described as a completed deployable service edition.
+- Agent configuration and runtime state are stored in each site's `agents.db`; tokens stay only in the Controller process session credential vault and must not enter JobSpec, SQLite, events, logs, command lines, or DTOs.
+- Agent capability decisions use the Runtime Snapshot and capability fields only; do not infer capability from the operating system name. Browsers must not access Agents directly.
+- Unified Traffic work must start, stop, and recover through `TrafficTestApplicationService`; local-vs-Agent execution differences stay in adapter layers.
+- Traffic Runs, Agent mappings, and independent Ping samples are stored in `traffic_runs.sqlite`; iPerf intervals continue to use the existing `iperf_results.sqlite` as the fact source and must not be copied into the Traffic database.
+- Phase 4C may only add controlled Traffic REST APIs, a dedicated WebSocket, and a Vue page on top of the existing application service. Do not add arbitrary shell/command execution interfaces, and do not push high-frequency samples into global `/ws/tasks`.
+- SNMP Center, wireless survey, Online MR, legacy Qt iPerf/Ping pages, devices, AC, FIT-AP, MESH, and other unmigrated domains must not be migrated into Web/Traffic opportunistically.
+
+Validation should cover tokens not being persisted, Agent/Controller Task IDs remaining independent, remote sync state not fabricating Task terminal states, and phase limits matching the current docs.
+
 ### Data Paths and Site Isolation
 
 Business data paths should be obtained through `PathResolver` or existing path services.
@@ -233,13 +272,13 @@ Requirements:
 
 ### Build and Release Boundaries
 
-Packaging and release work should follow `docs/BUILD_AND_RELEASE.md` and the build scripts under `project/`.
+Packaging and release work should follow `docs/BUILD_AND_RELEASE.md` and the build scripts under `scripts/build/`.
 
 Requirements:
 
-- Release output must go under the versioned `release/` directory and must not pollute the project root.
+- Release output must go under the versioned `dist/` directory and must not pollute the project root.
 - Release packages use the whitelist: `NetConsole.exe`, `_internal`, `data`, `runtime`, and `tools`.
-- `docs/`, `tests/`, `project/`, and source-form `netconsole/` must not be shipped in user release packages.
+- `docs/`, `tests/`, `scripts/`, and source-form `src/netconsole/` must not be shipped in user release packages.
 - Internal and customer editions are handled through the existing `--build-editions` and feature profile flow, not by copying separate code trees.
 - Check external tool source files such as `fping` and `iperf3` before packaging; runtime tool paths must not hard-code user-local paths.
 - Explain any non-interactive build that skips smoke tests.

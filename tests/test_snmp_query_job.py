@@ -476,7 +476,7 @@ def test_mib_browser_submits_snmp_jobs_and_restores_terminal_states(tmp_path: Pa
 
 
 def test_snmp_center_page_has_no_direct_query_client_or_query_qthread() -> None:
-    source = (PROJECT_ROOT / "netconsole" / "ui" / "pages" / "snmp_center_page.py").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "snmp_center_page.py").read_text(encoding="utf-8")
     assert "from netconsole.services.snmp_client import SnmpClient" not in source
     assert "SnmpClient()." not in source
     assert "SnmpQueryWorker(" not in source

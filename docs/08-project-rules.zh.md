@@ -46,6 +46,15 @@ NetConsole 的每日/每周自动复盘只服务于项目开发过程，不用�
 - 文档整理任务原则上只修改 `README.md` 和 `docs/`，不要顺手改业务代码。
 - 当历史编号文档与当前专题文档或代码冲突时，先标注“当前实现与待统一事项”，不要在文档任务里附带业务迁移。
 
+## 仓库目录和包结构
+
+- 新业务代码不得直接堆到仓库根目录；新增顶层目录前先更新 `docs/development/repository-layout.md` 并说明唯一职责。
+- Desktop、Web、Agent 分别放入 `apps/desktop`、`apps/web`、`apps/agent`；共享 Python 业务代码放入 `src/netconsole`，导入名仍是 `netconsole`。
+- 配置模板和 feature profiles 放入 `config/`；构建、开发和维护脚本分别放入 `scripts/build`、`scripts/dev`、`scripts/maintenance`。
+- 开发运行数据写入 `.local/`；打包态优先使用 `%LOCALAPPDATA%\NetConsole\`，不得依赖当前工作目录或把运行数据写回源码树。
+- 路径定位优先使用 `PathResolver`、资源 helper 或脚本自身位置；禁止用 `Path.cwd()` 或临时 `sys.path` 掩盖包结构问题。
+- 移动目录后必须同步检查 Python import、pytest 配置、构建脚本、批处理、前端工作目录、Agent 入口、README/docs 链接和资源定位。
+
 ## 中文和编码规则
 
 - 源码、Markdown、JSON、TOML、YAML、CSV 和日志导出默认按 UTF-8 处理。
@@ -53,7 +62,7 @@ NetConsole 的每日/每周自动复盘只服务于项目开发过程，不用�
 - Windows / PowerShell 下涉及中文、路径、日志、H3C 回显、MIB、CSV 或 XLSX 时，先初始化 UTF-8 终端编码。
 - 不用 PowerShell / Codex 终端中的乱码显示直接判断文件损坏；必要时检查原始字节和实际读取编码。
 - 读取 H3C 设备回显、历史日志、MIB 文件和外部 CSV 时，优先尝试 `utf-8-sig` / `utf-8`，失败后尝试 `gb18030` / `gbk`。
-- 优先复用 `netconsole/utils/text_encoding.py` 中的统一读取和清洗函数，不在各模块散写编码兜底循环。
+- 优先复用 `src/netconsole/utils/text_encoding.py` 中的统一读取和清洗函数，不在各模块散写编码兜底循环。
 - 不删除中文描述、MIB 中文字段或 UI 中文文案来规避解码问题。
 
 ## 新功能和优化规则
@@ -64,7 +73,7 @@ NetConsole 的每日/每周自动复盘只服务于项目开发过程，不用�
 
 要求：
 
-- 在 `netconsole/core/feature_registry.py` 注册新的 feature ID。
+- 在 `src/netconsole/core/feature_registry.py` 注册新的 feature ID。
 - 通过现有功能开关配置页面和 profile 流程暴露配置项。
 - 使用 `FeatureGate` 控制 UI 创建、入口显示或动作处理。
 - 避免在页面内散落一次性的 `if` 判断。
@@ -167,6 +176,20 @@ FIT-AP 扩展信息、轨旁 AP 布点表和信号 A/B 网布点表统一沉淀�
 
 验证时应覆盖 A/B 网识别、区间/场段推断、标准模板表头、旧模板拒绝和资源匹配结果。
 
+### AP Identity 只读接入边界
+
+AP Identity 当前只允许作为 shadow/diagnostics 观测能力，不接管生产匹配、页面展示或业务结论。
+
+要求：
+
+- resolver、adapter、shadow 和 diagnostics 不得回写 AP 主身份、业务数据库、Repository 结果、导出 workbook 或页面字段。
+- `identity_shadow`、`detail_identity_shadow`、`export_identity_diagnostics` 只能作为附加诊断 metadata；unavailable、failed、unresolved 或 ambiguous 不得改变原 Job/Export 终态和成功提示。
+- `identity_changed` 只表示旧/新结果或候选差异，用于阻断未来接管评估，不授权覆盖旧生产 key。
+- 可见 UI 必须默认关闭、internal-only、只消费脱敏聚合 ViewModel；没有统一 Job 详情宿主前，不得为了展示改多个业务页面或保存完整 result。
+- 未经真实局点观测、独立评审和用户明确批准，不得让 AP Identity resolver 接管生产匹配。
+
+验证时应覆盖旧业务字段不变、异常只降级诊断、导出/页面契约不变，以及敏感明细不进入展示或日志。
+
 ### 车载 MR 在线采集和分析规则
 
 车载 MR 在线采集、原始日志、实时缓存、解析缓存和图表时间轴必须保持可追溯。
@@ -209,6 +232,22 @@ MR 原始 MESH 日志可能是大文件或多文件导入，解析、图表和�
 - TCP 低带宽场景缺省 block size 时使用现有 `16K` 兜底。
 - IPERF 日志需记录 `duration_mode=follow_collection` 和保护时长，便于后续分析解释。
 
+### Web / Agent / Traffic 阶段边界
+
+NetConsole Web 演进采用渐进式接入，不重建第二套 Python Core，也不把业务执行下放到浏览器或路由层。
+
+要求：
+
+- Qt 主程序仍是正式生产入口；Server Mode、Web Shell、任务中心和 Agent 管理控制面不得描述为已完成的可交付服务版。
+- Agent 配置与运行状态写入每局点 `agents.db`；Token 只保存在 Controller 进程内的会话凭据中，不进入 JobSpec、SQLite、事件、日志、命令行或 DTO。
+- Agent 能力判断只使用 Runtime Snapshot 和 capability，不按操作系统名称猜测；浏览器不直接访问 Agent。
+- 统一 Traffic 业务只能通过 `TrafficTestApplicationService` 启动、停止和恢复；本地/Agent 执行差异留在 Adapter 层。
+- Traffic Run、Agent mapping 和独立 Ping 样本写入 `traffic_runs.sqlite`；iPerf interval 继续以既有 `iperf_results.sqlite` 为事实源，不复制到 Traffic 库。
+- 阶段 4C 只能在现有应用服务上增加受控 Traffic REST API、独立 WebSocket 和 Vue 页面；不得新增任意 Shell/命令执行接口，不得把高频样本塞入全局 `/ws/tasks`。
+- SNMP Center、无线勘测、Online MR、原 Qt iPerf/Ping 页面、设备、AC、FIT-AP、MESH 等未迁移域不得顺带迁入 Web/Traffic。
+
+验证时应覆盖 Token 不落库、Agent/Controller Task ID 独立、远端同步状态不伪造 Task 终态、阶段限制与 docs 状态一致。
+
 ### 数据路径和局点隔离
 
 业务数据路径应通过 `PathResolver` 或既有路径服务获取。
@@ -233,13 +272,13 @@ MR 原始 MESH 日志可能是大文件或多文件导入，解析、图表和�
 
 ### 构建和发布边界
 
-打包发布以 `docs/BUILD_AND_RELEASE.md` 和 `project/` 下构建脚本为准。
+打包发布以 `docs/BUILD_AND_RELEASE.md` 和 `scripts/build/` 下构建脚本为准。
 
 要求：
 
-- 发布输出必须进入 `release/` 下的版本目录，不污染项目根目录。
+- 发布输出必须进入 `dist/` 下的版本目录，不污染项目根目录。
 - 发布包只允许白名单内容进入：`NetConsole.exe`、`_internal`、`data`、`runtime`、`tools`。
-- `docs/`、`tests/`、`project/` 和源码形式的 `netconsole/` 不得进入用户发布包。
+- `docs/`、`tests/`、`scripts/` 和源码形式的 `src/netconsole/` 不得进入用户发布包。
 - 内部版和客户版通过既有 `--build-editions` 与 feature profile 机制处理，不临时复制两套代码。
 - 打包前检查 `fping`、`iperf3` 等外部工具源文件；运行时工具路径不得写死用户本机路径。
 - 非交互构建跳过 smoke test 时必须说明原因。

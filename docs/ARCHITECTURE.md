@@ -21,7 +21,7 @@ flowchart TD
     SPLASH --> WIN["主窗口与页面"]
 ```
 
-开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载阶段 3 Vue 任务中心与 Agent 管理，不替换普通启动；阶段 4B-2 的 Traffic 应用服务尚无 Web 页面。当前正式发布脚本尚未打包 `frontend/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
+开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载阶段 3 Vue 任务中心与 Agent 管理，不替换普通启动；阶段 4B-2 的 Traffic 应用服务尚无 Web 页面。当前正式发布脚本尚未打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
 
 ## 3. 分层与依赖方向
 
@@ -62,7 +62,7 @@ sequenceDiagram
     participant H as Domain Handler
     P->>M: start_job(JobSpec)
     M->>T: prepare(JobSpec)
-    T->>T: 写 runtime/cache/background_jobs/*.json
+    T->>T: 写 .local/runtime/cache/background_jobs/*.json
     M->>W: QProcess 启动
     W->>R: 加载任务并运行
     R->>H: handler(JobContext)
@@ -79,7 +79,7 @@ sequenceDiagram
 - `JobSpec` 包含 `job_id`、`task_type`、`params` 和取消文件路径。
 - worker 的 stdout 只允许输出 JSONL 协议；普通诊断输出重定向到 stderr。
 - 取消先写 `.cancel`，handler 通过 `JobContext.check_cancelled()` 协作退出；超时后进程管理器 terminate，再在 3 秒后 kill。
-- Job 文件位于 `runtime/cache/background_jobs/`，终态后清理。
+- Job 文件位于 `.local/runtime/cache/background_jobs/`，终态后清理。
 - Job Registry 当前注册 86 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 11 个领域模块。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
 - `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。FastAPI 已提供任务路由与 `/ws/tasks`。
@@ -97,7 +97,7 @@ sequenceDiagram
     participant W as export_worker
     participant E as Export Handler
     P->>M: start_export(ExportJob)
-    M->>M: 写 runtime/cache/export_jobs/*.json
+    M->>M: 写 .local/runtime/cache/export_jobs/*.json
     M->>W: QProcess 启动
     W->>E: 读取 repository/file/jsonl 数据
     E->>E: 写 output.tmp

@@ -15,7 +15,7 @@ from netconsole.core.feature_flags import (
     save_profile,
 )
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureStatus, list_features
-from project.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
+from scripts.build.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
 
 PROTECTED_INTERNAL_STATE = {"visible": True, "enabled": True, "client_package": False, "internal_only": True}

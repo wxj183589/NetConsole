@@ -1,96 +1,79 @@
 # Python
+.venv/
+venv/
 __pycache__/
+**/__pycache__/
 *.py[cod]
-*.pyo
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
 htmlcov/
-frontend/node_modules/
-frontend/dist/
-frontend/*.js
-frontend/*.d.ts
-frontend/*.tsbuildinfo
-frontend/src/**/*.js
-frontend/src/**/*.d.ts
-!frontend/src/env.d.ts
 
-# Virtual environments
-.venv/
-venv/
-.venv/*
-
-# Build artifacts
-build/
-dist/
-build_output/
-release/
-!netconsole/build/
-!netconsole/build/*.py
-project/build/
-project/dist/
-project/spec/
-project/release/
-*.spec
-project/resources/
-project/scripts
-
-# IDE
+# IDE and local Codex state
 .idea/
+.vs/
 .vscode/
+.junie/
+.codex/
 
-# Local NetConsole data
-data/sites/*/db/*.db
-data/sites/*/raw/*
-data/sites/*/parsed/*
-data/sites/*/reports/*
-data/sites/*/backups/*
-data/sites/*/tasks/*
-data/sites/*/metrics/*
-data/config/*
-data/logs/*
-data/config/
-data/logs/
-data/*
+# Local application state and legacy root state
+.local/
 data/
 runtime/
-!netconsole/services/job_center/runtime/
-!netconsole/services/job_center/runtime/*.py
+logs/
+tmp/
+release/
+
+# Build output
+build/
+dist/
+*.spec
+*.spec.bak
+
+# Web dependencies and generated files
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.vite/
+apps/web/.cache/
+apps/web/*.js
+apps/web/*.d.ts
+apps/web/*.tsbuildinfo
+apps/web/src/**/*.js
+apps/web/src/**/*.d.ts
+!apps/web/src/env.d.ts
+
+# Agent build/runtime output
+apps/agent/bin/
+apps/agent/data/
+apps/agent/logs/
+apps/agent/packages/
+apps/agent/dist/
+apps/agent/mr_collector_py/build/
+apps/agent/mr_collector_py/dist/
+apps/agent/tools/windows-x64/iperf3/*.exe
+apps/agent/tools/windows-x64/iperf3/*.dll
+apps/agent/tools/windows-x64/fping/*.exe
+apps/agent/tools/windows-x64/fping/*.dll
+
+# Generated archives and packages; versioned MIB archives remain allowed.
+*.zip
+*.7z
+*.tar
+*.tar.gz
+!resources/builtin_mibs/**/*.zip
+
+# IPOP v4.1 is a user-supplied, non-redistributable tool.
+tools/windows-x64/ipop/IPOP.EXE
+tools/windows-x64/ipop/*.exe
 
 # Local config and secrets
 *.local
 *.env
 *.env.*
 
-docs/宁波12-设备导入模板.csv
-netconsole.zip
-
-tmp/
-tmp/*
-
-# Project-level Codex Skills under .agents/skills are versioned with the repository.
-.codex
-
-.vs/*
-.vs
-
-# Go Agent build/runtime outputs (keep empty directory markers only)
-agent/bin/
-!agent/data/
-!agent/data/tasks/
-agent/data/tasks/*
-!agent/data/tasks/.gitkeep
-agent/logs/*
-!agent/logs/.gitkeep
-agent/packages/*
-!agent/packages/.gitkeep
-agent/tools/windows-x64/iperf3/*.exe
-agent/tools/windows-x64/iperf3/*.dll
-agent/tools/windows-x64/fping/*.exe
-agent/tools/windows-x64/fping/*.dll
-
-# IPOP v4.1 is a locally supplied unsigned third-party binary. Keep only its
-# placement/licensing notice in Git until redistribution permission is proven.
-tools/windows-x64/ipop/IPOP.EXE
-tools/windows-x64/ipop/*.exe
+# Operating system
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -277,8 +277,8 @@ def test_aggregate_shadow_failure_does_not_change_rows_or_finished(
 
 
 def test_trackside_shadow_static_boundaries_and_ui_remains_unaware() -> None:
-    source = (PROJECT_ROOT / "netconsole" / "services" / "rail_transit" / "trackside_ap_identity_shadow.py").read_text(encoding="utf-8")
-    page_source = (PROJECT_ROOT / "netconsole" / "ui" / "pages" / "trackside_ap_service_page.py").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "rail_transit" / "trackside_ap_identity_shadow.py").read_text(encoding="utf-8")
+    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "trackside_ap_service_page.py").read_text(encoding="utf-8")
 
     for forbidden in ("PySide6", "netconsole.ui", "repositories", "Database", "subprocess", "netmiko", "socket"):
         assert forbidden not in source

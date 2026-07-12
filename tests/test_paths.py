@@ -67,12 +67,13 @@ def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):
     exe_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe_path))
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path / "local_data"))
 
     paths = PathResolver()
 
     assert paths.app_root == tmp_path
-    assert paths.data_dir == tmp_path / "data"
-    assert paths.site_db_path() == tmp_path / "data" / "sites" / "demo" / "db" / "devices.db"
+    assert paths.data_dir == tmp_path / "local_data" / "data"
+    assert paths.site_db_path() == tmp_path / "local_data" / "data" / "sites" / "demo" / "db" / "devices.db"
 
 
 def test_path_resolver_uses_exe_dir_when_nuitka_compiled(tmp_path, monkeypatch):
@@ -80,13 +81,14 @@ def test_path_resolver_uses_exe_dir_when_nuitka_compiled(tmp_path, monkeypatch):
     exe_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(exe_path))
     monkeypatch.setattr(sys.modules["__main__"], "__compiled__", object(), raising=False)
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path / "local_data"))
 
     paths = PathResolver()
     paths.ensure_project_dirs()
 
     assert paths.app_root == tmp_path
-    assert paths.data_dir == tmp_path / "data"
-    assert paths.runtime_dir == tmp_path / "runtime"
+    assert paths.data_dir == tmp_path / "local_data" / "data"
+    assert paths.runtime_dir == tmp_path / "local_data" / "runtime"
     assert not (tmp_path / "docs").exists()
     assert not (tmp_path / "tests").exists()
     assert not (tmp_path / "project").exists()
@@ -105,11 +107,12 @@ def test_path_resolver_uses_release_dir_when_exe_has_build_info(tmp_path, monkey
     project_root.mkdir()
     monkeypatch.chdir(project_root)
     monkeypatch.setattr(sys, "executable", str(release_root / "NetConsole.exe"))
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path / "local_data"))
 
     paths = PathResolver()
 
     assert paths.app_root == release_root
-    assert paths.runtime_dir == release_root / "runtime"
+    assert paths.runtime_dir == tmp_path / "local_data" / "runtime"
 
 
 def test_path_resolver_uses_argv_exe_dir_before_unreliable_executable(tmp_path, monkeypatch):
@@ -129,11 +132,12 @@ def test_path_resolver_uses_argv_exe_dir_before_unreliable_executable(tmp_path, 
     monkeypatch.chdir(project_root)
     monkeypatch.setattr(sys, "argv", [str(release_root / "NetConsole.exe")])
     monkeypatch.setattr(sys, "executable", str(temp_root / "NetConsole.exe"))
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path / "local_data"))
 
     paths = PathResolver()
 
     assert paths.app_root == release_root
-    assert paths.runtime_dir == release_root / "runtime"
+    assert paths.runtime_dir == tmp_path / "local_data" / "runtime"
 
 
 def test_path_resolver_does_not_create_development_dirs_when_frozen(tmp_path, monkeypatch):
@@ -141,6 +145,7 @@ def test_path_resolver_does_not_create_development_dirs_when_frozen(tmp_path, mo
     exe_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe_path))
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path / "local_data"))
 
     paths = PathResolver()
     paths.ensure_project_dirs()
@@ -169,6 +174,7 @@ def test_nuitka_startup_context_does_not_create_development_dirs(tmp_path, monke
     exe_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(exe_path))
     monkeypatch.setattr(sys.modules["__main__"], "__compiled__", object(), raising=False)
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path / "local_data"))
 
     context = create_demo_context()
 

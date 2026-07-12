@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netconsole"
+dynamic = ["version"]
+description = "NetConsole 网络设备采集与分析工具"
+requires-python = ">=3.13"
+
+[tool.setuptools.dynamic]
+version = {attr = "netconsole.core.version.APP_VERSION"}
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+netconsole = ["assets/*", "docs/*", "resources/*", "ui/icons/*"]

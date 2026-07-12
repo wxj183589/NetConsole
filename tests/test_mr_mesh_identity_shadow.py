@@ -442,14 +442,14 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
 
 
 def test_shadow_static_boundaries_and_production_consumers_remain_unaware() -> None:
-    shadow_source = (PROJECT_ROOT / "netconsole" / "services" / "mr_mesh_identity_shadow.py").read_text(encoding="utf-8")
+    shadow_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "mr_mesh_identity_shadow.py").read_text(encoding="utf-8")
     forbidden_consumers = (
-        PROJECT_ROOT / "netconsole" / "parsers" / "mesh_log_parser.py",
-        PROJECT_ROOT / "netconsole" / "services" / "rail_transit" / "online_mr_diagnosis_parser.py",
-        PROJECT_ROOT / "netconsole" / "services" / "mesh_peer_mapping_service.py",
-        PROJECT_ROOT / "netconsole" / "services" / "mesh_link_detail_export.py",
-        PROJECT_ROOT / "netconsole" / "ui" / "pages" / "mesh_log_analysis_page.py",
-        PROJECT_ROOT / "netconsole" / "ui" / "pages" / "online_mr_collection_page.py",
+        PROJECT_ROOT / "src" / "netconsole" / "parsers" / "mesh_log_parser.py",
+        PROJECT_ROOT / "src" / "netconsole" / "services" / "rail_transit" / "online_mr_diagnosis_parser.py",
+        PROJECT_ROOT / "src" / "netconsole" / "services" / "mesh_peer_mapping_service.py",
+        PROJECT_ROOT / "src" / "netconsole" / "services" / "mesh_link_detail_export.py",
+        PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "mesh_log_analysis_page.py",
+        PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "online_mr_collection_page.py",
     )
 
     for forbidden in ("PySide6", "netconsole.ui", "repositories", "Database", "sqlite3", "subprocess", "netmiko", "socket"):

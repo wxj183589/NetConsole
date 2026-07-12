@@ -20,7 +20,7 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 - 设备连接：Netmiko、SSH / Telnet、SFTP / SCP、外部终端集成。
 - Excel：本地 `.xlsx` 导入导出，主要面向 WPS Office / Microsoft Office 打开体验。
 - 图表：当前项目内既有 Qt / Matplotlib / 交互图表相关实现，具体以页面代码为准。
-- 打包：PyInstaller / Nuitka 双后端，发布脚本在 `project/` 下。
+- 打包：PyInstaller / Nuitka 双后端，发布脚本在 `scripts/build/` 下。
 
 历史上如讨论过 React、Electron、FastAPI 或其他原型，均不得写成当前架构。当前仓库的正式桌面主线是 PySide6。
 
@@ -53,7 +53,7 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 | `netconsole/parsers/` | H3C / AC / Mesh / 文本输出解析 |
 | `netconsole/ui/` | PySide6 页面、对话框、Worker、控件、主题 |
 | `netconsole/build/` | 构建辅助 |
-| `project/` | 发布脚本、构建配置 |
+| `scripts/build/` | 发布脚本、构建配置 |
 | `tests/` | pytest 回归测试 |
 | `tools/` | 打包和运行依赖的外部工具 |
 

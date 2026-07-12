@@ -8,7 +8,7 @@
 
 ## 2. 导入与存储
 
-- 原始文件归档到 `data/sites/<site>/rail_transit/mr_raw_mesh/<mr>/raw/`，重名使用防冲突归档名。
+- 原始文件归档到 `.local/data/sites/<site>/rail_transit/mr_raw_mesh/<mr>/raw/`，重名使用防冲突归档名。
 - `catalog.sqlite` 和目录型 `mesh.sqlite` 管理文件目录与入口；明细数据可能在 `source_files.parsed_db_path` 指向的单文件 parsed SQLite。
 - `raw/` 永不因解析失败而删除；`parsed/` 和 `outputs/` 可重建。
 - 解析保留源文件、源行号和必要原始证据，便于从报表回溯。

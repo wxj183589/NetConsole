@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from netconsole.core.version import APP_VERSION
-from project.build_config import load_config
+from scripts.build.build_config import load_config
 import zipfile
 
 import pytest
 
-from project.build_release import (
+from scripts.build.build_release import (
     BuildError,
     NUITKA_ALLOWED_RELEASE_ITEMS,
     find_forbidden_release_dirs,
@@ -55,8 +55,8 @@ def test_nuitka_command_uses_onefile_and_required_resources() -> None:
 
 
 def test_nuitka_scripts_do_not_call_publish_flow() -> None:
-    script_text = (ROOT / "build_nuitka_release.bat").read_text(encoding="utf-8")
-    helper_text = (ROOT / "project" / "build_nuitka_release.py").read_text(encoding="utf-8")
+    script_text = (ROOT / "scripts" / "build" / "build_nuitka_release.bat").read_text(encoding="utf-8")
+    helper_text = (ROOT / "scripts" / "build" / "build_nuitka_release.py").read_text(encoding="utf-8")
     combined = f"{script_text}\n{helper_text}".lower()
 
     forbidden_tokens = (
@@ -122,7 +122,7 @@ def test_release_zip_validation_rejects_forbidden_entries(tmp_path: Path) -> Non
 
 
 def test_release_validation_rejects_ipop_but_keeps_other_tools(tmp_path: Path) -> None:
-    from project.build_release import validate_no_ipop_artifacts
+    from scripts.build.build_release import validate_no_ipop_artifacts
 
     release_dir = tmp_path / "release"
     (release_dir / "tools" / "windows-x64" / "fping").mkdir(parents=True)
@@ -142,8 +142,8 @@ def test_release_validation_rejects_ipop_but_keeps_other_tools(tmp_path: Path) -
 
 
 def test_release_tool_copy_uses_allowlist_and_never_copies_ipop(tmp_path: Path) -> None:
-    from project.build_config import BuildConfig
-    from project.build_release import copy_release_tools
+    from scripts.build.build_config import BuildConfig
+    from scripts.build.build_release import copy_release_tools
 
     tools = tmp_path / "tools"
     for relative in ("windows-x64/fping/fping.exe", "windows-x64/iperf3/iperf3.exe", "windows-x64/ipop/IPOP.EXE"):
@@ -195,11 +195,11 @@ def test_release_version_tree_rejects_sibling_backend_pollution(tmp_path: Path) 
 
 
 def test_release_packaging_does_not_use_project_root_sources() -> None:
-    script = (ROOT / "project" / "build_release.py").read_text(encoding="utf-8").lower()
+    script = (ROOT / "scripts" / "build" / "build_release.py").read_text(encoding="utf-8").lower()
     batch_scripts = "\n".join(
         [
-            (ROOT / "build_release.bat").read_text(encoding="utf-8").lower(),
-            (ROOT / "build_nuitka_release.bat").read_text(encoding="utf-8").lower(),
+            (ROOT / "scripts" / "build" / "build_release.bat").read_text(encoding="utf-8").lower(),
+            (ROOT / "scripts" / "build" / "build_nuitka_release.bat").read_text(encoding="utf-8").lower(),
         ]
     )
 

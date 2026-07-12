@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通车地无线、SNMP/MIB、网络测试、配置采集、文件管理和日志诊断。
 
-当前版本：`v1.3.8`。版本唯一来源为 `netconsole/core/version.py`；本文不单独维护版本号。
+当前版本：`v1.3.8`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
 
 ## 仓库地址
 
@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4B-2 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件和远端恢复，但尚未创建 Traffic REST/WebSocket 路由或 Vue 流量页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `frontend/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4B-2 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件和远端恢复，但尚未创建 Traffic REST/WebSocket 路由或 Vue 流量页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -31,7 +31,22 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 | 日志 | `module.logs` | 应用日志查看与导出 |
 | 系统设置 | `module.system_settings` | 局点、主题、工具路径、磁盘清理和版本信息 |
 
-模块、页面、Tab、动作和按钮的真实启用状态以 `netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。
+模块、页面、Tab、动作和按钮的真实启用状态以 `src/netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。
+
+## 仓库结构
+
+```text
+apps/       独立应用：Agent、Desktop Web Shell、Web 前端
+src/        可安装的 Python 包（src/netconsole）
+config/     开发和构建配置模板（含 feature profiles）
+docs/       项目文档和长期工程规则
+resources/  版本化静态资源、命令参考和 MIB 归档
+scripts/    build、dev、maintenance 脚本
+tests/      自动化测试和脱敏 fixtures
+tools/      独立开发/诊断工具及允许打包的运行工具
+```
+
+根目录只保留项目级配置、说明、许可证、`main.py` 兼容入口和上述白名单目录。完整规则见 [仓库目录规范](docs/development/repository-layout.md)。
 
 ## 架构摘要
 
@@ -83,6 +98,7 @@ flowchart LR
 优先使用仓库虚拟环境：
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe main.py
 .\.venv\Scripts\python.exe main.py --web-shell
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
@@ -92,7 +108,7 @@ flowchart LR
 前端首次运行或依赖变化后执行：
 
 ```powershell
-cd frontend
+cd apps/web
 pnpm install
 pnpm test
 pnpm build
@@ -102,11 +118,11 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 数据与发布边界
 
-- 运行数据默认位于应用根目录下的 `data/`，临时协议、缓存和应用日志位于顶层 `runtime/`。
+- 开发运行数据默认位于 `.local/data/` 和 `.local/runtime/`；打包程序优先使用 `%LOCALAPPDATA%\NetConsole\`，不会依赖当前工作目录。
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
 - H3C 私有 MIB 不随仓库分发，需由用户导入合法取得的官方归档或参考资料。
 - 主程序和 Agent 的 Windows x64 工具目录统一命名为 `tools/windows-x64/{fping,iperf3,ipop}`；IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。
-- 发布包必须保留 `_internal`、`data`、`runtime` 目录，以及 PySide6、网络工具和 VC++ 运行库等运行依赖。
+- 发布包必须保留 `_internal`、`data`、`runtime` 目录，以及 PySide6、网络工具和 VC++ 运行库等运行依赖；这些目录是发布包内部契约，不代表开发数据写入源码仓库。
 - 构建入口、版本来源、外部工具和 Windows 验证要求见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
 
 ## 重点专题

@@ -1,0 +1,39 @@
+{
+  "agent": {
+    "id": "win-agent-001",
+    "name": "NetConsole Windows Agent",
+    "listen_host": "0.0.0.0",
+    "listen_port": 18080,
+    "data_dir": "$LOCALAPPDATA/NetConsole/Agent/data",
+    "log_dir": "$LOCALAPPDATA/NetConsole/Agent/logs",
+    "package_dir": "$LOCALAPPDATA/NetConsole/Agent/packages"
+  },
+  "security": {
+    "token": "change-me",
+    "web_username": "admin",
+    "web_password": "admin",
+    "enable_auth": false
+  },
+  "tools": {
+    "iperf3_windows_x64": "./tools/windows-x64/iperf3/iperf3.exe",
+    "fping_windows_x64": "./tools/windows-x64/fping/fping.exe",
+    "mr_collector_windows_x64": "./tools/windows-x64/mr_collector/netconsole-mr-collector.exe"
+  },
+  "runtime": {
+    "auto_package_on_stop": true,
+    "keep_task_days": 30,
+    "keep_package_days": 30
+  },
+  "ping_probe": {
+    "default_interval_ms": 200,
+    "default_timeout_ms": 500,
+    "default_packet_size": 64,
+    "max_targets": 16,
+    "default_tcp_port": 80
+  },
+  "power": {
+    "prevent_sleep_on_start": true,
+    "keep_display_on_when_task_running": true,
+    "restore_on_exit": true
+  }
+}
