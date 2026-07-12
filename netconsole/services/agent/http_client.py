@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+from netconsole.models.agent_traffic import (
+    AgentFpingStartRequest,
+    AgentIperfClientStartRequest,
+    AgentIperfServerStartRequest,
+    AgentTaskDTO,
+    AgentTaskEventPageDTO,
+    AgentTaskResultDTO,
+)
 
 
 DEFAULT_AGENT_CONNECT_TIMEOUT_SECONDS = 3.0
@@ -93,6 +103,81 @@ class AgentHttpClient:
             latency_ms=latency_ms,
         )
 
+    async def start_fping(self, base_url: str, request: AgentFpingStartRequest, token: str | None = None) -> AgentTaskDTO:
+        payload = await self._call_data("POST", base_url, "/api/v1/fping/start", token, json_body=request.as_payload())
+        return AgentTaskDTO.from_payload(payload)
+
+    async def start_iperf_server(
+        self, base_url: str, request: AgentIperfServerStartRequest, token: str | None = None
+    ) -> AgentTaskDTO:
+        payload = await self._call_data("POST", base_url, "/api/v1/iperf/server/start", token, json_body=request.as_payload())
+        return AgentTaskDTO.from_payload(payload)
+
+    async def start_iperf_client(
+        self, base_url: str, request: AgentIperfClientStartRequest, token: str | None = None
+    ) -> AgentTaskDTO:
+        payload = await self._call_data("POST", base_url, "/api/v1/iperf/client/start", token, json_body=request.as_payload())
+        return AgentTaskDTO.from_payload(payload)
+
+    async def get_task(self, base_url: str, task_id: str, token: str | None = None) -> AgentTaskDTO:
+        payload = await self._call_data("GET", base_url, f"/api/v1/tasks/{self._task_id(task_id)}", token)
+        return AgentTaskDTO.from_payload(payload)
+
+    async def stop_task(self, base_url: str, task_id: str, token: str | None = None) -> AgentTaskDTO:
+        payload = await self._call_data("POST", base_url, f"/api/v1/tasks/{self._task_id(task_id)}/stop", token)
+        return AgentTaskDTO.from_payload(payload)
+
+    async def get_task_events(
+        self,
+        base_url: str,
+        task_id: str,
+        *,
+        after: int = 0,
+        limit: int = 200,
+        token: str | None = None,
+    ) -> AgentTaskEventPageDTO:
+        payload = await self._call_data(
+            "GET",
+            base_url,
+            f"/api/v1/tasks/{self._task_id(task_id)}/events",
+            token,
+            params={"after": after, "limit": limit},
+        )
+        return AgentTaskEventPageDTO.from_payload(payload)
+
+    async def get_task_result(self, base_url: str, task_id: str, token: str | None = None) -> AgentTaskResultDTO:
+        payload = await self._call_data("GET", base_url, f"/api/v1/tasks/{self._task_id(task_id)}/result", token)
+        return AgentTaskResultDTO.from_payload(payload)
+
+    async def _call_data(
+        self,
+        method: str,
+        base_url: str,
+        path: str,
+        token: str | None,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized = normalize_agent_base_url(base_url)
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["X-Agent-Token"] = token
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=False,
+            headers=headers,
+            transport=self.transport,
+        ) as client:
+            return await self._request_data(
+                client,
+                method,
+                f"{normalized}{path}",
+                json_body=json_body,
+                params=params,
+                unsupported_on_not_found=True,
+            )
+
     async def _get_capabilities(self, client: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
         try:
             value = await self._get_data(client, f"{base_url}/api/v1/capabilities", allow_not_found=True)
@@ -103,8 +188,21 @@ class AgentHttpClient:
         return value
 
     async def _get_data(self, client: httpx.AsyncClient, url: str, *, allow_not_found: bool = False) -> dict[str, Any]:
+        return await self._request_data(client, "GET", url, allow_not_found=allow_not_found)
+
+    async def _request_data(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        allow_not_found: bool = False,
+        unsupported_on_not_found: bool = False,
+    ) -> dict[str, Any]:
         try:
-            response = await client.get(url)
+            response = await client.request(method, url, json=json_body, params=params)
         except httpx.TimeoutException as exc:
             raise AgentClientError("AGENT_TIMEOUT", "连接 Agent 超时") from exc
         except httpx.ConnectError as exc:
@@ -126,7 +224,10 @@ class AgentHttpClient:
         if not response.is_success or payload.get("ok") is not True:
             error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
             message = str(error.get("message") or f"Agent 返回 HTTP {response.status_code}")
-            raise AgentClientError("AGENT_REQUEST_FAILED", message, status_code=response.status_code)
+            code = str(error.get("code") or "")
+            if not code and unsupported_on_not_found and response.status_code == 404:
+                code = "AGENT_TRAFFIC_UNSUPPORTED"
+            raise AgentClientError(code or "AGENT_REQUEST_FAILED", message, status_code=response.status_code)
         data = payload.get("data")
         if not isinstance(data, dict):
             raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", "Agent data 字段格式不兼容", status_code=response.status_code)
@@ -138,3 +239,10 @@ class AgentHttpClient:
         if not result:
             raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", message)
         return result
+
+    @staticmethod
+    def _task_id(value: str) -> str:
+        task_id = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", task_id):
+            raise ValueError("task_id 格式无效")
+        return task_id

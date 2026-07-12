@@ -2,7 +2,7 @@
 
 ## 1. 当前范围
 
-阶段 3 将 Windows Go Agent 接入 Python 主程序的多 Agent 控制面。当前只支持配置、健康探测、版本、平台、架构、能力和实时状态，不支持启动 iPerf、Ping、Online MR 或任意命令。
+阶段 3 将 Windows Go Agent 接入 Python 主程序的多 Agent 控制面。阶段 4B-1 已在底层 `AgentHttpClient` 增加 iPerf、真实 fping、任务事件和结果的强类型方法，但当前 `AgentControllerService` 与 Web 仍只支持配置、健康探测、版本、平台、架构、能力和实时状态，不会调度业务任务，也不支持 Online MR 或任意命令。
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,7 @@ flowchart LR
 - Token Header：`X-Agent-Token`；
 - 响应：成功 `{"ok":true,"data":...}`，失败 `{"ok":false,"error":{"message":"..."}}`。
 
-阶段 3 仅为缺失的能力事实来源增加了向后兼容接口，没有修改任务、目标、采集或认证协议。旧 Agent 返回 404 时，Controller 将能力保存为空对象并显示为未知。
+阶段 4B-1 在保持旧接口兼容的前提下新增 Agent fping、任务事件游标和结果接口，并补齐 iPerf 强类型参数。旧 Agent 对新路由返回 404 时，Typed Client 映射为 `AGENT_TRAFFIC_UNSUPPORTED`；能力探测仍将缺失的 capabilities 保留为未知。
 
 `AgentHttpClient` 统一处理 URL、连接/读取超时、HTTP/HTTPS、Token Header、JSON 契约、401、版本兼容和错误映射；禁止自动跟随重定向，也不记录 Header 或 Token。
 
@@ -86,7 +86,7 @@ DELETE /api/agents/{agent_id}
 WS     /ws/agents
 ```
 
-没有 iPerf、Ping、MR、任意命令、包管理或升级接口。
+这里仍没有面向浏览器的 iPerf、Ping、MR、任意命令、包管理或升级接口。`AgentHttpClient` 的底层流量方法只供阶段 4B-2 应用服务复用，浏览器不能直接访问 Agent。
 
 ## 7. 已知限制与后续
 
@@ -95,4 +95,4 @@ WS     /ws/agents
 - 仅适配 Windows Go Agent V1；CentOS Agent 尚未实现。
 - 正式发布脚本尚未确认打包 `frontend/dist`。
 
-阶段 4 才能设计 `TrafficTestService`、Agent 执行端选择、任务中心关联、实时指标和图表；必须继续复用当前 Agent 配置、凭据引用和状态事实来源。
+阶段 4B-2 才能设计 `TrafficTestApplicationService`、Agent 执行端选择、任务中心关联、轮询、实时指标和图表；必须继续复用当前 Agent 配置、凭据引用和状态事实来源。协议细节见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md)。

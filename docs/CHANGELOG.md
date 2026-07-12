@@ -4,6 +4,8 @@
 
 ### 本次修复
 
+- 完成 Web 演进阶段 4B-1：Windows Go Agent 新增真实 `fping` 任务、每任务增量事件游标、结果描述和 iPerf 3.20 强类型参数；`ping_probe` 继续明确为 TCP Connect，不伪装为 ICMP Ping。
+- Python `AgentHttpClient` 新增 fping/iPerf 启动、任务查询/停止、事件和结果的强类型 DTO/方法；本阶段未创建 Traffic 数据库、应用服务、Controller 轮询、FastAPI Traffic API 或 Vue 页面。
 - 完成 Web 演进阶段 3：新增每局点 `agents.db`、Agent 配置/运行快照分离、`AgentControllerService`、会话级凭据、健康检查调度、Agent REST API、`/ws/agents` 与 Vue Agent 管理页面；本阶段不提供任何业务任务启动接口。
 - Windows Go Agent 新增向后兼容的 `GET /api/v1/capabilities`；Controller 对旧 Agent 保留未知能力，不根据操作系统猜测。Element Plus 改为按需导入，Dashboard、任务中心与 Agent 页面按路由分包，移除阶段 2 约 1 MB 单包警告。
 - 统一窗口标题为 `NetConsole v1.3.8 by WXJ`，分离 Git SSH 推送地址与关于页 HTTPS 浏览地址；修复弹出模块错误复用“设备管理”的当前页归属。

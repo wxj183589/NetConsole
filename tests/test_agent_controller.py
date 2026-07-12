@@ -12,6 +12,11 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.models.agent import AgentAuthenticationType, AgentConfig, AgentRuntimeSnapshot, AgentStatus
+from netconsole.models.agent_traffic import (
+    AgentFpingStartRequest,
+    AgentIperfClientStartRequest,
+    AgentIperfServerStartRequest,
+)
 from netconsole.repositories.agent_repository import AgentRepository
 from netconsole.services.agent.controller import (
     AgentControllerError,
@@ -217,6 +222,113 @@ def test_http_adapter_rejects_invalid_responses(response, code) -> None:
     with pytest.raises(AgentClientError) as exc_info:
         asyncio.run(AgentHttpClient(transport=httpx.MockTransport(handler)).probe("http://127.0.0.1:18080"))
     assert exc_info.value.code == code
+
+
+def test_agent_http_client_typed_traffic_contract_and_cursor() -> None:
+    requests: list[tuple[str, str, dict | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("X-Agent-Token") == "secret"
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        if request.url.path.endswith("/events"):
+            assert dict(request.url.params) == {"after": "7", "limit": "50"}
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "data": {
+                        "task_id": "task-1",
+                        "events": [
+                            {
+                                "sequence": 8,
+                                "timestamp": "2026-07-12T12:30:01.123Z",
+                                "type": "future-event",
+                                "source": "future-source",
+                                "payload": {"future": {"value": 1}},
+                                "unknown": True,
+                            }
+                        ],
+                        "next_after": 8,
+                        "has_more": False,
+                    },
+                },
+            )
+        if request.url.path.endswith("/result"):
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "data": {
+                        "task_id": "task-1",
+                        "task_type": "fping",
+                        "status": "completed",
+                        "started_at": "2026-07-12T12:30:00Z",
+                        "finished_at": "2026-07-12T12:31:00Z",
+                        "summary": {"samples": 10},
+                        "artifacts": [{"name": "fping_samples.jsonl", "kind": "samples", "available": True}],
+                        "last_sequence": 8,
+                        "error": "",
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "data": {
+                    "task_id": "task-1",
+                    "task_type": "fping",
+                    "status": "running",
+                    "created_at": "2026-07-12T12:30:00Z",
+                    "start_time": "2026-07-12T12:30:00Z",
+                    "end_time": "",
+                    "params": body or {},
+                },
+            },
+        )
+
+    client = AgentHttpClient(transport=httpx.MockTransport(handler))
+    base_url = "http://127.0.0.1:18080"
+    fping_task = asyncio.run(
+        client.start_fping(
+            base_url,
+            AgentFpingStartRequest(("127.0.0.1",), packet_size=1256, count=3),
+            "secret",
+        )
+    )
+    asyncio.run(client.start_iperf_server(base_url, AgentIperfServerStartRequest(one_off=True), "secret"))
+    asyncio.run(
+        client.start_iperf_client(
+            base_url,
+            AgentIperfClientStartRequest("192.0.2.1", protocol="udp", bandwidth_mbps=100, udp_packet_length=1400),
+            "secret",
+        )
+    )
+    asyncio.run(client.get_task(base_url, "task-1", "secret"))
+    asyncio.run(client.stop_task(base_url, "task-1", "secret"))
+    events = asyncio.run(client.get_task_events(base_url, "task-1", after=7, limit=50, token="secret"))
+    result = asyncio.run(client.get_task_result(base_url, "task-1", "secret"))
+
+    assert fping_task.task_id == "task-1"
+    assert requests[0][2]["packet_size"] == 1256
+    assert "extra_args" not in requests[0][2]
+    assert requests[1][2]["one_off"] is True
+    assert "extra_args" not in requests[2][2]
+    assert events.events[0].type == "future-event"
+    assert events.events[0].payload == {"future": {"value": 1}}
+    assert result.summary == {"samples": 10}
+    assert result.artifacts[0].name == "fping_samples.jsonl"
+
+
+def test_agent_http_client_reports_old_agent_traffic_endpoint_as_unsupported() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"ok": False, "error": {"message": "接口不存在"}})
+
+    client = AgentHttpClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(AgentClientError) as exc_info:
+        asyncio.run(client.get_task_events("http://127.0.0.1:18080", "task-1"))
+    assert exc_info.value.code == "AGENT_TRAFFIC_UNSUPPORTED"
 
 
 def test_agent_rest_crud_probe_disable_archive_and_no_secret(tmp_path) -> None:

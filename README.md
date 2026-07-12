@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面，但尚未通过 Agent 启动 iPerf、Ping、MR 等业务任务。Python 依赖以 `requirements.txt` 为准，前端依赖以 `frontend/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4B-1 已补齐 Agent fping/iPerf 强类型协议、任务事件与结果读取，但尚未接入 Controller 业务调度或 Web 流量页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `frontend/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -63,7 +63,7 @@ flowchart LR
 - `JobRegistry` 当前注册 83 个任务类型，已按 10 个领域 handler 模块分区；多数领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集仍使用专用 `QThread`/线程池，不应误写成 Job Center 已接管。
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
-- Windows Go Agent 仍是独立进程和数据根；Python Agent Controller 只接入配置、健康检查、版本和能力，不进入 Job Center，也没有业务任务启动接口。
+- Windows Go Agent 仍是独立进程和数据根；Python `AgentHttpClient` 已具备流量任务强类型方法，但 Agent Controller 仍只接入配置、健康检查、版本和能力，不进入 Job Center，也没有面向 Web 的业务任务启动接口。
 
 完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Web 演进架构](docs/WEB_ARCHITECTURE.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
@@ -111,6 +111,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 - [Online MR 实时采集](docs/ONLINE_MR_COLLECTION.md)
 - [Windows 独立 Go Agent](docs/AGENT.md)
 - [Agent Controller](docs/AGENT_CONTROLLER.md)
+- [Agent 流量测试协议](docs/AGENT_TRAFFIC_API.md)
 - [MR/Mesh 日志分析规则](docs/mr_mesh_log_analysis_rules.md)
 - [SNMP Center](docs/SNMP_CENTER.md)
 - [AP Identity](docs/AP_IDENTITY.md)
@@ -119,4 +120,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进下一阶段接入 iPerf/Ping 与 Agent 执行端选择，之后依次为 Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`，不得顺带迁移；AP Identity 继续只读。
+Web 演进下一阶段 4B-2 建立统一流量测试应用服务、本地/Agent 执行端选择、任务映射与事件汇聚，之后再实现流量测试 Web 页面，并依次推进 Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`，不得顺带迁移；AP Identity 继续只读。

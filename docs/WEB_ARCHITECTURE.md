@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，但尚未接入 iPerf、Ping、MR、设备、AC、SNMP 等业务页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4B-1 已建立 Agent fping/iPerf 强类型协议，但尚未接入流量、MR、设备、AC、SNMP 等业务页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -40,7 +40,7 @@ flowchart LR
     NC -.-> CA["CentOS Agent - planned"]
 ```
 
-Windows Go Agent 已有独立 REST/Web、任务和采集能力；Python 主程序现已接入多 Agent 配置、健康检查、版本和能力控制面。Agent 不共享主程序 SQLite connection、Job Center 或数据根；CentOS Agent 和业务任务调用仍是规划项。
+Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量事件和结果能力；Python 主程序已接入多 Agent 配置、健康检查、版本和能力控制面，底层 Typed Client 可以调用流量任务，但 Controller 调度与任务映射尚未实现。Agent 不共享主程序 SQLite connection、Job Center 或数据根；CentOS Agent 仍是规划项。
 
 ## 3. RuntimeMode
 
@@ -90,11 +90,19 @@ flowchart TD
 - Agent REST API、`/ws/agents` 与 Vue Agent 管理页面；
 - Element Plus 按需导入和 Dashboard/任务中心/Agent 页面路由分包。
 
+阶段 4B-1 已完成：
+
+- Go Agent 独立 `fping` 任务，`ping_probe` 继续明确为 TCP Connect；
+- 每任务持久 `events.jsonl`、排他游标增量读取和安全 `result.json` 描述；
+- iPerf 3.20 强类型执行参数与原始 stdout/stderr 事件，统一指标继续使用 Python parser；
+- Python `AgentHttpClient` 流量任务 DTO 与强类型方法；
+- 未创建 Traffic 数据库、应用服务、Controller 轮询、FastAPI Traffic 路由或 Vue 页面。
+
 仍未实现：
 
 - 业务任务创建 API；
 - 独立于桌面/FastAPI 生命周期的 Controller daemon；
-- Agent 业务任务事件适配；
+- Agent 业务任务事件轮询、Controller Task 映射与 Traffic Event Hub；
 - Export Process 的 Web 接口。
 
 本地 Worker 仍由宿主进程管理。页面关闭但宿主仍存活时可从 `TaskRepository` 恢复；正常退出会取消所属任务，异常退出后再次启动会把失去 PID 宿主的本地活动任务核对为 `FAILED`。不得把旧快照误报为仍在运行；真正退出桌面后继续运行需要独立 Controller/Agent。
@@ -107,7 +115,7 @@ flowchart TD
 - 无线勘测 `module.wifi_survey`：Registry 状态为 `DISABLED`，Qt 菜单/页面工厂不注册，不创建 Web 路由；保留扫描、勘测、热力图、导出及硬件适配逻辑；
 - `network_tools.wireless_scan` 是不同能力，当前保持可用，但 Web 迁移优先级为 HOLD。
 
-本阶段同样未修改 MR 命令、MESH 规则、AP Identity、光衰判断、iPerf 业务或 Export Process。Go Agent 只新增向后兼容的能力查询接口，未改变现有任务、目标或认证协议。
+阶段 4B-1 未修改 Online MR、本地 Qt iPerf/fping、MR 命令、MESH 规则、AP Identity、光衰判断或 Export Process；Agent 认证、目标和旧专用接口保持兼容。SNMP Center 与无线勘测仍为硬禁用。
 
 ## 7. 目录边界
 
@@ -151,4 +159,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段只接入 iPerf/Ping 与 Agent 执行端选择；随后依次为 Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测继续冻结。
+下一阶段 4B-2 只建立统一流量测试应用服务、Local/Agent Adapter、任务映射、事件汇聚和数据边界；完成后再进入 Traffic REST/WebSocket 与 Vue 页面。Online MR、SNMP Center 和无线勘测继续冻结。
