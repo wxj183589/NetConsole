@@ -22,7 +22,7 @@ func TestCommandRunnerCapturesWindowsStdout(t *testing.T) {
 	if tool == "" {
 		t.Fatal("COMSPEC is empty")
 	}
-	runner := commandRunner(tool, []string{"/d", "/c", "echo iperf-output&&cd"}, 0)
+	runner := commandRunner(tool, []string{"/d", "/c", "echo iperf-output&&cd"}, 0, "client")
 	if err := runner(&core.Runtime{TaskID: "test", Dir: dir, RawDir: raw, Ctx: context.Background()}); err != nil {
 		t.Fatal(err)
 	}

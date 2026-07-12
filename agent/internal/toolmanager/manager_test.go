@@ -63,6 +63,14 @@ func TestRequireIperfUsesOnlyConfiguredPathAndChecksDLLs(t *testing.T) {
 }
 
 func TestStatusReportsOptionalTools(t *testing.T) {
+	original := runProbe
+	defer func() { runProbe = original }()
+	runProbe = func(_ context.Context, _, _ string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "-v" {
+			return "fping: Version 5.5", nil
+		}
+		return "-J, --json output in JSON format\n-S, --src=IP set source address", nil
+	}
 	root := t.TempDir()
 	cfg := &config.Config{BaseDir: root}
 	cfg.Tools.Iperf3WindowsX64 = config.DefaultIperf3WindowsX64
@@ -74,8 +82,11 @@ func TestStatusReportsOptionalTools(t *testing.T) {
 	if err := os.WriteFile(path, []byte("tool"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "cygwin1.dll"), []byte("dll"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	status := New(cfg).Status(context.Background())
-	if !status.Fping.Exists || status.Iperf3.Exists {
+	if !status.Fping.Exists || !status.Fping.Ready || status.Iperf3.Exists {
 		t.Fatalf("status=%#v", status)
 	}
 }

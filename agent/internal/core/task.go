@@ -37,6 +37,7 @@ type Task struct {
 	EndTime            string          `json:"end_time"`
 	PackageID          string          `json:"package_id"`
 	PackageDownloadURL string          `json:"package_download_url"`
+	ErrorCode          string          `json:"error_code,omitempty"`
 	ErrorMessage       string          `json:"error_message"`
 	Params             json.RawMessage `json:"params,omitempty"`
 }
@@ -47,6 +48,7 @@ type Runtime struct {
 	RawDir string
 	Ctx    context.Context
 	logMu  sync.Mutex
+	events *eventStore
 }
 
 func (r *Runtime) Log(format string, args ...any) {
@@ -60,6 +62,17 @@ func (r *Runtime) Log(format string, args ...any) {
 	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339Nano), fmt.Sprintf(format, args...))
 }
 
+func (r *Runtime) Emit(eventType, source string, payload map[string]any) (Event, error) {
+	if r.events == nil {
+		r.events = newEventStore(r.Dir)
+	}
+	return r.events.append(eventType, source, payload)
+}
+
+func (r *Runtime) WriteResult(summary map[string]any, artifacts []Artifact) error {
+	return writeResult(r.Dir, summary, artifacts)
+}
+
 type Runner func(*Runtime) error
 
 type runningTask struct {
@@ -67,6 +80,7 @@ type runningTask struct {
 	cancel      context.CancelFunc
 	done        chan struct{}
 	dir         string
+	events      *eventStore
 	autoPackage bool
 }
 
@@ -102,6 +116,9 @@ func NewManager(dataDir string, packager *packagex.Packager, autoPackage bool) (
 				task.EndTime = time.Now().Format(time.RFC3339Nano)
 				task.ErrorMessage = "Agent 重启，原运行任务已中断"
 				_ = util.WriteJSONAtomic(filepath.Join(root, entry.Name(), "task.json"), task, 0o600)
+				store := newEventStore(filepath.Join(root, entry.Name()))
+				_, _ = store.append("system", "task", map[string]any{"message": task.ErrorMessage})
+				_, _ = store.append("state", "task", map[string]any{"status": Failed})
 			}
 			m.tasks[task.TaskID] = &task
 		}
@@ -142,7 +159,7 @@ func (m *Manager) start(taskType string, params any, targetSnapshot any, autoPac
 	}
 	task := &Task{TaskID: id, TaskType: taskType, Status: Running, CreatedAt: now.Format(time.RFC3339Nano), StartTime: now.Format(time.RFC3339Nano), Params: paramJSON}
 	ctx, cancel := context.WithCancel(context.Background())
-	rt := &runningTask{task: task, cancel: cancel, done: make(chan struct{}), dir: dir, autoPackage: autoPackage}
+	rt := &runningTask{task: task, cancel: cancel, done: make(chan struct{}), dir: dir, events: newEventStore(dir), autoPackage: autoPackage}
 	m.tasks[id] = task
 	m.running[id] = rt
 	m.activeTypes[taskType] = id
@@ -171,26 +188,35 @@ func (m *Manager) start(taskType string, params any, targetSnapshot any, autoPac
 }
 
 func (m *Manager) execute(rt *runningTask, ctx context.Context, runner Runner) {
-	runtimeTask := &Runtime{TaskID: rt.task.TaskID, Dir: rt.dir, RawDir: filepath.Join(rt.dir, "raw"), Ctx: ctx}
+	runtimeTask := &Runtime{TaskID: rt.task.TaskID, Dir: rt.dir, RawDir: filepath.Join(rt.dir, "raw"), Ctx: ctx, events: rt.events}
 	runtimeTask.Log("任务启动 type=%s", rt.task.TaskType)
+	_, _ = runtimeTask.Emit("state", "task", map[string]any{"status": Running, "task_type": rt.task.TaskType})
 	runnerErr := runner(runtimeTask)
 	m.mu.Lock()
 	task := rt.task
 	wasStopping := task.Status == Stopping
 	task.EndTime = time.Now().Format(time.RFC3339Nano)
 	finalStatus := Completed
+	finalErrorCode := ""
 	finalError := ""
 	switch {
+	case wasStopping || errors.Is(runnerErr, context.Canceled):
+		finalStatus = Cancelled
 	case runnerErr != nil && !errors.Is(runnerErr, context.Canceled):
 		finalStatus = Failed
 		finalError = runnerErr.Error()
+		if coded, ok := runnerErr.(interface{ TrafficCode() string }); ok {
+			finalErrorCode = coded.TrafficCode()
+		}
 	}
 	packageSnapshot := *task
 	packageSnapshot.Status = finalStatus
+	packageSnapshot.ErrorCode = finalErrorCode
 	packageSnapshot.ErrorMessage = finalError
 	m.mu.Unlock()
 	if runnerErr != nil && !errors.Is(runnerErr, context.Canceled) {
 		runtimeTask.Log("任务失败: %v", runnerErr)
+		_, _ = runtimeTask.Emit("error", "task", map[string]any{"code": finalErrorCode, "message": runnerErr.Error()})
 	} else {
 		runtimeTask.Log("任务执行结束，准备提交 status=%s", finalStatus)
 	}
@@ -218,17 +244,20 @@ func (m *Manager) execute(rt *runningTask, ctx context.Context, runner Runner) {
 			packageInfo = info
 		}
 	}
-	m.mu.Lock()
-	task.Status = finalStatus
-	task.ErrorMessage = finalError
-	task.PackageID = packageInfo.ID
-	task.PackageDownloadURL = packageInfo.DownloadURL
-	delete(m.running, task.TaskID)
-	delete(m.activeTypes, task.TaskType)
-	finalSnapshot := *task
-	m.mu.Unlock()
+	finalSnapshot := packageSnapshot
+	finalSnapshot.Status = finalStatus
+	finalSnapshot.ErrorCode = finalErrorCode
+	finalSnapshot.ErrorMessage = finalError
+	finalSnapshot.PackageID = packageInfo.ID
+	finalSnapshot.PackageDownloadURL = packageInfo.DownloadURL
 	_ = util.WriteJSONAtomic(filepath.Join(rt.dir, "task.json"), finalSnapshot, 0o600)
 	runtimeTask.Log("任务提交完成 status=%s package_id=%s", finalSnapshot.Status, finalSnapshot.PackageID)
+	_, _ = runtimeTask.Emit("state", "task", map[string]any{"status": finalSnapshot.Status, "error": finalSnapshot.ErrorMessage})
+	m.mu.Lock()
+	*task = finalSnapshot
+	delete(m.running, task.TaskID)
+	delete(m.activeTypes, task.TaskType)
+	m.mu.Unlock()
 	close(rt.done)
 }
 
@@ -236,12 +265,18 @@ func (m *Manager) Stop(id string) (Task, error) {
 	m.mu.Lock()
 	rt, ok := m.running[id]
 	if !ok {
+		if task, found := m.tasks[id]; found {
+			copyTask := *task
+			m.mu.Unlock()
+			return copyTask, nil
+		}
 		m.mu.Unlock()
 		return Task{}, fmt.Errorf("任务未运行或不存在: %s", id)
 	}
 	if rt.task.Status != Stopping {
 		rt.task.Status = Stopping
 		_ = util.WriteJSONAtomic(filepath.Join(rt.dir, "task.json"), rt.task, 0o600)
+		_, _ = rt.events.append("state", "task", map[string]any{"status": Stopping})
 		rt.cancel()
 	}
 	task := *rt.task
@@ -357,6 +392,28 @@ func (m *Manager) Logs(id string, tail int) ([]string, error) {
 	return lines, scanner.Err()
 }
 
+func (m *Manager) Events(id string, after int64, limit int) (EventPage, error) {
+	m.mu.RLock()
+	_, exists := m.tasks[id]
+	m.mu.RUnlock()
+	if !exists {
+		return EventPage{}, os.ErrNotExist
+	}
+	return readEventPage(id, filepath.Join(m.root, id, "events.jsonl"), after, limit)
+}
+
+func (m *Manager) Result(id string) (Result, error) {
+	m.mu.RLock()
+	task, exists := m.tasks[id]
+	if !exists {
+		m.mu.RUnlock()
+		return Result{}, os.ErrNotExist
+	}
+	copyTask := *task
+	m.mu.RUnlock()
+	return readResult(copyTask, filepath.Join(m.root, id))
+}
+
 func shortType(taskType string) string {
 	switch taskType {
 	case "mr_realtime_collect":
@@ -367,6 +424,8 @@ func shortType(taskType string) string {
 		return "iperf_server"
 	case "iperf_client":
 		return "iperf_client"
+	case "fping":
+		return "fping"
 	}
 	return strings.ReplaceAll(taskType, " ", "_")
 }

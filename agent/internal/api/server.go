@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"netconsole-agent/internal/config"
 	"netconsole-agent/internal/core"
+	"netconsole-agent/internal/fping"
 	"netconsole-agent/internal/iperf"
 	"netconsole-agent/internal/mr"
 	"netconsole-agent/internal/packagex"
@@ -100,6 +102,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case "ping-probe/status":
 		s.typeStatus(w, r, "ping_probe")
 		return
+	case "fping/start":
+		s.fpingStart(w, r)
+		return
+	case "fping/stop":
+		s.stopType(w, r, "fping")
+		return
+	case "fping/status":
+		s.typeStatus(w, r, "fping")
+		return
 	case "mr/collect/start":
 		s.mrStart(w, r)
 		return
@@ -142,6 +153,9 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 		"iperf_client":         tools.Iperf3.Ready,
 		"fping":                tools.Fping.Ready,
 		"ping_probe":           true,
+		"tcp_ping_probe":       true,
+		"task_events":          true,
+		"task_result":          true,
 		"online_mr_collection": true,
 	})
 }
@@ -285,6 +299,58 @@ func (s *Server) taskItem(w http.ResponseWriter, r *http.Request, parts []string
 		ok(w, map[string]any{"task_id": id, "lines": lines})
 		return
 	}
+	if len(parts) == 3 && parts[2] == "events" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		after, err := parseNonNegativeInt64(r.URL.Query().Get("after"))
+		if err != nil {
+			failCode(w, http.StatusBadRequest, "AGENT_TRAFFIC_EVENT_CURSOR_INVALID", err.Error())
+			return
+		}
+		limit, err := parseNonNegativeInt(r.URL.Query().Get("limit"))
+		if err != nil {
+			failCode(w, http.StatusBadRequest, "AGENT_TRAFFIC_EVENT_CURSOR_INVALID", err.Error())
+			return
+		}
+		page, err := s.tasks.Events(id, after, limit)
+		if errors.Is(err, os.ErrNotExist) {
+			failCode(w, http.StatusNotFound, "AGENT_TRAFFIC_TASK_NOT_FOUND", "任务不存在")
+			return
+		}
+		if errors.Is(err, core.ErrInvalidEventCursor) {
+			failCode(w, http.StatusBadRequest, "AGENT_TRAFFIC_EVENT_CURSOR_INVALID", err.Error())
+			return
+		}
+		if err != nil {
+			failCode(w, http.StatusInternalServerError, "AGENT_TRAFFIC_OUTPUT_READ_FAILED", "读取任务事件失败")
+			return
+		}
+		ok(w, page)
+		return
+	}
+	if len(parts) == 3 && parts[2] == "result" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		if _, found := s.tasks.Get(id); !found {
+			failCode(w, http.StatusNotFound, "AGENT_TRAFFIC_TASK_NOT_FOUND", "任务不存在")
+			return
+		}
+		result, err := s.tasks.Result(id)
+		if errors.Is(err, os.ErrNotExist) {
+			failCode(w, http.StatusConflict, "AGENT_TRAFFIC_RESULT_NOT_READY", "任务结果尚未就绪")
+			return
+		}
+		if err != nil {
+			failCode(w, http.StatusInternalServerError, "AGENT_TRAFFIC_OUTPUT_READ_FAILED", "读取任务结果失败")
+			return
+		}
+		ok(w, result)
+		return
+	}
 	fail(w, 404, "任务接口不存在")
 }
 
@@ -304,7 +370,7 @@ func (s *Server) iperfServerStart(w http.ResponseWriter, r *http.Request) {
 	}
 	runner, err := iperf.ServerRunner(toolPath, req)
 	if err != nil {
-		fail(w, 400, err.Error())
+		failTrafficError(w, err)
 		return
 	}
 	task, err := s.tasks.Start("iperf_server", req, nil, runner)
@@ -330,10 +396,36 @@ func (s *Server) iperfClientStart(w http.ResponseWriter, r *http.Request) {
 	}
 	runner, err := iperf.ClientRunner(toolPath, req)
 	if err != nil {
-		fail(w, 400, err.Error())
+		failTrafficError(w, err)
 		return
 	}
 	task, err := s.tasks.Start("iperf_client", req, nil, runner)
+	if err != nil {
+		conflictTask(w, err, task)
+		return
+	}
+	ok(w, task)
+}
+func (s *Server) fpingStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req fping.Request
+	if !decode(w, r, &req) {
+		return
+	}
+	toolPath, err := s.tools.RequireFping(r.Context())
+	if err != nil {
+		failTool(w, err)
+		return
+	}
+	runner, err := fping.Runner(toolPath, req)
+	if err != nil {
+		failTrafficError(w, err)
+		return
+	}
+	task, err := s.tasks.Start("fping", req, nil, runner)
 	if err != nil {
 		conflictTask(w, err, task)
 		return
@@ -496,6 +588,9 @@ func ok(w http.ResponseWriter, data any) { writeJSON(w, 200, map[string]any{"ok"
 func fail(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"ok": false, "error": map[string]any{"message": message}})
 }
+func failCode(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{"ok": false, "error": map[string]any{"code": code, "message": message}})
+}
 func failTool(w http.ResponseWriter, err error) {
 	var unavailable *toolmanager.UnavailableError
 	if !errors.As(err, &unavailable) {
@@ -505,12 +600,48 @@ func failTool(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadRequest, map[string]any{
 		"ok": false,
 		"error": map[string]any{
+			"code":           unavailable.Code,
 			"message":        unavailable.Message,
 			"path":           unavailable.Path,
 			"hint":           unavailable.Hint,
 			"required_files": unavailable.RequiredFiles,
 		},
 	})
+}
+func failTrafficError(w http.ResponseWriter, err error) {
+	var fpingError *fping.ProtocolError
+	if errors.As(err, &fpingError) {
+		failCode(w, http.StatusBadRequest, fpingError.Code, fpingError.Message)
+		return
+	}
+	var iperfError *iperf.ProtocolError
+	if errors.As(err, &iperfError) {
+		failCode(w, http.StatusBadRequest, iperfError.Code, iperfError.Message)
+		return
+	}
+	failCode(w, http.StatusBadRequest, "AGENT_TRAFFIC_INVALID_CONFIG", err.Error())
+}
+
+func parseNonNegativeInt64(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("after 必须是非负整数")
+	}
+	return parsed, nil
+}
+
+func parseNonNegativeInt(value string) (int, error) {
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("limit 必须是非负整数")
+	}
+	return parsed, nil
 }
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

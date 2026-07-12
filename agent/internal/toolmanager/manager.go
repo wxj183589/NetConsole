@@ -13,8 +13,10 @@ import (
 )
 
 var iperfRequiredFiles = []string{"cygwin1.dll", "cygcrypto-3.dll", "cygz.dll"}
+var fpingRequiredFiles = []string{"cygwin1.dll"}
 
 const iperfHint = "请将 iperf3.exe 及 cygwin1.dll、cygcrypto-3.dll、cygz.dll 放到 agent/tools/windows-x64/iperf3/ 目录"
+const fpingHint = "请将 fping.exe 和 cygwin1.dll 放到 agent/tools/windows-x64/fping/ 目录"
 
 type FileStatus struct {
 	Name   string `json:"name"`
@@ -37,6 +39,7 @@ type Status struct {
 }
 
 type UnavailableError struct {
+	Code          string       `json:"code"`
 	Message       string       `json:"message"`
 	Path          string       `json:"path"`
 	Hint          string       `json:"hint"`
@@ -52,17 +55,32 @@ func New(cfg *config.Config) *Manager { return &Manager{cfg: cfg} }
 func (m *Manager) Status(ctx context.Context) Status {
 	return Status{
 		Iperf3: m.iperfStatus(ctx),
-		Fping:  simpleStatus(m.cfg.FpingPath()),
+		Fping:  m.fpingStatus(ctx),
 	}
 }
 
 func (m *Manager) RequireIperf3(ctx context.Context) (string, error) {
 	status := m.iperfStatus(ctx)
 	if !status.Exists {
-		return "", &UnavailableError{Message: "未找到 iperf3.exe", Path: status.Path, Hint: iperfHint, RequiredFiles: status.RequiredFiles}
+		return "", &UnavailableError{Code: "AGENT_TRAFFIC_TOOL_NOT_FOUND", Message: "未找到 iperf3.exe", Path: status.Path, Hint: iperfHint, RequiredFiles: status.RequiredFiles}
 	}
 	if !status.Ready {
-		return "", &UnavailableError{Message: "iperf3 依赖文件缺失", Path: status.Path, Hint: iperfHint, RequiredFiles: status.RequiredFiles}
+		return "", &UnavailableError{Code: "AGENT_TRAFFIC_TOOL_NOT_FOUND", Message: "iperf3 依赖文件缺失", Path: status.Path, Hint: iperfHint, RequiredFiles: status.RequiredFiles}
+	}
+	return status.Path, nil
+}
+
+func (m *Manager) RequireFping(ctx context.Context) (string, error) {
+	status := m.fpingStatus(ctx)
+	if !status.Exists {
+		return "", &UnavailableError{Code: "AGENT_TRAFFIC_TOOL_NOT_FOUND", Message: "未找到 fping.exe", Path: status.Path, Hint: fpingHint, RequiredFiles: status.RequiredFiles}
+	}
+	if !status.Ready {
+		code := "AGENT_TRAFFIC_UNSUPPORTED"
+		if status.Warning == "依赖文件缺失: cygwin1.dll" {
+			code = "AGENT_TRAFFIC_TOOL_NOT_FOUND"
+		}
+		return "", &UnavailableError{Code: code, Message: "fping 不可用: " + status.Warning, Path: status.Path, Hint: fpingHint, RequiredFiles: status.RequiredFiles}
 	}
 	return status.Path, nil
 }
@@ -103,6 +121,46 @@ func (m *Manager) iperfStatus(parent context.Context) ToolStatus {
 		}
 	}
 	return status
+}
+
+func (m *Manager) fpingStatus(parent context.Context) ToolStatus {
+	path := m.cfg.FpingPath()
+	workDir := filepath.Dir(path)
+	status := ToolStatus{Path: path, WorkDir: workDir, Exists: fileExists(path)}
+	missing := make([]string, 0)
+	for _, name := range fpingRequiredFiles {
+		exists := fileExists(filepath.Join(workDir, name))
+		status.RequiredFiles = append(status.RequiredFiles, FileStatus{Name: name, Exists: exists})
+		if !exists {
+			missing = append(missing, name)
+		}
+	}
+	if !status.Exists {
+		status.Warning = "未找到 fping.exe"
+		return status
+	}
+	if len(missing) > 0 {
+		status.Warning = "依赖文件缺失: " + strings.Join(missing, ", ")
+		return status
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	versionOutput, versionErr := runProbe(ctx, path, workDir, "-v")
+	helpOutput, helpErr := runProbe(ctx, path, workDir, "-h")
+	status.Version = firstLine(versionOutput)
+	status.Ready = versionErr == nil && helpErr == nil && strings.Contains(helpOutput, "--json") && strings.Contains(helpOutput, "--src")
+	if !status.Ready {
+		status.Warning = "fping 版本或 JSON 输出能力检测失败"
+	}
+	return status
+}
+
+var runProbe = func(ctx context.Context, path, workDir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Dir = workDir
+	prepareCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 func simpleStatus(path string) ToolStatus {
