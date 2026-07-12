@@ -14,13 +14,14 @@ flowchart TD
     MODE -->|"--background-worker --job"| BJ["netconsole.background_worker"]
     MODE -->|"--export-worker / --export-worker-job"| EW["netconsole.export_worker"]
     MODE -->|"smoke 参数"| SMOKE["构建验证入口"]
+    MODE -->|"--web-shell"| WS["实验 Qt Web Shell + FastAPI"]
     MODE -->|"普通启动"| APP["netconsole.app.run"]
     APP --> QT["QApplication + Settings + PathResolver"]
     QT --> SPLASH["启动页 / schema 检查"]
     SPLASH --> WIN["主窗口与页面"]
 ```
 
-开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。
+开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载阶段 2 Vue 任务中心，不替换普通启动；当前正式发布脚本尚未打包 `frontend/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
 
 ## 3. 分层与依赖方向
 
@@ -54,18 +55,22 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant P as UI Page
-    participant M as BackgroundProcessManager
+    participant M as Qt BackgroundProcessManager
+    participant T as TaskApplicationService/Runtime
     participant W as background_worker
     participant R as JobRunner/Registry
     participant H as Domain Handler
     P->>M: start_job(JobSpec)
-    M->>M: 写 runtime/cache/background_jobs/*.json
+    M->>T: prepare(JobSpec)
+    T->>T: 写 runtime/cache/background_jobs/*.json
     M->>W: QProcess 启动
     W->>R: 加载任务并运行
     R->>H: handler(JobContext)
     H-->>R: progress / result
     R-->>W: JobResult
-    W-->>M: UTF-8 JSONL 事件
+    W-->>M: UTF-8 JSONL 字节
+    M->>T: 解析/状态/终态
+    T-->>M: 结构化事件
     M-->>P: progress / finished / error / cancelled
 ```
 
@@ -77,6 +82,8 @@ sequenceDiagram
 - Job 文件位于 `runtime/cache/background_jobs/`，终态后清理。
 - Job Registry 当前注册 83 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测 10 个领域模块。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
+- `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。当前 FastAPI 尚未提供任务路由或 WebSocket。
+- `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。
 
 设备批量连接测试（默认 50、上限 200）和批量详情采集（默认 20、上限 50）目前仍是专用线程/线程池路径。它们有取消、逐设备进度和错误隔离，但不属于上述进程 Job 协议。
 
@@ -111,7 +118,7 @@ flowchart TD
     ROOT --> RUN["runtime/ 临时协议、缓存、应用日志"]
     DATA --> GLOBAL["global/ 全局 MIB 等"]
     DATA --> SITES["sites/<site>/ 局点数据"]
-    SITES --> DB["db/ 主应用数据库"]
+    SITES --> DB["db/ devices.db / tasks.db / snmp.db"]
     SITES --> RAIL["rail_transit/ 原始、解析、输出"]
     SITES --> SNMP["snmp/ 原始、导出、Trap"]
 ```
@@ -120,12 +127,14 @@ flowchart TD
 - 并发 worker 各自创建连接，不跨线程共享 SQLite connection。
 - 设备管理、FIT AP 资源等主应用数据库默认保持兼容；会话解析数据库和可重建分析表可在明确范围内重构。
 - 自动清理只针对受控的运行日志、缓存和临时目录；局点业务文件、数据库、配置和备份不得自动删除。
+- `tasks.db` 是持久任务索引，不承担业务原始数据或大结果存储；大结果只记录 `result_path`。
 
 完整目录见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
 
 ## 6. Feature 与 UI
 
 - 一级模块和子能力以 `core/feature_registry.py` 为唯一注册表。
+- `FeatureStatus.DISABLED` 是 Registry 级硬禁用，profile、开发覆盖和直接页面入口均不能重新开启；当前用于 SNMP Center 与无线勘测。
 - 新页面、Tab、动作或按钮必须登记 Feature key，通过 `FeatureGate` 统一控制可见性和可用性。
 - 表格必须使用 item/delegate，不为每个单元格创建 QWidget；首屏可自动列宽，之后尊重用户拖动并持久化。
 - 对话框和复杂页面要覆盖 1920×1080，工具栏可滚动或换行，内容使用 splitter/scroll area，深浅主题同时保证文本和状态颜色可辨认。

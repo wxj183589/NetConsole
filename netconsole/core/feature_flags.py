@@ -11,7 +11,7 @@ from typing import Any, NamedTuple
 from PySide6.QtWidgets import QWidget
 
 from netconsole.core import app_logger
-from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem, children_of, list_features
+from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem, FeatureStatus, children_of, list_features
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import app_root, is_packaged_runtime
 
@@ -148,6 +148,9 @@ class FeatureGate:
     def state_for(self, feature_id: str) -> dict[str, bool]:
         item = FEATURE_BY_ID[feature_id]
         return dict(self._effective_state(item.feature_id))
+
+    def status_for(self, feature_id: str) -> FeatureStatus:
+        return FEATURE_BY_ID[feature_id].status
 
     def is_in_client_package(self, feature_id: str) -> bool:
         if feature_id not in FEATURE_BY_ID:
@@ -298,6 +301,19 @@ class FeatureGate:
         if self._is_customer_mode() and (state["internal_only"] or not state["client_package"]):
             state["visible"] = False
             state["enabled"] = False
+        if item.status is FeatureStatus.DISABLED:
+            state.update({"visible": False, "enabled": False, "client_package": False})
+        elif item.status is FeatureStatus.HIDDEN:
+            state.update({"visible": False, "enabled": False})
+        elif item.status is FeatureStatus.DEVELOPMENT:
+            development_allowed = self.edition in {"dev", "internal", "engineer"} and not is_packaged_runtime()
+            state.update(
+                {
+                    "visible": state["visible"] and development_allowed,
+                    "enabled": state["enabled"] and development_allowed,
+                    "client_package": False,
+                }
+            )
         if not state["visible"]:
             state["enabled"] = False
         return state
@@ -362,6 +378,12 @@ def normalize_feature_state(item: FeatureItem, raw_state: dict[str, Any] | None 
             state["enabled"] = True
         elif not (state["visible"] and state["enabled"]):
             state["client_package"] = False
+    if item.status is FeatureStatus.DISABLED:
+        state.update({"visible": False, "enabled": False, "client_package": False})
+    elif item.status is FeatureStatus.HIDDEN:
+        state.update({"visible": False, "enabled": False})
+    elif item.status is FeatureStatus.DEVELOPMENT:
+        state["client_package"] = False
     return {key: bool(state[key]) for key in FEATURE_STATE_KEYS}
 
 

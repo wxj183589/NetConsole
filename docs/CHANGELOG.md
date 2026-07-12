@@ -17,6 +17,12 @@
 - 明确 Job Registry 当前注册 83 个任务但领域迁移未完成，设备批量线程仍未进入 Job Center；AP Identity 继续只读 shadow/diagnostics，阶段 8.3 可见宿主保持 hold。
 
 ### 架构
+- 完成 Web 演进阶段 2：每局点 `tasks.db` 正式保存任务快照和结构化事件，新增 `TaskRepository`、`TaskEventHub`、恢复核对、任务 REST API 与 `/ws/tasks`；Qt 继续通过兼容 signals 使用原 Job/Worker 协议。
+- 新增 Vue 3/TypeScript/Vite/Element Plus/Pinia/Vue Router 基础工程，提供 App Layout、Dashboard 空页和任务中心列表/详情/日志/停止入口；FastAPI 提供 `frontend/dist` 和 SPA fallback。
+- 新增 Registry 级 `FeatureStatus`；SNMP Center 与无线勘测设为不可由 profile 重开的 `DISABLED`，Qt 导航/页面入口和 Web 路由关闭。网络工具无线扫描单独登记并保持可用，Web 迁移为 HOLD。
+- 新增 Web 演进阶段 0/1 基线：保留现有 Python Core，增加 Desktop/Server `RuntimeMode`、Pydantic API DTO、FastAPI 健康检查/OpenAPI 和不替换当前主窗口的 `--web-shell` 实验入口；Vue 与业务 API 尚未开始。
+- 将 Job 文件、取消文件、七状态、JSONL 分块解析、终态和清理下沉到无 PySide6 依赖的 `TaskRuntime`/`TaskApplicationService`；原 `BackgroundProcessManager` 保留为 Qt/QProcess Adapter，现有 JobSpec、Registry、handlers、Worker 和 Export Process 不变。
+- 本阶段冻结 SNMP Center 与 `module.wifi_survey`，未修改 MR/MESH/AP/光衰/iPerf/SNMP/无线勘测算法、数据库 schema 或 Agent 协议。
 - 已建立 NetConsole 分层架构规范。
 - 已引入并整理 Job Center 规则，以领域注册表替代巨型任务分发。
 - 已明确 UI 线程治理、Worker Process、Export Process 和 Domain Service 边界。

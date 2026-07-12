@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets（PySide6-Fluent-Widgets）、SQLite、Netmiko、openpyxl，以及基于 QProcess/QThread 的后台执行。依赖下限与固定版本以 `requirements.txt` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 2 已提供实验 Qt Web Shell 与任务中心，但尚无业务 Web 页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `frontend/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -22,10 +22,10 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 | 设备管理 | `module.devices` | 设备、分组、连接测试、批量采集、SecureCRT/OmniPeek 导出 |
 | AC 管理 | `module.ac` | FIT AP 资源、扩展、光衰、历史和命令 |
 | 轨道交通 | `module.rail_transit` | 车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、车载网络点表 |
-| 无线测试 | `module.wifi_survey` | 扫描、勘测、热力图和结果导出 |
+| 无线勘测 | `module.wifi_survey` | `DISABLED`；代码和数据保留，等待独立重构 |
 | 配置采集 | `module.config_collection` | 配置快照、比较、批量采集 |
 | 文件管理 | `module.file_management` | 局点文件、下载、复制和整理 |
-| SNMP Center | `module.snmp_center` | MIB 资源、OID 浏览、查询、批量采集、监控、Trap 记录和拓扑 |
+| SNMP Center | `module.snmp_center` | `DISABLED`；代码、数据库和 MIB 保留，等待独立重构 |
 | 网络工具 | `module.network_tools` | Ping/fping、iPerf3、工具箱和用户配置的可选外部 IPOP v4.1 |
 | 命令参考 | `module.command_reference` | 命令、参数、解析器与消费者索引 |
 | 日志 | `module.logs` | 应用日志查看与导出 |
@@ -38,6 +38,9 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 ```mermaid
 flowchart LR
     UI["Qt6 / PySide6 / QFluentWidgets UI"] --> SVC["Services"]
+    WS["Qt Web Shell / Browser"] --> VUE["Vue Task Center"]
+    VUE --> API["FastAPI Task API / WebSocket"]
+    API --> SVC
     SVC --> REPO["Repositories"]
     REPO --> DB["SQLite / 文件数据"]
     UI --> JOB["Background Job Process"]
@@ -51,7 +54,8 @@ flowchart LR
 ```
 
 - UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
-- 普通后台任务走 `BackgroundProcessManager -> background_worker -> JobRegistry -> handler`。
+- 普通后台任务走 `Qt BackgroundProcessManager -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
+- 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。
 - 所有正式导出走独立 Export Process，使用临时文件完成后原子替换目标文件。
 - 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
 - `JobRegistry` 当前注册 83 个任务类型，已按 10 个领域 handler 模块分区；多数领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
@@ -59,7 +63,7 @@ flowchart LR
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
 - Windows Go Agent 是独立进程和数据根，不进入 Qt UI、Job Center、Export Process 或主程序 Feature Registry；当前由浏览器直接操作，主程序多 Agent 管理尚未接入。
 
-完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
+完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Web 演进架构](docs/WEB_ARCHITECTURE.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
 ## 开发与运行
 
@@ -75,7 +79,18 @@ flowchart LR
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe main.py --web-shell
+.\.venv\Scripts\python.exe -m netconsole.backend.api.main
 .\.venv\Scripts\python.exe -m pytest
+```
+
+前端首次运行或依赖变化后执行：
+
+```powershell
+cd frontend
+pnpm install
+pnpm test
+pnpm build
 ```
 
 Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 UTF-8；源码和 Markdown 统一使用 UTF-8。读取 H3C 回显、MIB 和历史日志时，按 `utf-8-sig -> utf-8 -> gb18030 -> gbk` 顺序探测，不得因终端显示乱码直接改写业务数据。
@@ -101,4 +116,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-近期工作的正确顺序是：继续拆分 `legacy_tasks.py` 领域逻辑、统一剩余专用后台工作入口、在真实局点观测通过前保持 AP Identity 只读、持续用代码与测试反向校正文档。任何“重构完成”结论都必须同时满足生产调用链切换、测试覆盖和旧入口收口，不能只依据目录或注册表存在。
+Web 演进下一阶段只接 Agent 管理，之后依次为 iPerf/Ping、Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`，不得顺带迁移；AP Identity 继续只读。

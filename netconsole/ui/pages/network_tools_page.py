@@ -32,7 +32,7 @@ class NetworkToolsInitWorker(QThread):
 class NetworkToolsPage(QWidget):
     TAB_DEFINITIONS = (
         ("network_tools.iperf", None, "iperf_page"),
-        ("network_tools.wireless_scan", None, "wireless_scan_page"),
+        ("network_tools.wireless_scan", "network_tools.wireless_scan", "wireless_scan_page"),
         ("network_tools.toolbox", "network_tools.toolbox", "toolbox_page"),
     )
 

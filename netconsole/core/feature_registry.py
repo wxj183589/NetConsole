@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class FeatureStatus(StrEnum):
+    ENABLED = "ENABLED"
+    DISABLED = "DISABLED"
+    DEVELOPMENT = "DEVELOPMENT"
+    HIDDEN = "HIDDEN"
 
 
 @dataclass(frozen=True)
@@ -14,16 +22,17 @@ class FeatureItem:
     default_client_package: bool = True
     internal_only: bool = False
     description_key: str | None = None
+    status: FeatureStatus = FeatureStatus.ENABLED
 
 
 FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.devices", "nav.devices", None, "module"),
     FeatureItem("module.ac", "nav.ac", None, "module"),
     FeatureItem("module.rail_transit", "nav.rail_transit", None, "module"),
-    FeatureItem("module.wifi_survey", "nav.wifi_survey", None, "module"),
+    FeatureItem("module.wifi_survey", "nav.wifi_survey", None, "module", status=FeatureStatus.DISABLED),
     FeatureItem("module.config_collection", "nav.config_collection", None, "module"),
     FeatureItem("module.file_management", "nav.file_management", None, "module"),
-    FeatureItem("module.snmp_center", "nav.snmp_center", None, "module"),
+    FeatureItem("module.snmp_center", "nav.snmp_center", None, "module", status=FeatureStatus.DISABLED),
     FeatureItem("module.network_tools", "nav.network_tools", None, "module"),
     FeatureItem("module.command_reference", "nav.command_reference", None, "module"),
     FeatureItem("module.logs", "nav.logs", None, "module"),
@@ -53,6 +62,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("file.mesh_auto_import", "file_management.mesh_auto_import", "module.file_management", "button"),
     FeatureItem("file.external_winscp", "file_management.external_winscp", "module.file_management", "button"),
     FeatureItem("network_tools.toolbox", "network_tools.toolbox", "module.network_tools", "tab"),
+    FeatureItem("network_tools.wireless_scan", "network_tools.wireless_scan", "module.network_tools", "tab"),
     FeatureItem("network_tools.ipop", "network_tools.ipop", "network_tools.toolbox", "button"),
     FeatureItem("online_mr.advanced_ping", "online_mr.high_freq_ping", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.iperf_test", "online_mr.enable_traffic_test", "rail.online_mr_collection", "action"),

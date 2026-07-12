@@ -14,7 +14,7 @@ from netconsole.core.feature_flags import (
     load_profile,
     save_profile,
 )
-from netconsole.core.feature_registry import FEATURE_BY_ID, list_features
+from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureStatus, list_features
 from project.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
 
@@ -51,9 +51,32 @@ def test_feature_gate_full_profile_defaults_visible(tmp_path: Path) -> None:
 
     gate = FeatureGate(tmp_path)
 
-    assert all(gate.is_visible(item.feature_id) for item in list_features())
+    assert all(gate.is_visible(item.feature_id) for item in list_features() if item.status is FeatureStatus.ENABLED)
     assert gate.is_visible("module.feature_switch")
     assert gate.is_visible("system.feature_flags")
+    assert not gate.is_visible("module.snmp_center")
+    assert not gate.is_visible("module.wifi_survey")
+
+
+def test_disabled_modules_cannot_be_reenabled_by_profile(tmp_path: Path) -> None:
+    forced_on = {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
+    write_runtime(
+        tmp_path,
+        "internal",
+        "full",
+        {"module.snmp_center": forced_on, "module.wifi_survey": forced_on},
+    )
+
+    gate = FeatureGate(tmp_path)
+
+    for feature_id in ("module.snmp_center", "module.wifi_survey"):
+        assert gate.status_for(feature_id) is FeatureStatus.DISABLED
+        assert gate.state_for(feature_id) == {
+            "visible": False,
+            "enabled": False,
+            "client_package": False,
+            "internal_only": False,
+        }
 
 
 def test_packaged_runtime_never_exposes_feature_switch_page(tmp_path: Path, monkeypatch) -> None:

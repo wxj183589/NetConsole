@@ -91,6 +91,10 @@ if __name__ == "__main__":
             from netconsole.background_worker import main as run_background_worker
 
             raise SystemExit(run_background_worker(sys.argv[2:]))
+        if len(sys.argv) >= 2 and sys.argv[1] == "--web-shell":
+            from desktop.web_shell import run_web_shell
+
+            raise SystemExit(run_web_shell())
         if os.environ.get("NETCONSOLE_RUNTIME_SMOKE_TEST") == "1":
             from netconsole.core.bootstrap import create_demo_context
 

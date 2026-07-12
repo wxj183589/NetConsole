@@ -12,7 +12,12 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `job_registry.py`：`task_type → handler` 注册和分发。
 - `job_runner.py`：统一捕获取消、异常和 traceback。
 - `worker_protocol.py`：UTF-8 JSONL 编码、解析和分块缓冲。
-- `task_manager.py`：QProcess 生命周期和 Qt signals。
+- `runtime/task_state.py`：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED` 状态契约。
+- `runtime/task_event_hub.py`：统一 Worker/Service/未来 Agent 事件，提供 Qt callback 与 WebSocket stream。
+- `runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
+- `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
+- `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
+- `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测领域分区。
 
 ## Worker Process 约束
@@ -29,6 +34,18 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `BackgroundProcessManager` 是 `TaskManager` 的兼容入口。
 - `ExportJob` 是导出专用模型，增加 output/tmp/db/filter/context 等字段。
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
+- 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
+- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；尚未提供业务任务创建 API、Agent Event Adapter 或独立 Controller daemon。
+
+## Task Center API
+
+- `GET /api/tasks`：任务列表，可按七状态过滤；
+- `GET /api/tasks/{id}`：任务详情；
+- `GET /api/tasks/{id}/events`：结构化状态、进度和日志事件；
+- `POST /api/tasks/{id}/cancel`：写协作取消并进入 `STOPPING`；
+- `/ws/tasks`：初始快照与 Event Hub/SQLite 增量事件。
+
+本地 Worker 由宿主进程持有。正常关闭宿主会走既有取消/清理；崩溃后重启会将失去 PID 宿主的活动快照核对为 `FAILED`。任务中心不得仅依据旧数据库状态显示伪 `RUNNING`。
 
 ## 事件协议
 

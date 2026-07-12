@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from netconsole.core import app_logger
 from netconsole.core.feature_flags import FeatureGate, default_profile, engineer_package_enabled, load_profile, normalize_feature_state, project_root, save_profile, validate_feature_states
-from netconsole.core.feature_registry import list_features
+from netconsole.core.feature_registry import FeatureStatus, list_features
 from netconsole.core.i18n import I18n
 from netconsole.ui.shell.fluent_bridge import InfoBar, InfoBarPosition
 from netconsole.ui.widgets.table_check_delegate import create_checkable_table_item, install_checkbox_only_delegate
@@ -98,7 +98,7 @@ class FeatureFlagsPage(QWidget):
                 values = (
                     item.feature_id,
                     self.i18n.t(item.title_key),
-                    item.item_type,
+                    item.item_type if item.status is FeatureStatus.ENABLED else f"{item.item_type} / {item.status.value}",
                     item.parent_id or "",
                     state["visible"],
                     state["enabled"],
@@ -108,7 +108,9 @@ class FeatureFlagsPage(QWidget):
                 )
                 for column, value in enumerate(values):
                     if column in CHECK_COLUMNS:
-                        enabled = not (column == CUSTOMER_COLUMN and bool(state["internal_only"]))
+                        enabled = item.status is FeatureStatus.ENABLED
+                        if column == CUSTOMER_COLUMN and bool(state["internal_only"]):
+                            enabled = False
                         if column == INTERNAL_COLUMN and item.internal_only:
                             enabled = False
                         cell = create_checkable_table_item(bool(value), enabled=enabled)
@@ -263,7 +265,12 @@ class FeatureFlagsPage(QWidget):
         cell = self.table.item(row, CUSTOMER_COLUMN)
         if cell is None:
             return
-        enabled = not self._is_checked(row, INTERNAL_COLUMN)
+        items = list_features()
+        enabled = (
+            0 <= row < len(items)
+            and items[row].status is FeatureStatus.ENABLED
+            and not self._is_checked(row, INTERNAL_COLUMN)
+        )
         flags = Qt.ItemIsUserCheckable | Qt.ItemIsSelectable
         if enabled:
             flags |= Qt.ItemIsEnabled

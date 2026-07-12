@@ -33,10 +33,11 @@
 | Online MR 实时采集 | 页面会话 manager/worker | collection start/status/package handler +专用 runner | 部分迁移 | 部分 | 多会话/外部进程生命周期 | 不将长会话误改为一次性 Job |
 | Online MR 离线解析 | `online_mr_parse` Job | online_mr domain handler/service | 已迁移但保留兼容层 | 是 | 映射/历史相关 legacy | 收口兼容入口，锁定 raw/parsed 契约 |
 | 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
-| Job Center | 页面 manager + worker/registry | 统一协议与 10 个 domain modules | 部分迁移 | 协议是；领域逻辑否 | `legacy_tasks.py` 2348 行级兼容区 | 只迁出、不新增；按领域小步收口 |
+| Job Center | Qt Adapter + TaskRuntime + TaskRepository + worker/registry | 七状态、Event Hub、持久快照、REST/WebSocket 与 10 个 domain modules | 基础设施完成/领域部分迁移 | 任务中心是；领域逻辑否 | 宿主生命周期、`legacy_tasks.py` 兼容区 | 下一步接 Agent Adapter；legacy 只迁出 |
+| FastAPI / Web Shell | Vue Dashboard/任务中心、任务 API、OpenAPI、`--web-shell` | Application/API 与 Desktop Shell | 阶段 2完成 | 任务基础设施 | 无鉴权、业务 API、正式 dist 发布打包 | 阶段 3 仅接 Agent 管理 |
 | Export Center | ExportJob + manager + worker | 27 通用 + 2 专用类型 | 已完成主路径 | 是 | 兼容直接导出入口 | 继续保证 tmp/原子替换/占用提示 |
 | AP Identity | Job/Export finished metadata | canonical resolver + adapters + ViewModel | 影子验证 | 禁止接管 | 旧 matcher/lookup/写入仍生产使用 | 真实局点观测与单宿主批准前 hold |
-| Feature Gate | 主窗口/页面 `FeatureGate` | `feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | 新用户可见能力默认登记 |
+| Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | SNMP/无线勘测保持 DISABLED；新增能力默认登记 |
 | 日志分页 | 日志页面/Repository 查询 | 现有分页入口 | 已完成当前需求 | 是 | 大日志策略需随数据量复核 | 保持查询分页，不回 UI 全量加载 |
 | 自动清理 | 延时 `AppCleanupService` | 白名单日志/缓存/临时目录 | 已完成受控范围 | 是 | 手工磁盘清理是另一入口 | 不扩大到业务数据和数据库 |
 | Go/CentOS/远程 Agent | 无生产入口 | 仅规划概念 | 规划中 | 否 | 无完整生产代码 | 落地后另行设计与文档化 |
@@ -77,4 +78,4 @@
 
 ## 7. 明确不在本轮文档同步中执行
 
-本轮只同步文档，没有拆 `legacy_tasks.py`、迁移专用线程、修改数据库 schema、调整页面调用链或删除兼容入口。上述表格是后续重构地图，不是已授权的实现计划。
+阶段 2 只新增任务持久化、Event Hub、任务 API/WebSocket 和 Vue 任务中心，没有拆 `legacy_tasks.py`、迁移业务页面、修改业务数据库 schema/算法或删除兼容入口。上述未完成项仍是后续重构地图，不是已授权的实现计划。
