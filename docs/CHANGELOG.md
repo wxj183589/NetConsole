@@ -4,6 +4,8 @@
 
 ### 本次修复
 
+- 完成 Web 演进阶段 3：新增每局点 `agents.db`、Agent 配置/运行快照分离、`AgentControllerService`、会话级凭据、健康检查调度、Agent REST API、`/ws/agents` 与 Vue Agent 管理页面；本阶段不提供任何业务任务启动接口。
+- Windows Go Agent 新增向后兼容的 `GET /api/v1/capabilities`；Controller 对旧 Agent 保留未知能力，不根据操作系统猜测。Element Plus 改为按需导入，Dashboard、任务中心与 Agent 页面按路由分包，移除阶段 2 约 1 MB 单包警告。
 - 统一窗口标题为 `NetConsole v1.3.8 by WXJ`，分离 Git SSH 推送地址与关于页 HTTPS 浏览地址；修复弹出模块错误复用“设备管理”的当前页归属。
 - 统一轨旁 AP 规划、轨旁 AP 业务和在线解析表格的选择、复制、列宽与上下文菜单；日志中心首次进入异步加载并明确显示加载/空/错误状态，启动期不再记录逐次 geometry 噪声。
 - 网络工具移除本地网卡配置入口，工具箱移除“本机路由”；IPOP v4.1 改为用户在系统设置中配置的可选外部工具，所有正式发布包均不携带其二进制；Online MR 移除独立“收起设备列表”按钮并保留自动折叠逻辑。

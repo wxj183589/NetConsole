@@ -63,3 +63,18 @@ body { overflow: hidden; }
 @media (max-width: 1180px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+.agent-center { max-width: 1680px; margin: 0 auto; }
+.agent-summary { display: flex; align-items: center; gap: 28px; margin-bottom: 16px; padding: 16px 20px; background: #fff; border: 1px solid #e1e8f2; border-radius: 10px; }
+.agent-summary > div { min-width: 110px; }
+.agent-summary span { color: #6f7c90; font-size: 12px; }
+.agent-summary strong { display: block; margin-top: 5px; font-size: 24px; }
+.agent-summary p { margin-left: auto; color: #6f7c90; font-size: 12px; }
+.success-text { color: #15945f; }
+.danger-text { color: #cf4444; }
+.agent-table-card { margin-top: 16px; }
+.agent-table-card .table-toolbar { gap: 18px; }
+.agent-table-card .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+.form-hint { margin-top: 6px; color: #8995a7; font-size: 12px; line-height: 1.5; }
+.probe-result { margin-top: 14px; background: #f3fbf7; border-color: #bce7d1; }
+.probe-result p { margin: 7px 0 0; color: #536276; font-size: 12px; }

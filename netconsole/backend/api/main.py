@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from netconsole.backend.api.router import api_router, ws_router
@@ -11,6 +12,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
+from netconsole.models.api.common import ErrorDetail, ErrorResponse
+from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
@@ -19,15 +22,35 @@ def create_app(
     *,
     paths: PathResolver | None = None,
     task_service: TaskApplicationService | None = None,
+    agent_service: AgentControllerService | None = None,
     frontend_dist: Path | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
+    site_name = _current_site_name(paths)
     if task_service is None:
-        task_service = TaskApplicationService(paths=paths, site_name=_current_site_name(paths))
-    app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION.removeprefix("v"))
+        task_service = TaskApplicationService(paths=paths, site_name=site_name)
+    if agent_service is None:
+        agent_service = AgentControllerService(paths=paths, site_name=site_name)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        await agent_service.start()
+        try:
+            yield
+        finally:
+            await agent_service.stop()
+
+    app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION.removeprefix("v"), lifespan=lifespan)
     app.state.runtime_mode = runtime_mode
     app.state.paths = paths
     app.state.task_service = task_service
+    app.state.agent_service = agent_service
+
+    @app.exception_handler(AgentControllerError)
+    async def agent_error_handler(_: Request, exc: AgentControllerError) -> JSONResponse:
+        payload = ErrorResponse(error=ErrorDetail(code=exc.code, message=exc.message))
+        return JSONResponse(status_code=exc.status_code, content=payload.model_dump(mode="json"))
+
     app.include_router(api_router)
     app.include_router(ws_router)
 

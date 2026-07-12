@@ -47,6 +47,7 @@ data/sites/<site>/
 ├─ db/                           # 局点数据库
 │  ├─ devices.db                 # 设备、AC/FIT-AP 等主应用数据
 │  ├─ tasks.db                   # 任务快照与结构化事件历史
+│  ├─ agents.db                  # Agent 配置与运行状态（不保存明文凭据）
 │  └─ snmp.db                    # SNMP Center 局点数据库（功能冻结，数据保留）
 ├─ files/                        # 文件管理业务文件
 ├─ cache/                        # 可由手工磁盘清理管理的局点缓存
@@ -139,6 +140,7 @@ sessions/<session>/
 
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
 - `tasks.db` 由 `TaskRepository` 幂等初始化，使用 WAL/busy timeout；任务快照与单条事件在同一事务提交，不自动删除业务结果或原始日志。
+- `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
 - `online_diagnosis.sqlite`、单文件 Mesh parsed SQLite 等会话解析产物可重建，可在明确需求内调整结构，但必须保留 raw 事实来源并同步 parser/report。
 - 不允许把完整 AP Identity shadow items/evidence 或敏感原始字段写入新持久层；当前只允许受控聚合 metadata。
 - 导出目标位于用户选择路径或业务 `outputs/`；生成时先写 `.tmp`，成功后原子替换。

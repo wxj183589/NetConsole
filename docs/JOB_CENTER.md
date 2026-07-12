@@ -13,7 +13,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `job_runner.py`：统一捕获取消、异常和 traceback。
 - `worker_protocol.py`：UTF-8 JSONL 编码、解析和分块缓冲。
 - `runtime/task_state.py`：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED` 状态契约。
-- `runtime/task_event_hub.py`：统一 Worker/Service/未来 Agent 事件，提供 Qt callback 与 WebSocket stream。
+- `runtime/task_event_hub.py`：统一任务 Worker/Service 事件，提供 Qt callback 与 WebSocket stream；Agent 配置和健康状态使用独立 `AgentEventHub`。
 - `runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
@@ -35,7 +35,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `ExportJob` 是导出专用模型，增加 output/tmp/db/filter/context 等字段。
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
-- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；尚未提供业务任务创建 API、Agent Event Adapter 或独立 Controller daemon。
+- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；阶段 3 Agent Controller 只管理 Agent 资源，不创建业务任务，也不是独立 Controller daemon。
 
 ## Task Center API
 

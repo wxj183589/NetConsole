@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -9,9 +9,12 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ApiResponse(ApiModel):
+T = TypeVar("T")
+
+
+class ApiResponse(ApiModel, Generic[T]):
     ok: bool = True
-    data: Any = None
+    data: T
 
 
 class ErrorDetail(ApiModel):

@@ -26,6 +26,8 @@
 
 Registry 当前显式登记的主要子功能包括：设备外部终端/SecureCRT/OmniPeek 导出；轨道交通 train online、车载网络、轨旁 AP、MR/Mesh、Online MR 采集与分析；Online MR 链路详情、fping 汇总、备注、高级 Ping 和 iPerf；AC 轨旁计划、在线概览、FIT AP 资源/光衰/扩展及动作；文件管理 Mesh 下载/自动导入/WinSCP；网络工具 toolbox、`network_tools.wireless_scan` 与 `network_tools.ipop`；Mesh 报告；系统磁盘清理、变更记录、开源信息和开发态 Feature 页面。无线扫描与无线勘测不是同一模块，当前仅标记为 Web 迁移 HOLD，不禁用现有 Qt Tab。
 
+阶段 3 新增 Web 页面登记项 `web.agent_management`。它只控制 Agent 配置与健康管理入口，不代表 iPerf、Ping 或 Online MR 已迁移。
+
 SNMP Center 的 MIB 资源、Browser、OID 模板、监控、Trap/告警和拓扑目前作为 `module.snmp_center` 内部 Tab，尚未分别登记子 Feature key。单次查询和推荐页面是中心内部工作流，不是独立可见 Tab。若未来需要 edition 级单独控制，必须先在 Registry 增加明确 key，不能在页面另造配置。
 
 状态语义：`ENABLED` 进入正常 Gate/profile 判定；`DISABLED` 强制隐藏、禁用且不进入客户包，任何 profile 不能重开；`DEVELOPMENT` 只允许源码开发环境；`HIDDEN` 保留登记但不提供用户入口。

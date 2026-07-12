@@ -38,6 +38,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.logs", "nav.logs", None, "module"),
     FeatureItem("module.system_settings", "nav.system_settings", None, "module"),
     FeatureItem("module.feature_switch", "system.feature_flags", None, "module", internal_only=True),
+    FeatureItem("web.agent_management", "Agent 管理", None, "page"),
     FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
     FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),
     FeatureItem("devices.omnipeek_name_table_export", "导出 OmniPeek 名称表", "module.devices", "button"),

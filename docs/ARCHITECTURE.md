@@ -21,7 +21,7 @@ flowchart TD
     SPLASH --> WIN["主窗口与页面"]
 ```
 
-开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载阶段 2 Vue 任务中心，不替换普通启动；当前正式发布脚本尚未打包 `frontend/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
+开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载阶段 3 Vue 任务中心与 Agent 管理，不替换普通启动；当前正式发布脚本尚未打包 `frontend/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
 
 ## 3. 分层与依赖方向
 
@@ -82,8 +82,9 @@ sequenceDiagram
 - Job 文件位于 `runtime/cache/background_jobs/`，终态后清理。
 - Job Registry 当前注册 83 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测 10 个领域模块。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
-- `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。当前 FastAPI 尚未提供任务路由或 WebSocket。
+- `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。FastAPI 已提供任务路由与 `/ws/tasks`。
 - `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。
+- `Agent Router -> AgentControllerService -> AgentHttpClient -> Go Agent` 只承担配置与健康控制面；`AgentRepository -> agents.db` 分离配置和运行快照，`AgentEventHub` 独立提供 `/ws/agents`，不复用任务事件含义。
 
 设备批量连接测试（默认 50、上限 200）和批量详情采集（默认 20、上限 50）目前仍是专用线程/线程池路径。它们有取消、逐设备进度和错误隔离，但不属于上述进程 Job 协议。
 
@@ -118,7 +119,7 @@ flowchart TD
     ROOT --> RUN["runtime/ 临时协议、缓存、应用日志"]
     DATA --> GLOBAL["global/ 全局 MIB 等"]
     DATA --> SITES["sites/<site>/ 局点数据"]
-    SITES --> DB["db/ devices.db / tasks.db / snmp.db"]
+    SITES --> DB["db/ devices.db / tasks.db / agents.db / snmp.db"]
     SITES --> RAIL["rail_transit/ 原始、解析、输出"]
     SITES --> SNMP["snmp/ 原始、导出、Trap"]
 ```
@@ -179,4 +180,4 @@ stateDiagram-v2
 
 新增功能至少回答：运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
 
-打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，提供现场 HTTP/Web 控制、iPerf、TCP 探测、MR SSH 原始采集和本地打包，但尚未接入 Python 主程序的多 Agent 管理页面，也未实现 CentOS Agent、主动注册或上传；边界见 [独立 Agent](AGENT.md)。
+打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，并已接入 Python 多 Agent 配置、健康检查、版本和能力控制面；iPerf/Ping/MR 任务仍未从 Python Controller 调用，也未实现 CentOS Agent、主动注册或上传。边界见 [独立 Agent](AGENT.md) 与 [Agent Controller](AGENT_CONTROLLER.md)。

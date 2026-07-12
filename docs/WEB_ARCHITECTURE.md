@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 2 已建立 Vue Web Shell 和任务中心，但尚未接入设备、AC、MR、SNMP 等业务页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，但尚未接入 iPerf、Ping、MR、设备、AC、SNMP 等业务页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -19,7 +19,7 @@ flowchart TD
     CORE --> JOB["Job Registry / Worker Process"]
 ```
 
-阶段 2 的 `python main.py --web-shell` 加载 Vue Dashboard/任务中心、任务 API 和 OpenAPI，不替换当前 `python main.py` 的 Qt 主窗口。
+阶段 3 的 `python main.py --web-shell` 加载 Vue Dashboard、任务中心、Agent 管理、对应 API 和 OpenAPI，不替换当前 `python main.py` 的 Qt 主窗口。
 
 ### 2.2 Server Mode
 
@@ -36,11 +36,11 @@ Server Mode 可通过 `python -m netconsole.backend.api.main` 启动，并提供
 
 ```mermaid
 flowchart LR
-    NC["NetConsole Controller - planned"] --> WA["Windows Agent V1"]
+    NC["Python Agent Controller"] --> WA["Windows Agent V1"]
     NC -.-> CA["CentOS Agent - planned"]
 ```
 
-Windows Go Agent 已有独立 REST/Web、任务和采集能力，但 Python 主程序的多 Agent Controller 尚未接入；CentOS Agent 仍是规划项。Agent 不共享主程序 SQLite connection、Job Center 或数据根。
+Windows Go Agent 已有独立 REST/Web、任务和采集能力；Python 主程序现已接入多 Agent 配置、健康检查、版本和能力控制面。Agent 不共享主程序 SQLite connection、Job Center 或数据根；CentOS Agent 和业务任务调用仍是规划项。
 
 ## 3. RuntimeMode
 
@@ -82,11 +82,19 @@ flowchart TD
 - 每局点 `tasks.db`、`TaskRepository`、`TaskSnapshot` 和事件历史；
 - 任务 REST API、WebSocket 和 Vue 任务列表/详情/日志/停止入口。
 
+阶段 3 已完成：
+
+- `AgentConfig` 与 `AgentRuntimeSnapshot` 分离；
+- 每局点 `agents.db`、`AgentRepository`、会话级凭据和安全归档；
+- `AgentHttpClient`、`AgentControllerService`、单调度器健康检查和独立 `AgentEventHub`；
+- Agent REST API、`/ws/agents` 与 Vue Agent 管理页面；
+- Element Plus 按需导入和 Dashboard/任务中心/Agent 页面路由分包。
+
 仍未实现：
 
 - 业务任务创建 API；
 - 独立于桌面/FastAPI 生命周期的 Controller daemon；
-- Agent 任务事件适配；
+- Agent 业务任务事件适配；
 - Export Process 的 Web 接口。
 
 本地 Worker 仍由宿主进程管理。页面关闭但宿主仍存活时可从 `TaskRepository` 恢复；正常退出会取消所属任务，异常退出后再次启动会把失去 PID 宿主的本地活动任务核对为 `FAILED`。不得把旧快照误报为仍在运行；真正退出桌面后继续运行需要独立 Controller/Agent。
@@ -99,11 +107,11 @@ flowchart TD
 - 无线勘测 `module.wifi_survey`：Registry 状态为 `DISABLED`，Qt 菜单/页面工厂不注册，不创建 Web 路由；保留扫描、勘测、热力图、导出及硬件适配逻辑；
 - `network_tools.wireless_scan` 是不同能力，当前保持可用，但 Web 迁移优先级为 HOLD。
 
-本阶段同样未修改 MR 命令、MESH 规则、AP Identity、光衰判断、iPerf、数据库 schema、Agent 协议或 Export Process。
+本阶段同样未修改 MR 命令、MESH 规则、AP Identity、光衰判断、iPerf 业务或 Export Process。Go Agent 只新增向后兼容的能力查询接口，未改变现有任务、目标或认证协议。
 
 ## 7. 目录边界
 
-阶段 0～2 新增：
+阶段 0～3 新增：
 
 ```text
 desktop/                         # 实验 Qt Web Shell
@@ -112,7 +120,9 @@ netconsole/models/api/           # Pydantic API DTO
 netconsole/services/job_center/runtime/  # 纯 Python 任务运行时
 netconsole/services/job_center/task_application_service.py
 netconsole/repositories/task_repository.py
-frontend/                        # Vue 3 / TypeScript / Vite 任务中心
+netconsole/services/agent/       # Agent Controller、HTTP Adapter、凭据和事件
+netconsole/repositories/agent_repository.py
+frontend/                        # Vue 3 / TypeScript / Vite 任务与 Agent 管理
 ```
 
 明确禁止新增重复的 `backend/services/`、`backend/repositories/`，也不把现有核心目录搬入 `backend/`。
@@ -141,4 +151,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段只接入 Agent 管理 Web 化；随后依次为 iPerf/Ping、Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测继续冻结。
+下一阶段只接入 iPerf/Ping 与 Agent 执行端选择；随后依次为 Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测继续冻结。

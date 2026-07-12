@@ -77,6 +77,9 @@ class PathResolver:
     def site_tasks_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "tasks.db"
 
+    def site_agents_db_path(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "db" / "agents.db"
+
     def global_mib_root(self) -> Path:
         return self.data_dir / "global" / "mibs"
 

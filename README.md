@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 2 已提供实验 Qt Web Shell 与任务中心，但尚无业务 Web 页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `frontend/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面，但尚未通过 Agent 启动 iPerf、Ping、MR 等业务任务。Python 依赖以 `requirements.txt` 为准，前端依赖以 `frontend/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -38,8 +38,8 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 ```mermaid
 flowchart LR
     UI["Qt6 / PySide6 / QFluentWidgets UI"] --> SVC["Services"]
-    WS["Qt Web Shell / Browser"] --> VUE["Vue Task Center"]
-    VUE --> API["FastAPI Task API / WebSocket"]
+    WS["Qt Web Shell / Browser"] --> VUE["Vue Task Center / Agent 管理"]
+    VUE --> API["FastAPI Task / Agent API + WebSocket"]
     API --> SVC
     SVC --> REPO["Repositories"]
     REPO --> DB["SQLite / 文件数据"]
@@ -49,19 +49,21 @@ flowchart LR
     EXP --> WRITER["Export Handlers"]
     REG --> SVC
     WRITER --> REPO
-    BROWSER["Browser / future Controller"] --> AGENT["Windows Go Agent HTTP API"]
+    API --> CTRL["AgentControllerService"]
+    CTRL --> AGENT["Windows Go Agent HTTP API"]
     AGENT --> AGENTDATA["Agent tasks / raw / packages"]
 ```
 
 - UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
 - 普通后台任务走 `Qt BackgroundProcessManager -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
 - 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。
+- Agent 配置与运行状态分别写入每局点 `agents.db`；Token 仅保存在当前 Python 进程内，REST/WebSocket 不返回凭据。
 - 所有正式导出走独立 Export Process，使用临时文件完成后原子替换目标文件。
 - 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
 - `JobRegistry` 当前注册 83 个任务类型，已按 10 个领域 handler 模块分区；多数领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集仍使用专用 `QThread`/线程池，不应误写成 Job Center 已接管。
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
-- Windows Go Agent 是独立进程和数据根，不进入 Qt UI、Job Center、Export Process 或主程序 Feature Registry；当前由浏览器直接操作，主程序多 Agent 管理尚未接入。
+- Windows Go Agent 仍是独立进程和数据根；Python Agent Controller 只接入配置、健康检查、版本和能力，不进入 Job Center，也没有业务任务启动接口。
 
 完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Web 演进架构](docs/WEB_ARCHITECTURE.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
@@ -108,6 +110,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 - [Online MR 实时采集](docs/ONLINE_MR_COLLECTION.md)
 - [Windows 独立 Go Agent](docs/AGENT.md)
+- [Agent Controller](docs/AGENT_CONTROLLER.md)
 - [MR/Mesh 日志分析规则](docs/mr_mesh_log_analysis_rules.md)
 - [SNMP Center](docs/SNMP_CENTER.md)
 - [AP Identity](docs/AP_IDENTITY.md)
@@ -116,4 +119,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进下一阶段只接 Agent 管理，之后依次为 iPerf/Ping、Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`，不得顺带迁移；AP Identity 继续只读。
+Web 演进下一阶段接入 iPerf/Ping 与 Agent 执行端选择，之后依次为 Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`，不得顺带迁移；AP Identity 继续只读。
