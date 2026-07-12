@@ -335,7 +335,18 @@ class TaskApplicationService:
 
     @staticmethod
     def _first_text(values: dict[str, Any], *keys: str) -> str:
-        return next((str(values[key]) for key in keys if values.get(key) not in {None, ""}), "")
+        for key in keys:
+            value = values.get(key)
+            if value is None or value == "":
+                continue
+            if isinstance(value, dict):
+                for nested_key in ("name", "device_name", "agent_name", "device_uuid", "agent_id", "id"):
+                    nested_value = value.get(nested_key)
+                    if nested_value is not None and nested_value != "":
+                        return str(nested_value)
+                continue
+            return str(value)
+        return ""
 
     @staticmethod
     def _result_path(result: dict[str, Any]) -> str:

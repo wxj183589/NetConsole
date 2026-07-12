@@ -40,6 +40,21 @@ def _complete_task(service: TaskApplicationService, task_id: str = "task-complet
     service.complete(task_id, 0)
 
 
+def test_task_snapshot_extracts_display_name_from_device_mapping(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.prepare(
+        BackgroundJob(
+            job_id="mapping-device",
+            task_type="demo_task",
+            params={"device": {"name": "映射设备", "device_uuid": "device-1"}},
+        )
+    )
+
+    snapshot = service.get_task("mapping-device")
+    assert snapshot is not None
+    assert snapshot.device == "映射设备"
+
+
 def test_task_repository_persists_snapshot_events_and_wal(tmp_path: Path) -> None:
     service = _service(tmp_path)
     _complete_task(service)
