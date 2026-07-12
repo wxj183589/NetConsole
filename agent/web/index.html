@@ -3,18 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>NetConsole Agent</title>
+  <title>NetConsole Agent 现场采集控制台</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header><h1>NetConsole Agent</h1><div class="auth"><input id="token" type="password" placeholder="X-Agent-Token（按需）"><button id="save-token">保存 Token</button></div></header>
-  <nav><button data-page="status" class="active">状态</button><button data-page="targets">目标设备</button><button data-page="control">任务控制</button><button data-page="tasks">任务与日志</button><button data-page="packages">采集包</button></nav>
+  <header>
+    <div><h1>NetConsole Agent</h1><span class="subtitle">现场采集控制台</span></div>
+    <div class="auth"><input id="token" type="password" placeholder="X-Agent-Token（按需）"><button id="save-token">保存 Token</button></div>
+  </header>
+  <nav>
+    <button data-page="status" class="active">状态总览</button>
+    <button data-page="targets">目标设备</button>
+    <button data-page="mr">车载 MR 在线收集</button>
+    <button data-page="iperf">iPerf 工具</button>
+    <button data-page="ping">连通性探测</button>
+    <button data-page="tasks">任务与日志</button>
+    <button data-page="packages">采集包</button>
+    <button data-page="config">配置</button>
+  </nav>
   <main>
     <section id="page-status" class="page active">
-      <h2>Agent 状态</h2><div id="status-cards" class="cards"></div>
+      <h2>状态总览</h2><div id="status-cards" class="cards"></div>
+      <h3>防休眠</h3><div id="power-card" class="status-panel">读取中...</div>
       <h3>工具检测</h3><div id="tools-cards" class="cards"></div>
       <button data-refresh="status">刷新</button>
     </section>
+
     <section id="page-targets" class="page">
       <h2>目标设备</h2>
       <form id="target-form" class="grid-form">
@@ -27,17 +41,36 @@
       <div class="toolbar"><input id="target-import" type="file" accept="application/json"><button id="target-export">导出 JSON</button><button data-refresh="targets">刷新</button></div>
       <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>类型</th><th>地址</th><th>协议</th><th>备注</th><th>操作</th></tr></thead><tbody id="targets-body"></tbody></table></div>
     </section>
-    <section id="page-control" class="page">
-      <h2>任务控制</h2>
-      <div class="task-grid">
-        <form id="iperf-server-form" class="panel"><h3>iPerf Server</h3><label>绑定地址<input name="bind" value="0.0.0.0"></label><label>端口<input name="port" type="number" value="5201"></label><button>启动</button><button type="button" data-stop-type="iperf/server">停止</button></form>
-        <form id="iperf-client-form" class="panel"><h3>iPerf Client</h3><label>服务端<input name="server_host" required></label><label>端口<input name="server_port" type="number" value="5201"></label><label>协议<select name="protocol"><option>tcp</option><option>udp</option></select></label><label>时长（0=持续）<input name="duration_sec" type="number" value="0"></label><label>并发<input name="parallel" type="number" value="1"></label><label>UDP Mbps<input name="bandwidth_mbps" type="number" value="0"></label><label>阈值 Mbps<input name="threshold_mbps" type="number" value="300"></label><label><input name="reverse" type="checkbox">反向</label><button>启动</button><button type="button" data-stop-type="iperf/client">停止</button></form>
-        <form id="ping-form" class="panel"><h3>ping_probe（TCP fallback）</h3><label>目标（逗号/换行）<textarea name="targets" required></textarea></label><label>TCP 端口<input name="tcp_port" type="number" value="80"></label><label>间隔 ms<input name="interval_ms" type="number" value="200"></label><label>超时 ms<input name="timeout_ms" type="number" value="500"></label><label>包大小<input name="packet_size" type="number" value="64"></label><label>次数（0=持续）<input name="count" type="number" value="0"></label><button>启动</button><button type="button" data-stop-type="ping-probe">停止</button></form>
-        <form id="mr-form" class="panel"><h3>MR 在线收集</h3><label>MR 目标<select name="target_id" id="mr-targets" required></select></label><label>周期秒<input name="interval_sec" type="number" value="3"></label><label><input name="terminal_monitor" type="checkbox" checked>Terminal Monitor</label><label><input name="channel_busy" type="checkbox" checked>Channel Busy</label><label><input name="ap_radio_statistics" type="checkbox" checked>Radio Statistics</label><label><input name="wireless_rssi" type="checkbox" checked>Wireless RSSI</label><label><input name="wireless_status" type="checkbox" checked>Wireless Status</label><button>启动</button><button type="button" data-stop-type="mr/collect">停止</button></form>
-      </div>
+
+    <section id="page-mr" class="page">
+      <h2>车载 MR 在线收集</h2>
+      <div id="mr-status-card" class="status-panel">未启动</div>
+      <form id="mr-form" class="panel mr-panel">
+        <h3>MR 采集配置</h3>
+        <div class="compact-grid"><label>MR 目标<select name="target_id" id="mr-targets" required></select></label><label>备注<input name="remark" placeholder="现场备注"></label></div>
+        <div class="compact-grid"><label>现场站点<input name="display_site"></label><label>站点<input name="display_station"></label><label>区间<input name="display_section"></label><label>方向<input name="display_direction"></label></div>
+        <div class="form-section-title">采集间隔（秒）</div>
+        <div class="compact-grid"><label>主链路信息<input name="interval_mesh_link" type="number" value="1" min="1"></label><label>信道繁忙度<input name="interval_channel_busy" type="number" value="9" min="1"></label><label>AP 射频统计<input name="interval_ap_radio_statistics" type="number" value="10" min="1"></label><label>主链路切换历史<input name="interval_switch_history" type="number" value="300" min="1"></label><label>接口速率<input name="interval_interface_rate" type="number" value="2" min="1"></label><label>无线状态<input name="interval_wireless_status" type="number" value="3" min="1"></label></div>
+        <div class="form-section-title">Radio</div>
+        <div class="compact-grid"><label>主链路 Radio<input name="radio_mesh_link" type="number" value="1" min="1"></label><label>信道繁忙度 Radio<input name="radio_channel_busy" type="number" value="1" min="1"></label><label>AP 射频统计 Radio<input name="radio_ap_radio_statistics" type="number" value="1" min="1"></label><label>无线状态 Radio<input name="radio_wireless_status" type="number" value="1" min="1"></label></div>
+        <div class="form-section-title">采集项</div>
+        <div class="check-grid"><label><input name="terminal_monitor" type="checkbox" checked>终端实时日志</label><label><input name="mesh_link" type="checkbox" checked>主链路信息</label><label><input name="channel_busy" type="checkbox" checked>信道繁忙度</label><label><input name="ap_radio_statistics" type="checkbox" checked>AP 射频统计</label><label><input name="switch_history" type="checkbox" checked>主链路切换历史</label><label><input name="interface_rate" type="checkbox" checked>接口速率</label><label><input name="wireless_status" type="checkbox" checked>无线状态</label></div>
+        <section class="subpanel"><h3>高频 Ping，跟随 MR</h3><label class="inline-check"><input name="fping_enabled" type="checkbox">启用高频 Ping</label><label>测试模板<select name="fping_template"><option>PIS 高频 Ping / 验收</option><option>CBTC 高频 Ping / 验收</option><option>自定义</option></select></label><div class="compact-grid two"><fieldset><legend>Ping 1</legend><label>设备<select name="fping1_device" id="fping1-device"></select></label><label>目标 IP<input name="fping1_host" id="fping1-host" placeholder="选择 MR 后自动填充，可手动修改"></label></fieldset><fieldset><legend>Ping 2</legend><label>设备<select name="fping2_device" id="fping2-device"></select></label><label>目标 IP<input name="fping2_host" placeholder="可选，默认不填充"></label></fieldset></div><div class="compact-grid"><label>包大小<input name="fping_packet_size" type="number" value="64" min="1"></label><label>间隔 ms<input name="fping_interval_ms" type="number" value="10" min="1"></label><label>超时 ms<input name="fping_timeout_ms" type="number" value="100" min="1"></label><label>丢包率告警 %<input name="fping_loss_alarm_percent" type="number" value="0.7" step="0.1" min="0"></label><label>延时告警 ms<input name="fping_latency_alarm_ms" type="number" value="100" min="1"></label></div></section>
+        <section class="subpanel"><h3>iPerf Client，跟随 MR</h3><label class="inline-check"><input name="iperf_enabled" type="checkbox">启用 iPerf Client</label><div class="compact-grid"><label>服务端地址<input name="iperf_server_host"></label><label>服务端端口<input name="iperf_server_port" type="number" value="5201"></label><label>协议<select name="iperf_protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label><label>方向<select name="iperf_direction"><option value="upload">上行</option><option value="download">下行</option><option value="bidirectional">双向</option></select></label><label>并发流<input name="iperf_parallel" type="number" value="1" min="1"></label><label>UDP 带宽 Mbps<input name="iperf_bandwidth_mbps" type="number" value="0"></label><label>TCP 验收阈值 Mbps<input name="iperf_threshold_mbps" type="number" value="300"></label><label>时长（0=跟随采集）<input name="iperf_duration_sec" type="number" value="0" min="0"></label><label class="inline-check"><input name="iperf_reverse" type="checkbox">反向模式</label></div></section>
+        <div class="toolbar"><button>启动车载 MR 在线收集</button><button type="button" data-stop-type="mr/collect">停止车载 MR 在线收集</button><button type="button" id="mr-package-button">下载采集包</button></div>
+      </form>
+      <section class="panel"><h3>轻量实时预览</h3><div id="mr-live" class="cards"></div></section>
+      <section class="panel"><div class="toolbar"><h3>原始采集显示</h3><button type="button" id="raw-toggle">显示原始采集</button><button type="button" id="raw-refresh" hidden>刷新</button><button type="button" id="raw-auto" hidden>自动刷新：关</button></div><div id="raw-panel" hidden><div class="tabs"><button data-raw="mesh_link">主链路 mesh-link</button><button data-raw="channel_busy">最新空口 channel_busy</button><button data-raw="fping_samples">高频 Ping fping</button><button data-raw="switch_history">主链路切换日志</button></div><pre id="raw-output">请选择一个日志 Tab</pre></div></section>
+      <section class="panel"><h3>当前日志 tail</h3><pre id="mr-log">暂无日志</pre></section>
     </section>
+
+    <section id="page-iperf" class="page"><h2>iPerf 工具</h2><div class="two-col"><form id="iperf-server-form" class="panel"><h3>iPerf 服务端</h3><label>绑定地址<input name="bind" value="0.0.0.0"></label><label>端口<input name="port" type="number" value="5201"></label><label>协议<select name="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label><div class="toolbar"><button>启动服务端</button><button type="button" data-stop-type="iperf/server">停止服务端</button></div><div id="iperf-server-status"></div></form><form id="iperf-client-form" class="panel"><h3>iPerf 客户端</h3><label>服务端地址<input name="server_host" required></label><label>服务端端口<input name="server_port" type="number" value="5201"></label><label>协议<select name="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label><label>时长（0=持续）<input name="duration_sec" type="number" value="0"></label><label>并发流<input name="parallel" type="number" value="1"></label><label>UDP 带宽 Mbps<input name="bandwidth_mbps" type="number" value="0"></label><label>TCP 验收阈值 Mbps<input name="threshold_mbps" type="number" value="300"></label><label class="inline-check"><input name="reverse" type="checkbox">反向模式</label><div class="toolbar"><button>启动客户端</button><button type="button" data-stop-type="iperf/client">停止客户端</button></div><div id="iperf-client-status"></div></form></div></section>
+
+    <section id="page-ping" class="page"><h2>连通性探测</h2><form id="ping-form" class="panel narrow"><h3>独立 ping_probe（TCP fallback）</h3><label>目标 IP（逗号或换行）<textarea name="targets" required></textarea></label><label>TCP 端口<input name="tcp_port" type="number" value="80"></label><label>间隔 ms<input name="interval_ms" type="number" value="200"></label><label>超时 ms<input name="timeout_ms" type="number" value="500"></label><label>包大小<input name="packet_size" type="number" value="64"></label><label>次数（0=持续）<input name="count" type="number" value="0"></label><div class="toolbar"><button>启动探测</button><button type="button" data-stop-type="ping-probe">停止探测</button></div></form></section>
+
     <section id="page-tasks" class="page"><h2>任务与日志</h2><button data-refresh="tasks">刷新</button><div class="table-wrap"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>开始</th><th>结束</th><th>包</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div><h3>日志 tail</h3><pre id="task-log">选择任务查看日志</pre></section>
     <section id="page-packages" class="page"><h2>采集包</h2><button data-refresh="packages">刷新</button><div class="table-wrap"><table><thead><tr><th>包 ID</th><th>类型</th><th>时间</th><th>大小</th><th>操作</th></tr></thead><tbody id="packages-body"></tbody></table></div></section>
+    <section id="page-config" class="page"><h2>配置</h2><pre id="config-output">读取中...</pre></section>
   </main>
   <div id="notice" role="status"></div>
   <script src="/app.js"></script>

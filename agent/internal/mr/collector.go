@@ -21,18 +21,72 @@ import (
 
 type Items struct {
 	TerminalMonitor   bool `json:"terminal_monitor"`
+	MeshLink          bool `json:"mesh_link"`
 	ChannelBusy       bool `json:"channel_busy"`
 	APRadioStatistics bool `json:"ap_radio_statistics"`
+	SwitchHistory     bool `json:"switch_history"`
+	InterfaceRate     bool `json:"interface_rate"`
 	WirelessRSSI      bool `json:"wireless_rssi"`
 	WirelessStatus    bool `json:"wireless_status"`
 }
 
+type FpingTarget struct {
+	Name string `json:"name"`
+	Host string `json:"host"`
+}
+
+type FpingFollowConfig struct {
+	Enabled          bool          `json:"enabled"`
+	Template         string        `json:"template"`
+	Targets          []FpingTarget `json:"targets"`
+	PacketSize       int           `json:"packet_size"`
+	IntervalMS       int           `json:"interval_ms"`
+	TimeoutMS        int           `json:"timeout_ms"`
+	LossAlarmPercent float64       `json:"loss_alarm_percent"`
+	LatencyAlarmMS   int           `json:"latency_alarm_ms"`
+}
+
+type IperfFollowConfig struct {
+	Enabled        bool    `json:"enabled"`
+	ServerHost     string  `json:"server_host"`
+	ServerPort     int     `json:"server_port"`
+	Protocol       string  `json:"protocol"`
+	Direction      string  `json:"direction"`
+	DurationSec    int     `json:"duration_sec"`
+	Parallel       int     `json:"parallel"`
+	BandwidthMbps  float64 `json:"bandwidth_mbps"`
+	ThresholdMbps  float64 `json:"threshold_mbps"`
+	Reverse        bool    `json:"reverse"`
+	Bidirectional  bool    `json:"bidirectional"`
+	ReportInterval float64 `json:"report_interval"`
+	PacketLength   int     `json:"packet_length"`
+}
+
+type DisplayContext struct {
+	Site      string `json:"site"`
+	Station   string `json:"station"`
+	Section   string `json:"section"`
+	Direction string `json:"direction"`
+}
+
 type Request struct {
-	TargetID          string        `json:"target_id,omitempty"`
-	Target            target.Target `json:"target,omitempty"`
-	IntervalSec       int           `json:"interval_sec"`
-	Items             Items         `json:"items"`
-	AutoPackageOnStop bool          `json:"auto_package_on_stop"`
+	TargetID          string            `json:"target_id,omitempty"`
+	Target            target.Target     `json:"target,omitempty"`
+	Session           map[string]string `json:"session,omitempty"`
+	Intervals         map[string]int    `json:"intervals,omitempty"`
+	Radio             map[string]int    `json:"radio,omitempty"`
+	IntervalSec       int               `json:"interval_sec,omitempty"`
+	Items             Items             `json:"items"`
+	AutoPackageOnStop bool              `json:"auto_package_on_stop"`
+	Fping             FpingFollowConfig `json:"fping,omitempty"`
+	Iperf             IperfFollowConfig `json:"iperf,omitempty"`
+	DisplayContext    DisplayContext    `json:"display_context,omitempty"`
+	Remark            string            `json:"remark,omitempty"`
+}
+
+func SanitizedRequest(request Request) Request {
+	request.Target = target.Sanitized(request.Target)
+	return request
 }
 
 func TestConnection(t target.Target, timeout time.Duration) error {
@@ -58,6 +112,8 @@ func TestConnection(t target.Target, timeout time.Duration) error {
 }
 
 func Runner(request Request) (core.Runner, error) {
+	// Legacy fake-SSH compatibility runner retained for existing unit tests only.
+	// The Agent API uses SidecarRunner and never calls this path.
 	if !strings.EqualFold(request.Target.Protocol, "ssh") {
 		return nil, errors.New("MR V1 仅支持 SSH，Telnet 尚未实现")
 	}

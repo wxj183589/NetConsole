@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	DefaultIperf3WindowsX64 = "./tools/windows-x64/iperf3/iperf3.exe"
-	DefaultFpingWindowsX64  = "./tools/windows-x64/fping/fping.exe"
+	DefaultIperf3WindowsX64      = "./tools/windows-x64/iperf3/iperf3.exe"
+	DefaultFpingWindowsX64       = "./tools/windows-x64/fping/fping.exe"
+	DefaultMRCollectorWindowsX64 = "./tools/windows-x64/mr_collector/netconsole-mr-collector.exe"
 )
 
 type Config struct {
@@ -29,8 +30,9 @@ type Config struct {
 		EnableAuth  bool   `json:"enable_auth"`
 	} `json:"security"`
 	Tools struct {
-		Iperf3WindowsX64 string `json:"iperf3_windows_x64"`
-		FpingWindowsX64  string `json:"fping_windows_x64"`
+		Iperf3WindowsX64      string `json:"iperf3_windows_x64"`
+		FpingWindowsX64       string `json:"fping_windows_x64"`
+		MRCollectorWindowsX64 string `json:"mr_collector_windows_x64"`
 	} `json:"tools"`
 	Runtime struct {
 		AutoPackageOnStop bool `json:"auto_package_on_stop"`
@@ -44,6 +46,11 @@ type Config struct {
 		MaxTargets        int `json:"max_targets"`
 		DefaultTCPPort    int `json:"default_tcp_port"`
 	} `json:"ping_probe"`
+	Power struct {
+		PreventSleepOnStart          bool `json:"prevent_sleep_on_start"`
+		KeepDisplayOnWhenTaskRunning bool `json:"keep_display_on_when_task_running"`
+		RestoreOnExit                bool `json:"restore_on_exit"`
+	} `json:"power"`
 	BaseDir string `json:"-"`
 }
 
@@ -76,6 +83,22 @@ func Load(path string) (*Config, error) {
 	if cfg.Tools.FpingWindowsX64 == "" {
 		cfg.Tools.FpingWindowsX64 = DefaultFpingWindowsX64
 	}
+	if cfg.Tools.MRCollectorWindowsX64 == "" {
+		cfg.Tools.MRCollectorWindowsX64 = DefaultMRCollectorWindowsX64
+	}
+	var raw struct {
+		Power map[string]json.RawMessage `json:"power"`
+	}
+	_ = json.Unmarshal(b, &raw)
+	if _, ok := raw.Power["prevent_sleep_on_start"]; !ok {
+		cfg.Power.PreventSleepOnStart = true
+	}
+	if _, ok := raw.Power["keep_display_on_when_task_running"]; !ok {
+		cfg.Power.KeepDisplayOnWhenTaskRunning = true
+	}
+	if _, ok := raw.Power["restore_on_exit"]; !ok {
+		cfg.Power.RestoreOnExit = true
+	}
 	for _, dir := range []string{cfg.DataPath(), cfg.LogPath(), cfg.PackagePath()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("创建运行目录失败 %s: %w", dir, err)
@@ -91,11 +114,12 @@ func (c *Config) Resolve(path string) string {
 	return filepath.Clean(filepath.Join(c.BaseDir, path))
 }
 
-func (c *Config) DataPath() string    { return c.Resolve(c.Agent.DataDir) }
-func (c *Config) LogPath() string     { return c.Resolve(c.Agent.LogDir) }
-func (c *Config) PackagePath() string { return c.Resolve(c.Agent.PackageDir) }
-func (c *Config) IperfPath() string   { return c.Resolve(c.Tools.Iperf3WindowsX64) }
-func (c *Config) FpingPath() string   { return c.Resolve(c.Tools.FpingWindowsX64) }
+func (c *Config) DataPath() string        { return c.Resolve(c.Agent.DataDir) }
+func (c *Config) LogPath() string         { return c.Resolve(c.Agent.LogDir) }
+func (c *Config) PackagePath() string     { return c.Resolve(c.Agent.PackageDir) }
+func (c *Config) IperfPath() string       { return c.Resolve(c.Tools.Iperf3WindowsX64) }
+func (c *Config) FpingPath() string       { return c.Resolve(c.Tools.FpingWindowsX64) }
+func (c *Config) MRCollectorPath() string { return c.Resolve(c.Tools.MRCollectorWindowsX64) }
 func (c *Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", c.Agent.ListenHost, c.Agent.ListenPort)
 }

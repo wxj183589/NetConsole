@@ -35,7 +35,7 @@ project/release.py
 agent\scripts\build_windows.bat
 ```
 
-输出为 `agent/bin/windows-x64/netconsole-agent.exe`。脚本先执行 Go 模块下载和 `go test ./...`，再以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；主程序与 Agent 都采用 `tools/windows-x64/{fping,iperf3,ipop}` 命名，但各自工具由各自的构建或部署流程管理，不隐式互相复制。
+输出为 `agent/dist/netconsole-agent-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并复制 sidecar、fping/iPerf 工具和运行目录。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；Agent 不携带或检测 IPOP。
 
 当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 `agent/data`、`agent/logs` 或 `agent/packages` 打入发布包。
 

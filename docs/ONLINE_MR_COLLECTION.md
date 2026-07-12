@@ -110,3 +110,9 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 - 1080p、窄/宽 splitter、输入区折叠恢复；
 - 打包原子替换、失败保留 raw、备注多会话写入；
 - 实时视图、离线解析和报告三条路径不互相越权。
+
+## 9. Windows Agent sidecar 边界
+
+独立 Agent 的 Online MR 由 `agent/mr_collector_py/collector_cli.py`（发布后为 `tools/windows-x64/mr_collector/netconsole-mr-collector.exe`）通过 Netmiko 执行；Go 进程只负责启动/停止 sidecar、任务状态、原始日志 tail、实时 view 和 ZIP。Agent 不生成正式分析报告，也不把 `stop.request` 打进采集包。
+
+Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/live`、`/api/v1/mr/collect/raw-tail`、`/api/v1/mr/collect/raw-summary`。fping 与可选 iPerf Client 共享 MR 生命周期；独立 iPerf Server/Client 和 TCP fallback 仍在各自工具页运行。

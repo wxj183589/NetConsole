@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"netconsole-agent/internal/mr"
 	"netconsole-agent/internal/packagex"
 	"netconsole-agent/internal/pingprobe"
+	"netconsole-agent/internal/power"
 	"netconsole-agent/internal/target"
 	"netconsole-agent/internal/toolmanager"
 	webassets "netconsole-agent/web"
@@ -30,12 +32,17 @@ type Server struct {
 	tasks    *core.Manager
 	packages *packagex.Packager
 	tools    *toolmanager.Manager
+	power    *power.Manager
 	started  time.Time
 	version  string
 }
 
-func New(cfg *config.Config, targets *target.Store, tasks *core.Manager, packages *packagex.Packager, version string) *Server {
-	return &Server{cfg: cfg, targets: targets, tasks: tasks, packages: packages, tools: toolmanager.New(cfg), started: time.Now(), version: version}
+func New(cfg *config.Config, targets *target.Store, tasks *core.Manager, packages *packagex.Packager, version string, powerManagers ...*power.Manager) *Server {
+	powerManager := power.New()
+	if len(powerManagers) > 0 && powerManagers[0] != nil {
+		powerManager = powerManagers[0]
+	}
+	return &Server{cfg: cfg, targets: targets, tasks: tasks, packages: packages, tools: toolmanager.New(cfg), power: powerManager, started: time.Now(), version: version}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -62,6 +69,18 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	case "tools/status":
 		s.requireMethod(w, r, http.MethodGet, func() { ok(w, map[string]any{"tools": s.tools.Status(r.Context())}) })
+		return
+	case "power/status":
+		s.requireMethod(w, r, http.MethodGet, func() { ok(w, map[string]any{"power": s.power.Status()}) })
+		return
+	case "power/prevent-sleep":
+		s.requireMethod(w, r, http.MethodPost, func() { s.powerAction(w, func() error { return s.power.PreventSleep("api_request") }) })
+		return
+	case "power/prevent-sleep-display":
+		s.requireMethod(w, r, http.MethodPost, func() { s.powerAction(w, func() error { return s.power.PreventSleepDisplay("api_request") }) })
+		return
+	case "power/restore":
+		s.requireMethod(w, r, http.MethodPost, func() { s.powerAction(w, func() error { return s.power.Restore("api_request") }) })
 		return
 	case "targets":
 		s.targetsRoot(w, r)
@@ -120,6 +139,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case "mr/collect/status":
 		s.typeStatus(w, r, "mr_realtime_collect")
 		return
+	case "mr/collect/live":
+		s.mrLive(w, r)
+		return
+	case "mr/collect/raw-tail":
+		s.mrRawTail(w, r)
+		return
+	case "mr/collect/raw-summary":
+		s.mrRawSummary(w, r)
+		return
 	case "packages":
 		s.packagesRoot(w, r)
 		return
@@ -143,7 +171,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) status(w http.ResponseWriter) {
 	current, total := s.tasks.Counts()
 	packages, _ := s.packages.List()
-	ok(w, map[string]any{"agent_id": s.cfg.Agent.ID, "agent_name": s.cfg.Agent.Name, "version": s.version, "os": runtime.GOOS, "arch": runtime.GOARCH, "listen": s.cfg.ListenAddress(), "uptime": time.Since(s.started).String(), "current_tasks": current, "task_count": total, "package_count": len(packages), "data_dir": s.cfg.DataPath(), "package_dir": s.cfg.PackagePath(), "disk": map[string]any{}})
+	ok(w, map[string]any{"agent_id": s.cfg.Agent.ID, "agent_name": s.cfg.Agent.Name, "version": s.version, "os": runtime.GOOS, "arch": runtime.GOARCH, "listen": s.cfg.ListenAddress(), "uptime": time.Since(s.started).String(), "current_tasks": current, "task_count": total, "package_count": len(packages), "data_dir": s.cfg.DataPath(), "package_dir": s.cfg.PackagePath(), "power": s.power.Status(), "disk": map[string]any{}})
 }
 
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
@@ -470,11 +498,28 @@ func (s *Server) mrStart(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Target = t
 	}
-	if err := mr.TestConnection(req.Target, 8*time.Second); err != nil {
-		fail(w, 400, err.Error())
+	if !hasMRItems(req.Items) {
+		fail(w, http.StatusBadRequest, "至少选择一个 MR 采集项")
 		return
 	}
-	runner, err := mr.Runner(req)
+	collectorPath, err := s.tools.RequireMRCollector(r.Context())
+	if err != nil {
+		failTool(w, err)
+		return
+	}
+	if req.Fping.Enabled && hasFpingTargets(req.Fping.Targets) {
+		if _, err := s.tools.RequireFping(r.Context()); err != nil {
+			failTool(w, err)
+			return
+		}
+	}
+	if req.Iperf.Enabled {
+		if _, err := s.tools.RequireIperf3(r.Context()); err != nil {
+			failTool(w, err)
+			return
+		}
+	}
+	runner, err := mr.SidecarRunner(collectorPath, s.cfg.BaseDir, req, req.Fping, s.cfg.FpingPath(), s.cfg.IperfPath())
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
@@ -487,6 +532,158 @@ func (s *Server) mrStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, task)
+}
+
+var mrRawFiles = map[string]string{"mesh_link": "mesh_link_raw.log", "channel_busy": "channel_busy_raw.log", "fping_samples": "fping_v5_samples.jsonl", "fping_summary": "fping_v5_final_summary.json", "fping_raw": "fping_v5_raw.log", "switch_history": "switch_history_latest.log"}
+
+func (s *Server) mrLive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	task, found := s.currentMRTask()
+	if !found {
+		ok(w, map[string]any{"success": true, "running": false, "message": "当前没有运行中的车载 MR 在线收集任务"})
+		return
+	}
+	dir, _ := s.tasks.TaskDir(task.TaskID)
+	payload := map[string]any{"success": true, "running": task.Status == core.Running || task.Status == core.Stopping, "task_id": task.TaskID, "mr_status": task, "link_status": map[string]any{"available": false, "message": "暂无实时链路数据"}, "fping_status": map[string]any{}, "iperf_status": map[string]any{}}
+	for key, name := range map[string]string{"mr_status": "live_mr_status.json", "link_status": "live_link_status.json", "fping_status": "live_fping_status.json", "iperf_status": "live_iperf_status.json"} {
+		if value, err := readJSONMap(filepath.Join(dir, "view", name)); err == nil {
+			payload[key] = value
+		}
+	}
+	ok(w, payload)
+}
+
+func (s *Server) mrRawTail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	filename, okName := mrRawFiles[name]
+	if !okName {
+		fail(w, http.StatusBadRequest, "不支持的 raw 文件名称")
+		return
+	}
+	tail := 200
+	if value, err := strconv.Atoi(r.URL.Query().Get("tail")); err == nil && value > 0 {
+		tail = value
+	}
+	if tail > 1000 {
+		tail = 1000
+	}
+	task, found := s.currentMRTask()
+	if !found {
+		ok(w, map[string]any{"success": true, "running": false, "name": name, "file": "raw/" + filename, "exists": false, "lines": []string{}, "message": "当前没有 MR 采集任务"})
+		return
+	}
+	dir, _ := s.tasks.TaskDir(task.TaskID)
+	lines, exists, size, updated, err := readTail(filepath.Join(dir, "raw", filename), tail)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "读取 raw 日志失败: "+err.Error())
+		return
+	}
+	data := map[string]any{"success": true, "running": task.Status == core.Running || task.Status == core.Stopping, "task_id": task.TaskID, "name": name, "file": "raw/" + filename, "exists": exists, "size": size, "updated_at": updated, "tail": tail, "lines": lines}
+	if !exists || size == 0 {
+		data["message"] = "文件不存在或尚未生成"
+	}
+	ok(w, data)
+}
+
+func (s *Server) mrRawSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	task, found := s.currentMRTask()
+	if !found {
+		ok(w, map[string]any{"success": true, "running": false, "files": map[string]any{}})
+		return
+	}
+	dir, _ := s.tasks.TaskDir(task.TaskID)
+	files := map[string]any{}
+	for name, filename := range mrRawFiles {
+		exists, size, updated, _ := statFile(filepath.Join(dir, "raw", filename))
+		files[name] = map[string]any{"file": "raw/" + filename, "exists": exists, "size": size, "updated_at": updated}
+	}
+	ok(w, map[string]any{"success": true, "task_id": task.TaskID, "running": task.Status == core.Running || task.Status == core.Stopping, "files": files})
+}
+
+func (s *Server) currentMRTask() (core.Task, bool) {
+	if task, found := s.tasks.Active("mr_realtime_collect"); found {
+		return task, true
+	}
+	for _, task := range s.tasks.List() {
+		if task.TaskType == "mr_realtime_collect" {
+			return task, true
+		}
+	}
+	return core.Task{}, false
+}
+func (s *Server) powerAction(w http.ResponseWriter, action func() error) {
+	if err := action(); err != nil {
+		ok(w, map[string]any{"success": false, "power": s.power.Status(), "error": err.Error()})
+		return
+	}
+	ok(w, map[string]any{"success": true, "power": s.power.Status()})
+}
+func hasFpingTargets(targets []mr.FpingTarget) bool {
+	for _, target := range targets {
+		if strings.TrimSpace(target.Host) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMRItems(items mr.Items) bool {
+	return items.TerminalMonitor || items.MeshLink || items.ChannelBusy || items.APRadioStatistics || items.SwitchHistory || items.InterfaceRate || items.WirelessRSSI || items.WirelessStatus
+}
+func readJSONMap(path string) (map[string]any, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var value map[string]any
+	if err := json.Unmarshal(b, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+func readTail(path string, tail int) ([]string, bool, int64, string, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, false, 0, "", nil
+	}
+	if err != nil {
+		return nil, false, 0, "", err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, true, info.Size(), info.ModTime().Format(time.RFC3339Nano), err
+	}
+	text := strings.TrimRight(strings.ToValidUTF8(string(b), "�"), "\r\n")
+	if text == "" {
+		return []string{}, true, info.Size(), info.ModTime().Format(time.RFC3339Nano), nil
+	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	if len(lines) > tail {
+		lines = lines[len(lines)-tail:]
+	}
+	return lines, true, info.Size(), info.ModTime().Format(time.RFC3339Nano), nil
+}
+
+func statFile(path string) (bool, int64, string, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, 0, "", nil
+	}
+	if err != nil {
+		return false, 0, "", err
+	}
+	return true, info.Size(), info.ModTime().Format(time.RFC3339Nano), nil
 }
 func (s *Server) stopType(w http.ResponseWriter, r *http.Request, taskType string) {
 	if r.Method != http.MethodPost {

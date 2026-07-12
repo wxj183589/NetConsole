@@ -6,7 +6,7 @@
 
 - iPerf3 server/client 启停、强类型参数与增量原始事件；
 - 真实 fping/ICMP 高频 Ping、结构化样本和摘要；
-- 车载 MR SSH 在线原始回显采集；
+- 车载 MR 在线收集由 Python + Netmiko sidecar 执行，包含 fping 和可选 iPerf Client 跟随采集、实时预览和原始日志 tail；
 - `ping_probe` TCP Connect 连通性探测；
 - 本地目标设备管理、统一任务状态、事件游标、结果描述、日志 tail、停止后 ZIP 打包和下载。
 
@@ -21,21 +21,22 @@ cd agent
 scripts\build_windows.bat
 ```
 
-输出：`agent/bin/windows-x64/netconsole-agent.exe`。构建脚本会执行 `go mod download`、`go test ./...` 后再构建。
+输出：`agent/dist/netconsole-agent-windows-x64/`，同时生成 console 版和 Windows 托盘版。构建脚本会先尝试构建 MR Collector，再执行 `go mod tidy`、`go test ./...`。
 
 构建脚本优先使用 PATH 中的 `go.exe`；若未加入 PATH，会回退到 `D:\Program Files\Go\bin\go.exe`。Go 的模块缓存和编译缓存默认位于用户目录并由不同项目共享，不应复制到 `agent/` 或提交仓库。
 
 ## Windows 运行
 
 ```bat
-cd agent
-scripts\start_windows.bat
+cd agent\dist\netconsole-agent-windows-x64
+start_agent.bat
 ```
 
 也可直接从 `agent` 目录运行：
 
 ```bat
-bin\windows-x64\netconsole-agent.exe -config config.json -targets targets.json
+netconsole-agent.exe --open
+netconsole-agent-console.exe --console --open
 ```
 
 默认监听 `0.0.0.0:18080`，浏览器访问 `http://127.0.0.1:18080`。涉及中文日志时建议使用 UTF-8 终端；批处理已执行 `chcp 65001`。
@@ -47,6 +48,7 @@ V1 使用标准库可直接读取的 `config.json`，不引入 YAML 依赖。相
 - `agent`：Agent ID/名称、监听地址、数据/日志/采集包目录；
 - `security`：Token 和预留 Web 账号字段；`enable_auth` 默认 `false`；
 - `tools`：Windows x64 `iperf3` 和可选 fping 的配置路径；所有路径均可覆盖，但不会扫描或回退旧目录；
+- `power`：启动防休眠、任务运行时保持屏幕和退出恢复，默认均为 `true`；
 - `runtime`：自动打包及保留天数（V1 记录配置，尚不自动清理现场数据）；MR 请求的 `auto_package_on_stop=true` 可在全局关闭时单任务启用打包；
 - `ping_probe`：默认间隔、超时、包大小、目标上限和 TCP fallback 端口。
 
@@ -90,6 +92,8 @@ agent/tools/windows-x64/
 └─ fping/
    ├─ fping.exe
    └─ cygwin1.dll
+└─ mr_collector/
+   └─ netconsole-mr-collector.exe
 ```
 
 默认配置路径分别为：
@@ -97,6 +101,7 @@ agent/tools/windows-x64/
 ```text
 ./tools/windows-x64/iperf3/iperf3.exe
 ./tools/windows-x64/fping/fping.exe
+./tools/windows-x64/mr_collector/netconsole-mr-collector.exe
 ```
 
 不再支持 `agent/tools/iperf/` 等旧目录，也不做 legacy fallback。使用 Cygwin 版工具时，exe 和对应 DLL 必须位于同一个工具目录；Agent 启动子进程时会把工作目录设置为 exe 所在目录。缺少 exe 或 DLL 时不会创建伪运行任务，API 和 Web 会给出当前配置路径及放置提示。
@@ -113,13 +118,17 @@ GET /api/v1/status
 GET /api/v1/capabilities
 GET /api/v1/config
 GET /api/v1/tools/status
+GET /api/v1/power/status
+POST /api/v1/power/prevent-sleep
+POST /api/v1/power/prevent-sleep-display
+POST /api/v1/power/restore
 ```
 
 目标：`GET/POST /api/v1/targets`、`PUT/DELETE /api/v1/targets/{id}`、导入、导出和连接测试。
 
 任务：`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}`、`POST /api/v1/tasks/{id}/stop`、`GET /api/v1/tasks/{id}/logs?tail=200`、`GET /api/v1/tasks/{id}/events`、`GET /api/v1/tasks/{id}/result`。
 
-能力入口：`/api/v1/iperf/server/*`、`/api/v1/iperf/client/*`、`/api/v1/fping/*`、`/api/v1/ping-probe/*`、`/api/v1/mr/collect/*`。
+能力入口：`/api/v1/iperf/server/*`、`/api/v1/iperf/client/*`、`/api/v1/fping/*`、`/api/v1/ping-probe/*`、`/api/v1/mr/collect/*`。MR 页面还使用 `/api/v1/mr/collect/live`、`raw-tail` 和 `raw-summary`。
 
 采集包：`GET /api/v1/packages`、`GET /api/v1/packages/{id}/download`、`DELETE /api/v1/packages/{id}`。
 
@@ -147,11 +156,23 @@ data/tasks/<task_id>/
 
 完成/停止/失败后默认在 `packages/<task_id>.zip` 原子提交采集包。包内包含 `manifest.json`、任务/目标/Agent/系统/停止信息、`agent_runtime.log` 和实际存在的 `raw/` 文件。用户停止后的终态为 `cancelled`；自然完成为 `completed`，执行或打包失败为 `failed`。终态只在事件、结果和打包提交完成后发布；打包失败保留任务目录和原始日志。
 
-## MR 命令边界
+## MR Netmiko sidecar 与命令边界
 
-MR V1 优先 SSH，只保存原始回显，不做解析。固定命令集中在 `internal/mr/templates.go`，与 Python 主程序 `netconsole/services/online_mr/collection_commands.py` 的命令文本对齐。Terminal Monitor 和四类周期采集分别使用持久 PTY Shell，停止时协作关闭全部 Session 和 SSH Client，避免按固定等待时间截断设备回显。SSH Host Key V1 尚未配置已知主机校验，适用于受控现场网；后续应加入指纹固定。
+Go Agent 不执行 MR SSH；它只创建私有请求、启动和停止 sidecar。sidecar 使用 Netmiko `hp_comware`/`hp_comware_telnet`，命令与 `netconsole/services/online_mr/collection_commands.py` 对齐，生成主程序兼容的 `raw/`、`view/`、`session_meta.json`。标准 sidecar 路径为 `tools/windows-x64/mr_collector/netconsole-mr-collector.exe`。停止时创建 `stop.request`，该文件不会进入最终 ZIP。
+
+MR session 必须包含 `init_raw.log`、`config_collect_raw.log`、`terminal_monitor_raw.log`、`mesh_link_raw.log`、`channel_busy_raw.log`、`ap_radio_statistics_raw.log`、`switch_history_latest.log`、`interface_rate_raw.log`、`wireless_status_raw.log`、`collector_output_raw.log`、fping 三件套和 `iperf_client_raw.log`。实时视图位于 `view/live_mr_status.json`、`live_link_status.json`、`live_fping_status.json`、`live_iperf_status.json`。
 
 Agent 收到 Ctrl+C 或终止信号时会先停止 HTTP 接入，再取消运行任务并等待日志关闭和打包；超过等待上限才退出。iPerf 子进程使用 Windows 进程终止语义回收，不在任务停止后留驻。
+
+构建 MR Collector：
+
+```bat
+cd agent\mr_collector_py
+pip install pyinstaller netmiko paramiko cryptography
+build_windows.bat
+```
+
+普通 Agent 运行包不依赖开发机 Python；只有重新构建或替换 sidecar 时才需要 Python。Go Agent 启动 sidecar 时会注入 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`。
 
 ## 当前限制
 

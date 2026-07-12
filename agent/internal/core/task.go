@@ -20,12 +20,15 @@ import (
 type Status string
 
 const (
-	Created   Status = "created"
-	Running   Status = "running"
-	Stopping  Status = "stopping"
-	Completed Status = "completed"
-	Failed    Status = "failed"
-	Cancelled Status = "cancelled"
+	Created               Status = "created"
+	Running               Status = "running"
+	Stopping              Status = "stopping"
+	Completed             Status = "completed"
+	Stopped               Status = "stopped"
+	CompletedWithWarnings Status = "completed_with_warnings"
+	StoppedWithWarnings   Status = "stopped_with_warnings"
+	Failed                Status = "failed"
+	Cancelled             Status = "cancelled"
 )
 
 type Task struct {
@@ -209,6 +212,16 @@ func (m *Manager) execute(rt *runningTask, ctx context.Context, runner Runner) {
 			finalErrorCode = coded.TrafficCode()
 		}
 	}
+	if task.TaskType == "mr_realtime_collect" {
+		if mrStatus, mrError := readMRStatus(rt.dir); mrStatus != "" {
+			finalStatus = mrStatus
+			if finalError == "" {
+				finalError = mrError
+			}
+		} else if wasStopping || errors.Is(runnerErr, context.Canceled) {
+			finalStatus = Stopped
+		}
+	}
 	packageSnapshot := *task
 	packageSnapshot.Status = finalStatus
 	packageSnapshot.ErrorCode = finalErrorCode
@@ -259,6 +272,35 @@ func (m *Manager) execute(rt *runningTask, ctx context.Context, runner Runner) {
 	delete(m.activeTypes, task.TaskType)
 	m.mu.Unlock()
 	close(rt.done)
+}
+
+func readMRStatus(taskDir string) (Status, string) {
+	b, err := os.ReadFile(filepath.Join(taskDir, "session_meta.json"))
+	if err != nil {
+		return "", ""
+	}
+	var meta map[string]any
+	if json.Unmarshal(b, &meta) != nil {
+		return "", ""
+	}
+	value, _ := meta["status"].(string)
+	var status Status
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "STOPPED":
+		status = Stopped
+	case "STOPPED_WITH_WARNINGS":
+		status = StoppedWithWarnings
+	case "COMPLETED":
+		status = Completed
+	case "COMPLETED_WITH_WARNINGS":
+		status = CompletedWithWarnings
+	case "FAILED":
+		status = Failed
+	default:
+		return "", ""
+	}
+	errorMessage, _ := meta["error_message"].(string)
+	return status, errorMessage
 }
 
 func (m *Manager) Stop(id string) (Task, error) {
@@ -337,6 +379,15 @@ func (m *Manager) Get(id string) (Task, bool) {
 		return Task{}, false
 	}
 	return *t, true
+}
+
+func (m *Manager) TaskDir(id string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.tasks[id]; !ok {
+		return "", false
+	}
+	return filepath.Join(m.root, id), true
 }
 
 func (m *Manager) Active(taskType string) (Task, bool) {

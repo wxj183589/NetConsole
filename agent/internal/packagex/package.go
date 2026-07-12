@@ -85,6 +85,9 @@ func (p *Packager) Create(taskDir string, task TaskView) (Info, error) {
 	}, 0o600); err != nil {
 		return Info{}, err
 	}
+	if task.Type == "mr_realtime_collect" {
+		return p.createMRPackage(taskDir, generated, task)
+	}
 
 	finalPath := filepath.Join(p.Dir, task.ID+".zip")
 	tmpPath := finalPath + ".tmp"
@@ -103,6 +106,128 @@ func (p *Packager) Create(taskDir string, task TaskView) (Info, error) {
 	}
 	return Info{ID: task.ID, TaskID: task.ID, TaskType: task.Type, StartTime: task.StartTime,
 		EndTime: task.EndTime, Size: st.Size(), DownloadURL: "/api/v1/packages/" + task.ID + "/download"}, nil
+}
+
+func (p *Packager) createMRPackage(taskDir, generated string, task TaskView) (Info, error) {
+	rootName := mrPackageRootName(taskDir, task.ID)
+	packageID := rootName + "_online_mr"
+	finalPath, tmpPath := filepath.Join(p.Dir, packageID+".zip"), filepath.Join(p.Dir, packageID+".zip.tmp")
+	_ = os.Remove(tmpPath)
+	if err := writeMRZip(tmpPath, taskDir, generated, rootName); err != nil {
+		_ = os.Remove(tmpPath)
+		return Info{}, err
+	}
+	if err := util.ReplaceFile(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return Info{}, err
+	}
+	info, err := os.Stat(finalPath)
+	if err != nil {
+		return Info{}, err
+	}
+	return Info{ID: packageID, TaskID: task.ID, TaskType: task.Type, StartTime: task.StartTime, EndTime: task.EndTime, Size: info.Size(), DownloadURL: "/api/v1/packages/" + packageID + "/download"}, nil
+}
+
+func writeMRZip(path, taskDir, generated, rootName string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	zw := zip.NewWriter(f)
+	add := func(source, name string) error {
+		in, err := os.Open(source)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := zw.Create(filepath.ToSlash(name))
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(out, in)
+		return err
+	}
+	files := [][2]string{}
+	err = filepath.Walk(taskDir, func(source string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			if source == filepath.Join(taskDir, "meta") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, relErr := filepath.Rel(taskDir, source)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "stop.request" || rel == "meta/request.private.json" || strings.HasSuffix(filepath.ToSlash(rel), ".tmp") {
+			return nil
+		}
+		files = append(files, [2]string{source, filepath.Join(rootName, rel)})
+		return nil
+	})
+	if err != nil {
+		_ = zw.Close()
+		_ = f.Close()
+		return err
+	}
+	files = append(files, [2]string{filepath.Join(generated, "manifest.json"), filepath.Join(rootName, "manifest.json")}, [2]string{filepath.Join(generated, "agent_info.json"), filepath.Join(rootName, "agent_info.json")}, [2]string{filepath.Join(generated, "system_info.json"), filepath.Join(rootName, "system_info.json")})
+	seen := map[string]bool{}
+	for _, item := range files {
+		name := filepath.ToSlash(item[1])
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if err := add(item[0], name); err != nil {
+			_ = zw.Close()
+			_ = f.Close()
+			return err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func mrPackageRootName(taskDir, fallback string) string {
+	sessionID, mrName := fallback, ""
+	if b, err := os.ReadFile(filepath.Join(taskDir, "session_meta.json")); err == nil {
+		var meta map[string]any
+		if json.Unmarshal(b, &meta) == nil {
+			if value, ok := meta["session_id"].(string); ok && strings.TrimSpace(value) != "" {
+				sessionID = value
+			}
+			if value, ok := meta["mr_name"].(string); ok {
+				mrName = value
+			}
+		}
+	}
+	name := sessionID
+	if strings.TrimSpace(mrName) != "" {
+		name += "_" + mrName
+	}
+	return safeFileName(name + "_agent")
+}
+
+func safeFileName(name string) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		if r < 32 || strings.ContainsRune(`<>:"/\\|?*`, r) {
+			builder.WriteRune('_')
+		} else {
+			builder.WriteRune(r)
+		}
+	}
+	value := strings.Trim(builder.String(), " .")
+	if value == "" {
+		return "agent_online_mr"
+	}
+	return value
 }
 
 func (p *Packager) List() ([]Info, error) {
@@ -237,7 +362,7 @@ func readManifest(path string) (Manifest, error) {
 	}
 	defer zr.Close()
 	for _, f := range zr.File {
-		if f.Name != "manifest.json" {
+		if f.Name != "manifest.json" && !strings.HasSuffix(f.Name, "/manifest.json") {
 			continue
 		}
 		r, err := f.Open()

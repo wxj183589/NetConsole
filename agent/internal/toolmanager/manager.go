@@ -17,6 +17,7 @@ var fpingRequiredFiles = []string{"cygwin1.dll"}
 
 const iperfHint = "请将 iperf3.exe 及 cygwin1.dll、cygcrypto-3.dll、cygz.dll 放到 agent/tools/windows-x64/iperf3/ 目录"
 const fpingHint = "请将 fping.exe 和 cygwin1.dll 放到 agent/tools/windows-x64/fping/ 目录"
+const mrCollectorHint = "请将 netconsole-mr-collector.exe 放到 agent/tools/windows-x64/mr_collector/ 目录"
 
 type FileStatus struct {
 	Name   string `json:"name"`
@@ -34,8 +35,9 @@ type ToolStatus struct {
 }
 
 type Status struct {
-	Iperf3 ToolStatus `json:"iperf3"`
-	Fping  ToolStatus `json:"fping"`
+	Iperf3      ToolStatus `json:"iperf3"`
+	Fping       ToolStatus `json:"fping"`
+	MRCollector ToolStatus `json:"mr_collector"`
 }
 
 type UnavailableError struct {
@@ -54,9 +56,33 @@ func New(cfg *config.Config) *Manager { return &Manager{cfg: cfg} }
 
 func (m *Manager) Status(ctx context.Context) Status {
 	return Status{
-		Iperf3: m.iperfStatus(ctx),
-		Fping:  m.fpingStatus(ctx),
+		Iperf3: m.iperfStatus(ctx), Fping: m.fpingStatus(ctx), MRCollector: m.mrCollectorStatus(ctx),
 	}
+}
+
+func (m *Manager) RequireMRCollector(ctx context.Context) (string, error) {
+	status := m.mrCollectorStatus(ctx)
+	if !status.Exists {
+		return "", &UnavailableError{Code: "AGENT_MR_COLLECTOR_NOT_FOUND", Message: "未找到 MR 采集器", Path: status.Path, Hint: mrCollectorHint}
+	}
+	return status.Path, nil
+}
+
+func (m *Manager) mrCollectorStatus(parent context.Context) ToolStatus {
+	path := m.cfg.MRCollectorPath()
+	status := simpleStatus(path)
+	if !status.Exists {
+		status.Warning = "未找到 MR 采集器"
+		return status
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	output, err := runProbe(ctx, path, filepath.Dir(path), "--version")
+	status.Version = firstLine(output)
+	if err != nil {
+		status.Warning = fmt.Sprintf("版本检测失败: %v", err)
+	}
+	return status
 }
 
 func (m *Manager) RequireIperf3(ctx context.Context) (string, error) {
