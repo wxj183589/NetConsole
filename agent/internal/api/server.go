@@ -52,6 +52,9 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case "status":
 		s.requireMethod(w, r, http.MethodGet, func() { s.status(w) })
 		return
+	case "capabilities":
+		s.requireMethod(w, r, http.MethodGet, func() { s.capabilities(w, r) })
+		return
 	case "config":
 		s.requireMethod(w, r, http.MethodGet, func() { s.config(w) })
 		return
@@ -130,6 +133,17 @@ func (s *Server) status(w http.ResponseWriter) {
 	current, total := s.tasks.Counts()
 	packages, _ := s.packages.List()
 	ok(w, map[string]any{"agent_id": s.cfg.Agent.ID, "agent_name": s.cfg.Agent.Name, "version": s.version, "os": runtime.GOOS, "arch": runtime.GOARCH, "listen": s.cfg.ListenAddress(), "uptime": time.Since(s.started).String(), "current_tasks": current, "task_count": total, "package_count": len(packages), "data_dir": s.cfg.DataPath(), "package_dir": s.cfg.PackagePath(), "disk": map[string]any{}})
+}
+
+func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
+	tools := s.tools.Status(r.Context())
+	ok(w, map[string]any{
+		"iperf_server":         tools.Iperf3.Ready,
+		"iperf_client":         tools.Iperf3.Ready,
+		"fping":                tools.Fping.Ready,
+		"ping_probe":           true,
+		"online_mr_collection": true,
+	})
 }
 
 func (s *Server) config(w http.ResponseWriter) {

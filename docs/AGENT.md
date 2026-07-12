@@ -13,6 +13,7 @@ V1 已实现 iPerf server/client、并发 TCP fallback `ping_probe`、MR 持久 
 - Agent 运行数据限定在自己的 `agent/data`、`agent/logs`、`agent/packages`，不写入主程序数据目录；
 - Windows 工具只读取配置指定的 `agent/tools/windows-x64/{iperf3,fping}` 标准目录，不扫描 Agent 旧目录；iPerf 子进程工作目录固定为 exe 所在目录，以加载同目录 Cygwin DLL；
 - V1 尚不是 Python 主程序的多 Agent 管理页面，主程序集成属于后续工作。
+- `GET /api/v1/capabilities` 是 Controller 的能力事实来源；旧 Agent 没有该接口时，Controller 必须保留未知状态，不能按操作系统推断。
 
 Windows 构建入口：
 

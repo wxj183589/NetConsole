@@ -34,7 +34,7 @@ func TestPingAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := New(cfg, store, manager, packager, "test").Handler()
-	for _, path := range []string{"/api/v1/ping", "/api/v1/status"} {
+	for _, path := range []string{"/api/v1/ping", "/api/v1/status", "/api/v1/capabilities"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -43,6 +43,13 @@ func TestPingAndStatus(t *testing.T) {
 		}
 		if got := rec.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
 			t.Fatalf("content type=%q", got)
+		}
+		if path == "/api/v1/capabilities" {
+			for _, field := range []string{`"ping_probe":true`, `"online_mr_collection":true`, `"iperf_server"`, `"fping"`} {
+				if !strings.Contains(rec.Body.String(), field) {
+					t.Fatalf("missing %s body=%s", field, rec.Body.String())
+				}
+			}
 		}
 	}
 }

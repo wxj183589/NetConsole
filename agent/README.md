@@ -108,6 +108,7 @@ Windows V1 的 fping 仅做工具检测，不参与 `ping_probe`。`ping_probe` 
 ```text
 GET /api/v1/ping
 GET /api/v1/status
+GET /api/v1/capabilities
 GET /api/v1/config
 GET /api/v1/tools/status
 ```
@@ -121,6 +122,8 @@ GET /api/v1/tools/status
 采集包：`GET /api/v1/packages`、`GET /api/v1/packages/{id}/download`、`DELETE /api/v1/packages/{id}`。
 
 统一响应：成功为 `{"ok":true,"data":...}`，失败为 `{"ok":false,"error":{"message":"..."}}`。工具错误会额外返回 `path`、`hint` 和 `required_files`；同类任务重复启动返回 HTTP 409，并包含已有 `task_id`。Web 状态页会显示 iperf3/fping 的检测结果、iPerf 路径和版本；排错时先查看 `/api/v1/tools/status`。
+
+`GET /api/v1/capabilities` 返回 Agent 自报能力。内建 `ping_probe`、Online MR 采集直接报告可用；iPerf/fping 能力依据 Agent 当前工具检测结果报告。Controller 不应根据操作系统猜测能力，旧 Agent 缺少该接口时应将能力保留为未知。
 
 ## 任务与采集包
 
