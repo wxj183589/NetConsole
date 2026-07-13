@@ -98,7 +98,7 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 
 ## 6. 会话文件
 
-会话位于 `.local/data/sites/<site>/rail_transit/online_mr/<mr>/sessions/<session>/`。完整 raw/parsed/logs/outputs 布局见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
+会话位于 `.local/data/sites/<site>/files/rail_transit/online_mr/<mr>/sessions/<session>/`。完整 raw/parsed/logs/outputs 布局见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
 
 打包先生成 `<session>.zip.tmp`，成功后原子替换 `<session>.zip`；错误时删除临时包并保留 raw 会话。采集失败不能删除现场证据。
 
@@ -171,7 +171,7 @@ Go Agent 已有 `/api/v1/mr/collect/{start,stop,status,live,raw-tail,raw-summary
 - Python `AgentHttpClient` 没有 Online MR Typed Client；
 - Go MR 请求尚未执行 `duration_minutes` 自动停止；
 - Agent task/status/live 三类响应尚未归一为 Controller 的 start/status/stop DTO；
-- Controller 没有安全的 Online MR Agent package importer；
+- Controller 已在 5B-7 增加本地 ZIP importer，但尚未接 Agent HTTP 下载；
 - Agent 终态、包下载、包校验、会话落盘和 Task/Session/Mapping 终态尚未形成完整同步链。
 
 因此 5B-6 不把 Agent 已有本地 Web 采集能力描述为 Python Controller 已接入。
@@ -207,8 +207,34 @@ Terminal mapping 不得被后续轮询或本地 Task 事件改回 ACTIVE。带 w
 
 当前稳定错误仍是 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。Controller 已预留带 `ONLINE_MR_` 前缀的 Agent unreachable/auth/version/tool/collector/start/stop/status/package download/package invalid/session metadata/raw contract 错误码；5B-6 不触发这些远程错误。
 
-Agent ZIP 使用单一会话根目录，必须包含主程序需要的 `manifest.json`、`raw/` 十四类事实文件、`session_meta.json`、`task.json`、`stop_reason.json`、`agent_info.json` 和 `system_info.json`。逻辑会话目录还包括 `parsed/`、`view/`、`logs/`、`outputs/`；ZIP 不保证为空目录有独立 entry，未来 importer 应在校验通过后创建缺失空目录。
+Agent ZIP 使用单一会话根目录，必须包含主程序需要的 `manifest.json`、`raw/` 十四类事实文件、`session_meta.json`、`task.json`、`stop_reason.json`、`agent_info.json` 和 `system_info.json`。逻辑会话目录还包括 `parsed/`、`view/`、`logs/`、`outputs/`；ZIP 不保证为空目录有独立 entry，importer 会在校验通过后创建缺失空目录。
 
-禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。本阶段只有纯 entry 契约校验，没有下载、解压或导入实现。
+禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。5B-7 已实现本地 ZIP 校验与导入，远端下载仍未接通。
 
 Agent Task/Event 向 Controller 只允许传递稳定 ID、状态、指标和相对 artifact 引用；不得传递 Agent 私有绝对路径、Token、密码或私有请求内容。
+
+## 11. Agent Package Importer（5B-7，尚未接 HTTP）
+
+`OnlineMrAgentPackageImporter` 只处理已经下载到本机的 Online MR ZIP，不连接 Agent、不启动远端任务，也不改变 `executor=AGENT` 的 unsupported 分派。Importer 是同步 IO 服务，未来 UI/API 调用者必须放入后台任务，不能阻塞 Qt 主线程。导入目标固定为当前局点：
+
+```text
+files/rail_transit/online_mr/<device_name>__<device_id>/sessions/<session_id>/
+```
+
+流程为：只读检查 ZIP 列表和公共 JSON，在当前局点 `files/imports/online_mr/.<import_id>.tmp/` 创建 staging，复制并复核源 ZIP 哈希，安全解压，补齐可能未写入 ZIP 的空目录，写入归一化 `session_meta.json` 和 `import_manifest.json`，再原子移动到正式 Session。源 ZIP 保留不删除；数据库登记失败会删除本次新建的正式目录并回滚 Mapping，不影响已有会话。
+
+### 11.1 安全校验
+
+- ZIP 只允许一个外层 Session 根目录或无外层根目录；成员路径拒绝 `..`、绝对路径、Windows 盘符、UNC、空路径段、重复路径、符号链接和加密成员；
+- 必须满足 5B-6 的 `manifest/task/session_meta/agent/system/stop_reason` 与十四个 raw 文件契约；空的 `parsed/view/logs/outputs` 由 importer 补齐；
+- `stop.request`、`meta/request.private.json` 和 `.tmp` 永久禁止；
+- 公共 JSON 中 `password/credential/secret/token/private_key` 等字段只允许空值，`session_meta.json` 不允许 Agent 私有绝对路径；raw 日志不做全文敏感词扫描；
+- 解压总文件数和声明的未压缩大小有上限，提取时再次校验目标仍位于 staging 内；校验失败不创建正式目录、Task 或 Mapping。
+
+### 11.2 幂等、冲突与登记
+
+`import_manifest.json` 保存源文件名、SHA-256、局点/设备/MR、Agent/Controller Task、Session、终态、完整性、文件数量和总大小，不保存源文件绝对路径。相同 Session 与相同哈希再次导入返回 `already_imported`，且要求原 Task/Mapping 仍完整；相同 Session 但哈希不同、已有其他目录或映射时返回 `conflict`，默认不覆盖。
+
+导入成功后在所属局点 `tasks.db` 写入 `source=agent` 的终态 Task 和 `executor_kind=AGENT / mapping_state=TERMINAL` 的映射；如果明确提供的 `controller_task_id` 已对应同一 AGENT 身份、设备和 Session，则更新现有 Task/Mapping，不重复创建。`stopped/completed` 映射为 `Task COMPLETED + Session STOPPED`；warning 终态保留警告；`failed` 映射为 `FAILED`；`force_stopped` 映射为 `CANCELLED + FORCED_STOPPED + data_integrity=partial`；`aborted/cancelled` 映射为取消/中止终态。默认 `strict` 拒绝 `created/starting/running/stopping` 包；显式 `partial` 只作为中止证据导入，不伪造完成态。
+
+导入后的源包保存为 Session 内 `outputs/<session_id>.zip`，Task 仅保存相对 artifact 引用。验收脚本支持 `executor=AGENT`：继续检查身份、raw、终态、ZIP 和 Mapping，但不套用 LOCAL 专属的 Traffic flush 与“Traffic 停止 < 本地打包 < Task 终态”事件顺序。当前尚未实现 Agent Typed HTTP Client、下载重试、远程 start/stop/status 或自动导入，也不会自动解析或生成报告。

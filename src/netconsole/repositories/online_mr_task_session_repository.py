@@ -154,6 +154,19 @@ class OnlineMrTaskSessionRepository:
             ).fetchone()
         return self._from_row(dict(row)) if row is not None else None
 
+    def delete(self, controller_task_id: str) -> None:
+        """仅用于尚未发布成功的导入事务回滚，不删除 Session 文件。"""
+
+        def operation() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM online_mr_task_sessions WHERE controller_task_id = ? AND site_id = ?",
+                    (controller_task_id, self.site_id),
+                )
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+
     def find_by_task(self, controller_task_id: str) -> OnlineMrTaskSessionMapping | None:
         return self.get_by_task(controller_task_id)
 

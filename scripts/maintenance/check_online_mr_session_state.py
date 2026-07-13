@@ -15,7 +15,7 @@ PASSED = "PASSED"
 WARNING = "WARNING"
 FAILED = "FAILED"
 TERMINAL_TASK_STATES = {"COMPLETED", "FAILED", "CANCELLED"}
-TERMINAL_SESSION_STATES = {"STOPPED", "FORCED_STOPPED", "FAILED", "ABORTED"}
+TERMINAL_SESSION_STATES = {"STOPPED", "STOPPED_WITH_WARNINGS", "FORCED_STOPPED", "FAILED", "ABORTED"}
 
 
 @dataclass(frozen=True)
@@ -75,9 +75,9 @@ def audit_online_mr_session(
         _check_raw(session_dir),
         _check_fping(session_dir, meta),
         _check_iperf(session_dir, meta),
-        _check_traffic_flush(meta),
-        _check_zip(session_dir, selected_session_id, meta),
-        _check_event_order(events, meta),
+        _check_traffic_flush(meta, mapping),
+        _check_zip(session_dir, selected_session_id, meta, mapping),
+        _check_event_order(events, meta, mapping),
     ]
     return AuditReport(
         site_name=selected_site,
@@ -205,8 +205,13 @@ def _check_identity(
         mismatches.append("force_stopped")
     if mapping_forced and session_status != "FORCED_STOPPED":
         mismatches.append("强停 Session 状态")
-    if not mapping_forced and (task_status != "COMPLETED" or session_status != "STOPPED"):
-        mismatches.append("正常停止 Task/Session 状态")
+    expected_sessions = {
+        "COMPLETED": {"STOPPED", "STOPPED_WITH_WARNINGS"},
+        "FAILED": {"FAILED"},
+        "CANCELLED": {"FORCED_STOPPED", "ABORTED"},
+    }
+    if not mapping_forced and session_status not in expected_sessions.get(task_status, set()):
+        mismatches.append("Task/Session 终态组合")
     if mismatches:
         return CheckResult("Task/Session/Mapping 一致性", FAILED, "不一致字段：" + ", ".join(mismatches))
     return CheckResult("Task/Session/Mapping 一致性", PASSED, "局点、Task ID、Session ID 一致")
@@ -295,7 +300,14 @@ def _check_iperf(session_dir: Path, meta: dict[str, Any]) -> CheckResult:
     return CheckResult("iPerf 输出", PASSED, "iperf_client_raw.log 非空")
 
 
-def _check_traffic_flush(meta: dict[str, Any]) -> CheckResult:
+def _check_traffic_flush(meta: dict[str, Any], mapping: dict[str, Any]) -> CheckResult:
+    if str(mapping.get("executor_kind") or "").upper() == "AGENT":
+        integrity = str(meta.get("data_integrity") or "").casefold()
+        if integrity == "complete":
+            return CheckResult("Traffic flush", PASSED, "Agent 导入包已完成校验，不套用 LOCAL flush 事件顺序")
+        if integrity == "partial":
+            return CheckResult("Traffic flush", WARNING, "Agent 导入包为 partial，不套用 LOCAL flush 事件顺序")
+        return CheckResult("Traffic flush", FAILED, f"Agent 导入包 data_integrity={integrity or '<empty>'}")
     summary = _json_object(meta.get("traffic_summary"))
     flush_complete = summary.get("flush_complete")
     finalization_complete = meta.get("finalization_complete")
@@ -315,9 +327,37 @@ def _check_traffic_flush(meta: dict[str, Any]) -> CheckResult:
     return CheckResult("Traffic flush", FAILED, detail)
 
 
-def _check_zip(session_dir: Path, session_id: str, meta: dict[str, Any]) -> CheckResult:
+def _check_zip(
+    session_dir: Path,
+    session_id: str,
+    meta: dict[str, Any],
+    mapping: dict[str, Any],
+) -> CheckResult:
     outputs_dir = session_dir / "outputs"
     archives = sorted(outputs_dir.glob("*.zip")) if outputs_dir.is_dir() else []
+    if str(mapping.get("executor_kind") or "").upper() == "AGENT":
+        try:
+            manifest = _read_json_object(session_dir / "import_manifest.json")
+        except LookupError as exc:
+            return CheckResult("ZIP 检查", FAILED, str(exc))
+        relative = str(manifest.get("package_relative_path") or "")
+        package = (session_dir / relative).resolve()
+        try:
+            package.relative_to(session_dir.resolve())
+        except ValueError:
+            return CheckResult("ZIP 检查", FAILED, "Agent 导入包路径越界")
+        if not relative or package.suffix.casefold() != ".zip" or not package.is_file():
+            return CheckResult("ZIP 检查", FAILED, "Agent 导入包或 import_manifest 不完整")
+        if not zipfile.is_zipfile(package):
+            return CheckResult("ZIP 检查", FAILED, f"Agent ZIP 无法读取：{package.name}")
+        with zipfile.ZipFile(package) as archive:
+            names = archive.namelist()
+        if any(Path(name).name.casefold() == "stop.request" for name in names):
+            return CheckResult("ZIP 检查", FAILED, "Agent ZIP 内误包含 stop.request")
+        if not any(Path(name).name.casefold() == "session_meta.json" for name in names):
+            return CheckResult("ZIP 检查", FAILED, "Agent ZIP 内缺少 session_meta.json")
+        return CheckResult("ZIP 检查", PASSED, f"{package.name} 可读且不含 stop.request")
+
     forced = bool(meta.get("force_stopped"))
     package_available = meta.get("package_available")
     if forced:
@@ -340,8 +380,16 @@ def _check_zip(session_dir: Path, session_id: str, meta: dict[str, Any]) -> Chec
     return CheckResult("ZIP 检查", PASSED, f"{expected.name} 可读且不含 stop.request")
 
 
-def _check_event_order(events: list[dict[str, Any]], meta: dict[str, Any]) -> CheckResult:
+def _check_event_order(
+    events: list[dict[str, Any]],
+    meta: dict[str, Any],
+    mapping: dict[str, Any],
+) -> CheckResult:
     terminal = [item["sequence"] for item in events if item["type"] in {"finished", "error", "cancelled"}]
+    if str(mapping.get("executor_kind") or "").upper() == "AGENT":
+        if not terminal:
+            return CheckResult("最终化事件顺序", FAILED, "缺少 Agent 导入 Task 终态事件")
+        return CheckResult("最终化事件顺序", PASSED, "Agent 导入包不套用 LOCAL Traffic/ZIP 事件顺序")
     traffic = [
         item["sequence"]
         for item in events

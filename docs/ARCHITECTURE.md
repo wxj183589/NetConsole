@@ -151,6 +151,8 @@ flowchart TD
 
 阶段 5B-3 的 Online MR LOCAL Application 入口复用现有 `online_mr_collection_start` Worker，不创建第二套 Core。Worker 内纯 Python `OnlineMrTrafficCoordinator` 持有 fping/iPerf 子线程：停止时先显式 stop/join Traffic，再关闭 SSH collector/writer，稳定 metadata 后原子打包，最后退出 Worker 让 Task Runtime 发布终态。强停由 Application Service 先有界协作等待，再通过 `LocalProcessAdapter` 终止进程树；无法确认 flush 时保留 raw、不发布新 ZIP，并把 Session/Mapping 收敛到带警告终态。阶段 5B-4 已让 Legacy Qt 页面通过 `OnlineMrCollectorWorker` 兼容 Adapter 使用该入口；Qt signals、实时 raw tail、快照和页面状态绑定继续保留，页面不再为这些会话重复启动自有 Traffic Worker。
 
+阶段 5B-7 增加纯 Python Agent package importer：只处理已下载 ZIP，在所属局点 staging 中校验路径、公共 JSON、raw 契约和哈希后原子落入 Online MR Session，并登记同局点终态 Task/Mapping；同哈希幂等、不同哈希冲突且不覆盖。该能力尚未接 Agent HTTP 下载或远程调度，`executor=AGENT` 仍保持 unsupported，也不改变 LOCAL 生命周期。
+
 Online MR 会话生命周期：
 
 ```mermaid

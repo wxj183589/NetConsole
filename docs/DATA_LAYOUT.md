@@ -50,6 +50,7 @@ H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、�
 │  ├─ agents.db                  # Agent 配置与运行状态（不保存明文凭据）
 │  └─ snmp.db                    # SNMP Center 局点数据库（功能冻结，数据保留）
 ├─ files/                        # 文件管理业务文件
+│  └─ imports/online_mr/         # Agent Online MR ZIP 导入 staging；成功或失败后清理
 ├─ cache/                        # 可由手工磁盘清理管理的局点缓存
 ├─ metrics/
 ├─ backups/
@@ -117,6 +118,7 @@ Online MR 会话结构：
 ```text
 sessions/<session>/
 ├─ session_meta.json
+├─ import_manifest.json          # 仅 Agent ZIP 导入会话存在；保存哈希与相对引用
 ├─ raw/
 │  ├─ init_raw.log
 │  ├─ config_collect_raw.log
@@ -138,12 +140,14 @@ sessions/<session>/
 ├─ logs/
 │  └─ collector.log
 └─ outputs/
-   └─ <session>.zip
+   └─ <session>.zip              # LOCAL 正式包或已校验导入的 Agent 源包
 ```
 
 手工备注保存为会话根目录下 UTF-8 的 `manual_notes.jsonl` 和 `manual_notes.txt`。只有存在运行中目标会话时才持久化；无目标时仅进入当前 UI 日志。
 
 当前标准 Online MR 会话目录没有 `reports/` 或 `packages/`；正式包位于 `outputs/`。`raw/` 和 metadata 是采集事实源，`parsed/online_diagnosis.sqlite` 是报告、历史图表和跨源时间轴的现行查询产物，虽然可由完整 raw 重建，但不能在未确认 raw 完整、重建能力和消费者的情况下当作普通缓存无条件删除。阶段 5B-1 的 `OnlineMrQueryService` 只通过白名单相对引用读取这些内容，不接受任意文件路径，也不创建、迁移或修复数据库 schema。
+
+阶段 5B-7 的 Agent ZIP importer 在当前局点 `files/imports/online_mr/.<import_id>.tmp/` 校验和解压，成功后原子移动到正式 Session；失败时只清理本次 staging，不删除用户源 ZIP 或已有 Session。同一 Session 的重复导入以 `import_manifest.json` 中的源 ZIP SHA-256 判断幂等，哈希不同则冲突且不覆盖。
 
 阶段 5B-3 的 `online_mr_task_sessions` schema v2 与任务快照/事件共用所属局点的 `tasks.db`。映射只保存 Controller Task、Session、局点、设备、MR、执行端、业务阶段、开始/结束时间、实际分钟时长、停止原因、强停标记和稳定错误摘要；会话创建前允许 `session_id` 为空，收到结构化会话事件后幂等补齐。连接密码、设备命令、完整运行配置、raw、样本和服务端绝对路径不得写入该映射。旧 schema 通过幂等 `ALTER TABLE` 补列，不重建或删除旧行。遗留会话核对只更新映射与 `session_meta.json` 状态，不删除或重建会话事实文件。
 
