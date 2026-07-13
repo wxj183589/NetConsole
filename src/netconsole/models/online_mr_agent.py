@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Any, Iterable
 
 from pydantic import Field, SecretStr
 
@@ -86,6 +86,7 @@ class OnlineMrAgentTaskStatusResponse(ApiModel):
     package_download_url: str = ""
     error_code: str = ""
     error_message: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class OnlineMrAgentPackageInfo(ApiModel):
@@ -100,6 +101,79 @@ class OnlineMrAgentPackageInfo(ApiModel):
     status: str = ""
     file_name: str = ""
     package_download_url: str = ""
+    source_zip_sha256: str = ""
+
+
+class OnlineMrAgentImportStatus(StrEnum):
+    NOT_IMPORTED = "not_imported"
+    ALREADY_IMPORTED = "already_imported"
+    CONFLICT = "conflict"
+    IMPORTED = "imported"
+    UNKNOWN = "unknown"
+
+
+class OnlineMrAgentDeviceMatchStatus(StrEnum):
+    MATCHED = "matched"
+    NOT_FOUND = "not_found"
+    CONFLICT = "conflict"
+
+
+class OnlineMrAgentDeviceCandidate(ApiModel):
+    device_id: int | str
+    device_name: str
+    mr_id: str = ""
+    mr_name: str
+    host: str
+    device_type: str = ""
+
+
+class OnlineMrAgentDeviceResolution(ApiModel):
+    status: OnlineMrAgentDeviceMatchStatus
+    source_host: str = ""
+    candidates: tuple[OnlineMrAgentDeviceCandidate, ...] = ()
+    error_code: str = ""
+    message: str = ""
+
+    @property
+    def candidate(self) -> OnlineMrAgentDeviceCandidate | None:
+        return self.candidates[0] if self.status is OnlineMrAgentDeviceMatchStatus.MATCHED else None
+
+
+class OnlineMrAgentSyncedPackage(ApiModel):
+    package_id: str
+    file_name: str = ""
+    task_id: str = ""
+    session_id: str = ""
+    task_type: str = ""
+    status: str = ""
+    size: int = Field(default=0, ge=0)
+    created_at: str = ""
+    start_time: str = ""
+    end_time: str = ""
+    source_device_id: str = ""
+    source_device_name: str = ""
+    source_host: str = ""
+    candidate_local_device: OnlineMrAgentDeviceCandidate | None = None
+    candidate_local_devices: tuple[OnlineMrAgentDeviceCandidate, ...] = ()
+    candidate_match_method: str = ""
+    import_status: OnlineMrAgentImportStatus = OnlineMrAgentImportStatus.UNKNOWN
+    resolution_code: str = ""
+    resolution_message: str = ""
+
+
+class OnlineMrAgentPackageSyncResult(ApiModel):
+    profile_id: str = ""
+    ping: OnlineMrAgentPingResponse
+    agent_status: OnlineMrAgentSystemStatus
+    tools: OnlineMrAgentToolsStatus
+    packages: tuple[OnlineMrAgentSyncedPackage, ...] = ()
+
+
+class OnlineMrAgentConnectionResult(ApiModel):
+    profile_id: str = ""
+    ping: OnlineMrAgentPingResponse
+    agent_status: OnlineMrAgentSystemStatus
+    tools: OnlineMrAgentToolsStatus
 
 
 class OnlineMrAgentDownloadResult(ApiModel):

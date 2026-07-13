@@ -168,6 +168,7 @@ class OnlineMrAgentPackageImporter:
         expected_host: str = "",
         allow_identity_override: bool = False,
         agent_id: str = "",
+        source_package_id: str = "",
     ) -> OnlineMrAgentPackageImportResult:
         source = Path(zip_path)
         inspected = self._inspect_package(source, import_mode=import_mode)
@@ -393,6 +394,7 @@ class OnlineMrAgentPackageImporter:
                 "imported_at": now,
                 "source_zip": source.name,
                 "source_zip_sha256": inspected.result.source_zip_sha256,
+                "source_package_id": str(source_package_id or ""),
                 "package_relative_path": package_relative,
                 "site_id": site,
                 "site_name": site_name or site,

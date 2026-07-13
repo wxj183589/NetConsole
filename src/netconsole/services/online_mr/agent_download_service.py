@@ -66,6 +66,7 @@ class OnlineMrAgentDownloadService:
         controller_task_id: str | None = None,
         agent_task_id: str | None = None,
         agent_id: str = "",
+        source_package_id: str = "",
         import_mode: str = "strict",
         identity_match_policy: str = "strict",
         expected_host: str = "",
@@ -111,6 +112,7 @@ class OnlineMrAgentDownloadService:
             expected_host=expected_host,
             allow_identity_override=allow_identity_override,
             agent_id=agent_id,
+            source_package_id=source_package_id or package_id,
         )
         warnings = list(imported.warnings)
         if imported.success and not keep_download_on_success:

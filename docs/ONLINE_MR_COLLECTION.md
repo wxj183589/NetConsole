@@ -208,7 +208,7 @@ Terminal mapping 不得被后续轮询或本地 Task 事件改回 ACTIVE。带 w
 
 Agent ZIP 使用单一会话根目录，必须包含主程序需要的 `manifest.json`、`raw/` 十四类事实文件、`session_meta.json`、`task.json`、`stop_reason.json`、`agent_info.json` 和 `system_info.json`。逻辑会话目录还包括 `parsed/`、`view/`、`logs/`、`outputs/`；ZIP 不保证为空目录有独立 entry，importer 会在校验通过后创建缺失空目录。
 
-禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。5B-7 已实现本地 ZIP 校验与导入，5B-8/5B-9 仅以手工方式接入远端下载。
+禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。5B-7 已实现本地 ZIP 校验与导入，5B-8/5B-9 接入受控手工下载，5B-10 增加只读同步和正式设备候选解析。
 
 Agent Task/Event 向 Controller 只允许传递稳定 ID、状态、指标和相对 artifact 引用；不得传递 Agent 私有绝对路径、Token、密码或私有请求内容。
 
@@ -288,3 +288,35 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 ```
 
 应确认所属局点 `tasks.db`、Session、`executor=AGENT` Mapping、raw、`outputs/<session_id>.zip` 和 `import_manifest.json` 一致，且没有误写 `demo/tasks.db`。阶段 5B-9A 已使用 `0.2.0-win-agent` 的真实停止态 Online MR 包完成列表、HTTP 下载、`ip_match` 身份解析、安全导入、验收与幂等复跑；`executor=AGENT`、远程 start/status/stop、Legacy Qt、FastAPI/Vue、自动解析和报告继续保持未启用。
+
+## 14. Agent 只读同步与包导入入口（5B-10）
+
+`OnlineMrAgentControllerService` 复用阶段 3 的 `AgentRepository`、`AgentConfig` 和进程内 `SessionCredentialVault`，不创建第二套 Online MR Agent Profile 或数据库。服务层可列出/读取既有 Profile、测试连接、查询状态与工具、同步远端 package，并调用既有下载/importer；Token 只在构造 HTTP Client 时从凭据容器取出，不进入 DTO、日志、异常、事件或 manifest。
+
+只读同步固定调用 `ping/status/tools/packages`，再按每个 Online MR package 的只读 Task 详情读取脱敏 `params.target/session`，补全来源设备和采集 IP。同步不下载、不导入、不删除远端包，也不发送 start/stop。返回项包含 package/task/session、来源身份、当前局点候选设备、匹配方式和 `not_imported/already_imported/conflict/unknown` 导入状态；已导入判断核对 `source_package_id`、Agent Task、Session、`import_manifest.json` 以及终态 Task/Mapping，远端列表未提供哈希时不伪造哈希结论，最终同 Session 不同哈希冲突仍由下载后的 importer 判定。
+
+设备候选只查询当前局点 `devices.db` 的正式静态设备表，并同时检查主/备地址；不查询 FIT-AP 资源表，因此 DHCP FIT-AP 不会被自动选为正式身份。唯一匹配返回 `ip_match` 候选；零匹配要求手工指定；多个正式设备使用同一 IP 时返回冲突，禁止自动导入。Agent 包内临时 ID/名称始终只作为 source identity 保存。
+
+只读显示候选和导入状态：
+
+```powershell
+python -m scripts.maintenance.download_import_agent_online_mr_package `
+  --agent-url "http://<agent-host>:18080" `
+  --site "<site_id>" `
+  --list-packages-with-match
+```
+
+按唯一静态 IP 候选下载并导入：
+
+```powershell
+python -m scripts.maintenance.download_import_agent_online_mr_package `
+  --agent-url "http://<agent-host>:18080" `
+  --package-id "<package_id>" `
+  --site "<site_id>" `
+  --identity-match-policy ip_match `
+  --auto-resolve-by-ip
+```
+
+无匹配或多匹配时命令在下载前结束；原有 `--device-id/--device-name/--mr-name`、`manual_override` 和显式覆盖入口继续保留。新导入 manifest 增加 `source_package_id`，旧 5B-9 导入仍可通过 Agent Task/Session 识别为已导入。当前仍不接 Legacy Qt/FastAPI/Vue，不开放 `executor=AGENT`，也不远程启动、停止或删除 Agent MR 任务/包。
+
+5B-10 已对 `127.0.0.1:18080` 的真实 `0.2.0-win-agent` 做只读同步：既有 12 车包解析出 `10.122.12.249`，在“宁波地铁12号线”唯一匹配设备 204“列车12-MR-CT”，并根据既有 manifest、Task 和 Mapping 返回 `already_imported`；验证未重复下载、导入或删除远端包。

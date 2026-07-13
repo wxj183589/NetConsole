@@ -30,6 +30,16 @@ def _parser() -> argparse.ArgumentParser:
         help="Agent Token；也可使用 NETCONSOLE_AGENT_TOKEN 环境变量",
     )
     parser.add_argument("--package-id", default="", help="省略时只列出采集包")
+    parser.add_argument(
+        "--list-packages-with-match",
+        action="store_true",
+        help="只读同步采集包，并显示当前局点的设备 IP 候选与导入状态",
+    )
+    parser.add_argument(
+        "--auto-resolve-by-ip",
+        action="store_true",
+        help="按 Agent 采集目标 IP 唯一匹配当前局点正式设备",
+    )
     parser.add_argument("--site", default="", help="目标局点 ID")
     parser.add_argument("--site-name", default="", help="局点显示名，默认同 --site")
     parser.add_argument("--device-id", default="", help="目标设备 ID")
@@ -59,6 +69,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _missing_import_arguments(args: argparse.Namespace) -> list[str]:
+    if args.auto_resolve_by_ip:
+        return [] if str(args.site or "").strip() else ["--site"]
     return [
         option
         for option, value in (
@@ -83,11 +95,19 @@ async def _run(args: argparse.Namespace) -> int:
         paths,
         OnlineMrAgentHttpClient(config),
     )
+    synchronized = None
     try:
-        ping = await service.ping_agent()
-        status = await service.get_agent_status()
-        tools = await service.get_agent_tools()
-        packages = await service.list_agent_packages()
+        if args.list_packages_with_match or args.auto_resolve_by_ip:
+            synchronized = await service.sync_agent_packages(site_id=args.site)
+            ping = synchronized.ping
+            status = synchronized.agent_status
+            tools = synchronized.tools
+            packages = synchronized.packages
+        else:
+            ping = await service.ping_agent()
+            status = await service.get_agent_status()
+            tools = await service.get_agent_tools()
+            packages = await service.list_agent_packages()
     except OnlineMrAgentClientError as exc:
         print(f"Agent 查询失败 [{exc.code}]：{exc.message}")
         return 2
@@ -113,6 +133,22 @@ async def _run(args: argparse.Namespace) -> int:
             f"{item.status or 'unknown'} | {item.size} bytes | "
             f"{item.end_time or item.created_at or 'unknown'}"
         )
+        if synchronized is not None:
+            candidate = item.candidate_local_device
+            print(
+                "  来源："
+                f"{item.source_device_id or '-'} / "
+                f"{item.source_device_name or '-'} / {item.source_host or '-'}"
+            )
+            print(
+                "  候选："
+                f"{candidate.device_id if candidate else '-'} / "
+                f"{candidate.device_name if candidate else '-'} | "
+                f"匹配={item.candidate_match_method or '-'} | "
+                f"导入={item.import_status.value}"
+            )
+            if item.resolution_message:
+                print(f"  说明：{item.resolution_message}")
 
     package_id = str(args.package_id or "").strip()
     if not package_id:
@@ -128,23 +164,34 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        result = await service.download_import_package(
-            package_id,
-            site_id=args.site,
-            site_name=args.site_name or args.site,
-            device_id=args.device_id,
-            device_name=args.device_name,
-            mr_id=args.mr_id,
-            mr_name=args.mr_name,
-            owner="manual_agent_import",
-            expected_session_id=args.expected_session_id or None,
-            controller_task_id=args.controller_task_id or None,
-            agent_task_id=selected.task_id or None,
-            agent_id=status.agent_id,
-            identity_match_policy=args.identity_match_policy,
-            expected_host=args.expected_host,
-            allow_identity_override=args.allow_identity_override,
-        )
+        if args.auto_resolve_by_ip:
+            result = await service.download_import_agent_package(
+                package_id,
+                site_id=args.site,
+                site_name=args.site_name or args.site,
+                owner="agent_package_sync",
+                identity_match_policy=args.identity_match_policy,
+                auto_resolve_by_ip=True,
+            )
+        else:
+            result = await service.download_import_package(
+                package_id,
+                site_id=args.site,
+                site_name=args.site_name or args.site,
+                device_id=args.device_id,
+                device_name=args.device_name,
+                mr_id=args.mr_id,
+                mr_name=args.mr_name,
+                owner="manual_agent_import",
+                expected_session_id=args.expected_session_id or None,
+                controller_task_id=args.controller_task_id or None,
+                agent_task_id=selected.task_id or None,
+                agent_id=status.agent_id,
+                identity_match_policy=args.identity_match_policy,
+                expected_host=args.expected_host,
+                allow_identity_override=args.allow_identity_override,
+                source_package_id=selected.package_id,
+            )
     except OnlineMrAgentClientError as exc:
         print(f"导入失败 [{exc.code}]：{exc.message}")
         return 2
@@ -205,6 +252,10 @@ async def _run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.list_packages_with_match and not str(args.site or "").strip():
+        parser.error("--list-packages-with-match 必须提供 --site")
+    if args.auto_resolve_by_ip and args.identity_match_policy != "ip_match":
+        parser.error("--auto-resolve-by-ip 必须使用 --identity-match-policy ip_match")
     if args.package_id:
         missing = _missing_import_arguments(args)
         if missing:

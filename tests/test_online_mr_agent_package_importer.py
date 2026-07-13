@@ -223,6 +223,22 @@ def test_same_zip_is_idempotent_without_duplicate_task_or_mapping(
     )
 
 
+def test_import_manifest_records_remote_package_id(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(tmp_path / "source.zip")
+
+    result = _import(
+        OnlineMrAgentPackageImporter(paths),
+        package,
+        source_package_id="remote-package-1",
+    )
+
+    manifest = json.loads(
+        (result.session_dir / "import_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["source_package_id"] == "remote-package-1"
+
+
 def test_agent_local_identity_requires_explicit_mapping(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     package = _write_package(
