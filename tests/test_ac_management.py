@@ -4114,6 +4114,43 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
     assert rows[1]["ap_name"] == "AP10"
 
 
+def test_trackside_ap_business_keeps_same_ap_on_different_interfaces():
+    switch = Device(name="04-横溪站1", sysname="HX_1", station="03横溪站", device_uuid="sw-hx-1")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-hx-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/16",
+                    "link_status": "UP",
+                    "description": "AP",
+                    "port_status": "trunk",
+                    "pvid": "923",
+                },
+                {
+                    "interface_name": "GigabitEthernet2/0/32",
+                    "link_status": "DOWN",
+                    "description": "AP",
+                    "port_status": "trunk",
+                    "pvid": "923",
+                },
+            ]
+        },
+        {"sw-hx-1": []},
+        [],
+        {
+            "sw-hx-1": [
+                {"local_interface": "GE2/0/16", "neighbor_mac": "bc5a-3457-9c60", "neighbor_sysname": "bc5a-3457-9c60"},
+                {"local_interface": "GE2/0/32", "neighbor_mac": "bc5a-3457-9c60", "neighbor_sysname": "bc5a-3457-9c60"},
+            ]
+        },
+        [],
+    )
+
+    assert [row["interface_name"] for row in rows] == ["GigabitEthernet2/0/16", "GigabitEthernet2/0/32"]
+    assert {row["ap_mac"] for row in rows} == {"bc5a-3457-9c60"}
+
+
 def test_trackside_ap_business_link_and_port_type_are_separate():
     assert normalize_link_state("up") == "UP"
     assert normalize_link_state("Administratively DOWN") == "DOWN"

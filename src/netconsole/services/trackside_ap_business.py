@@ -519,7 +519,6 @@ def build_trackside_ap_business_rows(
             )
             result.append(row)
     result.extend(_offline_ledger_to_trackside_rows(offline_ap_ledger_rows or [], interfaces_by_device, optical_by_device))
-    result = _merge_duplicate_ap_rows(result)
     result = _merge_duplicate_trackside_rows(result)
     _log_trackside_identity_coverage(
         devices,
