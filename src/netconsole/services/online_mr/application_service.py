@@ -58,7 +58,7 @@ _STARTUP_PHASES = {
 
 
 class OnlineMrApplicationService:
-    """Online MR 本地启动、Task/Session 映射和恢复的纯 Python 应用边界。"""
+    """Online MR LOCAL 生命周期与尚未启用的 Agent executor 分派边界。"""
 
     def __init__(
         self,
@@ -78,11 +78,11 @@ class OnlineMrApplicationService:
         self._unsubscribe = self.task_service.events.subscribe(self.reconcile_task_event)
 
     def prepare_start(self, request: OnlineMrStartRequest) -> OnlineMrStartRequest:
+        if request.executor_kind is not OnlineMrExecutorKind.LOCAL:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
         site_id = self._safe_component(request.site_id)
         if not site_id or not self.paths.site_dir(site_id).is_dir():
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.SITE_NOT_FOUND, "Online MR 局点不存在")
-        if request.executor_kind is not OnlineMrExecutorKind.LOCAL:
-            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
         if request.agent_id:
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "本地执行不能指定 Agent")
         if request.device_id in (None, "") or not request.device_name.strip() or not request.mr_name.strip():
@@ -98,6 +98,12 @@ class OnlineMrApplicationService:
         ):
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "Online MR 启动配置与任务归属不一致")
         return request
+
+    def start_collection(self, request: OnlineMrStartRequest) -> OnlineMrOperationSnapshotDTO:
+        """统一 executor 入口；5B-6 保持 AGENT 为显式 unsupported stub。"""
+        if request.executor_kind is not OnlineMrExecutorKind.LOCAL:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
+        return self.start_local_collection(request)
 
     def start_local_collection(self, request: OnlineMrStartRequest) -> OnlineMrOperationSnapshotDTO:
         request = self.prepare_start(request)
@@ -211,6 +217,8 @@ class OnlineMrApplicationService:
         mapping = self._required_mapping(controller_task_id, site_id=site_id)
         if mapping.phase is OnlineMrPhase.TERMINAL:
             return self._to_operation(mapping)
+        if mapping.executor_kind is not OnlineMrExecutorKind.LOCAL:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
         repository = self.repository(mapping.site_id)
         repository.mark_stopping(
             controller_task_id,
@@ -235,6 +243,8 @@ class OnlineMrApplicationService:
         mapping = self._required_mapping(controller_task_id, site_id=site_id)
         if mapping.phase is OnlineMrPhase.TERMINAL:
             return self._to_operation(mapping)
+        if mapping.executor_kind is not OnlineMrExecutorKind.LOCAL:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
         repository = self.repository(mapping.site_id)
         repository.mark_stopping(
             controller_task_id,
@@ -356,7 +366,11 @@ class OnlineMrApplicationService:
             return
         payload = dict(event.get("payload") or event)
         mapping = self._find_by_task(task_id, site_id=self._text(payload.get("site_id")) or None)
-        if mapping is None or mapping.phase is OnlineMrPhase.TERMINAL:
+        if (
+            mapping is None
+            or mapping.phase is OnlineMrPhase.TERMINAL
+            or mapping.executor_kind is not OnlineMrExecutorKind.LOCAL
+        ):
             return
         repository = self.repository(mapping.site_id)
         event_type = str(event.get("type") or payload.get("type") or "")
@@ -412,6 +426,8 @@ class OnlineMrApplicationService:
             task_repository = self.task_service.repository(selected_site)
             for mapping in repository.list(limit=1000):
                 if mapping.mapping_state not in _ACTIVE_MAPPING_STATES:
+                    continue
+                if mapping.executor_kind is not OnlineMrExecutorKind.LOCAL:
                     continue
                 task = task_repository.get(mapping.controller_task_id)
                 if task is not None and task.status not in TERMINAL_TASK_STATES:

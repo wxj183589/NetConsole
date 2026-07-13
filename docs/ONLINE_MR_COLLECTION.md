@@ -157,3 +157,58 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 独立 Agent 的 Online MR 由 `apps/agent/mr_collector_py/collector_cli.py`（发布后为 `tools/windows-x64/mr_collector/netconsole-mr-collector.exe`）通过 Netmiko 执行；Go 进程只负责启动/停止 sidecar、任务状态、原始日志 tail、实时 view 和 ZIP。Agent 不生成正式分析报告，也不把 `stop.request` 打进采集包。
 
 Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/live`、`/api/v1/mr/collect/raw-tail`、`/api/v1/mr/collect/raw-summary`。fping 与可选 iPerf Client 共享 MR 生命周期；独立 iPerf Server/Client 和 TCP fallback 仍在各自工具页运行。
+
+## 10. Agent Executor Contract（5B-6，尚未启用）
+
+阶段 5B-6 只固化 Controller 侧契约，不调用 Agent HTTP API、不创建远端任务、不下载或导入采集包。`OnlineMrApplicationService.start_collection()` 是 executor 分派入口；`LOCAL` 继续复用已验收的 `start_local_collection()`，`AGENT` 在创建 LOCAL Worker、Task/Session 映射或 TrafficCoordinator 之前稳定返回 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。已有 AGENT 映射也不会被 LOCAL stop/force stop、Task Event Hub 或本地遗留恢复误处理。
+
+### 10.1 当前 Agent 能力与协议缺口
+
+Go Agent 已有 `/api/v1/mr/collect/{start,stop,status,live,raw-tail,raw-summary}`、统一任务查询/事件、采集包下载、Netmiko sidecar 和密码脱敏。现有 start 请求已能表达目标、会话归属、采集项、周期、Radio、fping、iPerf 和现场展示上下文；私有 `meta/request.private.json` 只用于 sidecar 连接，任务参数和目标快照使用脱敏副本，最终 ZIP 排除该文件和 `stop.request`。
+
+尚未接通的边界：
+
+- Python `AgentHttpClient` 没有 Online MR Typed Client；
+- Go MR 请求尚未执行 `duration_minutes` 自动停止；
+- Agent task/status/live 三类响应尚未归一为 Controller 的 start/status/stop DTO；
+- Controller 没有安全的 Online MR Agent package importer；
+- Agent 终态、包下载、包校验、会话落盘和 Task/Session/Mapping 终态尚未形成完整同步链。
+
+因此 5B-6 不把 Agent 已有本地 Web 采集能力描述为 Python Controller 已接入。
+
+### 10.2 请求与响应模型
+
+`src/netconsole/models/online_mr_agent.py` 定义未来 Controller 边界：
+
+- `OnlineMrAgentStartRequest`：`site/device/mr/owner/agent_id`、最小连接目标、采集项、interval、Radio、fping、iPerf、`display_context`、`duration_minutes`、`stop_strategy` 和自动打包策略；
+- `OnlineMrAgentStartResponse`：`agent_task_id/session_id/task_type/status/started_at` 与稳定错误；
+- `OnlineMrAgentStatusResponse`：采集器、fping、iPerf、包、错误摘要和完整性；
+- `OnlineMrAgentStopResponse`：停止结果、原因和包状态。
+
+目标密码使用 `SecretStr`。`transport_payload()` 是未来 HTTP 私有请求，允许为连接临时包含明文密码，但返回值禁止写入日志、事件、数据库和包；`public_payload()`、模型 JSON 和 repr 不含明文密码。主程序映射继续只保存 `agent_id` 和业务摘要，不新增凭据字段。
+
+### 10.3 状态与交付映射
+
+| Agent 状态 | Controller Task | OnlineMrPhase | Mapping | 说明 |
+| --- | --- | --- | --- | --- |
+| `created/starting` | `STARTING` | `PREPARING_TASK/STARTING_COLLECTION` | `PENDING_SESSION` | 尚未确认远端采集运行 |
+| `running` | `RUNNING` | `COLLECTING` | `LINKED` | 远端 Task 与 Session 已关联 |
+| `stopping` | `STOPPING` | `STOPPING_TRAFFIC` | `LINKED` | 等待 Agent 最终化与打包 |
+| `stopped/completed` | `RUNNING` | `FINALIZING` | `LINKED` | 远端已终态，但包未下载/导入时 Controller 不能伪完成 |
+| 上述状态且包已校验导入 | `COMPLETED` | `TERMINAL` | `TERMINAL` | 本地主程序已取得兼容会话事实文件 |
+| 包下载或校验失败 | `FAILED` | `TERMINAL` | `TERMINAL` | Agent 远端 raw 保留，记录下载/校验错误 |
+| `failed` | `FAILED` | `TERMINAL` | `TERMINAL` | 不伪造成功 |
+| `force_stopped` | `CANCELLED` | `TERMINAL` | `TERMINAL` | `data_integrity=partial` |
+| `aborted/cancelled` | `CANCELLED` | `TERMINAL` | `TERMINAL` | 不自动解析、不删除远端 raw |
+
+Terminal mapping 不得被后续轮询或本地 Task 事件改回 ACTIVE。带 warning 的正常终态保留 warning；是否完整由包内 metadata 和校验结果决定。
+
+### 10.4 错误码与包契约
+
+当前稳定错误仍是 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。Controller 已预留带 `ONLINE_MR_` 前缀的 Agent unreachable/auth/version/tool/collector/start/stop/status/package download/package invalid/session metadata/raw contract 错误码；5B-6 不触发这些远程错误。
+
+Agent ZIP 使用单一会话根目录，必须包含主程序需要的 `manifest.json`、`raw/` 十四类事实文件、`session_meta.json`、`task.json`、`stop_reason.json`、`agent_info.json` 和 `system_info.json`。逻辑会话目录还包括 `parsed/`、`view/`、`logs/`、`outputs/`；ZIP 不保证为空目录有独立 entry，未来 importer 应在校验通过后创建缺失空目录。
+
+禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。本阶段只有纯 entry 契约校验，没有下载、解压或导入实现。
+
+Agent Task/Event 向 Controller 只允许传递稳定 ID、状态、指标和相对 artifact 引用；不得传递 Agent 私有绝对路径、Token、密码或私有请求内容。
