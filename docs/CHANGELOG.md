@@ -4,6 +4,8 @@
 
 ### 本次修复
 
+- 修复轨旁 AP 业务详情联表数据含嵌套字典时的显示文本提取异常，避免该详情页在归一化展示值时触发 `TypeError`。
+- Agent 发布工具统一从 `resources/tools/windows-x64/` 取用 fping/iPerf3，交付包只复制 Agent 所需工具；IPOP 不再作为 Agent 运行依赖。
 - 完成 Web 演进阶段 4B-2：新增 `TrafficTestApplicationService`、本地/Agent 执行适配、远端 Supervisor、Controller/Agent Task 映射、持久事件流和 Controller 重启恢复；尚未创建 Traffic REST/WebSocket 或 Vue 页面。
 - 新增每局点 `traffic_runs.sqlite`，只保存 Traffic Run 索引、Agent 映射和独立高频 Ping 样本；iPerf interval 继续只写既有 `iperf_results.sqlite`，Agent 事件重放使用远端事件键幂等去重。
 - 新增纯 Python `LocalProcessAdapter` 和三个 Traffic Job handler；高频样本不进入全局 Task Event 表。本地 fping `packet_size` 已传入 `-b`，多目标 Ping 批量落库，timeout 不再伪造 RTT=0。
