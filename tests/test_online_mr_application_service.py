@@ -24,10 +24,20 @@ from netconsole.services.online_mr.errors import OnlineMrApplicationError, Onlin
 
 
 class FakeProcessAdapter:
-    def __init__(self, task_service: TaskApplicationService, *, failure: str = "") -> None:
+    def __init__(
+        self,
+        task_service: TaskApplicationService,
+        *,
+        failure: str = "",
+        cooperative_stop: bool = True,
+    ) -> None:
         self.task_service = task_service
         self.failure = failure
+        self.cooperative_stop = cooperative_stop
         self.jobs = []
+        self.active_jobs: set[str] = set()
+        self.cancelled_jobs: list[str] = []
+        self.forced_jobs: list[str] = []
 
     def start_job(self, job, *, on_complete=None) -> str:
         del on_complete
@@ -39,7 +49,40 @@ class FakeProcessAdapter:
             self.task_service.fail_start(launch.job.job_id, "submit failed")
             raise RuntimeError("submit failed")
         self.task_service.mark_running(launch.job.job_id)
+        self.active_jobs.add(launch.job.job_id)
         return launch.job.job_id
+
+    def cancel_job(self, job_id: str) -> bool:
+        self.cancelled_jobs.append(job_id)
+        if job_id not in self.active_jobs:
+            return False
+        if self.cooperative_stop:
+            self.active_jobs.discard(job_id)
+            self.task_service.record_external_event(
+                job_id,
+                "finished",
+                {"result": {"status": "STOPPED"}},
+                site_name="site-a",
+            )
+        return True
+
+    def wait(self, job_id: str, timeout: float | None = None) -> bool:
+        del timeout
+        return job_id not in self.active_jobs
+
+    def force_stop_job(self, job_id: str, *, timeout_seconds: float = 1.0) -> bool:
+        del timeout_seconds
+        if job_id not in self.active_jobs:
+            return False
+        self.forced_jobs.append(job_id)
+        self.active_jobs.discard(job_id)
+        self.task_service.record_external_event(
+            job_id,
+            "cancelled",
+            {"message": "forced", "error": "forced"},
+            site_name="site-a",
+        )
+        return True
 
 
 def _paths(tmp_path: Path) -> PathResolver:
@@ -84,10 +127,15 @@ def _request(site: str = "site-a", *, executor: OnlineMrExecutorKind = OnlineMrE
     )
 
 
-def _service(tmp_path: Path, *, failure: str = "") -> tuple[OnlineMrApplicationService, TaskApplicationService, FakeProcessAdapter]:
+def _service(
+    tmp_path: Path,
+    *,
+    failure: str = "",
+    cooperative_stop: bool = True,
+) -> tuple[OnlineMrApplicationService, TaskApplicationService, FakeProcessAdapter]:
     paths = _paths(tmp_path)
     task_service = TaskApplicationService(paths, site_name="site-a")
-    adapter = FakeProcessAdapter(task_service, failure=failure)
+    adapter = FakeProcessAdapter(task_service, failure=failure, cooperative_stop=cooperative_stop)
     service = OnlineMrApplicationService(
         paths,
         site_name="site-a",
@@ -106,6 +154,7 @@ def _mapping(task_id: str, *, site: str = "site-a", session_id: str | None = Non
         site_id=site,
         device_id="7",
         device_name="列车07 MR",
+        mr_id="7",
         mr_name="MR-07",
         executor_kind=OnlineMrExecutorKind.LOCAL,
         phase=OnlineMrPhase.PREPARING_SESSION,
@@ -164,14 +213,67 @@ def test_mapping_repository_uses_tasks_db_and_is_idempotent(tmp_path: Path) -> N
         journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
         busy_timeout = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
         foreign_keys = int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+        mapping_columns = {row[1] for row in conn.execute("PRAGMA table_info(online_mr_task_sessions)")}
 
     assert task_service.repository("site-a").db_path == repository.db_path
     assert {"task_snapshots", "online_mr_task_sessions", "online_mr_task_session_schema"} <= tables
-    assert repository.schema_version() == 1
+    assert repository.schema_version() == 2
+    assert {"mr_id", "duration_minutes", "stop_reason", "force_stopped", "error_summary"} <= mapping_columns
     assert journal_mode == "wal"
     assert busy_timeout > 0
     assert foreign_keys == 1
     assert repository.get_by_task("task-1") == mapping
+
+
+def test_mapping_repository_migrates_existing_schema_without_recreating_rows(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    db_path = paths.site_tasks_db_path("site-a")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE online_mr_task_session_schema (
+                singleton INTEGER PRIMARY KEY,
+                version INTEGER NOT NULL
+            );
+            INSERT INTO online_mr_task_session_schema VALUES (1, 1);
+            CREATE TABLE online_mr_task_sessions (
+                controller_task_id TEXT PRIMARY KEY,
+                session_id TEXT UNIQUE,
+                site_id TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT '',
+                device_name TEXT NOT NULL DEFAULT '',
+                mr_name TEXT NOT NULL DEFAULT '',
+                executor_kind TEXT NOT NULL,
+                agent_id TEXT NOT NULL DEFAULT '',
+                phase TEXT NOT NULL,
+                mapping_state TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                terminal_at TEXT,
+                error_code TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO online_mr_task_sessions (
+                controller_task_id, site_id, executor_kind, phase, mapping_state, created_at, updated_at
+            ) VALUES ('legacy-task', 'site-a', 'LOCAL', 'COLLECTING', 'LINKED', '2026-07-13T10:00:00', '2026-07-13T10:00:00');
+            """
+        )
+
+    repository = OnlineMrTaskSessionRepository(db_path, site_id="site-a")
+    migrated = repository.get_by_task("legacy-task")
+
+    assert repository.schema_version() == 2
+    assert migrated is not None
+    assert migrated.mr_id == ""
+    assert migrated.duration_minutes is None
+    assert migrated.force_stopped is False
+    recovered = repository.recover_active_as_aborted(
+        ended_at="2026-07-13T10:05:00",
+        reason="worker missing",
+    )
+    assert recovered[0].mapping_state == OnlineMrMappingState.STALE
+    assert recovered[0].duration_minutes == 5.0
 
 
 def test_mapping_repository_links_session_and_rejects_conflicts(tmp_path: Path) -> None:
@@ -302,6 +404,107 @@ def test_finished_event_sets_terminal_without_changing_stop_or_packaging(tmp_pat
     assert terminal.task_status == "COMPLETED"
 
 
+def test_finished_event_persists_flush_warning_and_worker_stop_reason(tmp_path: Path) -> None:
+    service, _task_service, _adapter = _service(tmp_path)
+    operation = service.start_local_collection(_request())
+    _session_dir(service.paths, "session-warning", status="STOPPED")
+    details = {
+        "controller_task_id": operation.controller_task_id,
+        "session_id": "session-warning",
+        "site_id": "site-a",
+        "device_id": 7,
+    }
+    service.reconcile_task_event(
+        _event(operation.controller_task_id, "progress", stage="online_mr_session_created", details=details)
+    )
+
+    service.reconcile_task_event(
+        {
+            "type": "finished",
+            "job_id": operation.controller_task_id,
+            "result": {
+                "status": "STOPPED",
+                "stop_reason": "duration_elapsed",
+                "warnings": ["fping flush 超时，原始输出完整性未知"],
+            },
+        }
+    )
+
+    terminal = service.get_operation(operation.controller_task_id, site_id="site-a")
+    assert terminal.stop_reason == "duration_elapsed"
+    assert terminal.error_summary == "fping flush 超时，原始输出完整性未知"
+    assert terminal.mapping_state == OnlineMrMappingState.TERMINAL
+
+
+def test_stop_operation_converges_task_session_mapping_and_duration(tmp_path: Path) -> None:
+    service, _task_service, adapter = _service(tmp_path)
+    operation = service.start_local_collection(_request())
+    session_dir = _session_dir(service.paths, "session-stop", status="COLLECTING")
+    details = {
+        "controller_task_id": operation.controller_task_id,
+        "session_id": "session-stop",
+        "site_id": "site-a",
+        "device_id": 7,
+        "started_at": "2026-07-13 10:00:00",
+    }
+    service.reconcile_task_event(
+        _event(operation.controller_task_id, "progress", stage="online_mr_session_created", details=details)
+    )
+    service.reconcile_task_event(
+        _event(operation.controller_task_id, "progress", stage="online_mr_started", details=details)
+    )
+
+    stopped = service.stop_operation(operation.controller_task_id, site_id="site-a", timeout_seconds=0.1)
+
+    meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert stopped.task_status == "COMPLETED"
+    assert stopped.mapping_state == OnlineMrMappingState.TERMINAL
+    assert stopped.phase == OnlineMrPhase.TERMINAL
+    assert stopped.duration_minutes is not None and stopped.duration_minutes >= 0
+    assert stopped.stop_reason == "user_stop"
+    assert meta["status"] == "STOPPED"
+    assert meta["duration_minutes"] == stopped.duration_minutes
+    assert adapter.cancelled_jobs == [operation.controller_task_id]
+    assert adapter.jobs[0].params["manage_traffic"] is True
+
+
+def test_force_stop_is_bounded_marks_warning_and_preserves_raw(tmp_path: Path) -> None:
+    service, _task_service, adapter = _service(tmp_path, cooperative_stop=False)
+    operation = service.start_local_collection(_request())
+    session_dir = _session_dir(service.paths, "session-force", status="COLLECTING")
+    details = {
+        "controller_task_id": operation.controller_task_id,
+        "session_id": "session-force",
+        "site_id": "site-a",
+        "device_id": 7,
+        "started_at": "2026-07-13 10:00:00",
+    }
+    service.reconcile_task_event(
+        _event(operation.controller_task_id, "progress", stage="online_mr_session_created", details=details)
+    )
+    service.reconcile_task_event(
+        _event(operation.controller_task_id, "progress", stage="online_mr_started", details=details)
+    )
+
+    forced = service.force_stop_operation(
+        operation.controller_task_id,
+        site_id="site-a",
+        cooperative_timeout_seconds=0,
+        force_timeout_seconds=0,
+    )
+
+    meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert forced.task_status == "CANCELLED"
+    assert forced.mapping_state == OnlineMrMappingState.TERMINAL
+    assert forced.force_stopped is True
+    assert forced.stop_reason == "force_stop"
+    assert "无法确认全部 writer flush" in forced.error_summary
+    assert meta["status"] == "FORCED_STOPPED"
+    assert meta["finalization_complete"] is False
+    assert (session_dir / "raw" / "terminal_monitor_raw.log").read_text(encoding="utf-8") == "raw evidence\n"
+    assert adapter.forced_jobs == [operation.controller_task_id]
+
+
 def test_startup_failure_after_session_keeps_raw_and_aligns_failed_status(tmp_path: Path) -> None:
     service, _task_service, _adapter = _service(tmp_path)
     operation = service.start_local_collection(_request())
@@ -388,7 +591,9 @@ def test_recovery_does_not_abort_current_active_task_or_repeat_terminal_mapping(
     service.recover_mappings(site_id="site-a")
     after = service.get_operation(operation.controller_task_id, site_id="site-a")
     assert after == before
-    assert json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))["status"] == "ABORTED"
+    meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert meta["status"] == "FORCED_STOPPED"
+    assert meta["finalization_complete"] is False
 
 
 def test_application_boundary_has_no_qt_fastapi_or_worker_imports() -> None:

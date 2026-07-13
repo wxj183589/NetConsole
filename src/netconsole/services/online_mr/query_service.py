@@ -128,7 +128,10 @@ class OnlineMrQueryService:
                 "config_collect_status": meta.get("config_collect_status"),
             },
             enabled_collectors=self._enabled_collectors(meta),
-            traffic_summary={"fping": meta.get("fping") or {}, "iperf": meta.get("iperf") or {}},
+            traffic_summary=dict(
+                meta.get("traffic_summary")
+                or {"fping": meta.get("fping") or {}, "iperf": meta.get("iperf") or {}}
+            ),
             file_summary={"artifact_count": len(artifacts), "raw_file_count": raw_count},
             database_summary=database,
             notes_count=self._count_notes(session_dir),

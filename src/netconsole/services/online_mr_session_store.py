@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshLogRecord
@@ -81,6 +82,9 @@ class OnlineMrSessionStore:
             config_collect_enabled=enabled,
             config_collect_status="skipped" if not enabled else "pending",
             raw_log_path=str(session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE),
+            configured_duration_minutes=(
+                int(config.duration_minutes) if config.duration_minutes is not None and int(config.duration_minutes) > 0 else None
+            ),
         )
         session = OnlineMrSession(session_dir, meta)
         session.initialize_database()
@@ -135,6 +139,7 @@ class OnlineMrSession:
         self.session_dir = session_dir
         self.meta = meta
         self.db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        self._meta_lock = Lock()
 
     def initialize_database(self) -> None:
         with self._connect() as conn:
@@ -391,7 +396,14 @@ class OnlineMrSession:
 
     def write_meta(self) -> None:
         path = self.session_dir / "session_meta.json"
-        path.write_text(json.dumps(self.meta.to_json_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary = path.with_suffix(".json.tmp")
+        with self._meta_lock:
+            try:
+                temporary.write_text(json.dumps(self.meta.to_json_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+                temporary.replace(path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
 
     def log(self, level: str, message: str) -> None:
         now = datetime.now().isoformat(sep=" ", timespec="seconds")

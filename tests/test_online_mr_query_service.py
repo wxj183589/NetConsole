@@ -136,6 +136,24 @@ def test_get_session_handles_old_metadata_raw_only_and_safe_reference(tmp_path: 
     assert str(tmp_path) not in detail.model_dump_json()
 
 
+def test_get_session_prefers_finalized_traffic_summary(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "traffic-summary")
+    meta_path = session / "session_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["traffic_summary"] = {
+        "fping": {"status": "stopped", "sent_count": 10},
+        "iperf": {"status": "stopped_by_collection"},
+        "flush_complete": True,
+    }
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    detail = service.get_session("site-a", "traffic-summary")
+
+    assert detail.traffic_summary["flush_complete"] is True
+    assert detail.traffic_summary["fping"]["sent_count"] == 10
+
+
 def test_missing_and_invalid_metadata_have_domain_errors(tmp_path: Path) -> None:
     service = _service(tmp_path)
     missing = service.paths.online_mr_session_dir("site-a", "MR-01", "missing")

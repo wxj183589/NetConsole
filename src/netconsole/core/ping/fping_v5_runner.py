@@ -81,6 +81,8 @@ def run_fping_v5_json(
     project_root: Path | None = None,
     fping_path: Path | None = None,
 ) -> Iterator[FpingV5Sample]:
+    if stop_event is not None and stop_event.is_set():
+        return
     paths = resolve_fping_v5_paths(project_root, fping_path)
     args = build_fping_v5_args(paths.fping_path, target, period_ms, timeout_ms, packet_size)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0

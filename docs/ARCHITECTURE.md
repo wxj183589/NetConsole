@@ -149,6 +149,8 @@ flowchart TD
 - AP Identity：只读 shadow/diagnostics，不改旧 resolver、数据库 schema、workbook 字段或业务统计；阶段 8.3 可见 UI 继续暂缓。
 - MR/Mesh：目录数据库可仅作索引，源文件明细应解析到 `source_files.parsed_db_path` 指向的数据库；大样本图表按可见窗口或保留关键点的下采样结果绘制。
 
+阶段 5B-3 的新 Online MR LOCAL Application 入口仍复用现有 `online_mr_collection_start` Worker，不创建第二套 Core。Worker 内纯 Python `OnlineMrTrafficCoordinator` 持有 fping/iPerf 子线程：停止时先显式 stop/join Traffic，再关闭 SSH collector/writer，稳定 metadata 后原子打包，最后退出 Worker 让 Task Runtime 发布终态。强停由 Application Service 先有界协作等待，再通过 `LocalProcessAdapter` 终止进程树；无法确认 flush 时保留 raw、不发布新 ZIP，并把 Session/Mapping 收敛到带警告终态。Legacy Qt 尚未切换到该入口。
+
 Online MR 会话生命周期：
 
 ```mermaid

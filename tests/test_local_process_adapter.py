@@ -334,6 +334,31 @@ def test_local_process_adapter_cancel_uses_grace_then_terminate_and_kill(tmp_pat
     assert not (job_dir / f"{job_id}.cancel").exists()
 
 
+def test_local_process_adapter_force_stop_is_immediate_and_bounded(tmp_path: Path) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-force-stop"
+    process = _FakeProcess(auto_finish=False, terminate_exits=False)
+    process_tree = _FakeProcessTree()
+    completions: list[LocalProcessCompletion] = []
+    adapter = LocalProcessAdapter(
+        service,
+        popen_factory=_PopenFactory(process),
+        process_tree_factory=lambda _process: process_tree,
+        terminate_timeout_seconds=0.03,
+    )
+    adapter.start_job(_job(paths, job_id, cancel_grace_ms=60000), on_complete=completions.append)
+
+    assert adapter.force_stop_job(job_id, timeout_seconds=0.01) is True
+    _wait_until(lambda: not adapter.is_running(job_id))
+
+    assert process.terminate_called is True
+    assert process.kill_called is True
+    assert process_tree.close_calls == 1
+    assert service.get_task(job_id).status is TaskState.CANCELLED
+    assert len(completions) == 1
+    assert completions[0].forced is True
+
+
 def test_local_process_adapter_cooperative_cancel_calls_completion_once(tmp_path: Path) -> None:
     paths, service = _service(tmp_path)
     job_id = "local-cooperative-cancel"

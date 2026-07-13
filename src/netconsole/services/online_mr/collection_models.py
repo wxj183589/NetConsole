@@ -163,6 +163,15 @@ def session_meta_from_payload(payload: dict[str, Any]) -> OnlineMrSessionMeta:
         config_error=str(payload.get("config_error")) if payload.get("config_error") is not None else None,
         raw_log_path=str(payload.get("raw_log_path") or ""),
         init=dict(payload.get("init") or {}),
+        configured_duration_minutes=_optional_int(payload.get("configured_duration_minutes")),
+        duration_minutes=float(payload["duration_minutes"]) if payload.get("duration_minutes") is not None else None,
+        stop_reason=str(payload.get("stop_reason") or ""),
+        force_stopped=bool(payload.get("force_stopped", False)),
+        traffic_summary=dict(payload.get("traffic_summary") or {}),
+        finalization_warnings=[str(item) for item in list(payload.get("finalization_warnings") or [])],
+        finalization_complete=bool(payload.get("finalization_complete", False)),
+        package_available=bool(payload.get("package_available", False)),
+        data_integrity=str(payload.get("data_integrity") or "unknown"),
     )
 
 

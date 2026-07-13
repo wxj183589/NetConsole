@@ -253,6 +253,28 @@ class LocalProcessAdapter:
             return True
         return state.done.wait(timeout=None if timeout is None else max(0.0, float(timeout)))
 
+    def force_stop_job(self, job_id: str, *, timeout_seconds: float = 1.0) -> bool:
+        """立即终止本地 Worker 进程树，并以有界等待收口 Task 状态。"""
+
+        with self._state_lock:
+            state = self._states.get(str(job_id or ""))
+            if state is None or state.done.is_set():
+                return False
+            schedule_cancel = not state.cancel_scheduled
+            state.cancel_scheduled = True
+        if schedule_cancel:
+            with self._service_lock:
+                self.task_service.request_cancel(state.job_id)
+        self._terminate_process(state)
+        timeout = max(0.0, float(timeout_seconds))
+        if state.done.wait(timeout):
+            return True
+        self._kill_process(state)
+        if state.done.wait(min(self._terminate_timeout_seconds, max(0.01, timeout))):
+            return True
+        self._abandon(state)
+        return True
+
     def shutdown(self, timeout_seconds: float = 5.0) -> None:
         """停止所有本地 Worker；不会影响远端 Agent 任务。"""
 

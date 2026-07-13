@@ -164,6 +164,7 @@ class OnlineMrOperationSnapshotDTO(ApiModel):
     site_id: str
     device_id: int | str | None = None
     device_name: str = ""
+    mr_id: str = ""
     mr_name: str = ""
     executor_kind: OnlineMrExecutorKind
     agent_id: str = ""
@@ -173,6 +174,11 @@ class OnlineMrOperationSnapshotDTO(ApiModel):
     started_at: str | None = None
     updated_at: str
     terminal_at: str | None = None
+    ended_at: str | None = None
+    duration_minutes: float | None = None
+    stop_reason: str = ""
+    force_stopped: bool = False
+    error_summary: str = ""
     error_code: str = ""
     error_message: str = ""
     mapping_state: OnlineMrMappingState

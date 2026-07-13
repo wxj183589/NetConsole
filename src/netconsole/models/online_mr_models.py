@@ -377,6 +377,15 @@ class OnlineMrSessionMeta:
     config_error: str | None = None
     raw_log_path: str = ""
     init: dict[str, Any] = field(default_factory=dict)
+    configured_duration_minutes: int | None = None
+    duration_minutes: float | None = None
+    stop_reason: str = ""
+    force_stopped: bool = False
+    traffic_summary: dict[str, Any] = field(default_factory=dict)
+    finalization_warnings: list[str] = field(default_factory=list)
+    finalization_complete: bool = False
+    package_available: bool = False
+    data_integrity: str = "unknown"
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -405,6 +414,15 @@ class OnlineMrSessionMeta:
             "config_error": self.config_error,
             "raw_log_path": self.raw_log_path,
             "init": self.init,
+            "configured_duration_minutes": self.configured_duration_minutes,
+            "duration_minutes": self.duration_minutes,
+            "stop_reason": self.stop_reason,
+            "force_stopped": self.force_stopped,
+            "traffic_summary": self.traffic_summary,
+            "finalization_warnings": self.finalization_warnings,
+            "finalization_complete": self.finalization_complete,
+            "package_available": self.package_available,
+            "data_integrity": self.data_integrity,
         }
 
 

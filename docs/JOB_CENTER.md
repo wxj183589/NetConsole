@@ -19,7 +19,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
 - `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
-- `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。
+- `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测、Traffic 领域分区。
 
 ## Worker Process 约束
@@ -43,7 +43,9 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 阶段 5B-2A 的 `OnlineMrApplicationService` 是纯 Python LOCAL 启动边界。它通过 `LocalProcessAdapter` 提交既有 `online_mr_collection_start` Job，并把 `site_name`、`device`、`device_id` 和 owner 作为顶层任务摘要传入，避免 Task Center 从嵌套连接配置推断归属。创建任务前先在所属局点 `tasks.db` 写入可空 Session 映射；采集侧创建会话后发出 `online_mr_session_created`，应用层再幂等关联 Session。
 
-Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约。启动连接失败时 Task 为 `FAILED`，已创建会话 metadata 同步为 `FAILED`；显式恢复核对可将没有活动 Task 宿主的旧会话标为 `ABORTED`，但不触发解析、打包或 raw 清理。该入口尚未替换 Legacy Qt，`AGENT`、`duration_minutes`、Traffic 子任务停止/flush、正常停止、强停和最终化协调留给后续阶段。
+Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约。启动连接失败时 Task 为 `FAILED`，已创建会话 metadata 同步为 `FAILED`；显式恢复核对可将没有活动 Task 宿主的旧会话标为 `ABORTED`，但不触发解析、打包或 raw 清理。
+
+阶段 5B-3 的新 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用现有协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile。该入口仍未替换 Legacy Qt，AGENT 仍返回不支持。
 
 ## Task Center API
 

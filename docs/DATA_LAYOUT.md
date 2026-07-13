@@ -145,7 +145,7 @@ sessions/<session>/
 
 当前标准 Online MR 会话目录没有 `reports/` 或 `packages/`；正式包位于 `outputs/`。`raw/` 和 metadata 是采集事实源，`parsed/online_diagnosis.sqlite` 是报告、历史图表和跨源时间轴的现行查询产物，虽然可由完整 raw 重建，但不能在未确认 raw 完整、重建能力和消费者的情况下当作普通缓存无条件删除。阶段 5B-1 的 `OnlineMrQueryService` 只通过白名单相对引用读取这些内容，不接受任意文件路径，也不创建、迁移或修复数据库 schema。
 
-阶段 5B-2A 的 `online_mr_task_sessions` 与任务快照/事件共用所属局点的 `tasks.db`。映射只保存 Controller Task、Session、局点、设备、MR、执行端、业务阶段和稳定错误摘要；会话创建前允许 `session_id` 为空，收到结构化会话事件后幂等补齐。连接密码、设备命令、完整运行配置、raw、样本和服务端绝对路径不得写入该映射。遗留会话核对只更新映射与 `session_meta.json` 状态，不删除或重建会话事实文件。
+阶段 5B-3 的 `online_mr_task_sessions` schema v2 与任务快照/事件共用所属局点的 `tasks.db`。映射只保存 Controller Task、Session、局点、设备、MR、执行端、业务阶段、开始/结束时间、实际分钟时长、停止原因、强停标记和稳定错误摘要；会话创建前允许 `session_id` 为空，收到结构化会话事件后幂等补齐。连接密码、设备命令、完整运行配置、raw、样本和服务端绝对路径不得写入该映射。旧 schema 通过幂等 `ALTER TABLE` 补列，不重建或删除旧行。遗留会话核对只更新映射与 `session_meta.json` 状态，不删除或重建会话事实文件。
 
 ## 6. 数据稳定性边界
 

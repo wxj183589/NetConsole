@@ -558,6 +558,9 @@ class IperfProcessRunner:
         return_code: int | None = None
         status = "DONE"
         try:
+            if self.stop_requested:
+                status = self.stop_status
+                return
             self.process = subprocess.Popen(
                 self.command,
                 stdout=subprocess.PIPE,

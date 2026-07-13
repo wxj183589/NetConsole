@@ -18,13 +18,14 @@ from netconsole.models.online_mr_application import (
     OnlineMrPhase,
     OnlineMrStartRequest,
     OnlineMrTaskSessionMapping,
+    calculate_duration_minutes,
 )
 from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.models.task_state import TERMINAL_TASK_STATES
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.online_mr_task_session_repository import OnlineMrTaskSessionRepository
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.online_mr.collection_models import collection_config_to_payload
 from netconsole.services.online_mr.errors import OnlineMrApplicationError, OnlineMrApplicationErrorCode
@@ -107,6 +108,7 @@ class OnlineMrApplicationService:
             site_id=request.site_id,
             device_id=str(request.device_id),
             device_name=request.device_name,
+            mr_id=request.config.mr_id,
             mr_name=request.mr_name,
             executor_kind=request.executor_kind,
             agent_id=request.agent_id,
@@ -133,11 +135,13 @@ class OnlineMrApplicationService:
             "app_root": str(self.paths.app_root),
             "data_root": str(self.paths.data_root),
             "package_on_stop": True,
+            "manage_traffic": True,
             "_cancel_grace_ms": grace_ms,
         }
         try:
             self.process_adapter.start_job(
-                BackgroundJob(job_id=task_id, task_type="online_mr_collection_start", params=params)
+                BackgroundJob(job_id=task_id, task_type="online_mr_collection_start", params=params),
+                on_complete=self._process_completed,
             )
         except Exception as exc:
             snapshot = self.task_service.repository(request.site_id).get(task_id)
@@ -152,7 +156,11 @@ class OnlineMrApplicationService:
                 mapping_state=OnlineMrMappingState.TASK_ONLY_FAILED,
                 updated_at=utc_now_iso(),
                 terminal_at=utc_now_iso(),
+                ended_at=utc_now_iso(),
+                duration_minutes=0.0,
+                stop_reason="task_start_failed",
                 error_code=code.value,
+                error_summary=self._safe_error(exc),
                 error_message=self._safe_error(exc),
             )
             repository.save(failed)
@@ -192,6 +200,156 @@ class OnlineMrApplicationService:
         rows.sort(key=lambda row: (row.updated_at, row.controller_task_id), reverse=True)
         return rows[: max(1, min(int(limit), 1000))]
 
+    def stop_operation(
+        self,
+        controller_task_id: str,
+        *,
+        site_id: str | None = None,
+        timeout_seconds: float = 65.0,
+        stop_reason: str = "user_stop",
+    ) -> OnlineMrOperationSnapshotDTO:
+        mapping = self._required_mapping(controller_task_id, site_id=site_id)
+        if mapping.phase is OnlineMrPhase.TERMINAL:
+            return self._to_operation(mapping)
+        repository = self.repository(mapping.site_id)
+        repository.mark_stopping(
+            controller_task_id,
+            phase=OnlineMrPhase.STOPPING_TRAFFIC,
+            stop_reason=stop_reason,
+            updated_at=utc_now_iso(),
+        )
+        requested = self.process_adapter.cancel_job(controller_task_id)
+        if requested and self.process_adapter.wait(controller_task_id, timeout=max(0.0, float(timeout_seconds))):
+            return self.finalize_operation(controller_task_id, site_id=mapping.site_id, stop_reason=stop_reason)
+        return self.get_operation(controller_task_id, site_id=mapping.site_id)
+
+    def force_stop_operation(
+        self,
+        controller_task_id: str,
+        *,
+        site_id: str | None = None,
+        cooperative_timeout_seconds: float = 2.0,
+        force_timeout_seconds: float = 1.0,
+        stop_reason: str = "force_stop",
+    ) -> OnlineMrOperationSnapshotDTO:
+        mapping = self._required_mapping(controller_task_id, site_id=site_id)
+        if mapping.phase is OnlineMrPhase.TERMINAL:
+            return self._to_operation(mapping)
+        repository = self.repository(mapping.site_id)
+        repository.mark_stopping(
+            controller_task_id,
+            phase=OnlineMrPhase.STOPPING_TRAFFIC,
+            stop_reason=stop_reason,
+            force_stopped=True,
+            updated_at=utc_now_iso(),
+        )
+        self.process_adapter.cancel_job(controller_task_id)
+        cooperative = self.process_adapter.wait(
+            controller_task_id,
+            timeout=max(0.0, float(cooperative_timeout_seconds)),
+        )
+        forced_process = False
+        if not cooperative:
+            forced_process = self.process_adapter.force_stop_job(
+                controller_task_id,
+                timeout_seconds=max(0.0, float(force_timeout_seconds)),
+            )
+            self.process_adapter.wait(controller_task_id, timeout=max(0.0, float(force_timeout_seconds)))
+        warning = "强制终止后无法确认全部 writer flush，已保留原始会话目录" if forced_process else ""
+        return self.finalize_operation(
+            controller_task_id,
+            site_id=mapping.site_id,
+            status="FORCED_STOPPED",
+            stop_reason=stop_reason,
+            force_stopped=True,
+            error_summary=warning,
+            finalization_complete=False if forced_process else None,
+        )
+
+    def finalize_operation(
+        self,
+        controller_task_id: str,
+        *,
+        site_id: str | None = None,
+        status: str | None = None,
+        stop_reason: str = "",
+        force_stopped: bool = False,
+        error_summary: str = "",
+        error_code: str = "",
+        finalization_complete: bool | None = None,
+        mapping_state: OnlineMrMappingState | None = None,
+    ) -> OnlineMrOperationSnapshotDTO:
+        mapping = self._required_mapping(controller_task_id, site_id=site_id)
+        repository = self.repository(mapping.site_id)
+        now = utc_now_iso()
+        session_dir = self._session_dir(mapping)
+        meta = self._read_metadata(session_dir) if session_dir is not None else None
+        task = self.task_service.repository(mapping.site_id).get(mapping.controller_task_id)
+        started_at = self._text((meta or {}).get("started_at")) or mapping.started_at
+        if not started_at and task is not None:
+            started_at = task.started_time
+        started_at = started_at or mapping.created_at
+        ended_at = self._text((meta or {}).get("ended_at")) or now
+        duration = calculate_duration_minutes(started_at, ended_at)
+        forced = bool(force_stopped or mapping.force_stopped)
+        summary = str(error_summary or mapping.error_summary or mapping.error_message)
+        reason = str(stop_reason or mapping.stop_reason or ("force_stop" if forced else "task_terminal"))
+
+        if meta is not None and session_dir is not None:
+            current_status = self._text(meta.get("status")).upper()
+            selected_status = str(status or current_status or ("FORCED_STOPPED" if forced else "STOPPED")).upper()
+            if current_status not in {"STOPPED", "FORCED_STOPPED", "FAILED", "ABORTED"} or status:
+                meta["status"] = selected_status
+            meta["ended_at"] = self._text(meta.get("ended_at")) or datetime.now().isoformat(sep=" ", timespec="seconds")
+            meta["duration_minutes"] = duration
+            meta["stop_reason"] = reason
+            meta["force_stopped"] = forced
+            if finalization_complete is not None:
+                meta["finalization_complete"] = bool(finalization_complete)
+                if not finalization_complete:
+                    meta["package_available"] = False
+                    meta["data_integrity"] = "partial"
+            if summary:
+                warnings = [str(item) for item in list(meta.get("finalization_warnings") or []) if str(item)]
+                if summary not in warnings:
+                    warnings.append(summary)
+                meta["finalization_warnings"] = warnings
+                meta["error_message"] = summary
+            if error_code:
+                meta["error_code"] = error_code
+            self._write_metadata(session_dir, meta)
+
+        final_state = mapping_state or (
+            OnlineMrMappingState.TASK_ONLY_FAILED
+            if mapping.session_id is None and (status == "FAILED" or summary)
+            else OnlineMrMappingState.TERMINAL
+        )
+        updated = repository.mark_terminal(
+            controller_task_id,
+            started_at=started_at,
+            ended_at=ended_at,
+            updated_at=now,
+            duration_minutes=duration,
+            stop_reason=reason,
+            force_stopped=forced,
+            error_summary=summary,
+            error_code=error_code or mapping.error_code,
+            mapping_state=final_state,
+        )
+        return self._to_operation(updated)
+
+    def finalize_by_session(
+        self,
+        session_id: str,
+        *,
+        site_id: str | None = None,
+        **kwargs: object,
+    ) -> OnlineMrOperationSnapshotDTO:
+        mapping = self._find_by_session(session_id, site_id=site_id)
+        if mapping is None:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.OPERATION_NOT_FOUND, "Online MR 会话操作不存在")
+        return self.finalize_operation(mapping.controller_task_id, site_id=mapping.site_id, **kwargs)
+
     def reconcile_task_event(self, event: dict[str, object]) -> None:
         task_id = str(event.get("task_id") or event.get("job_id") or "")
         if not task_id:
@@ -214,20 +372,37 @@ class OnlineMrApplicationService:
 
         error_message = self._sanitize_error_text(payload.get("error") or payload.get("message"))
         startup_failure = event_type == "error" and mapping.phase in _STARTUP_PHASES
-        if startup_failure and mapping.session_id:
-            self._mark_session_failed(mapping, error_message)
         state = OnlineMrMappingState.TASK_ONLY_FAILED if event_type == "error" and not mapping.session_id else OnlineMrMappingState.TERMINAL
         error_code = OnlineMrApplicationErrorCode.STARTUP_CONNECTION_FAILED.value if startup_failure else mapping.error_code
-        repository.save(
-            replace(
-                mapping,
-                phase=OnlineMrPhase.TERMINAL,
-                mapping_state=state,
-                updated_at=now,
-                terminal_at=now,
-                error_code=error_code,
-                error_message=error_message if event_type == "error" else mapping.error_message,
-            )
+        result = dict(event.get("result") or payload.get("result") or {})
+        result_warnings = [str(item) for item in list(result.get("warnings") or []) if str(item)]
+        cancelled_with_session = event_type == "cancelled" and bool(mapping.session_id)
+        forced = bool(mapping.force_stopped or cancelled_with_session)
+        terminal_summary = (
+            error_message
+            if event_type == "error"
+            else "Worker 在完成最终化前退出，原始会话目录已保留"
+            if cancelled_with_session
+            else "; ".join(result_warnings) or mapping.error_summary
+        )
+        self.finalize_operation(
+            task_id,
+            site_id=mapping.site_id,
+            status=(
+                "FAILED"
+                if event_type == "error"
+                else "FORCED_STOPPED"
+                if forced
+                else self._text(result.get("status")) or "STOPPED"
+            ),
+            stop_reason=mapping.stop_reason
+            or self._text(result.get("stop_reason"))
+            or ("task_failed" if event_type == "error" else "worker_cancelled" if event_type == "cancelled" else "task_terminal"),
+            force_stopped=forced,
+            error_summary=terminal_summary,
+            error_code=error_code,
+            finalization_complete=False if cancelled_with_session else None,
+            mapping_state=state,
         )
 
     def recover_mappings(self, *, site_id: str | None = None) -> list[OnlineMrOperationSnapshotDTO]:
@@ -257,7 +432,11 @@ class OnlineMrApplicationService:
                     mapping_state=state,
                     updated_at=now,
                     terminal_at=now,
+                    ended_at=now,
+                    duration_minutes=calculate_duration_minutes(mapping.started_at or mapping.created_at, now),
+                    stop_reason="recovered_aborted",
                     error_code=mapping.error_code or OnlineMrApplicationErrorCode.STALE_OPERATION.value,
+                    error_summary=mapping.error_summary or error,
                     error_message=mapping.error_message or error,
                 )
                 repository.save(updated)
@@ -282,11 +461,25 @@ class OnlineMrApplicationService:
                         mapping_state=OnlineMrMappingState.STALE,
                         updated_at=now,
                         terminal_at=now,
+                        started_at=self._text(meta.get("started_at")) or existing.started_at,
+                        ended_at=self._text(meta.get("ended_at")) or now,
+                        duration_minutes=float(meta.get("duration_minutes") or 0.0),
+                        stop_reason="recovered_aborted",
+                        error_summary="Controller 重启后未发现仍存活的本地 Online MR Worker",
                         error_code=OnlineMrApplicationErrorCode.STALE_OPERATION.value,
                         error_message="Controller 重启后未发现仍存活的本地 Online MR Worker",
                     )
                     repository.save(updated)
                 elif existing:
+                    if existing.duration_minutes is None:
+                        repository.save(
+                            replace(
+                                existing,
+                                started_at=self._text(meta.get("started_at")) or existing.started_at,
+                                ended_at=self._text(meta.get("ended_at")) or existing.ended_at or now,
+                                duration_minutes=float(meta.get("duration_minutes") or 0.0),
+                            )
+                        )
                     continue
                 else:
                     session_id_value = str(meta.get("session_id") or session_dir.name)
@@ -296,12 +489,21 @@ class OnlineMrApplicationService:
                         site_id=selected_site,
                         device_id=str(meta.get("device_id") or ""),
                         device_name=str(meta.get("device_name") or ""),
+                        mr_id=str(meta.get("mr_id") or ""),
                         mr_name=str(meta.get("mr_name") or session_dir.parent.parent.name),
                         executor_kind=OnlineMrExecutorKind.LOCAL,
                         phase=OnlineMrPhase.TERMINAL,
                         mapping_state=OnlineMrMappingState.SESSION_ONLY_RECOVERED,
                         created_at=now,
                         updated_at=now,
+                        started_at=self._text(meta.get("started_at")) or None,
+                        ended_at=self._text(meta.get("ended_at")) or now,
+                        duration_minutes=calculate_duration_minutes(
+                            self._text(meta.get("started_at")) or now,
+                            self._text(meta.get("ended_at")) or now,
+                        ),
+                        stop_reason="recovered_aborted",
+                        error_summary="恢复到无 Controller Task 的遗留 Online MR 会话",
                         terminal_at=now,
                         error_code=OnlineMrApplicationErrorCode.STALE_OPERATION.value,
                         error_message="恢复到无 Controller Task 的遗留 Online MR 会话",
@@ -363,6 +565,11 @@ class OnlineMrApplicationService:
             phase=phase,
             mapping_state=OnlineMrMappingState.LINKED if session_id or mapping.session_id else mapping.mapping_state,
             updated_at=now,
+            started_at=(
+                self._text(details.get("started_at")) or mapping.started_at
+                if stage == "online_mr_started"
+                else mapping.started_at
+            ),
         )
         try:
             return repository.save(updated)
@@ -385,7 +592,11 @@ class OnlineMrApplicationService:
                 mapping_state=OnlineMrMappingState.TERMINAL,
                 updated_at=now,
                 terminal_at=now,
+                ended_at=now,
+                duration_minutes=calculate_duration_minutes(mapping.started_at or mapping.created_at, now),
+                stop_reason="mapping_error",
                 error_code=code.value,
+                error_summary=message,
                 error_message=message,
             )
         )
@@ -398,15 +609,21 @@ class OnlineMrApplicationService:
             site_id=mapping.site_id,
             device_id=mapping.device_id or None,
             device_name=mapping.device_name,
+            mr_id=mapping.mr_id,
             mr_name=mapping.mr_name,
             executor_kind=mapping.executor_kind,
             agent_id=mapping.agent_id,
             task_status=task.status if task else None,
             phase=mapping.phase,
             created_at=mapping.created_at,
-            started_at=task.started_time if task and task.started_time else None,
+            started_at=mapping.started_at or (task.started_time if task and task.started_time else None),
             updated_at=mapping.updated_at,
             terminal_at=mapping.terminal_at,
+            ended_at=mapping.ended_at,
+            duration_minutes=mapping.duration_minutes,
+            stop_reason=mapping.stop_reason,
+            force_stopped=mapping.force_stopped,
+            error_summary=mapping.error_summary,
             error_code=mapping.error_code,
             error_message=mapping.error_message,
             mapping_state=mapping.mapping_state,
@@ -426,6 +643,37 @@ class OnlineMrApplicationService:
                 return mapping
         return None
 
+    def _required_mapping(self, task_id: str, *, site_id: str | None = None) -> OnlineMrTaskSessionMapping:
+        mapping = self._find_by_task(task_id, site_id=site_id)
+        if mapping is None:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.OPERATION_NOT_FOUND, "Online MR 操作不存在")
+        return mapping
+
+    def _process_completed(self, completion: LocalProcessCompletion) -> None:
+        if not completion.forced:
+            return
+        mapping = self._find_by_task(completion.job_id)
+        if mapping is None:
+            return
+        self.finalize_operation(
+            completion.job_id,
+            site_id=mapping.site_id,
+            status="FORCED_STOPPED",
+            stop_reason=mapping.stop_reason or "worker_forced_stop",
+            force_stopped=True,
+            error_summary="Worker 进程被强制终止，原始会话目录已保留",
+            finalization_complete=False,
+        )
+
+    def _session_dir(self, mapping: OnlineMrTaskSessionMapping) -> Path | None:
+        if not mapping.session_id:
+            return None
+        store = OnlineMrSessionStore(self.paths)
+        for session_dir in store.list_session_dirs(mapping.site_id):
+            if session_dir.name == mapping.session_id:
+                return session_dir
+        return None
+
     def _site_ids(self) -> list[str]:
         values: set[str] = set()
         if self.paths.sites_dir.is_dir():
@@ -443,23 +691,6 @@ class OnlineMrApplicationService:
         except (TypeError, ValueError):
             return False
 
-    def _mark_session_failed(self, mapping: OnlineMrTaskSessionMapping, error_message: str) -> None:
-        if not mapping.session_id:
-            return
-        store = OnlineMrSessionStore(self.paths)
-        for session_dir in store.list_session_dirs(mapping.site_id):
-            if session_dir.name != mapping.session_id:
-                continue
-            meta = self._read_metadata(session_dir)
-            if meta is None:
-                return
-            meta["status"] = "FAILED"
-            meta["ended_at"] = meta.get("ended_at") or datetime.now().isoformat(sep=" ", timespec="seconds")
-            meta["error_code"] = OnlineMrApplicationErrorCode.STARTUP_CONNECTION_FAILED.value
-            meta["error_message"] = error_message
-            self._write_metadata(session_dir, meta)
-            return
-
     def _abort_stale_session(self, session_dir: Path, meta: dict[str, object]) -> None:
         previous_status = str(meta.get("status") or "")
         meta["status"] = "ABORTED"
@@ -467,6 +698,13 @@ class OnlineMrApplicationService:
         meta["recovery_previous_status"] = previous_status
         meta["error_code"] = meta.get("error_code") or OnlineMrApplicationErrorCode.STALE_OPERATION.value
         meta["error_message"] = meta.get("error_message") or "Controller 重启后未发现仍存活的本地 Online MR Worker"
+        meta["stop_reason"] = meta.get("stop_reason") or "recovered_aborted"
+        meta["force_stopped"] = bool(meta.get("force_stopped", False))
+        meta["finalization_complete"] = False
+        meta["duration_minutes"] = calculate_duration_minutes(
+            self._text(meta.get("started_at")) or str(meta["ended_at"]),
+            str(meta["ended_at"]),
+        )
         self._write_metadata(session_dir, meta)
 
     @staticmethod

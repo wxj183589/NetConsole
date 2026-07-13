@@ -140,6 +140,99 @@ def test_online_mr_collection_service_stops_packages_and_keeps_raw_logs(tmp_path
     assert started_event["enabled_collectors"] == ["terminal_monitor"]
 
 
+def test_application_collection_flushes_traffic_before_collector_close_and_package(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    order: list[str] = []
+
+    class OrderedConnection(FakeConnection):
+        def close(self) -> None:
+            order.append("collector-close")
+            super().close()
+
+    class TrafficCoordinator:
+        def start_for_session(self, _session, _config):
+            order.append("traffic-start")
+            return {"flush_complete": False}
+
+        def stop_traffic_for_session(self, _session_id):
+            order.append("traffic-stop")
+
+        def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
+            assert timeout_seconds > 0
+            order.append("traffic-flush")
+            return []
+
+        def finalize_traffic_outputs(self, _session_id):
+            order.append("traffic-finalize")
+            return {"flush_complete": True, "warnings": []}
+
+    class Packager:
+        def package(self, session_dir):
+            order.append("package")
+            path = Path(session_dir) / "outputs" / "session.zip"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"zip")
+            return path
+
+    connection = OrderedConnection()
+    service = OnlineMrCollectionService(
+        OnlineMrSessionStore(paths),
+        connection_factory=lambda _config: connection,
+        traffic_coordinator=TrafficCoordinator(),
+        packager=Packager(),
+    )
+    deadline = time.monotonic() + 0.25
+
+    result = service.run(
+        _config(),
+        should_cancel=lambda: time.monotonic() >= deadline,
+        manage_traffic=True,
+    )
+
+    assert result["status"] == "STOPPED"
+    assert order.index("traffic-flush") < order.index("collector-close")
+    assert order.index("collector-close") < order.index("traffic-finalize")
+    assert order[-1] == "package"
+    meta = json.loads((Path(result["session_dir"]) / "session_meta.json").read_text(encoding="utf-8"))
+    assert meta["finalization_complete"] is True
+    assert meta["stop_reason"] == "cancel_requested"
+    assert meta["duration_minutes"] >= 0
+
+
+def test_application_collection_duration_limit_uses_same_stop_and_flush_path(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    order: list[str] = []
+    clock_values = iter((0.0, 61.0, 61.0))
+
+    class TrafficCoordinator:
+        def start_for_session(self, _session, _config):
+            return {"flush_complete": False}
+
+        def stop_traffic_for_session(self, _session_id):
+            order.append("stop")
+
+        def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
+            order.append("flush")
+            return []
+
+        def finalize_traffic_outputs(self, _session_id):
+            return {"flush_complete": True, "warnings": []}
+
+    config = _config()
+    config.duration_minutes = 1
+    service = OnlineMrCollectionService(
+        OnlineMrSessionStore(paths),
+        connection_factory=lambda _config: FakeConnection(),
+        traffic_coordinator=TrafficCoordinator(),
+        clock=lambda: next(clock_values, 61.0),
+    )
+
+    result = service.run(config, manage_traffic=True, package_on_stop=False)
+
+    assert result["stop_reason"] == "duration_elapsed"
+    assert order[:2] == ["stop", "flush"]
+
+
 def test_online_mr_collection_service_emits_session_created_before_connection_failure(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     progress: list[tuple[str, str]] = []
