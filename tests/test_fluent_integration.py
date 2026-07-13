@@ -413,17 +413,16 @@ def test_disabled_snmp_center_is_not_registered():
 
 def test_visible_fluent_window_close_requires_confirmation(monkeypatch):
     from netconsole.app import build_window
-    from netconsole.ui.app_fluent_window import MessageBox
 
     app()
     window = build_window()
-    prompts = []
-
-    def fake_question(*args, **kwargs):
-        prompts.append((args, kwargs))
-        return MessageBox.No
-
-    monkeypatch.setattr(MessageBox, "question", fake_question)
+    prompts: list[bool] = []
+    window.settings.values["app/close_behavior"] = "ask"
+    monkeypatch.setattr(
+        window,
+        "_ask_close_behavior",
+        lambda has_tasks: prompts.append(has_tasks) or "cancel",
+    )
     window.show()
 
     assert window.close() is False
