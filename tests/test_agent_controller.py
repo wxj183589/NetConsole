@@ -192,7 +192,7 @@ def test_http_adapter_contract_unknown_capability_and_auth_header() -> None:
         if request.url.path.endswith("/status"):
             return httpx.Response(
                 200,
-                json={"ok": True, "data": {"agent_id": "remote", "agent_name": "Agent", "version": "v1.0.0-windows", "os": "windows", "arch": "amd64"}},
+                json={"ok": True, "data": {"agent_id": "remote", "agent_name": "Agent", "version": "0.2.0-win-agent", "os": "windows", "arch": "amd64"}},
             )
         return httpx.Response(404, json={"ok": False, "error": {"message": "接口不存在"}})
 
@@ -200,6 +200,7 @@ def test_http_adapter_contract_unknown_capability_and_auth_header() -> None:
     result = asyncio.run(client.probe("http://127.0.0.1:18080", "secret"))
     assert result.capabilities == {}
     assert result.platform == "windows"
+    assert result.version == "0.2.0-win-agent"
 
 
 @pytest.mark.parametrize(
@@ -207,10 +208,6 @@ def test_http_adapter_contract_unknown_capability_and_auth_header() -> None:
     [
         (httpx.Response(200, text="not-json"), "AGENT_INVALID_JSON"),
         (httpx.Response(200, json={"unexpected": True}), "AGENT_RESPONSE_INCOMPATIBLE"),
-        (
-            httpx.Response(200, json={"ok": True, "data": {"agent_id": "x", "version": "v9.0.0", "os": "windows", "arch": "amd64"}}),
-            "AGENT_VERSION_UNSUPPORTED",
-        ),
     ],
 )
 def test_http_adapter_rejects_invalid_responses(response, code) -> None:

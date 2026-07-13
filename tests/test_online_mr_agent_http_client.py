@@ -177,6 +177,20 @@ def test_status_missing_required_field_is_invalid() -> None:
     assert exc_info.value.code == OnlineMrApplicationErrorCode.AGENT_RESPONSE_INVALID
 
 
+def test_status_accepts_actual_agent_release_version() -> None:
+    payload = {
+        "agent_id": "agent-a",
+        "agent_name": "Agent A",
+        "version": "0.2.0-win-agent",
+        "os": "windows",
+        "arch": "amd64",
+    }
+
+    result = asyncio.run(_client(lambda _request: _response(payload)).get_status())
+
+    assert result.version == "0.2.0-win-agent"
+
+
 def test_get_task_parses_online_mr_task() -> None:
     payload = {
         "task_id": "task-1",

@@ -94,8 +94,6 @@ class AgentHttpClient:
             capabilities = await self._get_capabilities(client, normalized)
         latency_ms = max(0, round((time.perf_counter() - started) * 1000))
         version = self._required_text(status, "version", "Agent 状态缺少 version")
-        if not version.removeprefix("v").startswith("1."):
-            raise AgentClientError("AGENT_VERSION_UNSUPPORTED", f"暂不支持 Agent 版本：{version}")
         return AgentProbeResult(
             remote_agent_id=self._required_text(status, "agent_id", "Agent 状态缺少 agent_id"),
             remote_name=str(status.get("agent_name") or ""),

@@ -240,7 +240,7 @@ files/rail_transit/online_mr/<device_name>__<device_id>/sessions/<session_id>/
 
 ## 12. Agent HTTP 下载客户端（5B-8，executor 仍未启用）
 
-`OnlineMrAgentHttpClient` 复用现有异步 `AgentHttpClient` 的 URL、`X-Agent-Token`、统一响应、超时和禁止重定向逻辑，提供 `ping`、Agent/工具状态、Online MR Task、package 列表和 package 下载。客户端只读取现有 Go Agent API，不发送远程 start/stop；配置中的 Token 使用 `SecretStr`，异常和下载结果不包含 Token、远端私有路径或响应原文。
+`OnlineMrAgentHttpClient` 复用现有异步 `AgentHttpClient` 的 URL、`X-Agent-Token`、统一响应、超时和禁止重定向逻辑，提供 `ping`、Agent/工具状态、Online MR Task、package 列表和 package 下载。兼容性以 `/api/v1` 路由和类型化响应字段判断，不把 `0.2.0-win-agent` 等 Agent 软件发布版本误当作 API 主版本。客户端只读取现有 Go Agent API，不发送远程 start/stop；配置中的 Token 使用 `SecretStr`，异常和下载结果不包含 Token、远端私有路径或响应原文。
 
 下载固定使用 `/api/v1/packages/<package_id>/download`，不信任响应中的下载 URL。ZIP 流式写入所属局点 `files/imports/online_mr/downloads/*.zip.part`，同时计算 SHA-256，并受超时、取消和 `max_download_bytes` 限制；完成后关闭句柄并原子改名为 `.zip`。失败、取消或超限删除 `.part`，不删除远端 package。
 

@@ -80,13 +80,7 @@ class OnlineMrAgentHttpClient(AgentHttpClient):
 
     async def get_status(self) -> OnlineMrAgentSystemStatus:
         payload = await self._json("/api/v1/status")
-        result = self._model(OnlineMrAgentSystemStatus, payload)
-        if not result.version.removeprefix("v").startswith("1."):
-            raise OnlineMrAgentClientError(
-                OnlineMrApplicationErrorCode.AGENT_VERSION_UNSUPPORTED,
-                "Agent 版本不受支持",
-            )
-        return result
+        return self._model(OnlineMrAgentSystemStatus, payload)
 
     async def get_tools_status(self) -> OnlineMrAgentToolsStatus:
         payload = await self._json("/api/v1/tools/status")
