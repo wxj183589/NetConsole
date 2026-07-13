@@ -49,3 +49,65 @@ export interface AgentSocketEvent {
   agent_id?: string
   agents?: AgentItem[]
 }
+
+export interface AgentRemoteStatus {
+  agent_id: string
+  agent_name: string
+  version: string
+  os: string
+  arch: string
+  listen: string
+  uptime: string
+  current_tasks: number
+  task_count: number
+  package_count: number
+  data_dir: string
+  package_dir: string
+  power: Record<string, unknown>
+  disk: Record<string, unknown>
+}
+
+export interface AgentToolStatus {
+  exists: boolean
+  ready: boolean
+  path: string
+  work_dir: string
+  version: string
+  warning: string
+  required_files: Array<{ name: string; exists: boolean }>
+}
+
+export interface AgentToolsStatus {
+  iperf3: AgentToolStatus
+  fping: AgentToolStatus
+  mr_collector: AgentToolStatus
+}
+
+export interface AgentRemoteTask {
+  task_id: string
+  task_type: string
+  status: string
+  created_at: string | null
+  start_time: string | null
+  end_time: string | null
+  package_id: string
+  package_download_url: string
+  error_code: string
+  error_message: string
+  params: Record<string, unknown>
+}
+
+export interface AgentRemoteTaskLogs {
+  task_id: string
+  lines: string[]
+}
+
+export interface AgentRemotePackage {
+  package_id: string
+  task_id: string
+  task_type: string
+  start_time: string
+  end_time: string
+  size: number
+  package_download_url: string
+}

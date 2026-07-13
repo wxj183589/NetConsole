@@ -78,3 +78,11 @@ body { overflow: hidden; }
 .form-hint { margin-top: 6px; color: #8995a7; font-size: 12px; line-height: 1.5; }
 .probe-result { margin-top: 14px; background: #f3fbf7; border-color: #bce7d1; }
 .probe-result p { margin: 7px 0 0; color: #536276; font-size: 12px; }
+.detail-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.agent-remote-tabs { margin-top: 18px; }
+.remote-tab-body { min-height: 260px; }
+.remote-tab-body > .el-alert { margin-bottom: 14px; }
+.remote-section-title { margin: 20px 0 10px; font-size: 15px; }
+.remote-json, .remote-log { max-height: 280px; margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; }
+.remote-json { color: #334155; background: #f3f6fa; border: 1px solid #dce4ee; }
+.remote-log { min-height: 130px; color: #d6e0ec; background: #101827; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }

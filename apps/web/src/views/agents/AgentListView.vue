@@ -1,12 +1,29 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { CirclePlus, Edit, Refresh, Search, View } from '@element-plus/icons-vue'
+import { CirclePlus, CopyDocument, Edit, Link, Refresh, Search, View } from '@element-plus/icons-vue'
 
-import { probeUnsaved } from '../../api/agents'
+import {
+  getAgentRemoteStatus,
+  getAgentRemoteTask,
+  getAgentRemoteTaskLogs,
+  getAgentRemoteTools,
+  listAgentRemotePackages,
+  listAgentRemoteTasks,
+  probeUnsaved,
+} from '../../api/agents'
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import { useAgentStore } from '../../stores/agents'
-import type { AgentFormValue, AgentItem, AgentProbeResult, AgentStatus } from '../../types/agent'
+import type {
+  AgentFormValue,
+  AgentItem,
+  AgentProbeResult,
+  AgentRemotePackage,
+  AgentRemoteStatus,
+  AgentRemoteTask,
+  AgentStatus,
+  AgentToolsStatus,
+} from '../../types/agent'
 
 const store = useAgentStore()
 const search = ref('')
@@ -19,6 +36,20 @@ const probing = ref(false)
 const editingId = ref('')
 const selected = ref<AgentItem | null>(null)
 const probeResult = ref<AgentProbeResult | null>(null)
+const remoteTab = ref('overview')
+const remoteStatus = ref<AgentRemoteStatus | null>(null)
+const remoteTools = ref<AgentToolsStatus | null>(null)
+const remoteTasks = ref<AgentRemoteTask[]>([])
+const remotePackages = ref<AgentRemotePackage[]>([])
+const remoteLoading = ref(false)
+const remoteError = ref('')
+const remoteFailures = ref(0)
+const taskDialogVisible = ref(false)
+const selectedTask = ref<AgentRemoteTask | null>(null)
+const taskLogs = ref<string[]>([])
+const taskDetailLoading = ref(false)
+let remoteTimer: number | undefined
+let taskTimer: number | undefined
 const formRef = ref<FormInstance>()
 const form = reactive<AgentFormValue>(emptyForm())
 const visibleAgents = computed(() => store.filtered(search.value, statusFilter.value, enabledFilter.value))
@@ -35,7 +66,26 @@ onMounted(async () => {
   await store.refresh()
   store.connectSocket()
 })
-onBeforeUnmount(() => store.disconnectSocket())
+onBeforeUnmount(() => {
+  store.disconnectSocket()
+  clearRemoteTimer()
+  clearTaskTimer()
+})
+
+watch([drawerVisible, remoteTab], ([visible]) => {
+  clearRemoteTimer()
+  if (!visible) return
+  void refreshRemote()
+  const interval = remoteTab.value === 'tasks' ? 2000 : remoteTab.value === 'packages' ? 10000 : 5000
+  remoteTimer = window.setInterval(() => void refreshRemote(), interval)
+})
+
+watch(taskDialogVisible, (visible) => {
+  clearTaskTimer()
+  if (!visible) return
+  void refreshTaskDetail()
+  taskTimer = window.setInterval(() => void refreshTaskDetail(), 1000)
+})
 
 function emptyForm(): AgentFormValue {
   return { name: '', base_url: 'http://127.0.0.1:18080', enabled: true, authentication_type: 'none', token: '', tags: [], note: '' }
@@ -65,7 +115,85 @@ function openEdit(agent: AgentItem): void {
 
 function openDetail(agent: AgentItem): void {
   selected.value = agent
+  remoteTab.value = 'overview'
+  remoteStatus.value = null
+  remoteTools.value = null
+  remoteTasks.value = []
+  remotePackages.value = []
+  remoteError.value = ''
+  remoteFailures.value = 0
   drawerVisible.value = true
+}
+
+function clearRemoteTimer(): void {
+  if (remoteTimer !== undefined) window.clearInterval(remoteTimer)
+  remoteTimer = undefined
+}
+
+function clearTaskTimer(): void {
+  if (taskTimer !== undefined) window.clearInterval(taskTimer)
+  taskTimer = undefined
+}
+
+async function refreshRemote(): Promise<void> {
+  const agent = selected.value
+  if (!agent || remoteLoading.value) return
+  remoteLoading.value = true
+  remoteError.value = ''
+  try {
+    if (remoteTab.value === 'overview') remoteStatus.value = await getAgentRemoteStatus(agent.agent_id)
+    else if (remoteTab.value === 'tools') remoteTools.value = await getAgentRemoteTools(agent.agent_id)
+    else if (remoteTab.value === 'tasks') remoteTasks.value = await listAgentRemoteTasks(agent.agent_id)
+    else if (remoteTab.value === 'packages') remotePackages.value = await listAgentRemotePackages(agent.agent_id)
+    remoteFailures.value = 0
+  } catch (cause) {
+    remoteFailures.value += 1
+    const message = cause instanceof Error ? cause.message : '读取 Agent 远端状态失败'
+    remoteError.value = remoteFailures.value >= 3 ? `连续 ${remoteFailures.value} 次读取失败，远端状态异常：${message}` : message
+  } finally {
+    remoteLoading.value = false
+  }
+}
+
+function openTask(task: AgentRemoteTask): void {
+  selectedTask.value = task
+  taskLogs.value = []
+  taskDialogVisible.value = true
+}
+
+async function refreshTaskDetail(): Promise<void> {
+  const agent = selected.value
+  const task = selectedTask.value
+  if (!agent || !task || taskDetailLoading.value) return
+  taskDetailLoading.value = true
+  try {
+    const [detail, logs] = await Promise.all([
+      getAgentRemoteTask(agent.agent_id, task.task_id),
+      getAgentRemoteTaskLogs(agent.agent_id, task.task_id),
+    ])
+    selectedTask.value = detail
+    taskLogs.value = logs.lines
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '读取远端任务详情失败')
+    clearTaskTimer()
+  } finally {
+    taskDetailLoading.value = false
+  }
+}
+
+function openAgentWeb(): void {
+  if (!selected.value) return
+  window.open(selected.value.base_url, '_blank', 'noopener,noreferrer')
+}
+
+async function copyAgentUrl(): Promise<void> {
+  if (!selected.value) return
+  try {
+    await navigator.clipboard.writeText(selected.value.base_url)
+    ElMessage.success('Agent Web 地址已复制')
+  } catch {
+    ElMessage.error('复制失败，请手工复制地址')
+  }
 }
 
 async function testFormConnection(): Promise<void> {
@@ -128,8 +256,23 @@ async function archive(agent: AgentItem): Promise<void> {
   }
 }
 
-function formatTime(value: string): string {
+function formatTime(value: string | null): string {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--'
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GiB`
+}
+
+function normalizedStatus(value: string): string {
+  return value.toUpperCase()
+}
+
+function prettyJson(value: unknown): string {
+  return JSON.stringify(value, null, 2)
 }
 
 function capabilityText(capabilities: Record<string, unknown>): string {
@@ -206,20 +349,99 @@ function capabilityText(capabilities: Record<string, unknown>): string {
       <template #footer><el-button :loading="probing" @click="testFormConnection">测试连接</el-button><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
     </el-dialog>
 
-    <el-drawer v-model="drawerVisible" title="Agent 详情" size="min(720px, 92vw)">
+    <el-drawer v-model="drawerVisible" title="Agent 控制中心（只读）" size="min(980px, 96vw)">
       <template v-if="selected">
-        <div class="detail-heading"><div><h2>{{ selected.name }}</h2><p>{{ selected.base_url }}</p></div><NcStatusTag :status="selected.status" /></div>
-        <el-descriptions :column="2" border>
-          <el-descriptions-item label="启用状态">{{ selected.enabled ? '已启用' : '已禁用' }}</el-descriptions-item>
-          <el-descriptions-item label="认证">{{ selected.authentication_type === 'token' ? (selected.has_credential ? 'Token 已加载' : 'Token 需重新录入') : '无认证' }}</el-descriptions-item>
-          <el-descriptions-item label="平台">{{ selected.platform || '--' }}</el-descriptions-item><el-descriptions-item label="架构">{{ selected.architecture || '--' }}</el-descriptions-item>
-          <el-descriptions-item label="版本">{{ selected.version || '--' }}</el-descriptions-item><el-descriptions-item label="延迟">{{ selected.latency_ms === null ? '--' : `${selected.latency_ms} ms` }}</el-descriptions-item>
-          <el-descriptions-item label="最近在线">{{ formatTime(selected.last_seen_at) }}</el-descriptions-item><el-descriptions-item label="最近检查">{{ formatTime(selected.last_checked_at) }}</el-descriptions-item>
-          <el-descriptions-item label="能力" :span="2">{{ capabilityText(selected.capabilities) }}</el-descriptions-item>
-          <el-descriptions-item label="最近错误" :span="2">{{ selected.last_error_message || '--' }}</el-descriptions-item>
-          <el-descriptions-item label="备注" :span="2">{{ selected.note || '--' }}</el-descriptions-item>
-        </el-descriptions>
+        <div class="detail-heading">
+          <div><h2>{{ selected.name }}</h2><p>{{ selected.base_url }}</p></div>
+          <div class="detail-actions">
+            <NcStatusTag :status="selected.status" />
+            <el-button :icon="Link" @click="openAgentWeb">打开 Agent Web</el-button>
+            <el-button :icon="CopyDocument" @click="copyAgentUrl">复制地址</el-button>
+            <el-button :icon="Refresh" :loading="remoteLoading" @click="refreshRemote">刷新</el-button>
+          </div>
+        </div>
+        <el-alert v-if="remoteError" :title="remoteError" type="error" show-icon :closable="false" />
+        <el-tabs v-model="remoteTab" class="agent-remote-tabs">
+          <el-tab-pane label="概览" name="overview">
+            <div v-loading="remoteLoading" class="remote-tab-body">
+              <el-empty v-if="!remoteStatus" description="暂未读取 Agent 运行状态" :image-size="72" />
+              <el-descriptions v-else :column="2" border>
+                <el-descriptions-item label="远端 Agent">{{ remoteStatus.agent_name || remoteStatus.agent_id }}</el-descriptions-item>
+                <el-descriptions-item label="版本">{{ remoteStatus.version }}</el-descriptions-item>
+                <el-descriptions-item label="系统">{{ remoteStatus.os }} / {{ remoteStatus.arch }}</el-descriptions-item>
+                <el-descriptions-item label="运行时间">{{ remoteStatus.uptime || '--' }}</el-descriptions-item>
+                <el-descriptions-item label="当前任务">{{ remoteStatus.current_tasks }}</el-descriptions-item>
+                <el-descriptions-item label="历史任务">{{ remoteStatus.task_count }}</el-descriptions-item>
+                <el-descriptions-item label="采集包">{{ remoteStatus.package_count }}</el-descriptions-item>
+                <el-descriptions-item label="监听地址">{{ remoteStatus.listen || '--' }}</el-descriptions-item>
+                <el-descriptions-item label="数据目录" :span="2">{{ remoteStatus.data_dir || '--' }}</el-descriptions-item>
+                <el-descriptions-item label="采集包目录" :span="2">{{ remoteStatus.package_dir || '--' }}</el-descriptions-item>
+              </el-descriptions>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="工具状态" name="tools">
+            <div v-loading="remoteLoading" class="remote-tab-body">
+              <el-empty v-if="!remoteTools" description="暂未读取工具状态" :image-size="72" />
+              <el-table v-else :data="[
+                { name: 'MR Collector', ...remoteTools.mr_collector },
+                { name: 'fping', ...remoteTools.fping },
+                { name: 'iPerf3', ...remoteTools.iperf3 },
+              ]" stripe>
+                <el-table-column prop="name" label="工具" width="150" />
+                <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="row.ready ? 'success' : 'danger'">{{ row.ready ? 'READY' : '不可用' }}</el-tag></template></el-table-column>
+                <el-table-column prop="version" label="版本" min-width="130"><template #default="{ row }">{{ row.version || '--' }}</template></el-table-column>
+                <el-table-column prop="path" label="路径" min-width="260" show-overflow-tooltip />
+                <el-table-column prop="warning" label="提示" min-width="180"><template #default="{ row }">{{ row.warning || '--' }}</template></el-table-column>
+              </el-table>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="远端任务" name="tasks">
+            <div v-loading="remoteLoading" class="remote-tab-body">
+              <el-table :data="remoteTasks" empty-text="Agent 暂无任务" stripe>
+                <el-table-column prop="task_id" label="任务 ID" min-width="170" show-overflow-tooltip />
+                <el-table-column prop="task_type" label="类型" min-width="150" />
+                <el-table-column label="状态" width="110"><template #default="{ row }"><NcStatusTag :status="normalizedStatus(row.status)" /></template></el-table-column>
+                <el-table-column label="开始时间" width="176"><template #default="{ row }">{{ formatTime(row.start_time || row.created_at) }}</template></el-table-column>
+                <el-table-column label="结束时间" width="176"><template #default="{ row }">{{ formatTime(row.end_time) }}</template></el-table-column>
+                <el-table-column prop="error_message" label="错误摘要" min-width="170"><template #default="{ row }">{{ row.error_message || '--' }}</template></el-table-column>
+                <el-table-column label="操作" width="92" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openTask(row)">详情</el-button></template></el-table-column>
+              </el-table>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="采集包" name="packages">
+            <div v-loading="remoteLoading" class="remote-tab-body">
+              <el-alert title="本页只读；下载导入请暂用桌面端现有 Agent 包导入入口。" type="info" show-icon :closable="false" />
+              <el-table :data="remotePackages" empty-text="Agent 暂无采集包" stripe>
+                <el-table-column prop="package_id" label="采集包 ID" min-width="210" show-overflow-tooltip />
+                <el-table-column prop="task_type" label="任务类型" min-width="170" />
+                <el-table-column prop="task_id" label="任务 ID" min-width="180" show-overflow-tooltip />
+                <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
+                <el-table-column label="开始时间" width="176"><template #default="{ row }">{{ formatTime(row.start_time) }}</template></el-table-column>
+                <el-table-column label="结束时间" width="176"><template #default="{ row }">{{ formatTime(row.end_time) }}</template></el-table-column>
+              </el-table>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </template>
     </el-drawer>
+
+    <el-dialog v-model="taskDialogVisible" title="Agent 任务详情（只读）" width="min(900px, 94vw)" destroy-on-close>
+      <div v-if="selectedTask" v-loading="taskDetailLoading">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="任务 ID" :span="2">{{ selectedTask.task_id }}</el-descriptions-item>
+          <el-descriptions-item label="任务类型">{{ selectedTask.task_type }}</el-descriptions-item>
+          <el-descriptions-item label="状态"><NcStatusTag :status="normalizedStatus(selectedTask.status)" /></el-descriptions-item>
+          <el-descriptions-item label="开始时间">{{ formatTime(selectedTask.start_time || selectedTask.created_at) }}</el-descriptions-item>
+          <el-descriptions-item label="结束时间">{{ formatTime(selectedTask.end_time) }}</el-descriptions-item>
+          <el-descriptions-item label="采集包">{{ selectedTask.package_id || '--' }}</el-descriptions-item>
+          <el-descriptions-item label="错误码">{{ selectedTask.error_code || '--' }}</el-descriptions-item>
+          <el-descriptions-item label="错误摘要" :span="2">{{ selectedTask.error_message || '--' }}</el-descriptions-item>
+        </el-descriptions>
+        <h3 class="remote-section-title">脱敏任务参数</h3>
+        <pre class="remote-json">{{ prettyJson(selectedTask.params) }}</pre>
+        <h3 class="remote-section-title">日志 tail（每秒刷新）</h3>
+        <pre class="remote-log">{{ taskLogs.join('\n') || '暂无日志' }}</pre>
+      </div>
+    </el-dialog>
   </section>
 </template>

@@ -104,6 +104,48 @@ class AgentHttpClient:
             latency_ms=latency_ms,
         )
 
+    async def get_status(self, base_url: str, token: str | None = None) -> dict[str, Any]:
+        return await self._call_data("GET", base_url, "/api/v1/status", token)
+
+    async def get_tools_status(self, base_url: str, token: str | None = None) -> dict[str, Any]:
+        payload = await self._call_data("GET", base_url, "/api/v1/tools/status", token)
+        tools = payload.get("tools")
+        if not isinstance(tools, dict):
+            raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", "Agent 工具状态格式不兼容")
+        return tools
+
+    async def list_tasks(self, base_url: str, token: str | None = None) -> tuple[AgentTaskDTO, ...]:
+        payload = await self._call_payload("GET", base_url, "/api/v1/tasks", token)
+        if not isinstance(payload, list):
+            raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", "Agent 任务列表格式不兼容")
+        return tuple(AgentTaskDTO.from_payload(item) for item in payload if isinstance(item, dict))
+
+    async def get_task_logs(
+        self,
+        base_url: str,
+        task_id: str,
+        *,
+        tail: int = 300,
+        token: str | None = None,
+    ) -> tuple[str, ...]:
+        payload = await self._call_data(
+            "GET",
+            base_url,
+            f"/api/v1/tasks/{self._task_id(task_id)}/logs",
+            token,
+            params={"tail": max(1, min(int(tail), 2000))},
+        )
+        lines = payload.get("lines")
+        if not isinstance(lines, list):
+            raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", "Agent 任务日志格式不兼容")
+        return tuple(str(line) for line in lines)
+
+    async def list_packages(self, base_url: str, token: str | None = None) -> tuple[dict[str, Any], ...]:
+        payload = await self._call_payload("GET", base_url, "/api/v1/packages", token)
+        if not isinstance(payload, list):
+            raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", "Agent 采集包列表格式不兼容")
+        return tuple(dict(item) for item in payload if isinstance(item, dict))
+
     async def start_fping(self, base_url: str, request: AgentFpingStartRequest, token: str | None = None) -> AgentTaskDTO:
         payload = await self._call_data("POST", base_url, "/api/v1/fping/start", token, json_body=request.as_payload())
         return AgentTaskDTO.from_payload(payload)

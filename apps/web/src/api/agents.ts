@@ -1,5 +1,14 @@
 import { apiRequest } from './client'
-import type { AgentFormValue, AgentItem, AgentProbeResult } from '../types/agent'
+import type {
+  AgentFormValue,
+  AgentItem,
+  AgentProbeResult,
+  AgentRemotePackage,
+  AgentRemoteStatus,
+  AgentRemoteTask,
+  AgentRemoteTaskLogs,
+  AgentToolsStatus,
+} from '../types/agent'
 
 interface ApiResponse<T> {
   ok: true
@@ -33,4 +42,29 @@ export async function setAgentEnabled(agentId: string, enabled: boolean): Promis
 
 export async function archiveAgent(agentId: string): Promise<void> {
   await apiRequest<ApiResponse<{ agent_id: string; archived: boolean }>>(`/api/agents/${agentId}`, { method: 'DELETE' })
+}
+
+export async function getAgentRemoteStatus(agentId: string): Promise<AgentRemoteStatus> {
+  return (await apiRequest<ApiResponse<AgentRemoteStatus>>(`/api/agents/${agentId}/remote/status`)).data
+}
+
+export async function getAgentRemoteTools(agentId: string): Promise<AgentToolsStatus> {
+  return (await apiRequest<ApiResponse<AgentToolsStatus>>(`/api/agents/${agentId}/remote/tools`)).data
+}
+
+export async function listAgentRemoteTasks(agentId: string): Promise<AgentRemoteTask[]> {
+  return (await apiRequest<ApiResponse<AgentRemoteTask[]>>(`/api/agents/${agentId}/remote/tasks`)).data
+}
+
+export async function getAgentRemoteTask(agentId: string, taskId: string): Promise<AgentRemoteTask> {
+  return (await apiRequest<ApiResponse<AgentRemoteTask>>(`/api/agents/${agentId}/remote/tasks/${encodeURIComponent(taskId)}`)).data
+}
+
+export async function getAgentRemoteTaskLogs(agentId: string, taskId: string, tail = 300): Promise<AgentRemoteTaskLogs> {
+  const value = Math.max(1, Math.min(Math.trunc(tail), 2000))
+  return (await apiRequest<ApiResponse<AgentRemoteTaskLogs>>(`/api/agents/${agentId}/remote/tasks/${encodeURIComponent(taskId)}/logs?tail=${value}`)).data
+}
+
+export async function listAgentRemotePackages(agentId: string): Promise<AgentRemotePackage[]> {
+  return (await apiRequest<ApiResponse<AgentRemotePackage[]>>(`/api/agents/${agentId}/remote/packages`)).data
 }

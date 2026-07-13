@@ -234,6 +234,36 @@ class AgentControllerService:
             raise AgentControllerError(exc.code, exc.message, status_code=_client_status(exc)) from exc
         return _probe_result_dict(result)
 
+    async def get_remote_status(self, agent_id: str) -> dict[str, Any]:
+        config, token = self._remote_context(agent_id)
+        return await self._read_remote(lambda: self.client.get_status(config.base_url, token))
+
+    async def get_remote_tools(self, agent_id: str) -> dict[str, Any]:
+        config, token = self._remote_context(agent_id)
+        return await self._read_remote(lambda: self.client.get_tools_status(config.base_url, token))
+
+    async def list_remote_tasks(self, agent_id: str) -> list[dict[str, Any]]:
+        config, token = self._remote_context(agent_id)
+        tasks = await self._read_remote(lambda: self.client.list_tasks(config.base_url, token))
+        return [asdict(task) for task in tasks]
+
+    async def get_remote_task(self, agent_id: str, task_id: str) -> dict[str, Any]:
+        config, token = self._remote_context(agent_id)
+        task = await self._read_remote(lambda: self.client.get_task(config.base_url, task_id, token))
+        return asdict(task)
+
+    async def get_remote_task_logs(self, agent_id: str, task_id: str, *, tail: int = 300) -> dict[str, Any]:
+        config, token = self._remote_context(agent_id)
+        lines = await self._read_remote(
+            lambda: self.client.get_task_logs(config.base_url, task_id, tail=tail, token=token)
+        )
+        return {"task_id": task_id, "lines": list(lines)}
+
+    async def list_remote_packages(self, agent_id: str) -> list[dict[str, Any]]:
+        config, token = self._remote_context(agent_id)
+        packages = await self._read_remote(lambda: self.client.list_packages(config.base_url, token))
+        return list(packages)
+
     async def start(self) -> None:
         if not self.settings.health_check_enabled or self._health_task is not None:
             return
@@ -304,6 +334,21 @@ class AgentControllerService:
         if value is None:
             raise AgentControllerError("AGENT_CREDENTIAL_REQUIRED", "Agent Token 未加载，请重新编辑认证配置", status_code=409)
         return value
+
+    def _remote_context(self, agent_id: str) -> tuple[AgentConfig, str | None]:
+        config = self._require_config(agent_id)
+        if not config.enabled:
+            raise AgentControllerError("AGENT_DISABLED", "Agent 已禁用", status_code=409)
+        return config, self._credential_for(config)
+
+    @staticmethod
+    async def _read_remote(operation):
+        try:
+            return await operation()
+        except ValueError as exc:
+            raise AgentControllerError("AGENT_REQUEST_INVALID", str(exc), status_code=422) from exc
+        except AgentClientError as exc:
+            raise AgentControllerError(exc.code, exc.message, status_code=_client_status(exc)) from exc
 
     def _require_config(self, agent_id: str) -> AgentConfig:
         config = self.repository.get(agent_id)

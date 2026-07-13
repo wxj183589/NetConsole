@@ -12,6 +12,11 @@ from netconsole.models.api.agent import (
     AgentEventDTO,
     AgentProbeDTO,
     AgentProbeRequest,
+    AgentRemotePackageDTO,
+    AgentRemoteStatusDTO,
+    AgentRemoteTaskDTO,
+    AgentRemoteTaskLogsDTO,
+    AgentToolsStatusDTO,
     AgentUpdateRequest,
 )
 from netconsole.models.api.common import ApiResponse
@@ -53,6 +58,52 @@ async def probe_unsaved(payload: AgentProbeRequest, request: Request) -> ApiResp
         token=_secret(payload.token),
     )
     return ApiResponse(data=AgentProbeDTO.model_validate(result))
+
+
+@router.get("/{agent_id}/remote/status", response_model=ApiResponse[AgentRemoteStatusDTO])
+async def remote_status(agent_id: str, request: Request) -> ApiResponse[AgentRemoteStatusDTO]:
+    return ApiResponse(data=AgentRemoteStatusDTO.model_validate(await _service(request).get_remote_status(agent_id)))
+
+
+@router.get("/{agent_id}/remote/tools", response_model=ApiResponse[AgentToolsStatusDTO])
+async def remote_tools(agent_id: str, request: Request) -> ApiResponse[AgentToolsStatusDTO]:
+    return ApiResponse(data=AgentToolsStatusDTO.model_validate(await _service(request).get_remote_tools(agent_id)))
+
+
+@router.get("/{agent_id}/remote/tasks", response_model=ApiResponse[list[AgentRemoteTaskDTO]])
+async def remote_tasks(agent_id: str, request: Request) -> ApiResponse[list[AgentRemoteTaskDTO]]:
+    return ApiResponse(
+        data=[AgentRemoteTaskDTO.model_validate(item) for item in await _service(request).list_remote_tasks(agent_id)]
+    )
+
+
+@router.get("/{agent_id}/remote/tasks/{task_id}", response_model=ApiResponse[AgentRemoteTaskDTO])
+async def remote_task(agent_id: str, task_id: str, request: Request) -> ApiResponse[AgentRemoteTaskDTO]:
+    return ApiResponse(data=AgentRemoteTaskDTO.model_validate(await _service(request).get_remote_task(agent_id, task_id)))
+
+
+@router.get("/{agent_id}/remote/tasks/{task_id}/logs", response_model=ApiResponse[AgentRemoteTaskLogsDTO])
+async def remote_task_logs(
+    agent_id: str,
+    task_id: str,
+    request: Request,
+    tail: int = 300,
+) -> ApiResponse[AgentRemoteTaskLogsDTO]:
+    return ApiResponse(
+        data=AgentRemoteTaskLogsDTO.model_validate(
+            await _service(request).get_remote_task_logs(agent_id, task_id, tail=max(1, min(tail, 2000)))
+        )
+    )
+
+
+@router.get("/{agent_id}/remote/packages", response_model=ApiResponse[list[AgentRemotePackageDTO]])
+async def remote_packages(agent_id: str, request: Request) -> ApiResponse[list[AgentRemotePackageDTO]]:
+    return ApiResponse(
+        data=[
+            AgentRemotePackageDTO.model_validate(item)
+            for item in await _service(request).list_remote_packages(agent_id)
+        ]
+    )
 
 
 @router.get("/{agent_id}", response_model=ApiResponse[AgentDTO])

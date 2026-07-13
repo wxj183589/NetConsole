@@ -16,6 +16,7 @@ from netconsole.models.agent_traffic import (
     AgentFpingStartRequest,
     AgentIperfClientStartRequest,
     AgentIperfServerStartRequest,
+    AgentTaskDTO,
 )
 from netconsole.repositories.agent_repository import AgentRepository
 from netconsole.services.agent.controller import (
@@ -49,6 +50,54 @@ class FakeAgentClient:
         if self.error:
             raise self.error
         return self.result
+
+
+class FakeReadOnlyAgentClient(FakeAgentClient):
+    async def get_status(self, base_url: str, token: str | None = None) -> dict:
+        return {
+            "agent_id": "remote-1",
+            "agent_name": "Remote",
+            "version": "0.2.0-win-agent",
+            "os": "windows",
+            "arch": "amd64",
+            "current_tasks": 1,
+            "task_count": 2,
+            "package_count": 1,
+        }
+
+    async def get_tools_status(self, base_url: str, token: str | None = None) -> dict:
+        return {
+            "iperf3": {"exists": True, "ready": True, "version": "iperf 3"},
+            "fping": {"exists": True, "ready": True},
+            "mr_collector": {"exists": True, "ready": True},
+        }
+
+    async def list_tasks(self, base_url: str, token: str | None = None) -> tuple[AgentTaskDTO, ...]:
+        return (AgentTaskDTO.from_payload({"task_id": "task-1", "task_type": "fping", "status": "running"}),)
+
+    async def get_task(self, base_url: str, task_id: str, token: str | None = None) -> AgentTaskDTO:
+        return AgentTaskDTO.from_payload({"task_id": task_id, "task_type": "fping", "status": "running"})
+
+    async def get_task_logs(
+        self,
+        base_url: str,
+        task_id: str,
+        *,
+        tail: int = 300,
+        token: str | None = None,
+    ) -> tuple[str, ...]:
+        return ("第一行", "第二行")[-tail:]
+
+    async def list_packages(self, base_url: str, token: str | None = None) -> tuple[dict, ...]:
+        return (
+            {
+                "package_id": "package-1",
+                "task_id": "task-1",
+                "task_type": "mr_realtime_collect",
+                "size": 1024,
+                "package_download_url": "/api/v1/packages/package-1/download",
+            },
+        )
 
 
 def _service(tmp_path, *, client=None, site="demo") -> AgentControllerService:
@@ -328,6 +377,33 @@ def test_agent_http_client_reports_old_agent_traffic_endpoint_as_unsupported() -
     assert exc_info.value.code == "AGENT_TRAFFIC_UNSUPPORTED"
 
 
+def test_agent_http_client_read_only_control_center_contract() -> None:
+    requested: list[tuple[str, dict[str, str]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("X-Agent-Token") == "secret"
+        requested.append((request.url.path, dict(request.url.params)))
+        payloads = {
+            "/api/v1/status": {"agent_id": "remote", "version": "0.2.0", "os": "windows", "arch": "amd64"},
+            "/api/v1/tools/status": {
+                "tools": {"iperf3": {"ready": True}, "fping": {"ready": True}, "mr_collector": {"ready": True}}
+            },
+            "/api/v1/tasks": [{"task_id": "task-1", "task_type": "fping", "status": "running"}],
+            "/api/v1/tasks/task-1/logs": {"task_id": "task-1", "lines": ["line-1"]},
+            "/api/v1/packages": [{"package_id": "package-1", "size": 10}],
+        }
+        return httpx.Response(200, json={"ok": True, "data": payloads[request.url.path]})
+
+    client = AgentHttpClient(transport=httpx.MockTransport(handler))
+    base_url = "http://127.0.0.1:18080"
+    assert asyncio.run(client.get_status(base_url, "secret"))["agent_id"] == "remote"
+    assert asyncio.run(client.get_tools_status(base_url, "secret"))["iperf3"]["ready"] is True
+    assert asyncio.run(client.list_tasks(base_url, "secret"))[0].task_id == "task-1"
+    assert asyncio.run(client.get_task_logs(base_url, "task-1", tail=25, token="secret")) == ("line-1",)
+    assert asyncio.run(client.list_packages(base_url, "secret"))[0]["package_id"] == "package-1"
+    assert requested[3] == ("/api/v1/tasks/task-1/logs", {"tail": "25"})
+
+
 def test_agent_rest_crud_probe_disable_archive_and_no_secret(tmp_path) -> None:
     service = _service(tmp_path)
     app = create_app(
@@ -373,6 +449,36 @@ def test_agent_rest_unsaved_probe_error_is_standardized(tmp_path) -> None:
         response = client.post("/api/agents/probe", json={"base_url": "http://127.0.0.1:18080"})
     assert response.status_code == 502
     assert response.json() == {"ok": False, "error": {"code": "AGENT_TIMEOUT", "message": "连接 Agent 超时", "details": {}}}
+
+
+def test_agent_rest_read_only_control_center_endpoints(tmp_path) -> None:
+    service = _service(tmp_path, client=FakeReadOnlyAgentClient())
+    created = service.create_agent(
+        name="Agent",
+        base_url="http://127.0.0.1:18080",
+        enabled=True,
+        authentication_type=AgentAuthenticationType.NONE,
+    )
+    app = create_app(
+        paths=PathResolver(tmp_path),
+        task_service=TaskApplicationService(paths=PathResolver(tmp_path)),
+        agent_service=service,
+        frontend_dist=tmp_path / "missing",
+    )
+    prefix = f"/api/agents/{created['agent_id']}/remote"
+    with TestClient(app) as client:
+        assert client.get(f"{prefix}/status").json()["data"]["current_tasks"] == 1
+        assert client.get(f"{prefix}/tools").json()["data"]["iperf3"]["ready"] is True
+        assert client.get(f"{prefix}/tasks").json()["data"][0]["task_id"] == "task-1"
+        assert client.get(f"{prefix}/tasks/task-1").json()["data"]["status"] == "running"
+        assert client.get(f"{prefix}/tasks/task-1/logs?tail=1").json()["data"]["lines"] == ["第二行"]
+        assert client.get(f"{prefix}/packages").json()["data"][0]["package_id"] == "package-1"
+
+        for method, path in (
+            ("post", f"{prefix}/tasks/task-1/stop"),
+            ("delete", f"{prefix}/packages/package-1"),
+        ):
+            assert getattr(client, method)(path).status_code == 404
 
 
 def test_saved_agent_probe_persists_failure_and_returns_domain_error(tmp_path) -> None:
