@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,6 +16,12 @@ from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.traffic.application_service import TrafficTestApplicationService
+from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
+
+
+_ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
+_SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 
 
 def create_app(
@@ -23,6 +30,7 @@ def create_app(
     paths: PathResolver | None = None,
     task_service: TaskApplicationService | None = None,
     agent_service: AgentControllerService | None = None,
+    traffic_service: TrafficTestApplicationService | None = None,
     frontend_dist: Path | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
@@ -31,13 +39,22 @@ def create_app(
         task_service = TaskApplicationService(paths=paths, site_name=site_name)
     if agent_service is None:
         agent_service = AgentControllerService(paths=paths, site_name=site_name)
+    if traffic_service is None:
+        traffic_service = TrafficTestApplicationService(
+            paths=paths,
+            site_name=site_name,
+            task_service=task_service,
+            agent_controller=agent_service,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await agent_service.start()
+        await traffic_service.start()
         try:
             yield
         finally:
+            await traffic_service.stop()
             await agent_service.stop()
 
     app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION.removeprefix("v"), lifespan=lifespan)
@@ -45,11 +62,23 @@ def create_app(
     app.state.paths = paths
     app.state.task_service = task_service
     app.state.agent_service = agent_service
+    app.state.traffic_service = traffic_service
 
     @app.exception_handler(AgentControllerError)
     async def agent_error_handler(_: Request, exc: AgentControllerError) -> JSONResponse:
         payload = ErrorResponse(error=ErrorDetail(code=exc.code, message=exc.message))
         return JSONResponse(status_code=exc.status_code, content=payload.model_dump(mode="json"))
+
+    @app.exception_handler(TrafficTestError)
+    async def traffic_error_handler(_: Request, exc: TrafficTestError) -> JSONResponse:
+        payload = ErrorResponse(
+            error=ErrorDetail(
+                code=exc.code,
+                message=_safe_error_message(exc.message),
+                details={"retryable": exc.retryable},
+            )
+        )
+        return JSONResponse(status_code=_traffic_error_status(exc.code), content=payload.model_dump(mode="json"))
 
     app.include_router(api_router)
     app.include_router(ws_router)
@@ -95,6 +124,44 @@ def _frontend_dist(paths: PathResolver) -> Path:
     packaged = paths.app_root / "apps" / "web" / "dist"
     source = paths.app_root / "apps" / "web" / "dist"
     return packaged if (packaged / "index.html").is_file() else source
+
+
+def _traffic_error_status(code: str) -> int:
+    try:
+        normalized = TrafficErrorCode(code)
+    except ValueError:
+        return 400
+    if normalized in {TrafficErrorCode.RESULT_NOT_FOUND, TrafficErrorCode.AGENT_NOT_FOUND, TrafficErrorCode.REMOTE_TASK_NOT_FOUND}:
+        return 404
+    if normalized in {TrafficErrorCode.INVALID_CONFIG, TrafficErrorCode.EXECUTION_TARGET_INVALID, TrafficErrorCode.EVENT_CURSOR_INVALID}:
+        return 422
+    if normalized in {
+        TrafficErrorCode.AGENT_DISABLED,
+        TrafficErrorCode.AGENT_CREDENTIAL_REQUIRED,
+        TrafficErrorCode.CAPABILITY_UNSUPPORTED,
+        TrafficErrorCode.SERVER_PORT_IN_USE,
+    }:
+        return 409
+    if normalized is TrafficErrorCode.AGENT_UNAUTHORIZED:
+        return 401
+    if normalized in {TrafficErrorCode.CONNECTION_TIMEOUT, TrafficErrorCode.CANCEL_TIMEOUT}:
+        return 504
+    if normalized in {
+        TrafficErrorCode.AGENT_OFFLINE,
+        TrafficErrorCode.REMOTE_SYNC_FAILED,
+        TrafficErrorCode.SERVER_NOT_READY,
+        TrafficErrorCode.CONNECTION_REFUSED,
+        TrafficErrorCode.PROCESS_START_FAILED,
+        TrafficErrorCode.PROCESS_EXITED,
+        TrafficErrorCode.TOOL_NOT_FOUND,
+    }:
+        return 502
+    return 400
+
+
+def _safe_error_message(message: str) -> str:
+    redacted = _ABSOLUTE_PATH_RE.sub("<redacted-path>", str(message or "流量测试失败"))
+    return _SECRET_RE.sub(r"\1<redacted>", redacted)
 
 
 app = create_app()
