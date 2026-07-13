@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from netconsole.models.api.agent import AgentDTO, AgentStatusDTO
 from netconsole.models.api.common import ApiResponse, ErrorDetail, ErrorResponse, HealthResponse
+from netconsole.models.api.online_mr import (
+    OnlineMrArtifactDTO,
+    OnlineMrDatabaseSummaryDTO,
+    OnlineMrLogChunkDTO,
+    OnlineMrMetricSeriesDTO,
+    OnlineMrSessionDetailDTO,
+    OnlineMrSessionSummaryDTO,
+)
 from netconsole.models.api.task import TaskCancelResponse, TaskDTO, TaskEventDTO
 from netconsole.models.api.traffic import (
     FpingStartRequest,
@@ -24,6 +32,12 @@ __all__ = [
     "ErrorDetail",
     "ErrorResponse",
     "HealthResponse",
+    "OnlineMrArtifactDTO",
+    "OnlineMrDatabaseSummaryDTO",
+    "OnlineMrLogChunkDTO",
+    "OnlineMrMetricSeriesDTO",
+    "OnlineMrSessionDetailDTO",
+    "OnlineMrSessionSummaryDTO",
     "TaskDTO",
     "TaskEventDTO",
     "TaskCancelResponse",

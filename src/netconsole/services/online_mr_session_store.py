@@ -107,19 +107,27 @@ class OnlineMrSessionStore:
         return changed
 
     def list_sessions(self, site_name: str, safe_mr_name: str | None = None) -> list[dict[str, object]]:
-        roots = [self.paths.online_mr_sessions_root(site_name, safe_mr_name)] if safe_mr_name else list(self.paths.online_mr_root(site_name).glob("*/sessions"))
         rows: list[dict[str, object]] = []
-        for root in roots:
-            if not root.exists():
+        for session_dir in self.list_session_dirs(site_name, safe_mr_name):
+            meta_path = session_dir / "session_meta.json"
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
                 continue
-            for meta_path in root.glob("*/session_meta.json"):
-                try:
-                    data = json.loads(meta_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                data["session_dir"] = str(meta_path.parent)
-                rows.append(data)
+            data["session_dir"] = str(session_dir)
+            rows.append(data)
         return sorted(rows, key=lambda item: str(item.get("started_at") or ""), reverse=True)
+
+    def list_session_dirs(self, site_name: str, safe_mr_name: str | None = None) -> list[Path]:
+        roots = (
+            [self.paths.online_mr_sessions_root(site_name, safe_mr_name)]
+            if safe_mr_name
+            else list(self.paths.online_mr_root(site_name).glob("*/sessions"))
+        )
+        return sorted(
+            (session_dir for root in roots if root.is_dir() for session_dir in root.iterdir() if session_dir.is_dir()),
+            key=lambda path: (path.name, path.parent.parent.name),
+        )
 
 
 class OnlineMrSession:
