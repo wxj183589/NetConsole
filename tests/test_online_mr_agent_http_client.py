@@ -211,12 +211,11 @@ def test_list_packages_and_tools_status_are_typed() -> None:
             return _response(
                 [
                     {
-                        "package_id": "package-1",
-                        "task_id": "task-1",
-                        "task_type": "mr_realtime_collect",
-                        "start_time": "start",
+                        "session_id": "session-1",
+                        "created_at": "created",
                         "end_time": "end",
-                        "size": 128,
+                        "status": "completed",
+                        "file_name": "package-1.zip",
                         "package_download_url": "/api/v1/packages/package-1/download",
                     }
                 ]
@@ -236,6 +235,9 @@ def test_list_packages_and_tools_status_are_typed() -> None:
     tools = asyncio.run(client.get_tools_status())
 
     assert packages[0].package_id == "package-1"
+    assert packages[0].task_id == ""
+    assert packages[0].session_id == "session-1"
+    assert packages[0].status == "completed"
     assert tools.mr_collector.ready and not tools.iperf3.ready
     assert "private" not in tools.model_dump_json()
 
@@ -390,6 +392,7 @@ def test_download_service_preserves_conflicting_zip(tmp_path: Path) -> None:
     )
 
     assert not result.success and result.conflict
+    assert result.error_code == OnlineMrApplicationErrorCode.AGENT_PACKAGE_CONFLICT
     assert result.downloaded_path is not None and result.downloaded_path.is_file()
 
 

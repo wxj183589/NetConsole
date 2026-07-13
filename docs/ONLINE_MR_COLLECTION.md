@@ -166,13 +166,12 @@ Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/
 
 Go Agent 已有 `/api/v1/mr/collect/{start,stop,status,live,raw-tail,raw-summary}`、统一任务查询/事件、采集包下载、Netmiko sidecar 和密码脱敏。现有 start 请求已能表达目标、会话归属、采集项、周期、Radio、fping、iPerf 和现场展示上下文；私有 `meta/request.private.json` 只用于 sidecar 连接，任务参数和目标快照使用脱敏副本，最终 ZIP 排除该文件和 `stop.request`。
 
-尚未接通的边界：
+仍未接通的边界：
 
-- Python `AgentHttpClient` 没有 Online MR Typed Client；
 - Go MR 请求尚未执行 `duration_minutes` 自动停止；
 - Agent task/status/live 三类响应尚未归一为 Controller 的 start/status/stop DTO；
-- Controller 已在 5B-7 增加本地 ZIP importer，但尚未接 Agent HTTP 下载；
-- Agent 终态、包下载、包校验、会话落盘和 Task/Session/Mapping 终态尚未形成完整同步链。
+- Controller 已能手工查询、下载并导入 Agent ZIP，但尚未接远程任务生命周期；
+- Agent 终态到 Controller Task/Session/Mapping 的自动同步链尚未建立。
 
 因此 5B-6 不把 Agent 已有本地 Web 采集能力描述为 Python Controller 已接入。
 
@@ -209,11 +208,11 @@ Terminal mapping 不得被后续轮询或本地 Task 事件改回 ACTIVE。带 w
 
 Agent ZIP 使用单一会话根目录，必须包含主程序需要的 `manifest.json`、`raw/` 十四类事实文件、`session_meta.json`、`task.json`、`stop_reason.json`、`agent_info.json` 和 `system_info.json`。逻辑会话目录还包括 `parsed/`、`view/`、`logs/`、`outputs/`；ZIP 不保证为空目录有独立 entry，importer 会在校验通过后创建缺失空目录。
 
-禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。5B-7 已实现本地 ZIP 校验与导入，远端下载仍未接通。
+禁止包内出现 `stop.request`、`meta/request.private.json`、`.tmp`、路径穿越或绝对路径。包下载到临时文件后必须先校验根目录、metadata、raw 契约和敏感信息，再原子提交到 `PathResolver` 管理的局点会话目录；校验失败不得覆盖既有会话，也不得删除 Agent 远端 raw。5B-7 已实现本地 ZIP 校验与导入，5B-8/5B-9 仅以手工方式接入远端下载。
 
 Agent Task/Event 向 Controller 只允许传递稳定 ID、状态、指标和相对 artifact 引用；不得传递 Agent 私有绝对路径、Token、密码或私有请求内容。
 
-## 11. Agent Package Importer（5B-7，尚未接 HTTP）
+## 11. Agent Package Importer（5B-7，由手工下载流程调用）
 
 `OnlineMrAgentPackageImporter` 只处理已经下载到本机的 Online MR ZIP，不连接 Agent、不启动远端任务，也不改变 `executor=AGENT` 的 unsupported 分派。Importer 是同步 IO 服务，未来 UI/API 调用者必须放入后台任务，不能阻塞 Qt 主线程。导入目标固定为当前局点：
 
@@ -248,3 +247,37 @@ files/rail_transit/online_mr/<device_name>__<device_id>/sessions/<session_id>/
 `OnlineMrAgentDownloadService` 将下载完成的 ZIP 在线程中交给 5B-7 importer。下载失败不调用 importer；校验失败或冲突时保留下载 ZIP，正式 Session 不受污染；导入成功或幂等确认后默认清理临时下载 ZIP。错误统一映射为 `ONLINE_MR_AGENT_*`，覆盖 unreachable、timeout、auth、version、tool/collector、Task 不存在、package 未就绪、下载失败、超限、响应无效和 package invalid。
 
 本阶段不把该服务接入 `OnlineMrApplicationService`、Legacy Qt、FastAPI 或 Vue，`executor=AGENT` 仍返回 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。没有连接真实 Agent，也没有修改 Go Agent、MR 命令、raw 契约或 LOCAL 生命周期。
+
+## 13. Controller 手工下载与导入（5B-9）
+
+`OnlineMrAgentControllerService` 是 5B-8 Client/DownloadService 的轻量门面，只提供 ping、Agent/工具状态、package 列表和指定 package 下载导入。它不依赖 `OnlineMrApplicationService`，不提供远程 start/stop，也不会改变 LOCAL 采集路径。
+
+维护脚本可先只列出 Agent 现有采集包：
+
+```powershell
+$env:NETCONSOLE_AGENT_TOKEN = "<token>"
+python -m scripts.maintenance.download_import_agent_online_mr_package `
+  --agent-url "http://<agent-host>:18080"
+```
+
+选定 Online MR `package_id` 后，手工下载并导入当前局点：
+
+```powershell
+python -m scripts.maintenance.download_import_agent_online_mr_package `
+  --agent-url "http://<agent-host>:18080" `
+  --package-id "<package_id>" `
+  --site "<site_id>" `
+  --device-id "<device_id>" `
+  --device-name "<device_name>" `
+  --mr-name "<mr_name>"
+```
+
+脚本先查询 ping、Agent/工具状态和 package 列表，再按固定 `/api/v1/packages/<package_id>/download` 路由下载；可选列表字段缺失时显示为空或 `unknown`，不会请求返回值中的任意 URL。成功或幂等导入后输出 Controller Task、Session 和只读验收命令；冲突或无效包保留下载 ZIP，远端 package 始终保留。Token 可通过 `NETCONSOLE_AGENT_TOKEN` 提供，输出和异常摘要不回显 Token。
+
+真实 Agent 验证只允许先在 Agent Web 手工完成采集，再由该脚本下载已有包。导入后运行：
+
+```powershell
+python -m scripts.maintenance.check_online_mr_session_state --task-id "<controller_task_id>"
+```
+
+应确认所属局点 `tasks.db`、Session、`executor=AGENT` Mapping、raw、`outputs/<session_id>.zip` 和 `import_manifest.json` 一致，且没有误写 `demo/tasks.db`。当前代码仅通过 fake HTTP/临时目录定向测试，尚未完成真实 Agent 下载验收；`executor=AGENT`、远程 start/status/stop、Legacy Qt、FastAPI/Vue、自动解析和报告继续保持未启用。

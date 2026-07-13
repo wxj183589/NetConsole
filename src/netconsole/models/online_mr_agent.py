@@ -89,12 +89,16 @@ class OnlineMrAgentTaskStatusResponse(ApiModel):
 
 
 class OnlineMrAgentPackageInfo(ApiModel):
-    package_id: str = Field(min_length=1)
-    task_id: str = Field(min_length=1)
-    task_type: str = Field(min_length=1)
+    package_id: str = ""
+    task_id: str = ""
+    session_id: str = ""
+    task_type: str = ""
+    created_at: str = ""
     start_time: str = ""
     end_time: str = ""
-    size: int = Field(ge=0)
+    size: int = Field(default=0, ge=0)
+    status: str = ""
+    file_name: str = ""
     package_download_url: str = ""
 
 

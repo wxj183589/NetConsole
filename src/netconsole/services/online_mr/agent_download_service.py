@@ -32,6 +32,10 @@ class OnlineMrAgentDownloadImportResult:
     warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
 
+    @property
+    def source_zip_sha256(self) -> str:
+        return self.sha256
+
 
 class OnlineMrAgentDownloadService:
     """下载 Agent ZIP 并交给 5B-7 importer；不启动或停止远端任务。"""
@@ -120,8 +124,10 @@ class OnlineMrAgentDownloadService:
             downloaded_path=(downloaded.path if downloaded.path.exists() else None),
             sha256=downloaded.sha256,
             error_code=(
-                str(OnlineMrApplicationErrorCode.AGENT_PACKAGE_INVALID)
-                if not imported.success and not imported.conflict
+                str(OnlineMrApplicationErrorCode.AGENT_PACKAGE_CONFLICT)
+                if imported.conflict
+                else str(OnlineMrApplicationErrorCode.AGENT_PACKAGE_INVALID)
+                if not imported.success
                 else ""
             ),
             warnings=tuple(warnings),

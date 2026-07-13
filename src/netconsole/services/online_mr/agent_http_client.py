@@ -31,6 +31,9 @@ from netconsole.services.online_mr.errors import OnlineMrApplicationErrorCode
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _SAFE_ID = re.compile(r"[A-Za-z0-9_.-]+")
+_PACKAGE_DOWNLOAD_PATH = re.compile(
+    r"/api/v1/packages/([A-Za-z0-9_.-]+)/download"
+)
 
 
 class OnlineMrAgentClientError(RuntimeError):
@@ -115,7 +118,17 @@ class OnlineMrAgentHttpClient(AgentHttpClient):
             not isinstance(item, dict) for item in payload
         ):
             self._invalid_response("Agent package 列表格式无效")
-        return tuple(self._model(OnlineMrAgentPackageInfo, item) for item in payload)
+        packages = []
+        for item in payload:
+            package = self._model(OnlineMrAgentPackageInfo, item)
+            if not package.package_id:
+                match = _PACKAGE_DOWNLOAD_PATH.fullmatch(
+                    package.package_download_url
+                )
+                if match:
+                    package = package.model_copy(update={"package_id": match.group(1)})
+            packages.append(package)
+        return tuple(packages)
 
     async def download_package(
         self,
