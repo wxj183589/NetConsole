@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化，但尚未接入 MR、设备、AC、SNMP 等其他 Web 业务页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化。阶段 5B-1 已建立 Online MR 纯 Python DTO 和只读查询边界，但尚未创建 Online MR API 或 Web 页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -126,9 +126,16 @@ flowchart TD
 - 不新增 QWebChannel 业务桥接。文件选择、目录选择、打开目录、外部程序和通知仍是后续受控 Native Bridge 范围；
 - 离屏冒烟覆盖 100%/125%/150% 缩放和 1280×720、1920×1080、2560×1440。该验证确认路由、DOM、构建和关闭链路，不代替 Windows 实机上的字体、表格、图表和滚动人工观察。
 
+阶段 5B-1 已完成：
+
+- `OnlineMrQueryService` 只读复用现有 Session Store、会话 metadata、受控 Artifact 和 `online_diagnosis.sqlite`，不建立第二套会话索引或 Core；
+- Pydantic DTO 明确会话、日志、指标、文件、备注、时间轴和 Task/Session 只读映射边界；旧 metadata 不存在的 task、agent、最终化字段保持未知；
+- 日志使用受控 source 和字节游标分块，SQLite 使用独立只读连接、缺表兼容、参数绑定和确定性降采样，不重跑 parser、不补零、不混合 Ping 目标或 Radio；
+- 正式冻结 Traffic/SSH/writer flush 后再解析、最终化和原子打包的生命周期契约；本阶段未修改 Legacy 启停、Traffic、Agent、FastAPI、Vue 或数据库 schema。
+
 仍未实现：
 
-- MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；
+- Online MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；Online MR 当前只有只读 Application DTO/Query Service；
 - 独立于桌面/FastAPI 生命周期的 Controller daemon；
 - Export Process 的 Web 接口。
 
