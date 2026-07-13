@@ -23,30 +23,80 @@ flowchart TD
 
 开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载 Vue 任务中心、Agent 管理和阶段 4C Traffic 页面，不替换普通启动。当前正式发布脚本尚未打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
 
-## 3. 分层与依赖方向
+## 3. 目标分层与依赖方向
+
+后续 NetConsole 新增和改造代码统一采用以下目标结构：
+
+```text
+apps/
+├─ desktop_qt/       # Qt 桌面程序入口、窗口、资源和启动适配
+├─ agent/            # Windows/CentOS Agent
+└─ web/              # Vue 前端，可暂时为空
+
+src/netconsole/
+├─ domain/           # 纯领域模型、规则、值对象
+├─ application/      # 用例、ApplicationService、DTO、端口接口
+├─ infrastructure/   # SSH、SNMP、数据库、文件、进程、网络实现
+├─ api/              # FastAPI、REST、WebSocket 适配层
+└─ presentation/
+   └─ qt/            # Qt 页面、ViewModel、Qt 信号适配
+```
+
+依赖只能由外向内：
 
 ```mermaid
 flowchart LR
-    UI["UI\n页面、对话框、widgets"] --> SVC["Services\n业务编排、解析、导出模型"]
-    UI --> VM["Models / ViewModels\n稳定数据与展示模型"]
-    SVC --> REPO["Repositories\n数据访问与查询"]
-    SVC --> PARSER["Parsers / Adapters\n外部格式与设备边界"]
-    REPO --> STORE["SQLite / JSON / 日志 / 原始文件"]
-    UI --> CORE["Core\n路径、设置、Feature、日志、版本"]
-    SVC --> CORE
-    REPO --> CORE
-    JOB["Background Job Process"] --> SVC
-    EXP["Export Process"] --> SVC
+    QT["Qt Page"] --> APP["ApplicationService"]
+    VUE["Vue"] --> API["FastAPI"]
+    API --> APP
+    APP --> DOMAIN["Domain"]
+    INFRA["Infrastructure"] --> APP
+    INFRA --> DOMAIN
 ```
 
-约束：
+- `domain` 不依赖外层，不得导入 Qt、FastAPI、SQLAlchemy 或具体 IO 实现。
+- `application` 只依赖 `domain`，定义用例、Command/Query/DTO 和基础设施端口；不得导入 Qt、API 或具体基础设施实现。
+- `infrastructure` 实现 `application` 定义的端口，封装 SSH、SNMP、SQLite、文件、进程、网络、解析和报告实现。
+- `presentation/qt` 与 `api` 都只调用 `application`，不得绕过 ApplicationService 直接编排基础设施。
+- `core/paths.py` 仍是迁移期间的路径事实来源；运行数据不得写入源码、`docs/` 或 `tests/`。
 
-- UI 负责输入、状态、轻量 ViewModel 和结果呈现，不承载长任务或大规模业务计算。
-- Services 不依赖具体页面；需要向 UI 通知时使用结果对象、事件或回调。
-- Repositories 负责数据库连接、事务、查询和数据映射，不放页面文案。
-- `core/paths.py` 是路径事实来源；业务模块不得散落硬编码的本机绝对路径。
-- `resources/` 存放只读资源和规则；运行数据不得写入源码、`docs/` 或 `tests/`。
-- 用户可见文案通过 i18n 资源/服务管理；日志通过 core logger 记录稳定事件，设备密码和认证材料不得进入普通日志。
+Qt 只负责展示数据、收集输入、调用 ApplicationService、订阅状态与进度，以及把结构化结果绑定到 ViewModel。业务入口统一进入应用层，例如：
+
+```python
+service.start_session(command)
+service.stop_session(command)
+service.export_report(command)
+service.get_session(query)
+```
+
+不得在 Qt 页面新增解析、采集、报告生成或数据库业务：
+
+```python
+class OnlineMrPage(QWidget):
+    def parse_log(self): ...
+    def run_ssh_collection(self): ...
+    def generate_excel(self): ...
+    def execute_sql(self): ...
+```
+
+页面事件处理只允许完成轻量输入转换并调用应用服务：
+
+```python
+class OnlineMrPage(QWidget):
+    def _on_start_clicked(self) -> None:
+        command = self._build_start_command()
+        self._service.start_session(command)
+```
+
+### 3.1 当前实现与渐进迁移
+
+上述目录是正式目标架构，不表示现有代码已经完成全量迁移。当前 `apps/desktop`、`src/netconsole/ui`、`backend/api`、`services`、`repositories`、`parsers` 和 `adapters` 均属于兼容结构。
+
+- 不进行一次性全仓重写，也不为目录整齐批量搬动稳定代码。
+- 以后修改 Online MR、离线分析、SNMP、AC 管理、网络工具或报告导出等模块时，先把当前用例的业务逻辑迁入 `application/domain`，把具体 IO 实现归入 `infrastructure`，再修改 Qt/API 适配层。
+- 旧目录只迁出、不扩大职责；兼容入口保留到调用方和测试完成迁移后再删除。
+- Qt 与未来 Web 必须复用同一套 ApplicationService，不建立第二套业务 Core。
+- 自动检查对新目标目录严格执行依赖边界；对旧 Qt 页面冻结现有直接实现依赖并禁止增加新的违规导入。
 
 ## 4. 后台任务架构
 

@@ -49,7 +49,9 @@ NetConsole 的每日/每周自动复盘只服务于项目开发过程，不用�
 ## 仓库目录和包结构
 
 - 新业务代码不得直接堆到仓库根目录；新增顶层目录前先更新 `docs/development/repository-layout.md` 并说明唯一职责。
-- Desktop、Web、Agent 分别放入 `apps/desktop`、`apps/web`、`apps/agent`；共享 Python 业务代码放入 `src/netconsole`，导入名仍是 `netconsole`。
+- Desktop、Web、Agent 分别放入 `apps/desktop_qt`、`apps/web`、`apps/agent`；共享 Python 代码按 `src/netconsole/{domain,application,infrastructure,api,presentation/qt}` 分层，导入名仍是 `netconsole`。
+- 依赖方向固定为 `domain <- application <- Qt/API`，`infrastructure` 实现 `application` 定义的端口；Qt 和 FastAPI/Vue 复用同一套 ApplicationService。
+- 当前 `apps/desktop`、`src/netconsole/ui`、`backend/api`、`services`、`repositories`、`parsers` 和 `adapters` 是兼容结构，只按当前改动模块渐进迁移，不一次性重写。
 - 配置模板和 feature profiles 放入 `config/`；构建、开发和维护脚本分别放入 `scripts/build`、`scripts/dev`、`scripts/maintenance`。
 - 开发运行数据写入 `.local/`；打包态优先使用 `%LOCALAPPDATA%\NetConsole\`，不得依赖当前工作目录或把运行数据写回源码树。
 - 路径定位优先使用 `PathResolver`、资源 helper 或脚本自身位置；禁止用 `Path.cwd()` 或临时 `sys.path` 掩盖包结构问题。

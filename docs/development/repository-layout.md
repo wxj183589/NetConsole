@@ -6,7 +6,9 @@
 
 本文件与 `AGENTS.md` 是强制约束；README 只提供简明导航。目录职责不明确时先审计内容、Git 跟踪状态、代码引用、测试引用和构建引用，再决定位置。
 
-## 2. 标准目录树
+## 2. 标准目标目录树
+
+以下是新增和渐进迁移代码的正式目标，不表示兼容目录已经完成物理搬迁；现状与迁移映射见第 4、12 节。
 
 ```text
 NetConsole/
@@ -14,10 +16,15 @@ NetConsole/
 ├─ .codex/                  # 本地 Codex 状态，允许存在但不提交
 ├─ apps/
 │  ├─ agent/                # Windows Go Agent 及其 sidecar/静态页面
-│  ├─ desktop/              # Qt Web Shell 宿主
+│  ├─ desktop_qt/           # Qt 桌面入口、窗口、资源和启动适配
 │  └─ web/                  # Vue/TypeScript/Vite 前端
 ├─ src/
-│  └─ netconsole/               # 可安装的共享 Python 包
+│  └─ netconsole/           # 可安装的共享 Python 包
+│     ├─ domain/            # 纯领域模型、规则和值对象
+│     ├─ application/       # 用例、ApplicationService、DTO 和端口
+│     ├─ infrastructure/    # SSH、SNMP、数据库、文件、进程和网络实现
+│     ├─ api/               # FastAPI、REST 和 WebSocket 适配层
+│     └─ presentation/qt/   # Qt 页面、ViewModel 和信号适配
 ├─ config/
 │  └─ profiles/             # 版本化 feature profile 和配置模板
 ├─ docs/                    # 项目文档、架构和开发规则
@@ -53,10 +60,16 @@ NetConsole/
 ## 4. 应用边界
 
 - `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，开发态可使用 `.local/agent/`。
-- `apps/desktop` 只放 Qt Web Shell 宿主，不复制 Python Core 或业务服务。
+- `apps/desktop_qt` 只放 Qt 桌面程序入口、窗口宿主、应用资源和启动适配，不放领域规则、采集、解析、数据库或报告实现。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
-- `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser、UI 和包内静态资源；包名仍为 `netconsole`。
+- `src/netconsole/domain` 放纯领域模型、规则和值对象；不得依赖 Qt、FastAPI、SQLAlchemy 或外部实现。
+- `src/netconsole/application` 放用例、ApplicationService、Command/Query/DTO 和端口接口；只依赖 `domain`。
+- `src/netconsole/infrastructure` 实现应用层端口，封装 SSH、SNMP、数据库、文件、进程、网络、解析和报告。
+- `src/netconsole/api` 与 `src/netconsole/presentation/qt` 分别作为 Web/API 和 Qt 适配层，只调用 `application`。
+- Python 包名仍为 `netconsole`；Qt 与 Vue/FastAPI 复用同一套 ApplicationService。
 - 任何应用不得把数据库、日志、抓包、采集结果、缓存或正式报告写入源码目录。
+
+当前 `apps/desktop`、`src/netconsole/ui`、`backend/api`、`services`、`repositories`、`parsers` 和 `adapters` 是渐进迁移兼容区，不要求一次性搬迁。修改具体模块时先抽离该用例的业务逻辑，再迁移适配层；兼容区只迁出、不扩大职责。
 
 ### Agent 二级目录
 
@@ -130,6 +143,7 @@ apps/agent/
 - 是否需要补充测试和文档链接？
 - 是否改变顶层职责，需要同步更新本规则？
 - 文档中引用的相对链接、源码路径和交付包路径是否分别存在且语义正确？
+- 是否满足 `Qt/API -> application -> domain`、`infrastructure -> application/domain` 的向内依赖边界，并通过架构检查？
 
 ## 11. 禁止事项
 
@@ -148,9 +162,13 @@ apps/agent/
 | 迁移前 | 迁移后 | 说明 |
 | --- | --- | --- |
 | `agent/` | `apps/agent/` | 独立 Go Agent |
-| `desktop/` | `apps/desktop/` | Qt Web Shell |
+| `desktop/`、`apps/desktop/` | `apps/desktop_qt/` | Qt 桌面入口与 Web Shell 宿主，渐进迁移 |
 | `frontend/` | `apps/web/` | Vue Web 前端 |
 | `netconsole/` | `src/netconsole/` | 共享 Python 包，导入名仍是 `netconsole` |
+| `src/netconsole/ui/` | `src/netconsole/presentation/qt/` | Qt 页面、ViewModel 和信号适配，按模块迁移 |
+| `src/netconsole/backend/api/` | `src/netconsole/api/` | FastAPI/REST/WebSocket 适配层，按路由迁移 |
+| `src/netconsole/services/`、`models/` | `src/netconsole/application/`、`domain/` | 按用例拆分编排、DTO 与纯领域规则 |
+| `src/netconsole/repositories/`、`parsers/`、`adapters/`、`storage/` | `src/netconsole/infrastructure/` | 具体 IO 与外部实现，按模块迁移 |
 | `profiles/` | `config/profiles/` | Feature profile 配置 |
 | `project/build_*.py` | `scripts/build/` | 构建脚本 |
 | `project/release.py` | `scripts/build/release.py` | 发布辅助脚本 |

@@ -28,7 +28,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 先梳理目标、假设和验证标准；只改当前需求范围，优先复用现有组件、Service、Repository、Parser 和路径 helper。
 - 不执行 `git reset`、`git checkout --`、`git clean`、`git stash` 等破坏性操作，不覆盖用户未提交修改。
 - 网络、磁盘、解析、压缩、大查询和批量任务不得阻塞 UI；超过 300ms 的 IO/CPU/网络任务进入 Job Center，所有导出进入独立 Export Process。
-- UI 只负责布局、输入、轻量校验和状态绑定；Worker 不访问 QWidget，SQLite connection 不跨线程/进程共享。
+- 新增和改造代码统一按 `Qt/API -> application -> domain`、`infrastructure -> application/domain` 的向内依赖落地；Qt/API 只调用 ApplicationService，不直接承载或引用采集、解析、数据库和报告实现。
+- UI 只负责布局、输入、轻量校验、ApplicationService 调用和状态绑定；Worker 不访问 QWidget，SQLite connection 不跨线程/进程共享。
 - 不擅自修改用户要求保持的设备命令、顺序或原始文本；不静默删除数据库、原始日志、会话或正式报告。
 - 新用户可见模块、页面、Tab、动作或按钮默认接入 Feature Registry；用户可见文本进入 i18n。
 - 页面、弹窗和弹出子页不得被窗口挤压；内容超出时提供纵向和必要的横向滚动，表格允许手工调列宽。
@@ -38,14 +39,14 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 仓库目录约束
 
 - 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](docs/development/repository-layout.md) 并说明唯一职责。
-- Desktop、Web、Agent 分别进入 `apps/desktop`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。
+- Desktop、Web、Agent 分别进入 `apps/desktop_qt`、`apps/web`、`apps/agent`；共享 Python 代码按 `src/netconsole/{domain,application,infrastructure,api,presentation/qt}` 分层。
 - 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。
 - 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。
 - 移动文件后必须同步检查 Python import、测试、构建参数、批处理、前端工作目录、Agent 入口、文档和资源定位。
 - 禁止使用 `Path.cwd()` 定位源码、资源、配置或运行数据；禁止用临时 `sys.path` 修改掩盖包结构问题。
 - 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/builtin_mibs` 中明确版本化的 MIB 归档和 `resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护，`apps/agent/tools/` 禁止作为运行时工具来源。
 - `apps/agent` 二级目录只保留 `cmd`、`internal`、`mr_collector_py`、`web`、`scripts`、`resources/config` 和项目元文件；示例配置命名为 `config.example.json`/`targets.example.json`，真实配置不得回写源码目录。Agent 开发运行数据使用 `.local/agent/`，构建产物使用 `dist/agent/`；禁止保留 `apps/agent/bin`、`data`、`dist`、`logs`、`packages`、`tmp` 和 `apps/agent/tools` 作为运行目录或工具来源。
-- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop`、`apps/web` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
+- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。现有 `apps/desktop`、`src/netconsole/ui`、`services`、`repositories` 等目录是渐进迁移兼容区，只迁出、不扩大职责；除标准 `apps/desktop_qt`、`apps/web` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
 - 修改 Agent 构建、工具、配置或路径时，必须同步检查 `apps/agent/README.md`、`docs/AGENT.md`、`docs/BUILD_AND_RELEASE.md`、`resources/tools/README.md` 和 `docs/development/repository-layout.md`；重要文档链接必须在提交前验证。
 - 目录职责不明确时先审计内容、Git 跟踪状态和引用关系，不得先新建目录或静默删除数据。
 

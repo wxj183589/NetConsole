@@ -36,8 +36,8 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 ## 仓库结构
 
 ```text
-apps/       独立应用：Agent、Desktop Web Shell、Web 前端
-src/        可安装的 Python 包（src/netconsole）
+apps/       独立应用：Agent、Web、现有 desktop 兼容宿主（目标迁入 desktop_qt）
+src/        可安装的 Python 包（src/netconsole，目标按 domain/application/infrastructure/api/presentation 分层）
 config/     开发和构建配置模板（含 feature profiles）
 docs/       项目文档和长期工程规则
 resources/  版本化静态资源、命令参考、MIB 归档和随包运行工具
@@ -54,27 +54,17 @@ Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/reso
 
 ```mermaid
 flowchart LR
-    UI["Qt6 / PySide6 / QFluentWidgets UI"] --> SVC["Services"]
-    WS["Qt Web Shell / Browser"] --> VUE["Vue Task / Agent / Traffic"]
-    VUE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
-    API --> SVC
-    SVC --> REPO["Repositories"]
-    REPO --> DB["SQLite / 文件数据"]
-    UI --> JOB["Background Job Process"]
-    UI --> EXP["Export Process"]
-    JOB --> REG["Job Registry / Domain Handlers"]
-    EXP --> WRITER["Export Handlers"]
-    REG --> SVC
-    WRITER --> REPO
-    API --> CTRL["AgentControllerService"]
-    CTRL --> AGENT["Windows Go Agent HTTP API"]
-    AGENT --> AGENTDATA["Agent tasks / raw / packages"]
-    SVC --> TRAFFIC["TrafficTestApplicationService"]
-    TRAFFIC --> JOB
-    TRAFFIC --> CTRL
+    QT["Qt Page"] --> APP["ApplicationService"]
+    VUE["Vue"] --> API["FastAPI / REST / WebSocket"]
+    API --> APP
+    APP --> DOMAIN["Domain"]
+    INFRA["Infrastructure"] --> APP
+    INFRA --> DOMAIN
+    INFRA --> DB["SQLite / 文件 / SSH / SNMP / 进程"]
 ```
 
-- UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
+- 正式目标结构为 `apps/desktop_qt` 与 `src/netconsole/{domain,application,infrastructure,api,presentation/qt}`，依赖只能由外向内；当前旧目录按模块渐进迁移，不进行一次性重写。
+- Qt 只负责交互、轻量校验、调用 ApplicationService 和状态展示；不得新增解析、采集、数据库或报告业务。预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
 - 普通后台任务走 `Qt BackgroundProcessManager -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
 - 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。
 - Agent 配置与运行状态分别写入每局点 `agents.db`；Token 仅保存在当前 Python 进程内，REST/WebSocket 不返回凭据。

@@ -13,7 +13,7 @@ FRONT_MATTER_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):\s*")
 def _markdown_files() -> list[Path]:
     paths = [ROOT / "README.md", ROOT / "AGENTS.md"]
     paths.extend((ROOT / "docs").rglob("*.md"))
-    paths.extend((ROOT / "apps").rglob("*.md"))
+    paths.extend(path for path in (ROOT / "apps").rglob("*.md") if "node_modules" not in path.parts)
     paths.extend((ROOT / ".agents" / "skills").rglob("*.md"))
     paths.extend((ROOT / "tools").rglob("*.md"))
     paths.extend((ROOT / "resources").rglob("*.md"))

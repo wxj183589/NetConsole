@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import queue
 import subprocess
 import threading
 import time
@@ -33,6 +34,25 @@ class _BarrierPipe:
         self._read = True
         self._barrier.wait(timeout=1.0)
         return self._payload
+
+    def close(self) -> None:
+        return None
+
+
+class _StreamingPipe:
+    def __init__(self, *chunks: bytes) -> None:
+        self._chunks: queue.Queue[bytes] = queue.Queue()
+        for chunk in chunks:
+            self._chunks.put(chunk)
+
+    def read(self, _size: int = -1) -> bytes:
+        raise AssertionError("实时管道不能等待缓冲区填满")
+
+    def read1(self, _size: int = -1) -> bytes:
+        return self._chunks.get(timeout=1.0)
+
+    def push(self, chunk: bytes) -> None:
+        self._chunks.put(chunk)
 
     def close(self) -> None:
         return None
@@ -185,6 +205,34 @@ def test_local_process_adapter_completes_and_reads_both_pipes(tmp_path: Path) ->
     job_dir = paths.runtime_cache_dir / "background_jobs"
     assert not (job_dir / f"{job_id}.json").exists()
     assert not (job_dir / f"{job_id}.cancel").exists()
+
+
+def test_local_process_adapter_streams_progress_before_worker_exit(tmp_path: Path) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-live-progress"
+    stdout = _StreamingPipe(encode_event(progress_event(job_id, "session_created", 0, 1, "会话已创建")).encode("utf-8"))
+    process = _FakeProcess(stdout=stdout, auto_finish=False)
+    adapter = LocalProcessAdapter(service, popen_factory=_PopenFactory(process))
+    events: list[dict[str, object]] = []
+    service.events.subscribe(events.append)
+
+    adapter.start_job(_job(paths, job_id))
+    _wait_until(
+        lambda: any(
+            event.get("task_id") == job_id
+            and event.get("type") == "progress"
+            and dict(event.get("payload") or {}).get("stage") == "session_created"
+            for event in events
+        )
+    )
+
+    assert adapter.is_running(job_id)
+    assert service.get_task(job_id).status is TaskState.RUNNING
+
+    stdout.push(encode_event(finished_event(job_id, {"ok": True})).encode("utf-8"))
+    stdout.push(b"")
+    process.finish()
+    _wait_until(lambda: service.get_task(job_id).status is TaskState.COMPLETED)
 
 
 def test_local_process_adapter_binds_tree_closes_once_and_calls_completion(tmp_path: Path) -> None:

@@ -49,7 +49,9 @@ Do not review or persist:
 ## Repository Layout and Package Structure
 
 - Do not place new business code directly in the repository root; before adding a new top-level directory, update `docs/development/repository-layout.md` and explain its single responsibility.
-- Desktop, Web, and Agent code live under `apps/desktop`, `apps/web`, and `apps/agent`; shared Python business code lives under `src/netconsole`, while the import name remains `netconsole`.
+- Desktop, Web, and Agent code live under `apps/desktop_qt`, `apps/web`, and `apps/agent`; shared Python code is layered under `src/netconsole/{domain,application,infrastructure,api,presentation/qt}`, while the import name remains `netconsole`.
+- Dependencies point inward as `domain <- application <- Qt/API`; `infrastructure` implements ports defined by `application`, and Qt plus FastAPI/Vue reuse the same ApplicationService.
+- Existing `apps/desktop`, `src/netconsole/ui`, `backend/api`, `services`, `repositories`, `parsers`, and `adapters` are compatibility locations migrated module by module, not through a one-time rewrite.
 - Configuration templates and feature profiles live under `config/`; build, development, and maintenance scripts live under `scripts/build`, `scripts/dev`, and `scripts/maintenance`.
 - Development runtime data lives under `.local/`; packaged builds prefer `%LOCALAPPDATA%\NetConsole\` and must not depend on the current working directory or write runtime data back into the source tree.
 - Resolve paths through `PathResolver`, resource helpers, or the script's own location; do not use `Path.cwd()` or temporary `sys.path` edits to mask package-structure problems.

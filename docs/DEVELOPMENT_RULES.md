@@ -13,6 +13,25 @@
 
 超过 300ms 的 IO、CPU 或网络任务不得在 UI 线程执行。重 CPU、重 IO、重网络和批量任务进入 Worker Process；所有导出进入独立 Export Process。
 
+## 分层与依赖方向
+
+新增和改造代码统一使用 `src/netconsole/{domain,application,infrastructure,api,presentation/qt}`，依赖方向固定为：
+
+```text
+domain <- application <- Qt/API
+   ^           ^
+   └ infrastructure（实现 application 端口）
+```
+
+- `domain` 只放纯领域模型、规则和值对象，不导入 PySide6、QFluentWidgets、FastAPI、SQLAlchemy 或任何具体 IO 实现。
+- `application` 只放用例、ApplicationService、Command/Query/DTO 和端口接口，不导入 Qt、API、`infrastructure` 或具体 Repository/Adapter。
+- `infrastructure` 封装 SSH、SNMP、数据库、文件、进程、网络、解析和报告实现，并实现 `application` 端口。
+- `presentation/qt` 只负责布局、输入、轻量校验、调用 ApplicationService、订阅状态/进度和绑定 ViewModel。
+- `api` 只负责 FastAPI、REST、WebSocket 的协议适配和鉴权，不复制业务规则或直接调用基础设施。
+- Qt 和 Vue/FastAPI 必须复用同一套 ApplicationService；不得为 Web 再建一套业务实现。
+
+现有 `src/netconsole/ui`、`backend/api`、`services`、`repositories`、`parsers` 和 `adapters` 是兼容结构。修改某个模块时，以当前用例为边界先抽离业务，再改 UI；不做一次性全仓重写，也不得继续向旧 Qt 页面增加数据库、SSH、SNMP、Excel 或解析实现依赖。
+
 ## Job 必备字段和能力
 
 所有普通任务和导出任务必须具备：
@@ -61,7 +80,7 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - loading / empty / success / error / cancelled 状态刷新。
 - 结构化结果到 ViewModel 的绑定。
 
-业务判断下沉 Domain Service；展示转换下沉 ViewModel / Presenter；数据读写下沉 Repository；解析下沉 Parser；设备通信下沉 Adapter。
+业务判断下沉 `domain`；用例编排下沉 `application`；数据读写、解析、报告和设备通信归入 `infrastructure`；展示转换留在 `presentation/qt` 的 ViewModel / Presenter。
 
 不允许新增巨型 page 文件。触碰现有巨型页面时，以当前用例为边界逐段迁移，不做破坏性全量重命名。
 
@@ -187,5 +206,6 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 对应 pytest 覆盖成功、失败、空数据、取消。
 - 搜索 UI 页面是否出现网络连接、Excel 保存、大文件解析和长查询。
 - 搜索 Worker 是否导入 UI page。
+- 运行 `tests/test_architecture_boundaries.py`，确认 `domain/application` 无 Qt 依赖，Qt 页面未新增数据库、SSH、SNMP、Excel 或解析实现导入。
 - 检查旧 `BackgroundJob / BackgroundProcessManager / run_background_task / ExportJob / ExportProcessManager` 导入仍可用。
 - 说明是否影响数据库结构、导出模板、编码策略、日志和中文显示。
