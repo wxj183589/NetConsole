@@ -44,7 +44,7 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 ## 3. RuntimeMode
 
-`netconsole/core/runtime_mode.py::RuntimeMode` 是宿主运行模式的统一枚举：
+`src/netconsole/core/runtime_mode.py::RuntimeMode` 是宿主运行模式的统一枚举：
 
 | 模式 | 值 | 本机能力 |
 | --- | --- | --- |
@@ -55,10 +55,10 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 ## 4. API 契约
 
-- API DTO 位于 `netconsole/models/api/`，使用 Pydantic，禁止在路由中散落无约束 dict。
-- FastAPI 路由位于 `netconsole/backend/api/`，只编排应用服务，不复制 Repository 或业务算法。
+- API DTO 位于 `src/netconsole/models/api/`，使用 Pydantic，禁止在路由中散落无约束 dict。
+- FastAPI 路由位于 `src/netconsole/backend/api/`，只编排应用服务，不复制 Repository 或业务算法。
 - 当前提供 `GET /api/health`、任务查询/详情/事件/取消、`/ws/tasks` 和自动 OpenAPI `/docs`。
-- 版本来自 `netconsole/core/version.py`，API 不维护第二份版本号。
+- 版本来自 `src/netconsole/core/version.py`，API 不维护第二份版本号。
 - 后续前端使用统一生成或封装的 API Client；页面不得各自散写请求和错误协议。
 
 ## 5. 任务边界
@@ -133,17 +133,17 @@ flowchart TD
 阶段 0～3 新增：
 
 ```text
-desktop/                         # 实验 Qt Web Shell
-netconsole/backend/api/          # FastAPI Application/API 骨架
-netconsole/models/api/           # Pydantic API DTO
-netconsole/services/job_center/runtime/  # 纯 Python 任务运行时
-netconsole/services/job_center/task_application_service.py
-netconsole/repositories/task_repository.py
+apps/desktop/                    # 实验 Qt Web Shell
+src/netconsole/backend/api/          # FastAPI Application/API 骨架
+src/netconsole/models/api/           # Pydantic API DTO
+src/netconsole/services/job_center/runtime/  # 纯 Python 任务运行时
+src/netconsole/services/job_center/task_application_service.py
+src/netconsole/repositories/task_repository.py
 src/netconsole/services/agent/   # Agent Controller、HTTP Adapter、凭据和事件
-netconsole/repositories/agent_repository.py
+src/netconsole/repositories/agent_repository.py
 apps/web/                        # Vue 3 / TypeScript / Vite 任务与 Agent 管理
-netconsole/services/traffic/     # 统一 Traffic 应用层、执行适配、事件与 Supervisor
-netconsole/repositories/traffic_run_repository.py
+src/netconsole/services/traffic/     # 统一 Traffic 应用层、执行适配、事件与 Supervisor
+src/netconsole/repositories/traffic_run_repository.py
 ```
 
 明确禁止新增重复的 `backend/services/`、`backend/repositories/`，也不把现有核心目录搬入 `backend/`。
@@ -155,7 +155,7 @@ netconsole/repositories/traffic_run_repository.py
 .\.venv\Scripts\python.exe main.py
 
 # 构建 Vue（使用项目可用的 pnpm/Node 环境）
-cd frontend
+cd apps/web
 pnpm install
 pnpm test
 pnpm build

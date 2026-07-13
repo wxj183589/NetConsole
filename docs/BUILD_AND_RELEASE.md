@@ -39,6 +39,8 @@ apps\agent\scripts\build_windows.bat
 
 当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 Agent 运行数据打入发布包。
 
+正式对外分发前，release checklist 必须人工确认 fping/iPerf3 的来源、版本、许可证、NOTICE 和 Cygwin 运行依赖。当前构建脚本只做文件存在性和 IPOP 排除，不等同于法律授权确认；iPerf3/Cygwin 材料未齐全前不得新增或替换来源不明二进制。
+
 ## 外部工具要求
 
 构建前会检查工具源文件。当前 `scripts/build/build_config.py` 要求：
@@ -80,7 +82,7 @@ netconsole
 说明：
 
 - `docs/`、`tests/`、`scripts/` 不应进入用户发布包。
-- `netconsole/` 源码目录不应以源码形式进入发布包。
+- `src/netconsole/` 源码目录不应以源码形式进入发布包。
 - 发布 zip 使用白名单枚举。
 - 打包后有发布目录和 zip 校验，防止开发目录进入包。
 

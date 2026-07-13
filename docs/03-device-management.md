@@ -24,4 +24,4 @@ The Device Details entry is available from the toolbar and from each row's actio
 
 SNMP fields are reserved configuration fields only. SNMPv1, SNMPv2c, and SNMPv3 can be enabled independently. SNMP collection is not implemented in this stage.
 
-The UI text is provided by `netconsole/core/i18n.py` and currently supports `zh_CN` and `en_US`.
+The UI text is provided by `src/netconsole/core/i18n.py` and currently supports `zh_CN` and `en_US`.

@@ -24,13 +24,13 @@ description: "QFluentWidgets、PySide6-Fluent-Widgets、Fluent Shell、AppFluent
 
 - 输入：Shell/主题/Fluent 组件目标、受影响页面和必须保留的 fallback 行为。
 - 输出：最小 Fluent 集成修改、主题/启动/降级验证与风险说明。
-- 允许修改生产代码：允许，仅限 `netconsole/ui/` 的 Shell、主题、组件、设置入口和必要 i18n/Feature Registry；不修改业务服务或数据库。
+- 允许修改生产代码：允许，仅限 `src/netconsole/ui/` 的 Shell、主题、组件、设置入口和必要 i18n/Feature Registry；不修改业务服务或数据库。
 
 # 开始前读取
 
 - `README.md`、`docs/THIRD_PARTY_DEPENDENCIES.md`、`docs/DEVELOPMENT_RULES.md`。
-- `netconsole/ui/app_fluent_window.py`、`netconsole/ui/app_window_factory.py`、`netconsole/ui/shell/fluent_bridge.py`。
-- `netconsole/ui/components/`、`netconsole/ui/theme/`、`netconsole/ui/pages/settings_page.py`。
+- `src/netconsole/ui/app_fluent_window.py`、`src/netconsole/ui/app_window_factory.py`、`src/netconsole/ui/shell/fluent_bridge.py`。
+- `src/netconsole/ui/components/`、`src/netconsole/ui/theme/`、`src/netconsole/ui/pages/settings_page.py`。
 
 # 工作流程与约束
 

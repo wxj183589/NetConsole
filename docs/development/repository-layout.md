@@ -10,14 +10,14 @@
 
 ```text
 NetConsole/
-├─ .agents/                 # 项目 Skills 和规则
-├─ .codex/                  # 本地 Codex 状态，不提交
+├─ .agents/                 # 项目 Skills 和规则，版本化
+├─ .codex/                  # 本地 Codex 状态，允许存在但不提交
 ├─ apps/
 │  ├─ agent/                # Windows Go Agent 及其 sidecar/静态页面
 │  ├─ desktop/              # Qt Web Shell 宿主
 │  └─ web/                  # Vue/TypeScript/Vite 前端
 ├─ src/
-│  └─ netconsole/           # 可安装的共享 Python 包
+│  └─ netconsole/               # 可安装的共享 Python 包
 ├─ config/
 │  └─ profiles/             # 版本化 feature profile 和配置模板
 ├─ docs/                    # 项目文档、架构和开发规则
@@ -39,7 +39,9 @@ NetConsole/
 
 ## 3. 顶层目录白名单
 
-允许的顶层目录为：`.agents`、`.codex`、`apps`、`src`、`config`、`docs`、`resources`、`scripts`、`tests`、`tools`。`.git` 属于 Git 管理目录，不是业务目录。
+版本化顶层目录为：`.agents`、`apps`、`src`、`config`、`docs`、`resources`、`scripts`、`tests`、`tools`。`.codex`、`.venv`、`.local`、`.idea`、`.vs`、`.pytest_cache`、`.ruff_cache` 允许在本机存在，但必须被 `.gitignore` 忽略；`.git` 属于 Git 管理目录，不是业务目录。
+
+`.agents/` 是已纳入 Git 的项目级 Skill 和规则目录；`.codex/` 只是本地 Codex 状态目录，不得误认为项目配置或版本化 Skill 来源。
 
 允许的顶层文件仅包括项目级配置、说明、许可证、依赖清单、统一入口和 CI/Git 配置。新增顶层目录必须同时满足：
 
@@ -78,6 +80,9 @@ apps/agent/
 
 - `config` 放可审查、可版本化的配置模板和 feature profiles，不放真实账号、密码、Token、community、私钥或生产局点数据。
 - `resources` 放随代码发布的只读资源、规则、命令参考和明确版本化的 MIB 归档；不得把用户导入的 MIB、编译索引或报告写回此目录。
+- 所有文档中的源码文件路径使用 `src/netconsole/...`；Python import、模块或包名仍使用 `netconsole.*`，不得把 import 写成 `src.netconsole.*`。
+- `resources/tools/` 是 fping/iPerf 运行工具的唯一源码来源；`tools/` 只用于开发、诊断、维护和协议分析。`tools/windows-x64/ipop/` 只保存 IPOP 外部工具说明，`IPOP.EXE` 不提交、不打包。
+- `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent\`。
 - `src/netconsole/assets`、`src/netconsole/resources` 是包内资源，必须通过资源 helper 定位并在打包配置中显式处理。
 - 真实敏感配置只能由用户在本机应用数据目录配置，提交前必须脱敏。
 
@@ -124,6 +129,7 @@ apps/agent/
 - 是否影响 Python 包发现、打包、前端工作目录、Agent 入口或资源路径？
 - 是否需要补充测试和文档链接？
 - 是否改变顶层职责，需要同步更新本规则？
+- 文档中引用的相对链接、源码路径和交付包路径是否分别存在且语义正确？
 
 ## 11. 禁止事项
 

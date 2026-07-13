@@ -27,12 +27,12 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 ## 当前入口
 
 - 应用入口：`main.py`
-- 主窗口：`netconsole/ui/main_window.py`
-- 应用启动：`netconsole/app.py`
-- 路径管理：`netconsole/core/paths.py`
-- 站点管理：`netconsole/core/sites.py`
-- 数据库初始化：`netconsole/core/database.py`
-- 功能开关：`netconsole/core/feature_registry.py`、`netconsole/core/feature_flags.py`
+- 主窗口：`src/netconsole/ui/main_window.py`
+- 应用启动：`src/netconsole/app.py`
+- 路径管理：`src/netconsole/core/paths.py`
+- 站点管理：`src/netconsole/core/sites.py`
+- 数据库初始化：`src/netconsole/core/database.py`
+- 功能开关：`src/netconsole/core/feature_registry.py`、`src/netconsole/core/feature_flags.py`
 
 开发环境启动示例：
 
@@ -46,16 +46,19 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 
 | 目录 | 角色 |
 | --- | --- |
-| `netconsole/core/` | 启动、路径、站点、数据库、设置、功能开关、运行环境 |
-| `netconsole/models/` | 数据模型 |
-| `netconsole/repositories/` | SQLite 持久化访问 |
-| `netconsole/services/` | 采集、解析、导入导出、业务规则、外部工具 |
-| `netconsole/parsers/` | H3C / AC / Mesh / 文本输出解析 |
-| `netconsole/ui/` | PySide6 页面、对话框、Worker、控件、主题 |
-| `netconsole/build/` | 构建辅助 |
+| `src/netconsole/core/` | 启动、路径、站点、数据库、设置、功能开关、运行环境 |
+| `src/netconsole/models/` | 数据模型 |
+| `src/netconsole/repositories/` | SQLite 持久化访问 |
+| `src/netconsole/services/` | 采集、解析、导入导出、业务规则、外部工具 |
+| `src/netconsole/parsers/` | H3C / AC / Mesh / 文本输出解析 |
+| `src/netconsole/ui/` | PySide6 页面、对话框、Worker、控件、主题 |
+| `src/netconsole/build/` | 构建辅助 |
 | `scripts/build/` | 发布脚本、构建配置 |
 | `tests/` | pytest 回归测试 |
-| `tools/` | 打包和运行依赖的外部工具 |
+| `resources/tools/` | 版本化的 fping/iPerf 运行工具唯一源码来源 |
+| `tools/` | 开发、诊断、维护和协议分析工具，不作为运行时工具来源 |
+
+独立应用位于 `apps/agent/`、`apps/desktop/` 和 `apps/web/`；Agent 的示例配置位于 `apps/agent/resources/config/`，运行数据和构建产物分别位于 `.local/agent/`、系统应用数据目录和 `dist/agent/`。
 
 ## 模块边界
 

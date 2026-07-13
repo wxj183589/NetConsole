@@ -28,11 +28,11 @@ description: "H3C、HH3C、SNMP MIB、OID、MIB Browser、MIB 资源、模块依
 
 # 开始前读取
 
-- `netconsole/services/mib_compile_service.py`、`netconsole/services/mib_dictionary_service.py`、`netconsole/services/mib_index_service.py`。
-- `netconsole/services/mib_product_reference_service.py`、`netconsole/services/mib_product_reference_compare_service.py`。
-- `netconsole/services/mib_resource_service.py`、`netconsole/services/mib_translation_service.py`。
-- `netconsole/repositories/global_mib_repository.py`、`netconsole/repositories/site_snmp_repository.py`、`netconsole/models/mib_models.py`。
-- `netconsole/ui/pages/mib_browser_page.py`、`netconsole/ui/pages/mib_dictionary_page.py`、`netconsole/ui/pages/mib_resource_page.py`。
+- `src/netconsole/services/mib_compile_service.py`、`src/netconsole/services/mib_dictionary_service.py`、`src/netconsole/services/mib_index_service.py`。
+- `src/netconsole/services/mib_product_reference_service.py`、`src/netconsole/services/mib_product_reference_compare_service.py`。
+- `src/netconsole/services/mib_resource_service.py`、`src/netconsole/services/mib_translation_service.py`。
+- `src/netconsole/repositories/global_mib_repository.py`、`src/netconsole/repositories/site_snmp_repository.py`、`src/netconsole/models/mib_models.py`。
+- `src/netconsole/ui/pages/mib_browser_page.py`、`src/netconsole/ui/pages/mib_dictionary_page.py`、`src/netconsole/ui/pages/mib_resource_page.py`。
 - `tests/test_snmp_center.py` 和实际 MIB fixture/资源说明。
 
 # 工作流程

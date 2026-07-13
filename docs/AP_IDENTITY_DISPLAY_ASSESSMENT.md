@@ -346,10 +346,10 @@ display_allowed =
 建议文件范围，具体路径在实现前以当前宿主为准：
 
 ```text
-netconsole/services/ap_identity/diagnostics_summary.py
-netconsole/core/feature_registry.py
-netconsole/ui/models/ap_identity_diagnostics_summary_model.py
-netconsole/ui/dialogs/ap_identity_diagnostics_summary_dialog.py
+src/netconsole/services/ap_identity/diagnostics_summary.py
+src/netconsole/core/feature_registry.py
+src/netconsole/ui/models/ap_identity_diagnostics_summary_model.py
+src/netconsole/ui/dialogs/ap_identity_diagnostics_summary_dialog.py
 tests/test_ap_identity_diagnostics_summary.py
 tests/test_ap_identity_diagnostics_display.py
 ```

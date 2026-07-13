@@ -19,24 +19,24 @@ Job Center、Online MR、SNMP 与 AC Domain 第一阶段迁移完成后，AP 相
 
 本轮检查了以下实际路径：
 
-- `netconsole/core/database.py`
-- `netconsole/repositories/ac_repository.py`
-- `netconsole/repositories/mesh_mr_repository.py`
-- `netconsole/services/ac/`
-- `netconsole/services/h3c_ac_collect_service.py`
-- `netconsole/services/ap_extension_import.py`
-- `netconsole/services/fit_ap_import_export.py`
-- `netconsole/services/trackside_ap_business.py`
-- `netconsole/services/rail_transit/`
-- `netconsole/services/online_mr/`
-- `netconsole/services/vehicle_mr_online.py`
-- `netconsole/services/ap_radio_mapping_service.py`
-- `netconsole/services/mesh_peer_mapping_service.py`
-- `netconsole/services/network_tools/trackside_bssid_resolver.py`
-- `netconsole/services/mesh_analysis_report.py`
-- `netconsole/services/mesh_link_detail_export.py`
-- `netconsole/services/online_mr_analysis_report_exporter.py`
-- `netconsole/services/export/`
+- `src/netconsole/core/database.py`
+- `src/netconsole/repositories/ac_repository.py`
+- `src/netconsole/repositories/mesh_mr_repository.py`
+- `src/netconsole/services/ac/`
+- `src/netconsole/services/h3c_ac_collect_service.py`
+- `src/netconsole/services/ap_extension_import.py`
+- `src/netconsole/services/fit_ap_import_export.py`
+- `src/netconsole/services/trackside_ap_business.py`
+- `src/netconsole/services/rail_transit/`
+- `src/netconsole/services/online_mr/`
+- `src/netconsole/services/vehicle_mr_online.py`
+- `src/netconsole/services/ap_radio_mapping_service.py`
+- `src/netconsole/services/mesh_peer_mapping_service.py`
+- `src/netconsole/services/network_tools/trackside_bssid_resolver.py`
+- `src/netconsole/services/mesh_analysis_report.py`
+- `src/netconsole/services/mesh_link_detail_export.py`
+- `src/netconsole/services/online_mr_analysis_report_exporter.py`
+- `src/netconsole/services/export/`
 - AC、Online MR、Vehicle MR、Mesh、Trackside 相关测试
 
 按 Python 文件统计的字段覆盖面如下。该计数只用于说明影响面，不代表字段语义一致：

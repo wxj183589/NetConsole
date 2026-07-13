@@ -34,6 +34,7 @@
 | `netconsole-job-center-skill` | 普通后台 Job、handler、JSONL、进度和取消 | “迁移到 Job Center”“取消后仍运行” | 导出文件、轻量 UI |
 | `netconsole-export-report-skill` | Export Process、本地 XLSX/CSV/PDF/ZIP 与文件恢复 | “导出卡 UI”“Excel 列宽不合适” | 实时采集、普通表格样式 |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、原始日志和会话打包 | “Ping 2 自动填错”“停止采集困难” | 离线 MESH 分析 |
+| `netconsole-agent-skill` | Windows Go Agent V1、HTTP API、内嵌 Web、配置/targets、工具、MR sidecar、构建和运行目录 | “修改 Agent API”“Agent 构建失败”“工具路径或运行数据不对” | CentOS 离线部署；纯流量参数；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线解析、主备链、切换、图表和报告 | “备份链为空”“乒乓判定错误” | 在线 MR SSH、普通 SNMP |
 | `netconsole-ap-identity-skill` | AP canonical identity、Radio/BSSID/Peer、shadow 和 diagnostics | “Identity 匹配错误”“评审接管” | 普通 AP 表格/名称显示 |
 | `netconsole-project-docs-skill` | README/docs/架构状态同步 | “更新 docs”“同步重构地图” | 一次性报告、无文档影响的实现 |
@@ -51,6 +52,10 @@
 | 新增普通后台采集 | `netconsole-job-center-skill` | `network-command-parser-skill` |
 | 新增本地报告 | `netconsole-export-report-skill` | `netconsole-data-safety-skill` |
 | 在线 MR 修改 | `netconsole-online-mr-skill` | `traffic-test-skill`、`network-command-parser-skill` |
+| Agent API/构建/工具路径 | `netconsole-agent-skill` | `netconsole-project-docs-skill` |
+| Agent 流量任务 | `netconsole-agent-skill` | `traffic-test-skill` |
+| Agent Online MR sidecar | `netconsole-agent-skill` | `netconsole-online-mr-skill` |
+| Agent 文档同步 | `netconsole-agent-skill` | `netconsole-project-docs-skill` |
 | 离线 MESH 分析 | `netconsole-mesh-analysis-skill` | `netconsole-ap-identity-skill`、`netconsole-export-report-skill` |
 | H3C MIB/OID | `h3c-snmp-mib-skill` | `snmp-collector-design-skill`、`windows-encoding-skill` |
 | SNMP 后台查询 | `snmp-collector-design-skill` | `netconsole-job-center-skill` |
@@ -120,18 +125,16 @@ $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞
 
 ## 9. 当前架构状态提示
 
-- `netconsole/services/job_center/handlers/legacy_tasks.py` 仍是兼容区，只迁出、不迁入；不能写成全部任务已迁移。
+- `src/netconsole/services/job_center/handlers/legacy_tasks.py` 仍是兼容区，只迁出、不迁入；不能写成全部任务已迁移。
 - AP Identity 当前主要是 canonical 工具、shadow comparison 和只读 diagnostics；不能写成已全面接管生产匹配。
-- 当前执行端仍为本地 Worker Process，没有完整 Windows/CentOS/Go/远程 Agent 生产实现。
+- Windows Go Agent V1 已位于 `apps/agent/`，包含 HTTP API、内嵌 Web、iPerf/fping、MR sidecar、目标管理、任务事件和采集包；Python Controller 与 Agent Traffic Adapter/Supervisor 已接入部分能力。
+- 普通 Job Center 仍以本地 Worker Process 为主；Windows Go Agent 是独立执行端，通过 Controller/Traffic 适配接入，不等同于 Job Center 完全远程化。CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未完成。
 - 本地 XLSX 格式优化在范围内；WPS 云服务、WPS API、KDocs 和在线同步默认不在范围内。
 
 ## 10. 后续候选 Skills
 
-可在生产代码真正落地后再评估：
+当前仅保留以下后续候选：
 
-- Agent 管理。
-- Go Agent。
 - CentOS 离线部署 Agent。
-- 远程 iPerf Agent。
-
-当前仓库尚无完整生产实现，不在本轮创建 Skill。
+- 远程 Agent 批量运维。
+- Agent 发布、签名和许可证检查流程。

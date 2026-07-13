@@ -6,9 +6,9 @@
 
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
 | --- | --- | --- | --- | --- |
-| [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | `main.py`、`netconsole/app.py`、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
-| [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `netconsole/core`、`services`、`repositories`、`ui` | 新增跨层依赖、后台执行模型或核心服务 |
-| [Web 演进架构](WEB_ARCHITECTURE.md) | Desktop/Server/Agent 模式、API、Web Shell、冻结和迁移边界 | Web 演进与桌面宿主开发 | `backend/api`、`desktop`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
+| [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | `main.py`、`src/netconsole/app.py`、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
+| [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `src/netconsole/core`、`src/netconsole/services`、`src/netconsole/repositories`、`src/netconsole/ui` | 新增跨层依赖、后台执行模型或核心服务 |
+| [Web 演进架构](WEB_ARCHITECTURE.md) | Desktop/Server/Agent 模式、API、Web Shell、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
 | [项目级 Codex Skills](CODEX_SKILLS.md) | Skill 清单、路由、组合和维护 | Codex/Skill 维护者 | `.agents/skills`、`AGENTS.md` | Skill 新增、升级、改名或边界变化 |
 | [Job Center](JOB_CENTER.md) | 普通后台任务协议、生命周期、取消和迁移规则 | 后台任务开发 | `job_models.py`、`job_runner.py`、`job_registry.py`、`background_*` | Job 协议、事件、handler 或 manager 变化 |

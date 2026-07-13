@@ -28,11 +28,11 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 
 # 开始前读取
 
-- `netconsole/ui/pages/online_mr_collection_page.py`、`netconsole/ui/pages/online_mr_collection_analysis_page.py`。
-- `netconsole/services/online_mr/`、`netconsole/services/online_mr_collector.py`、`netconsole/services/online_mr_parser.py`。
-- `netconsole/services/online_mr_session_store.py`、`netconsole/services/online_mr_terminal_log_parser.py`。
-- `netconsole/services/rail_transit/online_mr_diagnosis_parser.py`、`netconsole/models/online_mr_models.py`。
-- `netconsole/services/job_center/handlers/online_mr_jobs.py`、`netconsole/core/mr_collect/`、`netconsole/core/ping/`。
+- `src/netconsole/ui/pages/online_mr_collection_page.py`、`src/netconsole/ui/pages/online_mr_collection_analysis_page.py`。
+- `src/netconsole/services/online_mr/`、`src/netconsole/services/online_mr_collector.py`、`src/netconsole/services/online_mr_parser.py`。
+- `src/netconsole/services/online_mr_session_store.py`、`src/netconsole/services/online_mr_terminal_log_parser.py`。
+- `src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py`、`src/netconsole/models/online_mr_models.py`。
+- `src/netconsole/services/job_center/handlers/online_mr_jobs.py`、`src/netconsole/core/mr_collect/`、`src/netconsole/core/ping/`。
 - `tests/test_online_mr_collection.py`、`tests/test_online_mr_collection_job.py`。
 
 # 业务与生命周期规则
@@ -41,8 +41,8 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 2. 开始前显示可滚动确认，包含设备、周期、高频 Ping 和 iPerf；启用 iPerf 时正式启动前检查服务端地址和端口。
 3. 正式开始后自动收起设备列表和参数区，但用户可重新展开；1080p 实时状态不得遮挡，状态同时用文字和颜色。
 4. 采集中允许记录带时间戳备注；iPerf 跟随整体采集启停，不独立延长测试时长。
-5. 设备命令以 `netconsole/services/online_mr/collection_commands.py` 为唯一事实源，不改变顺序或文本。
-6. 会话路径以 `netconsole/services/online_mr/collection_paths.py` 为事实源；停止后协作取消、关闭 SSH/文件、保存 raw、更新状态并原子打包。
+5. 设备命令以 `src/netconsole/services/online_mr/collection_commands.py` 为唯一事实源，不改变顺序或文本。
+6. 会话路径以 `src/netconsole/services/online_mr/collection_paths.py` 为事实源；停止后协作取消、关闭 SSH/文件、保存 raw、更新状态并原子打包。
 7. UI 只提交长运行 Job 和绑定事件；大解析走 `online_mr_parse` Job，报告走 Export Process。
 
 # 必须保护的会话文件

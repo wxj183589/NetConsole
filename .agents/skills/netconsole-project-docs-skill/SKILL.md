@@ -29,21 +29,21 @@ description: "NetConsole README、docs、架构说明、REFACTOR_MAP、Job/Expor
 # 开始前读取
 
 - `README.md`、`AGENTS.md`、`docs/README.md`、目标专题文档。
-- `netconsole/core/version.py`、`netconsole/core/feature_registry.py`、`netconsole/core/paths.py`。
-- 与任务相关的 `netconsole/services/job_center/`、`netconsole/services/export/` 和测试。
+- `src/netconsole/core/version.py`、`src/netconsole/core/feature_registry.py`、`src/netconsole/core/paths.py`。
+- 与任务相关的 `src/netconsole/services/job_center/`、`src/netconsole/services/export/` 和测试。
 
 # 工作流程
 
 1. 按“生产代码 > 测试/断言 > 当前 diff > 当前专题文档 > Git 近期提交 > 历史规划”确认事实。
 2. 检查 README、docs 索引、架构、开发规则、REFACTOR_MAP 和受影响领域专题。
 3. 明确标注已完成、保留兼容层、shadow/diagnostics、部分迁移、尚未迁移、规划中或禁止接管。
-4. 读取 `core/version.py`、Feature Registry 和 PathResolver，不手写可能漂移的版本、入口或路径。
+4. 读取 `src/netconsole/core/version.py`、Feature Registry 和 PathResolver，不手写可能漂移的版本、入口或路径。
 5. 使用仓库相对链接，不创建大小写不同的重复文档，不复制整份源码或整套 docs 到 Skill。
 
 # 项目约束
 
 - 不编造命令、路径、测试结果或功能状态；不写开发机绝对路径、真实账号、密码、community、IP 或 MAC。
-- 当前无完整 Windows/CentOS/Go/远程 Agent 生产实现；只能列为候选并明确未实现。
+- Windows Go Agent V1 已位于 `apps/agent/`，包含 HTTP API、内嵌 Web、iPerf/fping、MR sidecar、目标管理、任务事件和采集包；不能再写成“无 Go Agent 实现”。CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未实现。
 - AP Identity 不得写成已全面接管；`legacy_tasks.py` 存在时不得写成全部任务已迁移。
 - 产品 changelog 只记录实际用户功能变化；纯 Codex Skill 工作不伪装成产品功能。
 

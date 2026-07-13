@@ -28,10 +28,10 @@ description: "SNMP GET、GETNEXT、GETBULK、GETSUBTREE、WALK、BULKWALK、TABL
 
 # 开始前读取
 
-- `netconsole/services/snmp_client.py`、`netconsole/services/snmp_query_service.py`、`netconsole/services/snmp_poll_service.py`。
-- `netconsole/services/snmp/`、`netconsole/services/job_center/handlers/snmp_jobs.py`。
-- `netconsole/models/snmp_models.py`、`netconsole/repositories/global_mib_repository.py`、`netconsole/repositories/site_snmp_repository.py`。
-- `netconsole/ui/pages/snmp_center_page.py`、`netconsole/ui/snmp_collection_helper.py`。
+- `src/netconsole/services/snmp_client.py`、`src/netconsole/services/snmp_query_service.py`、`src/netconsole/services/snmp_poll_service.py`。
+- `src/netconsole/services/snmp/`、`src/netconsole/services/job_center/handlers/snmp_jobs.py`。
+- `src/netconsole/models/snmp_models.py`、`src/netconsole/repositories/global_mib_repository.py`、`src/netconsole/repositories/site_snmp_repository.py`。
+- `src/netconsole/ui/pages/snmp_center_page.py`、`src/netconsole/ui/snmp_collection_helper.py`。
 - `tests/test_snmp_query_job.py`、`tests/test_snmp_collection_job.py`、`tests/smoke/snmp/`。
 
 # 工作流程

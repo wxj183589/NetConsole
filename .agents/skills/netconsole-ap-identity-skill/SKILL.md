@@ -31,9 +31,9 @@ description: "AP Identity、CanonicalApIdentity、AP/Radio/BSSID/Peer MAC 归一
 - `docs/AP_IDENTITY.md`、`docs/AP_MODEL_ASSESSMENT.md`、`docs/AP_IDENTITY_OBSERVATION_PLAN.md`。
 - `docs/AP_IDENTITY_DISPLAY_ASSESSMENT.md`、`docs/AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md`。
 - `docs/TRACKSIDE_AP_IDENTITY_ASSESSMENT.md`、`docs/MR_MESH_AP_IDENTITY_ASSESSMENT.md`、`docs/EXPORT_FIELD_DEDUP_ASSESSMENT.md`。
-- `netconsole/services/ap_identity/`、`netconsole/services/ac/ac_identity_models.py`、`netconsole/services/ac/ac_identity_adapter.py`。
-- `netconsole/services/ac/ac_optical_identity_adapter.py`、`netconsole/services/mr_mesh_identity_shadow.py`。
-- `netconsole/services/rail_transit/trackside_ap_identity_shadow.py`、`netconsole/services/export_identity_diagnostics.py`、`netconsole/ui/diagnostics/`。
+- `src/netconsole/services/ap_identity/`、`src/netconsole/services/ac/ac_identity_models.py`、`src/netconsole/services/ac/ac_identity_adapter.py`。
+- `src/netconsole/services/ac/ac_optical_identity_adapter.py`、`src/netconsole/services/mr_mesh_identity_shadow.py`。
+- `src/netconsole/services/rail_transit/trackside_ap_identity_shadow.py`、`src/netconsole/services/export_identity_diagnostics.py`、`src/netconsole/ui/diagnostics/`。
 - 相关 `tests/test_*identity*.py`。
 
 # 工作流程与边界

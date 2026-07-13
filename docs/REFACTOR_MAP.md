@@ -2,7 +2,7 @@
 
 ## 1. 当前结论
 
-截至 2026-07-12，NetConsole 已建立统一 Background Job 协议、独立 worker、进程适配器、Job Registry 和 11 个领域 handler 模块；Registry 当前注册 86 个任务类型。Traffic 的三个本地 handler 已直接调用正式 Adapter，但多数既有领域 handler 仍通过 `legacy_handler(...)` 调用 `netconsole/services/job_center/handlers/legacy_tasks.py`，因此总体状态仍是“入口与协议统一，领域实现迁移中”，不是“已完成”。
+截至 2026-07-12，NetConsole 已建立统一 Background Job 协议、独立 worker、进程适配器、Job Registry 和 11 个领域 handler 模块；Registry 当前注册 86 个任务类型。Traffic 的三个本地 handler 已直接调用正式 Adapter，但多数既有领域 handler 仍通过 `legacy_handler(...)` 调用 `src/netconsole/services/job_center/handlers/legacy_tasks.py`，因此总体状态仍是“入口与协议统一，领域实现迁移中”，不是“已完成”。
 
 ## 2. 状态定义
 

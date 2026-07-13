@@ -3,7 +3,8 @@
 ## 项目概况
 
 - NetConsole 是 Windows 本地桌面网络设备采集与分析工具，当前技术栈为 Python 3.13、Qt6、PySide6、QFluentWidgets、SQLite、Netmiko 和本地 Excel 报告。
-- 真实版本从 `netconsole/core/version.py` 读取，用户可见功能从 `netconsole/core/feature_registry.py` 读取，数据路径从 `netconsole/core/paths.py` 读取。
+- 真实版本从 `src/netconsole/core/version.py` 读取，用户可见功能从 `src/netconsole/core/feature_registry.py` 读取，数据路径从 `src/netconsole/core/paths.py` 读取。
+- Windows Go Agent V1 已位于 `apps/agent/`，包含独立 API、内嵌 Web、fping/iPerf、MR sidecar 和采集包；CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未实现。
 - 开发前先读当前代码、测试和 `docs/README.md`，不依赖旧会话或旧项目假设。
 
 ## 语言与编码
@@ -44,6 +45,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 禁止使用 `Path.cwd()` 定位源码、资源、配置或运行数据；禁止用临时 `sys.path` 修改掩盖包结构问题。
 - 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/builtin_mibs` 中明确版本化的 MIB 归档和 `resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护，`apps/agent/tools/` 禁止作为运行时工具来源。
 - `apps/agent` 二级目录只保留 `cmd`、`internal`、`mr_collector_py`、`web`、`scripts`、`resources/config` 和项目元文件；示例配置命名为 `config.example.json`/`targets.example.json`，真实配置不得回写源码目录。Agent 开发运行数据使用 `.local/agent/`，构建产物使用 `dist/agent/`；禁止保留 `apps/agent/bin`、`data`、`dist`、`logs`、`packages`、`tmp` 和 `apps/agent/tools` 作为运行目录或工具来源。
+- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop`、`apps/web` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
+- 修改 Agent 构建、工具、配置或路径时，必须同步检查 `apps/agent/README.md`、`docs/AGENT.md`、`docs/BUILD_AND_RELEASE.md`、`resources/tools/README.md` 和 `docs/development/repository-layout.md`；重要文档链接必须在提交前验证。
 - 目录职责不明确时先审计内容、Git 跟踪状态和引用关系，不得先新建目录或静默删除数据。
 
 ## Skill 路由
@@ -59,6 +62,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | `netconsole-job-center-skill` | 普通后台 Job、JSONL、取消和迁移 | 文件导出、轻量 UI |
 | `netconsole-export-report-skill` | ExportJob、本地 XLSX/CSV/PDF/ZIP 报告 | 实时采集、普通表格样式 |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、会话打包 | 离线 MESH 分析 |
+| `netconsole-agent-skill` | Windows Go Agent API、构建、工具、配置、targets、MR sidecar 和运行目录 | CentOS 离线部署；纯流量语义；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线分析、图表和报告 | 在线 SSH 采集 |
 | `netconsole-ap-identity-skill` | AP/Radio/BSSID/Peer 身份与 shadow | 普通 AP 展示 |
 | `h3c-snmp-mib-skill` | H3C MIB、OID、模块、参考表 | SNMP 请求调度、CLI parser |

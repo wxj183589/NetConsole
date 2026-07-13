@@ -29,11 +29,11 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 # 开始前读取
 
 - `docs/mr_mesh_log_analysis_rules.md`、`docs/MR_MESH_AP_IDENTITY_ASSESSMENT.md`。
-- `netconsole/ui/pages/mesh_log_analysis_page.py`、`netconsole/ui/mesh_log_workers.py`、`netconsole/ui/mesh_peer_series_worker.py`。
-- `netconsole/ui/mesh_time_window_controller.py` 和 `netconsole/ui/mesh_chart_*.py`。
-- `netconsole/parsers/mesh_log_parser.py`、`netconsole/services/mesh_log_analysis_service.py`、`netconsole/services/mesh_analysis_params_service.py`。
-- `netconsole/services/mr_mesh_identity_shadow.py`、`netconsole/repositories/mesh_catalog_repository.py`、`netconsole/repositories/mesh_mr_repository.py`。
-- `netconsole/models/mesh_log_models.py`、`netconsole/models/mesh_analysis_params.py`、`netconsole/resources/mesh_quality_rules.json`、`tests/test_mesh_log_analysis.py`。
+- `src/netconsole/ui/pages/mesh_log_analysis_page.py`、`src/netconsole/ui/mesh_log_workers.py`、`src/netconsole/ui/mesh_peer_series_worker.py`。
+- `src/netconsole/ui/mesh_time_window_controller.py` 和 `src/netconsole/ui/mesh_chart_*.py`。
+- `src/netconsole/parsers/mesh_log_parser.py`、`src/netconsole/services/mesh_log_analysis_service.py`、`src/netconsole/services/mesh_analysis_params_service.py`。
+- `src/netconsole/services/mr_mesh_identity_shadow.py`、`src/netconsole/repositories/mesh_catalog_repository.py`、`src/netconsole/repositories/mesh_mr_repository.py`。
+- `src/netconsole/models/mesh_log_models.py`、`src/netconsole/models/mesh_analysis_params.py`、`src/netconsole/resources/mesh_quality_rules.json`、`tests/test_mesh_log_analysis.py`。
 
 # 工作流程与规则
 

@@ -111,7 +111,7 @@ task_result
 
 ## 7. Python Typed Client
 
-`netconsole/services/agent/http_client.py` 复用现有 URL、Token、超时、重定向和错误映射，实现：
+`src/netconsole/services/agent/http_client.py` 复用现有 URL、Token、超时、重定向和错误映射，实现：
 
 ```text
 start_fping
@@ -123,7 +123,7 @@ get_task_events
 get_task_result
 ```
 
-DTO 位于 `netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。阶段 4B-2 由 `AgentTrafficAdapter` 调用这些方法，`AgentTrafficSupervisor` 使用排他游标批量轮询；浏览器路由仍未接入。
+DTO 位于 `src/netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。阶段 4B-2 由 `AgentTrafficAdapter` 调用这些方法，`AgentTrafficSupervisor` 使用排他游标批量轮询；浏览器路由仍未接入。
 
 ## 8. Controller 接入边界
 

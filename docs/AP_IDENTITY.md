@@ -2,14 +2,14 @@
 
 ## 1. 工具定位
 
-`netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
+`src/netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
 阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入；阶段 6/6.1 已完成导出评估和两个 P0 diagnostics 接入；阶段 7 已定义真实局点只读观测、脱敏汇总和准入阈值；阶段 8 已完成只读展示方案评估；阶段 8.1 已实现默认关闭的纯 Python 诊断摘要 ViewModel；阶段 8.2 已确认当前没有统一 Job 详情宿主，阶段 8.3 可见 UI 暂缓。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出字段语义保持不变。
 
 目录结构：
 
 ```text
-netconsole/services/ap_identity/
+src/netconsole/services/ap_identity/
   __init__.py       # 稳定导出面
   models.py         # frozen dataclass 与匹配状态
   normalizers.py    # MAC、名称、里程和线别纯函数

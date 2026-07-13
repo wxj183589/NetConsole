@@ -29,15 +29,15 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 # 开始前读取
 
 - `docs/ARCHITECTURE.md`、`docs/JOB_CENTER.md`、`docs/REFACTOR_MAP.md`、`docs/background_task_policy.md`。
-- `netconsole/background_worker.py`、`netconsole/services/background_job.py`、`netconsole/services/background_process_manager.py`。
-- `netconsole/services/job_center/`、`netconsole/ui/job_action_helper.py`、`netconsole/ui/background_process_bridge.py`。
-- `netconsole/core/background_tasks.py`、`netconsole/core/shutdown_manager.py`、`tests/test_job_center.py`。
+- `src/netconsole/background_worker.py`、`src/netconsole/services/background_job.py`、`src/netconsole/services/background_process_manager.py`。
+- `src/netconsole/services/job_center/`、`src/netconsole/ui/job_action_helper.py`、`src/netconsole/ui/background_process_bridge.py`。
+- `src/netconsole/core/background_tasks.py`、`src/netconsole/core/shutdown_manager.py`、`tests/test_job_center.py`。
 
 # 工作流程
 
 1. 判断任务是否含网络、磁盘、大查询、解析、压缩、批量或可能超过 300ms；符合则进入 Job Center。
 2. 用 `JobSpec`/兼容名 `BackgroundJob` 表达 `job_id + task_type + params + cancel_path`；参数必须可 JSON 序列化。
-3. 在 `netconsole/services/job_center/handlers/<domain>_jobs.py` 注册 handler；新增任务不得继续堆入 `legacy_tasks.py`。
+3. 在 `src/netconsole/services/job_center/handlers/<domain>_jobs.py` 注册 handler；新增任务不得继续堆入 `legacy_tasks.py`。
 4. Worker 内创建 service、Repository、SQLite connection 和临时状态，通过 `JobContext` 报进度、日志并检查取消。
 5. stdout 只输出 UTF-8 JSONL 协议事件；普通 print、设备回显和 traceback 进入 stderr/结构化日志。
 6. UI 使用 `submit_background_job()`，处理 progress、log、finished、error、cancelled 和强制停止，并在终态释放 controller。
@@ -48,7 +48,7 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 - 不向 Worker 传 QWidget、QObject、连接对象、Repository、SQLite connection 或未序列化 model。
 - Worker 不导入 `netconsole.ui.pages`，不弹窗，不访问 UI。
 - 当前仍有 `handlers/legacy_tasks.py` 兼容实现；它是只迁出、不迁入区域，不得描述为已全部完成迁移。
-- 当前执行端是本地 Worker Process，尚未实现 Windows/CentOS/Go/远程 Agent 管理。
+- 普通 Job Center 仍以本地 Worker Process 为主；Windows Go Agent 是独立执行端，通过 Controller/Traffic 适配接入，不等同于 Job Center 完全远程化。CentOS 离线部署和完整远程 Agent 管理仍未实现。
 - 页面回调只绑定结构化结果，不做重查询、解析或导出。
 
 # 验证与失败报告

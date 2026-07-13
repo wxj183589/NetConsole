@@ -28,9 +28,9 @@ description: "Windows、PowerShell、Codex 终端、中文乱码、H3C 回显、
 
 # 开始前读取
 
-- `netconsole/utils/text_encoding.py`、`netconsole/core/runtime_environment.py`、`netconsole/core/app_logger.py`。
-- `netconsole/services/netmiko_connection.py`、`netconsole/services/connection_manager.py`、`netconsole/services/tool_path_resolver.py`。
-- `netconsole/background_worker.py`、`netconsole/export_worker.py`、`netconsole/services/job_center/worker_protocol.py`。
+- `src/netconsole/utils/text_encoding.py`、`src/netconsole/core/runtime_environment.py`、`src/netconsole/core/app_logger.py`。
+- `src/netconsole/services/netmiko_connection.py`、`src/netconsole/services/connection_manager.py`、`src/netconsole/services/tool_path_resolver.py`。
+- `src/netconsole/background_worker.py`、`src/netconsole/export_worker.py`、`src/netconsole/services/job_center/worker_protocol.py`。
 - `tests/test_text_encoding.py` 和受影响导入/导出测试。
 
 # PowerShell 前置

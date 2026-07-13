@@ -63,7 +63,7 @@
 
 新增用户可见模块、页面、标签页、动作、按钮或入口，默认接入集中式功能开关：
 
-- 在 `netconsole/core/feature_registry.py` 注册 feature ID。
+- 在 `src/netconsole/core/feature_registry.py` 注册 feature ID。
 - 使用 `FeatureGate` 控制 UI 创建、入口显示或动作处理。
 - 通过既有 profile / 功能配置流程暴露配置。
 - 避免散落一次性 `if`。

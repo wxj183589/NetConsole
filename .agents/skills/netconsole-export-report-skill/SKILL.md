@@ -29,9 +29,9 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 # 开始前读取
 
 - `docs/export_process_policy.md`、`docs/JOB_CENTER.md`、`docs/DEVELOPMENT_RULES.md`。
-- `netconsole/export_worker.py`、`netconsole/services/export/`、`netconsole/services/export_task_models.py`。
-- `netconsole/services/excel_autosize.py`、`netconsole/services/excel_report_utils.py`、`netconsole/services/excel_stream_exporter.py`。
-- 目标报告 service、`netconsole/ui/export_action_helper.py`、`netconsole/utils/excel_workbook.py`。
+- `src/netconsole/export_worker.py`、`src/netconsole/services/export/`、`src/netconsole/services/export_task_models.py`。
+- `src/netconsole/services/excel_autosize.py`、`src/netconsole/services/excel_report_utils.py`、`src/netconsole/services/excel_stream_exporter.py`。
+- 目标报告 service、`src/netconsole/ui/export_action_helper.py`、`src/netconsole/utils/excel_workbook.py`。
 - `tests/test_export_process_framework.py` 和目标报告测试。
 
 # 工作流程

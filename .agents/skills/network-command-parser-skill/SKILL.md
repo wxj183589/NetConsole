@@ -28,9 +28,9 @@ description: "H3C/Comware display 命令、SSH/Telnet/Netmiko 回显、提示符
 
 # 开始前读取
 
-- `netconsole/adapters/h3c/`、`netconsole/parsers/`、`netconsole/parsers/h3c/`。
-- `netconsole/services/h3c_collect_service.py`、`netconsole/services/h3c_ac_collect_service.py`。
-- `netconsole/services/command_guard.py`、`netconsole/services/command_reference_service.py`、`netconsole/utils/text_encoding.py`。
+- `src/netconsole/adapters/h3c/`、`src/netconsole/parsers/`、`src/netconsole/parsers/h3c/`。
+- `src/netconsole/services/h3c_collect_service.py`、`src/netconsole/services/h3c_ac_collect_service.py`。
+- `src/netconsole/services/command_guard.py`、`src/netconsole/services/command_reference_service.py`、`src/netconsole/utils/text_encoding.py`。
 - 相关 `tests/fixtures/h3c/` 和 parser/service 测试。
 
 # 工作流程

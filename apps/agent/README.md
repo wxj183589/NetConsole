@@ -142,7 +142,7 @@ POST /api/v1/power/restore
 
 `GET /api/v1/capabilities` 返回 Agent 自报能力。内建 `ping_probe`/`tcp_ping_probe`、任务事件、结果和 Online MR 采集直接报告可用；iPerf/fping 能力依据 Agent 当前工具检测结果报告。Controller 不应根据操作系统猜测能力，旧 Agent 缺少该接口时应将能力保留为未知。
 
-流量参数、事件游标、结果和错误码的完整契约见 [Agent 流量测试协议](../docs/AGENT_TRAFFIC_API.md)。旧 iPerf `extra_args` 只为兼容保留并继续过滤，新 Python Typed Client 不发送该字段。
+流量参数、事件游标、结果和错误码的完整契约见 [Agent 流量测试协议](../../docs/AGENT_TRAFFIC_API.md)。旧 iPerf `extra_args` 只为兼容保留并继续过滤，新 Python Typed Client 不发送该字段。
 
 ## 任务与采集包
 
@@ -164,7 +164,7 @@ POST /api/v1/power/restore
 
 ## MR Netmiko sidecar 与命令边界
 
-Go Agent 不执行 MR SSH；它只创建私有请求、启动和停止 sidecar。sidecar 使用 Netmiko `hp_comware`/`hp_comware_telnet`，命令与 `netconsole/services/online_mr/collection_commands.py` 对齐，生成主程序兼容的 `raw/`、`view/`、`session_meta.json`。标准 sidecar 路径为 `tools/windows-x64/mr_collector/netconsole-mr-collector.exe`；构建临时产物写入 `dist/agent/.build-windows-x64/`，不写入 `apps/agent/mr_collector_py/dist/`。停止时创建 `stop.request`，该文件不会进入最终 ZIP。
+Go Agent 不执行 MR SSH；它只创建私有请求、启动和停止 sidecar。sidecar 使用 Netmiko `hp_comware`/`hp_comware_telnet`，命令与 `src/netconsole/services/online_mr/collection_commands.py` 对齐，生成主程序兼容的 `raw/`、`view/`、`session_meta.json`。标准 sidecar 路径为 `tools/windows-x64/mr_collector/netconsole-mr-collector.exe`；构建临时产物写入 `dist/agent/.build-windows-x64/`，不写入 `apps/agent/mr_collector_py/dist/`。停止时创建 `stop.request`，该文件不会进入最终 ZIP。
 
 MR session 必须包含 `init_raw.log`、`config_collect_raw.log`、`terminal_monitor_raw.log`、`mesh_link_raw.log`、`channel_busy_raw.log`、`ap_radio_statistics_raw.log`、`switch_history_latest.log`、`interface_rate_raw.log`、`wireless_status_raw.log`、`collector_output_raw.log`、fping 三件套和 `iperf_client_raw.log`。实时视图位于 `view/live_mr_status.json`、`live_link_status.json`、`live_fping_status.json`、`live_iperf_status.json`。
 

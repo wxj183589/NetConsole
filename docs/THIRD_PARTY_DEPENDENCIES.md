@@ -41,6 +41,13 @@
 
 本地 `.xlsx` 导出只面向 WPS Office / Microsoft Office 可打开的文件格式，不引入 WPS 云、KDocs 或在线文档同步能力。
 
+## Agent 运行工具
+
+- `fping` 和 `iperf3` 的版本化源码唯一位于 `resources/tools/`，Agent 交付包内才复制到 `tools/windows-x64/`。
+- fping 目录保留来源和许可证说明；当前 iPerf3 Windows x64 Cygwin 目录仍缺少可核验的上游许可证/NOTICE 材料。
+- 正式对外分发前必须人工确认来源、版本、许可证、NOTICE 和同目录 DLL；构建脚本的文件存在性检查和 IPOP 排除不等同于法律授权确认。
+- 未补齐材料前不得新增或替换来源不明的 iPerf3/Cygwin 二进制。IPOP 仍是用户自备的桌面端可选外部工具，不属于 Agent 依赖。
+
 ## IPOP v4.1
 
 - 分类：用户自行提供的可选外部工具，不属于 NetConsole 内置工具或开源依赖。

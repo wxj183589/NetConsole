@@ -158,8 +158,8 @@ Worker result
 若后续先有一个明确的、只持有当前终态 event 的任务详情入口，阶段 8.3 推荐只实现：
 
 ```text
-netconsole/ui/diagnostics/diagnostics_summary_dialog.py
-netconsole/ui/job_result_detail_host.py              # 以最终批准宿主命名
+src/netconsole/ui/diagnostics/diagnostics_summary_dialog.py
+src/netconsole/ui/job_result_detail_host.py              # 以最终批准宿主命名
 tests/test_diagnostics_summary_dialog.py
 tests/test_job_result_detail_host.py
 ```

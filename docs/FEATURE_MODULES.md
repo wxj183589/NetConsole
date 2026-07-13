@@ -2,7 +2,7 @@
 
 ## 1. 唯一事实来源
 
-用户可见模块、页面、Tab、动作和按钮统一登记在 `netconsole/core/feature_registry.py`。Feature key 使用点号分层；页面通过 `FeatureGate` 和 `apply_feature_to_widget` 控制，而不是散落读取配置。Registry 使用 `FeatureStatus` 表达 `ENABLED / DISABLED / DEVELOPMENT / HIDDEN`，profile 不能重新开启 `DISABLED` 能力。
+用户可见模块、页面、Tab、动作和按钮统一登记在 `src/netconsole/core/feature_registry.py`。Feature key 使用点号分层；页面通过 `FeatureGate` 和 `apply_feature_to_widget` 控制，而不是散落读取配置。Registry 使用 `FeatureStatus` 表达 `ENABLED / DISABLED / DEVELOPMENT / HIDDEN`，profile 不能重新开启 `DISABLED` 能力。
 
 内部功能开关页面使用 `module.feature_switch`。该页面只在源码开发态注册；所有冻结/安装包运行态（包括 internal、customer、engineer）都强制隐藏并禁用，不能通过 profile 或本地覆盖重新开启。
 

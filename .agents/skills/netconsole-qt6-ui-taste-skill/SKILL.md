@@ -30,7 +30,7 @@ description: "NetConsole Qt6/PySide6/QFluentWidgets 界面审查、Taste、Impec
 
 - 目标页面、相关弹窗和控件 helper。
 - `docs/ui_table_guidelines.md`、`docs/ui_thread_policy.md`、`docs/DEVELOPMENT_RULES.md`。
-- 涉及 Fluent 时读取 `netconsole/ui/shell/fluent_bridge.py`、`netconsole/ui/theme/`、`netconsole/ui/components/`。
+- 涉及 Fluent 时读取 `src/netconsole/ui/shell/fluent_bridge.py`、`src/netconsole/ui/theme/`、`src/netconsole/ui/components/`。
 
 # 审查流程
 

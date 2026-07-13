@@ -28,10 +28,10 @@ description: "iperf3、iPerf、TCP/UDP 打流、fping v5 高频 Ping、CBTC/PIS 
 
 # 开始前读取
 
-- `netconsole/core/ping/`、`netconsole/services/fping_v5.py`、`netconsole/services/fping_legacy_parser.py`。
-- `netconsole/services/network_tools/`、`netconsole/ui/iperf_worker.py`、`netconsole/ui/pages/iperf_bandwidth_page.py`。
-- `netconsole/services/online_mr/ping_presets.py`、`netconsole/services/online_mr/traffic_presets.py`。
-- `netconsole/services/online_mr/workers/`、`netconsole/ui/pages/online_mr_collection_page.py`。
+- `src/netconsole/core/ping/`、`src/netconsole/services/fping_v5.py`、`src/netconsole/services/fping_legacy_parser.py`。
+- `src/netconsole/services/network_tools/`、`src/netconsole/ui/iperf_worker.py`、`src/netconsole/ui/pages/iperf_bandwidth_page.py`。
+- `src/netconsole/services/online_mr/ping_presets.py`、`src/netconsole/services/online_mr/traffic_presets.py`。
+- `src/netconsole/services/online_mr/workers/`、`src/netconsole/ui/pages/online_mr_collection_page.py`。
 - `tests/test_fping_v5.py`、`tests/test_iperf_network_tools.py`、`tests/test_online_mr_collection.py`。
 
 # 工作流程与规则

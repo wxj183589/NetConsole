@@ -29,8 +29,8 @@ description: "Qt6、PySide6、QFluentWidgets 现有页面或弹窗出现遮挡�
 # 开始前读取
 
 - `docs/ui_table_guidelines.md`、`docs/ui_thread_policy.md`、`docs/ui_governance_guardrails.md`。
-- 目标文件及 `netconsole/ui/pages/`、`netconsole/ui/dialogs/`、`netconsole/ui/widgets/`、`netconsole/ui/table/`。
-- `netconsole/ui/table_utils.py`、`netconsole/ui/windowing.py`、`netconsole/ui/window_manager.py`、`netconsole/ui/theme/`。
+- 目标文件及 `src/netconsole/ui/pages/`、`src/netconsole/ui/dialogs/`、`src/netconsole/ui/widgets/`、`src/netconsole/ui/table/`。
+- `src/netconsole/ui/table_utils.py`、`src/netconsole/ui/windowing.py`、`src/netconsole/ui/window_manager.py`、`src/netconsole/ui/theme/`。
 
 # 工作流程
 

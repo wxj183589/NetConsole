@@ -29,9 +29,9 @@ description: "Qt6、PySide6、QFluentWidgets 页面新建或系统性视觉与�
 # 开始前读取
 
 - `AGENTS.md`、`docs/ARCHITECTURE.md`、`docs/DEVELOPMENT_RULES.md`、`docs/ui_table_guidelines.md`。
-- `netconsole/ui/app_fluent_window.py`、`netconsole/ui/app_window_factory.py`、`netconsole/ui/navigation.py`。
-- `netconsole/ui/theme/`、`netconsole/ui/widgets/`、`netconsole/ui/table/`、`netconsole/ui/table_utils.py`。
-- `netconsole/core/i18n.py`、`netconsole/core/feature_registry.py`。
+- `src/netconsole/ui/app_fluent_window.py`、`src/netconsole/ui/app_window_factory.py`、`src/netconsole/ui/navigation.py`。
+- `src/netconsole/ui/theme/`、`src/netconsole/ui/widgets/`、`src/netconsole/ui/table/`、`src/netconsole/ui/table_utils.py`。
+- `src/netconsole/core/i18n.py`、`src/netconsole/core/feature_registry.py`。
 
 # 工作流程
 
@@ -39,7 +39,7 @@ description: "Qt6、PySide6、QFluentWidgets 页面新建或系统性视觉与�
 2. 读取现有页面、主题 token、公共组件和相关测试，列出必须保留的信号、状态和数据入口。
 3. 先调整布局层级、stretch、size policy、Splitter 和滚动策略，再处理 QSS；不得用 QSS 强行修布局。
 4. 复用既有组件；只有重复需求明确时才增加最小公共 helper。
-5. 新用户可见页面、Tab、动作或按钮接入 `netconsole/core/feature_registry.py`；用户可见文本进入 `netconsole/core/i18n.py`。
+5. 新用户可见页面、Tab、动作或按钮接入 `src/netconsole/core/feature_registry.py`；用户可见文本进入 `src/netconsole/core/i18n.py`。
 6. 补足 empty、loading、error、success/cancelled 状态；按钮必须连接真实 slot。
 
 # 项目约束
@@ -48,7 +48,7 @@ description: "Qt6、PySide6、QFluentWidgets 页面新建或系统性视觉与�
 - 所有页面、弹窗、弹出模块和子页都不得被窗口硬挤压。内容超高时用 `QScrollArea` 或区域自身纵向滚动；内容超宽时用水平滚动、`QSplitter` 或分区，禁止压缩到重叠、截字或单位覆盖输入框。
 - 复杂页面使用表单/网格、分组、Tab、折叠区或 Splitter；避免绝对定位和大量 `setFixedSize`。
 - 1920x1080 和 2560x1440 应保持比例；1280 宽度可出现滚动条，但全部功能必须可达。
-- 数字框和下拉框避免滚轮误改；不需要微调按钮时复用 `netconsole/ui/widgets/no_wheel.py` 或带 validator 的输入框。
+- 数字框和下拉框避免滚轮误改；不需要微调按钮时复用 `src/netconsole/ui/widgets/no_wheel.py` 或带 validator 的输入框。
 - 表格支持手动调列宽和横向滚动；大表使用 Model/View、分页、懒加载或分批渲染，不给每个单元格创建 QWidget。
 - 深色主题下正文、次要文字、边框、placeholder、禁用、hover、selected 可读；状态不能只靠颜色表达。
 - 不删除中文字段，不新增重复页面，不用 Web hero、营销页或装饰性渐变替代工程工具布局。
