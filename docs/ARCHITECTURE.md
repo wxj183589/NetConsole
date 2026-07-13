@@ -80,7 +80,7 @@ sequenceDiagram
 - worker 的 stdout 只允许输出 JSONL 协议；普通诊断输出重定向到 stderr。
 - 取消先写 `.cancel`，handler 通过 `JobContext.check_cancelled()` 协作退出；超时后进程管理器 terminate，再在 3 秒后 kill。
 - Job 文件位于 `.local/runtime/cache/background_jobs/`，终态后清理。
-- Job Registry 当前注册 86 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 11 个领域模块。
+- Job Registry 当前注册 88 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 11 个领域模块。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
 - `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。FastAPI 已提供任务路由与 `/ws/tasks`。
 - `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。
@@ -154,6 +154,8 @@ flowchart TD
 阶段 5B-7 增加纯 Python Agent package importer：只处理已下载 ZIP，在所属局点 staging 中校验路径、公共 JSON、raw 契约和哈希后原子落入 Online MR Session，并登记同局点终态 Task/Mapping；同哈希幂等、不同哈希冲突且不覆盖。该能力尚未接 Agent HTTP 下载或远程调度，`executor=AGENT` 仍保持 unsupported，也不改变 LOCAL 生命周期。
 
 阶段 5B-8 在现有 `AgentHttpClient` 统一响应和鉴权逻辑上增加 Online MR 类型化只读客户端，可查询 ping、Agent/工具状态、任务和包列表，并将受大小、超时和取消约束的 ZIP 流式下载到所属局点临时目录后交给 5B-7 importer。下载/导入不由 Qt 或 Application Service 自动触发，AGENT executor 与远程 start/stop 仍保持 unsupported。
+
+阶段 5B-11 在 Legacy Qt Online MR 页面增加 Agent 已有采集包同步/导入入口。网络查询、下载和导入通过 `online_mr_agent_packages_sync` / `online_mr_agent_package_import` Worker Process 执行；唯一 IP 候选才允许自动导入，`already_imported` 幂等跳过，`conflict` 不覆盖，无匹配或多匹配只允许经人工选择正式设备并二次确认。Token 只通过该 Worker 的临时环境传递，不进入 Job JSON、SQLite、日志或事件。该入口不开放远程 start/stop、`executor=AGENT` 或 Go Agent 修改，也不改变 LOCAL 生命周期。
 
 Online MR 会话生命周期：
 

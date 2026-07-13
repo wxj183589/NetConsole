@@ -200,6 +200,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "online_mr.agent_packages": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "mesh.generate_report": {
       "visible": true,
       "enabled": true,

@@ -2,7 +2,7 @@
 
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
-> 2026-07-12 代码核对：Registry 当前注册 86 个 task type，分布于 11 个领域 handler 模块。新增三个本地 Traffic handler；注册与进程协议已统一，但多数既有 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。
+> 2026-07-14 代码核对：Registry 当前注册 88 个 task type，分布于 11 个领域 handler 模块。新增三个本地 Traffic handler及两个 Online MR Agent 包同步/导入 handler；注册与进程协议已统一，但多数既有 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。
 
 ## 代码组成
 
@@ -46,6 +46,8 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约。启动连接失败时 Task 为 `FAILED`，已创建会话 metadata 同步为 `FAILED`；显式恢复核对可将没有活动 Task 宿主的旧会话标为 `ABORTED`，但不触发解析、打包或 raw 清理。
 
 阶段 5B-3 的 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用现有协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile。阶段 5B-5 后 Legacy Qt 兼容 Adapter 只接受该 Application Service 入口，重复停止幂等，页面不再通过旧 manager 二次取消或为新会话直接停止 fping/iPerf；AGENT 仍返回不支持。
+
+阶段 5B-11 的 Qt Agent 包入口新增 `online_mr_agent_packages_sync` 和 `online_mr_agent_package_import` 两个一次性 Job。前者只读 Agent 状态、工具、包及当前局点设备候选；后者只下载并导入用户选中的既有包。认证 Token 通过单个 QProcess 的临时环境传递，任务参数和 Job 文件只保存 Profile ID、地址和非敏感选项。取消检查继续传入流式下载，Worker 不访问 QWidget；远程任务 start/stop 不在这两个 handler 中。
 
 ## Task Center API
 

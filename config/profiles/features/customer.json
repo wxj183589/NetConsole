@@ -230,6 +230,12 @@
       "client_package": false,
       "internal_only": false
     },
+    "online_mr.agent_packages": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
     "mesh.generate_report": {
       "visible": false,
       "enabled": false,

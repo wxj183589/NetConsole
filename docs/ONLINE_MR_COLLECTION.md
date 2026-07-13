@@ -317,6 +317,22 @@ python -m scripts.maintenance.download_import_agent_online_mr_package `
   --auto-resolve-by-ip
 ```
 
-无匹配或多匹配时命令在下载前结束；原有 `--device-id/--device-name/--mr-name`、`manual_override` 和显式覆盖入口继续保留。新导入 manifest 增加 `source_package_id`，旧 5B-9 导入仍可通过 Agent Task/Session 识别为已导入。当前仍不接 Legacy Qt/FastAPI/Vue，不开放 `executor=AGENT`，也不远程启动、停止或删除 Agent MR 任务/包。
+无匹配或多匹配时命令在下载前结束；原有 `--device-id/--device-name/--mr-name`、`manual_override` 和显式覆盖入口继续保留。新导入 manifest 增加 `source_package_id`，旧 5B-9 导入仍可通过 Agent Task/Session 识别为已导入。5B-10 本身不接 Legacy Qt/FastAPI/Vue，不开放 `executor=AGENT`，也不远程启动、停止或删除 Agent MR 任务/包。
 
 5B-10 已对 `127.0.0.1:18080` 的真实 `0.2.0-win-agent` 做只读同步：既有 12 车包解析出 `10.122.12.249`，在“宁波地铁12号线”唯一匹配设备 204“列车12-MR-CT”，并根据既有 manifest、Task 和 Mapping 返回 `already_imported`；验证未重复下载、导入或删除远端包。
+
+## 15. Legacy Qt Agent 包入口（5B-11）
+
+Legacy Qt 的 Online MR 采集页操作栏增加 `online_mr.agent_packages` 入口，打开独立非模态对话框。对话框复用既有 Agent Profile，也允许不保存的临时 Agent 地址；Token 仅保留在当前窗口，并通过单个 Worker Process 的临时环境传递。任务 JSON、`tasks.db`、日志、事件和导入 manifest 均不保存 Token。
+
+同步通过 `online_mr_agent_packages_sync` Job 展示 Agent/工具状态、远端包、包内临时设备身份、采集目标 IP、本地候选和导入状态。导入通过 `online_mr_agent_package_import` Job 执行下载及 5B-7 importer：
+
+- `not_imported` 且只有一个正式设备 IP 候选时，可按 IP 匹配导入；
+- `already_imported` 不重复下载或写入；
+- `conflict` 禁止自动或手工覆盖；
+- 无匹配或多匹配时不自动导入，只能由操作人员选择当前局点正式设备并二次确认 `manual_override`；
+- 对话框关闭、局点切换或应用退出时，所属 Job Center 子进程按既有取消/清理协议回收。
+
+导入完成后，对话框显示 Controller Task、Session 和本地会话目录，并提供复制 Package ID、复制只读验收命令和打开导入目录操作；这些操作只使用本次本地导入结果，不会把 Agent Token 或密码拼入命令、路径或 URL。
+
+5B-11 不新增 Agent start/stop/delete API，不修改 Go Agent 或 Agent Web，不开放 `executor=AGENT`，不改变 LOCAL Online MR 启动、停止、Traffic flush、raw 和打包生命周期，也不接 FastAPI/Vue。

@@ -120,6 +120,7 @@ from netconsole.ui.online_mr_parse_worker import OnlineMrAnalysisLoadWorker, Onl
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.components.button_icons import apply_button_icon
 from netconsole.ui.dialogs.dialog_style import apply_dialog_style
+from netconsole.ui.dialogs.online_mr_agent_packages_dialog import OnlineMrAgentPackagesDialog
 from netconsole.ui.table_utils import apply_analysis_table_style, attach_table_context_menu, auto_fit_table_columns, configure_readonly_table, make_table_item
 from netconsole.ui.widgets.online_mr_analysis_chart_widget import OnlineMrAnalysisChartWidget
 from netconsole.ui.widgets.no_wheel import NoWheelComboBox, NoWheelSpinBox
@@ -581,6 +582,8 @@ class OnlineMrCollectionPage(QWidget):
         self.params_toggle_button = QPushButton("收起输入区")
         self.open_button = QPushButton()
         self.refresh_devices_button = QPushButton()
+        self.agent_packages_button = QPushButton()
+        self.agent_packages_dialog: OnlineMrAgentPackagesDialog | None = None
         self.action_bar: QWidget | None = None
         self.action_layout: FlowLayout | None = None
         self.main_splitter: QSplitter | None = None
@@ -1389,6 +1392,7 @@ class OnlineMrCollectionPage(QWidget):
         self.device_list_title_label.setText(self.i18n.t("online_mr.device_list"))
         self.open_button.setText(self.i18n.t("online_mr.open_session_dir"))
         self.refresh_devices_button.setText(self.i18n.t("online_mr.refresh_devices"))
+        self.agent_packages_button.setText(self.i18n.t("online_mr.agent_packages.entry"))
         self.parse_session_button.setText(self.i18n.t("online_mr.parse_selected_session" if self.analysis_only else "online_mr.parse_collection_data"))
         self.force_parse_button.setText(self.i18n.t("online_mr.force_reparse"))
         self.force_parse_button.setVisible(self.analysis_only)
@@ -1603,6 +1607,7 @@ class OnlineMrCollectionPage(QWidget):
             (self.params_toggle_button, "MENU"),
             (self.open_button, "FOLDER"),
             (self.refresh_devices_button, "SYNC"),
+            (self.agent_packages_button, "DOWNLOAD"),
             (self.parse_session_button, "PLAY"),
             (self.force_parse_button, "SYNC"),
             (self.export_analysis_report_button, "SHARE"),
@@ -1655,7 +1660,16 @@ class OnlineMrCollectionPage(QWidget):
         self.action_layout = action_layout
         self.force_stop_button.setVisible(False)
         self.force_stop_button.setEnabled(False)
-        for button in (self.start_button, self.stop_selected_button, self.stop_all_button, self.force_stop_button, self.params_toggle_button, self.open_button, self.refresh_devices_button):
+        for button in (
+            self.start_button,
+            self.stop_selected_button,
+            self.stop_all_button,
+            self.force_stop_button,
+            self.params_toggle_button,
+            self.open_button,
+            self.refresh_devices_button,
+            self.agent_packages_button,
+        ):
             action_layout.addWidget(button)
         if not self.analysis_only:
             root.insertWidget(0, action_bar)
@@ -1901,6 +1915,7 @@ class OnlineMrCollectionPage(QWidget):
         self.params_toggle_button.clicked.connect(self._toggle_parameter_panel)
         self.open_button.clicked.connect(self.open_selected_session_dir)
         self.refresh_devices_button.clicked.connect(lambda: self.refresh_all(defer_heavy=False, refresh_tools=True))
+        self.agent_packages_button.clicked.connect(self.open_agent_packages_dialog)
         self.parse_session_button.clicked.connect(self.parse_selected_session)
         self.force_parse_button.clicked.connect(lambda: self.parse_selected_session(force_reparse=True))
         self.parse_cancel_button.clicked.connect(self._cancel_parse_worker)
@@ -5446,6 +5461,9 @@ class OnlineMrCollectionPage(QWidget):
             self.enable_iperf_check.isChecked() and has_legacy_iperf_session and not stopping
         )
         self.open_button.setEnabled(True)
+        self.agent_packages_button.setEnabled(
+            self.feature_gate.is_enabled("online_mr.agent_packages") and not stopping
+        )
         self._running_count = self._site_running_count()
         self.running_count_label.setText(str(self._running_count))
         self._refresh_top_metrics()
@@ -5457,11 +5475,29 @@ class OnlineMrCollectionPage(QWidget):
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.iperf_check_server_button)
         apply_feature_to_widget(self.feature_gate, "online_mr.iperf_test", self.iperf_retry_button)
         apply_feature_to_widget(self.feature_gate, "online_mr.collection_notes", self.collection_note_widget)
+        apply_feature_to_widget(self.feature_gate, "online_mr.agent_packages", self.agent_packages_button)
         note_tab_index = self.tabs.indexOf(self.collection_note_table)
         if note_tab_index >= 0:
             if hasattr(self.tabs, "setTabVisible"):
                 self.tabs.setTabVisible(note_tab_index, self.feature_gate.is_visible("online_mr.collection_notes"))
             self.tabs.setTabEnabled(note_tab_index, self.feature_gate.is_enabled("online_mr.collection_notes"))
+
+    def open_agent_packages_dialog(self) -> None:
+        if self.agent_packages_dialog is not None:
+            self.agent_packages_dialog.show()
+            self.agent_packages_dialog.raise_()
+            self.agent_packages_dialog.activateWindow()
+            return
+        dialog = OnlineMrAgentPackagesDialog(
+            paths=self.paths,
+            site_name=self.site_name,
+            i18n=self.i18n,
+            devices=self.available_devices or self.devices,
+            parent=self,
+        )
+        self.agent_packages_dialog = dialog
+        dialog.destroyed.connect(lambda _=None: setattr(self, "agent_packages_dialog", None))
+        dialog.show()
 
     def _reconcile_collection_state(self) -> None:
         if not self._can_update_ui():
@@ -6271,6 +6307,7 @@ class OnlineMrCollectionPage(QWidget):
             self.stop_all_button,
             self.open_button,
             self.refresh_devices_button,
+            self.agent_packages_button,
         ):
             button.setMinimumWidth(104)
             button.setMinimumHeight(34)

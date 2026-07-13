@@ -12,6 +12,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
+WORKER_SECRET_ENV_PREFIX = "NETCONSOLE_JOB_SECRET_"
+
 
 @dataclass
 class _RunningBackgroundJob:
@@ -40,7 +42,7 @@ class BackgroundProcessManager(QObject):
         if parent is not None:
             parent.destroyed.connect(self.shutdown)
 
-    def start_job(self, job: BackgroundJob) -> str:
+    def start_job(self, job: BackgroundJob, *, environment: dict[str, str] | None = None) -> str:
         launch = self.task_service.prepare(job)
         job_id = launch.job.job_id
         process = QProcess(self)
@@ -59,7 +61,7 @@ class BackgroundProcessManager(QObject):
         program, args = self._worker_command(launch.job_path)
         worker_root = self._worker_code_root()
         process.setWorkingDirectory(str(worker_root))
-        process.setProcessEnvironment(self._worker_environment(worker_root))
+        process.setProcessEnvironment(self._worker_environment(worker_root, environment))
         app_logger.log_info("BACKGROUND_JOB_STARTED", f"job_id={job_id} type={launch.job.task_type}")
         process.start(program, args)
         return job_id
@@ -108,11 +110,20 @@ class BackgroundProcessManager(QObject):
     def _worker_code_root(self) -> Path:
         return self.task_service.runtime.worker_code_root()
 
-    def _worker_environment(self, worker_root: Path) -> QProcessEnvironment:
+    def _worker_environment(
+        self,
+        worker_root: Path,
+        additions: dict[str, str] | None = None,
+    ) -> QProcessEnvironment:
         environment = QProcessEnvironment.systemEnvironment()
         existing = environment.value("PYTHONPATH")
         root_text = str(worker_root)
         environment.insert("PYTHONPATH", root_text if not existing else f"{root_text}{os.pathsep}{existing}")
+        for key, value in dict(additions or {}).items():
+            if key and value:
+                if not str(key).startswith(WORKER_SECRET_ENV_PREFIX):
+                    raise ValueError("后台任务临时环境变量必须使用受控密钥前缀")
+                environment.insert(str(key), str(value))
         return environment
 
     def _read_stdout(self, job_id: str) -> None:

@@ -263,6 +263,8 @@ def test_online_mr_fping_parameter_layout_has_stable_widths(tmp_path: Path) -> N
     assert page.fping_preset_combo.minimumWidth() >= 220
     assert not page.start_button.icon().isNull()
     assert not page.refresh_devices_button.icon().isNull()
+    assert page.agent_packages_button.text() == "Agent Packages"
+    assert not page.agent_packages_button.icon().isNull()
 
 
 def _create_onboard_device(repository: DeviceRepository, group_id: int, name: str, device_type: str = "FAT-AP") -> Device:
@@ -2516,7 +2518,7 @@ def test_online_mr_page_uses_card_layout_and_bounded_inputs(tmp_path: Path) -> N
     assert page.connection_box.minimumHeight() >= 64
     assert page.connection_box.layout().count() >= 4
     assert page.action_bar.minimumHeight() >= 44
-    assert page.action_layout.count() == 7
+    assert page.action_layout.count() == 8
     assert page.action_layout.indexOf(page.force_stop_button) >= 0
     assert page.action_layout.indexOf(page.params_toggle_button) >= 0
     assert page.page_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded

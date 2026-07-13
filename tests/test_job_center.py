@@ -54,7 +54,7 @@ def _jsonl_events(result: subprocess.CompletedProcess[str]) -> list[dict[str, ob
 def test_registry_contains_all_existing_task_types() -> None:
     tasks = registered_task_types()
 
-    assert len(tasks) == 86
+    assert len(tasks) == 88
     assert "ac_command_action_execute" in tasks
     assert "device_csv_import" in tasks
     assert "mesh_mr_profiles_refresh" in tasks
@@ -62,6 +62,8 @@ def test_registry_contains_all_existing_task_types() -> None:
     assert "traffic_local_iperf_server" in tasks
     assert "traffic_local_iperf_client" in tasks
     assert "traffic_local_fping" in tasks
+    assert "online_mr_agent_packages_sync" in tasks
+    assert "online_mr_agent_package_import" in tasks
     assert "wifi_survey_heatmap_render" in tasks
 
 

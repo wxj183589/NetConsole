@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import SecretStr
@@ -178,6 +179,7 @@ class OnlineMrAgentControllerService:
         expected_host: str = "",
         allow_identity_override: bool = False,
         auto_resolve_by_ip: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> OnlineMrAgentDownloadImportResult:
         synchronized = await self.sync_agent_packages(site_id=site_id, profile_id=profile_id)
         package = next((item for item in synchronized.packages if item.package_id == package_id), None)
@@ -227,6 +229,7 @@ class OnlineMrAgentControllerService:
             allow_identity_override=allow_identity_override,
             source_package_id=package.package_id,
             profile_id=profile_id,
+            cancel_check=cancel_check,
         )
 
     async def download_import_package(
@@ -249,6 +252,7 @@ class OnlineMrAgentControllerService:
         allow_identity_override: bool = False,
         source_package_id: str = "",
         profile_id: str = "",
+        cancel_check: Callable[[], bool] | None = None,
     ) -> OnlineMrAgentDownloadImportResult:
         client = self._client(profile_id)
         download_service = self._download_service(client)
@@ -269,6 +273,7 @@ class OnlineMrAgentControllerService:
             expected_host=expected_host,
             allow_identity_override=allow_identity_override,
             source_package_id=source_package_id or package_id,
+            cancel_check=cancel_check,
         )
 
     def _download_service(self, client: OnlineMrAgentHttpClient) -> OnlineMrAgentDownloadService:

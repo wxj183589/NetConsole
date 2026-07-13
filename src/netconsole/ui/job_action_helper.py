@@ -22,6 +22,7 @@ def submit_background_job(
     success_title: str = "任务完成",
     progress_title: str = "正在执行后台任务",
     paths: PathResolver | None = None,
+    environment: dict[str, str] | None = None,
     on_progress: EventCallback | None = None,
     on_finished: EventCallback | None = None,
     on_failed: EventCallback | None = None,
@@ -35,6 +36,7 @@ def submit_background_job(
         success_title=success_title,
         progress_title=progress_title,
         paths=paths,
+        environment=environment,
         on_progress=on_progress,
         on_finished=on_finished,
         on_failed=on_failed,
@@ -61,6 +63,7 @@ class BackgroundJobController(QObject):
         success_title: str,
         progress_title: str,
         paths: PathResolver | None = None,
+        environment: dict[str, str] | None = None,
         on_progress: EventCallback | None = None,
         on_finished: EventCallback | None = None,
         on_failed: EventCallback | None = None,
@@ -75,6 +78,7 @@ class BackgroundJobController(QObject):
         self.on_failed = on_failed
         self.on_cancelled = on_cancelled
         self._terminal = False
+        self._environment = dict(environment or {})
         self.manager = BackgroundProcessManager(self, paths=paths or PathResolver())
         self.dialog = QProgressDialog("准备执行...", "取消", 0, 100, parent)
         self.dialog.setWindowTitle(progress_title)
@@ -91,8 +95,10 @@ class BackgroundJobController(QObject):
     def start(self) -> None:
         self.dialog.show()
         try:
-            self.manager.start_job(self.job)
+            self.manager.start_job(self.job, environment=self._environment)
+            self._environment.clear()
         except Exception as exc:
+            self._environment.clear()
             payload = self._error_payload(str(exc), cancelled=False)
             self._finish_terminal(payload, self.on_failed)
             MessageBox.warning(self.parent_widget, "任务启动失败", str(exc))
