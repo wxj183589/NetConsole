@@ -337,9 +337,10 @@ class LocalProcessAdapter:
     def _read_pipe(self, job_id: str, pipe: BinaryIO | None, is_stderr: bool) -> None:
         if pipe is None:
             return
+        read_chunk = getattr(pipe, "read1", pipe.read)
         try:
             while True:
-                chunk = pipe.read(self._read_size)
+                chunk = read_chunk(self._read_size)
                 if not chunk:
                     break
                 payload = chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else bytes(chunk)

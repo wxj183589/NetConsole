@@ -19,7 +19,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
 - `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
-- `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
+- `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测、Traffic 领域分区。
 
 ## Worker Process 约束
