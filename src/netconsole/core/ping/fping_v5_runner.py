@@ -12,7 +12,7 @@ from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.ping.fping_v5_models import FpingV5CheckResult, FpingV5Paths, FpingV5Sample
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
 from netconsole.core.paths import PathResolver
-from netconsole.services.tool_path_resolver import get_tool_dir, get_tool_executable
+from netconsole.services.tool_path_resolver import get_tool_executable
 
 
 def resolve_fping_v5_paths(project_root: Path | None = None, fping_path: Path | None = None) -> FpingV5Paths:
@@ -20,10 +20,10 @@ def resolve_fping_v5_paths(project_root: Path | None = None, fping_path: Path | 
         exe = Path(fping_path).resolve()
     elif project_root is not None:
         paths = PathResolver(Path(project_root).resolve())
-        exe = get_tool_dir("fping", paths) / "fping.exe"
+        exe = get_tool_executable("fping", paths, project_root=Path(project_root)) or Path(project_root).resolve() / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe"
     else:
         paths = PathResolver()
-        exe = get_tool_executable("fping", paths) or get_tool_dir("fping", paths) / "fping.exe"
+        exe = get_tool_executable("fping", paths) or paths.app_root / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe"
     exe = exe.resolve()
     dll = exe.parent / "cygwin1.dll"
     if not exe.exists():

@@ -176,8 +176,8 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("src/netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
-    assert ("tools/windows-x64/fping", "tools/windows-x64/fping") in clean_build_spec.ALLOWED_DATA
-    assert ("tools/windows-x64/iperf3", "tools/windows-x64/iperf3") in clean_build_spec.ALLOWED_DATA
+    assert ("resources/tools/windows-x64/fping", "tools/windows-x64/fping") in clean_build_spec.ALLOWED_DATA
+    assert ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3") in clean_build_spec.ALLOWED_DATA
     assert not any(source.casefold().startswith("tools/windows-x64/ipop") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA

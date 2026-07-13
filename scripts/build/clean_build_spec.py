@@ -32,8 +32,8 @@ SRC_ROOT = ROOT / "src"
 
 ALLOWED_DATA = [
     ("src/netconsole", "netconsole"),
-    ("tools/windows-x64/fping", "tools/windows-x64/fping"),
-    ("tools/windows-x64/iperf3", "tools/windows-x64/iperf3"),
+    ("resources/tools/windows-x64/fping", "tools/windows-x64/fping"),
+    ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3"),
     ("src/netconsole/ui/icons", "netconsole/ui/icons"),
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
@@ -50,16 +50,16 @@ EXCLUDE_DIRS = [
 ]
 EXCLUDE_FILES = {"*.pyc", "*.pyo"}
 REQUIRED_TOOL_FILES = (
-    Path("tools") / "windows-x64" / "fping" / "fping.exe",
-    Path("tools") / "windows-x64" / "fping" / "cygwin1.dll",
-    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe",
-    Path("tools") / "windows-x64" / "iperf3" / "cygcrypto-3.dll",
-    Path("tools") / "windows-x64" / "iperf3" / "cygwin1.dll",
-    Path("tools") / "windows-x64" / "iperf3" / "cygz.dll",
+    Path("resources") / "tools" / "windows-x64" / "fping" / "fping.exe",
+    Path("resources") / "tools" / "windows-x64" / "fping" / "cygwin1.dll",
+    Path("resources") / "tools" / "windows-x64" / "iperf3" / "iperf3.exe",
+    Path("resources") / "tools" / "windows-x64" / "iperf3" / "cygcrypto-3.dll",
+    Path("resources") / "tools" / "windows-x64" / "iperf3" / "cygwin1.dll",
+    Path("resources") / "tools" / "windows-x64" / "iperf3" / "cygz.dll",
 )
 REQUIRED_TOOL_EXECUTABLES = (
-    Path("tools") / "windows-x64" / "fping" / "fping.exe",
-    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe",
+    Path("resources") / "tools" / "windows-x64" / "fping" / "fping.exe",
+    Path("resources") / "tools" / "windows-x64" / "iperf3" / "iperf3.exe",
 )
 REQUIRED_VC_RUNTIME_DLLS = (
     "VCRUNTIME140.dll",
@@ -70,8 +70,8 @@ REQUIRED_VC_RUNTIME_DLLS = (
     "msvcp140_2.dll",
 )
 TOOL_VERSION_MARKERS = {
-    Path("tools") / "windows-x64" / "fping" / "fping.exe": ("Version 5.5", "fping"),
-    Path("tools") / "windows-x64" / "iperf3" / "iperf3.exe": ("iperf 3.",),
+    Path("resources") / "tools" / "windows-x64" / "fping" / "fping.exe": ("Version 5.5", "fping"),
+    Path("resources") / "tools" / "windows-x64" / "iperf3" / "iperf3.exe": ("iperf 3.",),
 }
 VERSION_INFO_FILE = BUILD_ROOT / "version_info.txt"
 
@@ -115,7 +115,7 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
         datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
         source_path = ROOT / source
-        if (source.startswith("tools/") and source_path.is_dir()) or source_path.is_file():
+        if (source.startswith("resources/tools/") and source_path.is_dir()) or source_path.is_file():
             if (str(source_path), destination) in datas:
                 continue
             datas.append((str(source_path), destination))
@@ -205,7 +205,7 @@ def prepare_runtime() -> None:
 
 
 def clean_tool_cache_artifacts() -> None:
-    tools_root = ROOT / "tools"
+    tools_root = ROOT / "resources" / "tools"
     if not tools_root.exists():
         return
     for cache_dir in tools_root.glob("**/__pycache__"):
@@ -317,8 +317,8 @@ def validate_tool_sources() -> None:
     missing = [path.as_posix() for path in REQUIRED_TOOL_FILES if not (ROOT / path).is_file()]
     if missing:
         raise CleanBuildLockError(f"required runtime tool is missing: {', '.join(missing)}")
-    if not (ROOT / "tools").is_dir():
-        raise CleanBuildLockError("required tools directory is missing")
+    if not (ROOT / "resources" / "tools").is_dir():
+        raise CleanBuildLockError("required resources/tools directory is missing")
 
 
 def collect_vc_runtime_dlls(search_roots: list[Path] | None = None, *, required: bool = True) -> list[tuple[str, str]]:
@@ -388,11 +388,12 @@ def _find_runtime_dll(dll_name: str, roots: list[Path]) -> Path | None:
 def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: bool = True) -> None:
     app_dist = Path(app_dist or DIST_ROOT / "NetConsole")
     if run_version_check and _same_path(app_dist, DIST_ROOT / "NetConsole"):
+        source_root = ROOT / "resources"
         source_files = sorted(
-            path.relative_to(ROOT)
+            path.relative_to(source_root)
             for tool_dir in (
-                ROOT / "tools" / "windows-x64" / "fping",
-                ROOT / "tools" / "windows-x64" / "iperf3",
+                ROOT / "resources" / "tools" / "windows-x64" / "fping",
+                ROOT / "resources" / "tools" / "windows-x64" / "iperf3",
             )
             for path in tool_dir.glob("**/*")
             if path.is_file()
@@ -404,10 +405,11 @@ def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: boo
                 + ", ".join(relative.as_posix() for relative in missing_packaged)
             )
     for relative in REQUIRED_TOOL_FILES:
-        packaged = app_dist / "_internal" / relative
+        packaged_relative = relative.relative_to(Path("resources"))
+        packaged = app_dist / "_internal" / packaged_relative
         if not packaged.is_file():
             raise CleanBuildLockError(f"packaged runtime tool is missing: {packaged}")
-        print(f"[OK] {relative.as_posix()} included")
+        print(f"[OK] {packaged_relative.as_posix()} included")
         if run_version_check and relative in REQUIRED_TOOL_EXECUTABLES:
             _check_tool_version(packaged, relative)
 
@@ -433,7 +435,7 @@ def _same_path(left: Path, right: Path) -> bool:
 
 
 def _is_excluded_tool_artifact(path: Path) -> bool:
-    relative_parts = path.relative_to(ROOT / "tools").parts
+    relative_parts = path.relative_to(ROOT / "resources" / "tools").parts
     if "ipop" in {part.casefold() for part in relative_parts}:
         return True
     if path.suffix.casefold() == ".py":

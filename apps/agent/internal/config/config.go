@@ -125,9 +125,25 @@ func (c *Config) Resolve(path string) string {
 func (c *Config) DataPath() string        { return c.Resolve(c.Agent.DataDir) }
 func (c *Config) LogPath() string         { return c.Resolve(c.Agent.LogDir) }
 func (c *Config) PackagePath() string     { return c.Resolve(c.Agent.PackageDir) }
-func (c *Config) IperfPath() string       { return c.Resolve(c.Tools.Iperf3WindowsX64) }
-func (c *Config) FpingPath() string       { return c.Resolve(c.Tools.FpingWindowsX64) }
+func (c *Config) IperfPath() string       { return c.resolveRuntimeTool(c.Tools.Iperf3WindowsX64, DefaultIperf3WindowsX64) }
+func (c *Config) FpingPath() string       { return c.resolveRuntimeTool(c.Tools.FpingWindowsX64, DefaultFpingWindowsX64) }
 func (c *Config) MRCollectorPath() string { return c.Resolve(c.Tools.MRCollectorWindowsX64) }
 func (c *Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", c.Agent.ListenHost, c.Agent.ListenPort)
+}
+
+func (c *Config) resolveRuntimeTool(configured, defaultPath string) string {
+	resolved := c.Resolve(configured)
+	if filepath.Clean(configured) != filepath.Clean(defaultPath) {
+		return resolved
+	}
+	if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
+		return resolved
+	}
+	resourceRoot := filepath.Clean(filepath.Join(c.BaseDir, "..", "..", "resources", "tools"))
+	if info, err := os.Stat(resourceRoot); err != nil || !info.IsDir() {
+		return resolved
+	}
+	relative := strings.TrimPrefix(filepath.ToSlash(defaultPath), "./tools/windows-x64/")
+	return filepath.Clean(filepath.Join(resourceRoot, "windows-x64", filepath.FromSlash(relative)))
 }

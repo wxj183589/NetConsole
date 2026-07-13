@@ -42,7 +42,7 @@ def discover_fping(root: Path | None = None, env: dict[str, str] | None = None) 
             return check
         if check.error:
             return check
-    return FpingAvailability(False, error="未找到 tools/windows-x64/fping/fping.exe")
+    return FpingAvailability(False, error="未找到 resources/tools/windows-x64/fping/fping.exe 或发布包内 tools/windows-x64/fping/fping.exe")
 
 
 def scan_targets(
@@ -182,9 +182,15 @@ def _candidate_paths(root: Path | None, env: dict[str, str]) -> list[Path]:
     project_root = Path(root).resolve() if root else None
     if project_root is not None:
         candidates = ([Path(env_path)] if env_path else []) + [
-            project_root / "tools" / "windows-x64" / "fping" / "fping.exe",
-            project_root / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe",
+            project_root / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe",
         ]
+        if (project_root / "_internal").is_dir():
+            candidates.extend(
+                [
+                    project_root / "tools" / "windows-x64" / "fping" / "fping.exe",
+                    project_root / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe",
+                ]
+            )
     else:
         candidates = candidate_tool_paths("fping", PathResolver(), custom_path=env_path or None)
     unique: list[Path] = []

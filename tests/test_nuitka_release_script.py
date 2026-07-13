@@ -145,7 +145,7 @@ def test_release_tool_copy_uses_allowlist_and_never_copies_ipop(tmp_path: Path) 
     from scripts.build.build_config import BuildConfig
     from scripts.build.build_release import copy_release_tools
 
-    tools = tmp_path / "tools"
+    tools = tmp_path / "resources" / "tools"
     for relative in ("windows-x64/fping/fping.exe", "windows-x64/iperf3/iperf3.exe", "windows-x64/ipop/IPOP.EXE"):
         path = tools / relative
         path.parent.mkdir(parents=True, exist_ok=True)

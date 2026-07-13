@@ -35,7 +35,7 @@ scripts/build/release.py
 apps\agent\scripts\build_windows.bat
 ```
 
-输出为 `apps/agent/dist/netconsole-agent-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并复制 sidecar、fping/iPerf 工具。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，Agent 不携带或检测 IPOP。
+输出为 `apps/agent/dist/netconsole-agent-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并从 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制工具到交付包内的 `tools/windows-x64/`。Agent 的 `config.json`、`targets.json`、Web 静态资源和运行目录契约见 [独立 Agent](AGENT.md)；运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，Agent 不携带或检测 IPOP。
 
 当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 Agent 运行数据打入发布包。
 
@@ -44,15 +44,15 @@ apps\agent\scripts\build_windows.bat
 构建前会检查工具源文件。当前 `scripts/build/build_config.py` 要求：
 
 ```text
-tools/windows-x64/fping/fping.exe
-tools/windows-x64/fping/cygwin1.dll
-tools/windows-x64/iperf3/iperf3.exe
+resources/tools/windows-x64/fping/fping.exe
+resources/tools/windows-x64/fping/cygwin1.dll
+resources/tools/windows-x64/iperf3/iperf3.exe
 docs/IPOP_v4.1_notice.md
 ```
 
 运行时工具路径由统一解析器处理，不依赖当前工作目录。IPOP 是用户自行提供的可选外部工具，配置保存在现有 `settings.json` 的 `external_tools/ipop_path` 键；有效配置优先，未配置时可检查 `<应用目录>/tools/windows-x64/ipop/IPOP.EXE`。启动使用 Qt `QProcess.startDetached`，不拼接 shell 命令，也不等待该外部程序退出。
 
-仓库没有可核验的 IPOP 再分发许可。PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。发布脚本只白名单复制 `tools/windows-x64/fping` 和 `tools/windows-x64/iperf3`；最终目录或 ZIP 检测到 IPOP 时以“检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。”中止，不删除开发机上的本地文件。详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
+仓库没有可核验的 IPOP 再分发许可。PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。发布脚本只从 `resources/tools/windows-x64/fping` 和 `resources/tools/windows-x64/iperf3` 白名单复制到包内 `tools/windows-x64/`；最终目录或 ZIP 检测到 IPOP 时以“检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。”中止，不删除开发机上的本地文件。详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
 
 ## 发布目录约束
 

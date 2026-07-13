@@ -21,7 +21,7 @@ cd apps\agent
 scripts\build_windows.bat
 ```
 
-输出：`apps/agent/dist/netconsole-agent-windows-x64/`，同时生成 console 版和 Windows 托盘版。构建脚本会先尝试构建 MR Collector，再执行 `go mod tidy`、`go test ./...`。
+输出：`apps/agent/dist/netconsole-agent-windows-x64/`，同时生成 console 版和 Windows 托盘版。构建脚本会先尝试构建 MR Collector，再执行 `go mod tidy`、`go test ./...`；fping/iPerf 只从仓库根 `resources/tools/windows-x64/` 白名单复制，不从 Agent 子目录或根 `tools/` 复制。
 
 构建脚本优先使用 PATH 中的 `go.exe`；若未加入 PATH，会回退到 `D:\Program Files\Go\bin\go.exe`。Go 的模块缓存和编译缓存默认位于用户目录并由不同项目共享，不应复制到 `apps/agent/` 或提交仓库。
 
@@ -105,6 +105,8 @@ tools/windows-x64/
 ```
 
 不再支持 `apps/agent/tools/iperf/` 等旧目录，也不做 legacy fallback。使用 Cygwin 版工具时，exe 和对应 DLL 必须位于同一个工具目录；Agent 启动子进程时会把工作目录设置为 exe 所在目录。缺少 exe 或 DLL 时不会创建伪运行任务，API 和 Web 会给出当前配置路径及放置提示。
+
+源码态从 `apps/agent` 启动且交付目录尚未生成时，默认工具路径会解析到仓库的 `resources/tools/windows-x64/`；打包态优先使用可执行文件旁的 `tools/windows-x64/`。这只是源码来源与交付位置的区分，不会重新引入 `apps/agent/tools/`。
 
 真实 fping 使用独立 `fping` 任务类型，固定调用随 Agent 部署的 fping 5.5 参数，不接受任意命令、工具路径或输出路径。`ping_probe` 继续使用并发 TCP Connect，事件保持 `mode=tcp`，不等同于 ICMP Ping。
 

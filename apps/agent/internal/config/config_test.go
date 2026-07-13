@@ -21,3 +21,23 @@ func TestLoadAppliesStandardToolPaths(t *testing.T) {
 		t.Fatalf("unexpected defaults: %#v", cfg.Tools)
 	}
 }
+
+func TestDefaultTrafficToolsResolveFromRepositoryResourcesInSourceMode(t *testing.T) {
+	root := t.TempDir()
+	agentRoot := filepath.Join(root, "apps", "agent")
+	fping := filepath.Join(root, "resources", "tools", "windows-x64", "fping", "fping.exe")
+	if err := os.MkdirAll(filepath.Dir(fping), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fping, []byte("tool"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		BaseDir: agentRoot,
+	}
+	cfg.Tools.FpingWindowsX64 = DefaultFpingWindowsX64
+
+	if got := cfg.FpingPath(); got != fping {
+		t.Fatalf("source-mode fping path = %q, want %q", got, fping)
+	}
+}

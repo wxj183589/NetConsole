@@ -16,6 +16,7 @@ exit /b 1
 
 :go_found
 set "VERSION=0.2.0-win-agent"
+set "TOOL_SOURCE=%ROOT%\..\..\resources\tools\windows-x64"
 if exist "dist" rmdir /s /q "dist"
 mkdir "dist" || exit /b 1
 mkdir "%DELIVERY%" || exit /b 1
@@ -53,7 +54,17 @@ copy /y "config.json" "%DELIVERY%\config.json" >nul || exit /b 1
 copy /y "targets.json" "%DELIVERY%\targets.json" >nul || exit /b 1
 copy /y "README.md" "%DELIVERY%\README.md" >nul || exit /b 1
 mkdir "%DELIVERY%\tools\windows-x64" 2>nul
-for %%T in (iperf3 fping mr_collector) do if exist "tools\windows-x64\%%T" xcopy /e /i /y "tools\windows-x64\%%T" "%DELIVERY%\tools\windows-x64\%%T\" >nul
+for %%T in (iperf3 fping) do (
+  if not exist "%TOOL_SOURCE%\%%T" (
+    echo [ERROR] Runtime tool source is missing: %TOOL_SOURCE%\%%T
+    exit /b 1
+  )
+  xcopy /e /i /y "%TOOL_SOURCE%\%%T" "%DELIVERY%\tools\windows-x64\%%T\" >nul || exit /b 1
+)
+if exist "%ROOT%\mr_collector_py\dist\netconsole-mr-collector.exe" (
+  mkdir "%DELIVERY%\tools\windows-x64\mr_collector" 2>nul
+  copy /y "%ROOT%\mr_collector_py\dist\netconsole-mr-collector.exe" "%DELIVERY%\tools\windows-x64\mr_collector\netconsole-mr-collector.exe" >nul || exit /b 1
+)
 
 > "%DELIVERY%\start_agent.bat" (
   echo @echo off

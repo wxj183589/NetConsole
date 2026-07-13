@@ -40,10 +40,10 @@ apps/       独立应用：Agent、Desktop Web Shell、Web 前端
 src/        可安装的 Python 包（src/netconsole）
 config/     开发和构建配置模板（含 feature profiles）
 docs/       项目文档和长期工程规则
-resources/  版本化静态资源、命令参考和 MIB 归档
+resources/  版本化静态资源、命令参考、MIB 归档和随包运行工具
 scripts/    build、dev、maintenance 脚本
 tests/      自动化测试和脱敏 fixtures
-tools/      独立开发/诊断工具及允许打包的运行工具
+tools/      独立开发、诊断、维护和协议分析工具，不作为运行时工具来源
 ```
 
 根目录只保留项目级配置、说明、许可证、`main.py` 兼容入口和上述白名单目录。完整规则见 [仓库目录规范](docs/development/repository-layout.md)。
@@ -121,7 +121,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 - 开发运行数据默认位于 `.local/data/` 和 `.local/runtime/`；打包程序优先使用 `%LOCALAPPDATA%\NetConsole\`，不会依赖当前工作目录。
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
 - H3C 私有 MIB 不随仓库分发，需由用户导入合法取得的官方归档或参考资料。
-- 主程序和 Agent 的 Windows x64 工具目录统一命名为 `tools/windows-x64/{fping,iperf3,ipop}`；IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。
+- `resources/tools/` 是主程序和 Agent 随包运行工具的唯一源码来源；构建后交付包内统一使用 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 不再保存 fping/iPerf 运行依赖，IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。
 - 发布包必须保留 `_internal`、`data`、`runtime` 目录，以及 PySide6、网络工具和 VC++ 运行库等运行依赖；这些目录是发布包内部契约，不代表开发数据写入源码仓库。
 - 构建入口、版本来源、外部工具和 Windows 验证要求见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
 

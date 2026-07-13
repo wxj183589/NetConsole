@@ -1715,8 +1715,8 @@ def test_run_forever_does_not_create_second_session_after_explicit_start(tmp_pat
     assert [path.name for path in sessions] == [meta.session_id]
 
 
-def test_fping_tool_discovery_from_project_tools(tmp_path: Path) -> None:
-    exe = tmp_path / "tools" / "windows-x64" / "fping" / "fping.exe"
+def test_fping_tool_discovery_from_project_resources(tmp_path: Path) -> None:
+    exe = tmp_path / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe"
     exe.parent.mkdir(parents=True)
     exe.write_text("fake", encoding="utf-8")
     (exe.parent / "cygwin1.dll").write_text("fake", encoding="utf-8")

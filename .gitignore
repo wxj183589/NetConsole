@@ -52,10 +52,8 @@ apps/agent/packages/
 apps/agent/dist/
 apps/agent/mr_collector_py/build/
 apps/agent/mr_collector_py/dist/
-apps/agent/tools/windows-x64/iperf3/*.exe
-apps/agent/tools/windows-x64/iperf3/*.dll
-apps/agent/tools/windows-x64/fping/*.exe
-apps/agent/tools/windows-x64/fping/*.dll
+apps/agent/tmp/
+apps/agent/tools/
 
 # Generated archives and packages; versioned MIB archives remain allowed.
 *.zip

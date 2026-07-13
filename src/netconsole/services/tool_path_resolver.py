@@ -142,16 +142,17 @@ def candidate_tool_paths(
                 candidates.append(Path(value))
 
     app_root = paths.app_root
-    for tools_root in _platform_tool_roots(app_root):
+    for tools_root in _platform_tool_roots(app_root, definition):
         candidates.append(tools_root / definition.relative_path)
 
     if not _is_compiled_runtime():
         development_root = project_root or _development_project_root(app_root)
-        candidates.append(development_root / "tools" / platform_tools_dir_name() / definition.relative_path)
+        source_root = development_root / "tools" if definition is TOOL_DEFINITIONS["ipop"] else development_root / "resources" / "tools"
+        candidates.append(source_root / platform_tools_dir_name() / definition.relative_path)
     return _deduplicate_paths(candidates)
 
 
-def _platform_tool_roots(app_root: Path) -> Iterable[Path]:
+def _platform_tool_roots(app_root: Path, definition: ToolDefinition) -> Iterable[Path]:
     platform_dir = platform_tools_dir_name()
     yield app_root / "tools" / platform_dir
     yield app_root / "_internal" / "tools" / platform_dir
@@ -183,7 +184,7 @@ def _source_project_root() -> Path:
 
 
 def _development_project_root(app_root: Path) -> Path:
-    if (app_root / "tools").exists() or (app_root / "src" / "netconsole").exists():
+    if (app_root / "resources" / "tools").exists() or (app_root / "src" / "netconsole").exists():
         return app_root
     return _source_project_root()
 

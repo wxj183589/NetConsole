@@ -22,8 +22,8 @@ def _write_tool(path: Path) -> Path:
 
 
 def test_resolver_finds_development_tools_from_project_root(tmp_path: Path) -> None:
-    fping = _write_tool(tmp_path / "tools" / "windows-x64" / "fping" / "fping.exe")
-    iperf = _write_tool(tmp_path / "tools" / "windows-x64" / "iperf3" / "iperf3.exe")
+    fping = _write_tool(tmp_path / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe")
+    iperf = _write_tool(tmp_path / "resources" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe")
     paths = PathResolver(tmp_path)
 
     assert resolve_tool_path("fping", paths, project_root=tmp_path) == fping.resolve()
@@ -98,7 +98,7 @@ def test_resolver_candidate_order_contains_packaged_and_development_paths(tmp_pa
 
     assert normalized[0].endswith("NetConsole/tools/windows-x64/fping/fping.exe")
     assert normalized[1].endswith("NetConsole/_internal/tools/windows-x64/fping/fping.exe")
-    assert any(path.endswith("project_root/tools/windows-x64/fping/fping.exe") for path in normalized)
+    assert any(path.endswith("project_root/resources/tools/windows-x64/fping/fping.exe") for path in normalized)
 
 
 def test_resolver_finds_nuitka_onefile_extracted_tools(tmp_path: Path, monkeypatch) -> None:

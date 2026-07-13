@@ -8,7 +8,5 @@ if errorlevel 1 (
   exit /b 1
 )
 pyinstaller --clean --onefile --name netconsole-mr-collector collector_cli.py || exit /b 1
-mkdir "..\tools\windows-x64\mr_collector" 2>nul
-copy /y "dist\netconsole-mr-collector.exe" "..\tools\windows-x64\mr_collector\netconsole-mr-collector.exe" >nul || exit /b 1
-echo Built: ..\tools\windows-x64\mr_collector\netconsole-mr-collector.exe
+echo Built: %~dp0dist\netconsole-mr-collector.exe
 endlocal

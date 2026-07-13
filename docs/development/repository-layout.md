@@ -92,7 +92,7 @@ NetConsole/
 
 ## 9. 构建产物规则
 
-`build/`、`dist/`、旧 `release/`、PyInstaller/Nuitka 临时目录、`*.spec`、安装包、ZIP、前端构建产物、Python/Go 缓存和本地 Agent 运行目录均不得提交。`resources/builtin_mibs` 中明确版本化的 MIB ZIP，以及 `tools/windows-x64/fping`、`tools/windows-x64/iperf3` 中现有允许打包的运行依赖是已审计例外；IPOP 始终不进入发布包。
+`build/`、`dist/`、旧 `release/`、PyInstaller/Nuitka 临时目录、`*.spec`、安装包、ZIP、前端构建产物、Python/Go 缓存和本地 Agent 运行目录均不得提交。`resources/builtin_mibs` 中明确版本化的 MIB ZIP，以及 `resources/tools/windows-x64/{fping,iperf3}` 中已记录来源与许可证的运行依赖是已审计例外；构建后才复制为交付包内的 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 只用于开发、诊断、维护和协议分析，`apps/agent/tools/` 禁止作为运行时工具来源；IPOP 始终不进入发布包。
 
 ## 10. 新增文件检查表
 

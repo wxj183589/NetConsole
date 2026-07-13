@@ -26,7 +26,7 @@ import sqlite3
 
 
 def test_fping_v5_path_resolution_requires_exe_and_cygwin(tmp_path: Path) -> None:
-    tools = tmp_path / "tools" / "windows-x64" / "fping"
+    tools = tmp_path / "resources" / "tools" / "windows-x64" / "fping"
     tools.mkdir(parents=True)
     exe = tools / "fping.exe"
     exe.write_text("fake", encoding="utf-8")
@@ -50,7 +50,7 @@ def test_fping_v5_check_reports_missing_executable(tmp_path: Path) -> None:
 
 
 def test_fping_v5_check_detects_json_support(tmp_path: Path, monkeypatch) -> None:
-    tools = tmp_path / "tools" / "windows-x64" / "fping"
+    tools = tmp_path / "resources" / "tools" / "windows-x64" / "fping"
     tools.mkdir(parents=True)
     (tools / "fping.exe").write_text("fake", encoding="utf-8")
     (tools / "cygwin1.dll").write_text("fake", encoding="utf-8")
