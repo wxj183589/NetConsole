@@ -119,10 +119,10 @@ async def task_events_socket(websocket: WebSocket) -> None:
                     continue
                 await websocket.send_json(event)
             heartbeat += 1
-            if heartbeat >= 20:
+            if heartbeat >= 4:
                 heartbeat = 0
                 await websocket.send_json({"type": "heartbeat"})
-    except (WebSocketDisconnect, RuntimeError):
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
         return
     finally:
         subscription.close()

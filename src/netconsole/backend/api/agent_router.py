@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
@@ -96,12 +97,12 @@ async def agent_events(websocket: WebSocket) -> None:
     try:
         await websocket.send_json({"type": "snapshot", "agents": service.list_agents()})
         while True:
-            event = await service.events.next_event(subscription)
+            event = await service.events.next_event(subscription, timeout=2.0)
             if event is None:
                 await websocket.send_json({"type": "heartbeat"})
             else:
                 await websocket.send_json(AgentEventDTO.model_validate(event).model_dump(mode="json"))
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
         subscription.close()

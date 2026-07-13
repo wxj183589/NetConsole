@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面；阶段 4D 已稳定 Qt Web Shell 的启动、失败提示、外链和退出生命周期。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -142,4 +142,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，并继续复用阶段 4B-2 的应用服务与数据边界。下一阶段计划推进 Online MR，之后再依次处理 MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，并继续复用阶段 4B-2 的应用服务与数据边界；阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。下一阶段先执行 Online MR 阶段 5A 只读审计，之后再按应用服务、API、Web 页面和 Traffic 子任务联动逐步推进。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。

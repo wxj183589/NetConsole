@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，但尚未接入 MR、设备、AC、SNMP 等其他 Web 业务页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化，但尚未接入 MR、设备、AC、SNMP 等其他 Web 业务页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -117,6 +117,15 @@ flowchart TD
 - Vue 新增“网络工具 / 流量测试”页面，包含三类表单、执行端选择、实时状态、ECharts RTT 曲线、日志、历史任务、停止和原配置重试；
 - 继续不修改 Online MR、原 Qt iPerf/Ping、Agent 协议、设备、AC、FIT-AP、MESH、SNMP Center 或无线勘测。
 
+阶段 4D 已完成：
+
+- Qt Web Shell 启动期间先显示本地状态页，再以 Qt 定时器等待 FastAPI，避免同步探测阻塞 UI；服务失败或超时显示可重试页面，不再白屏；
+- Qt 退出前先卸载 Vue 页面和 WebSocket，再停止 Uvicorn；正常关闭和 `Ctrl+C` 后均不残留 Web Shell Python、FastAPI 或 QtWebEngine 进程；
+- Vue 外部链接交给系统浏览器，JavaScript error/warning 写入应用日志；WebEngine 默认上下文菜单关闭；
+- Desktop Web Shell 与 Server Mode 均验证 `/`、`/tasks`、`/agents` 和 `/network-tools/traffic`；普通 Qt 启动继续不监听 FastAPI 端口；
+- 不新增 QWebChannel 业务桥接。文件选择、目录选择、打开目录、外部程序和通知仍是后续受控 Native Bridge 范围；
+- 离屏冒烟覆盖 100%/125%/150% 缩放和 1280×720、1920×1080、2560×1440。该验证确认路由、DOM、构建和关闭链路，不代替 Windows 实机上的字体、表格、图表和滚动人工观察。
+
 仍未实现：
 
 - MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；
@@ -181,4 +190,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段计划进入 Online MR，但阶段 4C 收口期间不提前实施；后续仍必须复用现有 Python Core、Job Center、Agent Controller 和 Traffic API 边界。SNMP Center 和无线勘测继续冻结，除非收到独立任务。
+下一阶段计划进入 Online MR，只先执行阶段 5A 只读审计，不直接迁移大页面；后续仍必须复用现有 Python Core、Job Center、Agent Controller 和 Traffic API 边界。SNMP Center 和无线勘测继续冻结，除非收到独立任务。

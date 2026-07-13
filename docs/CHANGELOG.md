@@ -4,6 +4,7 @@
 
 ### 本次修复
 
+- 完成 Web 演进阶段 4D：Qt Web Shell 改为非阻塞等待本地 FastAPI，增加启动/失败重试页、外链系统浏览器跳转、JavaScript 日志和退出前 WebSocket 卸载；关闭后不残留 Uvicorn/Python/QtWebEngine 进程，普通 Qt 入口继续不依赖 FastAPI 或 Node。
 - 修复轨旁 AP 业务详情联表数据含嵌套字典时的显示文本提取异常，避免该详情页在归一化展示值时触发 `TypeError`。
 - Agent 发布工具统一从 `resources/tools/windows-x64/` 取用 fping/iPerf3，交付包只复制 Agent 所需工具；IPOP 不再作为 Agent 运行依赖。
 - 完成 Web 演进阶段 4C：新增 Traffic REST API、按 Run 订阅的 `/ws/traffic/{traffic_run_id}` 和 Vue“网络工具 / 流量测试”页面，支持 iPerf Server、iPerf Client、高频 Ping、实时带宽/RTT 图、日志、历史、停止和原配置重试；高频样本继续不进入全局 `/ws/tasks`。
