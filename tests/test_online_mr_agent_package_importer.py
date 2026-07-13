@@ -60,6 +60,8 @@ def _write_package(
     data_integrity: str = "",
     raw_marker: str = "raw evidence\n",
     manifest_status: str = "",
+    session_meta_overrides: dict[str, object] | None = None,
+    task_overrides: dict[str, object] | None = None,
 ) -> Path:
     omit = omit or set()
     prefix = f"{session_id}_{MR_NAME}_agent/" if root else ""
@@ -122,6 +124,8 @@ def _write_package(
         },
         "stop_reason.json": {"reason": stop_reason or "running"},
     }
+    documents["session_meta.json"].update(session_meta_overrides or {})
+    documents["task.json"].update(task_overrides or {})
     if secret_file:
         documents[secret_file][secret_key] = "plain-secret"
 
@@ -217,6 +221,164 @@ def test_same_zip_is_idempotent_without_duplicate_task_or_mapping(
         )
         == 1
     )
+
+
+def test_agent_local_identity_requires_explicit_mapping(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(
+        tmp_path / "agent-local-identity.zip",
+        session_meta_overrides={
+            "device_id": "agent-device-12",
+            "device_name": "12-MR-CT",
+            "mr_id": "agent-mr-12",
+            "mr_name": "12-MR-CT",
+        },
+    )
+
+    result = _import(OnlineMrAgentPackageImporter(paths), package)
+
+    assert not result.success
+    assert any("device_id" in error for error in result.errors)
+    assert any("mr_id" in error for error in result.errors)
+    assert not paths.site_tasks_db_path(SITE).exists()
+    assert not paths.online_mr_root(SITE).exists()
+
+
+def test_manual_identity_override_preserves_source_and_resolved_identity(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(
+        tmp_path / "agent-local-identity.zip",
+        session_meta_overrides={
+            "device_id": "agent-device-12",
+            "device_name": "12-MR-CT",
+            "mr_id": "agent-mr-12",
+            "mr_name": "12-MR-CT",
+        },
+    )
+
+    result = _import(
+        OnlineMrAgentPackageImporter(paths),
+        package,
+        identity_match_policy="manual_override",
+        allow_identity_override=True,
+    )
+
+    assert result.success and result.imported
+    assert any("手工指定" in warning for warning in result.warnings)
+    meta = json.loads(
+        (result.session_dir / "session_meta.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (result.session_dir / "import_manifest.json").read_text(encoding="utf-8")
+    )
+    mapping = OnlineMrTaskSessionRepository(
+        paths.site_tasks_db_path(SITE), site_id=SITE
+    ).get_by_task(result.task_id)
+    assert meta["device_id"] == DEVICE_ID
+    assert meta["mr_id"] == MR_ID
+    assert manifest["identity"]["match_method"] == "manual_override"
+    assert manifest["identity"]["source"] == {
+        "site_id": SITE,
+        "device_id": "agent-device-12",
+        "device_name": "12-MR-CT",
+        "mr_id": "agent-mr-12",
+        "mr_name": "12-MR-CT",
+        "host": "",
+        "agent_task_id": "agent-task-1",
+        "session_id": "agent-session-1",
+    }
+    assert manifest["identity"]["resolved"]["device_id"] == str(DEVICE_ID)
+    assert manifest["identity"]["resolved"]["device_name"] == DEVICE_NAME
+    assert meta["import_context"]["match_method"] == "manual_override"
+    assert mapping is not None
+    assert mapping.device_id == str(DEVICE_ID)
+    assert mapping.mr_id == MR_ID
+    assert not paths.site_tasks_db_path("demo").exists()
+
+
+def test_ip_match_allows_temporary_agent_identity(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(
+        tmp_path / "agent-ip-match.zip",
+        session_meta_overrides={
+            "device_id": "agent-device-12",
+            "device_name": "12-MR-CT",
+            "mr_id": "agent-mr-12",
+            "mr_name": "12-MR-CT",
+            "target_host": "192.0.2.12",
+        },
+    )
+
+    result = _import(
+        OnlineMrAgentPackageImporter(paths),
+        package,
+        identity_match_policy="ip_match",
+        expected_host="192.0.2.12",
+    )
+
+    assert result.success and result.imported
+    assert any("按 IP 匹配" in warning for warning in result.warnings)
+    manifest = json.loads(
+        (result.session_dir / "import_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["identity"]["match_method"] == "ip_match"
+    assert manifest["identity"]["source"]["host"] == "192.0.2.12"
+    assert manifest["identity"]["resolved"]["host"] == "192.0.2.12"
+
+
+@pytest.mark.parametrize("source_host", ["", "192.0.2.13"])
+def test_ip_match_rejects_missing_or_different_host(
+    tmp_path: Path, source_host: str
+) -> None:
+    paths = _paths(tmp_path)
+    overrides: dict[str, object] = {
+        "device_id": "agent-device-12",
+        "device_name": "12-MR-CT",
+        "mr_id": "agent-mr-12",
+        "mr_name": "12-MR-CT",
+    }
+    if source_host:
+        overrides["target_host"] = source_host
+    package = _write_package(
+        tmp_path / "agent-ip-mismatch.zip",
+        session_meta_overrides=overrides,
+    )
+
+    result = _import(
+        OnlineMrAgentPackageImporter(paths),
+        package,
+        identity_match_policy="ip_match",
+        expected_host="192.0.2.12",
+    )
+
+    assert not result.success
+    assert any("IP" in error for error in result.errors)
+    assert not paths.site_tasks_db_path(SITE).exists()
+
+
+def test_manual_override_requires_explicit_permission(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(
+        tmp_path / "agent-manual-denied.zip",
+        session_meta_overrides={
+            "device_id": "agent-device-12",
+            "device_name": "12-MR-CT",
+            "mr_id": "agent-mr-12",
+            "mr_name": "12-MR-CT",
+        },
+    )
+
+    result = _import(
+        OnlineMrAgentPackageImporter(paths),
+        package,
+        identity_match_policy="manual_override",
+    )
+
+    assert not result.success
+    assert any("allow_identity_override" in error for error in result.errors)
+    assert not paths.site_tasks_db_path(SITE).exists()
 
 
 def test_idempotent_import_rejects_incomplete_task_registration(tmp_path: Path) -> None:
@@ -366,6 +528,18 @@ def test_rejects_non_empty_secret_in_public_metadata(
 
     assert not result.success
     assert any("敏感字段" in error for error in result.errors)
+
+
+def test_accepts_agent_masked_password_placeholder(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(
+        tmp_path / "masked-password.zip",
+        task_overrides={"params": {"target": {"password": "******"}}},
+    )
+
+    result = _import(OnlineMrAgentPackageImporter(paths), package)
+
+    assert result.success and result.imported
 
 
 def test_rejects_private_absolute_path_in_session_meta(tmp_path: Path) -> None:

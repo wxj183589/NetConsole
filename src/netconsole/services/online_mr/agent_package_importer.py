@@ -47,6 +47,7 @@ _PUBLIC_JSON_FILES = {
     "stop_reason.json",
     "system_info.json",
     "task.json",
+    "target_snapshot.json",
 }
 _ACTIVE_AGENT_STATES = {
     OnlineMrAgentStatus.CREATED,
@@ -96,6 +97,15 @@ class _InspectedPackage:
     result: OnlineMrAgentPackageInspectResult
     members: dict[str, str]
     documents: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _IdentityResolution:
+    match_method: str
+    source: dict[str, str]
+    resolved: dict[str, str]
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
 
 
 class OnlineMrAgentPackageImporter:
@@ -154,6 +164,9 @@ class OnlineMrAgentPackageImporter:
         agent_task_id: str | None = None,
         expected_session_id: str | None = None,
         import_mode: str = "strict",
+        identity_match_policy: str = "strict",
+        expected_host: str = "",
+        allow_identity_override: bool = False,
         agent_id: str = "",
     ) -> OnlineMrAgentPackageImportResult:
         source = Path(zip_path)
@@ -204,18 +217,21 @@ class OnlineMrAgentPackageImporter:
         except ValueError as exc:
             return self._import_result(inspected.result, errors=(str(exc),))
 
-        identity_errors, identity_warnings = self._validate_identity(
-            inspected.documents["session_meta.json"],
+        identity = self._resolve_identity(
+            inspected.documents,
             site_id=site,
             site_name=site_name,
             device_id=device_id,
             device_name=device_name,
             mr_id=mr_id,
             mr_name=mr_name,
+            identity_match_policy=identity_match_policy,
+            expected_host=expected_host,
+            allow_identity_override=allow_identity_override,
         )
-        if identity_errors:
+        if identity.errors:
             return self._import_result(
-                inspected.result, errors=identity_errors, warnings=identity_warnings
+                inspected.result, errors=identity.errors, warnings=identity.warnings
             )
 
         existing = self._existing_session(site, session_id)
@@ -226,13 +242,13 @@ class OnlineMrAgentPackageImporter:
                     inspected.result,
                     selected_task_id,
                     site,
-                    warnings=identity_warnings,
+                    warnings=identity.warnings,
                 )
             return self._import_result(
                 inspected.result,
                 status="conflict",
                 conflict=True,
-                warnings=identity_warnings,
+                warnings=identity.warnings,
                 errors=("同一局点已有相同 session_id 的其他会话目录",),
                 session_dir=existing,
             )
@@ -268,7 +284,7 @@ class OnlineMrAgentPackageImporter:
                 inspected.result,
                 status="conflict",
                 conflict=True,
-                warnings=identity_warnings,
+                warnings=identity.warnings,
                 errors=("目标 Task 或 Session 映射已存在",),
             )
 
@@ -281,7 +297,7 @@ class OnlineMrAgentPackageImporter:
         self._require_within(imports_root, self.paths.site_dir(site).resolve())
         self._require_within(staging_root, imports_root)
         warnings = tuple(
-            dict.fromkeys((*inspected.result.warnings, *identity_warnings))
+            dict.fromkeys((*inspected.result.warnings, *identity.warnings))
         )
         target_committed = False
         mapping_created = False
@@ -306,6 +322,12 @@ class OnlineMrAgentPackageImporter:
             now = utc_now_iso()
             documents = inspected.documents
             session_meta = dict(documents["session_meta.json"])
+            source_identity = {
+                **identity.source,
+                "agent_task_id": selected_agent_task_id,
+                "session_id": session_id,
+            }
+            resolved_identity = dict(identity.resolved)
             package_status = OnlineMrAgentStatus(inspected.result.package_status)
             data_integrity = inspected.result.data_integrity
             task_state, session_status, force_stopped = self._terminal_states(
@@ -356,6 +378,13 @@ class OnlineMrAgentPackageImporter:
                     "owner": owner,
                     "raw_log_path": "raw/collector_output_raw.log",
                     "finalization_warnings": list(warnings),
+                    "import_context": {
+                        "executor": OnlineMrExecutorKind.AGENT.value,
+                        "match_method": identity.match_method,
+                        "source": source_identity,
+                        "resolved": resolved_identity,
+                        "warnings": list(identity.warnings),
+                    },
                 }
             )
             self._write_json_atomic(staging_session / "session_meta.json", session_meta)
@@ -371,6 +400,12 @@ class OnlineMrAgentPackageImporter:
                 "device_name": device_name,
                 "mr_id": str(mr_id or session_meta.get("mr_id") or ""),
                 "mr_name": mr_name,
+                "identity": {
+                    "match_method": identity.match_method,
+                    "source": source_identity,
+                    "resolved": resolved_identity,
+                    "warnings": list(identity.warnings),
+                },
                 "agent_id": selected_agent_id,
                 "agent_task_id": selected_agent_task_id,
                 "controller_task_id": selected_task_id,
@@ -933,9 +968,9 @@ class OnlineMrAgentPackageImporter:
         return calculate_duration_minutes(started_at, ended_at)
 
     @classmethod
-    def _validate_identity(
+    def _resolve_identity(
         cls,
-        meta: dict[str, Any],
+        documents: dict[str, dict[str, Any]],
         *,
         site_id: str,
         site_name: str,
@@ -943,27 +978,121 @@ class OnlineMrAgentPackageImporter:
         device_name: str,
         mr_id: str,
         mr_name: str,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        identity_match_policy: str,
+        expected_host: str,
+        allow_identity_override: bool,
+    ) -> _IdentityResolution:
+        policy = str(identity_match_policy or "strict").strip().lower()
+        meta = documents.get("session_meta.json", {})
+        source = {
+            "site_id": cls._text(meta.get("site") or meta.get("site_id")),
+            "device_id": cls._text(meta.get("device_id")),
+            "device_name": cls._text(meta.get("device_name")),
+            "mr_id": cls._text(meta.get("mr_id")),
+            "mr_name": cls._text(meta.get("mr_name")),
+            "host": cls._extract_source_host(documents),
+        }
+        resolved = {
+            "site_id": str(site_id),
+            "site_name": str(site_name or site_id),
+            "device_id": str(device_id),
+            "device_name": str(device_name),
+            "mr_id": str(mr_id or ""),
+            "mr_name": str(mr_name),
+            "host": str(expected_host or "").strip(),
+        }
         errors: list[str] = []
         warnings: list[str] = []
-        package_site = cls._text(meta.get("site") or meta.get("site_id"))
+        if policy not in {"strict", "ip_match", "manual_override"}:
+            errors.append(
+                "identity_match_policy 只支持 strict、ip_match 或 manual_override"
+            )
+        package_site = source["site_id"]
         if package_site and package_site not in {site_id, site_name or site_id}:
             errors.append("Agent package 局点与目标局点不一致")
-        package_device_id = cls._text(meta.get("device_id"))
-        if package_device_id and package_device_id != str(device_id):
-            errors.append("Agent package device_id 与导入目标不一致")
-        package_mr_id = cls._text(meta.get("mr_id"))
-        if mr_id and package_mr_id and package_mr_id != str(mr_id):
-            errors.append("Agent package mr_id 与导入目标不一致")
-        if cls._text(meta.get("device_name")) not in {"", device_name}:
-            warnings.append(
-                "Agent package device_name 与 Controller 名称不同，已使用 Controller 名称"
+        comparisons = (
+            ("device_id", source["device_id"], resolved["device_id"]),
+            ("device_name", source["device_name"], resolved["device_name"]),
+            ("mr_name", source["mr_name"], resolved["mr_name"]),
+        )
+        if resolved["mr_id"]:
+            comparisons = (
+                *comparisons,
+                ("mr_id", source["mr_id"], resolved["mr_id"]),
             )
-        if cls._text(meta.get("mr_name")) not in {"", mr_name}:
-            warnings.append(
-                "Agent package mr_name 与 Controller 名称不同，已使用 Controller 名称"
-            )
-        return tuple(errors), tuple(warnings)
+        mismatches = [
+            (name, package_value, resolved_value)
+            for name, package_value, resolved_value in comparisons
+            if package_value != resolved_value
+        ]
+        match_method = "strict"
+        if not errors and mismatches:
+            if policy == "strict":
+                errors.extend(
+                    f"Agent package {name} 与导入目标不一致"
+                    for name, _package_value, _resolved_value in mismatches
+                )
+            elif policy == "ip_match":
+                source_host = cls._normalized_host(source["host"])
+                target_host = cls._normalized_host(expected_host)
+                if not source_host:
+                    errors.append("Agent package 未提供采集目标 IP，无法按 IP 匹配")
+                elif not target_host:
+                    errors.append("未提供 expected_host，无法按 IP 匹配")
+                elif source_host != target_host:
+                    errors.append("Agent package 采集目标 IP 与 expected_host 不一致")
+                else:
+                    match_method = "ip_match"
+                    warnings.append(
+                        "Agent 包内设备身份与本地设备身份不一致，已按 IP 匹配导入"
+                    )
+            elif not allow_identity_override:
+                errors.append("manual_override 必须显式设置 allow_identity_override")
+            else:
+                match_method = "manual_override"
+                warnings.append(
+                    "Agent 包内设备身份与本地设备身份不一致，已按手工指定目标导入"
+                )
+                if not source["host"]:
+                    warnings.append("Agent 包未提供采集目标 IP，已按手工覆盖导入")
+        return _IdentityResolution(
+            match_method=match_method,
+            source=source,
+            resolved=resolved,
+            warnings=tuple(dict.fromkeys(warnings)),
+            errors=tuple(dict.fromkeys(errors)),
+        )
+
+    @classmethod
+    def _extract_source_host(cls, documents: dict[str, dict[str, Any]]) -> str:
+        meta = documents.get("session_meta.json", {})
+        task = documents.get("task.json", {})
+        target = documents.get("target_snapshot.json", {})
+        candidates = (
+            cls._text(meta.get("host")),
+            cls._nested_text(meta, "target", "host"),
+            cls._text(meta.get("device_host")),
+            cls._text(meta.get("target_host")),
+            cls._text(target.get("host")),
+            cls._nested_text(task, "target", "host"),
+            cls._text(task.get("host")),
+            cls._nested_text(task, "request", "target", "host"),
+            cls._nested_text(task, "params", "target", "host"),
+        )
+        return next((value for value in candidates if value), "")
+
+    @classmethod
+    def _nested_text(cls, value: object, *keys: str) -> str:
+        current = value
+        for key in keys:
+            if not isinstance(current, dict):
+                return ""
+            current = current.get(key)
+        return cls._text(current)
+
+    @staticmethod
+    def _normalized_host(value: object) -> str:
+        return str(value or "").strip().rstrip(".").casefold()
 
     def _existing_session(self, site_id: str, session_id: str) -> Path | None:
         root = self.paths.online_mr_root(site_id)
@@ -1075,6 +1204,8 @@ class OnlineMrAgentPackageImporter:
 
     @staticmethod
     def _has_value(value: object) -> bool:
+        if isinstance(value, str) and value.strip() == "******":
+            return False
         return value is not None and value != "" and value != [] and value != {}
 
     @classmethod

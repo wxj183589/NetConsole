@@ -227,12 +227,14 @@ files/rail_transit/online_mr/<device_name>__<device_id>/sessions/<session_id>/
 - ZIP 只允许一个外层 Session 根目录或无外层根目录；成员路径拒绝 `..`、绝对路径、Windows 盘符、UNC、空路径段、重复路径、符号链接和加密成员；
 - 必须满足 5B-6 的 `manifest/task/session_meta/agent/system/stop_reason` 与十四个 raw 文件契约；空的 `parsed/view/logs/outputs` 由 importer 补齐；
 - `stop.request`、`meta/request.private.json` 和 `.tmp` 永久禁止；
-- 公共 JSON 中 `password/credential/secret/token/private_key` 等字段只允许空值，`session_meta.json` 不允许 Agent 私有绝对路径；raw 日志不做全文敏感词扫描；
+- 公共 JSON 中 `password/credential/secret/token/private_key` 等字段只允许空值或 Agent 固定脱敏占位符 `******`，其他非空值仍按明文凭据拒绝；`session_meta.json` 不允许 Agent 私有绝对路径，raw 日志不做全文敏感词扫描；
 - 解压总文件数和声明的未压缩大小有上限，提取时再次校验目标仍位于 staging 内；校验失败不创建正式目录、Task 或 Mapping。
 
 ### 11.2 幂等、冲突与登记
 
-`import_manifest.json` 保存源文件名、SHA-256、局点/设备/MR、Agent/Controller Task、Session、终态、完整性、文件数量和总大小，不保存源文件绝对路径。相同 Session 与相同哈希再次导入返回 `already_imported`，且要求原 Task/Mapping 仍完整；相同 Session 但哈希不同、已有其他目录或映射时返回 `conflict`，默认不覆盖。
+Agent Web 的目标 ID/名称可以是现场临时值，不能直接作为 Controller 正式资产身份。Importer 区分包内 `source identity` 与调用方选择的 `resolved identity`：`strict` 要求设备 ID、设备名和 MR 身份一致；`ip_match` 在身份不同但包内采集 IP 与显式 `expected_host` 相同时允许导入；`manual_override` 只有同时显式允许覆盖时才可导入，并产生警告。FIT-AP 的 DHCP 场景不默认使用 IP 匹配。
+
+导入后的 Task、Session metadata 和 Mapping 均使用 resolved identity；原始 source identity、匹配方式和警告写入 `session_meta.json.import_context` 及 `import_manifest.json.identity`。Manifest 还保存源文件名、SHA-256、Agent/Controller Task、Session、终态、完整性、文件数量和总大小，不保存本机绝对路径。相同 Session 与相同哈希再次导入返回 `already_imported`，且要求原 Task/Mapping 仍完整；相同 Session 但哈希不同、已有其他目录或映射时返回 `conflict`，默认不覆盖。
 
 导入成功后在所属局点 `tasks.db` 写入 `source=agent` 的终态 Task 和 `executor_kind=AGENT / mapping_state=TERMINAL` 的映射；如果明确提供的 `controller_task_id` 已对应同一 AGENT 身份、设备和 Session，则更新现有 Task/Mapping，不重复创建。`stopped/completed` 映射为 `Task COMPLETED + Session STOPPED`；warning 终态保留警告；`failed` 映射为 `FAILED`；`force_stopped` 映射为 `CANCELLED + FORCED_STOPPED + data_integrity=partial`；`aborted/cancelled` 映射为取消/中止终态。默认 `strict` 拒绝 `created/starting/running/stopping` 包；显式 `partial` 只作为中止证据导入，不伪造完成态。
 
@@ -269,8 +271,13 @@ python -m scripts.maintenance.download_import_agent_online_mr_package `
   --site "<site_id>" `
   --device-id "<device_id>" `
   --device-name "<device_name>" `
-  --mr-name "<mr_name>"
+  --mr-id "<mr_id>" `
+  --mr-name "<mr_name>" `
+  --expected-host "<device_ip>" `
+  --identity-match-policy ip_match
 ```
+
+如果包内没有可核验 IP，但操作人员已经确认真实车辆，可改用 `--identity-match-policy manual_override --allow-identity-override`。脚本默认仍为 `strict`，不会因为已填写目标参数而自动放宽身份校验；输出会同时显示 Agent 包身份、本地正式身份、匹配方式和警告。
 
 脚本先查询 ping、Agent/工具状态和 package 列表，再按固定 `/api/v1/packages/<package_id>/download` 路由下载；可选列表字段缺失时显示为空或 `unknown`，不会请求返回值中的任意 URL。成功或幂等导入后输出 Controller Task、Session 和只读验收命令；冲突或无效包保留下载 ZIP，远端 package 始终保留。Token 可通过 `NETCONSOLE_AGENT_TOKEN` 提供，输出和异常摘要不回显 Token。
 
@@ -280,4 +287,4 @@ python -m scripts.maintenance.download_import_agent_online_mr_package `
 python -m scripts.maintenance.check_online_mr_session_state --task-id "<controller_task_id>"
 ```
 
-应确认所属局点 `tasks.db`、Session、`executor=AGENT` Mapping、raw、`outputs/<session_id>.zip` 和 `import_manifest.json` 一致，且没有误写 `demo/tasks.db`。当前代码仅通过 fake HTTP/临时目录定向测试，尚未完成真实 Agent 下载验收；`executor=AGENT`、远程 start/status/stop、Legacy Qt、FastAPI/Vue、自动解析和报告继续保持未启用。
+应确认所属局点 `tasks.db`、Session、`executor=AGENT` Mapping、raw、`outputs/<session_id>.zip` 和 `import_manifest.json` 一致，且没有误写 `demo/tasks.db`。阶段 5B-9A 已使用 `0.2.0-win-agent` 的真实停止态 Online MR 包完成列表、HTTP 下载、`ip_match` 身份解析、安全导入、验收与幂等复跑；`executor=AGENT`、远程 start/status/stop、Legacy Qt、FastAPI/Vue、自动解析和报告继续保持未启用。

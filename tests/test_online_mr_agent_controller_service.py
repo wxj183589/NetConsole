@@ -137,12 +137,18 @@ def test_download_import_result_is_forwarded(
             device_id="7",
             device_name="MR-07",
             mr_name="MR-07",
+            identity_match_policy="manual_override",
+            expected_host="192.0.2.12",
+            allow_identity_override=True,
         )
     )
 
     assert getattr(actual, attribute)
     assert download.calls[0][0] == "package-1"
     assert download.calls[0][1]["site_id"] == "site-a"
+    assert download.calls[0][1]["identity_match_policy"] == "manual_override"
+    assert download.calls[0][1]["expected_host"] == "192.0.2.12"
+    assert download.calls[0][1]["allow_identity_override"] is True
 
 
 def test_download_failure_does_not_call_importer(tmp_path: Path) -> None:
@@ -186,7 +192,9 @@ def test_download_failure_does_not_call_importer(tmp_path: Path) -> None:
     )
 
     assert not result.success and not result.downloaded
-    assert result.error_code == OnlineMrApplicationErrorCode.AGENT_PACKAGE_DOWNLOAD_FAILED
+    assert (
+        result.error_code == OnlineMrApplicationErrorCode.AGENT_PACKAGE_DOWNLOAD_FAILED
+    )
     assert token not in " ".join(result.errors)
 
 

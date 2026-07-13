@@ -56,6 +56,9 @@ class OnlineMrAgentControllerService:
         controller_task_id: str | None = None,
         agent_task_id: str | None = None,
         agent_id: str = "",
+        identity_match_policy: str = "strict",
+        expected_host: str = "",
+        allow_identity_override: bool = False,
     ) -> OnlineMrAgentDownloadImportResult:
         return await self.download_service.download_and_import_package(
             package_id,
@@ -70,6 +73,9 @@ class OnlineMrAgentControllerService:
             controller_task_id=controller_task_id,
             agent_task_id=agent_task_id,
             agent_id=agent_id,
+            identity_match_policy=identity_match_policy,
+            expected_host=expected_host,
+            allow_identity_override=allow_identity_override,
         )
 
 

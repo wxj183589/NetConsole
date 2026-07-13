@@ -67,6 +67,9 @@ class OnlineMrAgentDownloadService:
         agent_task_id: str | None = None,
         agent_id: str = "",
         import_mode: str = "strict",
+        identity_match_policy: str = "strict",
+        expected_host: str = "",
+        allow_identity_override: bool = False,
         keep_download_on_success: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> OnlineMrAgentDownloadImportResult:
@@ -104,6 +107,9 @@ class OnlineMrAgentDownloadService:
             agent_task_id=agent_task_id,
             expected_session_id=expected_session_id,
             import_mode=import_mode,
+            identity_match_policy=identity_match_policy,
+            expected_host=expected_host,
+            allow_identity_override=allow_identity_override,
             agent_id=agent_id,
         )
         warnings = list(imported.warnings)

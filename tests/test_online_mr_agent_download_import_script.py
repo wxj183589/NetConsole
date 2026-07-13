@@ -17,6 +17,7 @@ from scripts.maintenance import download_import_agent_online_mr_package as comma
 
 class _Controller:
     result = OnlineMrAgentDownloadImportResult(True, imported=True)
+    last_options: dict[str, object] = {}
 
     def __init__(self, *_args, **_kwargs) -> None:
         pass
@@ -52,8 +53,10 @@ class _Controller:
         )
 
     async def download_import_package(
-        self, _package_id: str, **_options: object
+        self, _package_id: str, **options: object
     ) -> OnlineMrAgentDownloadImportResult:
+        self.last_options = options
+        type(self).last_options = options
         return self.result
 
 
@@ -107,6 +110,11 @@ def test_script_downloads_imports_and_prints_acceptance_command(
             "MR-07",
             "--mr-name",
             "MR-07",
+            "--identity-match-policy",
+            "manual_override",
+            "--expected-host",
+            "192.0.2.12",
+            "--allow-identity-override",
             "--data-root",
             str(tmp_path),
         ]
@@ -117,3 +125,6 @@ def test_script_downloads_imports_and_prints_acceptance_command(
     assert "导入结果：IMPORTED" in output
     assert "controller-task-1" in output
     assert "check_online_mr_session_state" in output
+    assert _Controller.last_options["identity_match_policy"] == "manual_override"
+    assert _Controller.last_options["expected_host"] == "192.0.2.12"
+    assert _Controller.last_options["allow_identity_override"] is True

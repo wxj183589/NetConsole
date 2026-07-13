@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -37,6 +38,20 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mr-name", default="", help="MR 名称")
     parser.add_argument("--expected-session-id", default="")
     parser.add_argument("--controller-task-id", default="")
+    parser.add_argument(
+        "--identity-match-policy",
+        choices=("strict", "ip_match", "manual_override"),
+        default="strict",
+        help="Agent 来源身份与 Controller 正式身份的匹配策略",
+    )
+    parser.add_argument(
+        "--expected-host", default="", help="ip_match 使用的正式设备 IP"
+    )
+    parser.add_argument(
+        "--allow-identity-override",
+        action="store_true",
+        help="允许 manual_override 将 Agent 临时身份映射到指定正式设备",
+    )
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--max-download-bytes", type=int, default=64 * 1024**3)
@@ -104,7 +119,9 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
     selected = next((item for item in packages if item.package_id == package_id), None)
     if selected is None:
-        print("导入失败 [ONLINE_MR_AGENT_PACKAGE_NOT_READY]：包列表中不存在指定 package_id")
+        print(
+            "导入失败 [ONLINE_MR_AGENT_PACKAGE_NOT_READY]：包列表中不存在指定 package_id"
+        )
         return 2
     if selected.task_type and selected.task_type != "mr_realtime_collect":
         print("导入失败 [ONLINE_MR_AGENT_PACKAGE_INVALID]：指定包不是 Online MR 采集包")
@@ -124,6 +141,9 @@ async def _run(args: argparse.Namespace) -> int:
             controller_task_id=args.controller_task_id or None,
             agent_task_id=selected.task_id or None,
             agent_id=status.agent_id,
+            identity_match_policy=args.identity_match_policy,
+            expected_host=args.expected_host,
+            allow_identity_override=args.allow_identity_override,
         )
     except OnlineMrAgentClientError as exc:
         print(f"导入失败 [{exc.code}]：{exc.message}")
@@ -144,6 +164,30 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"- Session 目录：{result.session_dir or '-'}")
     print(f"- 下载 ZIP：{result.downloaded_path or '已清理'}")
     print(f"- 源 ZIP SHA-256：{result.source_zip_sha256 or '-'}")
+    if result.session_dir:
+        try:
+            manifest = json.loads(
+                (result.session_dir / "import_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            identity = manifest.get("identity") or {}
+            source = identity.get("source") or {}
+            resolved = identity.get("resolved") or {}
+            print(
+                "- Agent 包身份："
+                f"{source.get('device_id') or '-'} / "
+                f"{source.get('device_name') or '-'} / "
+                f"{source.get('host') or '-'}"
+            )
+            print(
+                "- 本地设备身份："
+                f"{resolved.get('device_id') or '-'} / "
+                f"{resolved.get('device_name') or '-'}"
+            )
+            print(f"- 匹配方式：{identity.get('match_method') or '-'}")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            print("- 身份追溯：import_manifest.json 无法读取")
     if result.error_code:
         print(f"- 错误码：{result.error_code}")
     for warning in result.warnings:

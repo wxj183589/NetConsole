@@ -60,7 +60,10 @@ def _client(handler, **config: object) -> OnlineMrAgentHttpClient:
 
 
 def _package_bytes(
-    *, marker: str = "raw evidence\n", session_id: str = "session-1"
+    *,
+    marker: str = "raw evidence\n",
+    session_id: str = "session-1",
+    session_meta_overrides: dict[str, object] | None = None,
 ) -> bytes:
     root = f"{session_id}_MR-07_agent/"
     documents: dict[str, dict[str, object]] = {
@@ -96,6 +99,7 @@ def _package_bytes(
         "system_info.json": {"os": "windows", "arch": "amd64"},
         "stop_reason.json": {"reason": "completed"},
     }
+    documents["session_meta.json"].update(session_meta_overrides or {})
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for name in sorted(ONLINE_MR_AGENT_PACKAGE_REQUIRED_FILES):
@@ -362,6 +366,40 @@ def test_download_service_imports_package_and_cleans_download(tmp_path: Path) ->
     assert result.session_dir is not None
     assert (result.session_dir / "raw" / "collector_output_raw.log").is_file()
     assert (result.session_dir / "outputs" / "session-1.zip").is_file()
+
+
+def test_download_service_forwards_manual_identity_override(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    content = _package_bytes(
+        session_meta_overrides={
+            "device_id": "agent-device-12",
+            "device_name": "12-MR-CT",
+            "mr_id": "agent-mr-12",
+            "mr_name": "12-MR-CT",
+        }
+    )
+    service = OnlineMrAgentDownloadService(
+        paths, _client(lambda _request: httpx.Response(200, content=content))
+    )
+
+    result = asyncio.run(
+        service.download_and_import_package(
+            "package-1",
+            **_import_kwargs(),
+            identity_match_policy="manual_override",
+            allow_identity_override=True,
+        )
+    )
+
+    assert result.success and result.session_dir is not None
+    manifest = json.loads(
+        (result.session_dir / "import_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["identity"]["match_method"] == "manual_override"
+    assert manifest["identity"]["source"]["device_id"] == "agent-device-12"
+    assert manifest["identity"]["source"]["mr_id"] == "agent-mr-12"
 
 
 def test_download_service_is_idempotent(tmp_path: Path) -> None:
