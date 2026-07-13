@@ -14,7 +14,7 @@ V1 已实现 iPerf server/client、真实 fping、并发 TCP fallback `ping_prob
 - `resources/tools/windows-x64/{iperf3,fping}` 是版本化第三方工具的唯一源码来源；交付包内配置使用 `tools/windows-x64/{iperf3,fping,mr_collector}`，不扫描 `apps/agent/tools/` 或其他旧目录。Cygwin 工具和 sidecar 子进程工作目录固定为 exe 所在目录；
 - `apps/agent/resources/config/{config.example.json,targets.example.json}` 只保存脱敏模板；首次通过源码或交付包启动脚本运行时，会仅在缺失时初始化 `%LOCALAPPDATA%\NetConsole\Agent\config.json` 与 `targets.json`，绝不覆盖真实配置；
 - Windows 启动默认通过 `SetThreadExecutionState` 防止休眠，任务运行时可保持屏幕，退出时恢复系统电源行为；失败只写入状态，不阻断采集；
-- 阶段 4B-2 已通过 `TrafficTestApplicationService`、Agent Adapter/Supervisor 完成 fping/iPerf 调度、任务映射和恢复同步；Web 业务入口仍属于阶段 4C。
+- Traffic 已通过 Application Service、Agent Adapter/Supervisor 和阶段 4C Web 入口完成调度同步；Online MR 阶段 5B-8 仅接入状态/任务/包查询、安全下载和本地 importer，尚未启用 AGENT executor 或远程 start/stop。
 - `GET /api/v1/capabilities` 是 Controller 的能力事实来源；旧 Agent 没有该接口时，Controller 必须保留未知状态，不能按操作系统推断。
 
 Windows 构建入口：

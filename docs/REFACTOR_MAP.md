@@ -30,7 +30,7 @@
 | SNMP MIB/产品数据 | 中心后台刷新/动作 | snmp domain handlers | 部分迁移 | 部分 | MIB/resource/product/data legacy | 分离资源库与请求采集后迁移 |
 | 无线扫描/勘测 | 页面提交 wifi survey Job | wifi domain handlers | 部分迁移 | 部分 | 扫描/勘测动作 legacy | 核对设备/平台边界后拆分 |
 | MR 原始日志分析 | import/rebuild/profile Job | mesh domain + parser/repository | 部分迁移 | 部分 | domain handler 仍有 legacy | 保留单文件 parsed DB 契约迁移 |
-| Online MR 实时采集 | Legacy Qt 页面通过只支持 Application Service 的兼容 Adapter 调用 LOCAL 生命周期；保留原 signals/raw tail/快照 | collection start/status/finalize/package Application Service + Agent contract/importer | 5B-7 已有 Agent ZIP 安全导入器，远程仍未启用 | LOCAL 启停/强停/时长/恢复是；Agent 仅契约与本地包导入；Web 否 | 页面自管 Traffic 兼容方法、Agent HTTP client、FastAPI/Vue、离线解析接入 | 接 Typed HTTP 下载与调度前先复用 importer；不改 LOCAL |
+| Online MR 实时采集 | Legacy Qt 页面通过只支持 Application Service 的兼容 Adapter 调用 LOCAL 生命周期；保留原 signals/raw tail/快照 | collection Application Service + Agent contract/typed download/import | 5B-8 已有 Agent 状态/包查询、安全下载和导入，远程执行仍未启用 | LOCAL 生命周期是；Agent 仅下载导入底层能力；Web 否 | 页面自管 Traffic 兼容方法、Agent start/stop/status 同步、FastAPI/Vue、离线解析接入 | 5B-9 先接手工下载导入闭环，再评估远程 start/stop；不改 LOCAL |
 | Online MR 离线解析 | `online_mr_parse` Job | online_mr domain handler/service | 已迁移但保留兼容层 | 是 | 映射/历史相关 legacy | 收口兼容入口，锁定 raw/parsed 契约 |
 | 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
 | Job Center | Qt/Python Adapter + TaskRuntime + TaskRepository + worker/registry | 七状态、Event Hub、持久快照、REST/WebSocket、外部 Agent Task 与 11 个 domain modules | 基础设施完成/领域部分迁移 | 任务中心是；领域逻辑否 | 独立 daemon、`legacy_tasks.py` 兼容区 | Traffic 已接；legacy 只迁出 |
@@ -79,4 +79,4 @@
 
 ## 7. 当前阶段边界
 
-阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 在 5B-2A 的 Online MR DTO、纯 Python Query/Application Service 和同局点 Task/Session 映射之上，补齐新 LOCAL 入口的 Traffic stop/flush barrier、显式时长停止、普通/强制停止及最终化 reconcile；阶段 5B-4 把 Legacy Qt 的 LOCAL 生命周期接到该入口，阶段 5B-5 移除旧 manager 启动后门和重复取消。阶段 5B-6 固化 Agent 请求/响应、状态、错误和包契约；阶段 5B-7 增加已下载 ZIP 的安全检查、staging 原子导入、幂等/冲突处理与 Agent 终态登记，但仍没有调用 Agent HTTP API、修改 Go Agent 或创建远端任务。FastAPI/Vue、离线解析接入、设备/AC/FIT-AP/MESH、SNMP Center 和无线勘测均未迁移。
+阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 固化 Agent 契约，5B-7 增加安全 ZIP importer，5B-8 增加类型化状态/任务/包查询、受控下载和 importer 编排。当前仍未启用 AGENT executor、远程 start/stop、FastAPI/Vue 或离线解析接入，也没有修改 Go Agent、LOCAL 生命周期、设备/AC/FIT-AP/MESH、SNMP Center 或无线勘测。

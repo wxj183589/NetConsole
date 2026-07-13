@@ -142,4 +142,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 阶段 5B-4 已建立纯 Python Application Service、同局点 `tasks.db` 的 Task/Session 映射、结构化会话事件、Traffic 收口和遗留状态核对，并让旧 Qt 页面通过兼容 Adapter 使用 LOCAL 启动、停止、强停、显式时长和终态恢复；旧页面布局、实时 raw tail 和快照展示继续保留。Agent 执行、FastAPI Router、Vue 页面和离线分析接入尚未迁移。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 已建立纯 Python LOCAL Application Service、同局点 Task/Session 映射、Traffic 收口和 Legacy Qt 兼容入口；阶段 5B-8 另具备 Agent 状态/任务/包查询、安全下载及调用本地 importer 的底层能力，但 AGENT executor、远程 start/stop、FastAPI Router、Vue 页面和离线分析接入仍未启用。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。

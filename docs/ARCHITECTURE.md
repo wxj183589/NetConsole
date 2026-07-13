@@ -153,6 +153,8 @@ flowchart TD
 
 阶段 5B-7 增加纯 Python Agent package importer：只处理已下载 ZIP，在所属局点 staging 中校验路径、公共 JSON、raw 契约和哈希后原子落入 Online MR Session，并登记同局点终态 Task/Mapping；同哈希幂等、不同哈希冲突且不覆盖。该能力尚未接 Agent HTTP 下载或远程调度，`executor=AGENT` 仍保持 unsupported，也不改变 LOCAL 生命周期。
 
+阶段 5B-8 在现有 `AgentHttpClient` 统一响应和鉴权逻辑上增加 Online MR 类型化只读客户端，可查询 ping、Agent/工具状态、任务和包列表，并将受大小、超时和取消约束的 ZIP 流式下载到所属局点临时目录后交给 5B-7 importer。下载/导入不由 Qt 或 Application Service 自动触发，AGENT executor 与远程 start/stop 仍保持 unsupported。
+
 Online MR 会话生命周期：
 
 ```mermaid

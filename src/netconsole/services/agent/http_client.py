@@ -71,21 +71,24 @@ class AgentHttpClient:
         connect_timeout: float = DEFAULT_AGENT_CONNECT_TIMEOUT_SECONDS,
         read_timeout: float = DEFAULT_AGENT_READ_TIMEOUT_SECONDS,
         transport: httpx.AsyncBaseTransport | None = None,
+        verify_tls: bool = True,
+        user_agent: str = "",
     ) -> None:
         self.timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=read_timeout, pool=connect_timeout)
         self.transport = transport
+        self.verify_tls = verify_tls
+        self.user_agent = str(user_agent or "").strip()
 
     async def probe(self, base_url: str, token: str | None = None) -> AgentProbeResult:
         normalized = normalize_agent_base_url(base_url)
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["X-Agent-Token"] = token
+        headers = self._headers(token)
         started = time.perf_counter()
         async with httpx.AsyncClient(
             timeout=self.timeout,
             follow_redirects=False,
             headers=headers,
             transport=self.transport,
+            verify=self.verify_tls,
         ) as client:
             status = await self._get_data(client, f"{normalized}/api/v1/status")
             capabilities = await self._get_capabilities(client, normalized)
@@ -159,17 +162,40 @@ class AgentHttpClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        data = await self._call_payload(
+            method,
+            base_url,
+            path,
+            token,
+            json_body=json_body,
+            params=params,
+        )
+        if not isinstance(data, dict):
+            raise AgentClientError(
+                "AGENT_RESPONSE_INCOMPATIBLE", "Agent data 字段格式不兼容"
+            )
+        return data
+
+    async def _call_payload(
+        self,
+        method: str,
+        base_url: str,
+        path: str,
+        token: str | None,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
         normalized = normalize_agent_base_url(base_url)
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["X-Agent-Token"] = token
+        headers = self._headers(token)
         async with httpx.AsyncClient(
             timeout=self.timeout,
             follow_redirects=False,
             headers=headers,
             transport=self.transport,
+            verify=self.verify_tls,
         ) as client:
-            return await self._request_data(
+            return await self._request_payload(
                 client,
                 method,
                 f"{normalized}{path}",
@@ -201,6 +227,32 @@ class AgentHttpClient:
         allow_not_found: bool = False,
         unsupported_on_not_found: bool = False,
     ) -> dict[str, Any]:
+        data = await self._request_payload(
+            client,
+            method,
+            url,
+            json_body=json_body,
+            params=params,
+            allow_not_found=allow_not_found,
+            unsupported_on_not_found=unsupported_on_not_found,
+        )
+        if not isinstance(data, dict):
+            raise AgentClientError(
+                "AGENT_RESPONSE_INCOMPATIBLE", "Agent data 字段格式不兼容"
+            )
+        return data
+
+    async def _request_payload(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        allow_not_found: bool = False,
+        unsupported_on_not_found: bool = False,
+    ) -> Any:
         try:
             response = await client.request(method, url, json=json_body, params=params)
         except httpx.TimeoutException as exc:
@@ -211,8 +263,8 @@ class AgentHttpClient:
             raise AgentClientError("AGENT_HTTP_ERROR", "Agent HTTP 请求失败") from exc
         if 300 <= response.status_code < 400:
             raise AgentClientError("AGENT_REDIRECT_REJECTED", "Agent 返回了不允许的重定向", status_code=response.status_code)
-        if response.status_code == 401:
-            raise AgentClientError("AGENT_UNAUTHORIZED", "Agent 认证失败", status_code=401)
+        if response.status_code in {401, 403}:
+            raise AgentClientError("AGENT_UNAUTHORIZED", "Agent 认证失败", status_code=response.status_code)
         if allow_not_found and response.status_code == 404:
             raise AgentClientError("AGENT_CAPABILITIES_UNAVAILABLE", "旧 Agent 未提供能力接口", status_code=404)
         try:
@@ -229,9 +281,15 @@ class AgentHttpClient:
                 code = "AGENT_TRAFFIC_UNSUPPORTED"
             raise AgentClientError(code or "AGENT_REQUEST_FAILED", message, status_code=response.status_code)
         data = payload.get("data")
-        if not isinstance(data, dict):
-            raise AgentClientError("AGENT_RESPONSE_INCOMPATIBLE", "Agent data 字段格式不兼容", status_code=response.status_code)
         return data
+
+    def _headers(self, token: str | None) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.user_agent:
+            headers["User-Agent"] = self.user_agent
+        if token:
+            headers["X-Agent-Token"] = token
+        return headers
 
     @staticmethod
     def _required_text(value: dict[str, Any], key: str, message: str) -> str:

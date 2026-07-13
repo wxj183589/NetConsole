@@ -237,4 +237,14 @@ files/rail_transit/online_mr/<device_name>__<device_id>/sessions/<session_id>/
 
 导入成功后在所属局点 `tasks.db` 写入 `source=agent` 的终态 Task 和 `executor_kind=AGENT / mapping_state=TERMINAL` 的映射；如果明确提供的 `controller_task_id` 已对应同一 AGENT 身份、设备和 Session，则更新现有 Task/Mapping，不重复创建。`stopped/completed` 映射为 `Task COMPLETED + Session STOPPED`；warning 终态保留警告；`failed` 映射为 `FAILED`；`force_stopped` 映射为 `CANCELLED + FORCED_STOPPED + data_integrity=partial`；`aborted/cancelled` 映射为取消/中止终态。默认 `strict` 拒绝 `created/starting/running/stopping` 包；显式 `partial` 只作为中止证据导入，不伪造完成态。
 
-导入后的源包保存为 Session 内 `outputs/<session_id>.zip`，Task 仅保存相对 artifact 引用。验收脚本支持 `executor=AGENT`：继续检查身份、raw、终态、ZIP 和 Mapping，但不套用 LOCAL 专属的 Traffic flush 与“Traffic 停止 < 本地打包 < Task 终态”事件顺序。当前尚未实现 Agent Typed HTTP Client、下载重试、远程 start/stop/status 或自动导入，也不会自动解析或生成报告。
+导入后的源包保存为 Session 内 `outputs/<session_id>.zip`，Task 仅保存相对 artifact 引用。验收脚本支持 `executor=AGENT`：继续检查身份、raw、终态、ZIP 和 Mapping，但不套用 LOCAL 专属的 Traffic flush 与“Traffic 停止 < 本地打包 < Task 终态”事件顺序。Importer 本身不连接 Agent、不自动解析或生成报告；下载能力由下一节的独立客户端编排。
+
+## 12. Agent HTTP 下载客户端（5B-8，executor 仍未启用）
+
+`OnlineMrAgentHttpClient` 复用现有异步 `AgentHttpClient` 的 URL、`X-Agent-Token`、统一响应、超时和禁止重定向逻辑，提供 `ping`、Agent/工具状态、Online MR Task、package 列表和 package 下载。客户端只读取现有 Go Agent API，不发送远程 start/stop；配置中的 Token 使用 `SecretStr`，异常和下载结果不包含 Token、远端私有路径或响应原文。
+
+下载固定使用 `/api/v1/packages/<package_id>/download`，不信任响应中的下载 URL。ZIP 流式写入所属局点 `files/imports/online_mr/downloads/*.zip.part`，同时计算 SHA-256，并受超时、取消和 `max_download_bytes` 限制；完成后关闭句柄并原子改名为 `.zip`。失败、取消或超限删除 `.part`，不删除远端 package。
+
+`OnlineMrAgentDownloadService` 将下载完成的 ZIP 在线程中交给 5B-7 importer。下载失败不调用 importer；校验失败或冲突时保留下载 ZIP，正式 Session 不受污染；导入成功或幂等确认后默认清理临时下载 ZIP。错误统一映射为 `ONLINE_MR_AGENT_*`，覆盖 unreachable、timeout、auth、version、tool/collector、Task 不存在、package 未就绪、下载失败、超限、响应无效和 package invalid。
+
+本阶段不把该服务接入 `OnlineMrApplicationService`、Legacy Qt、FastAPI 或 Vue，`executor=AGENT` 仍返回 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。没有连接真实 Agent，也没有修改 Go Agent、MR 命令、raw 契约或 LOCAL 生命周期。

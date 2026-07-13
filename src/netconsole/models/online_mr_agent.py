@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 from pydantic import Field, SecretStr
@@ -30,6 +30,80 @@ class OnlineMrAgentStatus(StrEnum):
     FORCE_STOPPED = "force_stopped"
     ABORTED = "aborted"
     CANCELLED = "cancelled"
+
+
+class OnlineMrAgentConnectionConfig(ApiModel):
+    base_url: str = Field(min_length=8, max_length=500)
+    token: SecretStr = Field(default_factory=lambda: SecretStr(""))
+    timeout_sec: float = Field(default=15.0, gt=0, le=300)
+    verify_tls: bool = True
+    user_agent: str = "NetConsole-OnlineMR"
+    max_download_bytes: int = Field(default=64 * 1024**3, ge=1)
+    download_chunk_size: int = Field(
+        default=1024 * 1024,
+        ge=64 * 1024,
+        le=8 * 1024 * 1024,
+    )
+
+
+class OnlineMrAgentPingResponse(ApiModel):
+    status: str
+    time: str = ""
+
+
+class OnlineMrAgentSystemStatus(ApiModel):
+    agent_id: str = Field(min_length=1)
+    agent_name: str = ""
+    version: str = Field(min_length=1)
+    os: str = Field(min_length=1)
+    arch: str = Field(min_length=1)
+    current_tasks: int = Field(default=0, ge=0)
+    task_count: int = Field(default=0, ge=0)
+    package_count: int = Field(default=0, ge=0)
+
+
+class OnlineMrAgentToolStatus(ApiModel):
+    exists: bool = False
+    ready: bool = False
+    version: str = ""
+    warning: str = ""
+
+
+class OnlineMrAgentToolsStatus(ApiModel):
+    mr_collector: OnlineMrAgentToolStatus
+    fping: OnlineMrAgentToolStatus
+    iperf3: OnlineMrAgentToolStatus
+
+
+class OnlineMrAgentTaskStatusResponse(ApiModel):
+    task_id: str = Field(min_length=1)
+    task_type: str = Field(min_length=1)
+    status: OnlineMrAgentStatus
+    created_at: str = ""
+    start_time: str = ""
+    end_time: str = ""
+    package_id: str = ""
+    package_download_url: str = ""
+    error_code: str = ""
+    error_message: str = ""
+
+
+class OnlineMrAgentPackageInfo(ApiModel):
+    package_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    task_type: str = Field(min_length=1)
+    start_time: str = ""
+    end_time: str = ""
+    size: int = Field(ge=0)
+    package_download_url: str = ""
+
+
+class OnlineMrAgentDownloadResult(ApiModel):
+    package_id: str
+    path: Path
+    sha256: str
+    size: int = Field(ge=0)
+    content_type: str = ""
 
 
 class OnlineMrAgentTarget(ApiModel):
