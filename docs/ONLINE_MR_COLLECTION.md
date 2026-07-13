@@ -114,6 +114,25 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 
 `online_mr_task_sessions` schema v2 增加 `mr_id`、开始/结束时间、实际 `duration_minutes`、`stop_reason`、`force_stopped` 和 `error_summary`。实际时长统一使用 `max(0, ended_at - started_at) / 60` 并保留三位小数；配置的停止上限另存为 `configured_duration_minutes`。正常 `stop_operation()` 有界等待 Worker 完成完整收口；`force_stop_operation()` 先短暂协作停止，超时才终止进程树，并把会话标为 `FORCED_STOPPED`、`data_integrity=partial`、`finalization_complete=false`，保留 raw 且不发布新的正式 ZIP。遗留恢复仍只标记 `ABORTED`，不解析、不打包、不删除 raw。Qt Legacy 自有的 fping/iPerf 和停止流程保持不变，AGENT、FastAPI/Vue 与离线解析接入不属于本阶段。
 
+### 6.1 阶段 5B-3A 真实设备验收
+
+在真实 MR 上分别执行正常手动停止、`duration_minutes` 自动到期和强停。每次停止并等待最终化后，用只读检查器核对 Task、Session、Mapping、Traffic 输出和 ZIP：
+
+远程验收场景使用 fping `interval_ms=1000`、`timeout_ms=4000`，仅用于验证 Traffic 生命周期与落盘，不作为链路质量验收依据。
+
+```powershell
+python -m scripts.maintenance.check_online_mr_session_state --site "<局点>" --session-id "<session_id>"
+python -m scripts.maintenance.check_online_mr_session_state --task-id "<controller_task_id>"
+```
+
+检查器使用 SQLite `mode=ro`，不初始化或迁移数据库，不解析、不打包、不删除或改写会话文件。退出码 `0` 表示无失败项（允许强停的部分完整警告），`1` 表示存在验收失败项，`2` 表示参数、定位、数据库或文件读取失败。
+
+- 正常手动停止：Task/Session/Mapping 均终态，fping/iPerf 已启用项输出非空，Traffic flush 完成，正式 ZIP 可读且不含 `stop.request`；
+- 自动到期：除上述检查外，`stop_reason` 应为 `duration_elapsed`，实际时长在 Task、Mapping 与 metadata 中一致；
+- 强停：Task/Session/Mapping 不再活动，raw 保留，无法确认 flush 时允许 `WARNING`，但必须为部分完整且不得发布正式 ZIP。
+
+定向测试和只读检查器通过不等于真实链路验收通过；只有三类现场运行全部完成并留存检查结果后，才能确认阶段 5B-3 的 LOCAL 生命周期现场稳定。
+
 ## 7. 解析与报告
 
 - 实时 parser/cache：为运行中图表和状态服务，可因 stale、时间轴或样本塌缩检测而重建。
