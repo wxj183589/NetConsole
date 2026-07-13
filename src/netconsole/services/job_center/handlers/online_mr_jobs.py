@@ -21,6 +21,7 @@ def online_mr_collection_start(context: JobContext) -> dict[str, object]:
         progress=context.progress,
         should_cancel=context.should_cancel,
         package_on_stop=bool(context.params.get("package_on_stop", True)),
+        controller_task_id=context.job_id,
     )
 
 

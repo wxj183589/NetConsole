@@ -46,7 +46,7 @@ H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、�
 .local/data/sites/<site>/
 ├─ db/                           # 局点数据库
 │  ├─ devices.db                 # 设备、AC/FIT-AP 等主应用数据
-│  ├─ tasks.db                   # 任务快照与结构化事件历史
+│  ├─ tasks.db                   # 任务快照、结构化事件与 Online MR Task/Session 映射
 │  ├─ agents.db                  # Agent 配置与运行状态（不保存明文凭据）
 │  └─ snmp.db                    # SNMP Center 局点数据库（功能冻结，数据保留）
 ├─ files/                        # 文件管理业务文件
@@ -145,10 +145,12 @@ sessions/<session>/
 
 当前标准 Online MR 会话目录没有 `reports/` 或 `packages/`；正式包位于 `outputs/`。`raw/` 和 metadata 是采集事实源，`parsed/online_diagnosis.sqlite` 是报告、历史图表和跨源时间轴的现行查询产物，虽然可由完整 raw 重建，但不能在未确认 raw 完整、重建能力和消费者的情况下当作普通缓存无条件删除。阶段 5B-1 的 `OnlineMrQueryService` 只通过白名单相对引用读取这些内容，不接受任意文件路径，也不创建、迁移或修复数据库 schema。
 
+阶段 5B-2A 的 `online_mr_task_sessions` 与任务快照/事件共用所属局点的 `tasks.db`。映射只保存 Controller Task、Session、局点、设备、MR、执行端、业务阶段和稳定错误摘要；会话创建前允许 `session_id` 为空，收到结构化会话事件后幂等补齐。连接密码、设备命令、完整运行配置、raw、样本和服务端绝对路径不得写入该映射。遗留会话核对只更新映射与 `session_meta.json` 状态，不删除或重建会话事实文件。
+
 ## 6. 数据稳定性边界
 
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
-- `tasks.db` 由 `TaskRepository` 幂等初始化，使用 WAL/busy timeout；任务快照与单条事件在同一事务提交，不自动删除业务结果或原始日志。
+- `tasks.db` 由 `TaskRepository` 和 Online MR Task/Session Repository 幂等初始化，使用 WAL/busy timeout/foreign keys；任务快照、事件和映射按各自事务提交，不自动删除业务结果或原始日志。
 - `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
 - `.local/data/sites/<site>/files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。
 - iPerf interval 的唯一事实源仍是 `files/network_tools/iperf/parsed/iperf_results.sqlite`；Traffic 库只用 `local_iperf_run_id` 关联，不复制 interval。Agent 事件重放通过远端事件键幂等写入既有 interval 表。

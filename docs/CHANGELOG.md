@@ -4,6 +4,8 @@
 
 ### 本次修复
 
+- 完成 Web 演进阶段 5B-2A：新增纯 Python `OnlineMrApplicationService`、LOCAL 执行入口和所属局点 `tasks.db` 中的 Task/Session 映射；任务快照显式记录局点/设备摘要，会话通过 `online_mr_session_created` 结构化事件幂等关联，业务阶段与 Job Center 七状态保持分离。
+- 统一 Online MR 启动失败与遗留会话状态：会话创建后的初始连接失败固定落为 `FAILED`，显式恢复核对将失去活动宿主的旧会话标为 `ABORTED`，均保留 raw 且不触发解析或打包；Legacy Qt、自动时长、Traffic/Agent、API/Vue 和正常停止/最终化顺序未修改。
 - 完成 Web 演进阶段 5B-1：新增 Online MR 会话/日志/指标/Artifact/备注 DTO 与纯 Python 只读 `OnlineMrQueryService`，兼容旧或不完整会话、缺表解析库、日志增长和安全相对引用；Qt Legacy 页面、采集启停、Traffic/Agent、FastAPI/Vue 与 schema 均未修改。
 - 固定 Online MR 停止、最终化和打包契约：Traffic、SSH、raw writer 与摘要完成 flush 后才允许最终解析和原子发布 ZIP；强停或文件稳定性未知不得伪装完成，必须保留 raw 并允许后续重新最终化。
 - 完成 Web 演进阶段 4D：Qt Web Shell 改为非阻塞等待本地 FastAPI，增加启动/失败重试页、外链系统浏览器跳转、JavaScript 日志和退出前 WebSocket 卸载；关闭后不残留 Uvicorn/Python/QtWebEngine 进程，普通 Qt 入口继续不依赖 FastAPI 或 Node。

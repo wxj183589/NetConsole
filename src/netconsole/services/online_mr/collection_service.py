@@ -34,8 +34,8 @@ class OnlineMrCollectionService:
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
         package_on_stop: bool = True,
+        controller_task_id: str = "",
     ) -> dict[str, object]:
-        collector = OnlineMrCollector(config, self.store, connection_factory=self.connection_factory)
         monitor_stop = Event()
 
         def monitor_cancel() -> None:
@@ -52,6 +52,23 @@ class OnlineMrCollectionService:
             if progress is not None:
                 progress(stage, current, total, message)
 
+        def on_session_created(meta) -> None:
+            payload = {
+                "controller_task_id": controller_task_id,
+                "session_id": meta.session_id,
+                "site_id": config.site,
+                "device_id": config.device_id,
+                "mr_name": config.mr_name,
+            }
+            emit("online_mr_session_created", json.dumps(payload, ensure_ascii=False))
+
+        collector = OnlineMrCollector(
+            config,
+            self.store,
+            connection_factory=self.connection_factory,
+            session_created_callback=on_session_created,
+        )
+
         def on_snapshot(snapshot: OnlineMrSnapshot) -> None:
             nonlocal last_progress
             now = time.monotonic()
@@ -62,10 +79,22 @@ class OnlineMrCollectionService:
 
         package_path = ""
         try:
-            meta = collector.start()
+            try:
+                meta = collector.start()
+            except Exception as exc:
+                collector.fail_start(str(exc) or exc.__class__.__name__)
+                raise
             started = meta.to_json_dict()
-            started["session_dir"] = str(meta.session_dir or "")
-            started["enabled_collectors"] = self._enabled_collectors(config)
+            started.update(
+                {
+                    "controller_task_id": controller_task_id,
+                    "session_dir": str(meta.session_dir or ""),
+                    "site_id": config.site,
+                    "device_id": config.device_id,
+                    "mr_name": config.mr_name,
+                    "enabled_collectors": self._enabled_collectors(config),
+                }
+            )
             emit("online_mr_started", json.dumps(started, ensure_ascii=False))
             collector.run_forever(on_snapshot, should_cancel=should_cancel)
             if package_on_stop and collector.session is not None:

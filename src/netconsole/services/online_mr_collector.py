@@ -41,7 +41,7 @@ from netconsole.models.online_mr_models import (
 from netconsole.services.online_mr_parser import parse_channel_busy_text, parse_mesh_link_text, summarize_active
 from netconsole.services.online_mr.collection_commands import (
     NORMAL_DISPLAY_PREPARE_COMMANDS,
-    PROBE_STREAM_PREPARE_COMMANDS,
+    PROBE_STREAM_PREPARE_COMMANDS as PROBE_STREAM_PREPARE_COMMANDS,
     stream_prepare_commands,
 )
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
@@ -296,6 +296,7 @@ class OnlineMrCollector:
         realtime_cache: OnlineMrRealtimeCache | None = None,
         clock: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
+        session_created_callback: Callable[[OnlineMrSessionMeta], None] | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -303,6 +304,7 @@ class OnlineMrCollector:
         self.realtime_cache = realtime_cache
         self.clock = clock or time.monotonic
         self.sleeper = sleeper or time.sleep
+        self.session_created_callback = session_created_callback
         self.session: OnlineMrSession | None = None
         self.connection: OnlineMrConnection | None = None
         self.stats = OnlineMrStats()
@@ -334,6 +336,8 @@ class OnlineMrCollector:
             config_collect_enabled=self.config.collect_config_on_start,
         )
         self._register_realtime_session()
+        if self.session_created_callback is not None:
+            self.session_created_callback(self.session.meta)
         if self.config.collect_config_on_start:
             self.collect_current_configuration()
         else:
@@ -513,6 +517,25 @@ class OnlineMrCollector:
             if self.realtime_cache:
                 self.realtime_cache.close_session(self.session.meta.session_id)
         self.status = STATE_STOPPED
+
+    def fail_start(self, error_message: str) -> None:
+        """收口已创建会话的启动失败，不进入正常停止语义。"""
+
+        self.cancelled = True
+        self._stream_stop.set()
+        self._stop_collector_output_writer()
+        self._stop_device_terminal_writer()
+        self._close_stream_connections()
+        self._close_main_connection()
+        self.status = STATE_FAILED
+        if self.session:
+            try:
+                self.session.log("ERROR", f"startup_failed={error_message}")
+            except Exception:
+                pass
+            self.session.finish(STATE_FAILED, self.stats.as_dict())
+            if self.realtime_cache:
+                self.realtime_cache.close_session(self.session.meta.session_id)
 
     def request_stop(self) -> None:
         self.cancelled = True

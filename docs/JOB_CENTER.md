@@ -17,6 +17,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `services/job_center/runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
+- `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
 - `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测、Traffic 领域分区。
@@ -37,6 +38,12 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
 - 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；阶段 4B-2 允许 `TaskApplicationService.create_external_task/record_external_event` 将 Agent Traffic 映射到同一任务中心，但它仍不是独立 Controller daemon。
+
+## Online MR Application 映射
+
+阶段 5B-2A 的 `OnlineMrApplicationService` 是纯 Python LOCAL 启动边界。它通过 `LocalProcessAdapter` 提交既有 `online_mr_collection_start` Job，并把 `site_name`、`device`、`device_id` 和 owner 作为顶层任务摘要传入，避免 Task Center 从嵌套连接配置推断归属。创建任务前先在所属局点 `tasks.db` 写入可空 Session 映射；采集侧创建会话后发出 `online_mr_session_created`，应用层再幂等关联 Session。
+
+Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约。启动连接失败时 Task 为 `FAILED`，已创建会话 metadata 同步为 `FAILED`；显式恢复核对可将没有活动 Task 宿主的旧会话标为 `ABORTED`，但不触发解析、打包或 raw 清理。该入口尚未替换 Legacy Qt，`AGENT`、`duration_minutes`、Traffic 子任务停止/flush、正常停止、强停和最终化协调留给后续阶段。
 
 ## Task Center API
 

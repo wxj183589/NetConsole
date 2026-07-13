@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化。阶段 5B-1 已建立 Online MR 纯 Python DTO 和只读查询边界，但尚未创建 Online MR API 或 Web 页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化。阶段 5B-2A 已建立 Online MR 纯 Python DTO、只读查询边界、LOCAL Application Service 与 Task/Session 持久映射，但尚未创建 Online MR API 或 Web 页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -133,9 +133,16 @@ flowchart TD
 - 日志使用受控 source 和字节游标分块，SQLite 使用独立只读连接、缺表兼容、参数绑定和确定性降采样，不重跑 parser、不补零、不混合 Ping 目标或 Radio；
 - 正式冻结 Traffic/SSH/writer flush 后再解析、最终化和原子打包的生命周期契约；本阶段未修改 Legacy 启停、Traffic、Agent、FastAPI、Vue 或数据库 schema。
 
+阶段 5B-2A 已完成：
+
+- 新增纯 Python `OnlineMrApplicationService`，LOCAL 启动复用 `LocalProcessAdapter`、既有 Job Registry、Worker 和采集服务，不建立第二套 Core；
+- 在每局点既有 `tasks.db` 中增加 Task/Session 映射，先持久化 Controller Task，再通过 `online_mr_session_created` 结构化事件关联会话；Task 快照使用显式顶层局点/设备摘要，不扫描嵌套连接配置；
+- `OnlineMrPhase` 只表示业务生命周期，Job Center 继续使用既有七状态；初始连接失败收口为会话 `FAILED`，遗留活动会话可显式核对为 `ABORTED`，raw 不解析、不打包、不删除；
+- 执行端目前只支持 `LOCAL`，`AGENT` 返回稳定不支持错误；Legacy Qt 尚未切换，`duration_minutes`、Traffic 子任务协调、停止/强停和最终化顺序继续延期。
+
 仍未实现：
 
-- Online MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；Online MR 当前只有只读 Application DTO/Query Service；
+- Online MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；Online MR 当前只有 Query/Application Service，尚未接 FastAPI、Vue 或 Legacy Qt；
 - 独立于桌面/FastAPI 生命周期的 Controller daemon；
 - Export Process 的 Web 接口。
 
@@ -197,4 +204,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段计划进入 Online MR，只先执行阶段 5A 只读审计，不直接迁移大页面；后续仍必须复用现有 Python Core、Job Center、Agent Controller 和 Traffic API 边界。SNMP Center 和无线勘测继续冻结，除非收到独立任务。
+下一阶段按阶段 5B-3 继续收口 Online MR 生命周期，优先补齐 Traffic 子任务停止/flush 与最终化协调，再决定 `duration_minutes` 自动停止；不得绕过既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界，也不直接迁移大页面。SNMP Center 和无线勘测继续冻结，除非收到独立任务。

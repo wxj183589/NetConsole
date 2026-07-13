@@ -24,7 +24,6 @@ from netconsole.services.online_mr.collection_commands import (
     TERMINAL_MONITOR_INIT_COMMANDS,
     stream_prepare_commands,
 )
-from netconsole.services.online_mr.collection_models import collection_config_to_payload
 from netconsole.services.online_mr.collection_packager import OnlineMrCollectionPackager
 from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
 from netconsole.services.online_mr.collection_service import OnlineMrCollectionService
@@ -139,6 +138,39 @@ def test_online_mr_collection_service_stops_packages_and_keeps_raw_logs(tmp_path
     started_event = next(json.loads(message) for stage, message in progress if stage == "online_mr_started")
     assert started_event["session_id"] == result["session_id"]
     assert started_event["enabled_collectors"] == ["terminal_monitor"]
+
+
+def test_online_mr_collection_service_emits_session_created_before_connection_failure(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    progress: list[tuple[str, str]] = []
+
+    def fail_connection(_config: OnlineMrConnectionConfig):
+        raise RuntimeError("connection refused")
+
+    store = OnlineMrSessionStore(paths)
+    service = OnlineMrCollectionService(
+        store,
+        connection_factory=fail_connection,
+    )
+    with pytest.raises(RuntimeError, match="connection refused"):
+        service.run(
+            _config(),
+            controller_task_id="controller-1",
+            progress=lambda stage, _current, _total, message: progress.append((stage, message)),
+        )
+
+    stage, message = progress[0]
+    payload = json.loads(message)
+    session_dirs = store.list_session_dirs("demo")
+    assert len(session_dirs) == 1
+    session_dir = session_dirs[0]
+    meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+    assert stage == "online_mr_session_created"
+    assert set(payload) == {"controller_task_id", "session_id", "site_id", "device_id", "mr_name"}
+    assert payload["controller_task_id"] == "controller-1"
+    assert payload["session_id"]
+    assert meta["status"] == "FAILED"
+    assert session_dir.is_dir()
 
 
 def test_online_mr_packaging_failure_preserves_raw_and_cleans_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
