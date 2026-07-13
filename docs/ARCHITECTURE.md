@@ -21,7 +21,7 @@ flowchart TD
     SPLASH --> WIN["主窗口与页面"]
 ```
 
-开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载 Vue 任务中心、Agent 管理和阶段 4C Traffic 页面，不替换普通启动。当前正式发布脚本尚未打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)。
+开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载 Vue 任务中心、Agent 管理和阶段 4C Traffic 页面，不替换普通启动。阶段 5C-0 起，普通 Qt 主程序也可从托盘按需打开完整 Web 控制台；发布脚本会构建并打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md) 和 [Qt WebHost](WEB_HOST.md)。
 
 ## 3. 分层与依赖方向
 

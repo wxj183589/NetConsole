@@ -212,6 +212,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "system.web_console": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "system.feature_flags": {
       "visible": true,
       "enabled": true,

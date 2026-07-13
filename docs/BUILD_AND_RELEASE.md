@@ -27,6 +27,16 @@ scripts/build/release.py
 
 `BuildConfig` 从 `src/netconsole/core/version.py` 读取应用名、版本和作者；构建临时文件和发布包统一写入 `dist/`。
 
+桌面发布包包含现有完整 Vue Web 控制台。构建脚本在 Python 打包前执行 `apps/web` 的 `pnpm build`，并将 `apps/web/dist` 打入内部 `netconsole/assets/web` 资源。构建前先准备前端依赖：
+
+```powershell
+cd apps/web
+pnpm install --frozen-lockfile
+cd ../..
+```
+
+构建机缺少 pnpm、`apps/web/node_modules` 或构建后缺少 `dist/index.html` 时会明确失败，避免发布只能显示占位页的桌面包。`apps/web/dist` 和 `node_modules` 仍不得提交仓库。
+
 ## Windows Go Agent
 
 独立 Agent 不进入上述 PyInstaller/Nuitka 发布链，使用 Go 1.26.5 单独构建：

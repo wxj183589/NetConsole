@@ -35,7 +35,7 @@
 | 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
 | Job Center | Qt/Python Adapter + TaskRuntime + TaskRepository + worker/registry | 七状态、Event Hub、持久快照、REST/WebSocket、外部 Agent Task 与 11 个 domain modules | 基础设施完成/领域部分迁移 | 任务中心是；领域逻辑否 | 独立 daemon、`legacy_tasks.py` 兼容区 | Traffic 已接；legacy 只迁出 |
 | 统一 Traffic | `TrafficTestApplicationService` + Local/Agent Adapter + Supervisor | 本地/Agent iPerf/fping、任务映射、事件、运行索引、REST/专用 WebSocket/Vue 页面 | 阶段 4C 完成 | 是 | 原 Qt iPerf/Ping 页面、无独立 Controller daemon | 阶段 5 复用 Traffic 边界接 Online MR |
-| FastAPI / Web Shell | Vue Dashboard/任务中心/Agent/Traffic、对应 API、OpenAPI、`--web-shell` | Application/API 与 Desktop Shell | 阶段 4C 完成 | 任务、Agent 与 Traffic | 无用户登录、正式 dist 发布打包 | 阶段 5 接 Online MR |
+| FastAPI / Web Shell | Vue Dashboard/任务中心/Agent/Traffic、对应 API、OpenAPI、`--web-shell`、普通主程序托盘 Web 控制台 | Application/API、Desktop WebHost 与临时本地会话 | 阶段 5C-0 完成底座 | 任务、Agent 与 Traffic | Agent 控制中心细节、Online MR Web、统一用户登录 | 先做 Agent 只读控制中心，再做 MR 实时展示 |
 | Export Center | ExportJob + manager + worker | 27 通用 + 2 专用类型 | 已完成主路径 | 是 | 兼容直接导出入口 | 继续保证 tmp/原子替换/占用提示 |
 | AP Identity | Job/Export finished metadata | canonical resolver + adapters + ViewModel | 影子验证 | 禁止接管 | 旧 matcher/lookup/写入仍生产使用 | 真实局点观测与单宿主批准前 hold |
 | Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | SNMP/无线勘测保持 DISABLED；新增能力默认登记 |
@@ -79,4 +79,4 @@
 
 ## 7. 当前阶段边界
 
-阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 固化 Agent 契约，5B-7 增加安全 ZIP importer，5B-8 增加类型化查询、受控下载和 importer 编排，5B-9 增加维护脚本与 Controller 手工下载/导入门面，5B-10 复用既有 Agent Profile，增加只读包同步、局点静态设备 IP 候选和高层导入入口，5B-11 将该能力通过两个 Job 接入 Legacy Qt。当前仍未启用 AGENT executor、远程 start/status/stop、FastAPI/Vue 或离线解析接入，也没有修改 Go Agent、LOCAL 生命周期、设备/AC/FIT-AP/MESH、SNMP Center 或无线勘测。
+阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 固化 Agent 契约，5B-7 增加安全 ZIP importer，5B-8 增加类型化查询、受控下载和 importer 编排，5B-9 增加维护脚本与 Controller 手工下载/导入门面，5B-10 复用既有 Agent Profile，增加只读包同步、局点静态设备 IP 候选和高层导入入口，5B-11 将该能力通过两个 Job 接入 Legacy Qt。阶段 5C-0 增加按需 Desktop WebHost、托盘入口、WebEngine fallback、本地临时会话和前端发布打包。当前仍未启用 AGENT executor、远程 start/status/stop、Online MR FastAPI/Vue 或离线解析接入，也没有修改 Go Agent、LOCAL 生命周期、设备/AC/FIT-AP/MESH、SNMP Center 或无线勘测。

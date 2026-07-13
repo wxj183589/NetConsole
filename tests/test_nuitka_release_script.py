@@ -40,6 +40,8 @@ def test_nuitka_command_uses_onefile_and_required_resources() -> None:
     assert "main.py" in command_text
     assert "netconsole/ui/icons" in command_text
     assert "netconsole/assets/changelog.md" in command_text
+    assert "netconsole/assets/web" in command_text
+    assert "apps\\web\\dist" in command_text or "apps/web/dist" in command_text
     assert "tools/windows-x64/fping" in command_text
     assert "tools/windows-x64/iperf3" in command_text
     assert "tools/windows-x64/ipop" not in command_text

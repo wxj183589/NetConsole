@@ -9,10 +9,11 @@ from time import perf_counter
 from typing import Callable
 
 from PySide6.QtCore import QRect, QTimer, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
-    QStackedWidget,
+    QSystemTrayIcon,
     QTabWidget,
     QTableView,
     QTextEdit,
@@ -74,6 +75,8 @@ from netconsole.ui.windowing import (
 )
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
+from netconsole.ui.web_host.browser_host_widget import WebConsoleHost
+from netconsole.core.resources import icon_path
 
 
 WINDOW_CONTROL_SAFE_RIGHT = 180
@@ -120,8 +123,10 @@ class AppFluentWindow(SplitFluentWindow):
         self._startup_geometry_checks_scheduled = False
         self._startup_geometry_default_rect = QRect()
         self._force_close = False
+        self.tray_notice_shown_this_session = False
         self._page_enter_serial = 0
         self._site_bar_sync_scheduled = False
+        self.web_console_host = WebConsoleHost(paths=self.paths, parent=self)
 
         self.apply_app_theme(self.settings.theme, persist=False)
         self.setMicaEffectEnabled(False)
@@ -136,6 +141,7 @@ class AppFluentWindow(SplitFluentWindow):
         self.navigation = _FluentNavigationProxy(self)
         self.stackedWidget.currentChanged.connect(self._handle_stack_current_changed)
         self._handle_stack_current_changed(self.stackedWidget.currentIndex())
+        self._setup_tray()
         self._log_ui_startup()
 
     def _normalize_theme(self, theme: str) -> str:
@@ -526,6 +532,7 @@ class AppFluentWindow(SplitFluentWindow):
         overflow_actions = [
             ("top", "窗口置顶", self.toggle_always_on_top),
             ("open_site_dir", "打开当前局点目录", self.open_current_site_dir),
+            ("web_console", "打开 Web 控制台", self.open_web_console),
             ("disk_cleanup", "磁盘清理", self.show_disk_cleanup),
             ("changelog", "版本更新日志", self.show_changelog),
             ("open_source", "开源许可", self.show_open_source_notices),
@@ -546,6 +553,7 @@ class AppFluentWindow(SplitFluentWindow):
                 "disk_cleanup": "system.disk_cleanup",
                 "changelog": "system.changelog",
                 "open_source": "system.open_source",
+                "web_console": "system.web_console",
             }.get(key)
             if feature_id is not None:
                 action.setVisible(self.feature_gate.is_visible(feature_id))
@@ -881,21 +889,136 @@ class AppFluentWindow(SplitFluentWindow):
         if self._force_close or not self.isVisible():
             event.accept()
             return
-        answer = MessageBox.question(
-            self,
-            "退出 NetConsole",
-            "确认退出 NetConsole？\n\n退出会停止后台任务并关闭已打开的子窗口。",
-            MessageBox.Yes | MessageBox.No,
-            MessageBox.No,
-        )
-        if answer != MessageBox.Yes:
+        behavior = self.settings.close_behavior
+        has_tasks = background_task_manager.active_count() > 0
+        if behavior == "minimize_to_tray" and self.tray_available:
+            self.hide_to_tray()
             event.ignore()
             return
-        event.accept()
+        if behavior == "exit" and not has_tasks:
+            event.ignore()
+            self.request_app_exit("fluent_main_window_close")
+            return
+        choice = self._ask_close_behavior(has_tasks)
+        if choice == "minimize_to_tray" and self.tray_available:
+            self.hide_to_tray()
+            event.ignore()
+            return
+        if choice != "exit":
+            event.ignore()
+            return
+        event.ignore()
+        self.request_app_exit("fluent_main_window_close_confirmed")
+
+    def request_app_exit(self, reason: str) -> None:
         self._log_main_window_geometry_save_policy()
         self._force_close = True
+        self.web_console_host.stop()
         self._shutdown_children_and_tasks()
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        app_logger.log_info("FLUENT_APP_EXIT_REQUESTED", reason)
         QApplication.quit()
+
+    def _ask_close_behavior(self, has_tasks: bool) -> str:
+        message = self.i18n.t("app.exit_message")
+        if has_tasks:
+            message = f"{message}\n\n{self.i18n.t('app.background_tasks_running')}"
+        box = MessageBox(self)
+        box.setWindowTitle(self.i18n.t("app.exit_title"))
+        box.setText(message)
+        box.setIcon(MessageBox.Question)
+        minimize_button = None
+        if self.tray_available:
+            minimize_button = box.addButton(self.i18n.t("app.minimize_to_tray"), MessageBox.ActionRole)
+        exit_button = box.addButton(self.i18n.t("app.exit_app"), MessageBox.DestructiveRole)
+        box.addButton(self.i18n.t("app.cancel"), MessageBox.RejectRole)
+        remember = QCheckBox(self.i18n.t("app.remember_choice"))
+        box.setCheckBox(remember)
+        box.exec()
+        if box.clickedButton() == minimize_button:
+            if remember.isChecked():
+                self.settings.set_close_behavior("minimize_to_tray")
+            return "minimize_to_tray"
+        if box.clickedButton() == exit_button:
+            if remember.isChecked():
+                self.settings.set_close_behavior("exit")
+            return "exit"
+        return "cancel"
+
+    def _setup_tray(self) -> None:
+        self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+        self.tray_icon: QSystemTrayIcon | None = None
+        self.tray_menu: QMenu | None = None
+        self.tray_actions: dict[str, QAction] = {}
+        if not self.tray_available:
+            return
+        self.tray_icon = QSystemTrayIcon(QIcon(str(icon_path("love.ico"))), self)
+        self.tray_menu = QMenu(self)
+        actions = (
+            ("show", self.i18n.t("tray.show_window"), self.show_main_window),
+            ("hide", self.i18n.t("tray.hide_to_tray"), self.hide_to_tray),
+            ("web", self.i18n.t("tray.open_web_console"), self.open_web_console),
+            ("logs", self.i18n.t("tray.open_log_folder"), self.open_log_folder),
+            ("stop", self.i18n.t("tray.stop_all_tasks"), self.confirm_stop_all_background_tasks),
+        )
+        for key, text, callback in actions:
+            action = QAction(text, self)
+            action.triggered.connect(callback)
+            self.tray_actions[key] = action
+            self.tray_menu.addAction(action)
+        self.tray_actions["web"].setVisible(self.feature_gate.is_visible("system.web_console"))
+        self.tray_actions["web"].setEnabled(self.feature_gate.is_enabled("system.web_console"))
+        self.tray_actions["stop"].setEnabled(background_task_manager.active_count() > 0)
+        self.tray_menu.addSeparator()
+        exit_action = QAction(self.i18n.t("tray.exit"), self)
+        exit_action.triggered.connect(lambda: self.request_app_exit("fluent_tray_exit"))
+        self.tray_actions["exit"] = exit_action
+        self.tray_menu.addAction(exit_action)
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.setToolTip(version_info.APP_TITLE_DISPLAY)
+        self.tray_icon.show()
+
+    def hide_to_tray(self) -> None:
+        if not self.tray_available:
+            return
+        self.hide()
+        if self.tray_icon is not None and not (self.settings.tray_notice_shown or self.tray_notice_shown_this_session):
+            self.tray_icon.showMessage(
+                self.i18n.t("tray.running_in_background"),
+                self.i18n.t("tray.reopen_hint"),
+                QSystemTrayIcon.Information,
+                3000,
+            )
+            self.tray_notice_shown_this_session = True
+            self.settings.set_tray_notice_shown(True)
+
+    def show_main_window(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.show_main_window()
+
+    def open_web_console(self) -> None:
+        self.feature_gate.assert_enabled("system.web_console")
+        self.web_console_host.open()
+
+    def open_log_folder(self) -> None:
+        self.paths.app_log_path.parent.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.app_log_path.parent)))
+
+    def confirm_stop_all_background_tasks(self) -> None:
+        if background_task_manager.active_count() <= 0:
+            return
+        answer = MessageBox.question(self, self.i18n.t("tray.stop_all_tasks"), self.i18n.t("tray.stop_all_confirm"))
+        if answer == MessageBox.Yes:
+            background_task_manager.stop_all()
+            if self.tray_actions:
+                self.tray_actions["stop"].setEnabled(False)
 
     def _shutdown_children_and_tasks(self) -> None:
         app_logger.log_info("FLUENT_APP_EXIT", "closing child windows and background tasks")
@@ -936,6 +1059,9 @@ class AppFluentWindow(SplitFluentWindow):
 
     def refresh_feature_flags(self) -> None:
         self.feature_gate.reload()
+        if self.tray_actions:
+            self.tray_actions["web"].setVisible(self.feature_gate.is_visible("system.web_console"))
+            self.tray_actions["web"].setEnabled(self.feature_gate.is_enabled("system.web_console"))
         for page_id, page in list(self.raw_pages.items()):
             try:
                 apply_gate = getattr(page, "_apply_feature_gate", None)

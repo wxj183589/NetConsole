@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面；阶段 4D 已稳定 Qt Web Shell 的启动、失败提示、外链和退出生命周期；Online MR 阶段 5B-4 已让旧 Qt 页面通过兼容 Adapter 使用新的 LOCAL Application Service 生命周期。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面；阶段 4D 已稳定 Qt Web Shell 的启动、失败提示、外链和退出生命周期；阶段 5C-0 让普通 Qt 主程序也可从托盘按需打开带临时本地会话保护的完整 Web 控制台，并将 Vue 产物纳入正式构建。Online MR 阶段 5B-4 已让旧 Qt 页面通过兼容 Adapter 使用新的 LOCAL Application Service 生命周期。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -85,7 +85,7 @@ flowchart LR
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
 - Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Token 始终留在 Controller 进程内。浏览器端通过“网络工具 / 流量测试”调用统一 Traffic API。
 
-完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Web 演进架构](docs/WEB_ARCHITECTURE.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
+完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Web 演进架构](docs/WEB_ARCHITECTURE.md)、[Qt WebHost](docs/WEB_HOST.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
 ## 开发与运行
 

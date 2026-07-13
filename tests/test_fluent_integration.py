@@ -118,7 +118,16 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     assert not buttons["弹出模块"].isHidden()
     assert not buttons["更多"].isHidden()
     visible_menu_texts = [action.text() for action in buttons["更多"].menu().actions() if action.isVisible() and action.text()]
-    assert visible_menu_texts == ["窗口置顶", "打开当前局点目录", "磁盘清理", "版本更新日志", "开源许可", "关于 NetConsole", "退出"]
+    assert visible_menu_texts == [
+        "窗口置顶",
+        "打开当前局点目录",
+        "打开 Web 控制台",
+        "磁盘清理",
+        "版本更新日志",
+        "开源许可",
+        "关于 NetConsole",
+        "退出",
+    ]
 
     window.resize(TOP_BAR_MEDIUM_WIDTH, 900)
     window._sync_site_bar_action_modes()
@@ -126,7 +135,17 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     assert not buttons["切换局点"].isHidden()
     assert not buttons["弹出模块"].isHidden()
     visible_menu_texts = [action.text() for action in buttons["更多"].menu().actions() if action.isVisible() and action.text()]
-    assert visible_menu_texts == ["新建局点", "窗口置顶", "打开当前局点目录", "磁盘清理", "版本更新日志", "开源许可", "关于 NetConsole", "退出"]
+    assert visible_menu_texts == [
+        "新建局点",
+        "窗口置顶",
+        "打开当前局点目录",
+        "打开 Web 控制台",
+        "磁盘清理",
+        "版本更新日志",
+        "开源许可",
+        "关于 NetConsole",
+        "退出",
+    ]
 
     window.setMinimumSize(900, 600)
     window.resize(TOP_BAR_MEDIUM_WIDTH - 100, 760)
@@ -135,7 +154,19 @@ def test_fluent_site_bar_reserves_window_controls_and_compacts_actions():
     assert buttons["切换局点"].isHidden()
     assert buttons["弹出模块"].isHidden()
     visible_menu_texts = [action.text() for action in buttons["更多"].menu().actions() if action.isVisible() and action.text()]
-    assert visible_menu_texts == ["新建局点", "切换局点", "弹出模块", "窗口置顶", "打开当前局点目录", "磁盘清理", "版本更新日志", "开源许可", "关于 NetConsole", "退出"]
+    assert visible_menu_texts == [
+        "新建局点",
+        "切换局点",
+        "弹出模块",
+        "窗口置顶",
+        "打开当前局点目录",
+        "打开 Web 控制台",
+        "磁盘清理",
+        "版本更新日志",
+        "开源许可",
+        "关于 NetConsole",
+        "退出",
+    ]
     window.close()
 
 

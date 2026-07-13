@@ -103,11 +103,23 @@ def install_dependencies(backend: str) -> None:
 
 def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
     clean_build_spec.validate_tool_sources()
+    build_web_frontend(config)
     if smoke_test:
         print("[check] source external tools")
         for result in run_tool_smoke_tests():
             first_line = next((line.strip() for line in result.output.splitlines() if line.strip()), "OK")
             print(f"[OK] {result.name}: {first_line}")
+
+
+def build_web_frontend(config: BuildConfig) -> None:
+    pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
+    if pnpm is None:
+        raise BuildError("未找到 pnpm，无法构建桌面版 Web 页面；请先安装 Node.js/pnpm 并执行 pnpm install。")
+    if not (config.web_dir / "node_modules").is_dir():
+        raise BuildError("apps/web/node_modules 不存在；请先在 apps/web 执行 pnpm install --frozen-lockfile。")
+    run([pnpm, "build"], cwd=config.web_dir)
+    if not (config.web_dir / "dist" / "index.html").is_file():
+        raise BuildError("Vue 构建未生成 apps/web/dist/index.html。")
 
 
 def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) -> Path:
@@ -282,6 +294,7 @@ def nuitka_command(config: BuildConfig, jobs: str, package_config: Path) -> list
         f"--include-raw-dir={config.tools_dir / 'windows-x64' / 'fping'}=tools/windows-x64/fping",
         f"--include-raw-dir={config.tools_dir / 'windows-x64' / 'iperf3'}=tools/windows-x64/iperf3",
         f"--include-data-dir={config.root / 'src' / 'netconsole' / 'ui' / 'icons'}=netconsole/ui/icons",
+        f"--include-data-dir={config.web_dir / 'dist'}=netconsole/assets/web",
         f"--include-data-file={config.changelog_file}=netconsole/assets/changelog.md",
         f"--include-data-file={config.root / 'src' / 'netconsole' / 'assets' / 'open_source_notices.json'}=netconsole/assets/open_source_notices.json",
         f"--include-data-file={config.root / 'src' / 'netconsole' / 'assets' / 'THIRD_PARTY_COMPONENTS.md'}=netconsole/assets/THIRD_PARTY_COMPONENTS.md",

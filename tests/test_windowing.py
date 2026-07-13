@@ -842,7 +842,14 @@ def test_tray_menu_contains_expected_actions(tmp_path, monkeypatch):
 
     action_texts = [action.text() for action in window.tray_menu.actions() if action.text()]
 
-    assert action_texts == ["Show Window", "Hide to Tray", "Open Log Folder", "Stop All Background Tasks", "Exit"]
+    assert action_texts == [
+        "Show Window",
+        "Hide to Tray",
+        "Open Web Console",
+        "Open Log Folder",
+        "Stop All Background Tasks",
+        "Exit",
+    ]
 
 
 def test_tray_unavailable_close_dialog_has_no_minimize_option(tmp_path, monkeypatch):

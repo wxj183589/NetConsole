@@ -73,6 +73,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("system.disk_cleanup", "system.disk_cleanup", "module.system_settings", "page"),
     FeatureItem("system.changelog", "system.changelog", "module.system_settings", "page"),
     FeatureItem("system.open_source", "system.open_source", "module.system_settings", "page"),
+    FeatureItem("system.web_console", "system.web_console", "module.system_settings", "action"),
     FeatureItem("system.feature_flags", "system.feature_flags", "module.feature_switch", "page", internal_only=True),
 )
 

@@ -200,7 +200,7 @@ cd ..
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 ```
 
-实验服务默认仅绑定 `127.0.0.1`。`apps/web/dist` 是忽略提交的构建产物；缺失时后端保留阶段 1 占位页。当前正式发布脚本尚未打包 `apps/web/dist`，发布接入需单独验证。
+实验服务默认仅绑定 `127.0.0.1`。`apps/web/dist` 是忽略提交的构建产物；缺失时后端保留阶段 1 占位页。阶段 5C-0 起，普通 Qt 主程序可通过托盘或 Fluent“更多”菜单按需打开同一套完整 Web 控制台，并使用进程级临时会话 Cookie 保护本地 HTTP/WebSocket。发布脚本会先执行 Vue 构建，再将产物作为 `netconsole/assets/web` 内部资源打包；构建机必须预先安装 pnpm 依赖。WebHost 生命周期和 fallback 见 [Qt WebHost](WEB_HOST.md)。
 
 ## 9. 下一阶段
 

@@ -35,6 +35,7 @@ ALLOWED_DATA = [
     ("resources/tools/windows-x64/fping", "tools/windows-x64/fping"),
     ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3"),
     ("src/netconsole/ui/icons", "netconsole/ui/icons"),
+    ("apps/web/dist", "netconsole/assets/web"),
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
     ("src/netconsole/assets/IPOP_v4.1_notice.md", "netconsole/assets"),
@@ -115,7 +116,7 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
         datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
         source_path = ROOT / source
-        if (source.startswith("resources/tools/") and source_path.is_dir()) or source_path.is_file():
+        if ((source.startswith("resources/tools/") or source == "apps/web/dist") and source_path.is_dir()) or source_path.is_file():
             if (str(source_path), destination) in datas:
                 continue
             datas.append((str(source_path), destination))
@@ -198,10 +199,26 @@ def _source_to_module(source: Path) -> str:
 def prepare_runtime() -> None:
     if not CLEAN_BUILD:
         raise CleanBuildLockError("Clean Build Mode is required for release packaging")
+    ensure_web_frontend()
     clean_tool_cache_artifacts()
     validate_project_safety(ALLOWED_DATA)
     validate_allowed_runtime(ALLOWED_DATA)
     validate_tool_sources()
+
+
+def ensure_web_frontend() -> None:
+    dist_index = ROOT / "apps" / "web" / "dist" / "index.html"
+    if dist_index.is_file():
+        return
+    pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
+    if pnpm is None:
+        raise CleanBuildLockError("未找到 pnpm，无法构建桌面版 Web 页面。")
+    web_dir = ROOT / "apps" / "web"
+    if not (web_dir / "node_modules").is_dir():
+        raise CleanBuildLockError("apps/web/node_modules 不存在，请先执行 pnpm install --frozen-lockfile。")
+    subprocess.run([pnpm, "build"], cwd=web_dir, check=True)
+    if not dist_index.is_file():
+        raise CleanBuildLockError("Vue 构建未生成 apps/web/dist/index.html。")
 
 
 def clean_tool_cache_artifacts() -> None:

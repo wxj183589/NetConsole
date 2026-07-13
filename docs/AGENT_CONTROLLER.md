@@ -100,6 +100,6 @@ WS     /ws/agents
 - `AgentTrafficSupervisor` 不是 Windows Service；其 `stop()` 只停止轮询并标记 `STALE`，不会停止 Agent 上仍在运行的任务。
 - Controller 重启后，有 Token 时可从 `traffic_agent_tasks` 恢复同步；无 Token 时标记 `CREDENTIAL_REQUIRED` 并保留最后 Task 状态。
 - 仅适配 Windows Go Agent V1；CentOS Agent 尚未实现。
-- 正式发布脚本尚未确认打包 `apps/web/dist`。
+- 阶段 5C-0 已让正式发布脚本构建 `apps/web` 并将 `dist` 作为内部资源打包；尚未开放 Agent 远程 MR 启停。
 
 阶段 4B-2 已完成 `TrafficTestApplicationService`、执行端选择、任务中心关联和轮询恢复；阶段 4C 才实现 Traffic REST/WebSocket、实时指标和图表。协议细节见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。

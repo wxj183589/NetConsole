@@ -242,6 +242,12 @@
       "client_package": false,
       "internal_only": false
     },
+    "system.web_console": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "system.disk_cleanup": {
       "visible": true,
       "enabled": true,

@@ -181,12 +181,33 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert not any(source.casefold().startswith("tools/windows-x64/ipop") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
+    assert ("apps/web/dist", "netconsole/assets/web") in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
     assert "docs" in clean_build_spec.EXCLUDE_DIRS
     assert "project" in clean_build_spec.EXCLUDE_DIRS
     assert "__pycache__" in clean_build_spec.EXCLUDE_DIRS
+
+
+def test_clean_build_prepares_missing_web_frontend(tmp_path, monkeypatch):
+    web_dir = tmp_path / "apps" / "web"
+    (web_dir / "node_modules").mkdir(parents=True)
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(command, *, cwd, check):
+        assert check is True
+        calls.append((command, cwd))
+        (web_dir / "dist").mkdir()
+        (web_dir / "dist" / "index.html").write_text("web", encoding="utf-8")
+
+    monkeypatch.setattr(clean_build_spec, "ROOT", tmp_path)
+    monkeypatch.setattr(clean_build_spec.shutil, "which", lambda _name: "pnpm.cmd")
+    monkeypatch.setattr(clean_build_spec.subprocess, "run", fake_run)
+
+    clean_build_spec.ensure_web_frontend()
+
+    assert calls == [(["pnpm.cmd", "build"], web_dir)]
 
 
 def test_clean_build_spec_scans_runtime_import_graph():
@@ -223,6 +244,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
     assert any(destination == "tools/windows-x64/fping" and Path(source).name == "fping" for source, destination in datas)
     assert any(destination == "tools/windows-x64/iperf3" and Path(source).name == "iperf3" for source, destination in datas)
+    assert any(destination == "netconsole/assets/web" and Path(source).name == "dist" for source, destination in datas)
     assert not any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
     assert all(destination != "data" for _source, destination in datas)
 

@@ -37,6 +37,7 @@ ALLOWED_RUNTIME = (
     "src/netconsole/assets/open_source_notices.json",
     "src/netconsole/assets/third_party_components.md",
     "src/netconsole/assets/ipop_v4.1_notice.md",
+    "apps/web/dist",
     "resources/tools",
     "resources/tools/windows-x64",
     "resources/tools/windows-x64/fping",
@@ -63,6 +64,7 @@ ALLOWED_RUNTIME = (
     "netconsole/assets/open_source_notices.json",
     "netconsole/assets/third_party_components.md",
     "netconsole/assets/ipop_v4.1_notice.md",
+    "netconsole/assets/web",
 )
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "runtime", "tools")
 REQUIRED_PYINSTALLER_ARGS = (

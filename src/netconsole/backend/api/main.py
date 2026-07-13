@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import re
+import secrets
 from contextlib import asynccontextmanager
+from http.cookies import SimpleCookie
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from netconsole.backend.api.router import api_router, ws_router
 from netconsole.core.paths import PathResolver
+from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
@@ -22,6 +26,30 @@ from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestErro
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
 _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
+DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
+
+
+class DesktopSessionMiddleware:
+    def __init__(self, app, *, token: str) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in {"http", "websocket"} or scope.get("path") == "/__desktop_session":
+            await self.app(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        cookie = SimpleCookie()
+        cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
+        supplied = cookie.get(DESKTOP_SESSION_COOKIE)
+        if supplied is not None and secrets.compare_digest(supplied.value, self.token):
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 4401, "reason": "desktop session required"})
+            return
+        response = JSONResponse(status_code=401, content={"detail": "desktop session required"})
+        await response(scope, receive, send)
 
 
 def create_app(
@@ -32,6 +60,7 @@ def create_app(
     agent_service: AgentControllerService | None = None,
     traffic_service: TrafficTestApplicationService | None = None,
     frontend_dist: Path | None = None,
+    desktop_session_token: str | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
@@ -63,6 +92,23 @@ def create_app(
     app.state.task_service = task_service
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
+    if desktop_session_token:
+        app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)
+
+        @app.post("/__desktop_session", include_in_schema=False)
+        async def create_desktop_session(request: Request):
+            form = parse_qs((await request.body()).decode("utf-8", errors="replace"))
+            supplied = str((form.get("token") or [""])[0])
+            if not secrets.compare_digest(supplied, desktop_session_token):
+                return JSONResponse(status_code=401, content={"detail": "invalid desktop session"})
+            response = RedirectResponse(url="/", status_code=303)
+            response.set_cookie(
+                DESKTOP_SESSION_COOKIE,
+                desktop_session_token,
+                httponly=True,
+                samesite="strict",
+            )
+            return response
 
     @app.exception_handler(AgentControllerError)
     async def agent_error_handler(_: Request, exc: AgentControllerError) -> JSONResponse:
@@ -121,7 +167,7 @@ def _current_site_name(paths: PathResolver) -> str:
 
 
 def _frontend_dist(paths: PathResolver) -> Path:
-    packaged = paths.app_root / "apps" / "web" / "dist"
+    packaged = package_resource_path("assets", "web")
     source = paths.app_root / "apps" / "web" / "dist"
     return packaged if (packaged / "index.html").is_file() else source
 

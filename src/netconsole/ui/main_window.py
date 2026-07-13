@@ -52,6 +52,7 @@ from netconsole.ui.theme import apply_global_theme
 from netconsole.ui.widgets.loading_overlay import LoadingOverlay
 from netconsole.ui.window_manager import window_manager
 from netconsole.ui.window_popup_service import show_non_focus_window
+from netconsole.ui.web_host.browser_host_widget import WebConsoleHost
 from netconsole.ui.windowing import fit_default_window_size
 
 
@@ -131,6 +132,7 @@ class MainWindow(AppFramelessMainWindow):
         self.data_disk_dialog = None
         self.shutdown_dialog: ShutdownProgressDialog | None = None
         self._force_close = False
+        self.web_console_host = WebConsoleHost(paths=self.paths, parent=self)
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
         self.device_page.groups_changed.connect(self.refresh_group_filters)
@@ -904,6 +906,7 @@ class MainWindow(AppFramelessMainWindow):
 
     def _finish_app_exit(self) -> None:
         app_logger.log_info("APP_EXIT", "software closed")
+        self.web_console_host.stop()
         if self.tray_icon is not None:
             self.tray_icon.hide()
         self._force_close = True
@@ -1078,16 +1081,18 @@ class MainWindow(AppFramelessMainWindow):
         self.tray_actions = {
             "show": QAction(self),
             "hide": QAction(self),
+            "web": QAction(self),
             "logs": QAction(self),
             "stop": QAction(self),
             "exit": QAction(self),
         }
         self.tray_actions["show"].triggered.connect(self.show_main_window)
         self.tray_actions["hide"].triggered.connect(self.hide_to_tray)
+        self.tray_actions["web"].triggered.connect(self.open_web_console)
         self.tray_actions["logs"].triggered.connect(self.open_log_folder)
         self.tray_actions["stop"].triggered.connect(self.confirm_stop_all_background_tasks)
         self.tray_actions["exit"].triggered.connect(self.exit_from_tray)
-        for key in ("show", "hide", "logs", "stop"):
+        for key in ("show", "hide", "web", "logs", "stop"):
             self.tray_menu.addAction(self.tray_actions[key])
         self.tray_menu.addSeparator()
         self.tray_menu.addAction(self.tray_actions["exit"])
@@ -1104,6 +1109,9 @@ class MainWindow(AppFramelessMainWindow):
         if self.tray_actions:
             self.tray_actions["show"].setText(self.i18n.t("tray.show_window"))
             self.tray_actions["hide"].setText(self.i18n.t("tray.hide_to_tray"))
+            self.tray_actions["web"].setText(self.i18n.t("tray.open_web_console"))
+            self.tray_actions["web"].setVisible(self.feature_gate.is_visible("system.web_console"))
+            self.tray_actions["web"].setEnabled(self.feature_gate.is_enabled("system.web_console"))
             self.tray_actions["logs"].setText(self.i18n.t("tray.open_log_folder"))
             self.tray_actions["stop"].setText(self.i18n.t("tray.stop_all_tasks"))
             self.tray_actions["stop"].setEnabled(task_count > 0)
@@ -1177,6 +1185,10 @@ class MainWindow(AppFramelessMainWindow):
     def open_log_folder(self) -> None:
         self.paths.app_log_path.parent.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.app_log_path.parent)))
+
+    def open_web_console(self) -> None:
+        self.feature_gate.assert_enabled("system.web_console")
+        self.web_console_host.open()
 
     def confirm_stop_all_background_tasks(self) -> None:
         if not self.has_background_tasks():

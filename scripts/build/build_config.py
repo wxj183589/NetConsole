@@ -46,6 +46,10 @@ class BuildConfig:
             self.ipop_notice,
         )
 
+    @property
+    def web_dir(self) -> Path:
+        return self.root / "apps" / "web"
+
 
 def load_config() -> BuildConfig:
     from netconsole.core.version import APP_AUTHOR, APP_NAME, APP_VERSION

@@ -24,7 +24,7 @@
 
 ## 3. 已登记的子功能与内部能力
 
-Registry 当前显式登记的主要子功能包括：设备外部终端/SecureCRT/OmniPeek 导出；轨道交通 train online、车载网络、轨旁 AP、MR/Mesh、Online MR 采集与分析；Online MR 链路详情、fping 汇总、备注、高级 Ping、iPerf 和 Agent 采集包入口 `online_mr.agent_packages`；AC 轨旁计划、在线概览、FIT AP 资源/光衰/扩展及动作；文件管理 Mesh 下载/自动导入/WinSCP；网络工具 toolbox、`network_tools.traffic`、`network_tools.wireless_scan` 与 `network_tools.ipop`；Mesh 报告；系统磁盘清理、变更记录、开源信息和开发态 Feature 页面。无线扫描与无线勘测不是同一模块，当前仅标记为 Web 迁移 HOLD，不禁用现有 Qt Tab。
+Registry 当前显式登记的主要子功能包括：设备外部终端/SecureCRT/OmniPeek 导出；轨道交通 train online、车载网络、轨旁 AP、MR/Mesh、Online MR 采集与分析；Online MR 链路详情、fping 汇总、备注、高级 Ping、iPerf 和 Agent 采集包入口 `online_mr.agent_packages`；AC 轨旁计划、在线概览、FIT AP 资源/光衰/扩展及动作；文件管理 Mesh 下载/自动导入/WinSCP；网络工具 toolbox、`network_tools.traffic`、`network_tools.wireless_scan` 与 `network_tools.ipop`；Mesh 报告；系统磁盘清理、变更记录、开源信息、Web 控制台动作 `system.web_console` 和开发态 Feature 页面。无线扫描与无线勘测不是同一模块，当前仅标记为 Web 迁移 HOLD，不禁用现有 Qt Tab。
 
 阶段 3 新增 Web 页面登记项 `web.agent_management`。它只控制 Agent 配置与健康管理入口，不代表 iPerf、Ping 或 Online MR 已迁移。
 
