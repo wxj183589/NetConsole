@@ -62,7 +62,7 @@ func Load(path string) (*Config, error) {
 	}
 	b, err := os.ReadFile(abs)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置失败: %w", err)
+		return nil, fmt.Errorf("读取配置失败 %s: %w", abs, err)
 	}
 	var cfg Config
 	if err := json.Unmarshal(b, &cfg); err != nil {
@@ -122,14 +122,68 @@ func (c *Config) Resolve(path string) string {
 	return filepath.Clean(filepath.Join(c.BaseDir, path))
 }
 
-func (c *Config) DataPath() string        { return c.Resolve(c.Agent.DataDir) }
-func (c *Config) LogPath() string         { return c.Resolve(c.Agent.LogDir) }
-func (c *Config) PackagePath() string     { return c.Resolve(c.Agent.PackageDir) }
-func (c *Config) IperfPath() string       { return c.resolveRuntimeTool(c.Tools.Iperf3WindowsX64, DefaultIperf3WindowsX64) }
-func (c *Config) FpingPath() string       { return c.resolveRuntimeTool(c.Tools.FpingWindowsX64, DefaultFpingWindowsX64) }
+func (c *Config) DataPath() string    { return c.Resolve(c.Agent.DataDir) }
+func (c *Config) LogPath() string     { return c.Resolve(c.Agent.LogDir) }
+func (c *Config) PackagePath() string { return c.Resolve(c.Agent.PackageDir) }
+func (c *Config) IperfPath() string {
+	return c.resolveRuntimeTool(c.Tools.Iperf3WindowsX64, DefaultIperf3WindowsX64)
+}
+func (c *Config) FpingPath() string {
+	return c.resolveRuntimeTool(c.Tools.FpingWindowsX64, DefaultFpingWindowsX64)
+}
 func (c *Config) MRCollectorPath() string { return c.Resolve(c.Tools.MRCollectorWindowsX64) }
 func (c *Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", c.Agent.ListenHost, c.Agent.ListenPort)
+}
+
+// ResolveConfigPath returns the runtime config path without treating an example
+// config as an active configuration. The CLI and environment variables are
+// explicit overrides; the remaining candidates are runtime locations.
+func ResolveConfigPath(explicit string) string {
+	if path := strings.TrimSpace(explicit); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_CONFIG")); path != "" {
+		return path
+	}
+
+	candidates := make([]string, 0, 4)
+	if root := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_PROJECT_ROOT")); root != "" {
+		candidates = append(candidates, filepath.Join(root, ".local", "agent", "config.json"))
+	}
+	if home := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_HOME")); home != "" {
+		candidates = append(candidates, filepath.Join(home, "config.json"))
+	}
+	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+		candidates = append(candidates, filepath.Join(localAppData, "NetConsole", "Agent", "config.json"))
+	}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config.json"))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return "config.json"
+}
+
+// ResolveTargetsPath keeps editable targets beside the active config unless
+// the caller or environment explicitly selects another file.
+func ResolveTargetsPath(explicit, configDir string) string {
+	if path := strings.TrimSpace(explicit); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_TARGETS")); path != "" {
+		return path
+	}
+	if configDir != "" {
+		return filepath.Join(configDir, "targets.json")
+	}
+	return "targets.json"
 }
 
 func (c *Config) resolveRuntimeTool(configured, defaultPath string) string {
@@ -140,10 +194,20 @@ func (c *Config) resolveRuntimeTool(configured, defaultPath string) string {
 	if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
 		return resolved
 	}
-	resourceRoot := filepath.Clean(filepath.Join(c.BaseDir, "..", "..", "resources", "tools"))
-	if info, err := os.Stat(resourceRoot); err != nil || !info.IsDir() {
-		return resolved
+	resourceRoots := make([]string, 0, 3)
+	if root := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_PROJECT_ROOT")); root != "" {
+		resourceRoots = append(resourceRoots, filepath.Join(root, "resources", "tools"))
 	}
-	relative := strings.TrimPrefix(filepath.ToSlash(defaultPath), "./tools/windows-x64/")
-	return filepath.Clean(filepath.Join(resourceRoot, "windows-x64", filepath.FromSlash(relative)))
+	resourceRoots = append(resourceRoots,
+		filepath.Clean(filepath.Join(c.BaseDir, "..", "..", "resources", "tools")),
+		filepath.Clean(filepath.Join(c.BaseDir, "..", "..", "..", "..", "resources", "tools")),
+	)
+	for _, resourceRoot := range resourceRoots {
+		if info, err := os.Stat(resourceRoot); err != nil || !info.IsDir() {
+			continue
+		}
+		relative := strings.TrimPrefix(filepath.ToSlash(defaultPath), "./tools/windows-x64/")
+		return filepath.Clean(filepath.Join(resourceRoot, "windows-x64", filepath.FromSlash(relative)))
+	}
+	return resolved
 }

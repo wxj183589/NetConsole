@@ -27,7 +27,7 @@ NetConsole/
 │  ├─ dev/                  # 本地开发、基准和手工 smoke 脚本
 │  └─ maintenance/          # 仓库维护、离线迁移和审计脚本
 ├─ tests/                   # 自动化测试和脱敏 fixtures
-├─ tools/                   # 独立诊断工具及允许打包的运行工具
+├─ tools/                   # 独立开发、诊断、维护和协议分析工具
 ├─ main.py                  # 轻量兼容入口
 ├─ pyproject.toml           # src 包发现和 editable 安装配置
 ├─ pytest.ini               # pytest 入口配置
@@ -50,11 +50,29 @@ NetConsole/
 
 ## 4. 应用边界
 
-- `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`。
+- `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，开发态可使用 `.local/agent/`。
 - `apps/desktop` 只放 Qt Web Shell 宿主，不复制 Python Core 或业务服务。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
 - `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser、UI 和包内静态资源；包名仍为 `netconsole`。
 - 任何应用不得把数据库、日志、抓包、采集结果、缓存或正式报告写入源码目录。
+
+### Agent 二级目录
+
+`apps/agent/` 只保留源码和可审查模板：
+
+```text
+apps/agent/
+├─ cmd/                         # Go 入口
+├─ internal/                    # Agent 内部包
+├─ mr_collector_py/             # Python MR sidecar 源码
+├─ web/                         # 内嵌 Web 静态文件
+├─ scripts/                     # Agent 构建、启动和运行维护脚本
+├─ resources/config/            # config.example.json、targets.example.json
+├─ go.mod、go.sum、README.md
+└─ testdata/                    # 需要时放脱敏测试样本，不放运行数据
+```
+
+`bin/`、`data/`、`dist/`、`logs/`、`packages/`、`tmp/`、`apps/agent/tools/` 不得作为 Agent 源码子目录保留。Agent 开发运行数据使用 `.local/agent/{data,logs,tmp,runtime,packages}`，打包态使用 `%LOCALAPPDATA%\NetConsole\Agent\{data,logs,packages}`；构建产物统一写入 `dist/agent/`。运行时第三方工具的唯一源码来源是根 `resources/tools/`，Agent 交付包内才生成 `tools/windows-x64/{fping,iperf3}`，不在 `apps/agent/resources/tools/` 或 `apps/agent/tools/` 复制第二份。
 
 ## 5. 配置和资源规则
 

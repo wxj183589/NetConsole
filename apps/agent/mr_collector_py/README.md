@@ -8,6 +8,6 @@ pip install pyinstaller netmiko paramiko cryptography
 build_windows.bat
 ```
 
-构建临时产物：`apps/agent/mr_collector_py/dist/netconsole-mr-collector.exe`。Agent 总构建脚本会将它复制到交付包内的 `tools/windows-x64/mr_collector/`；它是 Agent 自建 sidecar，不属于 `resources/tools/` 第三方运行时工具白名单。
+构建临时产物：`dist/agent/.build-windows-x64/mr_collector/dist/netconsole-mr-collector.exe`。Agent 总构建脚本会将它复制到交付包内的 `tools/windows-x64/mr_collector/`；它是 Agent 自建 sidecar，不属于 `resources/tools/` 第三方运行时工具白名单。
 
 命令、raw 文件名和 session 目录与 `netconsole/services/online_mr/` 保持一致；停止由 Agent 创建 `stop.request` 文件触发。sidecar stdout/stderr 使用 UTF-8，所有 JSON 状态写入均使用带锁的原子替换。

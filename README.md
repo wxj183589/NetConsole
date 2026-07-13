@@ -48,6 +48,8 @@ tools/      独立开发、诊断、维护和协议分析工具，不作为运�
 
 根目录只保留项目级配置、说明、许可证、`main.py` 兼容入口和上述白名单目录。完整规则见 [仓库目录规范](docs/development/repository-layout.md)。
 
+Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/resources/config/` 下的示例配置；开发运行数据在 `.local/agent/`，构建输出在 `dist/agent/`。fping/iPerf 的版本化源码唯一位于 `resources/tools/`，Agent 交付包内才复制到 `tools/windows-x64/`。
+
 ## 架构摘要
 
 ```mermaid

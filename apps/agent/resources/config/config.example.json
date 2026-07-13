@@ -4,9 +4,9 @@
     "name": "NetConsole Windows Agent",
     "listen_host": "0.0.0.0",
     "listen_port": 18080,
-    "data_dir": "$LOCALAPPDATA/NetConsole/Agent/data",
-    "log_dir": "$LOCALAPPDATA/NetConsole/Agent/logs",
-    "package_dir": "$LOCALAPPDATA/NetConsole/Agent/packages"
+    "data_dir": "./data",
+    "log_dir": "./logs",
+    "package_dir": "./packages"
   },
   "security": {
     "token": "change-me",

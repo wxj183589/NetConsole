@@ -10,8 +10,9 @@ V1 已实现 iPerf server/client、真实 fping、并发 TCP fallback `ping_prob
 - Agent 只保存最小目标连接信息，不复制完整业务点表；
 - 密码不进入 API 明文响应、任务元数据、运行日志或采集包；
 - Go Agent 不执行 MR SSH；`apps/agent/mr_collector_py/collector_cli.py` 通过 Netmiko 执行采集，命令文本应持续与 `src/netconsole/services/online_mr/collection_commands.py` 对齐；
-- Agent 运行数据默认位于 `%LOCALAPPDATA%\NetConsole\Agent\{data,logs,packages}`，不写入主程序数据目录或源码目录；
+- Agent 运行数据默认位于 `%LOCALAPPDATA%\NetConsole\Agent\{data,logs,packages}`，开发态可通过 `NETCONSOLE_AGENT_PROJECT_ROOT` 使用 `.local/agent/{data,logs,tmp,runtime,packages}`，不写入主程序数据目录或源码目录；
 - `resources/tools/windows-x64/{iperf3,fping}` 是版本化第三方工具的唯一源码来源；交付包内配置使用 `tools/windows-x64/{iperf3,fping,mr_collector}`，不扫描 `apps/agent/tools/` 或其他旧目录。Cygwin 工具和 sidecar 子进程工作目录固定为 exe 所在目录；
+- `apps/agent/resources/config/{config.example.json,targets.example.json}` 只保存脱敏模板；真实配置和目标文件放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent\`，模板不会覆盖真实配置；
 - Windows 启动默认通过 `SetThreadExecutionState` 防止休眠，任务运行时可保持屏幕，退出时恢复系统电源行为；失败只写入状态，不阻断采集；
 - 阶段 4B-2 已通过 `TrafficTestApplicationService`、Agent Adapter/Supervisor 完成 fping/iPerf 调度、任务映射和恢复同步；Web 业务入口仍属于阶段 4C。
 - `GET /api/v1/capabilities` 是 Controller 的能力事实来源；旧 Agent 没有该接口时，Controller 必须保留未知状态，不能按操作系统推断。
@@ -22,6 +23,6 @@ Windows 构建入口：
 apps\agent\scripts\build_windows.bat
 ```
 
-输出为 `apps/agent/dist/netconsole-agent-windows-x64/`，包含 console 版、GUI 托盘版、sidecar（若构建环境可用）、工具目录和启动/兼容检查脚本；不进入当前 Python 主程序发布白名单。
+输出为 `dist/agent/windows-x64/`，临时构建目录为 `dist/agent/.build-windows-x64/`，包含 console 版、GUI 托盘版、sidecar（若构建环境可用）、工具目录和启动/兼容检查脚本；不进入当前 Python 主程序发布白名单。`apps/agent/bin|data|dist|logs|packages|tmp` 不作为源码子目录保留。
 
 Python 控制面、凭据与数据库边界见 [Agent Controller](AGENT_CONTROLLER.md)，流量任务协议见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md)，统一执行与恢复见 [流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。

@@ -25,8 +25,8 @@ import (
 var version = "v1.0.0-windows"
 
 func main() {
-	configPath := flag.String("config", "config.json", "配置文件路径")
-	targetsPath := flag.String("targets", "targets.json", "目标设备文件路径")
+	configPath := flag.String("config", "", "配置文件路径；未指定时按运行目录规则查找")
+	targetsPath := flag.String("targets", "", "目标设备文件路径；未指定时与活动配置放在一起")
 	consoleMode := flag.Bool("console", false, "控制台调试模式")
 	openWeb := flag.Bool("open", false, "启动后打开 Web 页面")
 	showVersion := flag.Bool("version", false, "显示版本")
@@ -35,11 +35,12 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	cfg, err := config.Load(*configPath)
+	resolvedConfig := config.ResolveConfigPath(*configPath)
+	cfg, err := config.Load(resolvedConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
-	resolvedTargets := *targetsPath
+	resolvedTargets := config.ResolveTargetsPath(*targetsPath, cfg.BaseDir)
 	if !filepath.IsAbs(resolvedTargets) {
 		resolvedTargets = filepath.Join(cfg.BaseDir, resolvedTargets)
 	}

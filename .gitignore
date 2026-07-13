@@ -45,6 +45,8 @@ apps/web/src/**/*.d.ts
 !apps/web/src/env.d.ts
 
 # Agent build/runtime output
+.local/agent/
+dist/agent/
 apps/agent/bin/
 apps/agent/data/
 apps/agent/logs/
