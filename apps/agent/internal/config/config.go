@@ -14,6 +14,8 @@ const (
 	DefaultMRCollectorWindowsX64 = "./tools/windows-x64/mr_collector/netconsole-mr-collector.exe"
 )
 
+var executablePath = os.Executable
+
 type Config struct {
 	Agent struct {
 		ID         string `json:"id"`
@@ -131,7 +133,9 @@ func (c *Config) IperfPath() string {
 func (c *Config) FpingPath() string {
 	return c.resolveRuntimeTool(c.Tools.FpingWindowsX64, DefaultFpingWindowsX64)
 }
-func (c *Config) MRCollectorPath() string { return c.Resolve(c.Tools.MRCollectorWindowsX64) }
+func (c *Config) MRCollectorPath() string {
+	return c.resolveRuntimeTool(c.Tools.MRCollectorWindowsX64, DefaultMRCollectorWindowsX64)
+}
 func (c *Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", c.Agent.ListenHost, c.Agent.ListenPort)
 }
@@ -187,27 +191,45 @@ func ResolveTargetsPath(explicit, configDir string) string {
 }
 
 func (c *Config) resolveRuntimeTool(configured, defaultPath string) string {
-	resolved := c.Resolve(configured)
-	if filepath.Clean(configured) != filepath.Clean(defaultPath) {
-		return resolved
+	configured = strings.TrimSpace(configured)
+	if configured != "" && filepath.Clean(configured) != filepath.Clean(defaultPath) {
+		return c.Resolve(configured)
 	}
-	if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
-		return resolved
-	}
-	resourceRoots := make([]string, 0, 3)
-	if root := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_PROJECT_ROOT")); root != "" {
-		resourceRoots = append(resourceRoots, filepath.Join(root, "resources", "tools"))
-	}
-	resourceRoots = append(resourceRoots,
-		filepath.Clean(filepath.Join(c.BaseDir, "..", "..", "resources", "tools")),
-		filepath.Clean(filepath.Join(c.BaseDir, "..", "..", "..", "..", "resources", "tools")),
-	)
-	for _, resourceRoot := range resourceRoots {
-		if info, err := os.Stat(resourceRoot); err != nil || !info.IsDir() {
-			continue
+
+	fallback := c.Resolve(defaultPath)
+	deliveryRelative := filepath.FromSlash(strings.TrimPrefix(filepath.ToSlash(defaultPath), "./"))
+	resourceRelative := filepath.FromSlash(strings.TrimPrefix(filepath.ToSlash(deliveryRelative), "tools/"))
+	candidates := make([]string, 0, 6)
+	seen := make(map[string]struct{})
+	addCandidate := func(path string) {
+		cleaned := filepath.Clean(path)
+		key := strings.ToLower(filepath.ToSlash(cleaned))
+		if _, exists := seen[key]; exists {
+			return
 		}
-		relative := strings.TrimPrefix(filepath.ToSlash(defaultPath), "./tools/windows-x64/")
-		return filepath.Clean(filepath.Join(resourceRoot, "windows-x64", filepath.FromSlash(relative)))
+		seen[key] = struct{}{}
+		candidates = append(candidates, cleaned)
 	}
-	return resolved
+
+	if executable, err := executablePath(); err == nil && strings.TrimSpace(executable) != "" {
+		addCandidate(filepath.Join(filepath.Dir(executable), deliveryRelative))
+	}
+	if root := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_PROJECT_ROOT")); root != "" {
+		addCandidate(filepath.Join(root, "resources", "tools", resourceRelative))
+	}
+	for directory := filepath.Clean(c.BaseDir); ; directory = filepath.Dir(directory) {
+		addCandidate(filepath.Join(directory, "resources", "tools", resourceRelative))
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+	}
+	addCandidate(fallback)
+
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return fallback
 }

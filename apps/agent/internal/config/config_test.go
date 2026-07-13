@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+func useExecutablePath(t *testing.T, path string) {
+	t.Helper()
+	original := executablePath
+	executablePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { executablePath = original })
+}
+
+func writeTool(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("tool"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadAppliesStandardToolPaths(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.json")
@@ -26,12 +43,9 @@ func TestDefaultTrafficToolsResolveFromRepositoryResourcesInSourceMode(t *testin
 	root := t.TempDir()
 	agentRoot := filepath.Join(root, "apps", "agent")
 	fping := filepath.Join(root, "resources", "tools", "windows-x64", "fping", "fping.exe")
-	if err := os.MkdirAll(filepath.Dir(fping), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fping, []byte("tool"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTool(t, fping)
+	t.Setenv("NETCONSOLE_AGENT_PROJECT_ROOT", "")
+	useExecutablePath(t, filepath.Join(root, "bin", "netconsole-agent.exe"))
 	cfg := &Config{
 		BaseDir: agentRoot,
 	}
@@ -46,12 +60,9 @@ func TestDefaultTrafficToolsResolveFromAgentExampleConfigDirectory(t *testing.T)
 	root := t.TempDir()
 	configDir := filepath.Join(root, "apps", "agent", "resources", "config")
 	fping := filepath.Join(root, "resources", "tools", "windows-x64", "fping", "fping.exe")
-	if err := os.MkdirAll(filepath.Dir(fping), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fping, []byte("tool"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTool(t, fping)
+	t.Setenv("NETCONSOLE_AGENT_PROJECT_ROOT", "")
+	useExecutablePath(t, filepath.Join(root, "bin", "netconsole-agent.exe"))
 	cfg := &Config{BaseDir: configDir}
 	cfg.Tools.FpingWindowsX64 = DefaultFpingWindowsX64
 
@@ -64,18 +75,64 @@ func TestDefaultTrafficToolsResolveFromDevelopmentRuntimeConfig(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, ".local", "agent")
 	fping := filepath.Join(root, "resources", "tools", "windows-x64", "fping", "fping.exe")
-	if err := os.MkdirAll(filepath.Dir(fping), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fping, []byte("tool"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTool(t, fping)
 	t.Setenv("NETCONSOLE_AGENT_PROJECT_ROOT", root)
+	useExecutablePath(t, filepath.Join(root, "bin", "netconsole-agent.exe"))
 	cfg := &Config{BaseDir: configDir}
 	cfg.Tools.FpingWindowsX64 = DefaultFpingWindowsX64
 
 	if got := cfg.FpingPath(); got != fping {
 		t.Fatalf("development-runtime fping path = %q, want %q", got, fping)
+	}
+}
+
+func TestDefaultRuntimeToolsPreferDeliveryDirectory(t *testing.T) {
+	root := t.TempDir()
+	delivery := filepath.Join(root, "dist", "agent", "windows-x64")
+	executable := filepath.Join(delivery, "netconsole-agent-console.exe")
+	localConfigDir := filepath.Join(root, "localappdata", "NetConsole", "Agent")
+	useExecutablePath(t, executable)
+	t.Setenv("NETCONSOLE_AGENT_PROJECT_ROOT", "")
+
+	wantIperf := filepath.Join(delivery, "tools", "windows-x64", "iperf3", "iperf3.exe")
+	wantFping := filepath.Join(delivery, "tools", "windows-x64", "fping", "fping.exe")
+	wantMR := filepath.Join(delivery, "tools", "windows-x64", "mr_collector", "netconsole-mr-collector.exe")
+	for _, path := range []string{wantIperf, wantFping, wantMR} {
+		writeTool(t, path)
+	}
+
+	cfg := &Config{BaseDir: localConfigDir}
+	cfg.Tools.Iperf3WindowsX64 = DefaultIperf3WindowsX64
+	cfg.Tools.FpingWindowsX64 = DefaultFpingWindowsX64
+	cfg.Tools.MRCollectorWindowsX64 = DefaultMRCollectorWindowsX64
+	if got := cfg.IperfPath(); got != wantIperf {
+		t.Fatalf("delivery iperf3 path = %q, want %q", got, wantIperf)
+	}
+	if got := cfg.FpingPath(); got != wantFping {
+		t.Fatalf("delivery fping path = %q, want %q", got, wantFping)
+	}
+	if got := cfg.MRCollectorPath(); got != wantMR {
+		t.Fatalf("delivery MR collector path = %q, want %q", got, wantMR)
+	}
+}
+
+func TestExplicitToolPathsResolveFromActiveConfigDirectory(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "localappdata", "NetConsole", "Agent")
+	absolute := filepath.Join(root, "custom", "iperf3.exe")
+	cfg := &Config{BaseDir: configDir}
+	cfg.Tools.Iperf3WindowsX64 = absolute
+	cfg.Tools.FpingWindowsX64 = filepath.Join("custom", "fping.exe")
+	cfg.Tools.MRCollectorWindowsX64 = filepath.Join("custom", "netconsole-mr-collector.exe")
+
+	if got := cfg.IperfPath(); got != absolute {
+		t.Fatalf("absolute iperf3 path = %q, want %q", got, absolute)
+	}
+	if got, want := cfg.FpingPath(), filepath.Join(configDir, "custom", "fping.exe"); got != want {
+		t.Fatalf("relative fping path = %q, want %q", got, want)
+	}
+	if got, want := cfg.MRCollectorPath(), filepath.Join(configDir, "custom", "netconsole-mr-collector.exe"); got != want {
+		t.Fatalf("relative MR collector path = %q, want %q", got, want)
 	}
 }
 

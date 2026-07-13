@@ -82,7 +82,7 @@ apps/agent/
 - `resources` 放随代码发布的只读资源、规则、命令参考和明确版本化的 MIB 归档；不得把用户导入的 MIB、编译索引或报告写回此目录。
 - 所有文档中的源码文件路径使用 `src/netconsole/...`；Python import、模块或包名仍使用 `netconsole.*`，不得把 import 写成 `src.netconsole.*`。
 - `resources/tools/` 是 fping/iPerf 运行工具的唯一源码来源；`tools/` 只用于开发、诊断、维护和协议分析。`tools/windows-x64/ipop/` 只保存 IPOP 外部工具说明，`IPOP.EXE` 不提交、不打包。
-- `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent\`。
+- `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent\`。Agent 启动脚本可在首次运行时从模板初始化缺失文件，但不得覆盖已有真实配置。
 - `src/netconsole/assets`、`src/netconsole/resources` 是包内资源，必须通过资源 helper 定位并在打包配置中显式处理。
 - 真实敏感配置只能由用户在本机应用数据目录配置，提交前必须脱敏。
 

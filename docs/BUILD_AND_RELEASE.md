@@ -35,7 +35,7 @@ scripts/build/release.py
 apps\agent\scripts\build_windows.bat
 ```
 
-输出为 `dist/agent/windows-x64/`，临时构建目录为 `dist/agent/.build-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并从 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制工具到交付包内的 `tools/windows-x64/`。Agent 的示例配置位于 `apps/agent/resources/config/`，真实 `config.json`、`targets.json` 放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent`；运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，Agent 不携带或检测 IPOP。
+输出为 `dist/agent/windows-x64/`，临时构建目录为 `dist/agent/.build-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并从 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制工具到交付包内的 `tools/windows-x64/`。交付包的 `start_agent.bat` 与 `start_console.bat` 会在首次运行时，从包内示例仅初始化缺失的 `%LOCALAPPDATA%\NetConsole\Agent\config.json`、`targets.json`，不会覆盖真实配置。Agent 的示例配置位于 `apps/agent/resources/config/`，真实配置放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent`；运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，Agent 不携带或检测 IPOP。
 
 当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 Agent 运行数据打入发布包。
 

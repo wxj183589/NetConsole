@@ -32,6 +32,15 @@ cd dist\agent\windows-x64
 start_agent.bat
 ```
 
+首次运行 `apps\agent\scripts\start_windows.bat`、交付包的 `start_agent.bat` 或 `start_console.bat` 时，脚本会仅在缺失时自动创建：
+
+```text
+%LOCALAPPDATA%\NetConsole\Agent\config.json
+%LOCALAPPDATA%\NetConsole\Agent\targets.json
+```
+
+源码启动脚本从 `apps/agent/resources/config/` 复制模板；交付包脚本从包内的 `config.example.json` 和 `targets.example.json` 复制。已有真实配置绝不会被覆盖。首次初始化后按提示编辑上述 LocalAppData 文件，再填入现场 MR / iPerf 目标；真实配置不得提交到 Git。
+
 开发态需要先把示例配置复制到仓库的 `.local\agent\`，再从仓库根目录启动：
 
 ```powershell
@@ -47,7 +56,7 @@ go run .\cmd\netconsole-agent --console --open
 
 ## 配置
 
-V1 使用标准库可直接读取的 JSON 配置，不引入 YAML 依赖。版本化模板位于 `apps/agent/resources/config/config.example.json`；真实配置不得放回源码目录。默认查找顺序为：命令行 `--config`、`NETCONSOLE_AGENT_CONFIG`、开发态 `$NETCONSOLE_AGENT_PROJECT_ROOT/.local/agent/config.json`、`NETCONSOLE_AGENT_HOME/config.json`、`%LOCALAPPDATA%\NetConsole\Agent\config.json`、可执行文件旁的 `config.json`。相对路径均以活动配置文件所在目录为基准。主要配置段：
+V1 使用标准库可直接读取的 JSON 配置，不引入 YAML 依赖。版本化模板位于 `apps/agent/resources/config/config.example.json`；真实配置不得放回源码目录。默认查找顺序为：命令行 `--config`、`NETCONSOLE_AGENT_CONFIG`、开发态 `$NETCONSOLE_AGENT_PROJECT_ROOT/.local/agent/config.json`、`NETCONSOLE_AGENT_HOME/config.json`、`%LOCALAPPDATA%\NetConsole\Agent\config.json`、可执行文件旁的 `config.json`。`agent` 运行目录和用户显式配置的相对工具路径均以活动配置文件所在目录为基准；默认工具路径按交付包和源码资源规则解析。主要配置段：
 
 - `agent`：Agent ID/名称、监听地址；数据、日志和采集包默认相对于活动配置目录写入，开发态即 `.local\agent\{data,logs,packages}`，打包态即 `%LOCALAPPDATA%\NetConsole\Agent\{data,logs,packages}`，也可在配置中覆盖；
 - `security`：Token 和预留 Web 账号字段；`enable_auth` 默认 `false`；
@@ -110,7 +119,7 @@ tools/windows-x64/
 
 不再支持 `apps/agent/tools/iperf/` 等旧目录，也不做 legacy fallback。使用 Cygwin 版工具时，exe 和对应 DLL 必须位于同一个工具目录；Agent 启动子进程时会把工作目录设置为 exe 所在目录。缺少 exe 或 DLL 时不会创建伪运行任务，API 和 Web 会给出当前配置路径及放置提示。
 
-源码态从 `apps/agent` 启动且交付目录尚未生成时，默认工具路径会解析到仓库的 `resources/tools/windows-x64/`；打包态优先使用可执行文件旁的 `tools/windows-x64/`。`apps/agent/resources/` 只保存 Agent 示例配置；运行时工具不在此目录复制第二份，避免与根 `resources/tools/` 产生双来源。`apps/agent/tools/` 永久禁止使用。
+默认工具路径先检查 Agent 可执行文件同级的 `tools/windows-x64/`，因此真实配置位于 `%LOCALAPPDATA%` 时不会错误查找 `%LOCALAPPDATA%\NetConsole\Agent\tools`；开发态其次检查 `$NETCONSOLE_AGENT_PROJECT_ROOT/resources/tools/windows-x64/`，再从活动配置目录向上查找仓库 `resources/tools/windows-x64/`，最后才回退到配置目录相对路径。用户显式配置的绝对路径直接使用，相对路径仍以 `config.json` 所在目录解析。MR sidecar 使用同一交付包优先规则。`apps/agent/resources/` 只保存 Agent 示例配置；运行时工具不在此目录复制第二份，避免与根 `resources/tools/` 产生双来源。`apps/agent/tools/` 永久禁止使用。
 
 真实 fping 使用独立 `fping` 任务类型，固定调用随 Agent 部署的 fping 5.5 参数，不接受任意命令、工具路径或输出路径。`ping_probe` 继续使用并发 TCP Connect，事件保持 `mode=tcp`，不等同于 ICMP Ping。
 

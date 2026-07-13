@@ -12,6 +12,8 @@ resources/tools/windows-x64/
 
 Agent 和桌面端正式包内的目标位置仍为 `tools/windows-x64/{fping,iperf3}`，这是交付包内部布局，不是源码来源目录。Agent 不打包 `ipop`；`IPOP.EXE` 是用户自备、不可再分发的桌面端可选外部工具。
 
+Agent 的 Python MR sidecar 是 `apps/agent/mr_collector_py/` 的自建构建产物，交付包内目标位置为 `tools/windows-x64/mr_collector/`，不属于本目录的第三方工具白名单。
+
 ## 来源与许可证
 
 - `fping`：`VERSION.txt` 记录为 schweikert/fping v5.5；目录内保留 `COPYING`、`CYGWIN_LICENSE` 和说明文件。

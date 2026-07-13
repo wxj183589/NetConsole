@@ -71,24 +71,65 @@ if exist "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" (
   copy /y "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" "%DELIVERY%\tools\windows-x64\mr_collector\netconsole-mr-collector.exe" >nul || exit /b 1
 )
 
+> "%DELIVERY%\init_agent_config.bat" (
+  echo @echo off
+  echo setlocal EnableExtensions
+  echo chcp 65001 ^>nul
+  echo if defined LOCALAPPDATA goto localappdata_ready
+  echo echo [ERROR] LOCALAPPDATA is unavailable; cannot initialize Agent runtime configuration.
+  echo exit /b 1
+  echo :localappdata_ready
+  echo set "NETCONSOLE_AGENT_HOME=%%LOCALAPPDATA%%\NetConsole\Agent"
+  echo if not exist "%%NETCONSOLE_AGENT_HOME%%" mkdir "%%NETCONSOLE_AGENT_HOME%%"
+  echo if exist "%%NETCONSOLE_AGENT_HOME%%" goto agent_home_ready
+  echo echo [ERROR] Cannot create Agent runtime directory: %%NETCONSOLE_AGENT_HOME%%
+  echo exit /b 1
+  echo :agent_home_ready
+  echo if exist "%%NETCONSOLE_AGENT_HOME%%\config.json" goto config_ready
+  echo if exist "%%~dp0config.example.json" goto config_template_ready
+  echo echo [ERROR] Config template was not found: %%~dp0config.example.json
+  echo exit /b 1
+  echo :config_template_ready
+  echo copy /y "%%~dp0config.example.json" "%%NETCONSOLE_AGENT_HOME%%\config.json" ^>nul
+  echo if errorlevel 1 goto config_copy_failed
+  echo echo [INIT] Created %%NETCONSOLE_AGENT_HOME%%\config.json from config.example.json
+  echo :config_ready
+  echo if exist "%%NETCONSOLE_AGENT_HOME%%\targets.json" goto targets_ready
+  echo if exist "%%~dp0targets.example.json" goto targets_template_ready
+  echo echo [ERROR] Targets template was not found: %%~dp0targets.example.json
+  echo exit /b 1
+  echo :targets_template_ready
+  echo copy /y "%%~dp0targets.example.json" "%%NETCONSOLE_AGENT_HOME%%\targets.json" ^>nul
+  echo if errorlevel 1 goto targets_copy_failed
+  echo echo [INIT] Created %%NETCONSOLE_AGENT_HOME%%\targets.json from targets.example.json
+  echo :targets_ready
+  echo echo [INFO] Edit these files for real MR / iperf targets if needed: %%NETCONSOLE_AGENT_HOME%%
+  echo exit /b 0
+  echo :config_copy_failed
+  echo echo [ERROR] Cannot initialize %%NETCONSOLE_AGENT_HOME%%\config.json
+  echo exit /b 1
+  echo :targets_copy_failed
+  echo echo [ERROR] Cannot initialize %%NETCONSOLE_AGENT_HOME%%\targets.json
+  echo exit /b 1
+)
 > "%DELIVERY%\start_agent.bat" (
   echo @echo off
+  echo setlocal EnableExtensions
+  echo chcp 65001 ^>nul
   echo cd /d "%%~dp0"
   echo set "NETCONSOLE_AGENT_HOME=%%LOCALAPPDATA%%\NetConsole\Agent"
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\config.json" echo [ERROR] Copy config.example.json to %%NETCONSOLE_AGENT_HOME%%\config.json first.
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\config.json" exit /b 1
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\targets.json" echo [ERROR] Copy targets.example.json to %%NETCONSOLE_AGENT_HOME%%\targets.json first.
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\targets.json" exit /b 1
+  echo call "%%~dp0init_agent_config.bat"
+  echo if errorlevel 1 exit /b 1
   echo start "" "netconsole-agent.exe" --open --config "%%NETCONSOLE_AGENT_HOME%%\config.json" --targets "%%NETCONSOLE_AGENT_HOME%%\targets.json"
 )
 > "%DELIVERY%\start_console.bat" (
   echo @echo off
+  echo setlocal EnableExtensions
+  echo chcp 65001 ^>nul
   echo cd /d "%%~dp0"
   echo set "NETCONSOLE_AGENT_HOME=%%LOCALAPPDATA%%\NetConsole\Agent"
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\config.json" echo [ERROR] Copy config.example.json to %%NETCONSOLE_AGENT_HOME%%\config.json first.
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\config.json" exit /b 1
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\targets.json" echo [ERROR] Copy targets.example.json to %%NETCONSOLE_AGENT_HOME%%\targets.json first.
-  echo if not exist "%%NETCONSOLE_AGENT_HOME%%\targets.json" exit /b 1
+  echo call "%%~dp0init_agent_config.bat"
+  echo if errorlevel 1 exit /b 1
   echo "netconsole-agent-console.exe" --console --open --config "%%NETCONSOLE_AGENT_HOME%%\config.json" --targets "%%NETCONSOLE_AGENT_HOME%%\targets.json"
   echo pause
 )
