@@ -41,7 +41,7 @@
 | Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | SNMP/无线勘测保持 DISABLED；新增能力默认登记 |
 | 日志分页 | 日志页面/Repository 查询 | 现有分页入口 | 已完成当前需求 | 是 | 大日志策略需随数据量复核 | 保持查询分页，不回 UI 全量加载 |
 | 自动清理 | 延时 `AppCleanupService` | 白名单日志/缓存/临时目录 | 已完成受控范围 | 是 | 手工磁盘清理是另一入口 | 不扩大到业务数据和数据库 |
-| Go/CentOS/远程 Agent | Windows Go Agent + Python Agent Controller + Vue 只读控制中心 | 配置、健康、能力、Typed Client、远端状态/工具/任务/日志/采集包查询、Traffic Adapter/Supervisor | 阶段 5C-1 只读监控完成 | Agent 资源、只读监控与 iPerf/fping 执行同步 | CentOS、主动注册、持久凭据、独立服务、远程 MR 控制 | 先做 localhost 自检；远程控制另行设计 |
+| Go/CentOS/远程 Agent | Windows Go Agent + Python Agent Controller + Vue 只读控制中心 | 配置、健康、能力、Typed Client、远端状态/工具/任务/日志/采集包查询、Traffic Adapter/Supervisor、本机维护自检 | 阶段 5B-12A localhost 自检通过 | Agent 资源、只读监控与 iPerf/fping 执行同步 | CentOS、主动注册、持久凭据、独立服务、远程 MR 控制 | 远程控制另行设计，不以本机结果代替现场验收 |
 
 ## 4. 当前非 Job Center 路径
 
@@ -79,4 +79,4 @@
 
 ## 7. 当前阶段边界
 
-阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 固化 Agent 契约，5B-7 增加安全 ZIP importer，5B-8 增加类型化查询、受控下载和 importer 编排，5B-9 增加维护脚本与 Controller 手工下载/导入门面，5B-10 复用既有 Agent Profile，增加只读包同步、局点静态设备 IP 候选和高层导入入口，5B-11 将该能力通过两个 Job 接入 Legacy Qt。阶段 5C-0 增加按需 Desktop WebHost、托盘入口、WebEngine fallback、本地临时会话和前端发布打包；阶段 5C-1 增加 Agent 远端状态、工具、任务、日志和采集包的只读控制中心。当前仍未启用 AGENT executor、远程 MR start/stop、Online MR FastAPI/Vue 或离线解析接入，也没有修改 Go Agent、LOCAL 生命周期、设备/AC/FIT-AP/MESH、SNMP Center 或无线勘测。
+阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 固化 Agent 契约，5B-7 增加安全 ZIP importer，5B-8 增加类型化查询、受控下载和 importer 编排，5B-9 增加维护脚本与 Controller 手工下载/导入门面，5B-10 复用既有 Agent Profile，增加只读包同步、局点静态设备 IP 候选和高层导入入口，5B-11 将该能力通过两个 Job 接入 Legacy Qt。阶段 5C-0 增加按需 Desktop WebHost、托盘入口、WebEngine fallback、本地临时会话和前端发布打包；阶段 5C-1 增加 Agent 远端状态、工具、任务、日志和采集包的只读控制中心；阶段 5B-12A 增加仅限 localhost 的 fping/iPerf 维护自检并完成本机真实 Agent 冒烟。当前仍未启用 AGENT executor、远程 MR start/stop、Online MR FastAPI/Vue 或离线解析接入，也没有修改 Go Agent、LOCAL 生命周期、设备/AC/FIT-AP/MESH、SNMP Center 或无线勘测。

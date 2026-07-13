@@ -336,3 +336,9 @@ Legacy Qt 的 Online MR 采集页操作栏增加 `online_mr.agent_packages` 入�
 导入完成后，对话框显示 Controller Task、Session 和本地会话目录，并提供复制 Package ID、复制只读验收命令和打开导入目录操作；这些操作只使用本次本地导入结果，不会把 Agent Token 或密码拼入命令、路径或 URL。
 
 5B-11 不新增 Agent start/stop/delete API，不修改 Go Agent 或 Agent Web，不开放 `executor=AGENT`，不改变 LOCAL Online MR 启动、停止、Traffic flush、raw 和打包生命周期，也不接 FastAPI/Vue。
+
+## 16. 本地 Agent 自检边界（5B-12A）
+
+维护脚本 `python -m scripts.maintenance.check_local_agent_runtime` 只允许连接 `127.0.0.1` 或 `localhost`，用于验证 Agent 状态、工具、fping/iPerf 任务、日志和终态。它不会调用 MR start/stop，不会下载或删除采集包，也不会改变本节仍为 `ONLINE_MR_EXECUTOR_UNSUPPORTED` 的远程执行边界。
+
+自检固定使用 fping `interval_ms=1000 / timeout_ms=4000 / packet_size=64 / count=10`；iPerf 使用回环 TCP、单流和 10 秒。当前 TCP 2 Mbps 仅为期望记录，不能当作车地链路限速或性能结论。

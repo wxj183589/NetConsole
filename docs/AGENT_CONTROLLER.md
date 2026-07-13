@@ -111,4 +111,20 @@ WS     /ws/agents
 - 阶段 5C-0 已让正式发布脚本构建 `apps/web` 并将 `dist` 作为内部资源打包；尚未开放 Agent 远程 MR 启停。
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`；配置模板中的 `web_username/web_password` 尚未形成实际登录契约，不能把 `admin/admin` 当作已启用认证。
 
-阶段 4B-2 已完成 `TrafficTestApplicationService`、执行端选择、任务中心关联和轮询恢复；阶段 4C 才实现 Traffic REST/WebSocket、实时指标和图表。协议细节见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。
+阶段 4B-2 已完成 `TrafficTestApplicationService`、执行端选择、任务中心关联和轮询恢复；阶段 4C 已实现 Traffic REST/WebSocket、实时指标和图表。协议细节见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。
+
+## 8. 本地 Agent 自检
+
+`scripts/maintenance/check_local_agent_runtime.py` 用于同机运行 NetConsole 与 Agent 时的回归检查。脚本在发送任何控制请求前硬限制 Agent URL 主机为 `127.0.0.1` 或 `localhost`，Token 只从 `NETCONSOLE_AGENT_TOKEN` 环境变量读取。
+
+```powershell
+python -m scripts.maintenance.check_local_agent_runtime `
+  --agent-url "http://127.0.0.1:18080" `
+  --iperf-port 5201 `
+  --tcp-limit-mbps 2 `
+  --duration-sec 10
+```
+
+固定检查顺序为状态/工具、`fping 127.0.0.1`（1 秒间隔、4 秒超时、64 字节、10 次）、本机 iPerf server、TCP client、幂等停止、终态、result 和日志。脚本不会启动 MR、删除 Agent 包或启用 `executor=AGENT`。
+
+当前 Agent runner 只对 UDP 应用 `bandwidth_mbps`；TCP 的 2 Mbps 是期望记录而非强制限速，因此本机结果只证明结构化任务、日志和停止链路可用，不作为车地无线带宽验收。2026-07-14 已对本机 `0.2.0-win-agent` 完成一次真实自检：fping 10 个样本，iPerf server/client 均为 `completed`。
