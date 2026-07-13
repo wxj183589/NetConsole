@@ -30,7 +30,7 @@
 | SNMP MIB/产品数据 | 中心后台刷新/动作 | snmp domain handlers | 部分迁移 | 部分 | MIB/resource/product/data legacy | 分离资源库与请求采集后迁移 |
 | 无线扫描/勘测 | 页面提交 wifi survey Job | wifi domain handlers | 部分迁移 | 部分 | 扫描/勘测动作 legacy | 核对设备/平台边界后拆分 |
 | MR 原始日志分析 | import/rebuild/profile Job | mesh domain + parser/repository | 部分迁移 | 部分 | domain handler 仍有 legacy | 保留单文件 parsed DB 契约迁移 |
-| Online MR 实时采集 | 页面会话 manager/worker；5B-3 Query/Application Service、Traffic Coordinator 与 Task/Session 映射 | collection start/status/finalize/package Application Service + 专用 runner | 5B-3 LOCAL 生命周期收口完成 | 新应用层 LOCAL 是；Qt Legacy 否 | Qt 切换、Agent、FastAPI/Vue、离线解析接入 | 下一步先做新入口验收/API 契约；不改为一次性 Job |
+| Online MR 实时采集 | Legacy Qt 页面通过兼容 Adapter 调用 Application Service；保留原 signals/raw tail/快照 | collection start/status/finalize/package Application Service + 专用 runner | 5B-4 Qt LOCAL 生命周期接入完成 | LOCAL 启停/强停/时长/恢复是；Agent/Web 否 | Qt 兼容展示、Agent、FastAPI/Vue、离线解析接入 | 下一步冻结 Qt Adapter 契约，再规划 Online MR API；不改为一次性 Job |
 | Online MR 离线解析 | `online_mr_parse` Job | online_mr domain handler/service | 已迁移但保留兼容层 | 是 | 映射/历史相关 legacy | 收口兼容入口，锁定 raw/parsed 契约 |
 | 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
 | Job Center | Qt/Python Adapter + TaskRuntime + TaskRepository + worker/registry | 七状态、Event Hub、持久快照、REST/WebSocket、外部 Agent Task 与 11 个 domain modules | 基础设施完成/领域部分迁移 | 任务中心是；领域逻辑否 | 独立 daemon、`legacy_tasks.py` 兼容区 | Traffic 已接；legacy 只迁出 |
@@ -50,7 +50,7 @@
 - 单设备连接测试：`DeviceConnectionTestThread`。
 - 批量连接测试：`BatchConnectionTestWorker`，默认并发 50、上限 200。
 - 批量设备详情采集：`BatchCollectWorker`，默认并发 20、上限 50。
-- Online MR 实时采集：页面编排多个会话 worker、fping/iPerf 外部进程和终端连接；生命周期不能简单替换成一次性 Job。
+- Online MR 实时采集：页面仍编排多会话显示和 Qt 兼容句柄，但 LOCAL 生命周期、Traffic 和 SSH 子任务由 Application Service/Worker 统一管理；不能简单替换成一次性 Job。
 - 少量兼容导出 service 仍可直接写文件，但当前正式页面导出应走 Export Process。
 
 这些路径若要迁移，必须先保留逐设备/逐会话进度、取消、失败隔离和现有用户交互，不能只替换类名。
@@ -79,4 +79,4 @@
 
 ## 7. 当前阶段边界
 
-阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 在 5B-2A 的 Online MR DTO、纯 Python Query/Application Service 和同局点 Task/Session 映射之上，补齐新 LOCAL 入口的 Traffic stop/flush barrier、显式时长停止、普通/强制停止及最终化 reconcile；Qt Legacy 尚未切换，AGENT、FastAPI/Vue、离线解析接入、设备/AC/FIT-AP/MESH、SNMP Center 和无线勘测均未迁移。
+阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 在 5B-2A 的 Online MR DTO、纯 Python Query/Application Service 和同局点 Task/Session 映射之上，补齐新 LOCAL 入口的 Traffic stop/flush barrier、显式时长停止、普通/强制停止及最终化 reconcile；阶段 5B-4 只把 Legacy Qt 的 LOCAL 启停、强停、状态和遗留恢复接到该入口，保留原页面、signals、raw tail 与快照显示。AGENT、FastAPI/Vue、离线解析接入、设备/AC/FIT-AP/MESH、SNMP Center 和无线勘测均未迁移。

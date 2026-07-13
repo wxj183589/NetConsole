@@ -45,7 +45,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约。启动连接失败时 Task 为 `FAILED`，已创建会话 metadata 同步为 `FAILED`；显式恢复核对可将没有活动 Task 宿主的旧会话标为 `ABORTED`，但不触发解析、打包或 raw 清理。
 
-阶段 5B-3 的新 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用现有协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile。该入口仍未替换 Legacy Qt，AGENT 仍返回不支持。
+阶段 5B-3 的 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用现有协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile。阶段 5B-4 已让 Legacy Qt 页面通过兼容 Adapter 使用该 LOCAL 入口，并保留原 signals/raw tail/快照 UI 契约；AGENT 仍返回不支持。
 
 ## Task Center API
 

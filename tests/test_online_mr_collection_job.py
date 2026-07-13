@@ -15,9 +15,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from netconsole.core.paths import PathResolver
+from netconsole.models.api.online_mr import OnlineMrOperationSnapshotDTO
+from netconsole.models.online_mr_application import (
+    OnlineMrExecutorKind,
+    OnlineMrMappingState,
+    OnlineMrPhase,
+    OnlineMrStartRequest,
+)
 from netconsole.models.online_mr_models import FpingConfig, OnlineMrConnectionConfig, OnlineMrTaskToggles
+from netconsole.models.task_state import TaskState
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_registry import registered_task_types
+from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.online_mr.collection_commands import (
     INIT_COMMANDS,
     TASK_COMMANDS,
@@ -68,6 +77,67 @@ def _config() -> OnlineMrConnectionConfig:
             wireless_status=False,
         ),
     )
+
+
+def _operation(
+    *,
+    phase: OnlineMrPhase = OnlineMrPhase.COLLECTING,
+    task_status: TaskState = TaskState.RUNNING,
+    force_stopped: bool = False,
+) -> OnlineMrOperationSnapshotDTO:
+    return OnlineMrOperationSnapshotDTO(
+        controller_task_id="application-task-1",
+        site_id="demo",
+        device_id=1,
+        device_name="MR-Test",
+        mr_id="1",
+        mr_name="MR-Test",
+        executor_kind=OnlineMrExecutorKind.LOCAL,
+        task_status=task_status,
+        phase=phase,
+        created_at="2026-07-13T10:00:00",
+        updated_at="2026-07-13T10:00:00",
+        force_stopped=force_stopped,
+        mapping_state=(
+            OnlineMrMappingState.TERMINAL
+            if phase is OnlineMrPhase.TERMINAL
+            else OnlineMrMappingState.PENDING_SESSION
+        ),
+    )
+
+
+class FakeApplicationService:
+    def __init__(self) -> None:
+        self.task_service = type("TaskService", (), {"events": TaskEventHub()})()
+        self.operation = _operation()
+        self.started: list[OnlineMrStartRequest] = []
+        self.stop_calls: list[dict[str, object]] = []
+        self.force_stop_calls: list[dict[str, object]] = []
+
+    def start_local_collection(self, request: OnlineMrStartRequest) -> OnlineMrOperationSnapshotDTO:
+        self.started.append(request)
+        return self.operation
+
+    def get_operation(self, controller_task_id: str, *, site_id: str | None = None) -> OnlineMrOperationSnapshotDTO:
+        assert controller_task_id == self.operation.controller_task_id
+        assert site_id == "demo"
+        return self.operation
+
+    def stop_operation(self, controller_task_id: str, **kwargs) -> OnlineMrOperationSnapshotDTO:
+        self.stop_calls.append({"controller_task_id": controller_task_id, **kwargs})
+        self.operation = self.operation.model_copy(
+            update={"phase": OnlineMrPhase.STOPPING_TRAFFIC, "task_status": TaskState.STOPPING}
+        )
+        return self.operation
+
+    def force_stop_operation(self, controller_task_id: str, **kwargs) -> OnlineMrOperationSnapshotDTO:
+        self.force_stop_calls.append({"controller_task_id": controller_task_id, **kwargs})
+        self.operation = _operation(
+            phase=OnlineMrPhase.TERMINAL,
+            task_status=TaskState.CANCELLED,
+            force_stopped=True,
+        )
+        return self.operation
 
 
 def test_online_mr_command_sequences_preserve_business_rules() -> None:
@@ -298,6 +368,94 @@ def test_online_mr_job_handle_submits_long_running_job(tmp_path: Path, monkeypat
     assert job.task_type == "online_mr_collection_start"
     assert int(job.params["_cancel_grace_ms"]) >= 30000
     assert "connection_targets" not in dict(job.params["config"])
+    application.processEvents()
+
+
+def test_online_mr_application_adapter_routes_start_stop_and_terminal_event(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    service = FakeApplicationService()
+    request = OnlineMrStartRequest(
+        site_id="demo",
+        device_id=1,
+        device_name="MR-Test",
+        mr_name="MR-Test",
+        config=_config(),
+        owner="legacy_qt",
+    )
+    worker = OnlineMrCollectorWorker(
+        _config(),
+        PathResolver(tmp_path),
+        application_service=service,
+        application_request=request,
+    )
+    completed: list[str] = []
+    worker.completed.connect(completed.append)
+
+    operation = worker.start()
+    worker.cancel()
+
+    assert operation is not None
+    assert operation.controller_task_id == "application-task-1"
+    assert service.started == [request]
+    assert service.stop_calls == [
+        {
+            "controller_task_id": "application-task-1",
+            "site_id": "demo",
+            "timeout_seconds": 0.0,
+            "stop_reason": "user_stop",
+        }
+    ]
+    assert worker.manages_traffic is True
+    assert worker.collector.status == "STOPPING"
+
+    service.operation = _operation(phase=OnlineMrPhase.TERMINAL, task_status=TaskState.COMPLETED)
+    service.task_service.events.publish(
+        {
+            "job_id": "application-task-1",
+            "type": "finished",
+            "result": {"session_id": "session-1", "status": "STOPPED"},
+        }
+    )
+    worker._poll_application_events()
+
+    assert completed == ["session-1"]
+    assert worker.collector.status == "STOPPED"
+    assert worker.isRunning() is False
+    application.processEvents()
+
+
+def test_online_mr_application_adapter_routes_force_stop_without_legacy_manager(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    service = FakeApplicationService()
+    request = OnlineMrStartRequest(
+        site_id="demo",
+        device_id=1,
+        device_name="MR-Test",
+        mr_name="MR-Test",
+        config=_config(),
+        owner="legacy_qt",
+    )
+    worker = OnlineMrCollectorWorker(
+        _config(),
+        PathResolver(tmp_path),
+        application_service=service,
+        application_request=request,
+    )
+    worker.start()
+
+    worker.force_stop("operator_force_stop")
+
+    assert worker._manager is None
+    assert service.force_stop_calls == [
+        {
+            "controller_task_id": "application-task-1",
+            "site_id": "demo",
+            "cooperative_timeout_seconds": 0.0,
+            "force_timeout_seconds": 0.1,
+            "stop_reason": "operator_force_stop",
+        }
+    ]
+    assert worker.collector.status == "FORCED_STOPPED"
     application.processEvents()
 
 

@@ -65,6 +65,7 @@ from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator
 from netconsole.services.online_mr.core.realtime_cache import OnlineMrRawEvent, OnlineMrRealtimeCache
 from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
+from netconsole.services.online_mr.errors import OnlineMrApplicationError, OnlineMrApplicationErrorCode
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.online_mr.collection_models import collection_config_from_payload, collection_config_to_payload
 from netconsole.ui.pages.online_mr_collection_page import (
@@ -1337,11 +1338,24 @@ def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path,
     monkeypatch.setattr(page, "_confirm_start_collection", lambda _devices: True)
     started: list[OnlineMrCollectorWorker] = []
     monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
+
+    def cancel(worker: OnlineMrCollectorWorker) -> None:
+        worker.collector.cancelled = True
+        worker.collector.status = STATE_STOPPING
+
+    monkeypatch.setattr(OnlineMrCollectorWorker, "cancel", cancel)
     monkeypatch.setattr("netconsole.ui.pages.online_mr_collection_page.QMessageBox.warning", lambda *_args: None)
 
     page.start_collection()
 
     assert len(started) == 1
+    assert started[0].application_service is page.application_service
+    assert started[0].application_request is not None
+    assert started[0].application_request.site_id == "demo"
+    assert started[0].application_request.device_id == int(device.id)
+    assert started[0].application_request.device_name == device.name
+    assert started[0].application_request.executor_kind.value == "LOCAL"
+    assert started[0].application_request.owner == "legacy_qt"
     assert not page.start_button.isEnabled()
     assert page.stop_selected_button.isEnabled()
 
@@ -1350,6 +1364,7 @@ def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path,
     assert page.status_value == "STOPPING"
     assert not page.start_button.isEnabled()
     assert not page.stop_selected_button.isEnabled()
+
 
     page._worker_failed("连接失败", int(device.id))
 
@@ -1383,6 +1398,46 @@ def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path,
     assert int(device.id) not in page.workers_by_device_id
     assert page.start_button.isEnabled()
     assert not page.stop_selected_button.isEnabled()
+
+
+def test_online_mr_job_page_start_failure_does_not_register_running_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-Start-Failed")
+    _paths, config = _config(tmp_path)
+    config.device_id = int(device.id)
+    config.device_name = device.name
+    config.mr_id = str(device.id)
+    config.mr_name = device.name
+    page.selected_device_ids = {int(device.id)}
+    page.enable_fping_check.setChecked(False)
+    page.enable_iperf_check.setChecked(False)
+    monkeypatch.setattr(page, "_selected_devices", lambda: [device])
+    monkeypatch.setattr(page, "_build_config_for_device", lambda _device: config)
+    monkeypatch.setattr(page, "_confirm_start_collection", lambda _devices: True)
+
+    def fail_start(_worker: OnlineMrCollectorWorker) -> None:
+        raise OnlineMrApplicationError(
+            OnlineMrApplicationErrorCode.STARTUP_CONNECTION_FAILED,
+            "连接失败",
+        )
+
+    warnings: list[str] = []
+    monkeypatch.setattr(OnlineMrCollectorWorker, "start", fail_start)
+    monkeypatch.setattr(
+        "netconsole.ui.pages.online_mr_collection_page.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(str(message)),
+    )
+
+    page.start_collection()
+
+    assert page.workers_by_device_id == {}
+    assert page.application_task_ids_by_device_id == {}
+    assert page.start_button.isEnabled()
+    assert warnings and "ONLINE_MR_STARTUP_CONNECTION_FAILED" in warnings[-1]
 
 
 def test_online_mr_start_confirmation_cancel_does_not_start_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

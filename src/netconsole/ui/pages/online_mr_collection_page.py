@@ -62,6 +62,7 @@ from netconsole.models.online_mr_models import (
     STATE_FORCED_STOPPED,
     STATE_INITIALIZING,
     STATE_RECONNECTING,
+    STATE_STOPPED,
     STATE_STOPPING,
     FpingConfig,
     IperfTrafficConfig,
@@ -71,6 +72,7 @@ from netconsole.models.online_mr_models import (
     OnlineMrSnapshot,
     OnlineMrTaskToggles,
 )
+from netconsole.models.online_mr_application import OnlineMrExecutorKind, OnlineMrStartRequest
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.core.database import Database
@@ -104,6 +106,8 @@ from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeP
 from netconsole.services.online_mr.db.event_writer import EventWriter
 from netconsole.services.online_mr.ping_presets import DEFAULT_PING_PRESET_KEY, get_ping_preset, list_ping_presets
 from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_KEY, DEFAULT_TRAFFIC_PRESET_PORT, get_traffic_preset, list_traffic_presets
+from netconsole.services.online_mr.application_service import OnlineMrApplicationService
+from netconsole.services.online_mr.errors import OnlineMrApplicationError
 from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngine
 from netconsole.services.online_mr.event_bus import OnlineMrEventBus
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
@@ -234,6 +238,7 @@ class OnlineMrRuntimeSiteState:
     fping_workers_by_device_id: dict[int, FpingV5ProbeWorker] = field(default_factory=dict)
     iperf_workers_by_device_id: dict[int, IperfProcessWorker] = field(default_factory=dict)
     output_buffers_by_device_id: dict[int, deque[str]] = field(default_factory=dict)
+    application_task_ids_by_device_id: dict[int, str] = field(default_factory=dict)
     output_hidden: bool = False
 
 
@@ -242,6 +247,7 @@ class OnlineMrSharedRuntime:
         self.manager = OnlineMrCollectionManager(max_concurrent=2)
         self.realtime_cache = OnlineMrRealtimeCache()
         self.sites: dict[str, OnlineMrRuntimeSiteState] = {}
+        self.application_services: dict[str, OnlineMrApplicationService] = {}
         self.observers: dict[str, weakref.WeakSet[OnlineMrCollectionPage]] = {}
 
     def site(self, site_name: str) -> OnlineMrRuntimeSiteState:
@@ -254,6 +260,13 @@ class OnlineMrSharedRuntime:
         observers = self.observers.get(site_name)
         if observers is not None:
             observers.discard(page)
+
+    def application_service(self, site_name: str, paths: PathResolver) -> OnlineMrApplicationService:
+        service = self.application_services.get(site_name)
+        if service is None:
+            service = OnlineMrApplicationService(paths, site_name=site_name)
+            self.application_services[site_name] = service
+        return service
 
 
 _ONLINE_MR_RUNTIMES: dict[str, OnlineMrSharedRuntime] = {}
@@ -471,6 +484,7 @@ class OnlineMrCollectionPage(QWidget):
         self.runtime = _online_mr_runtime(paths)
         self.manager = self.runtime.manager
         self.realtime_cache = self.runtime.realtime_cache
+        self.application_service = self.runtime.application_service(site_name, paths)
         self._runtime_site_state: OnlineMrRuntimeSiteState | None = None
         self._attached_worker_sessions: set[str] = set()
         self.devices: list[Device] = []
@@ -537,6 +551,7 @@ class OnlineMrCollectionPage(QWidget):
         self.output_widgets_by_device_id: dict[int, QTextEdit] = {}
         self.output_titles_by_device_id: dict[int, QLabel] = {}
         self.output_buffers_by_device_id: dict[int, deque[str]] = {}
+        self.application_task_ids_by_device_id: dict[int, str] = {}
         self.output_dirty_devices: set[int] = set()
         self.output_render_enabled = True
         self._stopping_task_count = 0
@@ -856,6 +871,8 @@ class OnlineMrCollectionPage(QWidget):
         self.fping_workers_by_device_id = state.fping_workers_by_device_id
         self.iperf_workers_by_device_id = state.iperf_workers_by_device_id
         self.output_buffers_by_device_id = state.output_buffers_by_device_id
+        self.application_task_ids_by_device_id = state.application_task_ids_by_device_id
+        self.application_service = self.runtime.application_service(site_name, self.paths)
         self.output_render_enabled = not state.output_hidden
         self.runtime.observe(site_name, self)
 
@@ -2297,7 +2314,7 @@ class OnlineMrCollectionPage(QWidget):
         if len(selected) > 2:
             MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_devices"))
             return
-        capacity = max(0, self.manager.max_concurrent - self.manager.running_count())
+        capacity = max(0, self.manager.max_concurrent - self._site_running_count())
         if capacity <= 0:
             MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), self.i18n.t("online_mr.max_two_running"))
             return
@@ -2325,16 +2342,44 @@ class OnlineMrCollectionPage(QWidget):
             device_id = int(device.id)
             self._reset_device_realtime_view_for_new_session(device_id)
             self.realtime_cache.clear_device_latest(site_id=self.site_name, device_id=device_id)
-            worker = OnlineMrCollectorWorker(config, self.paths, realtime_cache=self.realtime_cache)
-            if device.id is not None:
-                self.workers_by_device_id[int(device.id)] = worker
-                self.manager.register_device(int(device.id), worker)
+            try:
+                request = self.application_service.prepare_start(self._build_application_request(device, config))
+                worker = OnlineMrCollectorWorker(
+                    config,
+                    self.paths,
+                    realtime_cache=self.realtime_cache,
+                    application_service=self.application_service,
+                    application_request=request,
+                )
+            except OnlineMrApplicationError as exc:
+                message = f"{exc.code}: {exc.message}"
+                app_logger.log_error("ONLINE_MR_APPLICATION_PREPARE_FAILED", f"device_id={device.id} error={message}")
+                self._update_device_status(device.id, self.i18n.t("online_mr.status_failed"))
+                MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
+                continue
             worker.started_session.connect(lambda meta, w=worker: self._worker_started(meta, w))
             worker.snapshot.connect(self.throttle.enqueue)
             worker.raw_stream_event.connect(self._handle_raw_stream_event)
             worker.completed.connect(self._worker_completed)
             worker.failed.connect(lambda message, device_id=device.id: self._worker_failed(message, device_id))
-            worker.start()
+            try:
+                operation = worker.start()
+            except OnlineMrApplicationError as exc:
+                message = f"{exc.code}: {exc.message}"
+                app_logger.log_error("ONLINE_MR_APPLICATION_START_FAILED", f"device_id={device.id} error={message}")
+                self._update_device_status(device.id, self.i18n.t("online_mr.status_failed"))
+                MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
+                continue
+            except Exception as exc:
+                message = str(exc) or exc.__class__.__name__
+                app_logger.log_error("ONLINE_MR_APPLICATION_START_FAILED", f"device_id={device.id} error={message}")
+                self._update_device_status(device.id, self.i18n.t("online_mr.status_failed"))
+                MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
+                continue
+            self.workers_by_device_id[device_id] = worker
+            self.manager.register_device(device_id, worker)
+            if operation is not None:
+                self.application_task_ids_by_device_id[device_id] = operation.controller_task_id
             started += 1
             self._update_device_status(device.id, self.i18n.t("online_mr.status_connecting"))
         if skipped:
@@ -2345,6 +2390,21 @@ class OnlineMrCollectionPage(QWidget):
             self._collapse_collection_inputs_after_start()
             self._set_status("CONNECTING")
         self._update_action_state()
+
+    def _build_application_request(
+        self,
+        device: Device,
+        config: OnlineMrConnectionConfig,
+    ) -> OnlineMrStartRequest:
+        return OnlineMrStartRequest(
+            site_id=self.site_name,
+            device_id=int(device.id),
+            device_name=device.name,
+            mr_name=config.mr_name,
+            config=config,
+            executor_kind=OnlineMrExecutorKind.LOCAL,
+            owner="legacy_qt",
+        )
 
     def _confirm_start_collection(self, devices: list[Device]) -> bool:
         if not devices:
@@ -2572,7 +2632,11 @@ class OnlineMrCollectionPage(QWidget):
     def retry_iperf_for_running_sessions(self) -> None:
         if not self.enable_iperf_check.isChecked():
             return
-        sessions = set(self.workers)
+        sessions = {
+            session_id
+            for session_id, worker in self.workers.items()
+            if not getattr(worker, "manages_traffic", False)
+        }
         if not sessions:
             MessageBox.information(self, self.i18n.t("online_mr.traffic_test"), "当前没有正在采集的会话。")
             return
@@ -2683,7 +2747,13 @@ class OnlineMrCollectionPage(QWidget):
             worker = self.workers_by_device_id.get(device.id)
             if worker:
                 app_logger.log_info("ONLINE_MR_STOP_REQUESTED", f"device_id={device.id} session_id={self._session_id_for_device(device.id)}")
-                worker.cancel()
+                try:
+                    worker.cancel()
+                except Exception as exc:
+                    message = str(exc) or exc.__class__.__name__
+                    app_logger.log_error("ONLINE_MR_APPLICATION_STOP_FAILED", f"device_id={device.id} error={message}")
+                    MessageBox.warning(self, self.i18n.t("rail_transit.online_mr_collection"), message)
+                    continue
                 self._update_device_status(device.id, self.i18n.t("online_mr.status_stopping"))
                 self._update_summary_status_by_device(device.id, "STOPPING")
                 stopped_any = True
@@ -2731,6 +2801,7 @@ class OnlineMrCollectionPage(QWidget):
             self._update_summary_status_by_device(device_id, STATE_FORCED_STOPPED)
         self.workers.clear()
         self.workers_by_device_id.clear()
+        self.application_task_ids_by_device_id.clear()
         self.session_to_device_id.clear()
         self.fping_workers.clear()
         self.fping_workers_by_device_id.clear()
@@ -2779,7 +2850,13 @@ class OnlineMrCollectionPage(QWidget):
             actual_device_id = getattr(device_id, "device_id", None)
             session_id = next((sid for sid, item in self.workers.items() if item is worker), "")
             app_logger.log_info("ONLINE_MR_WORKER_CANCEL_SENT", f"device_id={actual_device_id} session_id={session_id}")
-            worker.cancel()
+            try:
+                worker.cancel()
+            except Exception as exc:
+                app_logger.log_error(
+                    "ONLINE_MR_APPLICATION_STOP_FAILED",
+                    f"device_id={actual_device_id} session_id={session_id} error={exc}",
+                )
         for device_id in device_ids:
             self._update_device_status(device_id, self.i18n.t("online_mr.status_stopping"))
             self._update_summary_status_by_device(device_id, "STOPPING")
@@ -4113,6 +4190,8 @@ class OnlineMrCollectionPage(QWidget):
         if meta.device_id is not None:
             self.session_to_device_id[meta.session_id] = int(meta.device_id)
             self.workers_by_device_id[int(meta.device_id)] = worker
+            if getattr(worker, "manages_traffic", False):
+                self.application_task_ids_by_device_id[int(meta.device_id)] = worker.job_id
             if not self.analysis_only and self._can_update_ui():
                 self._ensure_output_widget(int(meta.device_id), meta.session_id)
         self.workers[meta.session_id] = worker
@@ -4122,9 +4201,16 @@ class OnlineMrCollectionPage(QWidget):
             self._ensure_event_pipeline(meta.session_id, Path(meta.session_dir))
             if meta.device_id is not None:
                 self.last_session_dir_by_device_id[int(meta.device_id)] = Path(meta.session_dir)
-        if not getattr(worker.collector, "cancelled", False) and meta.status != STATE_STOPPING:
+        if (
+            not getattr(worker, "manages_traffic", False)
+            and not getattr(worker.collector, "cancelled", False)
+            and meta.status != STATE_STOPPING
+        ):
             self._start_fping_worker(meta, worker)
             self._start_iperf_worker(meta, worker)
+        elif getattr(worker, "manages_traffic", False) and meta.device_id is not None:
+            fping = worker.collector.config.fping.normalized()
+            self._set_ping_status(int(meta.device_id), f"running -> {fping.target}" if fping.enabled else "disabled")
         if not self._can_update_ui():
             return
         self._set_status(meta.status)
@@ -4135,7 +4221,14 @@ class OnlineMrCollectionPage(QWidget):
 
     def _worker_completed(self, session_id: str) -> None:
         app_logger.log_info("ONLINE_MR_WORKER_FINISHED", f"session_id={session_id}")
-        self._finalize_collection_state(device_id=None, session_id=session_id, final_status="STOPPED", reason="completed")
+        worker = self.workers.get(session_id)
+        final_status = str(getattr(getattr(worker, "collector", None), "status", "") or STATE_STOPPED)
+        self._finalize_collection_state(
+            device_id=None,
+            session_id=session_id,
+            final_status=final_status,
+            reason="completed",
+        )
 
     def _worker_failed(self, message: str, device_id: int | None = None) -> None:
         session_id = self._session_id_for_device(device_id) if device_id is not None else None
@@ -4189,8 +4282,10 @@ class OnlineMrCollectionPage(QWidget):
         if device_id is not None:
             self.manager.unregister_device(device_id)
             self.workers_by_device_id.pop(device_id, None)
+            self.application_task_ids_by_device_id.pop(device_id, None)
             self.iperf_workers_by_device_id.pop(device_id, None)
             self.fping_workers_by_device_id.pop(device_id, None)
+            self._set_ping_status(device_id, "stopped")
             self._last_active_peer_by_device_id.pop(device_id, None)
             self._stream_sample_count_by_device_id.pop(device_id, None)
         if completed_session_dir is not None and not self._shutdown_requested:
@@ -5326,7 +5421,12 @@ class OnlineMrCollectionPage(QWidget):
             force_ready = time.monotonic() - self._stop_requested_monotonic >= FORCE_STOP_DELAY_SECONDS
             self.force_stop_button.setVisible(force_ready)
             self.force_stop_button.setEnabled(force_ready)
-        self.iperf_retry_button.setEnabled(self.enable_iperf_check.isChecked() and bool(self.workers) and not stopping)
+        has_legacy_iperf_session = any(
+            not getattr(worker, "manages_traffic", False) for worker in self.workers.values()
+        )
+        self.iperf_retry_button.setEnabled(
+            self.enable_iperf_check.isChecked() and has_legacy_iperf_session and not stopping
+        )
         self.open_button.setEnabled(True)
         self._running_count = self._site_running_count()
         self.running_count_label.setText(str(self._running_count))
@@ -5534,6 +5634,12 @@ class OnlineMrCollectionPage(QWidget):
             if value is None:
                 text = f"{name}: idle"
             elif int(value) in self.fping_workers_by_device_id:
+                text = f"{name}: running"
+            elif (
+                int(value) in self.workers_by_device_id
+                and getattr(self.workers_by_device_id[int(value)], "manages_traffic", False)
+                and self.workers_by_device_id[int(value)].collector.config.fping.normalized().enabled
+            ):
                 text = f"{name}: running"
             else:
                 text = f"{name}: ready"

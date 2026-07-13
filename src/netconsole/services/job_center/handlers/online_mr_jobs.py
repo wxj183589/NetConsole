@@ -6,6 +6,7 @@ from pathlib import Path
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.collection_models import collection_config_from_payload
 from netconsole.services.online_mr.collection_packager import OnlineMrCollectionPackager
 from netconsole.services.online_mr.collection_service import OnlineMrCollectionService
@@ -43,6 +44,19 @@ def online_mr_collection_package(context: JobContext) -> dict[str, object]:
     context.progress("online_mr_package", 1, 1, "在线 MR 会话打包完成")
     return {"session_dir": str(session_dir), "package_path": str(output)}
 
+
+def online_mr_mark_stale_sessions(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_name = str(context.params.get("site_name") or "")
+    if not site_name:
+        raise ValueError("Online MR 遗留会话核对缺少 site_name")
+    service = OnlineMrApplicationService(context.paths, site_name=site_name)
+    try:
+        changed = service.recover_mappings(site_id=site_name)
+    finally:
+        service.close()
+    return {"changed_count": len(changed)}
+
 vehicle_mr_mapping_import = legacy_handler(legacy_tasks._vehicle_mr_mapping_import)
 vehicle_mr_mapping_load = legacy_handler(legacy_tasks._vehicle_mr_mapping_load)
 vehicle_mr_mapping_save = legacy_handler(legacy_tasks._vehicle_mr_mapping_save)
@@ -53,7 +67,6 @@ vehicle_mr_history_query = legacy_handler(legacy_tasks._vehicle_mr_history_query
 online_mr_parse = legacy_handler(legacy_tasks._online_mr_parse)
 online_mr_report_export = legacy_handler(legacy_tasks._online_mr_report_export)
 online_mr_collection_devices_refresh = legacy_handler(legacy_tasks._online_mr_collection_devices_refresh)
-online_mr_mark_stale_sessions = legacy_handler(legacy_tasks._online_mr_mark_stale_sessions)
 
 HANDLERS = {
     name: globals()[name]
