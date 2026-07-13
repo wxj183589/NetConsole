@@ -292,7 +292,7 @@ def test_main_table_columns_only_include_core_fields():
 
 
 def test_user_visible_i18n_and_ui_text_do_not_contain_question_mark_mojibake():
-    root = Path(__file__).parents[1] / "netconsole"
+    root = Path(__file__).parents[1] / "src" / "netconsole"
     checked_files = [
         path
         for path in root.rglob("*.py")

@@ -7,7 +7,7 @@ from netconsole.ui.window_manager import WindowManager
 
 
 def test_detached_page_window_is_not_owned_by_main_window():
-    source = Path("netconsole/ui/main_window.py").read_text(encoding="utf-8")
+    source = Path("src/netconsole/ui/main_window.py").read_text(encoding="utf-8")
     detach_body = source.split("def detach_current_page", 1)[1].split("def activate_detached_page", 1)[0]
 
     assert "QMainWindow(self)" not in detach_body

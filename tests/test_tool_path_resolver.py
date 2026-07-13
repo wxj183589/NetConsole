@@ -104,7 +104,7 @@ def test_resolver_candidate_order_contains_packaged_and_development_paths(tmp_pa
 def test_resolver_finds_nuitka_onefile_extracted_tools(tmp_path: Path, monkeypatch) -> None:
     package_root = tmp_path / "onefile"
     fping = _write_tool(package_root / "tools" / "windows-x64" / "fping" / "fping.exe")
-    fake_file = package_root / "netconsole" / "services" / "tool_path_resolver.py"
+    fake_file = package_root / "src" / "netconsole" / "services" / "tool_path_resolver.py"
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.write_text("", encoding="utf-8")
     monkeypatch.setattr("netconsole.services.tool_path_resolver.__file__", str(fake_file))

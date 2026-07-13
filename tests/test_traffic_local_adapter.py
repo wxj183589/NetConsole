@@ -455,9 +455,17 @@ def test_forced_worker_exit_closes_task_center_and_traffic_run(tmp_path: Path, m
 
     stopping = asyncio.run(application.cancel(run.controller_task_id))
     assert stopping.status in {TaskState.STOPPING, TaskState.CANCELLED}
+
+    def forced_stop_event_written() -> bool:
+        return any(
+            event.type is TrafficEventType.SYSTEM and event.payload.get("action") == "worker_forced_stop"
+            for event in store.list_events(run.traffic_run_id, limit=100)
+        )
+
     _wait_until(
         lambda: task_service.get_task(run.controller_task_id).status is TaskState.CANCELLED
         and repository.get(run.traffic_run_id).status is TaskState.CANCELLED
+        and forced_stop_event_written()
     )
 
     updated = repository.get(run.traffic_run_id)

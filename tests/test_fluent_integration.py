@@ -63,10 +63,8 @@ def test_build_window_starts_app_fluent_window():
         "设备管理",
         "AC 管理",
         "轨道交通",
-        "无线勘测",
         "配置采集中心",
         "文件管理",
-        "SNMP 中心",
         "网络工具",
         "命令说明",
         "日志中心",
@@ -172,7 +170,6 @@ def test_fluent_detach_current_page_opens_non_focus_window(monkeypatch):
         "network_tools": "网络工具",
         "logs": "日志中心",
         "system_settings": "系统设置",
-        "snmp_center": "SNMP 中心",
         "file_management": "文件管理",
     }
     for page_id, title in expected_titles.items():
@@ -373,33 +370,13 @@ def test_network_tools_uses_only_tab_local_actions():
     window.close()
 
 
-def test_snmp_center_uses_only_tab_local_actions():
-    from PySide6.QtWidgets import QPushButton
-
+def test_disabled_snmp_center_is_not_registered():
     from netconsole.app import build_window
-    from netconsole.ui.components.nc_command_bar import NCCommandBar
 
     app()
     window = build_window()
-    page = window.pages["snmp_center"]
-    window.preload_page("snmp_center")
-    raw_page = window.raw_pages["snmp_center"]
-
-    assert page.findChild(NCCommandBar) is None
-
-    buttons = [
-        raw_page.overview_page.init_button,
-        raw_page.overview_page.rebuild_button,
-        raw_page.overview_page.reset_button,
-        raw_page.browser_page.go_button,
-    ]
-    assert raw_page.browser_page.go_button.text() == "执行查询"
-    for button in buttons:
-        assert isinstance(button, QPushButton)
-        assert button.text().strip()
-        assert button.toolTip().strip()
-    query_button_texts = {button.text() for button in raw_page.query_page.findChildren(QPushButton)}
-    assert {"执行查询", "取消", "导出结果", "刷新设备", "从 MIB 选择"} <= query_button_texts
+    assert "snmp_center" not in window.pages
+    assert "snmp_center" not in window.raw_pages
     window.close()
 
 
@@ -436,7 +413,7 @@ def test_fluent_preload_does_not_create_english_placeholder_pages():
     labels = [window.navigation.item(index).text() for index in range(window.navigation.count())]
     assert "ac" not in labels
     assert "rail_transit" not in labels
-    assert window.stackedWidget.count() == 12
+    assert window.stackedWidget.count() == 10
     window.close()
 
 

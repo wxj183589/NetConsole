@@ -191,8 +191,8 @@ def test_device_dialog_and_page_do_not_use_exec_for_add_edit_windows():
     root = Path(__file__).resolve().parents[1]
 
     for relative_path in (
-        "netconsole/ui/pages/device_management_page.py",
-        "netconsole/ui/dialogs/device_dialog.py",
+        "src/netconsole/ui/pages/device_management_page.py",
+        "src/netconsole/ui/dialogs/device_dialog.py",
     ):
         source = (root / relative_path).read_text(encoding="utf-8")
         assert ".exec(" not in source
@@ -509,10 +509,10 @@ def test_changelog_title_uses_localized_version():
 def test_ui_files_do_not_hardcode_release_version_or_net_tools():
     root = Path(__file__).resolve().parents[1]
     checked_files = [
-        root / "netconsole" / "ui" / "widgets" / "startup_splash.py",
-        root / "netconsole" / "ui" / "main_window.py",
-        root / "netconsole" / "ui" / "dialogs" / "changelog_dialog.py",
-        root / "netconsole" / "ui" / "dialogs" / "about_dialog.py",
+        root / "src" / "netconsole" / "ui" / "widgets" / "startup_splash.py",
+        root / "src" / "netconsole" / "ui" / "main_window.py",
+        root / "src" / "netconsole" / "ui" / "dialogs" / "changelog_dialog.py",
+        root / "src" / "netconsole" / "ui" / "dialogs" / "about_dialog.py",
     ]
     combined = "\n".join(path.read_text(encoding="utf-8") for path in checked_files)
 

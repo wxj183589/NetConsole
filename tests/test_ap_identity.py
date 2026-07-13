@@ -351,7 +351,7 @@ def test_observation_adapters_keep_peer_bssid_and_topology_context_separate():
 
 
 def test_identity_package_has_no_ui_repository_worker_or_network_dependencies():
-    package = Path(__file__).parents[1] / "netconsole" / "services" / "ap_identity"
+    package = Path(__file__).parents[1] / "src" / "netconsole" / "services" / "ap_identity"
     forbidden = ("PySide6", "netconsole.ui", "netconsole.repositories", "job_center", "netmiko", "socket")
 
     for path in package.glob("*.py"):

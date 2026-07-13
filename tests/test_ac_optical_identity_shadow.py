@@ -278,7 +278,7 @@ def test_shadow_failure_is_non_blocking_and_removing_field_restores_original_pay
 
 
 def test_optical_identity_adapter_static_boundaries() -> None:
-    source = Path("netconsole/services/ac/ac_optical_identity_adapter.py").read_text(encoding="utf-8")
+    source = Path("src/netconsole/services/ac/ac_optical_identity_adapter.py").read_text(encoding="utf-8")
 
     assert "PySide6" not in source
     assert "netconsole.ui" not in source

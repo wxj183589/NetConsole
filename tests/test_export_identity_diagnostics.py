@@ -229,8 +229,8 @@ def test_online_mr_compat_diagnostics_failure_does_not_fail_workbook(tmp_path: P
 
 def test_export_identity_diagnostics_static_boundaries() -> None:
     project_root = Path(__file__).resolve().parents[1]
-    diagnostics_source = (project_root / "netconsole" / "services" / "export_identity_diagnostics.py").read_text(encoding="utf-8")
-    online_source = (project_root / "netconsole" / "services" / "online_mr_analysis_report_exporter.py").read_text(encoding="utf-8")
+    diagnostics_source = (project_root / "src" / "netconsole" / "services" / "export_identity_diagnostics.py").read_text(encoding="utf-8")
+    online_source = (project_root / "src" / "netconsole" / "services" / "online_mr_analysis_report_exporter.py").read_text(encoding="utf-8")
 
     for forbidden in ("PySide6", "netconsole.ui", "repositories", "sqlite3", "Workbook", "save(", "write_text", "open("):
         assert forbidden not in diagnostics_source
