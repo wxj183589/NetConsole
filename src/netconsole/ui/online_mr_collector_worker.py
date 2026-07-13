@@ -12,8 +12,9 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from netconsole.core.paths import PathResolver
-from netconsole.models.online_mr_application import OnlineMrPhase, OnlineMrStartRequest
+from netconsole.models.online_mr_application import OnlineMrMappingState, OnlineMrPhase, OnlineMrStartRequest
 from netconsole.models.online_mr_models import (
+    STATE_ABORTED,
     STATE_COLLECTING,
     STATE_CONNECTING,
     STATE_CREATED,
@@ -25,10 +26,7 @@ from netconsole.models.online_mr_models import (
     OnlineMrConnectionConfig,
     OnlineMrSnapshot,
 )
-from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
 from netconsole.services.online_mr.collection_models import (
-    collection_config_to_payload,
     session_meta_from_payload,
     snapshot_from_payload,
 )
@@ -104,22 +102,17 @@ class OnlineMrCollectorWorker(QObject):
         self.realtime_cache = realtime_cache
         self.collector = _CollectorFacade(config)
         self.job_id = f"online_mr_collection_{uuid4().hex}"
-        if (application_service is None) != (application_request is None):
-            raise ValueError("Online MR Application Service 与启动请求必须同时提供")
-        self.application_service = application_service
-        self.application_request = application_request
+        if application_service is None or application_request is None:
+            raise ValueError("Online MR Qt 采集必须通过 OnlineMrApplicationService 启动")
+        self.application_service: OnlineMrApplicationService = application_service
+        self.application_request: OnlineMrStartRequest = application_request
         self.operation_snapshot: OnlineMrOperationSnapshotDTO | None = None
-        self.manages_traffic = application_service is not None
+        self.manages_traffic = True
         self._application_events: deque[dict[str, object]] = deque(maxlen=2000)
         self._application_unsubscribe = None
         self._terminal_emitted = False
-        self._manager: BackgroundProcessManager | None = None
-        if application_service is None:
-            self._manager = BackgroundProcessManager(self, paths=paths)
-            self._manager.progress.connect(self._handle_progress)
-            self._manager.finished.connect(self._handle_finished)
-            self._manager.failed.connect(self._handle_failed)
-            self._manager.cancelled.connect(self._handle_cancelled)
+        self._stop_requested = False
+        self._force_stop_requested = False
         self._application_timer = QTimer(self)
         self._application_timer.setInterval(500)
         self._application_timer.timeout.connect(self._poll_application_events)
@@ -129,58 +122,48 @@ class OnlineMrCollectorWorker(QObject):
         self._raw_offsets: dict[Path, int] = {}
         self._raw_buffers: dict[Path, str] = {}
 
-    def start(self) -> OnlineMrOperationSnapshotDTO | None:
-        if self.application_service is not None and self.application_request is not None:
-            self._application_unsubscribe = self.application_service.task_service.events.subscribe(
-                self._enqueue_application_event
-            )
-            try:
-                operation = self.application_service.start_local_collection(self.application_request)
-            except Exception:
-                self._stop_application_monitor()
-                raise
-            self.job_id = operation.controller_task_id
-            self.operation_snapshot = operation
-            self.collector.status = self._operation_status(operation)
-            self._application_timer.start()
-            self._poll_application_events()
-            return operation
-        if self._manager is None:
-            raise RuntimeError("Online MR Job Manager 未初始化")
-        grace_ms = min(60000, max(30000, int(self.config.command_timeout or 15) * 1000 + 5000))
-        self._manager.start_job(
-            BackgroundJob(
-                job_id=self.job_id,
-                task_type="online_mr_collection_start",
-                params={
-                    "config": collection_config_to_payload(self.config),
-                    "app_root": str(self.paths.app_root),
-                    "data_root": str(self.paths.data_root),
-                    "package_on_stop": True,
-                    "_cancel_grace_ms": grace_ms,
-                },
-            )
+    def start(self) -> OnlineMrOperationSnapshotDTO:
+        if self.operation_snapshot is not None:
+            return self.operation_snapshot
+        self._application_unsubscribe = self.application_service.task_service.events.subscribe(
+            self._enqueue_application_event
         )
-        return None
+        try:
+            operation = self.application_service.start_local_collection(self.application_request)
+        except Exception:
+            self._stop_application_monitor()
+            raise
+        self.job_id = operation.controller_task_id
+        self.operation_snapshot = operation
+        self.collector.status = self._operation_status(operation)
+        self._application_timer.start()
+        self._poll_application_events()
+        return operation
 
     def cancel(self) -> None:
+        if self._terminal_emitted or self._stop_requested:
+            return
+        self._stop_requested = True
         self.collector.cancelled = True
         self.collector.status = STATE_STOPPING
-        if self.application_service is not None:
+        try:
             self.operation_snapshot = self.application_service.stop_operation(
                 self.job_id,
                 site_id=self.config.site,
                 timeout_seconds=0.0,
                 stop_reason="user_stop",
             )
-            return
-        if self._manager is not None:
-            self._manager.cancel_job(self.job_id)
+        except Exception:
+            self._stop_requested = False
+            raise
 
     def force_stop(self, reason: str = "force_stop") -> None:
+        if self._terminal_emitted or self._force_stop_requested:
+            return
+        self._force_stop_requested = True
         self.collector.cancelled = True
         self.collector.status = STATE_FORCED_STOPPED
-        if self.application_service is not None:
+        try:
             self.operation_snapshot = self.application_service.force_stop_operation(
                 self.job_id,
                 site_id=self.config.site,
@@ -188,21 +171,19 @@ class OnlineMrCollectorWorker(QObject):
                 force_timeout_seconds=0.1,
                 stop_reason=reason,
             )
-            self._poll_raw_files()
-            self._stop_application_monitor()
-            return
-        if self._manager is not None:
-            self._manager.force_stop_job(self.job_id)
+        except Exception:
+            self._force_stop_requested = False
+            raise
+        self._poll_raw_files()
+        self._stop_application_monitor()
 
     def isRunning(self) -> bool:
-        if self.application_service is not None:
-            try:
-                operation = self.application_service.get_operation(self.job_id, site_id=self.config.site)
-            except Exception:
-                return False
-            self.operation_snapshot = operation
-            return operation.phase is not OnlineMrPhase.TERMINAL
-        return self._manager is not None and self._manager.is_running(self.job_id)
+        try:
+            operation = self.application_service.get_operation(self.job_id, site_id=self.config.site)
+        except Exception:
+            return False
+        self.operation_snapshot = operation
+        return operation.phase is not OnlineMrPhase.TERMINAL
 
     def _enqueue_application_event(self, event: dict[str, object]) -> None:
         self._application_events.append(dict(event))
@@ -281,6 +262,11 @@ class OnlineMrCollectorWorker(QObject):
     def _operation_status(operation: OnlineMrOperationSnapshotDTO) -> str:
         phase = operation.phase
         if phase is OnlineMrPhase.TERMINAL:
+            if operation.stop_reason == "recovered_aborted" or operation.mapping_state in {
+                OnlineMrMappingState.STALE,
+                OnlineMrMappingState.SESSION_ONLY_RECOVERED,
+            }:
+                return STATE_ABORTED
             if operation.force_stopped:
                 return STATE_FORCED_STOPPED
             if str(operation.task_status or "").upper() == "FAILED" or operation.error_code:

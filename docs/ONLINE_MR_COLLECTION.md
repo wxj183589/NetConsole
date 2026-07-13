@@ -4,9 +4,9 @@
 
 Online MR 面向车载 MR 的实时 SSH/终端采集、fping 业务质量、随采集 iPerf3、手工备注、会话打包和离线诊断。原始文件是事实来源；实时视图用于现场观察，正式离线解析由 `online_mr_parse` Background Job 完成，报告由 Export Process 生成。
 
-当前最多同时采集 2 台 MR。超过 2 台会在选择和启动阶段被拒绝；采集管理器默认并发也为 2。
+当前最多同时采集 2 台 MR。超过 2 台会在选择和启动阶段被拒绝；页面按当前局点的 ApplicationService 操作引用计算可用并发，不再使用旧采集管理器作为运行状态来源。
 
-页面操作顺序：选择 1～2 台 MR；配置采集周期和高频 Ping；按需配置 iPerf；点击开始并在确认窗口复核设备/参数；启用 iPerf 时完成服务端预检；创建会话后自动收起设备列表和输入区；以实时状态、解析和采集输出为主；运行中可随时添加带时间戳备注；停止后保存并打包会话。页面不再提供独立“收起设备列表”按钮，自动折叠逻辑保留，输入区的展开操作会同时恢复设备选择区域。阶段 5B-4 保留现有 Qt 页面、signals、实时 raw tail 和快照展示，只把 LOCAL 启动、停止、强停、显式时长和状态恢复切到 `OnlineMrApplicationService`；Qt 兼容 Adapter 不再自行启动第二套 fping/iPerf。
+页面操作顺序：选择 1～2 台 MR；配置采集周期和高频 Ping；按需配置 iPerf；点击开始并在确认窗口复核设备/参数；启用 iPerf 时完成服务端预检；创建会话后自动收起设备列表和输入区；以实时状态、解析和采集输出为主；运行中可随时添加带时间戳备注；停止后保存并打包会话。页面不再提供独立“收起设备列表”按钮，自动折叠逻辑保留，输入区的展开操作会同时恢复设备选择区域。阶段 5B-5 后，Qt 兼容 Adapter 必须同时持有 `OnlineMrApplicationService` 和启动请求，不再提供旧 `BackgroundProcessManager` 启动后门；重复停止由 Adapter 幂等过滤，页面状态由 ApplicationService operation 轮询和 Task Event Hub 共同驱动。
 
 ## 2. 启动流程
 
@@ -112,7 +112,7 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 
 阶段 5B-3 为新 LOCAL 入口增加纯 Python `OnlineMrTrafficCoordinator`，由同一个 Background Worker 持有 fping/iPerf 与 SSH 采集生命周期。正常停止或达到显式 `duration_minutes` 上限时，先停止并 join Traffic，再停止 SSH collector、等待 writer/连接关闭、写最终 metadata，最后原子发布 ZIP；Worker 返回以后 Task 才进入终态。Traffic 工具缺失或运行失败写入 `traffic_summary/finalization_warnings`，不会让映射悬挂；无法确认 flush 时不发布正式 ZIP。
 
-`online_mr_task_sessions` schema v2 增加 `mr_id`、开始/结束时间、实际 `duration_minutes`、`stop_reason`、`force_stopped` 和 `error_summary`。实际时长统一使用 `max(0, ended_at - started_at) / 60` 并保留三位小数；配置的停止上限另存为 `configured_duration_minutes`。正常 `stop_operation()` 有界等待 Worker 完成完整收口；`force_stop_operation()` 先短暂协作停止，超时才终止进程树，并把会话标为 `FORCED_STOPPED`、`data_integrity=partial`、`finalization_complete=false`，保留 raw 且不发布新的正式 ZIP。遗留恢复仍只标记 `ABORTED`，不解析、不打包、不删除 raw。阶段 5B-4 的 Qt Adapter 订阅同一 Task Event Hub，并由定时查询补偿遗漏事件；Application Service 管理的会话不会再启动页面自有的 fping/iPerf。AGENT、FastAPI/Vue 与离线解析接入不属于本阶段。
+`online_mr_task_sessions` schema v2 增加 `mr_id`、开始/结束时间、实际 `duration_minutes`、`stop_reason`、`force_stopped` 和 `error_summary`。实际时长统一使用 `max(0, ended_at - started_at) / 60` 并保留三位小数；配置的停止上限另存为 `configured_duration_minutes`。正常 `stop_operation()` 有界等待 Worker 完成完整收口；`force_stop_operation()` 先短暂协作停止，超时才终止进程树，并把会话标为 `FORCED_STOPPED`、`data_integrity=partial`、`finalization_complete=false`，保留 raw 且不发布新的正式 ZIP。遗留恢复仍只标记 `ABORTED`，不解析、不打包、不删除 raw。阶段 5B-5 已撤掉 Legacy Qt 页面对旧采集管理器的运行登记和二次取消；页面自管 fping/iPerf 方法仅保留为历史兼容代码，并由 `manages_traffic` guard 保证 ApplicationService 会话不会调用。AGENT、FastAPI/Vue 与离线解析接入不属于本阶段。
 
 ### 6.1 阶段 5B-3A 真实设备验收
 

@@ -1142,6 +1142,8 @@ class OnlineMrCollector:
 
 
 class OnlineMrCollectionManager:
+    """遗留 UI 注册表；生产 Online MR 页面已改用 ApplicationService 操作引用。"""
+
     def __init__(self, max_concurrent: int = 2) -> None:
         self.max_concurrent = max_concurrent
         self._running: dict[str, object] = {}

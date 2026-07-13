@@ -455,6 +455,7 @@ def test_stop_operation_converges_task_session_mapping_and_duration(tmp_path: Pa
     )
 
     stopped = service.stop_operation(operation.controller_task_id, site_id="site-a", timeout_seconds=0.1)
+    stopped_again = service.stop_operation(operation.controller_task_id, site_id="site-a", timeout_seconds=0.1)
 
     meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
     assert stopped.task_status == "COMPLETED"
@@ -462,6 +463,7 @@ def test_stop_operation_converges_task_session_mapping_and_duration(tmp_path: Pa
     assert stopped.phase == OnlineMrPhase.TERMINAL
     assert stopped.duration_minutes is not None and stopped.duration_minutes >= 0
     assert stopped.stop_reason == "user_stop"
+    assert stopped_again == stopped
     assert meta["status"] == "STOPPED"
     assert meta["duration_minutes"] == stopped.duration_minutes
     assert adapter.cancelled_jobs == [operation.controller_task_id]
@@ -492,12 +494,19 @@ def test_force_stop_is_bounded_marks_warning_and_preserves_raw(tmp_path: Path) -
         cooperative_timeout_seconds=0,
         force_timeout_seconds=0,
     )
+    forced_again = service.force_stop_operation(
+        operation.controller_task_id,
+        site_id="site-a",
+        cooperative_timeout_seconds=0,
+        force_timeout_seconds=0,
+    )
 
     meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
     assert forced.task_status == "CANCELLED"
     assert forced.mapping_state == OnlineMrMappingState.TERMINAL
     assert forced.force_stopped is True
     assert forced.stop_reason == "force_stop"
+    assert forced_again == forced
     assert "无法确认全部 writer flush" in forced.error_summary
     assert meta["status"] == "FORCED_STOPPED"
     assert meta["finalization_complete"] is False

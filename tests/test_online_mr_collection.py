@@ -27,6 +27,7 @@ from netconsole.models.online_mr_models import (
     STATE_ABORTED,
     STATE_COLLECTING,
     STATE_CONNECTING,
+    STATE_FORCED_STOPPED,
     STATE_RECONNECTING,
     STATE_STOPPING,
     STATE_STOPPED,
@@ -1307,20 +1308,6 @@ def test_collector_snapshot_overrides_stale_latest_status(tmp_path: Path) -> Non
     assert snapshot.active_peer == "30f5-277a-5a2f"
 
 
-def test_collector_job_handle_cancel_only_requests_job_center_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _qt_app()
-    paths, config = _config(tmp_path)
-    worker = OnlineMrCollectorWorker(config, paths)
-    calls: list[str] = []
-    monkeypatch.setattr(worker._manager, "cancel_job", calls.append)
-
-    worker.cancel()
-
-    assert calls == [worker.job_id]
-    assert worker.collector.cancelled is True
-    assert worker.collector.status == STATE_STOPPING
-
-
 def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
     onboard = groups.create("车载")
@@ -1337,7 +1324,11 @@ def test_online_mr_job_page_terminal_events_restore_button_state(tmp_path: Path,
     monkeypatch.setattr(page, "_build_config_for_device", lambda _device: config)
     monkeypatch.setattr(page, "_confirm_start_collection", lambda _devices: True)
     started: list[OnlineMrCollectorWorker] = []
-    monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
+    monkeypatch.setattr(
+        OnlineMrCollectorWorker,
+        "start",
+        lambda worker: started.append(worker) or SimpleNamespace(controller_task_id=worker.job_id),
+    )
 
     def cancel(worker: OnlineMrCollectorWorker) -> None:
         worker.collector.cancelled = True
@@ -4141,8 +4132,6 @@ def test_online_mr_stop_selected_and_stop_all_are_device_scoped(tmp_path: Path) 
     first_worker = FakeWorker()
     second_worker = FakeWorker()
     page.workers_by_device_id = {first.id: first_worker, second.id: second_worker}
-    page.manager.register_device(first.id, first_worker)
-    page.manager.register_device(second.id, second_worker)
     row_for_first = next(row for row, device in enumerate(page.filtered_devices) if device.id == first.id)
     page.device_table.item(row_for_first, 0).setCheckState(Qt.Checked)
 
@@ -4178,7 +4167,6 @@ def test_online_mr_stop_all_covers_session_workers_and_probe_workers(tmp_path: P
     iperf_worker = FakeProbeWorker()
     page.workers["session-1"] = session_worker
     page.session_to_device_id["session-1"] = int(device.id)
-    page.manager.register("session-1", session_worker)
     page.fping_workers_by_device_id[int(device.id)] = fping_worker
     page.iperf_workers_by_device_id[int(device.id)] = iperf_worker
 
@@ -4189,6 +4177,134 @@ def test_online_mr_stop_all_covers_session_workers_and_probe_workers(tmp_path: P
     assert iperf_worker.stopped is True
     assert page.status_value == "STOPPING"
     assert page.stop_animation_timer.isActive()
+
+
+def test_application_managed_session_does_not_use_page_traffic_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page, repository, groups = _online_page_with_devices(tmp_path)
+    onboard = groups.create("车载")
+    device = _create_onboard_device(repository, onboard.id, "MR-App")
+    page.refresh_all()
+    config = page._build_config_for_device(device)
+    assert config is not None
+
+    cancel_calls: list[str] = []
+
+    class ApplicationWorker:
+        manages_traffic = True
+        job_id = "application-task-1"
+
+        def __init__(self) -> None:
+            self.collector = SimpleNamespace(
+                config=config,
+                cancelled=False,
+                status=STATE_COLLECTING,
+                snapshot=lambda: OnlineMrSnapshot(
+                    "session-app",
+                    STATE_COLLECTING,
+                    device_id=int(device.id),
+                    device_name=device.name,
+                    host=device.primary_address,
+                ),
+            )
+            self._stop_requested = False
+
+        def cancel(self) -> None:
+            if self._stop_requested:
+                return
+            self._stop_requested = True
+            cancel_calls.append(self.job_id)
+
+    class DirectTrafficWorker:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self, **_kwargs) -> None:
+            self.stopped = True
+
+    monkeypatch.setattr(page, "_start_fping_worker", lambda *_args: pytest.fail("不应启动页面 fping worker"))
+    monkeypatch.setattr(page, "_start_iperf_worker", lambda *_args: pytest.fail("不应启动页面 iPerf worker"))
+    worker = ApplicationWorker()
+    meta = SimpleNamespace(
+        session_id="session-app",
+        device_id=int(device.id),
+        session_dir=None,
+        status=STATE_COLLECTING,
+    )
+    page._worker_started(meta, worker)
+
+    fping = DirectTrafficWorker()
+    iperf = DirectTrafficWorker()
+    batch_iperf = DirectTrafficWorker()
+    batch_key = ("application",)
+    page.fping_workers[meta.session_id] = fping
+    page.fping_workers_by_device_id[int(device.id)] = fping
+    page.iperf_workers[meta.session_id] = iperf
+    page.iperf_workers_by_device_id[int(device.id)] = iperf
+    page.iperf_batch_sessions[batch_key] = {meta.session_id}
+    page.iperf_batch_workers[batch_key] = batch_iperf
+    row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
+    page.device_table.item(row, 0).setCheckState(Qt.Checked)
+
+    page.stop_selected()
+    page.stop_selected()
+
+    assert cancel_calls == [worker.job_id]
+    assert fping.stopped is False
+    assert iperf.stopped is False
+
+    page._finalize_collection_state(
+        device_id=int(device.id),
+        session_id=meta.session_id,
+        final_status=STATE_STOPPED,
+        reason="completed",
+    )
+
+    assert fping.stopped is False
+    assert iperf.stopped is False
+    assert batch_iperf.stopped is False
+    assert batch_key not in page.iperf_batch_workers
+
+
+def test_application_managed_force_stop_does_not_touch_page_traffic_workers(tmp_path: Path) -> None:
+    page, _repository, _groups = _online_page_with_devices(tmp_path)
+    force_calls: list[str] = []
+
+    class ApplicationWorker:
+        manages_traffic = True
+        job_id = "application-task-1"
+        collector = SimpleNamespace(config=SimpleNamespace(device_id=1), status=STATE_COLLECTING)
+
+        def force_stop(self, reason: str) -> None:
+            force_calls.append(reason)
+
+    class DirectTrafficWorker:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self, **_kwargs) -> None:
+            self.stopped = True
+
+    worker = ApplicationWorker()
+    fping = DirectTrafficWorker()
+    iperf = DirectTrafficWorker()
+    page.workers["session-app"] = worker
+    page.workers_by_device_id[1] = worker
+    page.session_to_device_id["session-app"] = 1
+    page.fping_workers["session-app"] = fping
+    page.fping_workers_by_device_id[1] = fping
+    page.iperf_workers["session-app"] = iperf
+    page.iperf_workers_by_device_id[1] = iperf
+
+    page.force_stop_collection()
+    page.force_stop_collection()
+
+    assert force_calls == ["force_stop"]
+    assert fping.stopped is False
+    assert iperf.stopped is False
+    assert page.status_value == STATE_FORCED_STOPPED
 
 
 def test_online_mr_reuses_one_iperf_worker_for_same_batch_config(tmp_path: Path, monkeypatch) -> None:
@@ -4343,21 +4459,35 @@ def test_online_mr_discards_failed_iperf_batch_worker(tmp_path: Path, monkeypatc
     assert page.iperf_workers["s-a"] is FakeIperfWorker.instances[0]
 
 
-def test_online_mr_stop_all_does_not_wait_for_worker_process_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_online_mr_stop_all_does_not_wait_for_worker_process_cleanup(tmp_path: Path) -> None:
     page, repository, groups = _online_page_with_devices(tmp_path)
     onboard = groups.create("\u8f66\u8f7d")
     device = _create_onboard_device(repository, onboard.id, "MR-01")
     page.refresh_all()
-    paths, config = _config(tmp_path)
+    _paths, config = _config(tmp_path)
     config.device_id = int(device.id)
-
-    worker = OnlineMrCollectorWorker(config, paths)
+    config.device_name = device.name
+    config.host = device.primary_address
     cancelled: list[str] = []
-    monkeypatch.setattr(worker._manager, "cancel_job", cancelled.append)
+    worker = SimpleNamespace(
+        job_id="application-task-1",
+        manages_traffic=True,
+        collector=SimpleNamespace(
+            status=STATE_COLLECTING,
+            config=config,
+            snapshot=lambda: OnlineMrSnapshot(
+                "session-1",
+                STATE_COLLECTING,
+                device_id=int(device.id),
+                device_name=device.name,
+                host=device.primary_address,
+            ),
+        ),
+        cancel=lambda: cancelled.append("application-task-1"),
+    )
     page.workers["session-1"] = worker
     page.workers_by_device_id[int(device.id)] = worker
     page.session_to_device_id["session-1"] = int(device.id)
-    page.manager.register_device(int(device.id), worker)
 
     started = time.perf_counter()
     page.stop_all()
@@ -4365,7 +4495,6 @@ def test_online_mr_stop_all_does_not_wait_for_worker_process_cleanup(tmp_path: P
 
     assert elapsed < 0.3
     assert cancelled == [worker.job_id]
-    assert worker.collector.status == STATE_STOPPING
     assert page.status_value == "STOPPING"
     assert page.stop_animation_timer.isActive()
 
@@ -4500,7 +4629,6 @@ def test_online_mr_stop_updates_device_and_summary_status(tmp_path: Path) -> Non
 
     worker = FakeWorker()
     page.workers_by_device_id = {device.id: worker}
-    page.manager.register_device(device.id, worker)
     page.summary_table.setRowCount(1)
     page.summary_table.setItem(0, SUMMARY_COL_DEVICE_ID, QTableWidgetItem(str(device.id)))
     row = next(row for row, row_device in enumerate(page.filtered_devices) if row_device.id == device.id)
@@ -4534,7 +4662,7 @@ def test_online_mr_pages_share_runtime_for_same_site(tmp_path: Path) -> None:
     page, repository, _groups = _online_page_with_devices(tmp_path)
     second = OnlineMrCollectionPage(repository, I18n("en_US"), "demo", page.paths)
 
-    assert second.manager is page.manager
+    assert second.application_service is page.application_service
     assert second.realtime_cache is page.realtime_cache
     assert second.workers is page.workers
     assert second.output_buffers_by_device_id is page.output_buffers_by_device_id
@@ -5391,8 +5519,7 @@ def test_online_mr_pending_worker_failure_and_stop_all_are_device_scoped(tmp_pat
 
     worker = FakePendingWorker()
     page.workers_by_device_id[int(device.id)] = worker
-    page.manager.register_device(int(device.id), worker)
-    assert page.manager.running_count() == 1
+    assert page._site_running_count() == 1
 
     page._upsert_summary(SimpleNamespace(session_id="pending-session"))
     assert page.summary_table.rowCount() == 0
@@ -5401,7 +5528,6 @@ def test_online_mr_pending_worker_failure_and_stop_all_are_device_scoped(tmp_pat
     assert worker.cancelled is True
 
     page.workers_by_device_id[int(device.id)] = worker
-    page.manager.register_device(int(device.id), worker)
     page._worker_failed("connect failed", int(device.id))
     assert int(device.id) not in page.workers_by_device_id
-    assert page.manager.running_count() == 0
+    assert page._site_running_count() == 0

@@ -355,20 +355,11 @@ def test_online_mr_packaging_failure_preserves_raw_and_cleans_tmp(tmp_path: Path
     assert not output.with_suffix(".zip.tmp").exists()
 
 
-def test_online_mr_job_handle_submits_long_running_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    application = QApplication.instance() or QApplication([])
-    worker = OnlineMrCollectorWorker(_config(), PathResolver(tmp_path))
-    submitted: list[BackgroundJob] = []
-    monkeypatch.setattr(worker._manager, "start_job", lambda job: submitted.append(job) or job.job_id)
+def test_online_mr_qt_adapter_rejects_legacy_job_manager_path(tmp_path: Path) -> None:
+    QApplication.instance() or QApplication([])
 
-    worker.start()
-
-    assert len(submitted) == 1
-    job = submitted[0]
-    assert job.task_type == "online_mr_collection_start"
-    assert int(job.params["_cancel_grace_ms"]) >= 30000
-    assert "connection_targets" not in dict(job.params["config"])
-    application.processEvents()
+    with pytest.raises(ValueError, match="OnlineMrApplicationService"):
+        OnlineMrCollectorWorker(_config(), PathResolver(tmp_path))
 
 
 def test_online_mr_application_adapter_routes_start_stop_and_terminal_event(tmp_path: Path) -> None:
@@ -392,6 +383,7 @@ def test_online_mr_application_adapter_routes_start_stop_and_terminal_event(tmp_
     worker.completed.connect(completed.append)
 
     operation = worker.start()
+    worker.cancel()
     worker.cancel()
 
     assert operation is not None
@@ -444,8 +436,9 @@ def test_online_mr_application_adapter_routes_force_stop_without_legacy_manager(
     worker.start()
 
     worker.force_stop("operator_force_stop")
+    worker.force_stop("operator_force_stop")
 
-    assert worker._manager is None
+    assert not hasattr(worker, "_manager")
     assert service.force_stop_calls == [
         {
             "controller_task_id": "application-task-1",
@@ -459,10 +452,55 @@ def test_online_mr_application_adapter_routes_force_stop_without_legacy_manager(
     application.processEvents()
 
 
+def test_online_mr_application_adapter_maps_recovered_operation_to_aborted(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    service = FakeApplicationService()
+    service.operation = _operation(phase=OnlineMrPhase.TERMINAL, task_status=TaskState.CANCELLED).model_copy(
+        update={
+            "mapping_state": OnlineMrMappingState.STALE,
+            "stop_reason": "recovered_aborted",
+        }
+    )
+    request = OnlineMrStartRequest(
+        site_id="demo",
+        device_id=1,
+        device_name="MR-Test",
+        mr_name="MR-Test",
+        config=_config(),
+        owner="legacy_qt",
+    )
+    worker = OnlineMrCollectorWorker(
+        _config(),
+        PathResolver(tmp_path),
+        application_service=service,
+        application_request=request,
+    )
+
+    worker.start()
+
+    assert worker.collector.status == "ABORTED"
+    assert worker.isRunning() is False
+    application.processEvents()
+
+
 def test_online_mr_job_handle_cancelled_cleans_interrupted_package_tmp(tmp_path: Path) -> None:
     application = QApplication.instance() or QApplication([])
     paths = PathResolver(tmp_path)
-    worker = OnlineMrCollectorWorker(_config(), paths)
+    service = FakeApplicationService()
+    request = OnlineMrStartRequest(
+        site_id="demo",
+        device_id=1,
+        device_name="MR-Test",
+        mr_name="MR-Test",
+        config=_config(),
+        owner="legacy_qt",
+    )
+    worker = OnlineMrCollectorWorker(
+        _config(),
+        paths,
+        application_service=service,
+        application_request=request,
+    )
     session = OnlineMrSessionStore(paths).create_session(_config())
     worker.collector.session = session
     package_tmp = OnlineMrCollectionPaths.from_session_dir(session.session_dir).package_tmp_path
