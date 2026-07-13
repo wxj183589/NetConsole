@@ -6,6 +6,8 @@ from typing import Any
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.online_mr_application import OnlineMrExecutorKind, OnlineMrMappingState, OnlineMrPhase
+from netconsole.models.task_state import TaskState
 
 
 class OnlineMrMetricType(StrEnum):
@@ -154,6 +156,26 @@ class OnlineMrTaskSessionLinkDTO(ApiModel):
     device_name: str = ""
     mapping_source: str = "unknown"
     mapping_confidence: float | None = None
+
+
+class OnlineMrOperationSnapshotDTO(ApiModel):
+    controller_task_id: str
+    session_id: str | None = None
+    site_id: str
+    device_id: int | str | None = None
+    device_name: str = ""
+    mr_name: str = ""
+    executor_kind: OnlineMrExecutorKind
+    agent_id: str = ""
+    task_status: TaskState | None = None
+    phase: OnlineMrPhase
+    created_at: str
+    started_at: str | None = None
+    updated_at: str
+    terminal_at: str | None = None
+    error_code: str = ""
+    error_message: str = ""
+    mapping_state: OnlineMrMappingState
 
 
 __all__ = [name for name in globals() if name.startswith("OnlineMr")]

@@ -1,0 +1,518 @@
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import uuid
+from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+from netconsole.core.database import Database
+from netconsole.core.paths import PathResolver
+from netconsole.models.api.online_mr import OnlineMrOperationSnapshotDTO
+from netconsole.models.online_mr_application import (
+    OnlineMrExecutorKind,
+    OnlineMrMappingState,
+    OnlineMrPhase,
+    OnlineMrStartRequest,
+    OnlineMrTaskSessionMapping,
+)
+from netconsole.models.task_snapshot import utc_now_iso
+from netconsole.models.task_state import TERMINAL_TASK_STATES
+from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.online_mr_task_session_repository import OnlineMrTaskSessionRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.online_mr.collection_models import collection_config_to_payload
+from netconsole.services.online_mr.errors import OnlineMrApplicationError, OnlineMrApplicationErrorCode
+from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+
+
+DeviceValidator = Callable[[str, int | str], bool]
+_ACTIVE_MAPPING_STATES = {OnlineMrMappingState.PENDING_SESSION, OnlineMrMappingState.LINKED}
+_STALE_SESSION_STATES = {
+    "CREATED",
+    "PREPARING",
+    "CONNECTING",
+    "INITIALIZING",
+    "STARTING",
+    "RUNNING",
+    "COLLECTING",
+    "RECONNECTING",
+    "STOPPING",
+    "FINALIZING",
+    "PARSING",
+    "PACKAGING",
+}
+_STARTUP_PHASES = {
+    OnlineMrPhase.VALIDATING,
+    OnlineMrPhase.PREPARING_TASK,
+    OnlineMrPhase.PREPARING_SESSION,
+    OnlineMrPhase.CONNECTING,
+    OnlineMrPhase.STARTING_COLLECTION,
+}
+
+
+class OnlineMrApplicationService:
+    """Online MR 本地启动、Task/Session 映射和恢复的纯 Python 应用边界。"""
+
+    def __init__(
+        self,
+        paths: PathResolver,
+        *,
+        site_name: str = "demo",
+        task_service: TaskApplicationService | None = None,
+        process_adapter: LocalProcessAdapter | None = None,
+        device_validator: DeviceValidator | None = None,
+    ) -> None:
+        self.paths = paths
+        self.site_name = str(site_name or "demo")
+        self.task_service = task_service or TaskApplicationService(paths, site_name=self.site_name)
+        self.process_adapter = process_adapter or LocalProcessAdapter(self.task_service)
+        self.device_validator = device_validator or self._device_exists
+        self._repositories: dict[str, OnlineMrTaskSessionRepository] = {}
+        self._unsubscribe = self.task_service.events.subscribe(self.reconcile_task_event)
+
+    def prepare_start(self, request: OnlineMrStartRequest) -> OnlineMrStartRequest:
+        site_id = self._safe_component(request.site_id)
+        if not site_id or not self.paths.site_dir(site_id).is_dir():
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.SITE_NOT_FOUND, "Online MR 局点不存在")
+        if request.executor_kind is not OnlineMrExecutorKind.LOCAL:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
+        if request.agent_id:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "本地执行不能指定 Agent")
+        if request.device_id in (None, "") or not request.device_name.strip() or not request.mr_name.strip():
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "Online MR 设备和 MR 信息不完整")
+        if not self.device_validator(site_id, request.device_id):
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.DEVICE_NOT_FOUND, "Online MR 设备不存在")
+        config = request.config
+        if (
+            config.site != site_id
+            or str(config.device_id or "") != str(request.device_id)
+            or config.device_name != request.device_name
+            or config.mr_name != request.mr_name
+        ):
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "Online MR 启动配置与任务归属不一致")
+        return request
+
+    def start_local_collection(self, request: OnlineMrStartRequest) -> OnlineMrOperationSnapshotDTO:
+        request = self.prepare_start(request)
+        task_id = f"online_mr_collection_{uuid.uuid4().hex}"
+        now = utc_now_iso()
+        mapping = OnlineMrTaskSessionMapping(
+            controller_task_id=task_id,
+            site_id=request.site_id,
+            device_id=str(request.device_id),
+            device_name=request.device_name,
+            mr_name=request.mr_name,
+            executor_kind=request.executor_kind,
+            agent_id=request.agent_id,
+            phase=OnlineMrPhase.PREPARING_TASK,
+            mapping_state=OnlineMrMappingState.PENDING_SESSION,
+            created_at=now,
+            updated_at=now,
+        )
+        repository = self.repository(request.site_id)
+        try:
+            repository.create(mapping)
+        except sqlite3.IntegrityError as exc:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.MAPPING_CONFLICT, "Online MR 任务映射冲突") from exc
+
+        grace_ms = min(60_000, max(30_000, int(request.config.command_timeout or 15) * 1_000 + 5_000))
+        params = {
+            "site_name": request.site_id,
+            "device": request.device_name,
+            "device_id": str(request.device_id),
+            "owner": request.owner,
+            "task_name": f"Online MR - {request.device_name}",
+            "task_source": "local",
+            "config": collection_config_to_payload(request.config),
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+            "package_on_stop": True,
+            "_cancel_grace_ms": grace_ms,
+        }
+        try:
+            self.process_adapter.start_job(
+                BackgroundJob(job_id=task_id, task_type="online_mr_collection_start", params=params)
+            )
+        except Exception as exc:
+            snapshot = self.task_service.repository(request.site_id).get(task_id)
+            code = (
+                OnlineMrApplicationErrorCode.TASK_SUBMIT_FAILED
+                if snapshot is not None
+                else OnlineMrApplicationErrorCode.TASK_CREATE_FAILED
+            )
+            failed = replace(
+                repository.get_by_task(task_id) or mapping,
+                phase=OnlineMrPhase.TERMINAL,
+                mapping_state=OnlineMrMappingState.TASK_ONLY_FAILED,
+                updated_at=utc_now_iso(),
+                terminal_at=utc_now_iso(),
+                error_code=code.value,
+                error_message=self._safe_error(exc),
+            )
+            repository.save(failed)
+            raise OnlineMrApplicationError(code, "Online MR 本地采集任务启动失败") from exc
+
+        current = repository.get_by_task(task_id) or mapping
+        if current.phase is OnlineMrPhase.PREPARING_TASK:
+            repository.save(replace(current, phase=OnlineMrPhase.PREPARING_SESSION, updated_at=utc_now_iso()))
+        return self.get_operation(task_id, site_id=request.site_id)
+
+    def get_operation(self, controller_task_id: str, *, site_id: str | None = None) -> OnlineMrOperationSnapshotDTO:
+        mapping = self._find_by_task(controller_task_id, site_id=site_id)
+        if mapping is None:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.OPERATION_NOT_FOUND, "Online MR 操作不存在")
+        return self._to_operation(mapping)
+
+    def get_operation_by_session(self, session_id: str, *, site_id: str | None = None) -> OnlineMrOperationSnapshotDTO:
+        mapping = self._find_by_session(session_id, site_id=site_id)
+        if mapping is None:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.OPERATION_NOT_FOUND, "Online MR 会话操作不存在")
+        return self._to_operation(mapping)
+
+    def list_operations(
+        self,
+        *,
+        site_id: str | None = None,
+        states: set[OnlineMrMappingState] | None = None,
+        device_id: str | int | None = None,
+        limit: int = 200,
+    ) -> list[OnlineMrOperationSnapshotDTO]:
+        sites = [site_id] if site_id else self._site_ids()
+        rows = [
+            self._to_operation(mapping)
+            for selected_site in sites
+            for mapping in self.repository(selected_site).list(states=states, device_id=device_id, limit=limit)
+        ]
+        rows.sort(key=lambda row: (row.updated_at, row.controller_task_id), reverse=True)
+        return rows[: max(1, min(int(limit), 1000))]
+
+    def reconcile_task_event(self, event: dict[str, object]) -> None:
+        task_id = str(event.get("task_id") or event.get("job_id") or "")
+        if not task_id:
+            return
+        payload = dict(event.get("payload") or event)
+        mapping = self._find_by_task(task_id, site_id=self._text(payload.get("site_id")) or None)
+        if mapping is None or mapping.phase is OnlineMrPhase.TERMINAL:
+            return
+        repository = self.repository(mapping.site_id)
+        event_type = str(event.get("type") or payload.get("type") or "")
+        stage = str(payload.get("stage") or "")
+        now = str(event.get("time") or utc_now_iso())
+
+        if event_type == "progress" and stage in {"online_mr_session_created", "online_mr_started", "online_mr_status"}:
+            details = self._structured_message(payload.get("message"))
+            mapping = self._reconcile_progress(repository, mapping, stage, details, now)
+            return
+        if event_type not in {"finished", "error", "cancelled"}:
+            return
+
+        error_message = self._sanitize_error_text(payload.get("error") or payload.get("message"))
+        startup_failure = event_type == "error" and mapping.phase in _STARTUP_PHASES
+        if startup_failure and mapping.session_id:
+            self._mark_session_failed(mapping, error_message)
+        state = OnlineMrMappingState.TASK_ONLY_FAILED if event_type == "error" and not mapping.session_id else OnlineMrMappingState.TERMINAL
+        error_code = OnlineMrApplicationErrorCode.STARTUP_CONNECTION_FAILED.value if startup_failure else mapping.error_code
+        repository.save(
+            replace(
+                mapping,
+                phase=OnlineMrPhase.TERMINAL,
+                mapping_state=state,
+                updated_at=now,
+                terminal_at=now,
+                error_code=error_code,
+                error_message=error_message if event_type == "error" else mapping.error_message,
+            )
+        )
+
+    def recover_mappings(self, *, site_id: str | None = None) -> list[OnlineMrOperationSnapshotDTO]:
+        changed: list[OnlineMrTaskSessionMapping] = []
+        for selected_site in ([site_id] if site_id else self._site_ids()):
+            repository = self.repository(selected_site)
+            task_repository = self.task_service.repository(selected_site)
+            for mapping in repository.list(limit=1000):
+                if mapping.mapping_state not in _ACTIVE_MAPPING_STATES:
+                    continue
+                task = task_repository.get(mapping.controller_task_id)
+                if task is not None and task.status not in TERMINAL_TASK_STATES:
+                    continue
+                now = utc_now_iso()
+                if task is None:
+                    state = OnlineMrMappingState.STALE
+                    error = "未找到对应 Controller Task"
+                elif mapping.session_id:
+                    state = OnlineMrMappingState.TERMINAL
+                    error = task.error_message
+                else:
+                    state = OnlineMrMappingState.TASK_ONLY_FAILED
+                    error = task.error_message
+                updated = replace(
+                    mapping,
+                    phase=OnlineMrPhase.TERMINAL,
+                    mapping_state=state,
+                    updated_at=now,
+                    terminal_at=now,
+                    error_code=mapping.error_code or OnlineMrApplicationErrorCode.STALE_OPERATION.value,
+                    error_message=mapping.error_message or error,
+                )
+                repository.save(updated)
+                changed.append(updated)
+
+            store = OnlineMrSessionStore(self.paths)
+            for session_dir in store.list_session_dirs(selected_site):
+                meta = self._read_metadata(session_dir)
+                if meta is None or str(meta.get("status") or "").upper() not in _STALE_SESSION_STATES:
+                    continue
+                existing = repository.get_by_session(str(meta.get("session_id") or session_dir.name))
+                if existing:
+                    task = task_repository.get(existing.controller_task_id)
+                    if task is not None and task.status not in TERMINAL_TASK_STATES:
+                        continue
+                self._abort_stale_session(session_dir, meta)
+                now = utc_now_iso()
+                if existing and existing.mapping_state in _ACTIVE_MAPPING_STATES:
+                    updated = replace(
+                        existing,
+                        phase=OnlineMrPhase.TERMINAL,
+                        mapping_state=OnlineMrMappingState.STALE,
+                        updated_at=now,
+                        terminal_at=now,
+                        error_code=OnlineMrApplicationErrorCode.STALE_OPERATION.value,
+                        error_message="Controller 重启后未发现仍存活的本地 Online MR Worker",
+                    )
+                    repository.save(updated)
+                elif existing:
+                    continue
+                else:
+                    session_id_value = str(meta.get("session_id") or session_dir.name)
+                    updated = OnlineMrTaskSessionMapping(
+                        controller_task_id=f"recovered_{uuid.uuid5(uuid.NAMESPACE_URL, f'{selected_site}:{session_id_value}').hex}",
+                        session_id=session_id_value,
+                        site_id=selected_site,
+                        device_id=str(meta.get("device_id") or ""),
+                        device_name=str(meta.get("device_name") or ""),
+                        mr_name=str(meta.get("mr_name") or session_dir.parent.parent.name),
+                        executor_kind=OnlineMrExecutorKind.LOCAL,
+                        phase=OnlineMrPhase.TERMINAL,
+                        mapping_state=OnlineMrMappingState.SESSION_ONLY_RECOVERED,
+                        created_at=now,
+                        updated_at=now,
+                        terminal_at=now,
+                        error_code=OnlineMrApplicationErrorCode.STALE_OPERATION.value,
+                        error_message="恢复到无 Controller Task 的遗留 Online MR 会话",
+                    )
+                    try:
+                        repository.create(updated)
+                    except sqlite3.IntegrityError:
+                        continue
+                changed.append(updated)
+        return [self._to_operation(mapping) for mapping in changed]
+
+    def repository(self, site_id: str) -> OnlineMrTaskSessionRepository:
+        selected_site = self._safe_component(site_id)
+        if not selected_site or not self.paths.site_dir(selected_site).is_dir():
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.SITE_NOT_FOUND, "Online MR 局点不存在")
+        repository = self._repositories.get(selected_site)
+        if repository is None:
+            repository = OnlineMrTaskSessionRepository(self.paths.site_tasks_db_path(selected_site), site_id=selected_site)
+            self._repositories[selected_site] = repository
+        return repository
+
+    def close(self) -> None:
+        self._unsubscribe()
+
+    def _reconcile_progress(
+        self,
+        repository: OnlineMrTaskSessionRepository,
+        mapping: OnlineMrTaskSessionMapping,
+        stage: str,
+        details: dict[str, object],
+        now: str,
+    ) -> OnlineMrTaskSessionMapping:
+        if details:
+            if self._text(details.get("controller_task_id")) not in {"", mapping.controller_task_id}:
+                return mapping
+            if self._text(details.get("site_id") or details.get("site")) not in {"", mapping.site_id}:
+                return mapping
+            if self._text(details.get("device_id")) not in {"", mapping.device_id}:
+                return mapping
+        session_id = self._text(details.get("session_id"))
+        if session_id and mapping.session_id not in {None, session_id}:
+            self._terminal_mapping_error(repository, mapping, OnlineMrApplicationErrorCode.SESSION_LINK_FAILED, "Online MR session_id 映射冲突")
+            return mapping
+        if stage == "online_mr_session_created":
+            phase = OnlineMrPhase.CONNECTING
+        elif stage == "online_mr_started":
+            phase = OnlineMrPhase.COLLECTING
+        else:
+            status = self._text(details.get("status")).upper()
+            phase = {
+                "CONNECTING": OnlineMrPhase.CONNECTING,
+                "INITIALIZING": OnlineMrPhase.STARTING_COLLECTION,
+                "COLLECTING": OnlineMrPhase.COLLECTING,
+                "RECONNECTING": OnlineMrPhase.COLLECTING,
+            }.get(status, mapping.phase)
+        updated = replace(
+            mapping,
+            session_id=session_id or mapping.session_id,
+            phase=phase,
+            mapping_state=OnlineMrMappingState.LINKED if session_id or mapping.session_id else mapping.mapping_state,
+            updated_at=now,
+        )
+        try:
+            return repository.save(updated)
+        except sqlite3.IntegrityError:
+            self._terminal_mapping_error(repository, mapping, OnlineMrApplicationErrorCode.MAPPING_CONFLICT, "Online MR session_id 已关联其他任务")
+            return mapping
+
+    def _terminal_mapping_error(
+        self,
+        repository: OnlineMrTaskSessionRepository,
+        mapping: OnlineMrTaskSessionMapping,
+        code: OnlineMrApplicationErrorCode,
+        message: str,
+    ) -> None:
+        now = utc_now_iso()
+        repository.save(
+            replace(
+                mapping,
+                phase=OnlineMrPhase.TERMINAL,
+                mapping_state=OnlineMrMappingState.TERMINAL,
+                updated_at=now,
+                terminal_at=now,
+                error_code=code.value,
+                error_message=message,
+            )
+        )
+
+    def _to_operation(self, mapping: OnlineMrTaskSessionMapping) -> OnlineMrOperationSnapshotDTO:
+        task = self.task_service.repository(mapping.site_id).get(mapping.controller_task_id)
+        return OnlineMrOperationSnapshotDTO(
+            controller_task_id=mapping.controller_task_id,
+            session_id=mapping.session_id,
+            site_id=mapping.site_id,
+            device_id=mapping.device_id or None,
+            device_name=mapping.device_name,
+            mr_name=mapping.mr_name,
+            executor_kind=mapping.executor_kind,
+            agent_id=mapping.agent_id,
+            task_status=task.status if task else None,
+            phase=mapping.phase,
+            created_at=mapping.created_at,
+            started_at=task.started_time if task and task.started_time else None,
+            updated_at=mapping.updated_at,
+            terminal_at=mapping.terminal_at,
+            error_code=mapping.error_code,
+            error_message=mapping.error_message,
+            mapping_state=mapping.mapping_state,
+        )
+
+    def _find_by_task(self, task_id: str, *, site_id: str | None = None) -> OnlineMrTaskSessionMapping | None:
+        for selected_site in ([site_id] if site_id else self._site_ids()):
+            mapping = self.repository(selected_site).get_by_task(task_id)
+            if mapping is not None:
+                return mapping
+        return None
+
+    def _find_by_session(self, session_id: str, *, site_id: str | None = None) -> OnlineMrTaskSessionMapping | None:
+        for selected_site in ([site_id] if site_id else self._site_ids()):
+            mapping = self.repository(selected_site).get_by_session(session_id)
+            if mapping is not None:
+                return mapping
+        return None
+
+    def _site_ids(self) -> list[str]:
+        values: set[str] = set()
+        if self.paths.sites_dir.is_dir():
+            values.update(path.name for path in self.paths.sites_dir.iterdir() if path.is_dir())
+        if self.paths.site_dir(self.site_name).is_dir():
+            values.add(self.site_name)
+        return sorted(values)
+
+    def _device_exists(self, site_id: str, device_id: int | str) -> bool:
+        db_path = self.paths.site_db_path(site_id)
+        if not db_path.is_file():
+            return False
+        try:
+            return DeviceRepository(Database(db_path)).get(int(device_id)) is not None
+        except (TypeError, ValueError):
+            return False
+
+    def _mark_session_failed(self, mapping: OnlineMrTaskSessionMapping, error_message: str) -> None:
+        if not mapping.session_id:
+            return
+        store = OnlineMrSessionStore(self.paths)
+        for session_dir in store.list_session_dirs(mapping.site_id):
+            if session_dir.name != mapping.session_id:
+                continue
+            meta = self._read_metadata(session_dir)
+            if meta is None:
+                return
+            meta["status"] = "FAILED"
+            meta["ended_at"] = meta.get("ended_at") or datetime.now().isoformat(sep=" ", timespec="seconds")
+            meta["error_code"] = OnlineMrApplicationErrorCode.STARTUP_CONNECTION_FAILED.value
+            meta["error_message"] = error_message
+            self._write_metadata(session_dir, meta)
+            return
+
+    def _abort_stale_session(self, session_dir: Path, meta: dict[str, object]) -> None:
+        previous_status = str(meta.get("status") or "")
+        meta["status"] = "ABORTED"
+        meta["ended_at"] = meta.get("ended_at") or datetime.now().isoformat(sep=" ", timespec="seconds")
+        meta["recovery_previous_status"] = previous_status
+        meta["error_code"] = meta.get("error_code") or OnlineMrApplicationErrorCode.STALE_OPERATION.value
+        meta["error_message"] = meta.get("error_message") or "Controller 重启后未发现仍存活的本地 Online MR Worker"
+        self._write_metadata(session_dir, meta)
+
+    @staticmethod
+    def _read_metadata(session_dir: Path) -> dict[str, object] | None:
+        try:
+            value = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return dict(value) if isinstance(value, dict) else None
+
+    @staticmethod
+    def _write_metadata(session_dir: Path, meta: dict[str, object]) -> None:
+        path = session_dir / "session_meta.json"
+        temporary = path.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    @staticmethod
+    def _structured_message(value: object) -> dict[str, object]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _safe_component(value: object) -> str:
+        text = str(value or "").strip()
+        return text if text and Path(text).name == text and text not in {".", ".."} else ""
+
+    @staticmethod
+    def _text(value: object) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _safe_error(exc: BaseException) -> str:
+        return OnlineMrApplicationService._sanitize_error_text(exc or exc.__class__.__name__)
+
+    @staticmethod
+    def _sanitize_error_text(value: object) -> str:
+        text = str(value or "").replace("\r", " ").replace("\n", " ")
+        return re.sub(r"(?i)(?:[a-z]:\\|/)[^ ]+", "<path>", text)[:500]
+
+
+__all__ = ["OnlineMrApplicationService"]

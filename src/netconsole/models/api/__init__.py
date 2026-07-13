@@ -7,6 +7,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrDatabaseSummaryDTO,
     OnlineMrLogChunkDTO,
     OnlineMrMetricSeriesDTO,
+    OnlineMrOperationSnapshotDTO,
     OnlineMrSessionDetailDTO,
     OnlineMrSessionSummaryDTO,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "OnlineMrDatabaseSummaryDTO",
     "OnlineMrLogChunkDTO",
     "OnlineMrMetricSeriesDTO",
+    "OnlineMrOperationSnapshotDTO",
     "OnlineMrSessionDetailDTO",
     "OnlineMrSessionSummaryDTO",
     "TaskDTO",

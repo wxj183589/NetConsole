@@ -18,6 +18,20 @@ class OnlineMrQueryErrorCode(StrEnum):
     QUERY_LIMIT_EXCEEDED = "ONLINE_MR_QUERY_LIMIT_EXCEEDED"
 
 
+class OnlineMrApplicationErrorCode(StrEnum):
+    INVALID_START_REQUEST = "ONLINE_MR_INVALID_START_REQUEST"
+    SITE_NOT_FOUND = "ONLINE_MR_SITE_NOT_FOUND"
+    DEVICE_NOT_FOUND = "ONLINE_MR_DEVICE_NOT_FOUND"
+    EXECUTOR_UNSUPPORTED = "ONLINE_MR_EXECUTOR_UNSUPPORTED"
+    TASK_CREATE_FAILED = "ONLINE_MR_TASK_CREATE_FAILED"
+    TASK_SUBMIT_FAILED = "ONLINE_MR_TASK_SUBMIT_FAILED"
+    SESSION_LINK_FAILED = "ONLINE_MR_SESSION_LINK_FAILED"
+    OPERATION_NOT_FOUND = "ONLINE_MR_OPERATION_NOT_FOUND"
+    MAPPING_CONFLICT = "ONLINE_MR_MAPPING_CONFLICT"
+    STARTUP_CONNECTION_FAILED = "ONLINE_MR_STARTUP_CONNECTION_FAILED"
+    STALE_OPERATION = "ONLINE_MR_STALE_OPERATION"
+
+
 class OnlineMrQueryError(RuntimeError):
     def __init__(self, code: OnlineMrQueryErrorCode | str, message: str) -> None:
         safe_message = str(message or "Online MR 查询失败").strip()
@@ -29,4 +43,20 @@ class OnlineMrQueryError(RuntimeError):
         return {"code": self.code, "message": self.message}
 
 
-__all__ = ["OnlineMrQueryError", "OnlineMrQueryErrorCode"]
+class OnlineMrApplicationError(RuntimeError):
+    def __init__(self, code: OnlineMrApplicationErrorCode | str, message: str) -> None:
+        safe_message = str(message or "Online MR 操作失败").strip()
+        super().__init__(safe_message)
+        self.code = str(code)
+        self.message = safe_message
+
+    def as_dict(self) -> dict[str, str]:
+        return {"code": self.code, "message": self.message}
+
+
+__all__ = [
+    "OnlineMrApplicationError",
+    "OnlineMrApplicationErrorCode",
+    "OnlineMrQueryError",
+    "OnlineMrQueryErrorCode",
+]
