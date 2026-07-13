@@ -9,7 +9,12 @@ const route = useRoute()
 const router = useRouter()
 const version = ref('')
 const backendOnline = ref(false)
-const activeMenu = computed(() => (route.path.startsWith('/agents') ? '/agents' : route.path.startsWith('/tasks') ? '/tasks' : '/'))
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
+  if (route.path.startsWith('/agents')) return '/agents'
+  if (route.path.startsWith('/tasks')) return '/tasks'
+  return '/'
+})
 
 onMounted(async () => {
   try {
@@ -45,14 +50,21 @@ onMounted(async () => {
           <el-icon><Connection /></el-icon>
           <span>Agent 管理</span>
         </el-menu-item>
+        <el-sub-menu index="/network-tools">
+          <template #title>
+            <el-icon><Operation /></el-icon>
+            <span>网络工具</span>
+          </template>
+          <el-menu-item index="/network-tools/traffic">流量测试</el-menu-item>
+        </el-sub-menu>
       </el-menu>
-      <div class="sidebar-note">阶段 3 · Agent 控制面</div>
+      <div class="sidebar-note">阶段 4C · Traffic Web</div>
     </el-aside>
     <el-container>
       <el-header class="app-header">
         <div>
           <div class="header-title">{{ route.meta.title || (route.name === 'tasks' ? '任务中心' : 'Dashboard') }}</div>
-          <div class="header-subtitle">任务与 Agent 状态均以 Python 后端为控制入口</div>
+          <div class="header-subtitle">任务、Agent 与流量测试均以 Python 后端为控制入口</div>
         </div>
         <div class="header-status">
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>

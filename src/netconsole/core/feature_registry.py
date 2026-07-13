@@ -63,6 +63,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("file.mesh_auto_import", "file_management.mesh_auto_import", "module.file_management", "button"),
     FeatureItem("file.external_winscp", "file_management.external_winscp", "module.file_management", "button"),
     FeatureItem("network_tools.toolbox", "network_tools.toolbox", "module.network_tools", "tab"),
+    FeatureItem("network_tools.traffic", "network_tools.traffic", "module.network_tools", "page"),
     FeatureItem("network_tools.wireless_scan", "network_tools.wireless_scan", "module.network_tools", "tab"),
     FeatureItem("network_tools.ipop", "network_tools.ipop", "network_tools.toolbox", "button"),
     FeatureItem("online_mr.advanced_ping", "online_mr.high_freq_ping", "rail.online_mr_collection", "action"),

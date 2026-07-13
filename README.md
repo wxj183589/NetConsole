@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4B-2 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件和远端恢复，但尚未创建 Traffic REST/WebSocket 路由或 Vue 流量页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -55,8 +55,8 @@ Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/reso
 ```mermaid
 flowchart LR
     UI["Qt6 / PySide6 / QFluentWidgets UI"] --> SVC["Services"]
-    WS["Qt Web Shell / Browser"] --> VUE["Vue Task Center / Agent 管理"]
-    VUE --> API["FastAPI Task / Agent API + WebSocket"]
+    WS["Qt Web Shell / Browser"] --> VUE["Vue Task / Agent / Traffic"]
+    VUE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
     API --> SVC
     SVC --> REPO["Repositories"]
     REPO --> DB["SQLite / 文件数据"]
@@ -83,7 +83,7 @@ flowchart LR
 - `JobRegistry` 当前注册 86 个任务类型，已按 11 个领域 handler 模块分区；新增三个本地 Traffic handler，多数既有领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集仍使用专用 `QThread`/线程池，不应误写成 Job Center 已接管。
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
-- Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Token 始终留在 Controller 进程内。面向浏览器的 Traffic API 与页面尚未实现。
+- Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Token 始终留在 Controller 进程内。浏览器端通过“网络工具 / 流量测试”调用统一 Traffic API。
 
 完整说明见 [架构文档](docs/ARCHITECTURE.md)、[Web 演进架构](docs/WEB_ARCHITECTURE.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
@@ -142,4 +142,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进下一阶段 4C 只接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，复用阶段 4B-2 的应用服务与数据边界。之后再依次推进 Online MR、MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`，不得顺带迁移；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，并继续复用阶段 4B-2 的应用服务与数据边界。下一阶段计划推进 Online MR，之后再依次处理 MR/MESH/FIT-AP/轨旁 AP、设备/AC/配置采集。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。

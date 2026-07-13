@@ -41,6 +41,7 @@ def test_feature_registry_lists_expected_features() -> None:
     assert "module.system_settings" in feature_ids
     assert "module.feature_switch" in feature_ids
     assert "rail.online_mr_collection" in feature_ids
+    assert FEATURE_BY_ID["network_tools.traffic"].parent_id == "module.network_tools"
     assert "online_mr.collect_config_once" not in feature_ids
     assert FEATURE_BY_ID["module.feature_switch"].internal_only is True
     assert FEATURE_BY_ID["system.feature_flags"].internal_only is True

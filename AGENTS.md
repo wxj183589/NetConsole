@@ -4,7 +4,7 @@
 
 - NetConsole 是 Windows 本地桌面网络设备采集与分析工具，当前技术栈为 Python 3.13、Qt6、PySide6、QFluentWidgets、SQLite、Netmiko 和本地 Excel 报告。
 - 真实版本从 `src/netconsole/core/version.py` 读取，用户可见功能从 `src/netconsole/core/feature_registry.py` 读取，数据路径从 `src/netconsole/core/paths.py` 读取。
-- Windows Go Agent V1 已位于 `apps/agent/`，包含独立 API、内嵌 Web、fping/iPerf、MR sidecar 和采集包；CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未实现。
+- Windows Go Agent V1 已位于 `apps/agent/`，包含独立 API、内嵌 Web、fping/iPerf、MR sidecar 和采集包；Traffic REST/WebSocket 与 Vue 流量测试页面已接入，CentOS 离线部署、主动注册和多 Controller 仍未实现。
 - 开发前先读当前代码、测试和 `docs/README.md`，不依赖旧会话或旧项目假设。
 
 ## 语言与编码

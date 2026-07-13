@@ -2,19 +2,21 @@
 
 ## 1. 当前状态
 
-阶段 4B-2 已建立纯 Python 流量测试应用层，统一支持本地或 Windows Go Agent 执行：
+阶段 4C 已在阶段 4B-2 的纯 Python 流量测试应用层之上接入 Web 调用能力，统一支持本地或 Windows Go Agent 执行：
 
 - iPerf Server；
 - iPerf Client（TCP/UDP、上传/下载/双向）；
 - fping v5 高频 Ping。
 
-本阶段没有 Traffic REST API、Traffic WebSocket 路由或 Vue 页面。原 Qt iPerf/Ping 页面继续可用，Online MR 页面、目标规则、会话和联动编排没有迁入通用 Traffic 服务。SNMP Center 与无线勘测继续保持 `DISABLED`。
+当前已提供 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面。原 Qt iPerf/Ping 页面继续可用，Online MR 页面、目标规则、会话和联动编排没有迁入通用 Traffic 服务。SNMP Center 与无线勘测继续保持 `DISABLED`。
 
 ## 2. 组件关系
 
 ```mermaid
 flowchart TD
-    CALLER["Future Qt / FastAPI Adapter"] --> APP["TrafficTestApplicationService"]
+    WEB["Vue /network-tools/traffic"] --> API["Traffic REST API / ws traffic"]
+    API --> APP["TrafficTestApplicationService"]
+    CALLER["Future Qt Adapter"] --> APP
     APP --> TASK["TaskApplicationService / tasks.db"]
     APP --> RUNS["TrafficRunRepository / traffic_runs.sqlite"]
     APP --> LOCAL["LocalTrafficAdapter"]
@@ -211,17 +213,47 @@ remote_sequence
 
 `TrafficEventHub` 使用有界队列。慢订阅者可丢弃中间绘图样本，但关键事件溢出时会断开订阅，调用者从 EventStore 游标恢复；Repository/EventStore 才是完整事实源。事件写入前会拒绝敏感键并脱敏绝对路径。
 
-## 9. 错误与当前限制
+## 9. Web 接入
+
+阶段 4C 新增 `src/netconsole/backend/api/traffic_router.py`，只作为 `TrafficTestApplicationService` 的薄适配层，不复制执行逻辑、Agent 协议或解析器。
+
+REST 入口：
+
+```text
+GET  /api/traffic/execution-targets
+POST /api/traffic/iperf/server
+POST /api/traffic/iperf/client
+POST /api/traffic/fping
+GET  /api/traffic/runs
+GET  /api/traffic/runs/{traffic_run_id}
+GET  /api/traffic/runs/{traffic_run_id}/summary
+GET  /api/traffic/runs/{traffic_run_id}/events
+GET  /api/traffic/runs/{traffic_run_id}/ping-samples
+POST /api/traffic/runs/{traffic_run_id}/cancel
+POST /api/traffic/runs/{traffic_run_id}/retry
+```
+
+实时入口：
+
+```text
+/ws/traffic/{traffic_run_id}
+```
+
+客户端先通过 REST 读取 Run、事件和样本，再以 `after_event`、`after_sample` 排他游标连接 WebSocket。服务端只发送 `ready`、`event/events`、`samples` 和 `heartbeat` 增量消息，不发送全量快照；断线重连前前端重新使用 REST 补齐事实数据。高频 Ping 采样只通过 Traffic 专用 REST/WS 通道传递，不进入全局 `/ws/tasks`。FastAPI lifespan 负责启动和停止 `TrafficTestApplicationService`，从而绑定 `AgentTrafficSupervisor`；普通 `python main.py` 的 Qt 主程序不依赖 FastAPI 才能启动。
+
+Vue 页面位于 `apps/web/src/views/network-tools/TrafficTestView.vue`，菜单入口为“网络工具 / 流量测试”，包含 iPerf Server、iPerf Client、高频 Ping、实时日志、ECharts RTT 曲线、历史任务、停止和原配置重试。
+
+Traffic API 错误统一返回稳定 `TRAFFIC_*` code；响应不返回 traceback、Token 或绝对路径。
+
+## 10. 错误与当前限制
 
 Traffic 错误使用稳定 `TRAFFIC_*` code。启动失败、工具缺失、连接拒绝/超时、解析失败、停止超时、凭据缺失、能力不支持、远端同步和结果缺失互相区分；Task/Traffic Run 不保存 traceback 或 Token。
 
 当前限制：
 
-- 没有 Traffic REST API、WebSocket 路由或 Vue 页面；
-- Supervisor 尚未绑定 FastAPI lifespan；
 - Controller 不是 Windows Service，退出后本地任务不会继续；
 - 只接入现有 Windows Go Agent，CentOS Agent 尚未实现；
 - 本地高频 Ping 暂不支持指定源地址，Agent 支持强类型 `source_address`；
 - 未迁移 Online MR、原 Qt iPerf/Ping、设备、AC、FIT-AP、MESH、SNMP Center 或无线勘测。
 
-阶段 4C 只能在本架构上增加 REST/WebSocket/Vue 接入，不得把业务执行、Token、工具路径或任意命令下放到页面和路由。
+后续业务迁移不得把执行、Token、工具路径或任意命令下放到页面和路由。

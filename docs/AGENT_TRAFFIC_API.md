@@ -2,7 +2,7 @@
 
 ## 1. 当前状态
 
-Web 演进阶段 4B-1 扩展了 Windows Go Agent 协议和 Python `AgentHttpClient`；阶段 4B-2 已增加 `TrafficTestApplicationService`、Agent 轮询、Controller/Agent 任务映射和 Traffic 数据库。当前仍没有 FastAPI Traffic 路由、独立 Traffic WebSocket 或 Vue 流量测试页面。
+Web 演进阶段 4B-1 扩展了 Windows Go Agent 协议和 Python `AgentHttpClient`；阶段 4B-2 已增加 `TrafficTestApplicationService`、Agent 轮询、Controller/Agent 任务映射和 Traffic 数据库；阶段 4C 已在 Controller 侧增加 FastAPI Traffic 路由、独立 Traffic WebSocket 和 Vue 流量测试页面，Agent 协议本身未改变。
 
 `ping-probe` 始终表示 TCP Connect Probe，不是 ICMP Ping。真实 ICMP 高频 Ping 使用独立任务类型 `fping`，两者不能互换或合并统计。
 
@@ -123,7 +123,7 @@ get_task_events
 get_task_result
 ```
 
-DTO 位于 `src/netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。阶段 4B-2 由 `AgentTrafficAdapter` 调用这些方法，`AgentTrafficSupervisor` 使用排他游标批量轮询；浏览器路由仍未接入。
+DTO 位于 `src/netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。阶段 4B-2 由 `AgentTrafficAdapter` 调用这些方法，`AgentTrafficSupervisor` 使用排他游标批量轮询；阶段 4C 浏览器路由只调用 Controller 的 `TrafficTestApplicationService`，浏览器不直连 Agent。
 
 ## 8. Controller 接入边界
 
@@ -131,4 +131,4 @@ DTO 位于 `src/netconsole/models/agent_traffic.py`，未知事件类型和 payl
 
 远端状态映射固定为 `created→STARTING / running→RUNNING / stopping→STOPPING / completed→COMPLETED / failed→FAILED / cancelled→CANCELLED`。未知状态只进入同步错误，不伪造 Task 终态；Controller 已进入 `STOPPING` 时不会被远端 `running` 回退。Agent 完成必须先取得最终 result，失败/取消在 Agent 重启导致 result 缺失时可使用任务快照收口。
 
-下一阶段 4C 只增加受控 REST/WebSocket 与 Vue 页面，不修改本协议，也不新增任意 Shell/命令执行接口。
+阶段 4C 只增加了受控 REST/WebSocket 与 Vue 页面，没有修改本协议，也没有新增任意 Shell/命令执行接口。

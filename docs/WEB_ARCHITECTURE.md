@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4B-2 已建立统一 Traffic 应用服务、本地/Agent 执行适配和任务同步，但尚未接入流量、MR、设备、AC、SNMP 等 Web 业务页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，但尚未接入 MR、设备、AC、SNMP 等其他 Web 业务页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -57,7 +57,7 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 - API DTO 位于 `src/netconsole/models/api/`，使用 Pydantic，禁止在路由中散落无约束 dict。
 - FastAPI 路由位于 `src/netconsole/backend/api/`，只编排应用服务，不复制 Repository 或业务算法。
-- 当前提供 `GET /api/health`、任务查询/详情/事件/取消、`/ws/tasks` 和自动 OpenAPI `/docs`。
+- 当前提供 `GET /api/health`、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及自动 OpenAPI `/docs`。
 - 版本来自 `src/netconsole/core/version.py`，API 不维护第二份版本号。
 - 后续前端使用统一生成或封装的 API Client；页面不得各自散写请求和错误协议。
 
@@ -109,11 +109,18 @@ flowchart TD
 - 本地 fping `packet_size` 已真实传入 `-b`，原 Qt iPerf/Ping 页面与 Online MR 编排继续保留；
 - 未创建 Traffic REST API、Traffic WebSocket 路由或 Vue 流量页面。
 
+阶段 4C 已完成：
+
+- 新增 `src/netconsole/backend/api/traffic_router.py`，以薄适配方式暴露执行端、iPerf Server、iPerf Client、高频 Ping、历史 Run、事件、样本、停止和重试接口；
+- 新增专用 `/ws/traffic/{traffic_run_id}`，高频样本不进入全局 `/ws/tasks`；
+- FastAPI lifespan 绑定 `TrafficTestApplicationService.start/stop`，从而启动和停止 `AgentTrafficSupervisor`；
+- Vue 新增“网络工具 / 流量测试”页面，包含三类表单、执行端选择、实时状态、ECharts RTT 曲线、日志、历史任务、停止和原配置重试；
+- 继续不修改 Online MR、原 Qt iPerf/Ping、Agent 协议、设备、AC、FIT-AP、MESH、SNMP Center 或无线勘测。
+
 仍未实现：
 
-- 业务任务创建 API；
+- MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；
 - 独立于桌面/FastAPI 生命周期的 Controller daemon；
-- Traffic REST/WebSocket 与 Vue 业务入口；
 - Export Process 的 Web 接口。
 
 本地 Worker 仍由宿主进程管理。页面关闭但宿主仍存活时可从 `TaskRepository` 恢复；正常退出会取消所属任务，异常退出后再次启动会把失去 PID 宿主的本地活动任务核对为 `FAILED`。不得把旧快照误报为仍在运行；真正退出桌面后继续运行需要独立 Controller/Agent。
@@ -144,6 +151,8 @@ src/netconsole/repositories/agent_repository.py
 apps/web/                        # Vue 3 / TypeScript / Vite 任务与 Agent 管理
 src/netconsole/services/traffic/     # 统一 Traffic 应用层、执行适配、事件与 Supervisor
 src/netconsole/repositories/traffic_run_repository.py
+src/netconsole/backend/api/traffic_router.py
+apps/web/src/views/network-tools/TrafficTestView.vue
 ```
 
 明确禁止新增重复的 `backend/services/`、`backend/repositories/`，也不把现有核心目录搬入 `backend/`。
@@ -172,4 +181,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段 4C 只增加 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面；不得绕过 `TrafficTestApplicationService`，也不得把高频样本塞入全局 `/ws/tasks`。Online MR、SNMP Center 和无线勘测继续冻结。
+下一阶段计划进入 Online MR，但阶段 4C 收口期间不提前实施；后续仍必须复用现有 Python Core、Job Center、Agent Controller 和 Traffic API 边界。SNMP Center 和无线勘测继续冻结，除非收到独立任务。
