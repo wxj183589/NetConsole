@@ -236,6 +236,12 @@
       "client_package": false,
       "internal_only": false
     },
+    "web.online_mr_realtime": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
     "mesh.generate_report": {
       "visible": false,
       "enabled": false,

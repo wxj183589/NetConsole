@@ -104,7 +104,7 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 
 手工备注带毫秒时间。若选择了运行中设备，只写入所选会话；否则写入所有运行中会话。每个目标追加 UTF-8 的 `manual_notes.jsonl` 和 `manual_notes.txt`，页面表格最多保留 500 行。没有运行中会话时仅显示在当前 UI，不写伪会话文件。
 
-阶段 5B-1 新增纯 Python `OnlineMrQueryService`，只读复用 `OnlineMrSessionStore`、`OnlineMrCollectionPaths`、`session_meta.json` 和 `parsed/online_diagnosis.sqlite`。它提供会话摘要/详情、Artifact 白名单、日志字节游标分块、备注/时间轴、数据库摘要和既有指标查询；SQLite 使用独立 URI 只读连接，不执行 migration，不持有 Qt/FastAPI 对象。公共 DTO 只返回相对引用，不暴露服务端绝对路径。阶段 5B-4 只切换 Qt 的 LOCAL 生命周期，现有 Qt 历史查询和离线视图尚未改用该 Query Service；FastAPI Router、Vue 页面与 Agent MR 接入仍未实现。
+阶段 5B-1 新增纯 Python `OnlineMrQueryService`，只读复用 `OnlineMrSessionStore`、`OnlineMrCollectionPaths`、`session_meta.json` 和 `parsed/online_diagnosis.sqlite`。它提供会话摘要/详情、Artifact 白名单、日志字节游标分块、备注/时间轴、数据库摘要和既有指标查询；SQLite 使用独立 URI 只读连接，不执行 migration，不持有 Qt/FastAPI 对象。公共 DTO 只返回相对引用，不暴露服务端绝对路径。阶段 5C-2 在这个边界上增加 GET-only FastAPI Router 和 Vue 实时展示，现有 Qt 历史查询与离线视图仍未切换，Agent MR 远程执行仍未启用。
 
 阶段 5B-2A 新增纯 Python `OnlineMrApplicationService`。新入口先创建 Controller Task 和同局点 `tasks.db` 中的待关联记录，采集进程创建会话后通过 `online_mr_session_created` 结构化事件补齐 `controller_task_id -> session_id`；Task 快照显式保存顶层局点、设备和所有者摘要，不扫描嵌套配置，也不把密码、命令或绝对路径写入任务/映射 DTO。Online MR 业务阶段使用独立 `OnlineMrPhase`，不扩展 Job Center 七状态。
 
@@ -342,3 +342,13 @@ Legacy Qt 的 Online MR 采集页操作栏增加 `online_mr.agent_packages` 入�
 维护脚本 `python -m scripts.maintenance.check_local_agent_runtime` 只允许连接 `127.0.0.1` 或 `localhost`，用于验证 Agent 状态、工具、fping/iPerf 任务、日志和终态。它不会调用 MR start/stop，不会下载或删除采集包，也不会改变本节仍为 `ONLINE_MR_EXECUTOR_UNSUPPORTED` 的远程执行边界。
 
 自检固定使用 fping `interval_ms=1000 / timeout_ms=4000 / packet_size=64 / count=10`；iPerf 使用回环 TCP、单流和 10 秒。当前 TCP 2 Mbps 仅为期望记录，不能当作车地链路限速或性能结论。
+
+## 17. Web 实时展示（5C-2，只读）
+
+Vue 路由 `/rail-transit/online-mr` 只展示当前局点的运行中或最近会话。FastAPI 的 `/api/online-mr/sessions/...` 仅提供 GET：当前/最近会话、详情、采集器状态、`view/*.json` 轻量预览、raw 白名单尾部和 raw 摘要。缺失或尚未生成的 raw 返回成功空结果，不创建文件、不回填 metadata，也不触发解析、打包或数据库迁移。
+
+raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`fping_summary`、`fping_raw`、`switch_history`、`collector_output` 和 `wireless_status`。响应只包含相对引用；`tasks.db` 使用 SQLite `mode=ro` 读取 Task/Mapping，不实例化会执行 schema 初始化的 Repository。
+
+页面状态和轻量预览每 2 秒刷新，最近会话、采集器与 raw 摘要每 5 秒刷新；原始日志只有展开后才每秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。终态会话若遗留 `view/live_mr_status.json` 的 `running` 采集器状态，查询层以 `session_meta.json` 终态校正为停止，事实文件本身保持不变。
+
+本阶段不提供 start/stop/force-stop/删除/解析/报告 API。Qt 仍是 LOCAL 启停和最终化入口；Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序保持第 3 节契约。`executor=AGENT`、Agent 远程 MR 控制、Go Agent 和 Agent Web 均未修改。

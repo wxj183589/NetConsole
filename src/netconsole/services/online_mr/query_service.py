@@ -13,6 +13,7 @@ from typing import Any, Iterable
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.online_mr import (
     OnlineMrArtifactDTO,
+    OnlineMrCollectorStatusDTO,
     OnlineMrDatabaseSummaryDTO,
     OnlineMrDataIntegrity,
     OnlineMrDownsampleMode,
@@ -23,6 +24,9 @@ from netconsole.models.api.online_mr import (
     OnlineMrMetricSeriesDTO,
     OnlineMrMetricSummaryDTO,
     OnlineMrMetricType,
+    OnlineMrRawFileDTO,
+    OnlineMrRawTailDTO,
+    OnlineMrRealtimePreviewDTO,
     OnlineMrSessionDetailDTO,
     OnlineMrSessionSummaryDTO,
     OnlineMrTimelineEventDTO,
@@ -36,6 +40,8 @@ LOGGER = logging.getLogger(__name__)
 MAX_QUERY_LIMIT = 10_000
 MAX_LOG_LIMIT = 1_000
 MAX_LOG_LINE_BYTES = 1024 * 1024
+MAX_WEB_TAIL_LIMIT = 500
+MAX_WEB_TAIL_BYTES = 4 * 1024 * 1024
 _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
 
@@ -59,6 +65,29 @@ class OnlineMrQueryService:
         "iperf_client": "raw/iperf_client_raw.log",
         "collector": "logs/collector.log",
     }
+    _WEB_RAW_SOURCES = {
+        "mesh_link": "raw/mesh_link_raw.log",
+        "channel_busy": "raw/channel_busy_raw.log",
+        "fping_samples": "raw/fping_v5_samples.jsonl",
+        "fping_summary": "raw/fping_v5_final_summary.json",
+        "fping_raw": "raw/fping_v5_raw.log",
+        "switch_history": "raw/switch_history_latest.log",
+        "collector_output": "raw/collector_output_raw.log",
+        "wireless_status": "raw/wireless_status_raw.log",
+    }
+    _COLLECTORS = {
+        "init": ("初始化", "raw/init_raw.log"),
+        "terminal_monitor": ("终端实时日志", "raw/terminal_monitor_raw.log"),
+        "mesh_link": ("主链路信息", "raw/mesh_link_raw.log"),
+        "channel_busy": ("信道繁忙度", "raw/channel_busy_raw.log"),
+        "ap_radio_statistics": ("AP 射频统计", "raw/ap_radio_statistics_raw.log"),
+        "wireless_status": ("无线状态", "raw/wireless_status_raw.log"),
+        "interface_rate": ("接口速率", "raw/interface_rate_raw.log"),
+        "switch_history": ("主链路切换历史", "raw/switch_history_latest.log"),
+        "fping_v5": ("高频 Ping", "raw/fping_v5_raw.log"),
+        "iperf_client": ("iPerf Client", "raw/iperf_client_raw.log"),
+    }
+    _ACTIVE_WEB_STATES = {"CREATED", "CONNECTING", "INITIALIZING", "COLLECTING", "RECONNECTING", "RUNNING", "STOPPING"}
 
     def __init__(self, paths: PathResolver, store: OnlineMrSessionStore | None = None) -> None:
         self.paths = paths
@@ -138,6 +167,146 @@ class OnlineMrQueryService:
             latest_metric_time=self._latest_metric_time(session_dir),
             data_integrity=integrity,
         )
+
+    def get_current_session(self, site_id: str) -> OnlineMrSessionDetailDTO | None:
+        for row in self.list_sessions(site_id, limit=100):
+            if row.status.upper() in self._ACTIVE_WEB_STATES:
+                return self.get_session(site_id, row.session_id)
+        return None
+
+    def list_collectors(self, site_id: str, session_id: str) -> list[OnlineMrCollectorStatusDTO]:
+        session_dir = self._find_session(site_id, session_id)
+        meta = self._read_metadata(session_dir)
+        assert meta is not None
+        active = str(meta.get("status") or "").upper() in self._ACTIVE_WEB_STATES
+        view = self._read_view_json(session_dir, "live_mr_status.json")
+        view_collectors = view.get("collectors") if isinstance(view.get("collectors"), dict) else {}
+        enabled = set(self._enabled_collectors(meta))
+        enabled.update({"init", "terminal_monitor"})
+        if "fping" in enabled:
+            enabled.add("fping_v5")
+        if "iperf" in enabled:
+            enabled.add("iperf_client")
+        rows: list[OnlineMrCollectorStatusDTO] = []
+        for name, (label, relative_name) in self._COLLECTORS.items():
+            item = view_collectors.get(name) if isinstance(view_collectors.get(name), dict) else {}
+            path = self._safe_session_file(session_dir, str(item.get("raw_file") or relative_name))
+            exists = bool(path and path.is_file() and not path.is_symlink())
+            size = path.stat().st_size if exists and path else 0
+            status = str(item.get("status") or "").lower()
+            is_enabled = name in enabled or (bool(item) and status != "disabled")
+            if not is_enabled:
+                status = "disabled"
+            elif not active and status in {"running", "starting", "stopping", ""}:
+                status = "stopped" if exists else "missing"
+            elif not status:
+                status = "running" if active and size else "starting" if active else "stopped" if exists else "missing"
+            rows.append(
+                OnlineMrCollectorStatusDTO(
+                    name=name,
+                    label=str(item.get("label") or label),
+                    status=status,
+                    enabled=is_enabled,
+                    raw_file=relative_name,
+                    exists=exists,
+                    size_bytes=size,
+                    error=str(item.get("error") or ""),
+                    started_at=self._text_or_none(item.get("started_at")),
+                    ended_at=self._text_or_none(item.get("ended_at")),
+                    updated_at=self._text_or_none(item.get("updated_at")) or self._text_or_none(view.get("updated_at")),
+                )
+            )
+        return rows
+
+    def get_realtime_preview(self, site_id: str, session_id: str) -> OnlineMrRealtimePreviewDTO:
+        session_dir = self._find_session(site_id, session_id)
+        meta = self._read_metadata(session_dir)
+        assert meta is not None
+        mr_view = self._read_view_json(session_dir, "live_mr_status.json")
+        link = self._read_view_json(session_dir, "live_link_status.json")
+        fping = self._read_view_json(session_dir, "live_fping_status.json")
+        iperf = self._read_view_json(session_dir, "live_iperf_status.json")
+        if str(meta.get("status") or "").upper() not in self._ACTIVE_WEB_STATES:
+            for item in (fping, iperf):
+                if str(item.get("status") or "").lower() in {"running", "starting", "stopping"}:
+                    item["status"] = "stopped"
+        timestamps = [
+            str(item.get("updated_at"))
+            for item in (mr_view, link, fping, iperf)
+            if item.get("updated_at")
+        ]
+        display_context = link.get("display_context") or mr_view.get("display_context") or {}
+        available = any(bool(item) for item in (link, fping, iperf))
+        message = str(link.get("message") or ("实时预览已更新" if available else "暂无实时链路数据"))
+        return OnlineMrRealtimePreviewDTO(
+            session_id=session_id,
+            available=available,
+            updated_at=max(timestamps) if timestamps else None,
+            message=message,
+            display_context=display_context if isinstance(display_context, dict) else {},
+            link=link,
+            fping=fping,
+            iperf=iperf,
+        )
+
+    def read_raw_tail(self, site_id: str, session_id: str, name: str, *, tail: int = 200) -> OnlineMrRawTailDTO:
+        if name not in self._WEB_RAW_SOURCES:
+            raise OnlineMrQueryError(OnlineMrQueryErrorCode.LOG_SOURCE_INVALID, "不支持的原始日志来源")
+        if tail < 1 or tail > MAX_WEB_TAIL_LIMIT:
+            raise OnlineMrQueryError(OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED, f"日志行数必须在 1 到 {MAX_WEB_TAIL_LIMIT} 之间")
+        session_dir = self._find_session(site_id, session_id)
+        path = self._safe_session_file(session_dir, self._WEB_RAW_SOURCES[name])
+        if path is None or not path.is_file() or path.is_symlink():
+            return OnlineMrRawTailDTO(name=name, message="文件不存在或尚未生成")
+        stat = path.stat()
+        if stat.st_size == 0:
+            return OnlineMrRawTailDTO(name=name, message="文件不存在或尚未生成")
+        lines: list[str] = []
+        consumed = 0
+        with path.open("rb") as handle:
+            handle.seek(self._tail_cursor(path, tail))
+            for _ in range(tail):
+                raw = handle.readline(MAX_LOG_LINE_BYTES)
+                if not raw:
+                    break
+                consumed += len(raw)
+                if consumed > MAX_WEB_TAIL_BYTES:
+                    break
+                lines.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        summary: dict[str, Any] = {}
+        if name == "fping_summary" and lines:
+            try:
+                parsed = json.loads("\n".join(lines))
+                summary = parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                summary = {}
+        return OnlineMrRawTailDTO(
+            name=name,
+            exists=True,
+            lines=lines,
+            message="" if lines else "文件存在但暂无内容",
+            size_bytes=stat.st_size,
+            modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
+            summary=summary,
+        )
+
+    def get_raw_summary(self, site_id: str, session_id: str) -> list[OnlineMrRawFileDTO]:
+        session_dir = self._find_session(site_id, session_id)
+        rows: list[OnlineMrRawFileDTO] = []
+        for name, relative_name in self._WEB_RAW_SOURCES.items():
+            path = self._safe_session_file(session_dir, relative_name)
+            exists = bool(path and path.is_file() and not path.is_symlink())
+            stat = path.stat() if exists and path else None
+            rows.append(
+                OnlineMrRawFileDTO(
+                    name=name,
+                    relative_name=relative_name,
+                    exists=exists,
+                    size_bytes=stat.st_size if stat else 0,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds") if stat else None,
+                )
+            )
+        return rows
 
     def list_artifacts(self, site_id: str, session_id: str) -> list[OnlineMrArtifactDTO]:
         session_dir = self._find_session(site_id, session_id)
@@ -375,12 +544,76 @@ class OnlineMrQueryService:
                 return None
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.METADATA_INVALID, "Online MR 会话 metadata 无效") from exc
 
+    def _read_view_json(self, session_dir: Path, name: str) -> dict[str, Any]:
+        path = self._safe_session_file(session_dir, f"view/{name}")
+        if path is None or not path.is_file() or path.is_symlink() or path.stat().st_size > 1024 * 1024:
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _safe_session_file(session_dir: Path, relative_name: str) -> Path | None:
+        relative = Path(str(relative_name or ""))
+        if not relative_name or relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            return None
+        try:
+            root = session_dir.resolve(strict=True)
+            candidate = (session_dir / relative).resolve(strict=False)
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            return None
+        return candidate
+
+    def _operation_status(self, site_id: str, session_id: str, task_id: str | None) -> tuple[str | None, str | None, float | None, str | None]:
+        path = self.paths.site_tasks_db_path(site_id)
+        if not path.is_file() or path.is_symlink():
+            return None, None, None, None
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                mapping_state = None
+                duration_minutes = None
+                stop_reason = None
+                if "online_mr_task_sessions" in tables:
+                    row = conn.execute(
+                        "SELECT mapping_state, duration_minutes, stop_reason, controller_task_id "
+                        "FROM online_mr_task_sessions WHERE session_id = ? AND site_id = ? LIMIT 1",
+                        (session_id, site_id),
+                    ).fetchone()
+                    if row:
+                        mapping_state = self._text_or_none(row["mapping_state"])
+                        duration_minutes = float(row["duration_minutes"]) if row["duration_minutes"] is not None else None
+                        stop_reason = self._text_or_none(row["stop_reason"])
+                        task_id = task_id or self._text_or_none(row["controller_task_id"])
+                task_status = None
+                if task_id and "task_snapshots" in tables:
+                    row = conn.execute("SELECT status FROM task_snapshots WHERE task_id = ? LIMIT 1", (task_id,)).fetchone()
+                    task_status = self._text_or_none(row["status"]) if row else None
+                return task_status, mapping_state, duration_minutes, stop_reason
+        except (OnlineMrQueryError, sqlite3.Error):
+            LOGGER.debug("读取 Online MR Task/Mapping 状态失败：%s", session_id, exc_info=True)
+            return None, None, None, None
+
     def _summary(self, site_id: str, session_dir: Path, meta: dict[str, Any]) -> OnlineMrSessionSummaryDTO:
         paths = OnlineMrCollectionPaths.from_session_dir(session_dir)
         started_at = self._text_or_none(meta.get("started_at"))
         stopped_at = self._text_or_none(meta.get("ended_at"))
         started = self._as_datetime(started_at)
         stopped = self._as_datetime(stopped_at)
+        status = str(meta.get("status") or "")
+        elapsed_end = stopped or (datetime.now() if started and status.upper() in self._ACTIVE_WEB_STATES else None)
+        duration_seconds = max(0.0, (elapsed_end - started).total_seconds()) if started and elapsed_end else None
+        task_id = self._text_or_none(meta.get("controller_task_id"))
+        task_status, mapping_state, mapped_duration, mapped_reason = self._operation_status(site_id, session_dir.name, task_id)
+        explicit_duration = meta.get("duration_minutes")
+        duration_minutes = (
+            float(explicit_duration)
+            if isinstance(explicit_duration, (int, float))
+            else mapped_duration if mapped_duration is not None else round(duration_seconds / 60, 3) if duration_seconds is not None else None
+        )
         packages = [paths.package_path] if paths.package_path.is_file() and not paths.package_path.is_symlink() else []
         return OnlineMrSessionSummaryDTO(
             session_id=str(meta.get("session_id") or session_dir.name),
@@ -388,23 +621,28 @@ class OnlineMrQueryService:
             mr_name=str(meta.get("mr_name") or session_dir.parent.parent.name),
             device_id=meta.get("device_id"),
             device_name=str(meta.get("device_name") or ""),
-            status=str(meta.get("status") or ""),
+            status=status,
             phase=self._text_or_none(meta.get("phase")),
             created_at=self._text_or_none(meta.get("created_at")),
             started_at=started_at,
             stopped_at=stopped_at,
-            duration_seconds=max(0.0, (stopped - started).total_seconds()) if started and stopped else None,
-            controller_task_id=self._text_or_none(meta.get("controller_task_id")),
+            duration_seconds=duration_seconds,
+            duration_minutes=duration_minutes,
+            controller_task_id=task_id,
             executor_kind=self._text_or_none(meta.get("executor_kind")),
             agent_id=self._text_or_none(meta.get("agent_id")),
             has_raw_data=paths.raw_dir.is_dir() and any(path.is_file() for path in paths.raw_dir.iterdir()),
             has_parsed_data=(session_dir / "parsed" / "online_diagnosis.sqlite").is_file(),
             has_package=bool(packages),
             package_name=packages[0].name if packages else None,
+            package_reference=f"outputs/{packages[0].name}" if packages else None,
             force_stopped=meta.get("force_stopped") if isinstance(meta.get("force_stopped"), bool) else None,
             finalization_complete=meta.get("finalization_complete") if isinstance(meta.get("finalization_complete"), bool) else None,
+            stop_reason=self._text_or_none(meta.get("stop_reason")) or mapped_reason,
+            task_status=task_status,
+            mapping_state=mapping_state,
             error_code=self._text_or_none(meta.get("error_code")),
-            error_message=self._text_or_none(meta.get("error_message") or meta.get("config_error")),
+            error_message=self._text_or_none(meta.get("error_message") or meta.get("error_summary") or meta.get("config_error")),
         )
 
     def _connect_readonly(self, path: Path) -> sqlite3.Connection:

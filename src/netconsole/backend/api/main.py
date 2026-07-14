@@ -20,6 +20,8 @@ from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 
@@ -92,6 +94,7 @@ def create_app(
     app.state.task_service = task_service
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
+    app.state.online_mr_query_service = OnlineMrQueryService(paths)
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)
 
@@ -125,6 +128,11 @@ def create_app(
             )
         )
         return JSONResponse(status_code=_traffic_error_status(exc.code), content=payload.model_dump(mode="json"))
+
+    @app.exception_handler(OnlineMrQueryError)
+    async def online_mr_query_error_handler(_: Request, exc: OnlineMrQueryError) -> JSONResponse:
+        payload = ErrorResponse(error=ErrorDetail(code=exc.code, message=exc.message))
+        return JSONResponse(status_code=_online_mr_query_error_status(exc.code), content=payload.model_dump(mode="json"))
 
     app.include_router(api_router)
     app.include_router(ws_router)
@@ -208,6 +216,25 @@ def _traffic_error_status(code: str) -> int:
 def _safe_error_message(message: str) -> str:
     redacted = _ABSOLUTE_PATH_RE.sub("<redacted-path>", str(message or "流量测试失败"))
     return _SECRET_RE.sub(r"\1<redacted>", redacted)
+
+
+def _online_mr_query_error_status(code: str) -> int:
+    if code in {
+        OnlineMrQueryErrorCode.SESSION_NOT_FOUND,
+        OnlineMrQueryErrorCode.ARTIFACT_NOT_FOUND,
+        OnlineMrQueryErrorCode.DATABASE_NOT_FOUND,
+    }:
+        return 404
+    if code == OnlineMrQueryErrorCode.DATABASE_BUSY:
+        return 503
+    if code in {
+        OnlineMrQueryErrorCode.LOG_SOURCE_INVALID,
+        OnlineMrQueryErrorCode.LOG_CURSOR_INVALID,
+        OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED,
+        OnlineMrQueryErrorCode.METRIC_UNSUPPORTED,
+    }:
+        return 422
+    return 409
 
 
 app = create_app()

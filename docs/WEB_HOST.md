@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-阶段 5C-0 在普通 Qt 主程序中增加可复用 WebHost。它复用既有 FastAPI、Vue、Task Center、Agent Controller 和 Traffic Service，不建立第二套 Python Core，也不通过 QWebChannel 暴露业务方法。
+阶段 5C-0 在普通 Qt 主程序中增加可复用 WebHost。它复用既有 FastAPI、Vue、Task Center、Agent Controller、Traffic Service 和 Online MR 只读 Query Service，不建立第二套 Python Core，也不通过 QWebChannel 暴露业务方法。
 
 主程序托盘和 Fluent 顶部“更多”菜单均可打开完整 Web 控制台。WebHost 按需启动，因此仅运行原生 Qt 页面时不会监听 HTTP 端口，也不会要求 FastAPI 服务提前启动。
 
@@ -51,7 +51,8 @@ cd ../..
 
 ## 当前边界
 
-- 当前 Web 页面包含 Dashboard、任务中心、Agent 管理和 Traffic；Online MR 尚未创建 Web 启停 API；
+- 当前 Web 页面包含 Dashboard、任务中心、Agent 管理、Traffic 和只读 Online MR 实时展示；Online MR 没有 Web 启停、强停、解析或报告 API；
+- Online MR Web 仅读取当前局点的 Session metadata、Task/Mapping、`view/*.json` 和 raw 白名单；页面隐藏或关闭后停止轮询；
 - Agent 远程 MR start/stop、`executor=AGENT`、远端包删除和 Agent 配置修改仍未开放；
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center 和无线勘测继续保持 `DISABLED`。

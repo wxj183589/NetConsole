@@ -48,6 +48,7 @@ class OnlineMrSessionSummaryDTO(ApiModel):
     started_at: str | None = None
     stopped_at: str | None = None
     duration_seconds: float | None = None
+    duration_minutes: float | None = None
     controller_task_id: str | None = None
     executor_kind: str | None = None
     agent_id: str | None = None
@@ -55,8 +56,12 @@ class OnlineMrSessionSummaryDTO(ApiModel):
     has_parsed_data: bool = False
     has_package: bool = False
     package_name: str | None = None
+    package_reference: str | None = None
     force_stopped: bool | None = None
     finalization_complete: bool | None = None
+    stop_reason: str | None = None
+    task_status: str | None = None
+    mapping_state: str | None = None
     error_code: str | None = None
     error_message: str | None = None
 
@@ -81,6 +86,50 @@ class OnlineMrSessionDetailDTO(OnlineMrSessionSummaryDTO):
     notes_count: int = 0
     latest_metric_time: str | None = None
     data_integrity: OnlineMrDataIntegrity = OnlineMrDataIntegrity.UNKNOWN
+
+
+class OnlineMrCollectorStatusDTO(ApiModel):
+    name: str
+    label: str
+    status: str = "unknown"
+    enabled: bool = True
+    raw_file: str
+    exists: bool = False
+    size_bytes: int = 0
+    error: str = ""
+    started_at: str | None = None
+    ended_at: str | None = None
+    updated_at: str | None = None
+
+
+class OnlineMrRealtimePreviewDTO(ApiModel):
+    session_id: str
+    available: bool = False
+    updated_at: str | None = None
+    message: str = "暂无实时链路数据"
+    display_context: dict[str, Any] = Field(default_factory=dict)
+    link: dict[str, Any] = Field(default_factory=dict)
+    fping: dict[str, Any] = Field(default_factory=dict)
+    iperf: dict[str, Any] = Field(default_factory=dict)
+
+
+class OnlineMrRawFileDTO(ApiModel):
+    name: str
+    relative_name: str
+    exists: bool = False
+    size_bytes: int = 0
+    modified_at: str | None = None
+
+
+class OnlineMrRawTailDTO(ApiModel):
+    success: bool = True
+    name: str
+    exists: bool = False
+    lines: list[str] = Field(default_factory=list)
+    message: str = ""
+    size_bytes: int = 0
+    modified_at: str | None = None
+    summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class OnlineMrArtifactDTO(ApiModel):
