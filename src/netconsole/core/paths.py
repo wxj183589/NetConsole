@@ -233,6 +233,15 @@ class PathResolver:
     def ac_mesh_link_failures_root(self, site_name: str = "demo") -> Path:
         return self.ac_mesh_link_root(site_name) / "failures"
 
+    def rail_transit_base_data_import_root(self, site_name: str = "demo") -> Path:
+        return self.rail_transit_root(site_name) / "base_data_import"
+
+    def rail_transit_base_data_import_backups_dir(self, site_name: str = "demo") -> Path:
+        return self.rail_transit_base_data_import_root(site_name) / "backups"
+
+    def rail_transit_base_data_import_operations_dir(self, site_name: str = "demo") -> Path:
+        return self.rail_transit_base_data_import_root(site_name) / "operations"
+
     def trackside_ap_root(self, site_name: str = "demo") -> Path:
         return self.rail_transit_root(site_name) / "trackside_ap"
 

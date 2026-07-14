@@ -26,6 +26,8 @@ Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增
 
 车载 MR 名称继续保留设备表原文。当前 `MR-CW` 在 Web 角色筛选中对应尾端 `TC`，不修改原始设备名称。AP 和 MR 的 MAC 各自在本领域查重，不互相合并。
 
+阶段 5C-6A 将正式资料、导入来源和 AC/Mesh-Link/Online MR 运行态分层。运行态只补充展示，不自动覆盖 AP 名称、MAC、站点、区间、里程或 MR 静态身份。合并预览只做精确匹配；冲突必须人工处理，当前 Web 不提供正式写入入口。
+
 ## AC Mesh-Link 数据方向
 
 现有 Qt 采集器在 AC 上执行 `display clock` 和 `display wlan mesh-link ap`，并复用 `H3CComwareV9VehicleMrMeshLinkParser`。一行 AC 输出的语义是：

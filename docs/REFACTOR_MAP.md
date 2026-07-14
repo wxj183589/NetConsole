@@ -24,7 +24,7 @@
 | FIT AP 光衰 | `ac_fit_ap_optical_refresh` Job | AC domain handler | 已迁移但保留兼容层 | 是 | 旧 service/helper 是回滚路径 | 先验证调用者再清兼容入口 |
 | AP 扩展信息 | preview/commit/refresh/save Job | AC domain + identity adapter | 影子验证 | 旧业务已接管；identity 否 | 原写入 service + shadow metadata | 保持只读，等待观测结论 |
 | 轨旁 AP 业务 | 轨旁聚合/详情 Job 与导出 | rail transit handler +专用 export | 部分迁移/影子验证 | 业务部分；identity 否 | lookup、缓存、legacy 聚合/详情 | 不改变旧结果前提下逐项拆分 |
-| 轨道交通基础资料 | Qt AP 扩展/设备资料；Web 只读查询与导入预览 | `RailTransitBaseDataQueryService` + GET API + 非持久化 preview | 5C-6 已增加站点/区间派生、轨旁 AP、列车/MR、质量问题和导入预览 | Web 只读是；正式写入否 | Qt 编辑/正式导入仍保留；AP Identity 不接管 | 先做真实局点只读验收，再单独设计受控写入 |
+| 轨道交通基础资料 | Qt AP 扩展/设备资料；Web 只读查询、问题治理与导入合并预览 | Query/Preview/Import Service + GET API + 非持久化 preview | 5C-6A 已增加来源策略、实体问题分组、字段级合并计划和默认禁写的事务/备份/审计准备 | Web 只读与预览是；正式写入否 | Qt 编辑/正式导入仍保留；AP Identity 不接管 | 先治理冲突和补录项，正式写入口另行授权并加 Feature Flag |
 | 配置采集 | snapshot/compare/collect Job | config domain handlers | 部分迁移 | 部分 | 多个任务 thin legacy | 补 handler 单测后迁出 legacy |
 | 文件管理 | 页面后台导航/动作 | file domain handlers | 部分迁移 | 部分 | 导航与动作 legacy 适配 | 收敛路径与取消契约 |
 | SNMP 查询/采集 | `snmp_query_execute` / `snmp_collection_execute` | snmp domain 正式 handler | 已完成 | 是 | 兼容 service/export 方法 | 保持请求/缓存契约，验证 frozen |
@@ -80,6 +80,6 @@
 
 ## 7. 当前阶段边界
 
-阶段 5C-5 复用既有 AC Mesh-Link parser 和 `vehicle_mr_online.sqlite`，增加快照、MR 状态、轨旁 AP 匹配、过期判定和 Vue 在线监控。阶段 5C-5A 增加唯一 `POST /api/ac-management/mesh-links/refresh`：Web 只创建 Task，Worker 从当前局点读取凭据并固定执行 `screen-length disable`、`display clock`、`display wlan mesh-link ap`，可选读取 switch-history；raw 经 staging 原子落盘，结构化快照事务提交，失败保留旧快照。阶段 5C-6 复用 `devices.db` 中 AP 扩展点位和设备资料，增加只读基础资料页面、质量检查与唯一非持久化 `import-preview` POST，不创建 Task、不连接设备、不写正式资料。旧快照没有 raw 时仍明确返回不可用，也不在轨道交通契约中引入客户端数量。
+阶段 5C-5 复用既有 AC Mesh-Link parser 和 `vehicle_mr_online.sqlite`，增加快照、MR 状态、轨旁 AP 匹配、过期判定和 Vue 在线监控。阶段 5C-5A 增加唯一 `POST /api/ac-management/mesh-links/refresh`：Web 只创建 Task，Worker 从当前局点读取凭据并固定执行 `screen-length disable`、`display clock`、`display wlan mesh-link ap`，可选读取 switch-history；raw 经 staging 原子落盘，结构化快照事务提交，失败保留旧快照。阶段 5C-6 复用 `devices.db` 中 AP 扩展点位和设备资料，增加只读基础资料页面、质量检查与唯一非持久化 `import-preview` POST。阶段 5C-6A 将正式资料、导入来源和运行态分层，增加实体问题分组、精确匹配、字段级合并计划，以及默认关闭的 SQLite 事务/备份/脱敏审计 Service；Web 仍不创建 Task、不连接设备、不提供 apply。旧快照没有 raw 时仍明确返回不可用，也不在轨道交通契约中引入客户端数量。
 
 阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面，没有拆其他 `legacy_tasks.py`，也没有修改 Agent 协议。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 固化 Agent 契约，5B-7 增加安全 ZIP importer，5B-8 增加类型化查询、受控下载和 importer 编排，5B-9 增加维护脚本与 Controller 手工下载/导入门面，5B-10 复用既有 Agent Profile，增加只读包同步、局点静态设备 IP 候选和高层导入入口，5B-11 将该能力通过两个 Job 接入 Legacy Qt。阶段 5C-0 增加按需 Desktop WebHost、托盘入口、WebEngine fallback、本地临时会话和前端发布打包；阶段 5C-1 增加 Agent 远端状态、工具、任务、日志和采集包的只读控制中心；阶段 5B-12A 增加仅限 localhost 的 fping/iPerf 维护自检并完成本机真实 Agent 冒烟；阶段 5C-2 增加 Online MR GET-only API、当前/最近会话、采集器、轻量 view 预览和 raw 白名单尾部页面；阶段 5C-3 复用 `tasks.db` 事实源，增加 `mode=ro + query_only` 的 Web 查询边界、任务详情、结构化日志 tail 和 Online MR 关联跳转；阶段 5C-4 复用既有 AC Repository、光衰 severity 与配置裁剪/diff，增加 `devices.db` 只读查询、FIT-AP 后端分页、Mesh Radio 1/2 详情和配置分块查看，且不在轨道交通资源契约中暴露客户端数量。当前 Web 不调用设备连接、采集、固化 AP、`save force`、远程登录或任意命令接口，也未启用 AGENT executor、远程 MR start/stop、Online MR Web 启停或离线解析接入；本阶段没有修改 Go Agent、LOCAL 生命周期、AC 命令、SNMP Center 或无线勘测。

@@ -44,6 +44,8 @@ def test_base_data_api_is_read_only_except_preview_and_redacts_credentials(tmp_p
             client.get("/api/rail-transit/base-data/trains"),
             client.get("/api/rail-transit/base-data/mrs"),
             client.get("/api/rail-transit/base-data/issues"),
+            client.get("/api/rail-transit/base-data/issues/groups"),
+            client.get("/api/rail-transit/base-data/import-policies"),
             client.get("/api/rail-transit/base-data/relations"),
         ]
         ap_id = responses[3].json()["items"][0]["id"]
@@ -86,8 +88,9 @@ def test_base_data_api_is_read_only_except_preview_and_redacts_credentials(tmp_p
     assert {path for path, method in routes if method == "POST"} == {"/api/rail-transit/base-data/import-preview"}
     assert all(method == "GET" for path, method in routes if path != "/api/rail-transit/base-data/import-preview")
     assert not any(
-        token in path
+        path.endswith(token)
         for path, _method in routes
         if path != "/api/rail-transit/base-data/import-preview"
         for token in ("/import", "/commit", "/apply", "/delete")
     )
+    assert responses[8].json()["write_enabled"] is False

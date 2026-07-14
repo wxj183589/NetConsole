@@ -11,6 +11,8 @@ from typing import Any, Iterable, TypeVar
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import (
+    DataQualityEntityGroupDTO,
+    DataQualityEntityGroupPageDTO,
     DataQualityIssueDTO,
     DataQualityIssuePageDTO,
     MileageDTO,
@@ -39,6 +41,7 @@ from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.rail_transit.source_policy import is_blocking_issue
 from netconsole.services.vehicle_mr_online import parse_train_identity_from_device
 from netconsole.utils.mileage import parse_track_mileage
 
@@ -319,6 +322,66 @@ class RailTransitBaseDataQueryService:
         selected, current, size = self._page(items, page, page_size)
         return DataQualityIssuePageDTO(items=selected, total=len(items), page=current, page_size=size)
 
+    def list_issue_groups(
+        self,
+        site_id: str,
+        *,
+        blocking_only: bool | None = None,
+        needs_confirmation_only: bool | None = None,
+        query: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> DataQualityEntityGroupPageDTO:
+        issues = self._issues(site_id)
+        grouped: dict[tuple[str, str], list[DataQualityIssueDTO]] = defaultdict(list)
+        for issue in issues:
+            grouped[(issue.entity_type, issue.entity_id)].append(issue)
+        items = []
+        for (entity_type, entity_id), rows in grouped.items():
+            blocking = any(row.blocking for row in rows)
+            needs_confirmation = not blocking and any(row.severity == "warning" for row in rows)
+            actions = list(dict.fromkeys(row.suggested_action for row in rows if row.suggested_action))
+            items.append(
+                DataQualityEntityGroupDTO(
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    display_name=next((row.entity_name for row in rows if row.entity_name), entity_id),
+                    issue_count=len(rows),
+                    error_count=sum(row.severity == "error" for row in rows),
+                    warning_count=sum(row.severity == "warning" for row in rows),
+                    info_count=sum(row.severity == "info" for row in rows),
+                    blocking=blocking,
+                    needs_confirmation=needs_confirmation,
+                    issues=rows,
+                    suggested_action="；".join(actions),
+                )
+            )
+        if blocking_only is not None:
+            items = [item for item in items if item.blocking is blocking_only]
+        if needs_confirmation_only is not None:
+            items = [item for item in items if item.needs_confirmation is needs_confirmation_only]
+        if query:
+            needle = query.casefold()
+            items = [
+                item
+                for item in items
+                if needle
+                in f"{item.entity_type} {item.display_name} {item.suggested_action} {' '.join(row.code for row in item.issues)}".casefold()
+            ]
+        items.sort(key=lambda item: (not item.blocking, -item.error_count, -item.warning_count, item.display_name))
+        selected, current, size = self._page(items, page, page_size)
+        return DataQualityEntityGroupPageDTO(
+            items=selected,
+            total=len(items),
+            issue_total=len(issues),
+            blocking_total=sum(item.blocking for item in items),
+            warning_total=sum(issue.severity == "warning" for issue in issues),
+            info_total=sum(issue.severity == "info" for issue in issues),
+            code_counts=dict(Counter(issue.code for issue in issues)),
+            page=current,
+            page_size=size,
+        )
+
     def list_relations(
         self, site_id: str, *, query: str = "", page: int = 1, page_size: int = 50
     ) -> RailTransitRelationPageDTO:
@@ -510,15 +573,19 @@ class RailTransitBaseDataQueryService:
         ap_macs = Counter(self._mac_key(ap.mac) for ap in aps if self._mac_key(ap.mac))
         for ap in aps:
             if not ap.name:
-                issues.append(self._issue("error", "ap_name_missing", "ap", ap.id, ap.name, "name", "", "AP 名称为空", "补充正式 AP 名称"))
+                issues.append(self._issue("warning", "ap_name_missing", "ap", ap.id, ap.name, "name", "", "AP 正式名称为空", "补充正式 AP 名称"))
             mac_key = self._mac_key(ap.mac)
-            if not mac_key:
-                issues.append(self._issue("error", "ap_mac_invalid", "ap", ap.id, ap.name, "mac", ap.mac, "AP MAC 为空或格式无效", "补充有效 AP MAC"))
+            if not ap.mac:
+                issues.append(self._issue("warning", "ap_mac_missing", "ap", ap.id, ap.name, "mac", "", "AP MAC 为空", "补充有效 AP MAC"))
+            elif not mac_key:
+                issues.append(self._issue("error", "ap_mac_invalid", "ap", ap.id, ap.name, "mac", ap.mac, "AP MAC 格式无效", "补充有效 AP MAC"))
             elif ap_macs[mac_key] > 1:
                 issues.append(self._issue("error", "ap_mac_duplicate", "ap", ap.id, ap.name, "mac", ap.mac, "同一局点存在重复 AP MAC", "核对 AP 点表"))
             if not ap.station and not ap.section:
                 issues.append(self._issue("warning", "ap_location_missing", "ap", ap.id, ap.name, "station/section", "", "AP 未填写站点或区间", "补充位置归属"))
-            if ap.mileage.raw and not ap.mileage.valid:
+            if not ap.mileage.raw:
+                issues.append(self._issue("warning", "ap_mileage_missing", "ap", ap.id, ap.name, "mileage", "", "AP 里程为空", "补充正式里程"))
+            elif not ap.mileage.valid:
                 issues.append(self._issue("error", "ap_mileage_invalid", "ap", ap.id, ap.name, "mileage", ap.mileage.raw, ap.mileage.error or "里程格式无效", "按现有 ZDK/YDK/CDK/RDK 格式修正"))
             expected = self._expected_prefix(ap.line_side, ap.direction)
             if ap.mileage.valid and expected and ap.mileage.line_type and expected != ap.mileage.line_type:
@@ -754,6 +821,7 @@ class RailTransitBaseDataQueryService:
             original_value=str(original or ""),
             message=message,
             suggested_action=action,
+            blocking=is_blocking_issue(code, severity),
         )
 
     @staticmethod

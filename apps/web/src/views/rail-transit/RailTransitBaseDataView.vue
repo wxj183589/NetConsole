@@ -13,12 +13,11 @@ const activeTab = ref('overview')
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
 const previewFilter = ref('all')
-const previewRows = computed(() => {
-  const rows = store.importPreview?.rows || []
-  if (previewFilter.value === 'error') return rows.filter((row) => row.issues.some((issue) => issue.severity === 'error'))
-  if (previewFilter.value === 'warning') return rows.filter((row) => row.issues.some((issue) => issue.severity === 'warning'))
-  return rows
+const mergeRows = computed(() => {
+  const rows = store.importPreview?.merge_plan?.items || []
+  return previewFilter.value === 'all' ? rows : rows.filter((row) => row.result === previewFilter.value)
 })
+const issueCodeStats = computed(() => Object.entries(store.issueCodeCounts).sort((left, right) => right[1] - left[1]))
 const summaryCards = computed(() => [
   ['站点', store.summary?.station_count || 0, 'normal'],
   ['区间', store.summary?.section_count || 0, 'normal'],
@@ -74,6 +73,15 @@ function openMrSession(mr: VehicleMr): void {
 }
 function issueType(value: string): 'danger' | 'warning' | 'info' {
   return value === 'error' ? 'danger' : value === 'warning' ? 'warning' : 'info'
+}
+function mergeType(value: string): 'success' | 'danger' | 'warning' | 'info' {
+  if (value === 'CREATE' || value === 'UPDATE') return 'success'
+  if (value === 'CONFLICT') return 'danger'
+  if (value === 'NEEDS_CONFIRMATION') return 'warning'
+  return 'info'
+}
+function diffSummary(diffs: Array<{ field_name: string; action: string }>): string {
+  return diffs.map((item) => `${item.field_name}: ${item.action}`).join('；') || '--'
 }
 function stateType(value: string): 'success' | 'danger' | 'warning' | 'info' {
   if (['online', 'normal', 'fresh'].includes(value)) return 'success'
@@ -222,24 +230,27 @@ function formatBytes(value: number): string {
         <el-tab-pane label="数据质量问题" name="issues">
           <div class="filter-bar">
             <el-input v-model="store.issueFilters.query" clearable placeholder="实体 / 错误码 / 说明" @keyup.enter="store.applyIssueFilters" />
-            <el-select v-model="store.issueFilters.severity" clearable placeholder="严重级别"><el-option label="错误" value="error" /><el-option label="警告" value="warning" /><el-option label="提示" value="info" /></el-select>
-            <el-select v-model="store.issueFilters.entity_type" clearable placeholder="实体类型"><el-option label="轨旁 AP" value="ap" /><el-option label="车载 MR" value="mr" /><el-option label="设备" value="device" /></el-select>
+            <el-select v-model="store.issueFilters.blocking_only" clearable placeholder="阻断状态"><el-option label="只看阻断问题" :value="true" /><el-option label="排除阻断问题" :value="false" /></el-select>
+            <el-select v-model="store.issueFilters.needs_confirmation_only" clearable placeholder="人工确认"><el-option label="只看待人工确认" :value="true" /><el-option label="无需人工确认" :value="false" /></el-select>
             <el-button type="primary" @click="store.applyIssueFilters">应用筛选</el-button>
           </div>
-          <el-table :data="store.issues" stripe height="calc(100vh - 420px)" empty-text="当前没有数据质量问题">
-            <el-table-column label="级别" width="90"><template #default="scope"><el-tag :type="issueType(scope.row.severity)">{{ scope.row.severity }}</el-tag></template></el-table-column>
+          <div class="issue-stats">
+            <el-tag v-for="item in issueCodeStats" :key="item[0]" type="info">{{ item[0] }}：{{ item[1] }}</el-tag>
+          </div>
+          <el-table :data="store.issueGroups" stripe height="calc(100vh - 460px)" empty-text="当前没有数据质量问题">
+            <el-table-column type="expand"><template #default="scope"><el-table :data="scope.row.issues" size="small"><el-table-column prop="field_name" label="字段" width="150" /><el-table-column prop="message" label="字段问题" min-width="260" /><el-table-column prop="suggested_action" label="建议处理" min-width="260" /></el-table></template></el-table-column>
+            <el-table-column label="状态" width="110"><template #default="scope"><el-tag v-if="scope.row.blocking" type="danger">阻断</el-tag><el-tag v-else-if="scope.row.needs_confirmation" type="warning">待确认</el-tag><el-tag v-else type="info">提示</el-tag></template></el-table-column>
             <el-table-column prop="entity_type" label="实体类型" width="110" />
-            <el-table-column prop="entity_name" label="实体" min-width="160" />
-            <el-table-column prop="field_name" label="字段" min-width="130" />
-            <el-table-column prop="original_value" label="原始值" min-width="150"><template #default="scope">{{ display(scope.row.original_value) }}</template></el-table-column>
-            <el-table-column prop="message" label="问题说明" min-width="260" />
-            <el-table-column prop="suggested_action" label="建议处理" min-width="260" />
+            <el-table-column prop="display_name" label="实体" min-width="180" />
+            <el-table-column prop="issue_count" label="问题数" width="90" />
+            <el-table-column label="错误 / 警告 / 提示" width="160"><template #default="scope">{{ scope.row.error_count }} / {{ scope.row.warning_count }} / {{ scope.row.info_count }}</template></el-table-column>
+            <el-table-column prop="suggested_action" label="建议处理" min-width="300" show-overflow-tooltip />
           </el-table>
-          <el-pagination background layout="total, prev, pager, next" :total="store.issueTotal" :current-page="store.issueFilters.page" :page-size="store.issueFilters.page_size" @current-change="store.setIssuePage" />
+          <el-pagination background layout="total, prev, pager, next" :total="store.issueGroupTotal" :current-page="store.issueFilters.page" :page-size="store.issueFilters.page_size" @current-change="store.setIssuePage" />
         </el-tab-pane>
 
         <el-tab-pane label="导入预览" name="preview">
-          <el-alert title="当前仅为预览，不会写入数据库。" description="支持 XLSX、CSV、JSON；不会创建任务，不会保存正式导入文件，页面不提供确认导入、应用或覆盖入口。" type="warning" :closable="false" show-icon />
+          <el-alert title="当前仅支持校验和合并预览。正式写入功能默认关闭。" description="支持 XLSX、CSV、JSON；不会创建任务，不会保存正式导入文件，也不会自动覆盖正式身份。" type="warning" :closable="false" show-icon />
           <div class="preview-toolbar">
             <label class="file-picker"><el-icon><UploadFilled /></el-icon><span>{{ store.selectedFileName || '选择预览文件' }}</span><input type="file" accept=".xlsx,.csv,.json" @change="handleFile" /></label>
             <span v-if="store.importPreview">{{ formatBytes(store.importPreview.file_size) }} · {{ store.importPreview.template_type }} · 置信度 {{ store.importPreview.confidence_score }}</span>
@@ -250,15 +261,18 @@ function formatBytes(value: number): string {
             <article class="danger"><span>错误</span><strong>{{ store.importPreview.error_count }}</strong></article>
             <article class="warning"><span>警告</span><strong>{{ store.importPreview.warning_count }}</strong></article>
           </div>
-          <el-radio-group v-if="store.importPreview" v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="error">只看错误</el-radio-button><el-radio-button value="warning">只看警告</el-radio-button></el-radio-group>
-          <el-table v-loading="store.previewLoading" :data="previewRows" stripe height="calc(100vh - 520px)" empty-text="请选择文件进行只读预览">
+          <div v-if="store.importPreview" class="preview-actions">
+            <el-radio-group v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="CREATE">CREATE</el-radio-button><el-radio-button value="UPDATE">UPDATE</el-radio-button><el-radio-button value="UNCHANGED">UNCHANGED</el-radio-button><el-radio-button value="CONFLICT">CONFLICT</el-radio-button><el-radio-button value="NEEDS_CONFIRMATION">待人工确认</el-radio-button></el-radio-group>
+            <el-button type="primary" disabled>正式写入未启用</el-button>
+          </div>
+          <el-table v-loading="store.previewLoading" :data="mergeRows" stripe height="calc(100vh - 520px)" empty-text="请选择文件生成合并预览">
             <el-table-column prop="row_number" label="行号" width="80" />
-            <el-table-column label="AP 名称" min-width="170"><template #default="scope">{{ display(scope.row.values.ap_name) }}</template></el-table-column>
-            <el-table-column label="AP MAC" min-width="160"><template #default="scope">{{ display(scope.row.values.ap_mac_display) }}</template></el-table-column>
-            <el-table-column label="站点" min-width="130"><template #default="scope">{{ display(scope.row.values.station_name) }}</template></el-table-column>
-            <el-table-column label="区间" min-width="180"><template #default="scope">{{ display(scope.row.values.section_name) }}</template></el-table-column>
-            <el-table-column label="里程" min-width="120"><template #default="scope">{{ display(scope.row.values.mileage_text) }}</template></el-table-column>
-            <el-table-column label="校验结果" min-width="320"><template #default="scope"><div class="row-issues"><el-tag v-for="issue in scope.row.issues" :key="`${issue.code}-${issue.message}`" :type="issueType(issue.severity)">{{ issue.message }}</el-tag><span v-if="!scope.row.issues.length">通过</span></div></template></el-table-column>
+            <el-table-column label="处理结果" width="150"><template #default="scope"><el-tag :type="mergeType(scope.row.result)">{{ scope.row.result }}</el-tag></template></el-table-column>
+            <el-table-column label="来源身份" min-width="210"><template #default="scope">{{ display(scope.row.source_identity.ap_name) }} / {{ display(scope.row.source_identity.ap_mac) }}</template></el-table-column>
+            <el-table-column prop="matched_entity_name" label="正式实体" min-width="170"><template #default="scope">{{ display(scope.row.matched_entity_name) }}</template></el-table-column>
+            <el-table-column prop="match_method" label="匹配方式" width="140" />
+            <el-table-column label="字段差异" min-width="320" show-overflow-tooltip><template #default="scope">{{ diffSummary(scope.row.field_diffs) }}</template></el-table-column>
+            <el-table-column prop="conflict_summary" label="冲突" min-width="240"><template #default="scope">{{ display(scope.row.conflict_summary) }}</template></el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -300,6 +314,8 @@ function formatBytes(value: number): string {
 .file-picker input { display: none; }
 .preview-summary { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
 .preview-filter { margin-bottom: 12px; }
+.preview-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.issue-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .row-issues { display: flex; flex-wrap: wrap; gap: 5px; }
 @media (max-width: 1360px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }

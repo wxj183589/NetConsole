@@ -27,6 +27,7 @@ from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
@@ -110,8 +111,10 @@ def create_app(
     app.state.traffic_service = traffic_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
+    app.state.rail_transit_base_data_import_service = RailTransitBaseDataImportService(paths)
     app.state.rail_transit_import_preview_service = RailTransitImportPreviewService(
-        app.state.rail_transit_base_data_query_service
+        app.state.rail_transit_base_data_query_service,
+        import_service=app.state.rail_transit_base_data_import_service,
     )
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)

@@ -6,8 +6,11 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, 
 
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
+    DataQualityEntityGroupPageDTO,
     DataQualityIssuePageDTO,
     ImportPreviewResultDTO,
+    ImportPolicyDTO,
+    ImportPolicyResponseDTO,
     RailTransitRelationPageDTO,
     RailTransitSummaryDTO,
     SectionPageDTO,
@@ -20,10 +23,12 @@ from netconsole.models.api.rail_transit_base_data import (
     VehicleMrPageDTO,
 )
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.import_preview_service import (
     MAX_IMPORT_PREVIEW_BYTES,
     RailTransitImportPreviewService,
 )
+from netconsole.services.rail_transit.source_policy import import_policy_rows
 
 
 router = APIRouter(prefix="/rail-transit/base-data", tags=["rail-transit-base-data"])
@@ -35,6 +40,10 @@ def _service(request: Request) -> RailTransitBaseDataQueryService:
 
 def _preview_service(request: Request) -> RailTransitImportPreviewService:
     return request.app.state.rail_transit_import_preview_service
+
+
+def _import_service(request: Request) -> RailTransitBaseDataImportService:
+    return request.app.state.rail_transit_base_data_import_service
 
 
 def _site_id(request: Request, supplied: str) -> str:
@@ -160,6 +169,41 @@ def issues(
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DataQualityIssuePageDTO:
     return _query(lambda: _service(request).list_issues(_site_id(request, site_id), severity=severity, entity_type=entity_type, query=query, page=page, page_size=page_size))
+
+
+@router.get("/issues/groups", response_model=DataQualityEntityGroupPageDTO)
+def issue_groups(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+    blocking_only: bool | None = None,
+    needs_confirmation_only: bool | None = None,
+    query: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DataQualityEntityGroupPageDTO:
+    return _query(
+        lambda: _service(request).list_issue_groups(
+            _site_id(request, site_id),
+            blocking_only=blocking_only,
+            needs_confirmation_only=needs_confirmation_only,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+    )
+
+
+@router.get("/import-policies", response_model=ImportPolicyResponseDTO)
+def import_policies(request: Request) -> ImportPolicyResponseDTO:
+    return ImportPolicyResponseDTO(
+        write_enabled=_import_service(request).write_enabled,
+        identity_boundaries={
+            "formal": "正式基础资料长期保存，来源数据不能自动覆盖。",
+            "source": "外部文件、AC、Agent 和日志身份保留来源，不自动成为正式身份。",
+            "runtime": "在线状态、DHCP IP、RSSI、光衰和 Mesh-Link 只关联展示。",
+        },
+        items=[ImportPolicyDTO.model_validate(item) for item in import_policy_rows()],
+    )
 
 
 @router.get("/relations", response_model=RailTransitRelationPageDTO)

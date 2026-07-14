@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 
 import {
   getRailTransitSummary,
-  listDataQualityIssues,
+  listDataQualityIssueGroups,
   listRelations,
   listSections,
   listStations,
@@ -14,6 +14,7 @@ import {
 } from '../api/railTransitBaseData'
 import type {
   DataQualityIssue,
+  DataQualityEntityGroup,
   ImportPreviewResult,
   RailTransitSummary,
   Relation,
@@ -32,11 +33,14 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const trains = ref<Train[]>([])
   const mrs = ref<VehicleMr[]>([])
   const issues = ref<DataQualityIssue[]>([])
+  const issueGroups = ref<DataQualityEntityGroup[]>([])
   const relations = ref<Relation[]>([])
   const apTotal = ref(0)
   const trainTotal = ref(0)
   const mrTotal = ref(0)
   const issueTotal = ref(0)
+  const issueGroupTotal = ref(0)
+  const issueCodeCounts = ref<Record<string, number>>({})
   const importPreview = ref<ImportPreviewResult | null>(null)
   const selectedFileName = ref('')
   const loading = ref(false)
@@ -45,7 +49,7 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const error = ref('')
   const apFilters = reactive({ query: '', station: '', section: '', line_side: '', has_issue: undefined as boolean | undefined, page: 1, page_size: 50, sort_by: 'name', sort_order: 'asc' })
   const mrFilters = reactive({ query: '', train: '', mr_role: '', has_issue: undefined as boolean | undefined, page: 1, page_size: 50, sort_by: 'train_no', sort_order: 'asc' })
-  const issueFilters = reactive({ query: '', severity: '', entity_type: '', page: 1, page_size: 50 })
+  const issueFilters = reactive({ query: '', blocking_only: undefined as boolean | undefined, needs_confirmation_only: undefined as boolean | undefined, page: 1, page_size: 50 })
   let summaryTimer: number | null = null
   let runtimeTimer: number | null = null
   let staticTimer: number | null = null
@@ -92,11 +96,15 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
       const [stationPage, sectionPage, issuePage] = await Promise.all([
         listStations({ page: 1, page_size: 200 }),
         listSections({ page: 1, page_size: 200 }),
-        listDataQualityIssues(issueFilters),
+        listDataQualityIssueGroups(issueFilters),
       ])
       stations.value = stationPage.items
       sections.value = sectionPage.items
-      issues.value = issuePage.items; issueTotal.value = issuePage.total
+      issueGroups.value = issuePage.items
+      issues.value = issuePage.items.flatMap((item) => item.issues)
+      issueTotal.value = issuePage.issue_total
+      issueGroupTotal.value = issuePage.total
+      issueCodeCounts.value = issuePage.code_counts
       recordSuccess()
     } catch (cause) {
       recordFailure(cause)
@@ -157,8 +165,8 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   }
 
   return {
-    summary, stations, sections, aps, trains, mrs, issues, relations,
-    apTotal, trainTotal, mrTotal, issueTotal, importPreview, selectedFileName,
+    summary, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
+    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, selectedFileName,
     loading, previewLoading, failures, error, apFilters, mrFilters, issueFilters,
     refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,

@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-阶段 5C-6 增加 `/rail-transit/base-data` 只读页面，Feature key 为 `web.rail_transit_base_data`。页面复用现有 Python Core 和当前局点数据，不建立第二套基础资料数据库。
+阶段 5C-6 增加 `/rail-transit/base-data` 只读页面，Feature key 为 `web.rail_transit_base_data`。阶段 5C-6A 在同一页面增加问题分组和合并预览，但不开放正式写入。页面复用现有 Python Core 和当前局点数据，不建立第二套基础资料数据库。
 
 ```text
 devices.db
@@ -29,6 +29,16 @@ FastAPI GET + Vue 只读页面
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
 - 当前设备名中的 `MR-CW` 在 Web 角色筛选中映射为尾端 `TC`，原始设备名称不改变；`MR-CT` 映射为 `CT`。
 - AP、MR、设备之间不因 MAC 相同而自动合并。运行态关联继续复用现有 AC 和 Mesh-Link 匹配结果，不接管 AP Identity 生产匹配。
+
+## 正式资料、导入来源与运行态
+
+三类数据必须分层，不得相互伪装：
+
+- 正式资料：当前局点 `devices.db` 中的 AP 扩展点位和设备资料，是 Web 查询与合并比较的基线。
+- 导入来源：官方点表、AP 扩展表和用户上传文件，只提供候选值与来源证据；文件名、SHA-256、行号和字段来源进入预览，不把本机绝对路径写入审计。
+- 运行态：AC FIT-AP、AC Mesh-Link、Agent 包和 Online MR 的状态、IP、RSSI、光衰与当前关联，只用于展示或候选提示，不自动回写正式身份和位置。
+
+字段策略集中在 `src/netconsole/services/rail_transit/source_policy.py`。AP 只允许 MAC 精确匹配，其次正式名称精确匹配；不使用 DHCP IP、模糊名称、里程相近或当前 Mesh 关联自动合并。MR 按设备 ID、静态 IP、MAC、名称精确匹配，多个键指向不同实体时直接标记冲突。正式值与低优先级候选不同则进入人工确认，不静默覆盖。
 
 ## 里程、IP 与 MAC
 
@@ -62,6 +72,8 @@ GET /api/rail-transit/base-data/trains/{train_id}
 GET /api/rail-transit/base-data/mrs
 GET /api/rail-transit/base-data/mrs/{mr_id}
 GET /api/rail-transit/base-data/issues
+GET /api/rail-transit/base-data/issues/groups
+GET /api/rail-transit/base-data/import-policies
 GET /api/rail-transit/base-data/relations
 ```
 
@@ -81,6 +93,23 @@ POST /api/rail-transit/base-data/import-preview
 - XLSX/CSV 仅写入系统受控临时目录，返回前由 `TemporaryDirectory` 清理；JSON 直接在内存解析。
 - 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential 和用户字段不返回、不记录。
 - 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。
+- 预览逐行返回 `CREATE / UPDATE / UNCHANGED / SKIP / CONFLICT / NEEDS_CONFIRMATION`，并展示字段级现值、候选值、来源、动作和警告。
+- 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把 2723 条字段问题误称为 2723 台设备。
+- 重复 MAC、重复静态 IP、MR 角色冲突和身份冲突属于阻断项。缺少 AP 正式名称、缺少 MAC、里程缺失等可进入补录队列，但不得绕过冲突检查。
+
+## 受控写入准备
+
+`RailTransitBaseDataImportService` 只复用 `ap_extension_points`，不新增主数据库或 schema。写入能力默认由 `RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=0` 硬关闭，当前 FastAPI 和 Vue 均没有 apply/commit 入口。测试只在临时数据库显式启用。
+
+在以后明确授权写入时，Service 仍必须同时满足：
+
+1. 合并预览未过期、数据库逻辑 SHA-256 未变化、无阻断项或待确认项；
+2. 调用方显式确认且安全开关为 `1`；
+3. 使用 SQLite Backup API 先生成可校验备份，再在一个事务内执行 CREATE/UPDATE；
+4. 记录操作 UUID、来源文件 basename/SHA-256、创建/更新/跳过/冲突数、相对备份引用、数据库前后哈希和可逆字段变化；
+5. 失败事务全部回滚；回滚前还要确认数据库仍等于本次写入后的哈希，避免覆盖后续修改。
+
+备份和审计位于当前局点 `rail_transit/base_data_import/backups/` 与 `operations/`。审计不保存凭据、连接串、源文件绝对路径或本机临时路径。
 
 ## 刷新与性能
 

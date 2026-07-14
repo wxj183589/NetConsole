@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useRailTransitBaseDataStore } from './railTransitBaseData'
 import {
   getRailTransitSummary,
-  listDataQualityIssues,
+  listDataQualityIssueGroups,
   listRelations,
   listSections,
   listStations,
@@ -16,7 +16,7 @@ import {
 
 vi.mock('../api/railTransitBaseData', () => ({
   getRailTransitSummary: vi.fn(),
-  listDataQualityIssues: vi.fn(),
+  listDataQualityIssueGroups: vi.fn(),
   listRelations: vi.fn(),
   listSections: vi.fn(),
   listStations: vi.fn(),
@@ -37,9 +37,12 @@ describe('Rail Transit base data polling store', () => {
       train_count: 0, mr_count: 0, missing_location_ap_count: 0, invalid_mileage_count: 0,
       duplicate_ap_mac_count: 0, duplicate_static_ip_count: 0, unbound_mr_count: 0, issue_count: 0, message: '',
     })
-    for (const mock of [listStations, listSections, listTracksideAps, listTrains, listVehicleMrs, listDataQualityIssues, listRelations]) {
+    for (const mock of [listStations, listSections, listTracksideAps, listTrains, listVehicleMrs, listRelations]) {
       vi.mocked(mock).mockReset().mockResolvedValue(emptyPage)
     }
+    vi.mocked(listDataQualityIssueGroups).mockReset().mockResolvedValue({
+      ...emptyPage, issue_total: 0, blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
+    })
     vi.mocked(previewRailTransitImport).mockReset()
     vi.stubGlobal('window', { setTimeout, clearTimeout })
   })

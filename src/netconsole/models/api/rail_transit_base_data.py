@@ -8,6 +8,7 @@ from netconsole.models.api.common import ApiModel
 
 
 IssueSeverity = Literal["error", "warning", "info"]
+MergeResult = Literal["CREATE", "UPDATE", "UNCHANGED", "SKIP", "CONFLICT", "NEEDS_CONFIRMATION"]
 
 
 class MileageDTO(ApiModel):
@@ -40,6 +41,33 @@ class DataQualityIssueDTO(ApiModel):
     original_value: str = ""
     message: str
     suggested_action: str = ""
+    blocking: bool = False
+
+
+class DataQualityEntityGroupDTO(ApiModel):
+    entity_type: str
+    entity_id: str
+    display_name: str = ""
+    issue_count: int = 0
+    error_count: int = 0
+    warning_count: int = 0
+    info_count: int = 0
+    blocking: bool = False
+    needs_confirmation: bool = False
+    issues: list[DataQualityIssueDTO] = Field(default_factory=list)
+    suggested_action: str = ""
+
+
+class DataQualityEntityGroupPageDTO(ApiModel):
+    items: list[DataQualityEntityGroupDTO] = Field(default_factory=list)
+    total: int = 0
+    issue_total: int = 0
+    blocking_total: int = 0
+    warning_total: int = 0
+    info_total: int = 0
+    code_counts: dict[str, int] = Field(default_factory=dict)
+    page: int = 1
+    page_size: int = 50
 
 
 class RailTransitSummaryDTO(ApiModel):
@@ -238,6 +266,80 @@ class ImportPreviewRowDTO(ApiModel):
     issues: list[DataQualityIssueDTO] = Field(default_factory=list)
 
 
+class FieldProvenanceDTO(ApiModel):
+    field_name: str
+    value: Any = None
+    source_type: str
+    source_reference: str = ""
+    source_row: int | None = None
+    imported_at: str = ""
+    confirmed: bool = False
+    priority: int = 0
+    warning: str = ""
+
+
+class MergeFieldDiffDTO(ApiModel):
+    field_name: str
+    current_value: Any = None
+    proposed_value: Any = None
+    source: FieldProvenanceDTO
+    action: Literal["keep_existing", "use_imported", "fill_missing", "manual_review"]
+    warning: str = ""
+
+
+class MergePlanItemDTO(ApiModel):
+    row_number: int
+    entity_type: str = "ap"
+    source_identity: dict[str, Any] = Field(default_factory=dict)
+    matched_entity_id: str = ""
+    matched_entity_name: str = ""
+    match_method: str = ""
+    result: MergeResult
+    conflict_summary: str = ""
+    field_diffs: list[MergeFieldDiffDTO] = Field(default_factory=list)
+    source_values: dict[str, Any] = Field(default_factory=dict)
+    blocking: bool = False
+    issues: list[DataQualityIssueDTO] = Field(default_factory=list)
+
+
+class MergePlanSummaryDTO(ApiModel):
+    create_count: int = 0
+    update_count: int = 0
+    unchanged_count: int = 0
+    skip_count: int = 0
+    conflict_count: int = 0
+    needs_confirmation_count: int = 0
+    blocking_count: int = 0
+
+
+class MergePlanDTO(ApiModel):
+    plan_id: str
+    site_id: str
+    source_file_name: str
+    source_file_sha256: str
+    source_type: str
+    database_hash: str
+    created_at: str
+    preview_expires_at: str
+    write_enabled: bool = False
+    items: list[MergePlanItemDTO] = Field(default_factory=list)
+    summary: MergePlanSummaryDTO = Field(default_factory=MergePlanSummaryDTO)
+
+
+class ImportPolicyDTO(ApiModel):
+    entity_type: str
+    field_name: str
+    priority: list[str] = Field(default_factory=list)
+    runtime_only: bool = False
+    note: str = ""
+
+
+class ImportPolicyResponseDTO(ApiModel):
+    write_enabled: bool = False
+    identity_boundaries: dict[str, str] = Field(default_factory=dict)
+    items: list[ImportPolicyDTO] = Field(default_factory=list)
+
+
 class ImportPreviewResultDTO(ApiModel):
     file_name: str
     file_size: int
@@ -248,7 +350,11 @@ class ImportPreviewResultDTO(ApiModel):
     error_count: int = 0
     warning_count: int = 0
     rows: list[ImportPreviewRowDTO] = Field(default_factory=list)
-    message: str = "当前仅为预览，不会写入数据库。"
+    merge_plan: MergePlanDTO | None = None
+    database_hash: str = ""
+    preview_expires_at: str = ""
+    write_enabled: bool = False
+    message: str = "当前仅支持校验和合并预览。正式写入功能默认关闭。"
 
 
 __all__ = [name for name in globals() if name.endswith("DTO")]

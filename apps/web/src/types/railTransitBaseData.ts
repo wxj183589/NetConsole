@@ -28,6 +28,29 @@ export interface DataQualityIssue {
   original_value: string
   message: string
   suggested_action: string
+  blocking: boolean
+}
+
+export interface DataQualityEntityGroup {
+  entity_type: string
+  entity_id: string
+  display_name: string
+  issue_count: number
+  error_count: number
+  warning_count: number
+  info_count: number
+  blocking: boolean
+  needs_confirmation: boolean
+  issues: DataQualityIssue[]
+  suggested_action: string
+}
+
+export interface DataQualityEntityGroupPage extends Page<DataQualityEntityGroup> {
+  issue_total: number
+  blocking_total: number
+  warning_total: number
+  info_total: number
+  code_counts: Record<string, number>
 }
 
 export interface RailTransitSummary {
@@ -173,7 +196,44 @@ export interface ImportPreviewResult {
   error_count: number
   warning_count: number
   rows: ImportPreviewRow[]
+  merge_plan: MergePlan | null
+  database_hash: string
+  preview_expires_at: string
+  write_enabled: boolean
   message: string
+}
+
+export type MergeResult = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'SKIP' | 'CONFLICT' | 'NEEDS_CONFIRMATION'
+
+export interface MergeFieldDiff {
+  field_name: string
+  current_value: unknown
+  proposed_value: unknown
+  source: { source_type: string; source_reference: string; source_row: number | null }
+  action: 'keep_existing' | 'use_imported' | 'fill_missing' | 'manual_review'
+  warning: string
+}
+
+export interface MergePlanItem {
+  row_number: number
+  entity_type: string
+  source_identity: Record<string, unknown>
+  matched_entity_id: string
+  matched_entity_name: string
+  match_method: string
+  result: MergeResult
+  conflict_summary: string
+  field_diffs: MergeFieldDiff[]
+  blocking: boolean
+}
+
+export interface MergePlan {
+  plan_id: string
+  database_hash: string
+  preview_expires_at: string
+  write_enabled: boolean
+  items: MergePlanItem[]
+  summary: Record<string, number>
 }
 
 export interface PageQuery {

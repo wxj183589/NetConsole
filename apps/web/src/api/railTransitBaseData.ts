@@ -1,6 +1,7 @@
 import { apiRequest } from './client'
 import type {
   DataQualityIssue,
+  DataQualityEntityGroupPage,
   ImportPreviewResult,
   Page,
   PageQuery,
@@ -31,6 +32,7 @@ export const listTracksideAps = (values: PageQuery = {}): Promise<Page<Trackside
 export const listTrains = (values: PageQuery = {}): Promise<Page<Train>> => apiRequest(`${root}/trains${queryString(values)}`)
 export const listVehicleMrs = (values: PageQuery = {}): Promise<Page<VehicleMr>> => apiRequest(`${root}/mrs${queryString(values)}`)
 export const listDataQualityIssues = (values: PageQuery = {}): Promise<Page<DataQualityIssue>> => apiRequest(`${root}/issues${queryString(values)}`)
+export const listDataQualityIssueGroups = (values: PageQuery = {}): Promise<DataQualityEntityGroupPage> => apiRequest(`${root}/issues/groups${queryString(values)}`)
 export const listRelations = (values: PageQuery = {}): Promise<Page<Relation>> => apiRequest(`${root}/relations${queryString(values)}`)
 
 export function previewRailTransitImport(file: File): Promise<ImportPreviewResult> {

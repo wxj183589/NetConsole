@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import tempfile
@@ -13,7 +14,9 @@ from netconsole.models.api.rail_transit_base_data import (
     ImportPreviewRowDTO,
 )
 from netconsole.services.ap_extension_import import ApExtensionImportService, normalize_ap_mac
+from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.source_policy import is_blocking_issue
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -61,10 +64,12 @@ class RailTransitImportPreviewService:
         query_service: RailTransitBaseDataQueryService,
         *,
         temp_root: Path | None = None,
+        import_service: RailTransitBaseDataImportService | None = None,
     ) -> None:
         self.query_service = query_service
         self.temp_root = temp_root
         self.ap_importer = ApExtensionImportService()
+        self.import_service = import_service or RailTransitBaseDataImportService(query_service.paths)
 
     def preview(
         self,
@@ -122,6 +127,13 @@ class RailTransitImportPreviewService:
         error_count = sum(issue.severity == "error" for row in output for issue in row.issues)
         warning_count = sum(issue.severity == "warning" for row in output for issue in row.issues)
         valid_rows = sum(not any(issue.severity == "error" for issue in row.issues) for row in output)
+        merge_plan = self.import_service.build_merge_plan(
+            site_id=site_id,
+            rows=output,
+            source_file_name=safe_name,
+            source_file_sha256=hashlib.sha256(content).hexdigest(),
+            source_type="official_point_table" if suffix in {".xlsx", ".csv"} else "import_file",
+        )
         return ImportPreviewResultDTO(
             file_name=safe_name,
             file_size=len(content),
@@ -132,6 +144,10 @@ class RailTransitImportPreviewService:
             error_count=error_count,
             warning_count=warning_count,
             rows=output,
+            merge_plan=merge_plan,
+            database_hash=merge_plan.database_hash,
+            preview_expires_at=merge_plan.preview_expires_at,
+            write_enabled=merge_plan.write_enabled,
         )
 
     @staticmethod
@@ -176,9 +192,9 @@ class RailTransitImportPreviewService:
         name = str(values.get("ap_name") or "").strip()
         mac = normalize_ap_mac(values.get("ap_mac_norm") or values.get("ap_mac_display"))
         if not name:
-            issues.append(cls._issue("error", "ap_name_missing", row_number, "ap_name", "", "AP 名称为空", "补充正式 AP 名称"))
+            issues.append(cls._issue("warning", "ap_name_missing", row_number, "ap_name", "", "AP 名称为空", "补充正式 AP 名称"))
         if not mac.raw:
-            issues.append(cls._issue("error", "ap_mac_missing", row_number, "ap_mac_display", "", "AP MAC 为空", "补充有效 AP MAC"))
+            issues.append(cls._issue("warning", "ap_mac_missing", row_number, "ap_mac_display", "", "AP MAC 为空", "补充有效 AP MAC"))
         elif not mac.valid:
             issues.append(cls._issue("error", "ap_mac_invalid", row_number, "ap_mac_display", mac.raw, "AP MAC 格式无效", "使用项目支持的常见 MAC 格式"))
         elif mac_counts[mac.normalized] > 1:
@@ -239,6 +255,7 @@ class RailTransitImportPreviewService:
             original_value=original,
             message=message,
             suggested_action=action,
+            blocking=is_blocking_issue(code, severity),
         )
 
     @staticmethod

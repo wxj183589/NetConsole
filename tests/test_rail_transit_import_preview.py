@@ -39,7 +39,10 @@ def test_import_preview_sanitizes_json_and_cleans_temporary_files(tmp_path: Path
 
     assert result.total_rows == 1
     assert result.valid_rows == 1
-    assert result.message == "当前仅为预览，不会写入数据库。"
+    assert result.message == "当前仅支持校验和合并预览。正式写入功能默认关闭。"
+    assert result.merge_plan is not None
+    assert result.merge_plan.summary.create_count == 1
+    assert result.write_enabled is False
     text = str(result.model_dump()).casefold()
     assert "must-not-return" not in text
     assert "password" not in text
