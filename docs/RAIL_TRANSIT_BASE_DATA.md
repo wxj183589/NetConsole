@@ -1,0 +1,100 @@
+# 轨道交通基础资料 Web 边界
+
+## 当前状态
+
+阶段 5C-6 增加 `/rail-transit/base-data` 只读页面，Feature key 为 `web.rail_transit_base_data`。页面复用现有 Python Core 和当前局点数据，不建立第二套基础资料数据库。
+
+```text
+devices.db
+├─ ap_extension_points       轨旁 AP 点位、位置和里程资料
+├─ devices / device_groups   列车、车载 MR 和其他静态设备
+└─ AC 当前资源表             FIT-AP、光衰和接入信息
+        |
+        v
+RailTransitBaseDataQueryService（mode=ro + query_only）
+        |
+        v
+FastAPI GET + Vue 只读页面
+```
+
+站点和区间当前不是独立持久化实体，而是由 `ap_extension_points` 派生的只读视图。查询不得初始化 schema、执行 migration、更新时间戳或写缓存。
+
+## 领域模型
+
+- 局点沿用当前 Site 模型；本阶段不改变“一条线路一个局点”的既有方式。
+- 站点由 AP 点位的 `station_name`、区间起终点派生。
+- 区间由 `section_name + 起点 + 终点 + 线别` 派生；站点为空但区间有效是合法资料。
+- `ap_extension_points` 可能包含站点标题、设计起点等定位辅助行。Web 轨旁 AP 列表只纳入具有 `ap_name`、有效 MAC 或非空且非 `-` 的 `ap_point_code` 的记录；站点和区间派生仍读取全部定位行。
+- AP 正式名称与 AP 点位编号分字段保留。正式名称为空时页面可显示点位编号，但不得把点位编号写回为正式名称。
+- 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
+- 当前设备名中的 `MR-CW` 在 Web 角色筛选中映射为尾端 `TC`，原始设备名称不改变；`MR-CT` 映射为 `CT`。
+- AP、MR、设备之间不因 MAC 相同而自动合并。运行态关联继续复用现有 AC 和 Mesh-Link 匹配结果，不接管 AP Identity 生产匹配。
+
+## 里程、IP 与 MAC
+
+里程解析只在后端复用 `src/netconsole/utils/mileage.py`：
+
+| 线路语义 | 前缀 |
+| --- | --- |
+| 左线 / 下行 | `ZDK` |
+| 右线 / 上行 | `YDK` |
+| 出段线 | `CDK` |
+| 入段线 | `RDK` |
+
+API 同时返回原文、标准显示、数值米、前缀、合法状态和错误摘要。不合法文本不得自动猜测；前缀与明确线别不一致时返回 warning。
+
+MAC 比较支持 `xxxx-xxxx-xxxx`、冒号、两位连字符和 12 位纯十六进制格式，统一按 12 位值比较，页面使用冒号格式显示。AP MAC 与 MR MAC 分域查重。
+
+同一局点静态设备 IP 必须唯一；车载 MR 即使当前设备类型沿用 `Cloud-AP`，仍按静态设备处理。非车载 FIT-AP/Cloud-AP 的 DHCP 地址不进入静态 IP 冲突判断。
+
+## API
+
+查询接口均为 GET：
+
+```text
+GET /api/rail-transit/base-data/summary
+GET /api/rail-transit/base-data/stations
+GET /api/rail-transit/base-data/sections
+GET /api/rail-transit/base-data/aps
+GET /api/rail-transit/base-data/aps/{ap_id}
+GET /api/rail-transit/base-data/trains
+GET /api/rail-transit/base-data/trains/{train_id}
+GET /api/rail-transit/base-data/mrs
+GET /api/rail-transit/base-data/mrs/{mr_id}
+GET /api/rail-transit/base-data/issues
+GET /api/rail-transit/base-data/relations
+```
+
+唯一 POST 是非持久化预览：
+
+```text
+POST /api/rail-transit/base-data/import-preview
+```
+
+不存在 `/import`、`/commit`、`/apply`、PUT、PATCH 或 DELETE 资产接口。
+
+## 导入预览安全
+
+- 支持现有 AP 模板的 XLSX/CSV 解析，并支持标准字段 JSON；最大 10 MiB、最多 5000 行。
+- 只允许 `.xlsx`、`.csv`、`.json` 与 MIME 白名单；不接受宏工作簿。
+- XLSX 使用 `data_only=True` 读取，不执行公式或宏，也不使用外部链接生成业务值。
+- XLSX/CSV 仅写入系统受控临时目录，返回前由 `TemporaryDirectory` 清理；JSON 直接在内存解析。
+- 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential 和用户字段不返回、不记录。
+- 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。
+
+## 刷新与性能
+
+- 总览 30 秒、AP/MR/关联运行态 15 秒、站点/区间/数据质量 60 秒。
+- 页面隐藏或卸载时停止全部计时器；同类请求未结束时不重复发起。
+- 连续失败 3 次后保留最后成功数据并把后续刷新降为 120 秒。
+- AP、MR 和问题使用后端分页；AC、Mesh-Link、Online MR 关联按批次读取，禁止逐行查询。
+
+## 当前未开放
+
+- 正式导入、批量修改、删除和数据库覆盖；
+- 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
+- Agent 远程 MR 控制与 `executor=AGENT`；
+- AP Identity 生产接管；
+- 离线分析和正式报告 Web 化。
+
+宁波地铁 12 号线只读验收以查询前后 `devices.db`、`tasks.db` 和导入资料文件 SHA-256/mtime 不变、Task 数不变为通过条件。

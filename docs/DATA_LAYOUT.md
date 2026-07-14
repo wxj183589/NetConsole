@@ -143,6 +143,8 @@ sessions/<session>/
    └─ <session>.zip              # LOCAL 正式包或已校验导入的 Agent 源包
 ```
 
+阶段 5C-6 的轨道交通基础资料不新增数据库：AP 点位、站点/区间派生字段和设备资料继续读取 `devices.db`。导入预览使用系统受控临时目录并在请求结束前清理，不进入局点 `files/imports/`、不创建正式文件，也不写 `tasks.db`。
+
 手工备注保存为会话根目录下 UTF-8 的 `manual_notes.jsonl` 和 `manual_notes.txt`。只有存在运行中目标会话时才持久化；无目标时仅进入当前 UI 日志。
 
 当前标准 Online MR 会话目录没有 `reports/` 或 `packages/`；正式包位于 `outputs/`。`raw/` 和 metadata 是采集事实源，`parsed/online_diagnosis.sqlite` 是报告、历史图表和跨源时间轴的现行查询产物，虽然可由完整 raw 重建，但不能在未确认 raw 完整、重建能力和消费者的情况下当作普通缓存无条件删除。阶段 5B-1 的 `OnlineMrQueryService` 只通过白名单相对引用读取这些内容，不接受任意文件路径，也不创建、迁移或修复数据库 schema。
@@ -156,6 +158,7 @@ sessions/<session>/
 ## 6. 数据稳定性边界
 
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
+- 轨道交通基础资料 Query Service 只允许 SQLite `mode=ro + query_only` 和显式安全字段；账号、密码、Community、Token 及隧道凭据不得进入公共 DTO 或预览结果。
 - `tasks.db` 由 `TaskRepository` 和 Online MR Task/Session Repository 幂等初始化，使用 WAL/busy timeout/foreign keys；任务快照、事件和映射按各自事务提交，不自动删除业务结果或原始日志。
 - `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
 - `.local/data/sites/<site>/files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。

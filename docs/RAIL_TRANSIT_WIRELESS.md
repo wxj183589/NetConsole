@@ -18,6 +18,14 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 
 轨道交通 FIT-AP 和 Mesh-Link Web 契约不提供客户端数量、终端数量或基于客户端数的筛选、汇总与判断。
 
+## 5C-6 基础资料边界
+
+Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增基础资料数据库。轨旁 AP 点位来自 `ap_extension_points`，列车和车载 MR 来自 `devices / device_groups`；FIT-AP、光衰、Mesh-Link 和 Online MR 只作为关联运行态，不写回基础资料。
+
+`ap_extension_points` 同时保存 AP 点位和站点标题、设计起点等位置辅助行。因此 AP 列表只纳入具有正式名称、有效 MAC 或有效点位编号的记录；站点和区间仍从全部位置行派生。正式名称为空时可显示点位编号，但不得将点位编号伪装成正式 AP 名称。详细契约见 [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md)。
+
+车载 MR 名称继续保留设备表原文。当前 `MR-CW` 在 Web 角色筛选中对应尾端 `TC`，不修改原始设备名称。AP 和 MR 的 MAC 各自在本领域查重，不互相合并。
+
 ## AC Mesh-Link 数据方向
 
 现有 Qt 采集器在 AC 上执行 `display clock` 和 `display wlan mesh-link ap`，并复用 `H3CComwareV9VehicleMrMeshLinkParser`。一行 AC 输出的语义是：

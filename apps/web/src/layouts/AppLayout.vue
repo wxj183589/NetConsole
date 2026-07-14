@@ -12,6 +12,7 @@ const backendOnline = ref(false)
 const activeMenu = computed(() => {
   if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
   if (route.path.startsWith('/rail-transit/online-mr')) return '/rail-transit/online-mr'
+  if (route.path.startsWith('/rail-transit/base-data')) return '/rail-transit/base-data'
   if (route.path.startsWith('/agents')) return '/agents'
   if (route.path.startsWith('/ac-management/mesh-links')) return '/ac-management/mesh-links'
   if (route.path.startsWith('/ac-management')) return '/ac-management'
@@ -66,6 +67,7 @@ onMounted(async () => {
             <el-icon><Monitor /></el-icon>
             <span>轨道交通</span>
           </template>
+          <el-menu-item index="/rail-transit/base-data">基础资料</el-menu-item>
           <el-menu-item index="/rail-transit/online-mr">车载 MR 实时展示</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="/network-tools">

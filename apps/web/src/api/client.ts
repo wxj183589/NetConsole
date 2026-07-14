@@ -6,12 +6,12 @@ export interface HealthResponse {
 const apiBase = import.meta.env.VITE_API_BASE || ''
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers)
+  const formData = typeof FormData !== 'undefined' && options.body instanceof FormData
+  if (!formData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   const response = await fetch(`${apiBase}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    headers,
   })
   if (!response.ok) {
     let message = `请求失败 (${response.status})`
