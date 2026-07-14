@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-阶段 5C-6 增加 `/rail-transit/base-data` 只读页面，Feature key 为 `web.rail_transit_base_data`。阶段 5C-6A 在同一页面增加问题分组和合并预览，但不开放正式写入。页面复用现有 Python Core 和当前局点数据，不建立第二套基础资料数据库。
+阶段 5C-6 增加 `/rail-transit/base-data` 页面，Feature key 为 `web.rail_transit_base_data`。阶段 5C-6A 增加问题分组和合并预览；阶段 5C-6B 增加由 `web.rail_transit_base_data_write`、环境开关和目标范围共同保护的受控写入闭环。默认配置仍是只读，宁波地铁 12 号线等真实局点当前未获得写入授权。页面复用现有 Python Core 和当前局点数据，不建立第二套基础资料数据库。
 
 ```text
 devices.db
@@ -77,13 +77,23 @@ GET /api/rail-transit/base-data/import-policies
 GET /api/rail-transit/base-data/relations
 ```
 
-唯一 POST 是非持久化预览：
+预览接口：
 
 ```text
 POST /api/rail-transit/base-data/import-preview
 ```
 
-不存在 `/import`、`/commit`、`/apply`、PUT、PATCH 或 DELETE 资产接口。
+受控导入与只读审计接口：
+
+```text
+POST /api/rail-transit/base-data/import-apply
+GET  /api/rail-transit/base-data/import-operations
+GET  /api/rail-transit/base-data/import-operations/{operation_id}
+GET  /api/rail-transit/base-data/import-operations/{operation_id}/changes
+POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
+```
+
+`import-apply` 只接受 `preview_id`、局点、明确确认、字段决策和预期数据库 SHA-256；不能传数据库路径、表名、SQL 或自由业务字段。回滚接口默认关闭。不存在通用 PUT、PATCH、DELETE 或 SQL 接口。
 
 ## 导入预览安全
 
@@ -92,16 +102,28 @@ POST /api/rail-transit/base-data/import-preview
 - XLSX 使用 `data_only=True` 读取，不执行公式或宏，也不使用外部链接生成业务值。
 - XLSX/CSV 仅写入系统受控临时目录，返回前由 `TemporaryDirectory` 清理；JSON 直接在内存解析。
 - 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential 和用户字段不返回、不记录。
-- 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。
+- 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。合并计划以 `preview_id` 保存到 `.local/runtime/base_data_import_previews/`，只包含安全字段、文件 basename/SHA-256、数据库 SHA-256、问题和 15 分钟有效期，不保存上传原文件或绝对路径；过期预览会被受控清理。
 - 预览逐行返回 `CREATE / UPDATE / UNCHANGED / SKIP / CONFLICT / NEEDS_CONFIRMATION`，并展示字段级现值、候选值、来源、动作和警告。
-- 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把 2723 条字段问题误称为 2723 台设备。
+- 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把字段问题数误称为设备数。
 - 重复 MAC、重复静态 IP、MR 角色冲突和身份冲突属于阻断项。缺少 AP 正式名称、缺少 MAC、里程缺失等可进入补录队列，但不得绕过冲突检查。
 
-## 受控写入准备
+2026-07-14 的宁波地铁 12 号线只读治理口径为“5C-6A 来源策略与实体分组 v1”：2726 条字段问题、951 个实体组、blocking 0。此前的 2723 是旧规则统计；统计变化来自规则重新分类，不代表数据库发生写入，判断数据是否变化仍以 `devices.db` SHA-256 和 mtime 为准。
 
-`RailTransitBaseDataImportService` 只复用 `ap_extension_points`，不新增主数据库或 schema。写入能力默认由 `RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=0` 硬关闭，当前 FastAPI 和 Vue 均没有 apply/commit 入口。测试只在临时数据库显式启用。
+## 受控写入
 
-在以后明确授权写入时，Service 仍必须同时满足：
+`RailTransitBaseDataImportService` 只复用 `ap_extension_points`，不新增主数据库或 schema。FastAPI 和 Vue 已具备受控入口，但默认隐藏应用按钮。后端必须同时通过以下开关：
+
+```text
+Feature Registry: web.rail_transit_base_data_write
+RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1
+NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1       # 仅带 copy_validation 标记的副本
+NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1       # 正式局点的额外授权；本阶段禁止设置
+RAIL_TRANSIT_BASE_DATA_ROLLBACK_ENABLED=1     # 回滚独立开关
+```
+
+副本还必须在局点 `site_meta.json` 中保存 `base_data_write_scope=copy_validation` 与真实源库 SHA-256。只有环境双开关不能把正式局点伪装为副本。
+
+一次写入固定满足：
 
 1. 合并预览未过期、数据库逻辑 SHA-256 未变化、无阻断项或待确认项；
 2. 调用方显式确认且安全开关为 `1`；
@@ -109,7 +131,9 @@ POST /api/rail-transit/base-data/import-preview
 4. 记录操作 UUID、来源文件 basename/SHA-256、创建/更新/跳过/冲突数、相对备份引用、数据库前后哈希和可逆字段变化；
 5. 失败事务全部回滚；回滚前还要确认数据库仍等于本次写入后的哈希，避免覆盖后续修改。
 
-备份和审计位于当前局点 `rail_transit/base_data_import/backups/` 与 `operations/`。审计不保存凭据、连接串、源文件绝对路径或本机临时路径。
+同一 `preview_id` 只处理一次；重复提交返回 `ALREADY_APPLIED`，不得重复 CREATE/UPDATE。`NEEDS_CONFIRMATION` 必须逐字段选择保留正式值或采用导入值，后端重新校验；blocking 冲突、运行态字段和空值覆盖不能由前端决策绕过。
+
+备份和审计位于当前局点 `files/rail_transit/base_data_import/backups/` 与 `operations/`。审计不保存凭据、连接串、源文件绝对路径或本机临时路径。
 
 ## 刷新与性能
 
@@ -118,12 +142,14 @@ POST /api/rail-transit/base-data/import-preview
 - 连续失败 3 次后保留最后成功数据并把后续刷新降为 120 秒。
 - AP、MR 和问题使用后端分页；AC、Mesh-Link、Online MR 关联按批次读取，禁止逐行查询。
 
+副本验收使用 `python -m scripts.maintenance.test_rail_transit_base_data_apply`。脚本复制 `devices.db` 后才预览、应用和可选回滚，并在结束时核对源库 SHA-256 与 mtime；目标副本已存在、目标与源目录重叠或缺少副本开关时直接拒绝。
+
 ## 当前未开放
 
-- 正式导入、批量修改、删除和数据库覆盖；
+- 真实局点写入授权、批量自由修改、删除和数据库覆盖；
 - 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
 - Agent 远程 MR 控制与 `executor=AGENT`；
 - AP Identity 生产接管；
 - 离线分析和正式报告 Web 化。
 
-宁波地铁 12 号线只读验收以查询前后 `devices.db`、`tasks.db` 和导入资料文件 SHA-256/mtime 不变、Task 数不变为通过条件。
+宁波地铁 12 号线真实库继续只读；验收仅允许先复制到隔离目录后对副本执行 apply/rollback。源库前后 `devices.db` SHA-256/mtime、`tasks.db` Task 数和正式导入目录必须不变。

@@ -187,6 +187,7 @@ export interface ImportPreviewRow {
 }
 
 export interface ImportPreviewResult {
+  preview_id: string
   file_name: string
   file_size: number
   template_type: string
@@ -229,11 +230,89 @@ export interface MergePlanItem {
 
 export interface MergePlan {
   plan_id: string
+  site_id: string
+  source_file_name: string
+  source_file_sha256: string
+  source_type: string
+  created_at: string
   database_hash: string
   preview_expires_at: string
   write_enabled: boolean
   items: MergePlanItem[]
-  summary: Record<string, number>
+  summary: {
+    create_count: number
+    update_count: number
+    unchanged_count: number
+    skip_count: number
+    conflict_count: number
+    needs_confirmation_count: number
+    blocking_count: number
+  }
+}
+
+export interface ImportPolicyStatus {
+  feature_enabled: boolean
+  write_enabled: boolean
+  copy_write_authorized: boolean
+  real_write_authorized: boolean
+  rollback_enabled: boolean
+  write_scope: 'copy_validation' | 'real'
+  identity_boundaries: Record<string, string>
+  items: Array<{ entity_type: string; field_name: string; priority: string[]; runtime_only: boolean; note: string }>
+}
+
+export interface MergeFieldDecision {
+  row_number: number
+  field_name: string
+  action: 'keep_existing' | 'use_imported' | 'fill_missing' | 'skip_entity'
+}
+
+export interface ImportApplyResult {
+  operation_id: string
+  status: string
+  created_count: number
+  updated_count: number
+  skipped_count: number
+  warning_count: number
+  backup_id: string
+  database_sha256_before: string
+  database_sha256_after: string
+  audit_id: string
+}
+
+export interface ImportOperation {
+  operation_id: string
+  preview_id: string
+  site_id: string
+  source_file_name: string
+  source_file_sha256: string
+  owner: string
+  started_at: string
+  ended_at: string
+  status: string
+  created_count: number
+  updated_count: number
+  skipped_count: number
+  warning_count: number
+  backup_reference: string
+  database_hash_before: string
+  database_hash_after: string
+  error_code: string
+  error_summary: string
+  rolled_back_at: string
+}
+
+export interface ImportChange {
+  operation_id: string
+  entity_type: string
+  entity_id: string
+  action: string
+  field_name: string
+  old_value: unknown
+  new_value: unknown
+  source_type: string
+  source_reference: string
+  confirmation_method: string
 }
 
 export interface PageQuery {

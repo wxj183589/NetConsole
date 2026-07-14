@@ -36,6 +36,10 @@ AP_MERGE_FIELDS = (
 )
 
 
+class RailTransitBaseDataRollbackConflict(RuntimeError):
+    pass
+
+
 class RailTransitBaseDataRepository:
     """轨道交通基础资料受控写入边界；调用方负责开关、预览和审计。"""
 
@@ -68,6 +72,10 @@ class RailTransitBaseDataRepository:
             if row is None or str(row[0]).casefold() != "ok":
                 raise sqlite3.DatabaseError("backup integrity check failed")
 
+    def assert_integrity(self, site_id: str) -> None:
+        with self._read_connection(self._database_path(site_id)) as connection:
+            self._assert_integrity(connection)
+
     def apply_operations(self, site_id: str, operation_id: str, operations: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         path = self._database_path(site_id)
         connection = sqlite3.connect(path, timeout=30.0)
@@ -91,12 +99,22 @@ class RailTransitBaseDataRepository:
     def rollback_changes(self, site_id: str, changes: Iterable[Mapping[str, Any]]) -> None:
         path = self._database_path(site_id)
         connection = sqlite3.connect(path, timeout=30.0)
+        connection.row_factory = sqlite3.Row
         configure_sqlite_connection(connection, foreign_keys=True)
         try:
             self._require_table(connection)
             connection.execute("BEGIN IMMEDIATE")
             for change in reversed(list(changes)):
                 entity_id = self._numeric_id(change.get("entity_id"))
+                current = connection.execute(
+                    "SELECT * FROM ap_extension_points WHERE id = ?",
+                    (entity_id,),
+                ).fetchone()
+                if current is None:
+                    raise RailTransitBaseDataRollbackConflict("rollback target missing")
+                expected = self._safe_restore_values(change.get("new_values") or {})
+                if any(current[field] != value for field, value in expected.items()):
+                    raise RailTransitBaseDataRollbackConflict("rollback target changed")
                 if change.get("kind") == "create":
                     connection.execute("DELETE FROM ap_extension_points WHERE id = ?", (entity_id,))
                     continue
@@ -213,4 +231,8 @@ class RailTransitBaseDataRepository:
         return int(text)
 
 
-__all__ = ["AP_MERGE_FIELDS", "RailTransitBaseDataRepository"]
+__all__ = [
+    "AP_MERGE_FIELDS",
+    "RailTransitBaseDataRepository",
+    "RailTransitBaseDataRollbackConflict",
+]

@@ -16,6 +16,10 @@
 │  └─ sites/<site>/              # 局点隔离数据
 └─ runtime/                      # 可清理的运行日志、协议和缓存
    ├─ logs/
+   ├─ base_data_import_previews/<preview_id>/
+   │  ├─ preview_meta.json
+   │  ├─ merge_plan.json
+   │  └─ issues.json
    └─ cache/
       ├─ background_jobs/
       ├─ export_jobs/
@@ -91,7 +95,7 @@ H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、�
 ## 5. 轨道交通目录
 
 ```text
-rail_transit/
+files/rail_transit/
 ├─ mr_raw_mesh/
 │  ├─ catalog.sqlite
 │  └─ <mr>/
@@ -146,7 +150,7 @@ sessions/<session>/
    └─ <session>.zip              # LOCAL 正式包或已校验导入的 Agent 源包
 ```
 
-阶段 5C-6/5C-6A 的轨道交通基础资料不新增数据库：AP 点位、站点/区间派生字段和设备资料继续读取 `devices.db`。导入预览使用系统受控临时目录并在请求结束前清理，不进入局点 `files/imports/`、不创建正式文件，也不写 `tasks.db`。`base_data_import/` 只在安全开关显式启用且真正执行受控写入时创建；当前 Web 没有该入口。备份使用 SQLite Backup API，审计只保存相对引用、哈希和安全字段。
+阶段 5C-6 至 5C-6B 的轨道交通基础资料不新增数据库：AP 点位、站点/区间派生字段和设备资料继续读取 `devices.db`。上传文件解析临时目录在请求结束前清理；安全合并计划保存到 `.local/runtime/base_data_import_previews/<preview_id>/`，包含 `preview_meta.json`、`merge_plan.json` 和 `issues.json`，不保存上传原文件或绝对路径，也不写 `tasks.db`。过期计划可清理，但不得影响已执行审计。`base_data_import/` 只在 Feature、环境开关和副本/真实范围授权全部通过且真正执行写入时创建。备份使用 SQLite Backup API，审计只保存相对引用、哈希和安全字段。
 
 手工备注保存为会话根目录下 UTF-8 的 `manual_notes.jsonl` 和 `manual_notes.txt`。只有存在运行中目标会话时才持久化；无目标时仅进入当前 UI 日志。
 
@@ -162,7 +166,7 @@ sessions/<session>/
 
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
 - 轨道交通基础资料 Query Service 只允许 SQLite `mode=ro + query_only` 和显式安全字段；账号、密码、Community、Token 及隧道凭据不得进入公共 DTO 或预览结果。
-- 轨道交通基础资料正式写入默认关闭，不新增主表；受控 Service 只允许事务更新既有 `ap_extension_points`，写前备份、操作审计和冲突哈希校验缺一不可。
+- 轨道交通基础资料正式写入默认关闭，不新增主表；受控 Service 只允许事务更新既有 `ap_extension_points`，写前备份、操作审计、预览有效期和数据库哈希乐观锁缺一不可。宁波地铁 12 号线真实库在 5C-6B 仍未授权写入。
 - `tasks.db` 由 `TaskRepository` 和 Online MR Task/Session Repository 幂等初始化，使用 WAL/busy timeout/foreign keys；任务快照、事件和映射按各自事务提交，不自动删除业务结果或原始日志。
 - `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
 - `.local/data/sites/<site>/files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。

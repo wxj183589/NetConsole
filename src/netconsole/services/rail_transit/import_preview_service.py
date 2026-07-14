@@ -57,7 +57,7 @@ _SECRET_MARKERS = ("password", "passwd", "secret", "token", "community", "creden
 
 
 class RailTransitImportPreviewService:
-    """受控文件解析与校验；只返回内存预览，不写正式数据。"""
+    """受控文件解析与校验；仅持久化安全合并计划，不写正式数据。"""
 
     def __init__(
         self,
@@ -134,7 +134,9 @@ class RailTransitImportPreviewService:
             source_file_sha256=hashlib.sha256(content).hexdigest(),
             source_type="official_point_table" if suffix in {".xlsx", ".csv"} else "import_file",
         )
+        preview_id = self.import_service.save_preview(merge_plan)
         return ImportPreviewResultDTO(
+            preview_id=preview_id,
             file_name=safe_name,
             file_size=len(content),
             template_type=template_type,

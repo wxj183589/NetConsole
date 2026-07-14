@@ -85,12 +85,10 @@ def test_base_data_api_is_read_only_except_preview_and_redacts_credentials(tmp_p
         if path.startswith("/api/rail-transit/base-data")
         for method in operations
     }
-    assert {path for path, method in routes if method == "POST"} == {"/api/rail-transit/base-data/import-preview"}
-    assert all(method == "GET" for path, method in routes if path != "/api/rail-transit/base-data/import-preview")
-    assert not any(
-        path.endswith(token)
-        for path, _method in routes
-        if path != "/api/rail-transit/base-data/import-preview"
-        for token in ("/import", "/commit", "/apply", "/delete")
-    )
+    assert {path for path, method in routes if method == "POST"} == {
+        "/api/rail-transit/base-data/import-preview",
+        "/api/rail-transit/base-data/import-apply",
+        "/api/rail-transit/base-data/import-operations/{operation_id}/rollback",
+    }
+    assert not any(method in {"PUT", "PATCH", "DELETE"} for _path, method in routes)
     assert responses[8].json()["write_enabled"] is False

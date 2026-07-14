@@ -242,6 +242,9 @@ class PathResolver:
     def rail_transit_base_data_import_operations_dir(self, site_name: str = "demo") -> Path:
         return self.rail_transit_base_data_import_root(site_name) / "operations"
 
+    def rail_transit_base_data_preview_root(self) -> Path:
+        return self.runtime_dir / "base_data_import_previews"
+
     def trackside_ap_root(self, site_name: str = "demo") -> Path:
         return self.rail_transit_root(site_name) / "trackside_ap"
 

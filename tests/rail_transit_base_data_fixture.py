@@ -70,4 +70,16 @@ def build_rail_transit_base_data_fixture(tmp_path: Path) -> tuple[PathResolver, 
     return paths, db_path
 
 
-__all__ = ["build_rail_transit_base_data_fixture"]
+def mark_base_data_copy(paths: PathResolver, site_id: str = "demo", source_sha256: str = "c" * 64) -> None:
+    path = paths.site_dir(site_id) / "site_meta.json"
+    payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    payload.update(
+        {
+            "base_data_write_scope": "copy_validation",
+            "base_data_source_sha256": source_sha256,
+        }
+    )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+__all__ = ["build_rail_transit_base_data_fixture", "mark_base_data_copy"]

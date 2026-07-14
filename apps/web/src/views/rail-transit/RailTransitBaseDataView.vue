@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
-import type { TracksideAp, VehicleMr } from '../../types/railTransitBaseData'
+import type { MergeFieldDecision, TracksideAp, VehicleMr } from '../../types/railTransitBaseData'
 
 const store = useRailTransitBaseDataStore()
 const router = useRouter()
@@ -13,9 +13,15 @@ const activeTab = ref('overview')
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
 const previewFilter = ref('all')
+const applyConfirmed = ref(false)
+const decisionSelections = ref<Record<string, MergeFieldDecision['action'] | ''>>({})
 const mergeRows = computed(() => {
   const rows = store.importPreview?.merge_plan?.items || []
   return previewFilter.value === 'all' ? rows : rows.filter((row) => row.result === previewFilter.value)
+})
+const previewBlocked = computed(() => {
+  const summary = store.importPreview?.merge_plan?.summary
+  return Boolean(summary && (summary.blocking_count > 0 || summary.conflict_count > 0))
 })
 const issueCodeStats = computed(() => Object.entries(store.issueCodeCounts).sort((left, right) => right[1] - left[1]))
 const summaryCards = computed(() => [
@@ -34,6 +40,7 @@ const summaryCards = computed(() => [
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   store.startPolling()
+  void store.refreshImportGovernance().catch(() => undefined)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
@@ -51,11 +58,53 @@ async function handleFile(event: Event): Promise<void> {
   if (!file) return
   try {
     await store.previewImport(file)
+    applyConfirmed.value = false
+    decisionSelections.value = {}
     ElMessage.success('导入预览解析完成，未写入数据库')
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '导入预览失败')
   } finally {
     input.value = ''
+  }
+}
+
+function decisionKey(rowNumber: number, fieldName: string): string { return `${rowNumber}:${fieldName}` }
+function manualDecisions(): MergeFieldDecision[] {
+  const result: MergeFieldDecision[] = []
+  for (const item of store.importPreview?.merge_plan?.items || []) {
+    for (const diff of item.field_diffs) {
+      if (diff.action !== 'manual_review') continue
+      const action = decisionSelections.value[decisionKey(item.row_number, diff.field_name)]
+      if (!action) throw new Error(`第 ${item.row_number} 行字段 ${diff.field_name} 尚未确认`)
+      result.push({ row_number: item.row_number, field_name: diff.field_name, action })
+    }
+  }
+  return result
+}
+
+async function handleApply(): Promise<void> {
+  if (!applyConfirmed.value) return
+  try {
+    const operationId = await store.applyImport(manualDecisions())
+    applyConfirmed.value = false
+    await store.manualRefresh()
+    ElMessage.success(`基础资料已应用，操作号：${operationId}`)
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '基础资料应用失败')
+  }
+}
+
+async function handleRollback(operationId: string): Promise<void> {
+  try {
+    await ElMessageBox.confirm('仅当数据库未发生后续变化时才能回滚。确认回滚该次导入？', '回滚确认', {
+      type: 'warning', confirmButtonText: '确认回滚', cancelButtonText: '取消',
+    })
+    await store.rollbackImport(operationId)
+    await store.manualRefresh()
+    ElMessage.success('导入操作已回滚')
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(cause instanceof Error ? cause.message : '回滚失败')
   }
 }
 
@@ -105,9 +154,9 @@ function formatBytes(value: number): string {
 <template>
   <section class="rail-base-data" v-loading="store.loading">
     <el-alert
-      title="轨道交通基础资料只读视图"
-      description="本页只查询当前局点的线路、位置、轨旁 AP、列车和车载 MR；导入功能仅做预览校验，不写数据库、不创建任务、不连接设备。"
-      type="info"
+      :title="store.canApplyImport() ? '轨道交通基础资料受控维护' : '轨道交通基础资料只读视图'"
+      :description="store.canApplyImport() ? '写入仅对当前明确授权的数据范围生效，应用前必须逐项核对差异并确认。' : '本页只查询当前局点资料；导入默认仅做预览校验，写入未授权。'"
+      :type="store.canApplyImport() ? 'warning' : 'info'"
       :closable="false"
       show-icon
     />
@@ -250,7 +299,7 @@ function formatBytes(value: number): string {
         </el-tab-pane>
 
         <el-tab-pane label="导入预览" name="preview">
-          <el-alert title="当前仅支持校验和合并预览。正式写入功能默认关闭。" description="支持 XLSX、CSV、JSON；不会创建任务，不会保存正式导入文件，也不会自动覆盖正式身份。" type="warning" :closable="false" show-icon />
+          <el-alert title="基础资料写入默认关闭" description="支持 XLSX、CSV、JSON；原文件不会保存在运行目录。只有明确授权的范围可以应用，正式身份和运行态字段不会被自动覆盖。" type="warning" :closable="false" show-icon />
           <div class="preview-toolbar">
             <label class="file-picker"><el-icon><UploadFilled /></el-icon><span>{{ store.selectedFileName || '选择预览文件' }}</span><input type="file" accept=".xlsx,.csv,.json" @change="handleFile" /></label>
             <span v-if="store.importPreview">{{ formatBytes(store.importPreview.file_size) }} · {{ store.importPreview.template_type }} · 置信度 {{ store.importPreview.confidence_score }}</span>
@@ -263,9 +312,35 @@ function formatBytes(value: number): string {
           </div>
           <div v-if="store.importPreview" class="preview-actions">
             <el-radio-group v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="CREATE">CREATE</el-radio-button><el-radio-button value="UPDATE">UPDATE</el-radio-button><el-radio-button value="UNCHANGED">UNCHANGED</el-radio-button><el-radio-button value="CONFLICT">CONFLICT</el-radio-button><el-radio-button value="NEEDS_CONFIRMATION">待人工确认</el-radio-button></el-radio-group>
-            <el-button type="primary" disabled>正式写入未启用</el-button>
+            <div v-if="store.canApplyImport()" class="apply-controls">
+              <el-checkbox v-model="applyConfirmed">我已核对差异、冲突和目标局点</el-checkbox>
+              <el-button type="primary" :loading="store.applyLoading" :disabled="!applyConfirmed || previewBlocked" @click="handleApply">应用导入</el-button>
+            </div>
+            <el-tag v-else type="info">写入未授权，仅可预览</el-tag>
           </div>
           <el-table v-loading="store.previewLoading" :data="mergeRows" stripe height="calc(100vh - 520px)" empty-text="请选择文件生成合并预览">
+            <el-table-column type="expand">
+              <template #default="scope">
+                <el-table :data="scope.row.field_diffs" size="small">
+                  <el-table-column prop="field_name" label="字段" width="160" />
+                  <el-table-column label="当前值" min-width="160"><template #default="field">{{ display(field.row.current_value) }}</template></el-table-column>
+                  <el-table-column label="导入值" min-width="160"><template #default="field">{{ display(field.row.proposed_value) }}</template></el-table-column>
+                  <el-table-column label="处置" min-width="200">
+                    <template #default="field">
+                      <el-select
+                        v-if="field.row.action === 'manual_review'"
+                        v-model="decisionSelections[decisionKey(scope.row.row_number, field.row.field_name)]"
+                        placeholder="请选择"
+                      >
+                        <el-option label="保留正式值" value="keep_existing" />
+                        <el-option label="采用导入值" value="use_imported" />
+                      </el-select>
+                      <span v-else>{{ field.row.action }}</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </template>
+            </el-table-column>
             <el-table-column prop="row_number" label="行号" width="80" />
             <el-table-column label="处理结果" width="150"><template #default="scope"><el-tag :type="mergeType(scope.row.result)">{{ scope.row.result }}</el-tag></template></el-table-column>
             <el-table-column label="来源身份" min-width="210"><template #default="scope">{{ display(scope.row.source_identity.ap_name) }} / {{ display(scope.row.source_identity.ap_mac) }}</template></el-table-column>
@@ -273,6 +348,34 @@ function formatBytes(value: number): string {
             <el-table-column prop="match_method" label="匹配方式" width="140" />
             <el-table-column label="字段差异" min-width="320" show-overflow-tooltip><template #default="scope">{{ diffSummary(scope.row.field_diffs) }}</template></el-table-column>
             <el-table-column prop="conflict_summary" label="冲突" min-width="240"><template #default="scope">{{ display(scope.row.conflict_summary) }}</template></el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane label="导入审计" name="operations">
+          <el-alert title="审计记录只保存文件摘要、字段差异和操作结果，不保存上传原文件。" type="info" :closable="false" show-icon />
+          <el-table :data="store.importOperations" stripe class="operation-table" empty-text="暂无导入操作">
+            <el-table-column prop="started_at" label="开始时间" min-width="180" />
+            <el-table-column prop="source_file_name" label="来源文件" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="status" label="状态" width="120" />
+            <el-table-column label="新增 / 更新 / 跳过" width="160"><template #default="scope">{{ scope.row.created_count }} / {{ scope.row.updated_count }} / {{ scope.row.skipped_count }}</template></el-table-column>
+            <el-table-column prop="owner" label="操作者" width="110" />
+            <el-table-column label="操作" width="180">
+              <template #default="scope">
+                <el-button link type="primary" @click="store.selectImportOperation(scope.row.operation_id)">查看变更</el-button>
+                <el-button
+                  v-if="store.importPolicies?.rollback_enabled && store.canApplyImport() && scope.row.status === 'APPLIED'"
+                  link type="danger" @click="handleRollback(scope.row.operation_id)"
+                >回滚</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-table v-if="store.selectedOperationId" :data="store.importChanges" stripe class="change-table" empty-text="该操作没有字段变更">
+            <el-table-column prop="entity_id" label="实体" min-width="180" />
+            <el-table-column prop="action" label="动作" width="100" />
+            <el-table-column prop="field_name" label="字段" width="150" />
+            <el-table-column label="原值" min-width="160"><template #default="scope">{{ display(scope.row.old_value) }}</template></el-table-column>
+            <el-table-column label="新值" min-width="160"><template #default="scope">{{ display(scope.row.new_value) }}</template></el-table-column>
+            <el-table-column prop="confirmation_method" label="确认方式" width="140" />
           </el-table>
         </el-tab-pane>
 
@@ -315,6 +418,8 @@ function formatBytes(value: number): string {
 .preview-summary { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
 .preview-filter { margin-bottom: 12px; }
 .preview-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.apply-controls { display: flex; align-items: center; gap: 12px; }
+.operation-table, .change-table { margin-top: 16px; }
 .issue-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .row-issues { display: flex; flex-wrap: wrap; gap: 5px; }
 @media (max-width: 1360px) {

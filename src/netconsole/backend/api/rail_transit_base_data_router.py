@@ -9,8 +9,15 @@ from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupPageDTO,
     DataQualityIssuePageDTO,
     ImportPreviewResultDTO,
+    ImportApplyRequestDTO,
+    ImportApplyResultDTO,
+    ImportChangePageDTO,
+    ImportOperationPageDTO,
+    ImportOperationDTO,
     ImportPolicyDTO,
     ImportPolicyResponseDTO,
+    ImportRollbackRequestDTO,
+    ImportRollbackResultDTO,
     RailTransitRelationPageDTO,
     RailTransitSummaryDTO,
     SectionPageDTO,
@@ -24,6 +31,7 @@ from netconsole.models.api.rail_transit_base_data import (
 )
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
+from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError
 from netconsole.services.rail_transit.import_preview_service import (
     MAX_IMPORT_PREVIEW_BYTES,
     RailTransitImportPreviewService,
@@ -194,15 +202,109 @@ def issue_groups(
 
 
 @router.get("/import-policies", response_model=ImportPolicyResponseDTO)
-def import_policies(request: Request) -> ImportPolicyResponseDTO:
+def import_policies(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+) -> ImportPolicyResponseDTO:
+    status_value = _import_service(request).guard.status(_site_id(request, site_id))
     return ImportPolicyResponseDTO(
-        write_enabled=_import_service(request).write_enabled,
+        feature_enabled=status_value.feature_enabled,
+        write_enabled=status_value.write_enabled,
+        copy_write_authorized=status_value.copy_write_authorized,
+        real_write_authorized=status_value.real_write_authorized,
+        rollback_enabled=status_value.rollback_enabled,
+        write_scope=status_value.scope,
         identity_boundaries={
             "formal": "正式基础资料长期保存，来源数据不能自动覆盖。",
             "source": "外部文件、AC、Agent 和日志身份保留来源，不自动成为正式身份。",
             "runtime": "在线状态、DHCP IP、RSSI、光衰和 Mesh-Link 只关联展示。",
         },
         items=[ImportPolicyDTO.model_validate(item) for item in import_policy_rows()],
+    )
+
+
+@router.post("/import-apply", response_model=ImportApplyResultDTO)
+def import_apply(request: Request, payload: ImportApplyRequestDTO) -> ImportApplyResultDTO:
+    site_id = _site_id(request, payload.site_id)
+    try:
+        audit = _import_service(request).apply_preview(
+            preview_id=payload.preview_id,
+            site_id=site_id,
+            expected_database_sha256=payload.expected_database_sha256,
+            explicit_confirmation=payload.explicit_confirmation,
+            decisions=payload.decisions,
+            owner="web",
+        )
+    except BaseDataImportError as exc:
+        _raise_import_error(exc)
+    return ImportApplyResultDTO(
+        operation_id=str(audit["operation_id"]),
+        status=str(audit["status"]),
+        created_count=int(audit.get("created_count") or 0),
+        updated_count=int(audit.get("updated_count") or 0),
+        skipped_count=int(audit.get("skipped_count") or 0),
+        warning_count=int(audit.get("warning_count") or 0),
+        backup_id=str(audit["operation_id"]),
+        database_sha256_before=str(audit.get("database_hash_before") or ""),
+        database_sha256_after=str(audit.get("database_hash_after") or ""),
+        audit_id=str(audit["operation_id"]),
+    )
+
+
+@router.get("/import-operations", response_model=ImportOperationPageDTO)
+def import_operations(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+) -> ImportOperationPageDTO:
+    items = _import_service(request).list_operations(_site_id(request, site_id))
+    return ImportOperationPageDTO(items=items, total=len(items))
+
+
+@router.get("/import-operations/{operation_id}", response_model=ImportOperationDTO)
+def import_operation(
+    request: Request,
+    operation_id: str,
+    site_id: str = Query(default="", max_length=100),
+) -> ImportOperationDTO:
+    try:
+        return _import_service(request).get_operation(_site_id(request, site_id), operation_id)
+    except BaseDataImportError as exc:
+        _raise_import_error(exc, not_found=True)
+
+
+@router.get("/import-operations/{operation_id}/changes", response_model=ImportChangePageDTO)
+def import_operation_changes(
+    request: Request,
+    operation_id: str,
+    site_id: str = Query(default="", max_length=100),
+) -> ImportChangePageDTO:
+    try:
+        items = _import_service(request).list_operation_changes(_site_id(request, site_id), operation_id)
+    except BaseDataImportError as exc:
+        _raise_import_error(exc, not_found=True)
+    return ImportChangePageDTO(items=items, total=len(items))
+
+
+@router.post("/import-operations/{operation_id}/rollback", response_model=ImportRollbackResultDTO)
+def import_operation_rollback(
+    request: Request,
+    operation_id: str,
+    payload: ImportRollbackRequestDTO,
+    site_id: str = Query(default="", max_length=100),
+) -> ImportRollbackResultDTO:
+    try:
+        audit = _import_service(request).rollback_import(
+            site_id=_site_id(request, site_id),
+            operation_id=operation_id,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except BaseDataImportError as exc:
+        _raise_import_error(exc)
+    return ImportRollbackResultDTO(
+        operation_id=str(audit["operation_id"]),
+        status=str(audit["status"]),
+        rolled_back_at=str(audit.get("rolled_back_at") or ""),
+        database_sha256=str(audit.get("database_hash_rollback") or ""),
     )
 
 
@@ -244,6 +346,29 @@ def _query(callback):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="轨道交通基础资料数据库暂时不可读") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) -> None:
+    if not_found:
+        status_code = status.HTTP_404_NOT_FOUND
+    elif exc.code in {
+        "BASE_DATA_WRITE_DISABLED",
+        "BASE_DATA_COPY_WRITE_NOT_AUTHORIZED",
+        "BASE_DATA_REAL_WRITE_NOT_AUTHORIZED",
+        "BASE_DATA_ROLLBACK_DISABLED",
+    }:
+        status_code = status.HTTP_403_FORBIDDEN
+    elif exc.code in {
+        "ALREADY_APPLIED",
+        "BASE_DATA_DATABASE_CHANGED",
+        "BASE_DATA_BLOCKING_ISSUES",
+        "BASE_DATA_IMPORT_CONFLICT",
+        "BASE_DATA_ROLLBACK_CONFLICT",
+    }:
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 __all__ = ["router"]

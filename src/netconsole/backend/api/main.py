@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from netconsole.backend.api.router import api_router, ws_router
 from netconsole.core.paths import PathResolver
+from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
@@ -28,6 +29,7 @@ from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQue
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
+from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
@@ -71,6 +73,7 @@ def create_app(
     ac_mesh_link_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
     frontend_dist: Path | None = None,
     desktop_session_token: str | None = None,
+    rail_base_data_write_feature_enabled: bool | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
@@ -111,7 +114,12 @@ def create_app(
     app.state.traffic_service = traffic_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
-    app.state.rail_transit_base_data_import_service = RailTransitBaseDataImportService(paths)
+    if rail_base_data_write_feature_enabled is None:
+        rail_base_data_write_feature_enabled = FeatureGate(paths.app_root).is_enabled(WRITE_FEATURE_ID)
+    app.state.rail_transit_base_data_import_service = RailTransitBaseDataImportService(
+        paths,
+        guard=BaseDataWriteGuard(paths, feature_enabled=rail_base_data_write_feature_enabled),
+    )
     app.state.rail_transit_import_preview_service = RailTransitImportPreviewService(
         app.state.rail_transit_base_data_query_service,
         import_service=app.state.rail_transit_base_data_import_service,

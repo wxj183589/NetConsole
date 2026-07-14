@@ -25,4 +25,13 @@ describe('API client errors', () => {
     const headers = new Headers(fetchMock.mock.calls[0][1].headers)
     expect(headers.has('Content-Type')).toBe(false)
   })
+
+  it('uses structured FastAPI detail messages', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ detail: { code: 'BASE_DATA_WRITE_DISABLED', message: '基础资料写入未启用' } }),
+    }))
+    await expect(apiRequest('/api/rail-transit/base-data/import-apply')).rejects.toThrow('基础资料写入未启用')
+  })
 })

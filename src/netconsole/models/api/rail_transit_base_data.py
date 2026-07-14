@@ -335,12 +335,18 @@ class ImportPolicyDTO(ApiModel):
 
 
 class ImportPolicyResponseDTO(ApiModel):
+    feature_enabled: bool = False
     write_enabled: bool = False
+    copy_write_authorized: bool = False
+    real_write_authorized: bool = False
+    rollback_enabled: bool = False
+    write_scope: str = "real"
     identity_boundaries: dict[str, str] = Field(default_factory=dict)
     items: list[ImportPolicyDTO] = Field(default_factory=list)
 
 
 class ImportPreviewResultDTO(ApiModel):
+    preview_id: str = ""
     file_name: str
     file_size: int
     template_type: str = ""
@@ -355,6 +361,89 @@ class ImportPreviewResultDTO(ApiModel):
     preview_expires_at: str = ""
     write_enabled: bool = False
     message: str = "当前仅支持校验和合并预览。正式写入功能默认关闭。"
+
+
+class MergeFieldDecisionDTO(ApiModel):
+    row_number: int = Field(ge=1)
+    field_name: str = ""
+    action: Literal["keep_existing", "use_imported", "fill_missing", "skip_entity"]
+
+
+class ImportApplyRequestDTO(ApiModel):
+    preview_id: str
+    site_id: str
+    explicit_confirmation: bool = False
+    decisions: list[MergeFieldDecisionDTO] = Field(default_factory=list)
+    expected_database_sha256: str
+
+
+class ImportApplyResultDTO(ApiModel):
+    operation_id: str
+    status: str
+    created_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    warning_count: int = 0
+    backup_id: str
+    database_sha256_before: str
+    database_sha256_after: str
+    audit_id: str
+
+
+class ImportOperationDTO(ApiModel):
+    operation_id: str
+    preview_id: str
+    site_id: str
+    source_file_name: str
+    source_file_sha256: str
+    owner: str = ""
+    started_at: str
+    ended_at: str = ""
+    status: str
+    created_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    warning_count: int = 0
+    backup_reference: str = ""
+    database_hash_before: str = ""
+    database_hash_after: str = ""
+    error_code: str = ""
+    error_summary: str = ""
+    rolled_back_at: str = ""
+
+
+class ImportOperationPageDTO(ApiModel):
+    items: list[ImportOperationDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class ImportChangeDTO(ApiModel):
+    operation_id: str
+    entity_type: str = "ap"
+    entity_id: str
+    action: str
+    field_name: str
+    old_value: Any = None
+    new_value: Any = None
+    source_type: str = ""
+    source_reference: str = ""
+    confirmation_method: str = "policy"
+
+
+class ImportChangePageDTO(ApiModel):
+    items: list[ImportChangeDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class ImportRollbackRequestDTO(ApiModel):
+    explicit_confirmation: bool = False
+
+
+class ImportRollbackResultDTO(ApiModel):
+    operation_id: str
+    status: str
+    rolled_back_at: str = ""
+    database_sha256: str = ""
 
 
 __all__ = [name for name in globals() if name.endswith("DTO")]

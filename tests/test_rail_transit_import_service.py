@@ -6,13 +6,28 @@ from pathlib import Path
 
 import pytest
 
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.models.api.rail_transit_base_data import ImportPreviewRowDTO
 from netconsole.repositories.rail_transit_base_data_repository import RailTransitBaseDataRepository
 from netconsole.services.rail_transit.base_data_import_service import (
     BaseDataImportError,
     RailTransitBaseDataImportService,
 )
+from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard
+
+
+def _service(paths, *, repository=None, write_enabled: bool = True, rollback_enabled: bool = True):
+    return RailTransitBaseDataImportService(
+        paths,
+        repository=repository,
+        guard=BaseDataWriteGuard(
+            paths,
+            feature_enabled=True,
+            write_enabled=write_enabled,
+            copy_write_enabled=True,
+            rollback_enabled=rollback_enabled,
+        ),
+    )
 
 
 def _plan(service: RailTransitBaseDataImportService, *rows: ImportPreviewRowDTO):
@@ -33,13 +48,14 @@ def _create_row(number: int, suffix: str) -> ImportPreviewRowDTO:
 
 def test_apply_is_disabled_by_default_and_rejects_changed_database(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
-    disabled = RailTransitBaseDataImportService(paths, write_enabled=False)
+    disabled = _service(paths, write_enabled=False)
     plan = _plan(disabled, _create_row(1, "10"))
     with pytest.raises(BaseDataImportError, match="未启用") as disabled_error:
         disabled.apply_merge_plan(plan, confirmed=True)
     assert disabled_error.value.code == "BASE_DATA_WRITE_DISABLED"
 
-    enabled = RailTransitBaseDataImportService(paths, write_enabled=True)
+    mark_base_data_copy(paths)
+    enabled = _service(paths)
     stale_plan = _plan(enabled, _create_row(1, "11"))
     with sqlite3.connect(db_path) as connection:
         connection.execute("UPDATE ap_extension_points SET remark = 'changed' WHERE id = 1")
@@ -51,7 +67,8 @@ def test_apply_is_disabled_by_default_and_rejects_changed_database(tmp_path: Pat
 
 def test_temp_database_apply_audit_and_rollback_are_atomic(tmp_path: Path) -> None:
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
-    service = RailTransitBaseDataImportService(paths, write_enabled=True)
+    mark_base_data_copy(paths)
+    service = _service(paths)
     plan = _plan(service, _create_row(1, "12"))
 
     audit = service.apply_merge_plan(plan, confirmed=True, owner="tester")
@@ -62,15 +79,19 @@ def test_temp_database_apply_audit_and_rollback_are_atomic(tmp_path: Path) -> No
     assert "password" not in serialized.casefold()
     assert any(row["ap_name"] == "AP-New-12" for row in service.repository.list_ap_records("demo"))
 
-    rolled_back = service.rollback_import(site_id="demo", operation_id=audit["operation_id"])
+    rolled_back = service.rollback_import(
+        site_id="demo",
+        operation_id=audit["operation_id"],
+        explicit_confirmation=True,
+    )
     assert rolled_back["status"] == "ROLLED_BACK"
     assert not any(row["ap_name"] == "AP-New-12" for row in service.repository.list_ap_records("demo"))
 
 
-def test_audit_drops_sensitive_owner_text(tmp_path: Path, monkeypatch) -> None:
+def test_audit_drops_sensitive_owner_text(tmp_path: Path) -> None:
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
-    monkeypatch.setenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", "1")
-    service = RailTransitBaseDataImportService(paths)
+    mark_base_data_copy(paths)
+    service = _service(paths)
     plan = _plan(service, _create_row(1, "16"))
 
     audit = service.apply_merge_plan(plan, confirmed=True, owner="password=not-for-audit")
@@ -81,7 +102,8 @@ def test_audit_drops_sensitive_owner_text(tmp_path: Path, monkeypatch) -> None:
 
 def test_update_rollback_restores_tracking_fields(tmp_path: Path) -> None:
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
-    service = RailTransitBaseDataImportService(paths, write_enabled=True)
+    mark_base_data_copy(paths)
+    service = _service(paths)
     before = next(row for row in service.repository.list_ap_records("demo") if row["ap_name"] == "AP-Section")
     plan = _plan(
         service,
@@ -96,7 +118,7 @@ def test_update_rollback_restores_tracking_fields(tmp_path: Path) -> None:
     )
 
     audit = service.apply_merge_plan(plan, confirmed=True)
-    service.rollback_import(site_id="demo", operation_id=audit["operation_id"])
+    service.rollback_import(site_id="demo", operation_id=audit["operation_id"], explicit_confirmation=True)
     after = next(row for row in service.repository.list_ap_records("demo") if row["ap_name"] == "AP-Section")
 
     assert after == before
@@ -104,8 +126,9 @@ def test_update_rollback_restores_tracking_fields(tmp_path: Path) -> None:
 
 def test_transaction_failure_rolls_back_all_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
     repository = RailTransitBaseDataRepository(paths)
-    service = RailTransitBaseDataImportService(paths, repository=repository, write_enabled=True)
+    service = _service(paths, repository=repository)
     plan = _plan(service, _create_row(1, "13"), _create_row(2, "14"))
     before = repository.database_hash("demo")
     original = repository._apply_operation
@@ -129,12 +152,13 @@ def test_transaction_failure_rolls_back_all_rows(tmp_path: Path, monkeypatch: py
 
 def test_rollback_rejects_later_database_changes(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
-    service = RailTransitBaseDataImportService(paths, write_enabled=True)
+    mark_base_data_copy(paths)
+    service = _service(paths)
     audit = service.apply_merge_plan(_plan(service, _create_row(1, "15")), confirmed=True)
     with sqlite3.connect(db_path) as connection:
         connection.execute("UPDATE ap_extension_points SET remark = 'later-change' WHERE id = 1")
         connection.commit()
 
     with pytest.raises(BaseDataImportError) as error:
-        service.rollback_import(site_id="demo", operation_id=audit["operation_id"])
+        service.rollback_import(site_id="demo", operation_id=audit["operation_id"], explicit_confirmation=True)
     assert error.value.code == "BASE_DATA_ROLLBACK_CONFLICT"

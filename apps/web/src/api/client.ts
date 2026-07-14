@@ -16,8 +16,11 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (!response.ok) {
     let message = `请求失败 (${response.status})`
     try {
-      const body = (await response.json()) as { detail?: string; error?: { message?: string } }
-      message = body.detail || body.error?.message || message
+      const body = (await response.json()) as {
+        detail?: string | { message?: string }
+        error?: { message?: string }
+      }
+      message = typeof body.detail === 'string' ? body.detail : body.detail?.message || body.error?.message || message
     } catch {
       // 保留稳定的 HTTP 状态错误。
     }

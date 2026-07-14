@@ -2,7 +2,11 @@ import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
+  applyRailTransitImport,
   getRailTransitSummary,
+  getRailTransitImportPolicies,
+  listRailTransitImportChanges,
+  listRailTransitImportOperations,
   listDataQualityIssueGroups,
   listRelations,
   listSections,
@@ -11,11 +15,16 @@ import {
   listTrains,
   listVehicleMrs,
   previewRailTransitImport,
+  rollbackRailTransitImport,
 } from '../api/railTransitBaseData'
 import type {
   DataQualityIssue,
   DataQualityEntityGroup,
+  ImportChange,
+  ImportOperation,
+  ImportPolicyStatus,
   ImportPreviewResult,
+  MergeFieldDecision,
   RailTransitSummary,
   Relation,
   Section,
@@ -42,9 +51,14 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const issueGroupTotal = ref(0)
   const issueCodeCounts = ref<Record<string, number>>({})
   const importPreview = ref<ImportPreviewResult | null>(null)
+  const importPolicies = ref<ImportPolicyStatus | null>(null)
+  const importOperations = ref<ImportOperation[]>([])
+  const importChanges = ref<ImportChange[]>([])
+  const selectedOperationId = ref('')
   const selectedFileName = ref('')
   const loading = ref(false)
   const previewLoading = ref(false)
+  const applyLoading = ref(false)
   const failures = ref(0)
   const error = ref('')
   const apFilters = reactive({ query: '', station: '', section: '', line_side: '', has_issue: undefined as boolean | undefined, page: 1, page_size: 50, sort_by: 'name', sort_order: 'asc' })
@@ -129,6 +143,55 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     } finally { previewLoading.value = false }
   }
 
+  async function refreshImportGovernance(): Promise<void> {
+    const [policies, operations] = await Promise.all([
+      getRailTransitImportPolicies(),
+      listRailTransitImportOperations(),
+    ])
+    importPolicies.value = policies
+    importOperations.value = operations
+  }
+
+  function canApplyImport(): boolean {
+    const policy = importPolicies.value
+    return Boolean(policy?.feature_enabled && policy.write_enabled
+      && (policy.write_scope === 'copy_validation' ? policy.copy_write_authorized : policy.real_write_authorized))
+  }
+
+  async function applyImport(decisions: MergeFieldDecision[]): Promise<string> {
+    const preview = importPreview.value
+    if (!preview?.merge_plan || !canApplyImport()) throw new Error('基础资料写入未授权')
+    applyLoading.value = true
+    try {
+      const result = await applyRailTransitImport({
+        preview_id: preview.preview_id,
+        site_id: preview.merge_plan.site_id,
+        explicit_confirmation: true,
+        decisions,
+        expected_database_sha256: preview.database_hash,
+      })
+      await refreshImportGovernance().catch(() => undefined)
+      return result.operation_id
+    } finally { applyLoading.value = false }
+  }
+
+  async function selectImportOperation(operationId: string): Promise<void> {
+    selectedOperationId.value = operationId
+    importChanges.value = await listRailTransitImportChanges(operationId)
+  }
+
+  async function rollbackImport(operationId: string): Promise<void> {
+    if (!importPolicies.value?.rollback_enabled || !canApplyImport()) throw new Error('基础资料回滚未授权')
+    applyLoading.value = true
+    try {
+      await rollbackRailTransitImport(operationId)
+      await refreshImportGovernance().catch(() => undefined)
+      if (selectedOperationId.value === operationId) {
+        await selectImportOperation(operationId).catch(() => undefined)
+      }
+    } finally { applyLoading.value = false }
+  }
+
   function applyApFilters(): void { apFilters.page = 1; void refreshRuntime() }
   function setApPage(page: number): void { apFilters.page = page; void refreshRuntime() }
   function applyMrFilters(): void { mrFilters.page = 1; void refreshRuntime() }
@@ -166,9 +229,11 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
 
   return {
     summary, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
-    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, selectedFileName,
-    loading, previewLoading, failures, error, apFilters, mrFilters, issueFilters,
+    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, importPolicies,
+    importOperations, importChanges, selectedOperationId, selectedFileName,
+    loading, previewLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
     refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport,
+    refreshImportGovernance, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,
   }
