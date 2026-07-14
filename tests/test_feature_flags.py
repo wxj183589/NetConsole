@@ -46,6 +46,14 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["online_mr.agent_packages"].parent_id == "rail.online_mr_collection"
     assert FEATURE_BY_ID["web.online_mr_realtime"].parent_id == "rail.online_mr_collection"
     assert FEATURE_BY_ID["web.job_center"].item_type == "page"
+    assert FEATURE_BY_ID["web.device_management"].parent_id == "module.devices"
+    assert FEATURE_BY_ID["web.config_collection"].parent_id == "module.config_collection"
+    assert FEATURE_BY_ID["web.file_management"].parent_id == "module.file_management"
+    assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"
+    assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
+    assert FEATURE_BY_ID["web.config_collection_download"].parent_id == "web.config_collection"
+    assert FEATURE_BY_ID["web.file_management_download"].parent_id == "web.file_management"
+    assert FEATURE_BY_ID["web.network_tools_tcp_port_test"].parent_id == "web.network_tools"
     assert FEATURE_BY_ID["system.web_console"].parent_id == "module.system_settings"
     assert FEATURE_BY_ID["module.feature_switch"].internal_only is True
     assert FEATURE_BY_ID["system.feature_flags"].internal_only is True

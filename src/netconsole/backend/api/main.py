@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import secrets
@@ -26,6 +27,9 @@ from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryServic
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
+from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
+from netconsole.services.device_management_web_service import DeviceManagementWebService
+from netconsole.services.file_management_service import FileManagementApplicationService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
@@ -137,6 +141,13 @@ def create_app(
         )
     if ac_mesh_link_refresh_service is None:
         ac_mesh_link_refresh_service = AcMeshLinkRefreshApplicationService(paths, task_service)
+    device_management_service = DeviceManagementWebService(paths, task_service, site_name=site_name)
+    config_collection_service = ConfigCollectionApplicationService(paths, task_service)
+    file_management_service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        site_name=site_name,
+    )
     owns_online_mr_application_service = (
         online_mr_application_service is None
         and online_mr_web_control_service is None
@@ -158,6 +169,9 @@ def create_app(
         try:
             yield
         finally:
+            await device_management_service.stop()
+            await asyncio.to_thread(config_collection_service.close)
+            await asyncio.to_thread(file_management_service.close)
             await ac_mesh_link_refresh_service.stop()
             await traffic_service.stop()
             await agent_service.stop()
@@ -177,6 +191,9 @@ def create_app(
     app.state.job_center_query_service = JobCenterQueryService(paths)
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
+    app.state.device_management_service = device_management_service
+    app.state.config_collection_service = config_collection_service
+    app.state.file_management_service = file_management_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
     app.state.online_mr_application_service = online_mr_application_service

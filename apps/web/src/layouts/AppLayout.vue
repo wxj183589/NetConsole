@@ -10,7 +10,11 @@ const router = useRouter()
 const version = ref('')
 const backendOnline = ref(false)
 const activeMenu = computed(() => {
+  if (route.path.startsWith('/network/devices')) return '/network/devices'
+  if (route.path.startsWith('/network-tools/overview')) return '/network-tools/overview'
   if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
+  if (route.path.startsWith('/config-center')) return '/config-center'
+  if (route.path.startsWith('/file-manager')) return '/file-manager'
   if (route.path.startsWith('/rail-transit/online-mr')) return '/rail-transit/online-mr'
   if (route.path.startsWith('/rail-transit/base-data')) return '/rail-transit/base-data'
   if (route.path.startsWith('/rail-transit/wireless-dashboard')) return '/rail-transit/wireless-dashboard'
@@ -49,6 +53,18 @@ onMounted(async () => {
           <el-icon><DataBoard /></el-icon>
           <span>Dashboard</span>
         </el-menu-item>
+        <el-menu-item index="/network/devices">
+          <el-icon><Monitor /></el-icon>
+          <span>设备管理</span>
+        </el-menu-item>
+        <el-menu-item index="/config-center">
+          <el-icon><Operation /></el-icon>
+          <span>配置采集中心</span>
+        </el-menu-item>
+        <el-menu-item index="/file-manager">
+          <el-icon><OfficeBuilding /></el-icon>
+          <span>文件管理</span>
+        </el-menu-item>
         <el-menu-item index="/tasks">
           <el-icon><Operation /></el-icon>
           <span>任务中心</span>
@@ -81,6 +97,7 @@ onMounted(async () => {
             <el-icon><Operation /></el-icon>
             <span>网络工具</span>
           </template>
+          <el-menu-item index="/network-tools/overview">网络工具总览</el-menu-item>
           <el-menu-item index="/network-tools/traffic">流量测试</el-menu-item>
         </el-sub-menu>
       </el-menu>
@@ -90,7 +107,7 @@ onMounted(async () => {
       <el-header class="app-header">
         <div>
           <div class="header-title">{{ route.meta.title || (route.name === 'tasks' ? '任务中心' : 'Dashboard') }}</div>
-          <div class="header-subtitle">任务、Agent、AC、流量测试与 Online MR 共享 Python Core</div>
+          <div class="header-subtitle">Qt 与 Web 共用设备、任务、配置、文件、Agent 和 Traffic 业务核心</div>
         </div>
         <div class="header-status">
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>

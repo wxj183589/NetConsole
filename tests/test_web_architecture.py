@@ -63,7 +63,14 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "/api/online-mr/sessions/current",
         "/api/rail-transit/base-data/summary",
         "/api/traffic/runs",
+        "/api/device-management/devices",
+        "/api/network-tools/tcp-port-test",
+        "/api/config-collection/devices",
+        "/api/file-management/files",
     } <= routes
+    assert app.state.device_management_service is not None
+    assert app.state.config_collection_service is not None
+    assert app.state.file_management_service is not None
     assert app.state.online_mr_web_control_enabled is False
 
 

@@ -80,7 +80,7 @@ sequenceDiagram
 - worker 的 stdout 只允许输出 JSONL 协议；普通诊断输出重定向到 stderr。
 - 取消先写 `.cancel`，handler 通过 `JobContext.check_cancelled()` 协作退出；超时后进程管理器 terminate，再在 3 秒后 kill。
 - Job 文件位于 `.local/runtime/cache/background_jobs/`，终态后清理。
-- Job Registry 当前注册 88 个任务类型，分布于 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 11 个领域模块。
+- Job Registry 按 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 等领域模块组织；测试校验必需能力集合，不再绑定易漂移的任务总数。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
 - `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。FastAPI 已提供任务路由与 `/ws/tasks`。
 - `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。

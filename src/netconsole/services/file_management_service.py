@@ -19,7 +19,6 @@ from netconsole.models.api.file_management import (
     ManagedFileDTO,
     ManagedFilePageDTO,
 )
-from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.services.background_job import BackgroundJob
 

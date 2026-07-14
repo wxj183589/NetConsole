@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化。Online MR 已建立纯 Python查询、LOCAL/AGENT Application Service、Task/Session 持久映射和独立 Web LOCAL/AGENT 受控入口；两种执行端继续共用服务而不是复制 Core。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；Vue Web Shell 已接入任务中心、Agent、Traffic、Online MR，以及第一批设备、网络工具、配置采集和文件管理页面。Qt 与 Web 继续共用 Application Service、Repository、Job、Task、Session、Mapping 和 Artifact；Web 验收完成前不删除或隐藏 Qt 页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -57,7 +57,7 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 - API DTO 位于 `src/netconsole/models/api/`，使用 Pydantic，禁止在路由中散落无约束 dict。
 - FastAPI 路由位于 `src/netconsole/backend/api/`，只编排应用服务，不复制 Repository 或业务算法。
-- 当前提供 `GET /api/health`、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及自动 OpenAPI `/docs`。
+- 当前提供 `GET /api/health`、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及设备管理、网络工具、配置采集、文件管理的模块化 API 和自动 OpenAPI `/docs`。
 - 版本来自 `src/netconsole/core/version.py`，API 不维护第二份版本号。
 - 后续前端使用统一生成或封装的 API Client；页面不得各自散写请求和错误协议。
 
@@ -140,9 +140,16 @@ flowchart TD
 - `OnlineMrPhase` 只表示业务生命周期，Job Center 继续使用既有七状态；初始连接失败收口为会话 `FAILED`，遗留活动会话可显式核对为 `ABORTED`，raw 不解析、不打包、不删除；
 - 执行端目前只支持 `LOCAL`，`AGENT` 返回稳定不支持错误；Legacy Qt 尚未切换，`duration_minutes`、Traffic 子任务协调、停止/强停和最终化顺序继续延期。
 
+第一批 Web 双轨迁移已接入：
+
+- 设备列表、筛选、详情、后台连接测试和受控编辑预览；不提供浏览器凭据或外部终端；
+- 复用 Traffic Run 的网络工具总览，并补充本地/Agent TCP 端口测试；
+- 复用 Config Lifecycle、Snapshot 和 Job 的配置采集、查看、比较与受控 Artifact 下载；不提供设备写入或删除；
+- 局点本地文件只读浏览和受控下载；设备远程文件与删除、上传、重命名继续延期。
+
 仍未实现：
 
-- Online MR、设备、AC、FIT-AP、MESH 等业务页面的 Web 创建 API；Online MR 当前只有 Query/Application Service，尚未接 FastAPI、Vue 或 Legacy Qt；
+- 设备正式编辑、AC 写操作、远程设备文件管理和统一登录/角色权限；
 - 独立于桌面/FastAPI 生命周期的 Controller daemon；
 - Export Process 的 Web 接口。
 

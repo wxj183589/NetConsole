@@ -201,7 +201,6 @@ def test_controller_status_change_persists_and_unchanged_scheduler_probe_does_no
         enabled=True,
         authentication_type=AgentAuthenticationType.NONE,
     )
-    events: list[dict] = []
     subscription = service.events.subscribe_stream()
     while not subscription.queue.empty():
         subscription.queue.get_nowait()
