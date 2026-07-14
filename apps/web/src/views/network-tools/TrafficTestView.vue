@@ -287,7 +287,7 @@ function openTaskCenter(): void {
               <span>{{ key }}</span><strong>{{ formatValue(value) }}</strong>
             </div>
           </div>
-          <TrafficRealtimeChart v-if="store.selected.test_type === 'HIGH_FREQUENCY_PING'" :samples="latestSamples" />
+          <TrafficRealtimeChart v-if="['HIGH_FREQUENCY_PING', 'TCP_PORT_TEST'].includes(store.selected.test_type)" :samples="latestSamples" />
           <TrafficBandwidthChart v-else :events="latestEvents" />
           <TrafficLogViewer :events="latestEvents" />
         </template>

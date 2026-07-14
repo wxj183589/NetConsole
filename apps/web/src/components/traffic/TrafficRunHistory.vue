@@ -17,6 +17,7 @@ function typeLabel(value: string): string {
     IPERF_SERVER: 'iPerf 服务端',
     IPERF_CLIENT: 'iPerf 客户端',
     HIGH_FREQUENCY_PING: '高频 Ping',
+    TCP_PORT_TEST: 'TCP 端口测试',
   }[value] || value
 }
 
@@ -35,6 +36,7 @@ function formatTime(value: string): string {
       <el-option label="iPerf 服务端" value="IPERF_SERVER" />
       <el-option label="iPerf 客户端" value="IPERF_CLIENT" />
       <el-option label="高频 Ping" value="HIGH_FREQUENCY_PING" />
+      <el-option label="TCP 端口测试" value="TCP_PORT_TEST" />
     </el-select>
     <el-select v-model="status" clearable placeholder="任务状态" style="width: 150px">
       <el-option v-for="value in ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED']" :key="value" :label="value" :value="value" />

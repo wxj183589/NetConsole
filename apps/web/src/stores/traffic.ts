@@ -14,6 +14,8 @@ import {
   startIperfClient,
   startIperfServer,
 } from '../api/traffic'
+import { startTcpPortTest } from '../api/networkTools'
+import type { TcpPortTestRequest } from '../types/networkTools'
 import type {
   FpingRequest,
   IperfClientRequest,
@@ -88,6 +90,10 @@ export const useTrafficStore = defineStore('traffic', () => {
 
   async function createFping(value: FpingRequest): Promise<TrafficRun> {
     return createRun(() => startFping(value))
+  }
+
+  async function createTcpPortTest(value: TcpPortTestRequest): Promise<TrafficRun> {
+    return createRun(() => startTcpPortTest(value))
   }
 
   async function requestCancel(id: string): Promise<void> {
@@ -235,6 +241,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     createIperfServer,
     createIperfClient,
     createFping,
+    createTcpPortTest,
     requestCancel,
     requestRetry,
     connectSocket,

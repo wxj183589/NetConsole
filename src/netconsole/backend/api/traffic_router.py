@@ -51,7 +51,7 @@ def list_execution_targets(request: Request) -> list[TrafficExecutionTargetDTO]:
             kind=ExecutionTargetKind.LOCAL,
             id="LOCAL",
             display_name="本机",
-            capabilities={"iperf_server": True, "iperf_client": True, "fping": True},
+            capabilities={"iperf_server": True, "iperf_client": True, "fping": True, "tcp_ping_probe": True},
         )
     ]
     for agent in agent_service(request).list_agents():
@@ -386,7 +386,7 @@ def _agent_availability(agent: dict[str, object], capabilities: dict[str, object
         return False, "Agent 认证失败或 Token 未加载"
     if status != AgentStatus.ONLINE.value:
         return False, "Agent 当前不在线"
-    if not any(bool(capabilities.get(key)) for key in ("iperf_server", "iperf_client", "fping")):
+    if not any(bool(capabilities.get(key)) for key in ("iperf_server", "iperf_client", "fping", "tcp_ping_probe")):
         return False, "Agent 未报告流量测试能力"
     return True, ""
 

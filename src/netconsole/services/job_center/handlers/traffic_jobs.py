@@ -6,6 +6,7 @@ from netconsole.services.traffic.local_adapter import (
     TASK_FPING,
     TASK_IPERF_CLIENT,
     TASK_IPERF_SERVER,
+    TASK_TCP_PORT_TEST,
 )
 
 
@@ -28,10 +29,15 @@ def traffic_local_fping(context: JobContext) -> dict[str, object]:
     return _adapter(context).execute_high_frequency_ping(context)
 
 
+def traffic_local_tcp_port_test(context: JobContext) -> dict[str, object]:
+    return _adapter(context).execute_tcp_port_test(context)
+
+
 HANDLERS = {
     TASK_IPERF_SERVER: traffic_local_iperf_server,
     TASK_IPERF_CLIENT: traffic_local_iperf_client,
     TASK_FPING: traffic_local_fping,
+    TASK_TCP_PORT_TEST: traffic_local_tcp_port_test,
 }
 
 

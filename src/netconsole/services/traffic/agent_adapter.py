@@ -13,6 +13,7 @@ from netconsole.models.agent_traffic import (
     AgentFpingStartRequest,
     AgentIperfClientStartRequest,
     AgentIperfServerStartRequest,
+    AgentPingProbeStartRequest,
     AgentTaskDTO,
     AgentTaskEventDTO,
     AgentTaskResultDTO,
@@ -29,6 +30,7 @@ from netconsole.models.traffic_test import (
     TrafficRun,
     TrafficSyncState,
     TrafficTestType,
+    TcpPortTestConfig,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.agent.controller import AgentControllerService
@@ -57,11 +59,13 @@ _AGENT_TASK_TYPES = {
     TrafficTestType.IPERF_SERVER: "iperf_server",
     TrafficTestType.IPERF_CLIENT: "iperf_client",
     TrafficTestType.HIGH_FREQUENCY_PING: "fping",
+    TrafficTestType.TCP_PORT_TEST: "ping_probe",
 }
 _REQUIRED_CAPABILITIES = {
     TrafficTestType.IPERF_SERVER: ("iperf_server", "task_events", "task_result"),
     TrafficTestType.IPERF_CLIENT: ("iperf_client", "task_events", "task_result"),
     TrafficTestType.HIGH_FREQUENCY_PING: ("fping", "task_events", "task_result"),
+    TrafficTestType.TCP_PORT_TEST: ("tcp_ping_probe", "task_events"),
 }
 
 
@@ -189,6 +193,25 @@ class AgentTrafficAdapter:
         return await self._start_remote(
             selected,
             lambda url, token: self.agent_controller.client.start_fping(url, request, token),
+        )
+
+    async def start_tcp_port_test(
+        self,
+        run: TrafficRun | str,
+        config: TcpPortTestConfig,
+    ) -> AgentTaskMapping:
+        selected = self._run(run, TrafficTestType.TCP_PORT_TEST)
+        normalized = config.normalized()
+        request = AgentPingProbeStartRequest(
+            target=normalized.target,
+            tcp_port=normalized.port,
+            interval_ms=normalized.interval_ms,
+            timeout_ms=normalized.timeout_ms,
+            count=normalized.count,
+        )
+        return await self._start_remote(
+            selected,
+            lambda url, token: self.agent_controller.client.start_ping_probe(url, request, token),
         )
 
     async def stop(self, mapping: AgentTaskMapping | str) -> AgentTaskDTO:
@@ -489,6 +512,9 @@ class AgentTrafficAdapter:
             if state in {TaskState.FAILED, TaskState.CANCELLED} and error.code == TrafficErrorCode.RESULT_NOT_FOUND.value:
                 return None
             if state is TaskState.COMPLETED and error.code == TrafficErrorCode.RESULT_NOT_FOUND.value:
+                run = self.repository.get(mapping.traffic_run_id)
+                if run is not None and run.test_type is TrafficTestType.TCP_PORT_TEST:
+                    return None
                 raise TrafficTestError(error.code, error.message, retryable=True) from exc
             raise error from exc
         if result.task_id != mapping.agent_task_id or result.task_type != mapping.agent_task_type:
@@ -622,7 +648,7 @@ class AgentTrafficAdapter:
                     if row is not None and latest_run.local_iperf_run_id:
                         key = f"agent:{mapping.agent_id}:{mapping.agent_task_id}:{event.remote_sequence}"
                         self.iperf_store.append_interval(latest_run.local_iperf_run_id, row, source_event_key=key)
-            elif latest_run.test_type is TrafficTestType.HIGH_FREQUENCY_PING and event.type is TrafficEventType.SAMPLE:
+            elif latest_run.test_type in {TrafficTestType.HIGH_FREQUENCY_PING, TrafficTestType.TCP_PORT_TEST} and event.type is TrafficEventType.SAMPLE:
                 sample = _ping_sample(latest_run.traffic_run_id, event)
                 if sample is not None:
                     ping_samples.append(sample)

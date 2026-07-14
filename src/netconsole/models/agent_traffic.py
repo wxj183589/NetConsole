@@ -35,6 +35,25 @@ class AgentFpingStartRequest:
 
 
 @dataclass(frozen=True)
+class AgentPingProbeStartRequest:
+    target: str
+    tcp_port: int
+    interval_ms: int = 1_000
+    timeout_ms: int = 3_000
+    count: int = 4
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "targets": [self.target],
+            "tcp_port": self.tcp_port,
+            "interval_ms": self.interval_ms,
+            "timeout_ms": self.timeout_ms,
+            "packet_size": 64,
+            "count": self.count,
+        }
+
+
+@dataclass(frozen=True)
 class AgentIperfServerStartRequest:
     bind_address: str = "0.0.0.0"
     port: int = 5201

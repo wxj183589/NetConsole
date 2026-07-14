@@ -16,6 +16,7 @@ from netconsole.models.agent_traffic import (
     AgentFpingStartRequest,
     AgentIperfClientStartRequest,
     AgentIperfServerStartRequest,
+    AgentPingProbeStartRequest,
     AgentTaskDTO,
 )
 from netconsole.repositories.agent_repository import AgentRepository
@@ -365,6 +366,36 @@ def test_agent_http_client_typed_traffic_contract_and_cursor() -> None:
     assert events.events[0].payload == {"future": {"value": 1}}
     assert result.summary == {"samples": 10}
     assert result.artifacts[0].name == "fping_samples.jsonl"
+
+
+def test_agent_http_client_uses_exact_ping_probe_contract() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/v1/ping-probe/start"
+        assert request.headers.get("X-Agent-Token") == "secret"
+        assert json.loads(request.content) == {
+            "targets": ["127.0.0.1"],
+            "tcp_port": 443,
+            "interval_ms": 250,
+            "timeout_ms": 500,
+            "packet_size": 64,
+            "count": 2,
+        }
+        return httpx.Response(
+            200,
+            json={"ok": True, "data": {"task_id": "tcp-1", "task_type": "ping_probe", "status": "running"}},
+        )
+
+    task = asyncio.run(
+        AgentHttpClient(transport=httpx.MockTransport(handler)).start_ping_probe(
+            "http://127.0.0.1:18080",
+            AgentPingProbeStartRequest("127.0.0.1", 443, interval_ms=250, timeout_ms=500, count=2),
+            "secret",
+        )
+    )
+
+    assert task.task_id == "tcp-1"
+    assert task.task_type == "ping_probe"
 
 
 def test_agent_http_client_reports_old_agent_traffic_endpoint_as_unsupported() -> None:

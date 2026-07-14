@@ -18,6 +18,7 @@ from netconsole.models.traffic_test import (
     TrafficRun,
     TrafficSyncState,
     TrafficTestType,
+    TcpPortTestConfig,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.repositories.task_repository import TaskRepository
@@ -45,6 +46,9 @@ class FakeLocalAdapter:
         return self._start(run)
 
     def start_high_frequency_ping(self, run: TrafficRun, _config: object) -> str:
+        return self._start(run)
+
+    def start_tcp_port_test(self, run: TrafficRun, _config: object) -> str:
         return self._start(run)
 
     def cancel(self, controller_task_id: str) -> bool:
@@ -89,6 +93,9 @@ class FakeAgentAdapter:
 
     async def start_high_frequency_ping(self, run: TrafficRun, _config: object) -> AgentTaskMapping:
         return await self._start(run, "fping")
+
+    async def start_tcp_port_test(self, run: TrafficRun, _config: object) -> AgentTaskMapping:
+        return await self._start(run, "ping_probe")
 
     async def stop(self, mapping: AgentTaskMapping) -> None:
         self.stopped.append(mapping.agent_task_id)
@@ -227,6 +234,22 @@ def test_application_service_retry_creates_new_ids_without_overwriting(tmp_path:
     assert retried.controller_task_id != first.controller_task_id
     assert retried.retry_of_traffic_run_id == first.traffic_run_id
     assert repository.get(first.traffic_run_id) is not None
+
+
+def test_application_service_submits_and_retries_tcp_port_test(tmp_path: Path) -> None:
+    service, repository, _tasks, local, _agent, _supervisor = _service(tmp_path)
+
+    first = asyncio.run(
+        service.start_tcp_port_test(
+            TcpPortTestConfig("127.0.0.1", 443, interval_ms=250, timeout_ms=500, count=2),
+            ExecutionTargetDTO(ExecutionTargetKind.LOCAL),
+        )
+    )
+    retried = asyncio.run(service.retry(first.controller_task_id))
+
+    assert local.started[0][0] is TrafficTestType.TCP_PORT_TEST
+    assert retried.retry_of_traffic_run_id == first.traffic_run_id
+    assert repository.get(retried.traffic_run_id).normalized_config["port"] == 443
 
 
 def test_application_service_normalizes_start_failure(tmp_path: Path) -> None:

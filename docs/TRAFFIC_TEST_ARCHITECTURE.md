@@ -6,7 +6,8 @@
 
 - iPerf Server；
 - iPerf Client（TCP/UDP、上传/下载/双向）；
-- fping v5 高频 Ping。
+- fping v5 高频 Ping；
+- TCP 端口测试（本地复用 Qt 工具箱探测函数，Agent 复用既有 `ping_probe`）。
 
 当前已提供 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面。原 Qt iPerf/Ping 页面继续可用，Online MR 页面、目标规则、会话和联动编排没有迁入通用 Traffic 服务。SNMP Center 与无线勘测继续保持 `DISABLED`。
 
@@ -25,6 +26,7 @@ flowchart TD
     HOST --> WORKER["Existing background_worker / Job Registry"]
     WORKER --> IRUN["Existing IperfProcessRunner / Parser / ResultStore"]
     WORKER --> FPING["Existing fping v5 Runner"]
+    WORKER --> TCP["Existing run_tcp_ping"]
     REMOTE --> CLIENT["Existing AgentHttpClient"]
     CLIENT --> AGENT["Windows Go Agent"]
     SUP["AgentTrafficSupervisor"] --> REMOTE
@@ -42,6 +44,7 @@ flowchart TD
 IPERF_SERVER
 IPERF_CLIENT
 HIGH_FREQUENCY_PING
+TCP_PORT_TEST
 ```
 
 固定执行端：
@@ -88,19 +91,20 @@ TrafficTestApplicationService
 → Existing iPerf/fping Core
 ```
 
-三个 Job type：
+四个 Job type：
 
 ```text
 traffic_local_iperf_server
 traffic_local_iperf_client
 traffic_local_fping
+traffic_local_tcp_port_test
 ```
 
 `LocalProcessAdapter` 是既有 `TaskRuntime` 的纯 Python进程宿主，只负责 `Popen`、stdout/stderr 并发读取、等待、取消宽限、terminate/kill 和 shutdown。Windows 下优先使用 Job Object 的 kill-on-close 回收 Worker 及其 iPerf/fping 子进程树；绑定失败时降级到原 terminate/kill 路径。它不复制任务状态机，也不依赖 PySide6 或 FastAPI。
 
 父进程完成回调会把 TaskRuntime 终态同步回 `TrafficRun`，包括强制停止后的 `CANCELLED` 收口和 `worker_forced_stop` 系统事件，避免本地 Run 长期停留在 `STOPPING`。
 
-Worker stdout 只承载低频 Job JSONL；带宽区间、RTT 和丢包样本直接写 Traffic EventStore/Repository，不能进入全局 Task Event 表。fping 多目标使用独立进程和共享取消，样本按批次写 SQLite；timeout 保持 `rtt_ms=null`，没有有效样本时返回 `TRAFFIC_PARSE_FAILED`，不伪造零延迟或零丢包。
+Worker stdout 只承载低频 Job JSONL；带宽区间、RTT 和丢包样本直接写 Traffic EventStore/Repository，不能进入全局 Task Event 表。fping 多目标使用独立进程和共享取消，样本按批次写 SQLite；timeout 保持 `rtt_ms=null`，没有有效样本时返回 `TRAFFIC_PARSE_FAILED`，不伪造零延迟或零丢包。TCP 端口测试在同一 Worker 中复用 `run_tcp_ping()`，在每次探测及间隔等待之间检查取消。
 
 ## 5. Agent 执行与凭据
 
@@ -108,8 +112,8 @@ Agent 启动前必须满足：
 
 - 配置存在、未归档且启用；
 - Runtime Snapshot 为 `ONLINE`；
-- 对应 `iperf_server`、`iperf_client` 或 `fping` capability 为 `true`；
-- `task_events` 与 `task_result` 为 `true`；
+- 对应 `iperf_server`、`iperf_client`、`fping` 或 `tcp_ping_probe` capability 为 `true`；
+- iPerf/fping 要求 `task_events` 与 `task_result`；兼容 TCP `ping_probe` 当前只要求 `task_events`；
 - Token 认证模式下，当前 `SessionCredentialVault` 中存在凭据。
 
 能力只使用 Agent Runtime Snapshot，不根据操作系统名称猜测。
@@ -155,7 +159,7 @@ Controller 正常关闭只停止轮询并将活动映射标记为 `STALE`，不�
 - 有 Token：从未完成映射恢复轮询并对账；
 - 无 Token：标记 `CREDENTIAL_REQUIRED`，保留最后 Task 状态；
 - 重新录入 Token：再次调用 `recover_active_runs()`；
-- completed：必须取得 result 后才进入 Controller 完成态；
+- completed：iPerf/fping 必须取得 result 后才进入 Controller 完成态；兼容 TCP `ping_probe` 可按任务快照收口；
 - failed/cancelled：Agent 重启导致 result 缺失时可用任务快照和错误摘要收口。
 
 如果 Agent 启动已成功但本地登记失败，Controller Task 保持原始 `FAILED`，Run 先进入等待远端清理的失败清理态。后续远端 `cancelled` 或 `task not found` 只完成清理 mapping，不覆盖原始启动失败错误。
@@ -182,7 +186,7 @@ Controller 正常关闭只停止轮询并将活动映射标记为 `STALE`，不�
 | --- | --- |
 | `traffic_runs` | Run、Controller Task、配置、状态、摘要和相对文件引用 |
 | `traffic_agent_tasks` | Agent/Controller Task 映射、远端游标和同步状态 |
-| `traffic_ping_samples` | 新独立高频 Ping 的结构化样本 |
+| `traffic_ping_samples` | 高频 Ping 与本地 TCP 端口探测的结构化样本 |
 
 SQLite 使用 WAL、busy timeout、foreign keys、显式事务、独立连接和幂等 schema 初始化。Ping 批量写入并用 Run/序号及目标/探测序号去重。
 
@@ -243,6 +247,8 @@ POST /api/traffic/runs/{traffic_run_id}/retry
 
 Vue 页面位于 `apps/web/src/views/network-tools/TrafficTestView.vue`，菜单入口为“网络工具 / 流量测试”，包含 iPerf Server、iPerf Client、高频 Ping、实时日志、ECharts RTT 曲线、历史任务、停止和原配置重试。
 
+TCP 端口测试新增独立薄路由 `src/netconsole/backend/api/network_tools_router.py` 和 `POST /api/network-tools/tcp-port-test`，只调用 `NetworkToolsApplicationService -> TrafficTestApplicationService`。组合页位于 `apps/web/src/views/network-tools/NetworkToolsView.vue`，保留并嵌入现有 `TrafficTestView`；中央 API router、Vue route/nav 与 Feature 接线由集成任务统一完成。
+
 Traffic API 错误统一返回稳定 `TRAFFIC_*` code；响应不返回 traceback、Token 或绝对路径。
 
 ## 10. 错误与当前限制
@@ -254,6 +260,7 @@ Traffic 错误使用稳定 `TRAFFIC_*` code。启动失败、工具缺失、连�
 - Controller 不是 Windows Service，退出后本地任务不会继续；
 - 只接入现有 Windows Go Agent，CentOS Agent 尚未实现；
 - 本地高频 Ping 暂不支持指定源地址，Agent 支持强类型 `source_address`；
+- 现有 Agent `ping_probe` 不生成结构化 result/sample，远端 TCP 端口测试仅能恢复和展示任务终态；
 - 未迁移 Online MR、原 Qt iPerf/Ping、设备、AC、FIT-AP、MESH、SNMP Center 或无线勘测。
 
 后续业务迁移不得把执行、Token、工具路径或任意命令下放到页面和路由。

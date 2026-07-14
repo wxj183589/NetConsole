@@ -22,6 +22,7 @@ from netconsole.models.traffic_test import (
     TrafficRun,
     TrafficSyncState,
     TrafficTestType,
+    TcpPortTestConfig,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.agent.controller import AgentControllerService, AgentControllerSettings
@@ -47,6 +48,11 @@ class FakeTrafficClient:
     async def start_fping(self, _url, request, token=None):
         self.calls.append(("start_fping", token, request))
         self.task = replace(self.task, task_type="fping", status="running")
+        return self.task
+
+    async def start_ping_probe(self, _url, request, token=None):
+        self.calls.append(("start_ping_probe", token, request))
+        self.task = replace(self.task, task_type="ping_probe", status="running")
         return self.task
 
     async def start_iperf_server(self, _url, request, token=None):
@@ -106,6 +112,7 @@ def _build(tmp_path, *, token: str = "session-secret"):
                 "fping": True,
                 "task_events": True,
                 "task_result": True,
+                "tcp_ping_probe": True,
             },
             updated_at="2026-07-12T08:00:00Z",
         )
@@ -237,6 +244,24 @@ def test_agent_fping_cursor_replay_timeout_and_terminal_result(tmp_path) -> None
     assert repository.get_agent_mapping(run.traffic_run_id).sync_state is TrafficSyncState.COMPLETED
     assert task_service.get_task(run.controller_task_id).status is TaskState.COMPLETED
     assert paths.traffic_run_remote_result_path("demo", run.traffic_run_id).is_file()
+
+
+def test_agent_tcp_port_test_reuses_ping_probe_and_accepts_legacy_empty_result(tmp_path) -> None:
+    _paths, client, _controller, task_service, repository, adapter, agent_id = _build(tmp_path)
+    run = _run(repository, task_service, agent_id, TrafficTestType.TCP_PORT_TEST)
+
+    mapping = asyncio.run(adapter.start_tcp_port_test(run, TcpPortTestConfig("127.0.0.1", 443, count=1)))
+    request = client.calls[0][2]
+    assert client.calls[0][0] == "start_ping_probe"
+    assert request.tcp_port == 443
+
+    client.task = replace(client.task, status="completed", end_time=NOW)
+    client.result_error = AgentClientError("AGENT_TRAFFIC_RESULT_NOT_READY", "结果不存在", status_code=409)
+    outcome = asyncio.run(adapter.sync_once(mapping))
+
+    assert outcome.terminal is True
+    assert repository.get(run.traffic_run_id).status is TaskState.COMPLETED
+    assert repository.get(run.traffic_run_id).summary == {}
 
 
 def test_agent_iperf_stdout_replay_is_idempotent(tmp_path) -> None:

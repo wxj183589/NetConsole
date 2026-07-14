@@ -115,6 +115,7 @@ task_result
 
 ```text
 start_fping
+start_ping_probe
 start_iperf_server
 start_iperf_client
 get_task
@@ -125,10 +126,12 @@ get_task_result
 
 DTO 位于 `src/netconsole/models/agent_traffic.py`，未知事件类型和 payload 字段保持兼容。阶段 4B-2 由 `AgentTrafficAdapter` 调用这些方法，`AgentTrafficSupervisor` 使用排他游标批量轮询；阶段 4C 浏览器路由只调用 Controller 的 `TrafficTestApplicationService`，浏览器不直连 Agent。
 
+`start_ping_probe` 固定调用既有 `POST /api/v1/ping-probe/start`，只发送 `targets / tcp_port / interval_ms / timeout_ms / packet_size / count` 白名单字段。当前 Go Agent 的兼容 `ping_probe` 只持久化原始探测文件和任务状态，不生成 Traffic `result.json` 或 sample 事件；Controller 因此可恢复和收口任务状态，但 Agent TCP 端口探测暂不提供结构化摘要与实时样本。本阶段没有修改 Go Agent 协议。
+
 ## 8. Controller 接入边界
 
 阶段 4B-2 已实现 `TrafficTestApplicationService`、Local/Agent Adapter、Traffic Event Hub、Controller Task/Agent Task 映射、本地 `packet_size` 修复和数据存储。现有 `iperf_results.sqlite` 继续作为 iPerf 区间事实源；`traffic_runs.sqlite` 不复制 iPerf interval，只保存运行索引、远端映射和独立 Ping 样本。
 
-远端状态映射固定为 `created→STARTING / running→RUNNING / stopping→STOPPING / completed→COMPLETED / failed→FAILED / cancelled→CANCELLED`。未知状态只进入同步错误，不伪造 Task 终态；Controller 已进入 `STOPPING` 时不会被远端 `running` 回退。Agent 完成必须先取得最终 result，失败/取消在 Agent 重启导致 result 缺失时可使用任务快照收口。
+远端状态映射固定为 `created→STARTING / running→RUNNING / stopping→STOPPING / completed→COMPLETED / failed→FAILED / cancelled→CANCELLED`。未知状态只进入同步错误，不伪造 Task 终态；Controller 已进入 `STOPPING` 时不会被远端 `running` 回退。Agent iPerf/fping 完成必须先取得最终 result，失败/取消在 Agent 重启导致 result 缺失时可使用任务快照收口；兼容 `ping_probe` 按上一节限制仅以任务快照收口。
 
 阶段 4C 只增加了受控 REST/WebSocket 与 Vue 页面，没有修改本协议，也没有新增任意 Shell/命令执行接口。

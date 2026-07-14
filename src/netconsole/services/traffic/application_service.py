@@ -19,6 +19,7 @@ from netconsole.models.traffic_test import (
     TrafficRun,
     TrafficSyncState,
     TrafficTestType,
+    TcpPortTestConfig,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -164,6 +165,28 @@ class TrafficTestApplicationService:
             retry_of_traffic_run_id=retry_of_traffic_run_id,
         )
 
+    async def start_tcp_port_test(
+        self,
+        config: TcpPortTestConfig,
+        execution_target: ExecutionTargetDTO,
+        *,
+        retry_of_traffic_run_id: str = "",
+    ) -> TrafficRun:
+        try:
+            normalized = config.normalized()
+        except (TypeError, ValueError) as exc:
+            raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, str(exc)) from exc
+        return await self._start(
+            TrafficTestType.TCP_PORT_TEST,
+            "tcp_probe",
+            normalized,
+            normalized.to_dict(),
+            execution_target,
+            parent_task_id="",
+            correlation_id="",
+            retry_of_traffic_run_id=retry_of_traffic_run_id,
+        )
+
     async def cancel(self, controller_task_id: str) -> TrafficRun:
         run = self._require_run_by_task(controller_task_id)
         if run.status in TERMINAL_TASK_STATES or run.status is TaskState.STOPPING:
@@ -248,6 +271,12 @@ class TrafficTestApplicationService:
             return await self.start_iperf_client(_client_config_from_dict(previous.normalized_config), target, **common)
         if previous.test_type is TrafficTestType.HIGH_FREQUENCY_PING:
             return await self.start_high_frequency_ping(_ping_config_from_dict(previous.normalized_config), target, **common)
+        if previous.test_type is TrafficTestType.TCP_PORT_TEST:
+            return await self.start_tcp_port_test(
+                _tcp_port_config_from_dict(previous.normalized_config),
+                target,
+                retry_of_traffic_run_id=previous.traffic_run_id,
+            )
         raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, "不支持重试该流量任务")
 
     def get_run(self, traffic_run_id: str) -> TrafficRun | None:
@@ -412,6 +441,8 @@ class TrafficTestApplicationService:
             return self.local_adapter.start_iperf_server(run, config)
         if run.test_type is TrafficTestType.IPERF_CLIENT:
             return self.local_adapter.start_iperf_client(run, config)
+        if run.test_type is TrafficTestType.TCP_PORT_TEST:
+            return self.local_adapter.start_tcp_port_test(run, config)
         return self.local_adapter.start_high_frequency_ping(run, config)
 
     def _start_agent(self, run: TrafficRun, config: object) -> object:
@@ -419,6 +450,8 @@ class TrafficTestApplicationService:
             return self.agent_adapter.start_iperf_server(run, config)
         if run.test_type is TrafficTestType.IPERF_CLIENT:
             return self.agent_adapter.start_iperf_client(run, config)
+        if run.test_type is TrafficTestType.TCP_PORT_TEST:
+            return self.agent_adapter.start_tcp_port_test(run, config)
         return self.agent_adapter.start_high_frequency_ping(run, config)
 
     @staticmethod
@@ -572,12 +605,23 @@ def _ping_config_from_dict(value: dict[str, Any]) -> HighFrequencyPingConfig:
     )
 
 
+def _tcp_port_config_from_dict(value: dict[str, Any]) -> TcpPortTestConfig:
+    return TcpPortTestConfig(
+        target=str(value.get("target") or ""),
+        port=int(value.get("port") or 0),
+        interval_ms=int(value.get("interval_ms") or 1_000),
+        timeout_ms=int(value.get("timeout_ms") or 3_000),
+        count=int(value.get("count") or 4),
+    )
+
+
 def _controller_task_type(run: TrafficRun, *, remote: bool) -> str:
     prefix = "traffic_agent" if remote else "traffic_local"
     suffix = {
         TrafficTestType.IPERF_SERVER: "iperf_server",
         TrafficTestType.IPERF_CLIENT: "iperf_client",
         TrafficTestType.HIGH_FREQUENCY_PING: "fping",
+        TrafficTestType.TCP_PORT_TEST: "tcp_port_test",
     }[run.test_type]
     return f"{prefix}_{suffix}"
 
@@ -587,6 +631,7 @@ def _task_name(run: TrafficRun) -> str:
         TrafficTestType.IPERF_SERVER: "iPerf 服务端",
         TrafficTestType.IPERF_CLIENT: "iPerf 客户端",
         TrafficTestType.HIGH_FREQUENCY_PING: "高频 Ping",
+        TrafficTestType.TCP_PORT_TEST: "TCP 端口测试",
     }[run.test_type]
 
 

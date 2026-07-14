@@ -24,6 +24,7 @@ from netconsole.models.traffic_test import (
     TrafficRun,
     TrafficSyncState,
     TrafficTestType,
+    TcpPortTestConfig,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.background_job import BackgroundJob
@@ -39,6 +40,7 @@ from netconsole.services.network_tools.iperf_runner import (
     run_iperf_client_preflight,
 )
 from netconsole.services.network_tools.iperf_tool_service import find_iperf_tool
+from netconsole.services.network_tools.toolbox.ping_tools import run_tcp_ping
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventHub
 from netconsole.services.traffic.event_store import TrafficEventStore
@@ -47,6 +49,7 @@ from netconsole.services.traffic.event_store import TrafficEventStore
 TASK_IPERF_SERVER = "traffic_local_iperf_server"
 TASK_IPERF_CLIENT = "traffic_local_iperf_client"
 TASK_FPING = "traffic_local_fping"
+TASK_TCP_PORT_TEST = "traffic_local_tcp_port_test"
 _TERMINAL_STATES = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
 _TERMINAL_STATE_VALUES = {state.value for state in _TERMINAL_STATES}
 
@@ -147,6 +150,17 @@ class LocalTrafficAdapter:
         normalized = config.normalized()
         grace_ms = min(60_000, max(5_000, normalized.timeout_ms + 3_000))
         return self._submit(run, TASK_FPING, normalized.to_dict(), "高频 Ping", cancel_grace_ms=grace_ms)
+
+    def start_tcp_port_test(self, run: TrafficRun, config: TcpPortTestConfig) -> str:
+        self._validate_run(run, TrafficTestType.TCP_PORT_TEST)
+        normalized = config.normalized()
+        return self._submit(
+            run,
+            TASK_TCP_PORT_TEST,
+            normalized.to_dict(),
+            "TCP 端口测试",
+            cancel_grace_ms=min(60_000, max(5_000, normalized.timeout_ms + 3_000)),
+        )
 
     def cancel(self, controller_task_id: str) -> bool:
         if self.process_adapter is None:
@@ -319,6 +333,9 @@ class LocalTrafficAdapter:
 
     def execute_high_frequency_ping(self, context: JobContext) -> dict[str, object]:
         return self._execute_guarded(context, lambda run: self._run_fping(context, run))
+
+    def execute_tcp_port_test(self, context: JobContext) -> dict[str, object]:
+        return self._execute_guarded(context, lambda run: self._run_tcp_port_test(context, run))
 
     def _execute_guarded(
         self,
@@ -541,6 +558,77 @@ class LocalTrafficAdapter:
         return {
             "targets": {target: target_stats.as_dict() for target, target_stats in stats.items()},
             "target_count": len(config.targets),
+        }
+
+    def _run_tcp_port_test(self, context: JobContext, run: TrafficRun) -> dict[str, object]:
+        config = _tcp_port_config(dict(context.params.get("config") or {}))
+        self._set_status(run.traffic_run_id, TaskState.RUNNING, message="本地 TCP 端口测试已启动")
+        context.progress("running", 0, config.count, "本地 TCP 端口测试运行中")
+        received = 0
+        latencies: list[float] = []
+        last_status = "unknown"
+        last_error = ""
+        for sequence in range(1, config.count + 1):
+            context.check_cancelled()
+            result = run_tcp_ping(config.target, config.port, timeout_seconds=config.timeout_ms / 1_000)
+            ok = result.status == "open"
+            if ok:
+                received += 1
+                if result.latency_ms is not None:
+                    latencies.append(result.latency_ms)
+            last_status, last_error = result.status, result.error
+            event = self.event_store.append(
+                TrafficEvent(
+                    traffic_run_id=run.traffic_run_id,
+                    controller_task_id=run.controller_task_id,
+                    source="local",
+                    type=TrafficEventType.SAMPLE,
+                    payload={
+                        "metric": "tcp_port",
+                        "target": config.target,
+                        "port": config.port,
+                        "probe_sequence": sequence,
+                        "ok": ok,
+                        "rtt_ms": result.latency_ms,
+                        "error": result.error,
+                    },
+                )
+            )
+            if event is not None:
+                self.repository.insert_ping_samples(
+                    [
+                        TrafficPingSample(
+                            traffic_run_id=run.traffic_run_id,
+                            sequence=event.sequence,
+                            timestamp=result.timestamp,
+                            target=config.target,
+                            probe_sequence=sequence,
+                            ok=ok,
+                            rtt_ms=result.latency_ms if ok else None,
+                            timeout=result.status == "timeout",
+                            error_code=result.status if not ok else "",
+                            error_message=result.error,
+                        )
+                    ],
+                    updated_at=utc_now_iso(),
+                )
+            context.progress("running", sequence, config.count, f"TCP 端口测试 {sequence}/{config.count}")
+            if sequence < config.count:
+                deadline = time.monotonic() + config.interval_ms / 1_000
+                while time.monotonic() < deadline:
+                    context.check_cancelled()
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        return {
+            "target": config.target,
+            "port": config.port,
+            "sent": config.count,
+            "received": received,
+            "success_percent": received * 100 / config.count,
+            "rtt_min_ms": min(latencies) if latencies else None,
+            "rtt_avg_ms": sum(latencies) / len(latencies) if latencies else None,
+            "rtt_max_ms": max(latencies) if latencies else None,
+            "last_status": last_status,
+            "last_error": last_error,
         }
 
     @staticmethod
@@ -831,6 +919,19 @@ def _ping_config(value: dict[str, object]) -> HighFrequencyPingConfig:
         ).normalized()
     except (TypeError, ValueError) as exc:
         raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, f"高频 Ping 配置无效：{exc}") from exc
+
+
+def _tcp_port_config(value: dict[str, object]) -> TcpPortTestConfig:
+    try:
+        return TcpPortTestConfig(
+            target=str(value.get("target") or ""),
+            port=int(value.get("port") or 0),
+            interval_ms=int(value.get("interval_ms") or 1_000),
+            timeout_ms=int(value.get("timeout_ms") or 3_000),
+            count=int(value.get("count") or 4),
+        ).normalized()
+    except (TypeError, ValueError) as exc:
+        raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, str(exc)) from exc
 
 
 def _preflight_error(code: str, message: str) -> TrafficTestError:

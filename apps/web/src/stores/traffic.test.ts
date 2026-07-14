@@ -12,6 +12,7 @@ import {
   startFping,
 } from '../api/traffic'
 import type { TrafficEvent, TrafficExecutionTarget, TrafficPingSample, TrafficRun } from '../types/traffic'
+import { startTcpPortTest } from '../api/networkTools'
 
 vi.mock('../api/traffic', () => ({
   listTrafficExecutionTargets: vi.fn(),
@@ -26,6 +27,8 @@ vi.mock('../api/traffic', () => ({
   cancelTrafficRun: vi.fn(),
   retryTrafficRun: vi.fn(),
 }))
+
+vi.mock('../api/networkTools', () => ({ startTcpPortTest: vi.fn() }))
 
 const localTarget: TrafficExecutionTarget = {
   kind: 'LOCAL',
@@ -118,6 +121,7 @@ describe('Traffic store', () => {
     vi.mocked(listTrafficEvents).mockReset().mockResolvedValue([event])
     vi.mocked(listTrafficPingSamples).mockReset().mockResolvedValue([sample])
     vi.mocked(startFping).mockReset().mockResolvedValue({ run })
+    vi.mocked(startTcpPortTest).mockReset().mockResolvedValue({ run: { ...run, test_type: 'TCP_PORT_TEST' } })
     FakeWebSocket.instances = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.stubGlobal('window', {
@@ -164,5 +168,17 @@ describe('Traffic store', () => {
     expect(store.samples.map((item) => item.sequence)).toEqual([1, 2])
     expect(store.selected?.status).toBe('COMPLETED')
     store.disconnectSocket()
+  })
+
+  it('starts TCP port tests through the network tools API and tracks the Traffic Run', async () => {
+    const store = useTrafficStore()
+    vi.mocked(getTrafficRun).mockResolvedValue({ ...run, test_type: 'TCP_PORT_TEST' })
+    vi.mocked(listTrafficRuns).mockResolvedValue([{ ...run, test_type: 'TCP_PORT_TEST' }])
+    await store.createTcpPortTest({
+      execution_target: { kind: 'LOCAL' }, target: '127.0.0.1', port: 443, interval_ms: 250, timeout_ms: 500, count: 2,
+    })
+
+    expect(startTcpPortTest).toHaveBeenCalledOnce()
+    expect(store.selected?.test_type).toBe('TCP_PORT_TEST')
   })
 })

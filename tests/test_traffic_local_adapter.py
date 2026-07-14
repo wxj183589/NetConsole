@@ -22,6 +22,7 @@ from netconsole.models.traffic_test import (
     TrafficEventType,
     TrafficRun,
     TrafficTestType,
+    TcpPortTestConfig,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
@@ -34,6 +35,7 @@ from netconsole.services.network_tools.iperf_runner import (
     IperfPreflightResult,
     IperfServerConfig,
 )
+from netconsole.services.network_tools.toolbox.ping_tools import TcpPingResult
 from netconsole.services.traffic.errors import TrafficTestError
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.event_hub import TrafficEventHub
@@ -43,6 +45,7 @@ from netconsole.services.traffic.local_adapter import (
     TASK_FPING,
     TASK_IPERF_CLIENT,
     TASK_IPERF_SERVER,
+    TASK_TCP_PORT_TEST,
     _ping_config,
 )
 
@@ -362,6 +365,28 @@ def test_local_fping_runs_all_targets_batches_samples_and_keeps_timeout_null(tmp
     assert [item[0] for item in progress] == ["running", "completed"]
 
 
+def test_local_tcp_port_test_reuses_toolbox_probe_and_persists_samples(tmp_path: Path, monkeypatch) -> None:
+    paths, repository, store = _infrastructure(tmp_path)
+    config = TcpPortTestConfig("127.0.0.1", 443, interval_ms=1, timeout_ms=50, count=2)
+    run = _create_run(repository, TrafficTestType.TCP_PORT_TEST, suffix="tcp", config=config.to_dict())
+    context, _progress = _context(paths, run, TASK_TCP_PORT_TEST, config.to_dict())
+    results = iter(
+        [
+            TcpPingResult("127.0.0.1", 443, "127.0.0.1", "open", 1.25, "2026-07-15T00:00:00Z"),
+            TcpPingResult("127.0.0.1", 443, "127.0.0.1", "closed", None, "2026-07-15T00:00:01Z", "refused"),
+        ]
+    )
+    monkeypatch.setattr("netconsole.services.traffic.local_adapter.run_tcp_ping", lambda *_args, **_kwargs: next(results))
+
+    result = LocalTrafficAdapter(paths, repository=repository, event_store=store).execute_tcp_port_test(context)
+
+    assert result["summary"]["received"] == 1
+    assert result["summary"]["last_status"] == "closed"
+    samples = repository.list_ping_samples(run.traffic_run_id)
+    assert [sample.ok for sample in samples] == [True, False]
+    assert repository.get(run.traffic_run_id).status is TaskState.COMPLETED
+
+
 def test_local_fping_continuous_zero_count_is_not_replaced_with_default() -> None:
     config = _ping_config({"targets": ["192.0.2.1"], "continuous": True, "count": 0})
 
@@ -417,7 +442,7 @@ def test_local_traffic_cancel_is_single_cancelled_terminal_and_handlers_are_regi
         if event.type is TrafficEventType.STATE and event.payload.get("state") in {"COMPLETED", "FAILED", "CANCELLED"}
     ]
     assert terminal_states == ["CANCELLED"]
-    assert {TASK_IPERF_SERVER, TASK_IPERF_CLIENT, TASK_FPING} <= set(registered_task_types())
+    assert {TASK_IPERF_SERVER, TASK_IPERF_CLIENT, TASK_FPING, TASK_TCP_PORT_TEST} <= set(registered_task_types())
 
 
 def test_forced_worker_exit_closes_task_center_and_traffic_run(tmp_path: Path, monkeypatch) -> None:

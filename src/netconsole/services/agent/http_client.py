@@ -12,6 +12,7 @@ from netconsole.models.agent_traffic import (
     AgentFpingStartRequest,
     AgentIperfClientStartRequest,
     AgentIperfServerStartRequest,
+    AgentPingProbeStartRequest,
     AgentTaskDTO,
     AgentTaskEventPageDTO,
     AgentTaskResultDTO,
@@ -148,6 +149,12 @@ class AgentHttpClient:
 
     async def start_fping(self, base_url: str, request: AgentFpingStartRequest, token: str | None = None) -> AgentTaskDTO:
         payload = await self._call_data("POST", base_url, "/api/v1/fping/start", token, json_body=request.as_payload())
+        return AgentTaskDTO.from_payload(payload)
+
+    async def start_ping_probe(
+        self, base_url: str, request: AgentPingProbeStartRequest, token: str | None = None
+    ) -> AgentTaskDTO:
+        payload = await self._call_data("POST", base_url, "/api/v1/ping-probe/start", token, json_body=request.as_payload())
         return AgentTaskDTO.from_payload(payload)
 
     async def start_iperf_server(

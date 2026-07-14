@@ -23,6 +23,7 @@ function valueOf(target: TrafficExecutionTarget): string {
 function capabilityKey(): string {
   if (props.testType === 'IPERF_SERVER') return 'iperf_server'
   if (props.testType === 'IPERF_CLIENT') return 'iperf_client'
+  if (props.testType === 'TCP_PORT_TEST') return 'tcp_ping_probe'
   return 'fping'
 }
 

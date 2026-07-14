@@ -1,7 +1,7 @@
 import type { TaskStatus } from './task'
 
 export type ExecutionTargetKind = 'LOCAL' | 'AGENT'
-export type TrafficTestType = 'IPERF_SERVER' | 'IPERF_CLIENT' | 'HIGH_FREQUENCY_PING'
+export type TrafficTestType = 'IPERF_SERVER' | 'IPERF_CLIENT' | 'HIGH_FREQUENCY_PING' | 'TCP_PORT_TEST'
 export type TrafficSyncState = 'ACTIVE' | 'STALE' | 'CREDENTIAL_REQUIRED' | 'AGENT_OFFLINE' | 'COMPLETED' | 'ERROR'
 
 export interface TrafficExecutionTarget {

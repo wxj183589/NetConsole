@@ -12,6 +12,7 @@ class TrafficTestType(StrEnum):
     IPERF_SERVER = "IPERF_SERVER"
     IPERF_CLIENT = "IPERF_CLIENT"
     HIGH_FREQUENCY_PING = "HIGH_FREQUENCY_PING"
+    TCP_PORT_TEST = "TCP_PORT_TEST"
 
 
 class ExecutionTargetKind(StrEnum):
@@ -104,6 +105,43 @@ class HighFrequencyPingConfig:
             "count": value.count,
             "continuous": value.continuous,
             "source_address": value.source_address,
+        }
+
+
+@dataclass(frozen=True)
+class TcpPortTestConfig:
+    target: str
+    port: int
+    interval_ms: int = 1_000
+    timeout_ms: int = 3_000
+    count: int = 4
+
+    def normalized(self) -> TcpPortTestConfig:
+        target = str(self.target or "").strip()
+        if not target:
+            raise ValueError("TCP 目标不能为空")
+        port = int(self.port)
+        interval_ms = int(self.interval_ms)
+        timeout_ms = int(self.timeout_ms)
+        count = int(self.count)
+        if not 1 <= port <= 65_535:
+            raise ValueError("TCP 端口必须在 1-65535 之间")
+        if not 1 <= interval_ms <= 60_000:
+            raise ValueError("TCP 探测间隔必须在 1-60000 ms 之间")
+        if not 1 <= timeout_ms <= 60_000:
+            raise ValueError("TCP 探测超时必须在 1-60000 ms 之间")
+        if not 1 <= count <= 1_000_000:
+            raise ValueError("TCP 探测次数必须在 1-1000000 之间")
+        return replace(self, target=target, port=port, interval_ms=interval_ms, timeout_ms=timeout_ms, count=count)
+
+    def to_dict(self) -> dict[str, Any]:
+        value = self.normalized()
+        return {
+            "target": value.target,
+            "port": value.port,
+            "interval_ms": value.interval_ms,
+            "timeout_ms": value.timeout_ms,
+            "count": value.count,
         }
 
 
