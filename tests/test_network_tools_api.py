@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.network_tools_router import router
+from netconsole.core.feature_flags import FeatureGate
 from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.models.traffic_test import ExecutionTargetKind, TrafficRun, TrafficTestType
@@ -30,10 +31,11 @@ class FakeTrafficService:
         )
 
 
-def test_network_tools_router_submits_whitelisted_tcp_probe() -> None:
+def test_network_tools_router_submits_whitelisted_tcp_probe(tmp_path) -> None:
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.state.traffic_service = FakeTrafficService()
+    app.state.feature_gate = FeatureGate(tmp_path)
 
     with TestClient(app) as client:
         response = client.post(

@@ -16,5 +16,6 @@ describe('unified network tools view', () => {
     expect(panel).toContain('v-if="store.error"')
     expect(panel).toContain("'执行中'")
     expect(panel).toContain("latest.status === 'COMPLETED'")
+    expect(panel).toContain("isFeatureEnabled('web.network_tools_tcp_port_test')")
   })
 })

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from netconsole.backend.api.ac_mesh_link_router import router as ac_mesh_link_router
 from netconsole.backend.api.ac_management_router import router as ac_management_router
@@ -9,6 +9,8 @@ from netconsole.backend.api.agent_router import ws_router as agent_ws_router
 from netconsole.backend.api.config_collection_router import router as config_collection_router
 from netconsole.backend.api.device_management_router import router as device_management_router
 from netconsole.backend.api.file_management_router import router as file_management_router
+from netconsole.backend.api.feature_access import require_feature
+from netconsole.backend.api.feature_router import router as feature_router
 from netconsole.backend.api.health import router as health_router
 from netconsole.backend.api.job_center_router import router as job_center_router
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
@@ -27,16 +29,29 @@ from netconsole.backend.api.traffic_router import ws_router as traffic_ws_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health_router)
+api_router.include_router(feature_router)
 api_router.include_router(ac_management_router)
 api_router.include_router(ac_mesh_link_router)
 api_router.include_router(job_center_router)
 api_router.include_router(task_router)
 api_router.include_router(agent_router)
 api_router.include_router(traffic_router)
-api_router.include_router(device_management_router)
-api_router.include_router(network_tools_router)
-api_router.include_router(config_collection_router)
-api_router.include_router(file_management_router)
+api_router.include_router(
+    device_management_router,
+    dependencies=[Depends(require_feature("web.device_management"))],
+)
+api_router.include_router(
+    network_tools_router,
+    dependencies=[Depends(require_feature("web.network_tools"))],
+)
+api_router.include_router(
+    config_collection_router,
+    dependencies=[Depends(require_feature("web.config_collection"))],
+)
+api_router.include_router(
+    file_management_router,
+    dependencies=[Depends(require_feature("web.file_management"))],
+)
 api_router.include_router(online_mr_router)
 api_router.include_router(online_mr_control_router)
 api_router.include_router(online_mr_agent_control_router)

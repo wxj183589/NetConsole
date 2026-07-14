@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 
 FILE_REF_RE = re.compile(r"^fm1_[0-9a-f]{32}$")
 FILE_CATEGORIES = {"session", "raw", "package", "artifact"}
+ARTIFACT_SUFFIXES = {".csv", ".diff", ".html", ".json", ".md", ".pdf", ".png", ".txt", ".xls", ".xlsx"}
+SESSION_SUFFIXES = {".csv", ".json", ".jsonl", ".log", ".pcap", ".pcapng", ".txt", ".yaml", ".yml"}
 REMOTE_FILES_UNAVAILABLE = "Web 首版不连接设备，仅提供局点本地文件浏览与下载。"
 
 
@@ -154,7 +156,7 @@ class FileManagementApplicationService:
                 "site_name": resolved.site_id,
                 "file_ref": resolved.file_ref,
                 "task_name": f"文件下载 - {resolved.path.name}",
-                "task_source": "web_file_management",
+                "task_source": "local",
                 "owner": "web_file_management",
                 "app_root": str(self.paths.app_root),
                 "data_root": str(self.paths.data_root),
@@ -177,7 +179,12 @@ class FileManagementApplicationService:
             return None
         site = self._site_id(site_id)
         snapshot = self.task_service.repository(site).get(str(task_id or ""))
-        if snapshot is None or snapshot.task_type != "file_management_download":
+        if (
+            snapshot is None
+            or snapshot.task_type != "file_management_download"
+            or snapshot.source != "local"
+            or snapshot.owner != "web_file_management"
+        ):
             return None
         result = dict(snapshot.result or {})
         result_dto = None
@@ -268,25 +275,33 @@ class FileManagementApplicationService:
             return None
         if path.is_symlink() or not candidate.is_file():
             return None
-        return ResolvedManagedFile(self._file_ref(site_id, relative), site_id, candidate, relative, classify_file(relative))
+        category = classify_file(relative)
+        if category is None:
+            return None
+        return ResolvedManagedFile(self._file_ref(site_id, relative), site_id, candidate, relative, category)
 
     def _file_ref(self, site_id: str, relative_path: str) -> str:
         digest = hashlib.sha256(f"{site_id}\0{relative_path}".encode("utf-8")).hexdigest()[:32]
         return f"fm1_{digest}"
 
 
-def classify_file(relative_path: str) -> str:
+def classify_file(relative_path: str) -> str | None:
     parts = {part.casefold() for part in Path(relative_path).parts}
     name = Path(relative_path).name.casefold()
+    if parts & {"parsed", "cache", "tmp", "runtime"}:
+        return None
+    if name.endswith((".sqlite", ".sqlite3", ".db", "-wal", "-shm", "-journal")):
+        return None
     if "raw" in parts:
         return "raw"
     if name.endswith((".zip", ".tar.gz", ".zip.gz")) or ("imports" in parts and "online_mr" in parts):
         return "package"
-    if parts & {"outputs", "reports", "artifacts", "view"}:
+    suffix = Path(relative_path).suffix.casefold()
+    if parts & {"outputs", "reports", "artifacts", "view"} and suffix in ARTIFACT_SUFFIXES:
         return "artifact"
-    if "online_mr" in parts and "sessions" in parts:
+    if "online_mr" in parts and "sessions" in parts and suffix in SESSION_SUFFIXES:
         return "session"
-    return "artifact"
+    return None
 
 
 def run_file_management_download(context: JobContext) -> dict[str, object]:

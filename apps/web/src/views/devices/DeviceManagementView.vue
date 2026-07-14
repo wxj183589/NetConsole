@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Connection, CopyDocument, Edit, Refresh, View } from '@element-plus/icons-vue'
 
+import { isFeatureEnabled } from '../../features'
 import {
   getDevice,
   getDeviceConnectionTest,
@@ -49,6 +50,7 @@ let pollTimer: number | undefined
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const testTerminal = computed(() => connectionTest.value && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(connectionTest.value.task_status))
+const testActive = computed(() => Boolean(connectionTest.value && !testTerminal.value))
 
 onMounted(async () => {
   await loadDevices()
@@ -289,7 +291,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <template v-else-if="detail">
           <div class="detail-heading">
             <div><h2>{{ detail.device.name }}</h2><p>{{ detail.device.device_uuid }}</p></div>
-            <el-button :icon="Edit" @click="openPreview">编辑预览</el-button>
+            <el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="openPreview">编辑预览</el-button>
           </div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="系统名">{{ detail.device.system_name || '--' }}</el-descriptions-item>
@@ -306,9 +308,9 @@ function errorMessage(cause: unknown, fallback: string): string {
           <section class="detail-section">
             <h3>连接测试</h3>
             <div class="action-row">
-              <el-button v-if="detail.device.capabilities.ssh" :icon="Connection" :loading="connectionLoading" @click="startTest('SSH')">测试 SSH</el-button>
-              <el-button v-if="detail.device.capabilities.telnet" :icon="Connection" :loading="connectionLoading" @click="startTest('TELNET')">测试 Telnet</el-button>
-              <el-button v-if="detail.device.capabilities.snmp" :icon="Connection" :loading="connectionLoading" @click="startTest('SNMP')">测试 SNMP</el-button>
+              <el-button v-if="detail.device.capabilities.ssh" :icon="Connection" :loading="connectionLoading" :disabled="testActive || !isFeatureEnabled('web.device_connection_test')" @click="startTest('SSH')">测试 SSH</el-button>
+              <el-button v-if="detail.device.capabilities.telnet" :icon="Connection" :loading="connectionLoading" :disabled="testActive || !isFeatureEnabled('web.device_connection_test')" @click="startTest('TELNET')">测试 Telnet</el-button>
+              <el-button v-if="detail.device.capabilities.snmp" :icon="Connection" :loading="connectionLoading" :disabled="testActive || !isFeatureEnabled('web.device_connection_test')" @click="startTest('SNMP')">测试 SNMP</el-button>
             </div>
             <el-alert
               v-if="connectionTest"
@@ -366,7 +368,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-form-item label="备注"><el-input v-model="editForm.remark" type="textarea" :rows="3" /></el-form-item>
       </el-form>
       <el-alert v-if="previewResult" :title="previewResult.valid ? '校验通过（尚未保存）' : '校验未通过'" :description="[...previewResult.errors, ...previewResult.warnings].join('；') || '字段符合当前设备表单规则'" :type="previewResult.valid ? 'success' : 'error'" show-icon :closable="false" />
-      <template #footer><el-button @click="previewVisible = false">关闭</el-button><el-button type="primary" :loading="previewLoading" @click="validatePreview">校验预览</el-button></template>
+      <template #footer><el-button @click="previewVisible = false">关闭</el-button><el-button type="primary" :loading="previewLoading" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="validatePreview">校验预览</el-button></template>
     </el-dialog>
   </section>
 </template>

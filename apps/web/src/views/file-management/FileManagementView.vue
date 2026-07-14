@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import { fileDownloadUrl, getFileDownloadTask, getFileManagementStatus, listManagedFiles, startFileDownload } from '../../api/fileManagement'
+import { isFeatureEnabled } from '../../features'
 import type { FileDownloadTask, ManagedFile, ManagedFileCategory } from '../../types/fileManagement'
 
 const storageKey = 'netconsole.file-management.download-tasks'
@@ -146,7 +147,7 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
         <el-table-column prop="relative_path" label="相对路径" min-width="320" show-overflow-tooltip />
         <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
         <el-table-column prop="modified_at" label="修改时间" width="180" />
-        <el-table-column label="操作" width="100" fixed="right"><template #default="{ row }"><el-button link type="primary" :disabled="!row.downloadable" @click="download(row)">下载</el-button></template></el-table-column>
+        <el-table-column label="操作" width="100" fixed="right"><template #default="{ row }"><el-button link type="primary" :disabled="!row.downloadable || !isFeatureEnabled('web.file_management_download')" @click="download(row)">下载</el-button></template></el-table-column>
       </el-table>
       <p class="result-count">共 {{ total }} 个文件；当前只返回受控 ref，不返回本机绝对路径。</p>
     </div>

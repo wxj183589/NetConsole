@@ -19,6 +19,7 @@ from netconsole.models.api.config_collection import (
 )
 from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskSnapshot
+from netconsole.models.task_state import TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -29,6 +30,8 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 CONFIG_COLLECTION_ACTIONS = {"fetch": "config_web_snapshot_fetch"}
+CONFIG_WEB_OWNER = "web_config_collection"
+ACTIVE_TASK_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 CONFIG_WEB_TASK_TYPES = frozenset(
     {
         "config_web_snapshot_fetch",
@@ -177,12 +180,19 @@ class ConfigCollectionApplicationService:
         return [
             self._task_dto(snapshot)
             for snapshot in snapshots
-            if snapshot.source == "web" and snapshot.task_type in CONFIG_WEB_TASK_TYPES
+            if snapshot.source == "local"
+            and snapshot.owner == CONFIG_WEB_OWNER
+            and snapshot.task_type in CONFIG_WEB_TASK_TYPES
         ]
 
     def get_task(self, site_name: str, task_id: str) -> ConfigTaskStatusDTO | None:
         snapshot = self.task_service.repository(site_name).get(str(task_id))
-        if snapshot is None or snapshot.source != "web" or snapshot.task_type not in CONFIG_WEB_TASK_TYPES:
+        if (
+            snapshot is None
+            or snapshot.source != "local"
+            or snapshot.owner != CONFIG_WEB_OWNER
+            or snapshot.task_type not in CONFIG_WEB_TASK_TYPES
+        ):
             return None
         return self._task_dto(snapshot)
 
@@ -203,7 +213,11 @@ class ConfigCollectionApplicationService:
             task = self.task_service.repository(site_name).get(task_id)
             if task is None:
                 raise FileNotFoundError("配置差异 Artifact 不存在")
-            if task.source != "web" or task.task_type not in CONFIG_WEB_COMPARE_TASK_TYPES:
+            if (
+                task.source != "local"
+                or task.owner != CONFIG_WEB_OWNER
+                or task.task_type not in CONFIG_WEB_COMPARE_TASK_TYPES
+            ):
                 raise FileNotFoundError("配置差异 Artifact 不存在")
             raw_path = str(task.result.get("diff_file") or "")
             path = Path(raw_path)
@@ -215,10 +229,23 @@ class ConfigCollectionApplicationService:
         raise FileNotFoundError("Artifact 不存在或不属于当前局点")
 
     def _start_device_job(self, site_name: str, task_type: str, device: Device) -> ConfigTaskReferenceDTO:
+        device_uuid = str(device.device_uuid or "")
+        active = next(
+            (
+                task
+                for task in self.task_service.repository(site_name).list(statuses=ACTIVE_TASK_STATES, limit=1000)
+                if task.task_type == task_type
+                and task.owner == CONFIG_WEB_OWNER
+                and task.device == device_uuid
+            ),
+            None,
+        )
+        if active is not None:
+            return self._task_dto(active)
         return self._start_job(
             site_name,
             task_type,
-            {"device_uuid": str(device.device_uuid or "")},
+            {"device_uuid": device_uuid},
             f"配置采集 · {device.name or device.device_uuid}",
             device=device,
         )
@@ -239,14 +266,20 @@ class ConfigCollectionApplicationService:
             "app_root": str(self.paths.app_root),
             "data_root": str(self.paths.data_root),
             "task_name": task_name,
-            "owner": "web_config_collection",
-            "task_source": "web",
+            "owner": CONFIG_WEB_OWNER,
+            "task_source": "local",
             "_emit_log_events": True,
             "_cancel_grace_ms": 3_000,
             **extra_params,
         }
         if device is not None:
-            params.update({"device": str(device.name or device.device_uuid or ""), "device_id": str(device.id or "")})
+            params.update(
+                {
+                    "device": str(device.device_uuid or ""),
+                    "device_name": str(device.name or ""),
+                    "device_id": str(device.id or ""),
+                }
+            )
         job = BackgroundJob(job_id=task_id, task_type=task_type, params=params)
         self.process_adapter.start_job(job)
         snapshot = self.task_service.repository(site_name).get(task_id)

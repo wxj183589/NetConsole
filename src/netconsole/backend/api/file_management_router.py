@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.file_management import (
     FileDownloadRequestDTO,
@@ -65,7 +66,12 @@ def list_files(
     return _call(lambda: _service(request).list_files(_site_id(request, site_id), category=category, search=search, limit=limit))
 
 
-@router.post("/downloads", response_model=FileDownloadTaskDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/downloads",
+    response_model=FileDownloadTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.file_management_download"))],
+)
 def start_download(
     request: Request,
     payload: FileDownloadRequestDTO,
@@ -81,7 +87,11 @@ def start_download(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@router.get("/downloads/{task_id}", response_model=FileDownloadTaskDTO)
+@router.get(
+    "/downloads/{task_id}",
+    response_model=FileDownloadTaskDTO,
+    dependencies=[Depends(require_feature("web.file_management_download"))],
+)
 def download_task(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileDownloadTaskDTO:
     task = _call(lambda: _service(request).download_task(_site_id(request, site_id), task_id))
     if task is None:
@@ -89,7 +99,11 @@ def download_task(request: Request, task_id: str, site_id: str = Query(default="
     return task
 
 
-@router.get("/downloads/{task_id}/file", response_class=FileResponse)
+@router.get(
+    "/downloads/{task_id}/file",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.file_management_download"))],
+)
 def download_file(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileResponse:
     path, name = _call(lambda: _service(request).open_download(_site_id(request, site_id), task_id))
     return FileResponse(path, filename=name)

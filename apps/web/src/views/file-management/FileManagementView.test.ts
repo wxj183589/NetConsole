@@ -12,6 +12,7 @@ describe('file management read-only view', () => {
     expect(source).toContain('el-alert v-if="error"')
     expect(source).toContain('startFileDownload')
     expect(source).toContain('fileDownloadUrl')
+    expect(source).toContain("isFeatureEnabled('web.file_management_download')")
     expect(source).not.toMatch(/>\s*(上传|删除|重命名)\s*</)
   })
 

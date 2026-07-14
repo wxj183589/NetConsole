@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Connection, DataBoard, Monitor, OfficeBuilding, Operation } from '@element-plus/icons-vue'
 
 import { getHealth } from '../api/client'
+import { isFeatureEnabled, isFeatureVisible, loadWebFeatures } from '../features'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,6 +30,11 @@ const activeMenu = computed(() => {
 
 onMounted(async () => {
   try {
+    await loadWebFeatures()
+  } catch {
+    // 后端 Feature Gate 仍会拒绝禁用能力；离线时保留导航用于展示连接状态。
+  }
+  try {
     const health = await getHealth()
     version.value = health.version
     backendOnline.value = health.status === 'ok'
@@ -53,15 +59,27 @@ onMounted(async () => {
           <el-icon><DataBoard /></el-icon>
           <span>Dashboard</span>
         </el-menu-item>
-        <el-menu-item index="/network/devices">
+        <el-menu-item
+          v-if="isFeatureVisible('web.device_management')"
+          index="/network/devices"
+          :disabled="!isFeatureEnabled('web.device_management')"
+        >
           <el-icon><Monitor /></el-icon>
           <span>设备管理</span>
         </el-menu-item>
-        <el-menu-item index="/config-center">
+        <el-menu-item
+          v-if="isFeatureVisible('web.config_collection')"
+          index="/config-center"
+          :disabled="!isFeatureEnabled('web.config_collection')"
+        >
           <el-icon><Operation /></el-icon>
           <span>配置采集中心</span>
         </el-menu-item>
-        <el-menu-item index="/file-manager">
+        <el-menu-item
+          v-if="isFeatureVisible('web.file_management')"
+          index="/file-manager"
+          :disabled="!isFeatureEnabled('web.file_management')"
+        >
           <el-icon><OfficeBuilding /></el-icon>
           <span>文件管理</span>
         </el-menu-item>
@@ -97,7 +115,11 @@ onMounted(async () => {
             <el-icon><Operation /></el-icon>
             <span>网络工具</span>
           </template>
-          <el-menu-item index="/network-tools/overview">网络工具总览</el-menu-item>
+          <el-menu-item
+            v-if="isFeatureVisible('web.network_tools')"
+            index="/network-tools/overview"
+            :disabled="!isFeatureEnabled('web.network_tools')"
+          >网络工具总览</el-menu-item>
           <el-menu-item index="/network-tools/traffic">流量测试</el-menu-item>
         </el-sub-menu>
       </el-menu>

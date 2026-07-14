@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.file_management_router import router
+from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.models.task_state import TaskState
 from netconsole.services.background_job import BackgroundJob
@@ -35,6 +36,7 @@ def _app(service: FileManagementApplicationService) -> FastAPI:
     app = FastAPI()
     app.state.paths = service.paths
     app.state.file_management_service = service
+    app.state.feature_gate = FeatureGate(service.paths.app_root)
     app.include_router(router, prefix="/api")
     return app
 
@@ -62,6 +64,28 @@ def test_local_file_refs_are_opaque_and_path_escape_or_symlink_is_rejected(tmp_p
     except (OSError, NotImplementedError):
         pytest.skip("当前 Windows 环境不允许创建测试符号链接")
     assert all(item.name != link.name for item in service.list_files("demo").items)
+
+
+def test_local_file_index_excludes_databases_runtime_files_and_unknown_formats(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    files_root = paths.site_files_dir("demo")
+    blocked = [
+        files_root / "parsed" / "online_diagnosis.sqlite",
+        files_root / "outputs" / "active.db-wal",
+        files_root / "outputs" / "unknown.bin",
+    ]
+    for path in blocked:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"private")
+
+    service = FileManagementApplicationService(paths)
+    page = service.list_files("demo")
+
+    assert not {path.name for path in blocked} & {item.name for item in page.items}
+    for path in blocked:
+        ref = service._file_ref("demo", path.relative_to(files_root).as_posix())
+        with pytest.raises(FileReferenceNotFound):
+            service.resolve_ref("demo", ref)
 
 
 def test_download_job_only_validates_and_returns_original_ref_without_creating_files(tmp_path: Path) -> None:
@@ -105,6 +129,10 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         assert started.status_code == 202
         task_id = started.json()["task_id"]
         assert started.json()["status"] in {TaskState.STARTING.value, TaskState.PENDING.value}
+        snapshot = task_service.repository("demo").get(task_id)
+        assert snapshot is not None
+        assert snapshot.source == "local"
+        assert snapshot.owner == "web_file_management"
         assert client.get(f"/api/file-management/downloads/{task_id}", params={"site_id": "demo"}).status_code == 200
         result = run_file_management_download(
             JobContext.from_job(

@@ -28,5 +28,11 @@ describe('Device Management Web view', () => {
     expect(source).toContain("searchParams.set('task_id', taskId)")
     expect(source).toContain("get('task_id')")
     expect(source).toContain('getDeviceConnectionTest')
+    expect(source).toContain("isFeatureEnabled('web.device_connection_test')")
+    expect(source).toContain('testActive')
+  })
+
+  it('gates edit preview independently', () => {
+    expect(source).toContain("isFeatureEnabled('web.device_edit_preview')")
   })
 })

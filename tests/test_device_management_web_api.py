@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.device_management_router import router
 from netconsole.core.database import Database
+from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
+from netconsole.core.sites import SiteManager
 from netconsole.models.device import Device
 from netconsole.models.snmp_models import DeviceSnmpProfileResult
 from netconsole.models.task_snapshot import TaskSnapshot
@@ -66,6 +68,7 @@ def _fixture(tmp_path: Path):
     service = DeviceManagementWebService(paths, tasks, site_name="demo", process_adapter=adapter)  # type: ignore[arg-type]
     app = FastAPI()
     app.state.device_management_service = service
+    app.state.feature_gate = FeatureGate(paths.app_root)
     app.include_router(router, prefix="/api")
     return TestClient(app), service, adapter, devices, DeviceFactRepository(database), mr, sw
 
@@ -209,6 +212,38 @@ def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path
     }
     assert "secret-password" not in str(adapter.jobs[0].to_dict())
     assert "private-community" not in str(adapter.jobs[0].to_dict())
+
+
+def test_connection_test_reuses_active_task(tmp_path: Path) -> None:
+    client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+
+    first = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+    second = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["task_id"] == second.json()["task_id"]
+    assert len(adapter.jobs) == 1
+
+
+def test_production_service_follows_runtime_site_switch(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "local")
+    sites = SiteManager(paths)
+    sites.ensure_demo_site()
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    adapter = _CapturingProcessAdapter(tasks)
+    service = DeviceManagementWebService(paths, tasks, process_adapter=adapter)  # type: ignore[arg-type]
+
+    assert service.current_site_id() == "demo"
+    sites.create_site("line-b")
+    assert service.current_site_id() == "line-b"
+    sites.switch_site("demo")
+    assert service.current_site_id() == "demo"
 
 
 def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_network(tmp_path: Path, monkeypatch) -> None:

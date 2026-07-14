@@ -115,11 +115,28 @@ def test_config_collection_submits_only_readonly_job_and_persists_task_reference
     assert response.status_code == 202
     assert response.json()[0]["type"] == "config_web_snapshot_fetch"
     assert adapter.jobs[0].params["device_uuid"] == device.device_uuid
+    snapshot = app.state.config_collection_service.task_service.repository("demo").get(response.json()[0]["id"])
+    assert snapshot is not None
+    assert snapshot.source == "local"
+    assert snapshot.owner == "web_config_collection"
     assert "password" not in json.dumps(response.json())
     assert tasks.status_code == 200
     assert tasks.json()[0]["status"] == TaskState.RUNNING.value
     assert save.status_code == 422
     assert "config_web_snapshot_save" not in registered_task_types()
+
+
+def test_config_collection_reuses_active_fetch_for_same_device(tmp_path: Path) -> None:
+    app, _paths, device, _running, _saved, adapter = _fixture(tmp_path)
+
+    with TestClient(app) as client:
+        first = client.post("/api/config-collection/actions", json={"action": "fetch", "device_ids": [device.id]})
+        second = client.post("/api/config-collection/actions", json={"action": "fetch", "device_ids": [device.id]})
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.json()[0]["id"] == first.json()[0]["id"]
+    assert len(adapter.jobs) == 1
 
 
 def test_config_task_status_redacts_paths_and_secrets_inside_messages_and_nested_results(tmp_path: Path) -> None:
@@ -136,7 +153,8 @@ def test_config_task_status_redacts_paths_and_secrets_inside_messages_and_nested
             message=r"读取 C:\Users\operator\secret.txt 失败，token=abc123",
             error_message=r"credential: top-secret \\server\share\result.txt",
             result={"note": r"file=C:\data\raw.log token:xyz789", "auth": "Authorization: Bearer abc.def", "nested": [{"text": "password=hidden"}]},
-            source="web",
+            owner="web_config_collection",
+            source="local",
             site_name="demo",
         )
     )
@@ -186,7 +204,8 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
         created_time="2026-07-15T10:00:00Z",
         updated_time="2026-07-15T10:00:01Z",
         result=result,
-        source="web",
+        owner="web_config_collection",
+        source="local",
         site_name="demo",
     )
     app.state.config_collection_service.task_service.repository("demo").save(task)

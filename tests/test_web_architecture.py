@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from netconsole.backend.api.health import health
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
@@ -63,15 +65,32 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "/api/online-mr/sessions/current",
         "/api/rail-transit/base-data/summary",
         "/api/traffic/runs",
+        "/api/features",
         "/api/device-management/devices",
         "/api/network-tools/tcp-port-test",
         "/api/config-collection/devices",
         "/api/file-management/files",
     } <= routes
     assert app.state.device_management_service is not None
+    assert app.state.device_management_service.site_name is None
     assert app.state.config_collection_service is not None
     assert app.state.file_management_service is not None
     assert app.state.online_mr_web_control_enabled is False
+
+
+def test_disabled_web_feature_hides_state_and_blocks_backend_route(tmp_path: Path) -> None:
+    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
+    app.state.feature_gate.features["web.device_management"] = {"visible": False, "enabled": False}
+
+    with TestClient(app) as client:
+        features = client.get("/api/features")
+        devices = client.get("/api/device-management/devices")
+
+    assert features.status_code == 200
+    state = next(item for item in features.json()["items"] if item["feature_id"] == "web.device_management")
+    assert state["visible"] is False
+    assert state["enabled"] is False
+    assert devices.status_code == 404
 
 
 def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -> None:

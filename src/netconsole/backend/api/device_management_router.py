@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.device_management import (
     DeviceConnectionTestDTO,
     DeviceConnectionTestRequestDTO,
@@ -57,7 +58,11 @@ def device_detail(request: Request, device_uuid: str) -> DeviceDetailDTO:
     return _not_found(lambda: _service(request).get_device_detail(device_uuid), "设备不存在")
 
 
-@router.post("/devices/{device_uuid}/edit-preview", response_model=DeviceEditPreviewDTO)
+@router.post(
+    "/devices/{device_uuid}/edit-preview",
+    response_model=DeviceEditPreviewDTO,
+    dependencies=[Depends(require_feature("web.device_edit_preview"))],
+)
 def edit_preview(
     request: Request,
     device_uuid: str,
@@ -70,6 +75,7 @@ def edit_preview(
     "/devices/{device_uuid}/connection-tests",
     response_model=DeviceConnectionTestDTO,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.device_connection_test"))],
 )
 def start_connection_test(
     request: Request,
@@ -86,7 +92,11 @@ def start_connection_test(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="连接测试任务暂时无法创建") from exc
 
 
-@router.get("/connection-tests/{task_id}", response_model=DeviceConnectionTestDTO)
+@router.get(
+    "/connection-tests/{task_id}",
+    response_model=DeviceConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.device_connection_test"))],
+)
 def connection_test(request: Request, task_id: str) -> DeviceConnectionTestDTO:
     return _not_found(lambda: _service(request).get_connection_test(task_id), "连接测试任务不存在")
 

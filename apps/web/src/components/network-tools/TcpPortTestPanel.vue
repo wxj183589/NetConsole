@@ -3,6 +3,7 @@ import { computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import ExecutionTargetSelect from '../traffic/ExecutionTargetSelect.vue'
+import { isFeatureEnabled } from '../../features'
 import { useTrafficStore } from '../../stores/traffic'
 import type { TrafficExecutionTargetRequest, TrafficRun } from '../../types/traffic'
 
@@ -63,7 +64,7 @@ async function select(run: TrafficRun): Promise<void> {
         <el-form-item label="超时 ms"><el-input-number v-model="form.timeout_ms" :min="1" :max="60000" /></el-form-item>
         <el-form-item label="次数"><el-input-number v-model="form.count" :min="1" :max="1000000" /></el-form-item>
       </div>
-      <el-button type="primary" :loading="store.starting" @click="start">开始测试</el-button>
+      <el-button type="primary" :loading="store.starting" :disabled="!isFeatureEnabled('web.network_tools_tcp_port_test')" @click="start">开始测试</el-button>
     </el-form>
 
     <el-divider />

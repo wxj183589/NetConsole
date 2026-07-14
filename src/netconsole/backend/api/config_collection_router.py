@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.config_collection import (
     ConfigActionRequest,
     ConfigDeviceDiffRequest,
@@ -56,7 +57,12 @@ def list_snapshots(
     return _query(lambda: _service(request).list_snapshots(_site_id(request), device_id, snapshot_type))
 
 
-@router.post("/actions", response_model=list[ConfigTaskReferenceDTO], status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/actions",
+    response_model=list[ConfigTaskReferenceDTO],
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_fetch"))],
+)
 def submit_collection(request: Request, payload: ConfigActionRequest) -> list[ConfigTaskReferenceDTO]:
     return _query(lambda: _service(request).submit_collection(_site_id(request), payload.action, payload.device_ids))
 
@@ -66,12 +72,22 @@ def load_snapshot_content(request: Request, snapshot_id: int) -> ConfigTaskRefer
     return _query(lambda: _service(request).submit_snapshot_content(_site_id(request), snapshot_id))
 
 
-@router.post("/devices/{device_id}/diff/latest", response_model=ConfigTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/devices/{device_id}/diff/latest",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_diff"))],
+)
 def compare_latest_snapshots(request: Request, device_id: int) -> ConfigTaskReferenceDTO:
     return _query(lambda: _service(request).submit_latest_diff(_site_id(request), device_id))
 
 
-@router.post("/diff/snapshots", response_model=ConfigTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/diff/snapshots",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_diff"))],
+)
 def compare_snapshot_pair(request: Request, payload: ConfigSnapshotDiffRequest) -> ConfigTaskReferenceDTO:
     return _query(
         lambda: _service(request).submit_snapshot_diff(
@@ -80,7 +96,12 @@ def compare_snapshot_pair(request: Request, payload: ConfigSnapshotDiffRequest) 
     )
 
 
-@router.post("/diff/devices", response_model=ConfigTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/diff/devices",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_diff"))],
+)
 def compare_device_pair(request: Request, payload: ConfigDeviceDiffRequest) -> ConfigTaskReferenceDTO:
     return _query(
         lambda: _service(request).submit_device_diff(
@@ -102,7 +123,11 @@ def get_task(request: Request, task_id: str) -> ConfigTaskStatusDTO:
     return result
 
 
-@router.get("/artifacts/{artifact_id}", response_class=FileResponse)
+@router.get(
+    "/artifacts/{artifact_id}",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.config_collection_download"))],
+)
 def download_artifact(request: Request, artifact_id: str) -> FileResponse:
     path, filename = _query(lambda: _service(request).open_artifact(_site_id(request), artifact_id))
     return FileResponse(path, filename=filename)

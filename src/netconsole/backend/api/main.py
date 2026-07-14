@@ -32,6 +32,7 @@ from netconsole.services.device_management_web_service import DeviceManagementWe
 from netconsole.services.file_management_service import FileManagementApplicationService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
+from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
@@ -141,11 +142,22 @@ def create_app(
         )
     if ac_mesh_link_refresh_service is None:
         ac_mesh_link_refresh_service = AcMeshLinkRefreshApplicationService(paths, task_service)
-    device_management_service = DeviceManagementWebService(paths, task_service, site_name=site_name)
-    config_collection_service = ConfigCollectionApplicationService(paths, task_service)
+    feature_gate = FeatureGate(paths.app_root)
+    web_process_adapter = LocalProcessAdapter(task_service)
+    device_management_service = DeviceManagementWebService(
+        paths,
+        task_service,
+        process_adapter=web_process_adapter,
+    )
+    config_collection_service = ConfigCollectionApplicationService(
+        paths,
+        task_service,
+        process_adapter=web_process_adapter,
+    )
     file_management_service = FileManagementApplicationService(
         paths,
         task_service=task_service,
+        process_adapter=web_process_adapter,
         site_name=site_name,
     )
     owns_online_mr_application_service = (
@@ -169,9 +181,7 @@ def create_app(
         try:
             yield
         finally:
-            await device_management_service.stop()
-            await asyncio.to_thread(config_collection_service.close)
-            await asyncio.to_thread(file_management_service.close)
+            await asyncio.to_thread(web_process_adapter.shutdown)
             await ac_mesh_link_refresh_service.stop()
             await traffic_service.stop()
             await agent_service.stop()
@@ -185,6 +195,7 @@ def create_app(
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.paths = paths
     app.state.task_service = task_service
+    app.state.feature_gate = feature_gate
     app.state.ac_management_query_service = AcManagementQueryService(paths)
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
     app.state.ac_mesh_link_refresh_service = ac_mesh_link_refresh_service
@@ -239,7 +250,7 @@ def create_app(
         agent_service=agent_service,
     )
     if rail_base_data_write_feature_enabled is None:
-        rail_base_data_write_feature_enabled = FeatureGate(paths.app_root).is_enabled(WRITE_FEATURE_ID)
+        rail_base_data_write_feature_enabled = feature_gate.is_enabled(WRITE_FEATURE_ID)
     app.state.rail_transit_base_data_import_service = RailTransitBaseDataImportService(
         paths,
         guard=BaseDataWriteGuard(paths, feature_enabled=rail_base_data_write_feature_enabled),

@@ -12,6 +12,12 @@ describe('Configuration Collection Center view', () => {
     expect(source).toContain('onBeforeUnmount')
   })
 
+  it('gates fetch, diff and artifact download actions independently', () => {
+    expect(source).toContain("isFeatureEnabled('web.config_collection_fetch')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_diff')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_download')")
+  })
+
   it('keeps collection read-only and exposes controlled artifact download', () => {
     expect(source).toContain('采集 running / saved')
     expect(source).toContain('configArtifactUrl(row.artifact_id)')

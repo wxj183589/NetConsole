@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
 
+import { isFeatureEnabled } from '../../features'
 import {
   configArtifactUrl,
   getConfigTask,
@@ -297,7 +298,7 @@ function formatBytes(value: number): string {
 
     <div class="main-grid">
       <div class="content-card device-card">
-        <div class="card-heading"><div><h2>设备选择</h2><p>共 {{ devicePage.total }} 台 H3C 设备</p></div><el-button type="primary" :disabled="!selectedDevices.length" @click="collectSelected">采集 running / saved</el-button></div>
+        <div class="card-heading"><div><h2>设备选择</h2><p>共 {{ devicePage.total }} 台 H3C 设备</p></div><el-button type="primary" :disabled="!selectedDevices.length || hasActiveTasks || !isFeatureEnabled('web.config_collection_fetch')" @click="collectSelected">采集 running / saved</el-button></div>
         <el-table v-loading="loading" :data="devicePage.items" row-key="id" stripe height="calc(100vh - 430px)" @row-click="selectDevice" @selection-change="selectedDevices = $event">
           <el-table-column type="selection" width="48" />
           <el-table-column label="设备" min-width="170"><template #default="{ row }"><strong>{{ row.name || '--' }}</strong><small>{{ row.system_name || '--' }}</small></template></el-table-column>
@@ -311,13 +312,13 @@ function formatBytes(value: number): string {
       </div>
 
       <div class="content-card snapshot-card">
-        <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 选两个快照可比较</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="selectedSnapshots.length !== 2" @click="compareSnapshots">比较快照</el-button><el-button :disabled="!selectedDevice" @click="compareLatest">最新差异</el-button></div></div>
+        <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 选两个快照可比较</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="selectedSnapshots.length !== 2 || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较快照</el-button><el-button :disabled="!selectedDevice || !isFeatureEnabled('web.config_collection_diff')" @click="compareLatest">最新差异</el-button></div></div>
         <el-table v-loading="snapshotLoading" :data="snapshots" row-key="id" stripe height="calc(100vh - 430px)" @selection-change="selectedSnapshots = $event">
           <el-table-column type="selection" width="48" />
           <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template></el-table-column>
           <el-table-column label="采集时间" min-width="180"><template #default="{ row }">{{ formatTime(row.timestamp) }}</template></el-table-column>
           <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" tag="a" :href="configArtifactUrl(row.artifact_id)" target="_blank" @click.stop>下载</el-button></template></el-table-column>
+          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" tag="a" :disabled="!isFeatureEnabled('web.config_collection_download')" :href="isFeatureEnabled('web.config_collection_download') ? configArtifactUrl(row.artifact_id) : undefined" target="_blank" @click.stop>下载</el-button></template></el-table-column>
         </el-table>
       </div>
     </div>

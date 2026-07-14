@@ -174,6 +174,18 @@ class DeviceManagementWebService:
         device = self._require_device(device_repository, device_uuid)
         selected_protocol = protocol.strip().upper()
         self._validate_protocol_enabled(device, selected_protocol)
+        active = next(
+            (
+                task
+                for task in self.task_service.repository(site).list(statuses=ACTIVE_TASK_STATES, limit=1000)
+                if task.task_type == DEVICE_CONNECTION_TEST_TASK_TYPE
+                and task.device == device_uuid
+                and _protocol_from_task_id(task.task_id) == selected_protocol
+            ),
+            None,
+        )
+        if active is not None:
+            return self._connection_test_dto(active, device)
         task_id = f"device-test-{selected_protocol.lower()}-{uuid.uuid4().hex}"
         job = BackgroundJob(
             job_id=task_id,
