@@ -30,6 +30,8 @@ def test_device_repository_crud_search_and_filters(tmp_path):
     assert repository.list(search="10.0.0.1")[0].id == created.id
     assert repository.list(vendor="H3C")[0].id == created.id
     assert repository.list(device_type="SW")[0].id == created.id
+    assert repository.get_by_uuid(str(original_uuid)).id == created.id
+    assert repository.get_by_uuid(Device.new_uuid()) is None
 
     repository.delete(created.id)
     assert repository.list() == []

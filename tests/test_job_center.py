@@ -57,6 +57,7 @@ def test_registry_contains_all_existing_task_types() -> None:
     assert {
         "ac_command_action_execute",
         "device_csv_import",
+        "device_connection_test",
         "mesh_mr_profiles_refresh",
         "snmp_center_data_action",
         "traffic_local_iperf_server",

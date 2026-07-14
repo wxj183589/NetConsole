@@ -36,6 +36,11 @@ class DeviceRepository:
             raise KeyError(f"Device not found: {device_id}")
         return Device.from_mapping(dict(row))
 
+    def get_by_uuid(self, device_uuid: str) -> Device | None:
+        with self.database.connect() as conn:
+            row = conn.execute("SELECT * FROM devices WHERE device_uuid = ?", (device_uuid,)).fetchone()
+        return Device.from_mapping(dict(row)) if row is not None else None
+
     def update(self, device: Device) -> Device:
         if device.id is None:
             raise ValueError("Device id is required for update")
