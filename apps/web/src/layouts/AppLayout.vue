@@ -13,6 +13,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
   if (route.path.startsWith('/rail-transit/online-mr')) return '/rail-transit/online-mr'
   if (route.path.startsWith('/agents')) return '/agents'
+  if (route.path.startsWith('/ac-management/mesh-links')) return '/ac-management/mesh-links'
   if (route.path.startsWith('/ac-management')) return '/ac-management'
   if (route.path.startsWith('/tasks')) return '/tasks'
   return '/'
@@ -52,10 +53,14 @@ onMounted(async () => {
           <el-icon><Connection /></el-icon>
           <span>Agent 管理</span>
         </el-menu-item>
-        <el-menu-item index="/ac-management">
-          <el-icon><OfficeBuilding /></el-icon>
-          <span>AC 管理</span>
-        </el-menu-item>
+        <el-sub-menu index="/ac-management">
+          <template #title>
+            <el-icon><OfficeBuilding /></el-icon>
+            <span>AC 管理</span>
+          </template>
+          <el-menu-item index="/ac-management">FIT-AP 资源</el-menu-item>
+          <el-menu-item index="/ac-management/mesh-links">Mesh-Link 在线监控</el-menu-item>
+        </el-sub-menu>
         <el-sub-menu index="/rail-transit">
           <template #title>
             <el-icon><Monitor /></el-icon>

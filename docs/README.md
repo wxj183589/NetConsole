@@ -25,6 +25,7 @@
 | [Agent 流量测试协议](AGENT_TRAFFIC_API.md) | fping/iPerf 强类型执行、任务事件游标、结果与能力契约 | Agent/流量测试开发 | `apps/agent/internal/{core,fping,iperf,api}`、`AgentHttpClient` | Agent 流量参数、事件、结果或能力变化 |
 | [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md) | 本地/Agent 执行、Task 映射、Traffic 事件、数据与恢复边界 | 流量测试与阶段 4C 开发 | `services/traffic`、`TrafficRunRepository`、Traffic handlers | 执行端、状态、事件、存储、恢复或 Web 接入变化 |
 | [AC 管理](AC_MANAGEMENT.md) | Qt AC 写操作边界、Web 只读资源/光衰/配置查看和刷新策略 | AC/FIT-AP 与 Web 开发 | `src/netconsole/services/ac/query_service.py`、AC Repository、AC Web API/Vue | AC 查询字段、光衰关联、配置查看或 Web 写操作边界变化 |
+| [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md) | 轨旁 AP、AC Mesh-Link、Online MR 与离线分析的业务边界和匹配规则 | 轨道交通无线与 AC Mesh-Link 开发 | `src/netconsole/services/vehicle_mr_online.py`、Mesh-Link Query API/Vue | Mesh-Link 字段、匹配、时效性或采集/分析边界变化 |
 | [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 
 ## 业务专题

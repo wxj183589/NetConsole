@@ -178,6 +178,12 @@ class AcManagementQueryService:
         item, raw, optical, lldp = record
         return AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical)
 
+    def list_all_ap_details(self, site_id: str) -> list[AcApDetailDTO]:
+        return [
+            AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical)
+            for item, raw, optical, lldp in self._ap_records(site_id)
+        ]
+
     def get_ap_radios(self, site_id: str, ap_id: str) -> list[AcRadioDTO] | None:
         detail = self.get_ap_detail(site_id, ap_id)
         return detail.radios if detail else None

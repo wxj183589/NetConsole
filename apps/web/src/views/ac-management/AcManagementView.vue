@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh, Setting, View } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
 
 import { useAcManagementStore } from '../../stores/acManagement'
 import type { AcAp, AcConfigSnapshot } from '../../types/acManagement'
 
 const store = useAcManagementStore()
+const route = useRoute()
 const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -54,6 +56,11 @@ const matchingLines = computed(() => {
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   store.startPolling()
+  const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
+  if (apId) {
+    detailVisible.value = true
+    void store.selectAp(apId)
+  }
 })
 
 onBeforeUnmount(() => {

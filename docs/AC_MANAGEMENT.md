@@ -4,6 +4,8 @@
 
 阶段 5C-4 在完整 Web 控制台中增加 AC 管理只读页面，入口为 `/ac-management`，Feature key 为 `web.ac_management`。Qt AC 页面仍是设备连接、采集和写操作的唯一生产入口；Web 页面只展示当前局点已有数据。
 
+阶段 5C-5 增加独立的 `/ac-management/mesh-links` 页面，Feature key 为 `web.ac_mesh_links`。该页面展示“车载 MR ↔ 轨旁 FIT-AP”的已落盘 AC Mesh-Link 快照，不把 MR 建模为无线客户端。完整领域与匹配规则见 [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md)。
+
 Web 只读链路为：
 
 ```text
@@ -23,6 +25,7 @@ Query Service 通过 SQLite URI `mode=ro` 和 `PRAGMA query_only=ON` 复用现�
 - AP 详情：基本信息、Radio 1/2、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
+- Mesh-Link 在线监控：车载 MR 状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、AP 在线与光衰关联、最近快照和切换事件；结构化快照 5 秒轮询，连续失败三次后降为 15 秒，页面隐藏或卸载后停止。
 
 轨道交通 FIT-AP 资源采用 Mesh 接口/射频链路语义，仅展示 Mesh Radio 1/2 的信道、带宽、功率、BSSID 等真实采集字段，不展示客户端数量。当前数据库没有可靠的 Mesh Radio 状态、模式和频段时，API 返回空值，页面显示“--”，不得根据 Radio ID、信道或其他无关字段推测。Web DTO 不返回 AP/设备序列号，不显示 Radio 3 和端口变化列。
 
@@ -59,6 +62,12 @@ GET /api/ac-management/optical-anomalies
 GET /api/ac-management/config-snapshots
 GET /api/ac-management/config-snapshots/{snapshot_id}
 GET /api/ac-management/config-snapshots/{snapshot_id}/diff
+GET /api/ac-management/mesh-links/summary
+GET /api/ac-management/mesh-links/current
+GET /api/ac-management/mesh-links/mrs
+GET /api/ac-management/mesh-links/mrs/{mr_id}
+GET /api/ac-management/mesh-links/snapshots
+GET /api/ac-management/mesh-links/raw-tail
 ```
 
 本路由没有 POST、PUT、PATCH 或 DELETE。不存在 Web 采集、固化 AP、`save force`、远程登录、任意命令、SNMP SET、删除或配置下发接口。
@@ -78,8 +87,10 @@ Web 页面稳定前不替换 Qt AC 页面，也不改变现有 AC 命令、数�
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/test_ac_management_query_service.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_management_web_api.py -q
+.venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_query_service.py tests/test_ac_mesh_link_web_api.py -q
 cd apps/web
 npm run test -- AcManagement
+npm run test -- AcMeshLink
 npm run build
 ```
 

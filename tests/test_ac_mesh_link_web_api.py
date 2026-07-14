@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from ac_mesh_link_web_fixture import build_ac_mesh_link_fixture
+from netconsole.backend.api.main import create_app
+from netconsole.core.runtime_mode import RuntimeMode
+
+
+class _NoopAsyncService:
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def _fingerprint(path: Path) -> tuple[str, int]:
+    return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+
+
+def test_mesh_link_get_api_is_read_only_and_raw_unavailable_is_not_an_error(tmp_path: Path) -> None:
+    paths, devices_db, mesh_db = build_ac_mesh_link_fixture(tmp_path)
+    tasks_db = paths.site_tasks_db_path("demo")
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        task_service=object(),  # type: ignore[arg-type]
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/api/ac-management/mesh-links/summary").status_code == 200
+        before = (_fingerprint(devices_db), _fingerprint(mesh_db), tasks_db.exists())
+        summary = client.get("/api/ac-management/mesh-links/summary")
+        links = client.get("/api/ac-management/mesh-links/current?match_status=matched")
+        mrs = client.get("/api/ac-management/mesh-links/mrs")
+        detail = client.get("/api/ac-management/mesh-links/mrs/mr-01-ct")
+        snapshots = client.get("/api/ac-management/mesh-links/snapshots")
+        raw_tail = client.get("/api/ac-management/mesh-links/raw-tail")
+        after = (_fingerprint(devices_db), _fingerprint(mesh_db), tasks_db.exists())
+
+    assert summary.status_code == 200
+    assert links.status_code == 200
+    assert mrs.status_code == 200
+    assert detail.status_code == 200
+    assert snapshots.status_code == 200
+    assert raw_tail.status_code == 200
+    assert raw_tail.json()["available"] is False
+    assert "client" not in "".join((summary.text, links.text, mrs.text, detail.text)).casefold()
+    assert after == before
+
+
+def test_mesh_link_router_exposes_get_only_operations(tmp_path: Path) -> None:
+    paths, _devices_db, _mesh_db = build_ac_mesh_link_fixture(tmp_path)
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        task_service=object(),  # type: ignore[arg-type]
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+    routes = {
+        (path, method.upper())
+        for path, operations in app.openapi()["paths"].items()
+        if path.startswith("/api/ac-management/mesh-links")
+        for method in operations
+    }
+
+    assert routes
+    assert {method for _path, method in routes} == {"GET"}
+    assert "client_count" not in str(app.openapi()).casefold()
+    assert all(not path.endswith(("/collect", "/command", "/start", "/stop")) for path, _method in routes)
