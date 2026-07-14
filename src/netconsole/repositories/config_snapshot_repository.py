@@ -21,9 +21,10 @@ class ConfigSnapshot:
 
 
 class ConfigSnapshotRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, ensure_schema: bool = True) -> None:
         self.database = database
-        self.ensure_schema()
+        if ensure_schema:
+            self.ensure_schema()
 
     def ensure_schema(self) -> None:
         with self.database.connect() as conn:
