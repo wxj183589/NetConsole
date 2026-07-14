@@ -243,8 +243,8 @@ def _check_stop_reason(mapping: dict[str, Any], task: dict[str, Any] | None, met
     if forced and "force" not in mapping_reason.casefold():
         return CheckResult("停止原因", FAILED, f"强停会话的原因未体现 force_stop：{mapping_reason}")
     if not forced and task_reason and task_reason != mapping_reason:
-        if task_reason == "cancel_requested" and mapping_reason == "user_stop":
-            return CheckResult("停止原因", PASSED, "入口 user_stop，Worker cancel_requested")
+        if task_reason == "cancel_requested" and mapping_reason in {"user_stop", "web_user_stop"}:
+            return CheckResult("停止原因", PASSED, f"入口 {mapping_reason}，Worker cancel_requested")
         return CheckResult("停止原因", WARNING, f"task={task_reason}, mapping/meta={mapping_reason}")
     return CheckResult("停止原因", PASSED, mapping_reason)
 

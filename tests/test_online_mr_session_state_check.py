@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
-from scripts.maintenance.check_online_mr_session_state import FAILED, WARNING, audit_online_mr_session, main
+from scripts.maintenance.check_online_mr_session_state import FAILED, PASSED, WARNING, audit_online_mr_session, main
 
 
 def _write_operation(
@@ -16,13 +16,14 @@ def _write_operation(
     session_id: str,
     forced: bool = False,
     forced_fping: bool = False,
+    normal_stop_reason: str = "user_stop",
 ) -> tuple[Path, Path]:
     site = "site-a"
     db_path = paths.site_tasks_db_path(site)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     status = "CANCELLED" if forced else "COMPLETED"
     session_status = "FORCED_STOPPED" if forced else "STOPPED"
-    stop_reason = "force_stop" if forced else "user_stop"
+    stop_reason = "force_stop" if forced else normal_stop_reason
     result = {
         "session_id": session_id,
         "status": session_status,
@@ -134,6 +135,21 @@ def test_session_check_passes_normal_stop_without_writing_data(tmp_path: Path) -
     assert all(item.status != FAILED for item in report.checks)
     assert db_path.read_bytes() == before_db
     assert (session_dir / "session_meta.json").read_bytes() == before_meta
+
+
+def test_session_check_accepts_web_normal_stop_reason(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    _write_operation(
+        paths,
+        task_id="task-web-normal",
+        session_id="session-web-normal",
+        normal_stop_reason="web_user_stop",
+    )
+
+    report = audit_online_mr_session(paths, task_id="task-web-normal")
+
+    assert report.status == PASSED
+    assert next(item for item in report.checks if item.name == "停止原因").status == PASSED
 
 
 def test_session_check_accepts_force_stop_as_partial_warning_without_zip(tmp_path: Path) -> None:
