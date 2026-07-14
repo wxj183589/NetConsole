@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from netconsole.backend.api.ac_management_router import router as ac_management_router
 from netconsole.backend.api.agent_router import router as agent_router
 from netconsole.backend.api.agent_router import ws_router as agent_ws_router
 from netconsole.backend.api.health import router as health_router
@@ -15,6 +16,7 @@ from netconsole.backend.api.traffic_router import ws_router as traffic_ws_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health_router)
+api_router.include_router(ac_management_router)
 api_router.include_router(job_center_router)
 api_router.include_router(task_router)
 api_router.include_router(agent_router)

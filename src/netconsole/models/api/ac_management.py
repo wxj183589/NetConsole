@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+from pydantic import Field
+
+from netconsole.models.api.common import ApiModel
+
+
+class AcOverviewDTO(ApiModel):
+    id: str
+    name: str
+    management_ip: str = ""
+    model: str = ""
+    software_version: str = ""
+    ap_total: int = 0
+    online_aps: int = 0
+    offline_aps: int = 0
+    unauthenticated_aps: int = 0
+    radio_total: int = 0
+    optical_anomalies: int = 0
+    updated_at: str = ""
+    data_source: str = "SQLite 已采集数据"
+
+
+class AcManagementSummaryDTO(ApiModel):
+    site_id: str
+    acs: list[AcOverviewDTO] = Field(default_factory=list)
+    ap_total: int = 0
+    online_aps: int = 0
+    offline_aps: int = 0
+    unauthenticated_aps: int = 0
+    radio_total: int = 0
+    optical_anomalies: int = 0
+    updated_at: str = ""
+    message: str = ""
+
+
+class AcOpticalDTO(ApiModel):
+    optical_status: str = "no_data"
+    optical_severity: str = "no_data"
+    raw_status: str = "unknown"
+    ap_offline_related: bool = False
+    anomaly_reason: str = ""
+    source_switch: str = ""
+    source_interface: str = ""
+    tx_power: str = ""
+    rx_power: str = ""
+    switch_rx_power: str = ""
+    temperature: str = ""
+    voltage: str = ""
+    bias_current: str = ""
+    threshold_status: str = ""
+    error_summary: str = ""
+    updated_at: str = ""
+
+
+class AcRadioDTO(ApiModel):
+    radio_id: int
+    status: str = ""
+    mode: str = ""
+    band: str = ""
+    channel: str = ""
+    bandwidth: str = ""
+    tx_power: str = ""
+    bssid: str = ""
+    updated_at: str = ""
+
+
+class AcLldpDTO(ApiModel):
+    switch_name: str = ""
+    switch_ip: str = ""
+    interface_name: str = ""
+    lldp_neighbor: str = ""
+    port_status: str = ""
+    vlan: str = ""
+    optical_module_status: str = ""
+    match_status: str = ""
+    source: str = ""
+    updated_at: str = ""
+
+
+class AcApDTO(ApiModel):
+    id: str
+    ac_id: str
+    ac_name: str = ""
+    name: str
+    ip: str = ""
+    mac: str = ""
+    status: str = "unknown"
+    state_display: str = ""
+    model: str = ""
+    online_time: str = ""
+    is_unauthenticated: bool = False
+    radio1_status: str = ""
+    radio2_status: str = ""
+    radio1_channel: str = ""
+    radio2_channel: str = ""
+    radio1_power: str = ""
+    radio2_power: str = ""
+    station: str = ""
+    section: str = ""
+    mileage: str = ""
+    direction: str = ""
+    switch_name: str = ""
+    switch_interface: str = ""
+    lldp_status: str = ""
+    optical_status: str = "no_data"
+    optical_severity: str = "no_data"
+    optical_rx_power: str = ""
+    updated_at: str = ""
+
+
+class AcApPageDTO(ApiModel):
+    items: list[AcApDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+
+
+class AcApDetailDTO(ApiModel):
+    ap: AcApDTO
+    radios: list[AcRadioDTO] = Field(default_factory=list)
+    lldp: AcLldpDTO
+    optical: AcOpticalDTO
+
+
+class AcConfigSnapshotDTO(ApiModel):
+    id: int
+    device_id: str
+    ac_name: str = ""
+    timestamp: str
+    type: str
+    status: str
+    size_bytes: int = 0
+    task_id: str = ""
+    error_summary: str = ""
+    path_id: str
+    file_name: str = ""
+    created_at: str = ""
+
+
+class AcConfigSnapshotPageDTO(ApiModel):
+    items: list[AcConfigSnapshotDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 30
+
+
+class AcConfigContentDTO(ApiModel):
+    snapshot: AcConfigSnapshotDTO
+    content: str = ""
+    offset: int = 0
+    next_offset: int | None = None
+    total_chars: int = 0
+    truncated: bool = False
+
+
+class AcConfigDiffDTO(ApiModel):
+    from_snapshot_id: int
+    to_snapshot_id: int
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    modified: list[dict[str, str]] = Field(default_factory=list)
+    raw_diff: str = ""
+    truncated: bool = False
+
+
+__all__ = [
+    "AcApDTO",
+    "AcApDetailDTO",
+    "AcApPageDTO",
+    "AcConfigContentDTO",
+    "AcConfigDiffDTO",
+    "AcConfigSnapshotDTO",
+    "AcConfigSnapshotPageDTO",
+    "AcLldpDTO",
+    "AcManagementSummaryDTO",
+    "AcOpticalDTO",
+    "AcOverviewDTO",
+    "AcRadioDTO",
+]

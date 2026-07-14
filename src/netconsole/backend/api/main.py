@@ -18,6 +18,7 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
+from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
@@ -93,6 +94,7 @@ def create_app(
     app.state.runtime_mode = runtime_mode
     app.state.paths = paths
     app.state.task_service = task_service
+    app.state.ac_management_query_service = AcManagementQueryService(paths)
     app.state.job_center_query_service = JobCenterQueryService(paths)
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service

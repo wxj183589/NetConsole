@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Connection, DataBoard, Monitor, Operation } from '@element-plus/icons-vue'
+import { Connection, DataBoard, Monitor, OfficeBuilding, Operation } from '@element-plus/icons-vue'
 
 import { getHealth } from '../api/client'
 
@@ -13,6 +13,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
   if (route.path.startsWith('/rail-transit/online-mr')) return '/rail-transit/online-mr'
   if (route.path.startsWith('/agents')) return '/agents'
+  if (route.path.startsWith('/ac-management')) return '/ac-management'
   if (route.path.startsWith('/tasks')) return '/tasks'
   return '/'
 })
@@ -51,6 +52,10 @@ onMounted(async () => {
           <el-icon><Connection /></el-icon>
           <span>Agent 管理</span>
         </el-menu-item>
+        <el-menu-item index="/ac-management">
+          <el-icon><OfficeBuilding /></el-icon>
+          <span>AC 管理</span>
+        </el-menu-item>
         <el-sub-menu index="/rail-transit">
           <template #title>
             <el-icon><Monitor /></el-icon>
@@ -72,7 +77,7 @@ onMounted(async () => {
       <el-header class="app-header">
         <div>
           <div class="header-title">{{ route.meta.title || (route.name === 'tasks' ? '任务中心' : 'Dashboard') }}</div>
-          <div class="header-subtitle">任务、Agent、流量测试与 Online MR 共享 Python Core</div>
+          <div class="header-subtitle">任务、Agent、AC、流量测试与 Online MR 共享 Python Core</div>
         </div>
         <div class="header-status">
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
