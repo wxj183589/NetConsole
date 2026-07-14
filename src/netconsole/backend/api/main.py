@@ -19,6 +19,7 @@ from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
+from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -64,6 +65,7 @@ def create_app(
     task_service: TaskApplicationService | None = None,
     agent_service: AgentControllerService | None = None,
     traffic_service: TrafficTestApplicationService | None = None,
+    ac_mesh_link_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
     frontend_dist: Path | None = None,
     desktop_session_token: str | None = None,
 ) -> FastAPI:
@@ -80,6 +82,8 @@ def create_app(
             task_service=task_service,
             agent_controller=agent_service,
         )
+    if ac_mesh_link_refresh_service is None:
+        ac_mesh_link_refresh_service = AcMeshLinkRefreshApplicationService(paths, task_service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -88,6 +92,7 @@ def create_app(
         try:
             yield
         finally:
+            await ac_mesh_link_refresh_service.stop()
             await traffic_service.stop()
             await agent_service.stop()
 
@@ -97,6 +102,7 @@ def create_app(
     app.state.task_service = task_service
     app.state.ac_management_query_service = AcManagementQueryService(paths)
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
+    app.state.ac_mesh_link_refresh_service = ac_mesh_link_refresh_service
     app.state.job_center_query_service = JobCenterQueryService(paths)
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service

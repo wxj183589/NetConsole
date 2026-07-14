@@ -3,6 +3,8 @@ export type MrOnlineStatus = 'online' | 'offline' | 'stale' | 'unknown'
 
 export interface AcMeshLinkSummary {
   site_id: string
+  controller_id: string
+  controller_name: string
   registered_mrs: number
   online_mrs: number
   offline_mrs: number
@@ -16,6 +18,15 @@ export interface AcMeshLinkSummary {
   age_seconds: number | null
   data_status: MeshDataStatus
   source_type: string
+  raw_available: boolean
+  message: string
+}
+
+export interface AcMeshLinkRefreshResponse {
+  success: boolean
+  task_id: string
+  status: string
+  already_running: boolean
   message: string
 }
 

@@ -10,10 +10,17 @@ from netconsole.models.api.ac_mesh_link import (
     AcMeshMrDetailDTO,
     AcMeshMrPageDTO,
     AcMeshRawTailDTO,
+    AcMeshLinkRefreshRequestDTO,
+    AcMeshLinkRefreshResponseDTO,
     AcMeshSnapshotDetailDTO,
     AcMeshSnapshotPageDTO,
 )
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
+from netconsole.services.ac.mesh_link_refresh_service import (
+    AcMeshLinkRefreshApplicationService,
+    AcMeshLinkRefreshError,
+    AcMeshLinkRefreshErrorCode,
+)
 
 
 router = APIRouter(prefix="/ac-management/mesh-links", tags=["ac-mesh-links"])
@@ -27,9 +34,44 @@ def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
 
 
+def _refresh_service(request: Request) -> AcMeshLinkRefreshApplicationService:
+    return request.app.state.ac_mesh_link_refresh_service
+
+
 @router.get("/summary", response_model=AcMeshLinkSummaryDTO)
 def summary(request: Request) -> AcMeshLinkSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request)))
+
+
+@router.post("/refresh", response_model=AcMeshLinkRefreshResponseDTO, status_code=status.HTTP_202_ACCEPTED)
+def refresh_mesh_links(
+    request: Request,
+    payload: AcMeshLinkRefreshRequestDTO,
+) -> AcMeshLinkRefreshResponseDTO:
+    try:
+        result = _refresh_service(request).start_refresh(
+            site_name=_site_id(request),
+            controller_id=payload.controller_id,
+            include_switch_history=payload.include_switch_history,
+        )
+    except AcMeshLinkRefreshError as exc:
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == AcMeshLinkRefreshErrorCode.CONTROLLER_NOT_FOUND
+            else status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+        raise HTTPException(status_code=status_code, detail=f"{exc.code}: {exc.message}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AC_MESH_LINK_INTERNAL_ERROR: Mesh-Link 刷新任务暂时无法创建。",
+        ) from exc
+    return AcMeshLinkRefreshResponseDTO(
+        task_id=result.task.task_id,
+        status=result.task.status.value,
+        already_running=result.already_running,
+        message="Mesh-Link 刷新任务正在运行" if result.already_running else "Mesh-Link 刷新任务已创建",
+    )
 
 
 @router.get("/current", response_model=AcMeshLinkPageDTO)

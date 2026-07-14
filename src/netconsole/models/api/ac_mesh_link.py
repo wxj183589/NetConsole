@@ -129,6 +129,8 @@ class AcMeshSnapshotDetailDTO(ApiModel):
 
 class AcMeshLinkSummaryDTO(ApiModel):
     site_id: str
+    controller_id: str = ""
+    controller_name: str = ""
     registered_mrs: int = 0
     online_mrs: int = 0
     offline_mrs: int = 0
@@ -142,6 +144,7 @@ class AcMeshLinkSummaryDTO(ApiModel):
     age_seconds: int | None = None
     data_status: str = "no_data"
     source_type: str = "vehicle_mr_online_snapshot"
+    raw_available: bool = False
     message: str = ""
 
 
@@ -155,9 +158,24 @@ class AcMeshRawTailDTO(ApiModel):
     message: str = "暂无 Mesh-Link 原始数据"
 
 
+class AcMeshLinkRefreshRequestDTO(ApiModel):
+    controller_id: str = Field(min_length=1, max_length=100)
+    include_switch_history: bool = False
+
+
+class AcMeshLinkRefreshResponseDTO(ApiModel):
+    success: bool = True
+    task_id: str
+    status: str
+    already_running: bool = False
+    message: str
+
+
 __all__ = [
     "AcMeshLinkPageDTO",
     "AcMeshLinkRecordDTO",
+    "AcMeshLinkRefreshRequestDTO",
+    "AcMeshLinkRefreshResponseDTO",
     "AcMeshLinkSummaryDTO",
     "AcMeshMrDetailDTO",
     "AcMeshMrEventDTO",

@@ -39,6 +39,7 @@ class _MrDevice:
     uuid: str
     name: str
     system_name: str
+    mac_address: str
     management_ip: str
     train_no: str
     car_end: str
@@ -88,6 +89,8 @@ class AcMeshLinkQueryService:
             )
         return AcMeshLinkSummaryDTO(
             site_id=site_id,
+            controller_id=snapshot.controller_id,
+            controller_name=snapshot.controller_name,
             registered_mrs=sum(bool(item.mr_device_id) for item in mrs),
             online_mrs=sum(item.online_status == "online" for item in mrs),
             offline_mrs=sum(item.online_status == "offline" for item in mrs),
@@ -100,6 +103,8 @@ class AcMeshLinkQueryService:
             updated_at=snapshot.collected_at,
             age_seconds=snapshot.age_seconds,
             data_status=snapshot.data_status,
+            source_type=snapshot.source_type,
+            raw_available=self._raw_path(site_id, snapshot).is_file(),
             message=snapshot.error_summary,
         )
 
@@ -264,12 +269,26 @@ class AcMeshLinkQueryService:
         return AcMeshSnapshotDetailDTO(snapshot=snapshot, links=self._link_rows(site_id, snapshot=snapshot))
 
     def get_raw_tail(self, site_id: str, *, snapshot_id: int | None = None, limit: int = 300) -> AcMeshRawTailDTO:
-        del limit
         snapshot = self._snapshot(site_id, snapshot_id) if snapshot_id else self._latest_snapshot(site_id)
+        if snapshot is None:
+            return AcMeshRawTailDTO(message="暂无 Mesh-Link 快照。")
+        raw_path = self._raw_path(site_id, snapshot)
+        if raw_path.is_file():
+            lines = raw_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            selected = lines[-max(1, min(int(limit), 300)) :]
+            return AcMeshRawTailDTO(
+                snapshot_id=snapshot.id,
+                available=True,
+                lines=selected,
+                line_count=len(lines),
+                source_reference=self._raw_reference(site_id, snapshot),
+                updated_at=snapshot.collected_at,
+                message="",
+            )
         return AcMeshRawTailDTO(
-            snapshot_id=snapshot.id if snapshot else None,
-            source_reference=snapshot.source_reference if snapshot else "",
-            updated_at=snapshot.collected_at if snapshot else "",
+            snapshot_id=snapshot.id,
+            source_reference=snapshot.source_reference,
+            updated_at=snapshot.collected_at,
             message="现有 AC Mesh-Link 采集器仅持久化结构化快照，暂无可读取的原始回显。",
         )
 
@@ -565,6 +584,7 @@ class AcMeshLinkQueryService:
             data_status = "recent"
         else:
             data_status = "stale"
+        live_raw = self.paths.ac_mesh_link_snapshot_dir(site_id, str(row.get("session_id") or "")).is_dir()
         return AcMeshSnapshotDTO(
             id=int(row["id"]),
             session_id=str(row.get("session_id") or ""),
@@ -573,7 +593,12 @@ class AcMeshLinkQueryService:
             site_id=site_id,
             collected_at=collected_at,
             ac_time=str(row.get("ac_time") or ""),
-            source_reference=f"vehicle_mr_online.sqlite#snapshot:{row['id']}",
+            source_type="ac_live_refresh" if live_raw else "vehicle_mr_online_snapshot",
+            source_reference=(
+                self._raw_reference_from_session(site_id, str(row.get("session_id") or ""))
+                if live_raw
+                else f"vehicle_mr_online.sqlite#snapshot:{row['id']}"
+            ),
             data_status=data_status,
             age_seconds=age,
             link_count=int(row.get("link_count") or 0),
@@ -595,6 +620,7 @@ class AcMeshLinkQueryService:
                     uuid=str(row.get("device_uuid") or ""),
                     name=name or system_name,
                     system_name=system_name,
+                    mac_address=normalize_mac(row.get("mac_address")),
                     management_ip=str(row.get("primary_address") or ""),
                     train_no=identity.train_no,
                     car_end=identity.car_end,
@@ -610,7 +636,7 @@ class AcMeshLinkQueryService:
             if not self._table_exists(conn, "devices"):
                 return []
             rows = conn.execute(
-                "SELECT id, device_uuid, name, system_name, primary_address, device_type FROM devices"
+                "SELECT id, device_uuid, name, system_name, mac_address, primary_address, device_type FROM devices"
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -628,7 +654,21 @@ class AcMeshLinkQueryService:
             by_end = [item for item in devices if item.train_no == identity.train_no and item.car_end == identity.car_end]
             if len(by_end) == 1:
                 return by_end[0]
+        peer_mac = normalize_mac(row.get("peer_mac"))
+        by_mac = [item for item in devices if peer_mac and item.mac_address == peer_mac]
+        if len(by_mac) == 1:
+            return by_mac[0]
         return None
+
+    def _raw_path(self, site_id: str, snapshot: AcMeshSnapshotDTO) -> Path:
+        return self.paths.ac_mesh_link_snapshot_dir(site_id, snapshot.session_id) / "raw" / "mesh_link_raw.log"
+
+    def _raw_reference(self, site_id: str, snapshot: AcMeshSnapshotDTO) -> str:
+        return self._raw_reference_from_session(site_id, snapshot.session_id)
+
+    def _raw_reference_from_session(self, site_id: str, session_id: str) -> str:
+        path = self.paths.ac_mesh_link_snapshot_dir(site_id, session_id) / "raw" / "mesh_link_raw.log"
+        return path.relative_to(self.paths.site_dir(site_id)).as_posix()
 
     def _current_state_rows(self, site_id: str) -> list[dict[str, object]]:
         db_path = self._snapshot_db_path(site_id)

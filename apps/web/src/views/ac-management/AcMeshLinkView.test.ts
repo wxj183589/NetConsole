@@ -14,14 +14,20 @@ describe('AC Mesh-Link read-only view', () => {
     expect(source).not.toContain('终端数')
   })
 
-  it('polls stored snapshots only and stops when hidden or unmounted', () => {
-    expect(source).toContain('刷新已落盘快照')
+  it('creates a controlled refresh task and stops polling without cancelling it', () => {
+    expect(source).toContain('刷新 Mesh-Link')
+    expect(source).toContain('store.startRefresh')
+    expect(source).toContain('正在刷新 Mesh-Link')
+    expect(source).toContain('打开任务详情')
+    expect(source).toContain('原始回显')
     expect(source).toContain('document.hidden')
     expect(source).toContain('store.stopPolling()')
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain('最新 Mesh-Link 原始输出')
     expect(source).not.toContain('display wlan mesh-link')
-    expect(source).not.toContain('开始采集')
+    expect(source).not.toContain('password')
+    expect(source).not.toContain('任意命令')
+    expect(source).not.toContain('cancel')
     expect(source).not.toContain('停止采集')
   })
 })

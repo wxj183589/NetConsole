@@ -74,12 +74,25 @@ function matchLabel(method: string): string {
       <div>
         <p class="eyebrow">轨道交通无线控制器资源管理</p>
         <h1>Mesh-Link 在线监控</h1>
-        <p>只读取 Qt 已采集的 AC Mesh-Link 快照，展示车载 MR 与轨旁 FIT-AP 的链路关系，不触发设备采集。</p>
+        <p>通过任务中心执行固定只读命令采集，展示车载 MR 与轨旁 FIT-AP 的 Mesh 链路关系。</p>
       </div>
-      <el-button :icon="Refresh" :loading="store.loading" @click="store.refreshCore">刷新已落盘快照</el-button>
+      <div class="refresh-actions">
+        <el-select v-model="store.selectedControllerId" placeholder="选择 AC" filterable>
+          <el-option v-for="item in store.controllers" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+        <el-checkbox v-model="store.includeSwitchHistory">包含切换历史</el-checkbox>
+        <el-button
+          type="primary"
+          :icon="Refresh"
+          :loading="store.refreshStarting"
+          :disabled="store.refreshActive || !store.selectedControllerId"
+          @click="store.startRefresh"
+        >{{ store.refreshActive ? '正在刷新 Mesh-Link…' : '刷新 Mesh-Link' }}</el-button>
+      </div>
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="warning" :closable="false" show-icon />
+    <el-alert v-if="store.refreshError" :title="store.refreshError" type="error" :closable="false" show-icon />
     <el-alert
       v-else-if="store.summary?.data_status !== 'fresh'"
       :title="`当前数据状态：${dataStatusLabel(store.summary?.data_status || 'no_data')}。历史 Forwarding 不代表当前在线。`"
@@ -104,6 +117,11 @@ function matchLabel(method: string): string {
       <span>更新时间：{{ formatTime(store.summary?.updated_at || '') }}</span>
       <span>数据年龄：{{ store.summary?.age_seconds == null ? '无数据' : `${store.summary.age_seconds}s` }}</span>
       <el-tag :type="statusType(store.summary?.data_status || 'no_data')">{{ dataStatusLabel(store.summary?.data_status || 'no_data') }}</el-tag>
+      <span>原始回显：{{ store.summary?.raw_available ? '可用' : '不可用' }}</span>
+      <template v-if="store.refreshTask">
+        <span>刷新任务：{{ store.refreshTask.status }}</span>
+        <el-button link type="primary" @click="router.push({ name: 'tasks', query: { task_id: store.refreshTask?.id } })">打开任务详情</el-button>
+      </template>
     </div>
 
     <div class="content-card">
@@ -234,8 +252,9 @@ function matchLabel(method: string): string {
 
 <style scoped>
 .mesh-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.page-heading, .source-strip, .toolbar, .pagination, .detail-title, .detail-actions { display: flex; align-items: center; gap: 12px; }
+.page-heading, .source-strip, .toolbar, .pagination, .detail-title, .detail-actions, .refresh-actions { display: flex; align-items: center; gap: 12px; }
 .page-heading { justify-content: space-between; }
+.refresh-actions { flex-wrap: wrap; justify-content: flex-end; }.refresh-actions .el-select { width: 200px; }
 .page-heading h1, .detail-title h2 { margin: 2px 0 6px; }
 .page-heading p, .detail-title p, .empty-raw { margin: 0; color: var(--el-text-color-secondary); }
 .eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: .08em; }

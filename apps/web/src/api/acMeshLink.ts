@@ -3,6 +3,7 @@ import type {
   AcMeshLinkPage,
   AcMeshLinkQuery,
   AcMeshLinkSummary,
+  AcMeshLinkRefreshResponse,
   AcMeshMrDetail,
   AcMeshMrPage,
   AcMeshMrQuery,
@@ -23,6 +24,19 @@ function queryString(values: object): string {
 
 export function getMeshLinkSummary(): Promise<AcMeshLinkSummary> {
   return apiRequest<AcMeshLinkSummary>(`${root}/summary`)
+}
+
+export function startMeshLinkRefresh(
+  controllerId: string,
+  includeSwitchHistory: boolean,
+): Promise<AcMeshLinkRefreshResponse> {
+  return apiRequest<AcMeshLinkRefreshResponse>(`${root}/refresh`, {
+    method: 'POST',
+    body: JSON.stringify({
+      controller_id: controllerId,
+      include_switch_history: includeSwitchHistory,
+    }),
+  })
 }
 
 export function listMeshLinks(values: AcMeshLinkQuery): Promise<AcMeshLinkPage> {

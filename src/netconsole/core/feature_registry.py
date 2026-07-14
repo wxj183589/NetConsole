@@ -42,6 +42,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.job_center", "任务中心", None, "page"),
     FeatureItem("web.ac_management", "AC 管理（Web 只读）", "module.ac", "page"),
     FeatureItem("web.ac_mesh_links", "Mesh-Link 在线监控（Web 只读）", "module.ac", "page"),
+    FeatureItem("ac.mesh_link.refresh", "刷新 Mesh-Link", "web.ac_mesh_links", "action"),
     FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
     FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),
     FeatureItem("devices.omnipeek_name_table_export", "导出 OmniPeek 名称表", "module.devices", "button"),

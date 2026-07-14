@@ -56,7 +56,7 @@ def test_mesh_link_get_api_is_read_only_and_raw_unavailable_is_not_an_error(tmp_
     assert after == before
 
 
-def test_mesh_link_router_exposes_get_only_operations(tmp_path: Path) -> None:
+def test_mesh_link_router_exposes_one_controlled_post_operation(tmp_path: Path) -> None:
     paths, _devices_db, _mesh_db = build_ac_mesh_link_fixture(tmp_path)
     app = create_app(
         RuntimeMode.SERVER,
@@ -74,6 +74,7 @@ def test_mesh_link_router_exposes_get_only_operations(tmp_path: Path) -> None:
     }
 
     assert routes
-    assert {method for _path, method in routes} == {"GET"}
+    assert {method for _path, method in routes} == {"GET", "POST"}
+    assert {path for path, method in routes if method == "POST"} == {"/api/ac-management/mesh-links/refresh"}
     assert "client_count" not in str(app.openapi()).casefold()
     assert all(not path.endswith(("/collect", "/command", "/start", "/stop")) for path, _method in routes)

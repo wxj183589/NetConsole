@@ -29,6 +29,7 @@ from netconsole.services.job_center.job_context import BackgroundTaskCancelled, 
 from netconsole.services.snmp.snmp_collection_service import SnmpCollectionService
 from netconsole.services.snmp_query_service import SnmpQueryService
 from netconsole.services.fit_ap_import_export import FitApImportExportService
+from netconsole.services.ac.mesh_link_refresh_service import run_ac_mesh_link_refresh
 
 
 def _string_list(value: object, fallback: object = None) -> list[str]:
@@ -298,6 +299,10 @@ def ac_command_action_execute(context: JobContext) -> dict[str, object]:
         raise RuntimeError(result.error_message or "AC 命令动作执行失败")
     return result.to_payload()
 
+
+def ac_mesh_link_refresh(context: JobContext) -> dict[str, object]:
+    return run_ac_mesh_link_refresh(context)
+
 HANDLERS = {
     name: globals()[name]
     for name in (
@@ -308,6 +313,7 @@ HANDLERS = {
         "ac_fit_ap_resources_refresh",
         "ac_fit_ap_optical_refresh",
         "ac_command_action_execute",
+        "ac_mesh_link_refresh",
         "ac_ap_extensions_refresh",
         "omnipeek_name_table_preview",
         "ac_overview_history_snapshot",

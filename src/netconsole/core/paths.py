@@ -218,6 +218,21 @@ class PathResolver:
     def online_mr_session_dir(self, site_name: str, safe_mr_name: str, session_id: str) -> Path:
         return self.online_mr_sessions_root(site_name, safe_mr_name) / session_id
 
+    def ac_mesh_link_root(self, site_name: str = "demo") -> Path:
+        return self.rail_transit_root(site_name) / "ac_mesh_link"
+
+    def ac_mesh_link_snapshots_root(self, site_name: str = "demo") -> Path:
+        return self.ac_mesh_link_root(site_name) / "snapshots"
+
+    def ac_mesh_link_snapshot_dir(self, site_name: str, session_id: str) -> Path:
+        return self.ac_mesh_link_snapshots_root(site_name) / session_id
+
+    def ac_mesh_link_staging_root(self, site_name: str = "demo") -> Path:
+        return self.ac_mesh_link_root(site_name) / ".staging"
+
+    def ac_mesh_link_failures_root(self, site_name: str = "demo") -> Path:
+        return self.ac_mesh_link_root(site_name) / "failures"
+
     def trackside_ap_root(self, site_name: str = "demo") -> Path:
         return self.rail_transit_root(site_name) / "trackside_ap"
 

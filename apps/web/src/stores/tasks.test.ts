@@ -18,6 +18,7 @@ const task: TaskItem = {
   mapping_state: 'LINKED', created_time: '2026-07-14T08:00:00Z', started_time: '2026-07-14T08:00:01Z',
   finished_time: '', updated_time: '2026-07-14T08:01:00Z', duration_seconds: 59, error_code: '', error_summary: '',
   has_warning: false, result_path: '', output_dir: '', package_path: '', session_path: '',
+  snapshot_id: null, records_count: null, raw_output_reference: '', parser_version: '',
 }
 
 describe('Job Center polling store', () => {

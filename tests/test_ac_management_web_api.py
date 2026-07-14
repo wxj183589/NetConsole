@@ -62,7 +62,7 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert after_config == before_config
 
 
-def test_ac_management_router_exposes_get_only_operations(tmp_path: Path) -> None:
+def test_ac_management_router_keeps_only_mesh_link_refresh_as_controlled_post(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     app = create_app(
         RuntimeMode.SERVER,
@@ -79,7 +79,8 @@ def test_ac_management_router_exposes_get_only_operations(tmp_path: Path) -> Non
     }
 
     assert routes
-    assert {method for _path, method in routes} == {"GET"}
+    assert {path for path, method in routes if method == "POST"} == {"/api/ac-management/mesh-links/refresh"}
+    assert all(method == "GET" for path, method in routes if not path.startswith("/api/ac-management/mesh-links"))
     assert "client_count" not in str(app.openapi()).casefold()
     assert all(not path.endswith(("/collect", "/persistent", "/save", "/command")) for path, _method in routes)
     assert all("delete" not in path for path, _method in routes)

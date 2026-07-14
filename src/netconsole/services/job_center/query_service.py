@@ -159,6 +159,9 @@ class JobCenterQueryService:
         result = cls._json_object(row.get("result_json")) if include_result else {}
         status = str(row.get("status") or "UNKNOWN").upper()
         error_summary = str(row.get("mapping_error_summary") or row.get("error_message") or "")
+        error_code = str(row.get("mapping_error_code") or result.get("error_code") or "")
+        if not error_code and error_summary.startswith("AC_MESH_LINK_"):
+            error_code = error_summary.partition(":")[0]
         source = str(row.get("source") or "local")
         executor = str(row.get("executor_kind") or result.get("executor_kind") or "")
         if not executor:
@@ -190,14 +193,25 @@ class JobCenterQueryService:
             finished_time=finished,
             updated_time=str(row.get("updated_time") or ""),
             duration_seconds=cls._duration_seconds(started, finished),
-            error_code=str(row.get("mapping_error_code") or result.get("error_code") or ""),
+            error_code=error_code,
             error_summary=error_summary,
             has_warning=bool(error_summary and status != "FAILED"),
             result_path=result_path,
             output_dir=cls._first_text(result, "output_dir", "output_path"),
             package_path=cls._first_text(result, "package_path", "zip_path"),
             session_path=cls._first_text(result, "session_dir", "session_path"),
+            snapshot_id=cls._optional_int(result.get("snapshot_id")),
+            records_count=cls._optional_int(result.get("records_count")),
+            raw_output_reference=cls._first_text(result, "raw_output_reference"),
+            parser_version=cls._first_text(result, "parser_version"),
         )
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        try:
+            return int(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
 
     @classmethod
     def _log_line(cls, row: dict[str, object]) -> JobCenterLogLineDTO:

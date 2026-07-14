@@ -182,6 +182,13 @@ class H3CComwareV9VehicleMrMeshLinkParser(VehicleMrMeshLinkParser):
         r"(?P<rssi>-?\d+|-)\s+"
         r"(?P<rx>\d+)\s*/\s*(?P<tx>\d+)\s*$"
     )
+    _peer_without_name_re = re.compile(
+        r"^\s*(?P<peer_mac>[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4})\s+"
+        r"(?P<local_mac>[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4}[-:.]?[0-9a-fA-F]{4})\s+"
+        r"(?P<status>\S+)\s+"
+        r"(?P<rssi>-?\d+|-)\s+"
+        r"(?P<rx>\d+)\s*/\s*(?P<tx>\d+)\s*$"
+    )
 
     def parse(self, raw_text: str) -> VehicleMrMeshParseResult:
         ac_time = ""
@@ -204,15 +211,16 @@ class H3CComwareV9VehicleMrMeshLinkParser(VehicleMrMeshLinkParser):
                     continue
                 if line.startswith("<") or line.lower().startswith("display ") or line.lower().startswith("time zone"):
                     continue
-                match = self._peer_re.match(line)
+                match = self._peer_re.match(line) or self._peer_without_name_re.match(line)
                 if not match or not current_ap:
                     continue
                 rssi_text = match.group("rssi")
+                peer_name = match.groupdict().get("peer", "").strip()
                 links.append(
                     VehicleMrMeshLink(
                         local_ap_name=current_ap,
-                        peer_name=match.group("peer").strip(),
-                        peer_name_canonical=canonical_peer_name(match.group("peer")),
+                        peer_name=peer_name,
+                        peer_name_canonical=canonical_peer_name(peer_name),
                         peer_mac=normalize_mac(match.group("peer_mac")),
                         local_mac=normalize_mac(match.group("local_mac")),
                         status=match.group("status").strip(),
@@ -477,9 +485,9 @@ def load_vehicle_mr_mapping_lookup(repository: DeviceRepository) -> dict[str, Tr
 
 
 def _identity_from_mapping_row(row: dict[str, object], columns: set[str]) -> TrainIdentity | None:
-    for field in ("peer_name", "mr_name", "device_name", "name"):
-        if field in columns:
-            identity = parse_train_identity(str(row.get(field) or ""))
+    for field_name in ("peer_name", "mr_name", "device_name", "name"):
+        if field_name in columns:
+            identity = parse_train_identity(str(row.get(field_name) or ""))
             if identity is not None:
                 return identity
     train_no = _first_text(row, columns, ("train_no", "train_number", "车号"))

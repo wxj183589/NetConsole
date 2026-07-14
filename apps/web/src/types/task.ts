@@ -44,6 +44,10 @@ export interface TaskItem {
   output_dir: string
   package_path: string
   session_path: string
+  snapshot_id: number | null
+  records_count: number | null
+  raw_output_reference: string
+  parser_version: string
 }
 
 export interface TaskLogLine {

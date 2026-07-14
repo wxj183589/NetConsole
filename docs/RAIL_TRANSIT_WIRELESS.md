@@ -36,7 +36,7 @@ Web 对外 DTO 从车载 MR 视角命名为 `peer_ap_*`，但匹配事实仍来�
 
 MR 先按 Peer Name 与设备管理名称精确匹配，再按唯一的列车号和 CT/CW 端匹配。AP 扩展信息只补充站点、区间、里程、方向、在线状态和光衰，不修改原始 Mesh-Link 事实。
 
-## 5C-5 只读边界
+## 5C-5 查询与 5C-5A 受控刷新边界
 
 Web 入口为 `/ac-management/mesh-links`，Feature key 为 `web.ac_mesh_links`。数据源为当前局点：
 
@@ -44,7 +44,7 @@ Web 入口为 `/ac-management/mesh-links`，Feature key 为 `web.ac_mesh_links`�
 files/rail_transit/online_mr/parsed/vehicle_mr_online.sqlite
 ```
 
-Query Service 使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，不实例化会初始化 schema 的 `VehicleMrOnlineStore`。页面只读取已落盘快照，不连接 AC、不执行命令、不创建任务，也不修改 `devices.db`、`tasks.db`、快照或 raw。
+Query Service 使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，不实例化会初始化 schema 的 `VehicleMrOnlineStore`。阶段 5C-5A 的唯一写入口只创建 `ac_mesh_link_refresh` Task；设备连接、固定白名单命令、raw 和快照写入均在 Worker 中完成。凭据不进入请求、Task payload、事件、metadata 或 raw。
 
 快照新鲜度规则：
 
@@ -56,9 +56,11 @@ Query Service 使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，不实例化�
 
 只有 `fresh` 且链路状态属于活动状态时，才计入当前在线和活动链路。缺失字段显示“无数据”，不得从无关字段推测。
 
-现有 AC Mesh-Link 采集器只持久化结构化快照，没有保存对应原始回显。首版 `/raw-tail` 因此返回 `available=false` 和明确说明；不得改用车载侧 Online MR 日志冒充 AC 原始输出。后续若要保存 raw，应在采集任务中另行设计受控文件契约。
+旧 AC Mesh-Link 快照没有对应原始回显时，`/raw-tail` 继续返回 `available=false`，不得改用车载侧 Online MR 日志冒充。5C-5A 新任务把完整 UTF-8 回显保存到 `files/rail_transit/ac_mesh_link/snapshots/<session_id>/raw/`，API 只返回局点内相对引用。失败 raw 转入受控 failure 目录，失败任务不覆盖最新成功快照。
 
-## GET-only API
+Peer Name 缺失但 Peer MAC 存在时保留该链路，并仅在 Peer MAC 唯一匹配设备管理记录时关联车载 MR。只有明确 `Total 0` 或等价无链路提示才可生成空快照；仅有表头、空回显、命令错误和解析失败不等同于全部 MR 离线。
+
+## API
 
 ```text
 GET /api/ac-management/mesh-links/summary
@@ -70,6 +72,7 @@ GET /api/ac-management/mesh-links/mrs/{mr_id}
 GET /api/ac-management/mesh-links/snapshots
 GET /api/ac-management/mesh-links/snapshots/{snapshot_id}
 GET /api/ac-management/mesh-links/raw-tail
+POST /api/ac-management/mesh-links/refresh
 ```
 
-没有 POST、PUT、PATCH 或 DELETE，也没有采集、刷新设备、启动、停止或任意命令接口。
+`refresh` 是唯一 POST，仅接受 AC 标识和是否包含切换历史的布尔值。没有 PUT、PATCH、DELETE、任意命令、自动周期采集或 AC 配置操作。

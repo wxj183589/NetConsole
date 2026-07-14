@@ -189,6 +189,12 @@ function openOnlineMr(task: TaskItem): void {
           <el-descriptions-item label="Session 路径" :span="2"><code>{{ store.selected.session_path || '--' }}</code></el-descriptions-item>
           <el-descriptions-item label="输出目录" :span="2"><code>{{ store.selected.output_dir || store.selected.result_path || '--' }}</code></el-descriptions-item>
           <el-descriptions-item label="采集包" :span="2"><code>{{ store.selected.package_path || '--' }}</code></el-descriptions-item>
+          <template v-if="store.selected.type === 'ac_mesh_link_refresh'">
+            <el-descriptions-item label="Mesh-Link 快照 ID">{{ store.selected.snapshot_id ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item label="链路记录数">{{ store.selected.records_count ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
+            <el-descriptions-item label="原始回显引用" :span="2"><code>{{ store.selected.raw_output_reference || '--' }}</code></el-descriptions-item>
+          </template>
         </el-descriptions>
 
         <div v-if="store.selected.session_id" class="association-actions">

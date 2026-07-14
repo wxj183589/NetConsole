@@ -36,6 +36,10 @@ class JobCenterTaskDTO(ApiModel):
     output_dir: str = ""
     package_path: str = ""
     session_path: str = ""
+    snapshot_id: int | None = None
+    records_count: int | None = None
+    raw_output_reference: str = ""
+    parser_version: str = ""
 
 
 class JobCenterSummaryDTO(ApiModel):
