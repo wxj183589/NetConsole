@@ -153,6 +153,7 @@ class OnlineMrQueryService:
             collection_config={
                 "intervals": meta.get("intervals") or {},
                 "radio": meta.get("radio") or {},
+                "duration_minutes": meta.get("configured_duration_minutes"),
                 "session_type": meta.get("session_type"),
                 "config_collect_enabled": meta.get("config_collect_enabled"),
                 "config_collect_status": meta.get("config_collect_status"),

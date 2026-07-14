@@ -54,6 +54,17 @@ class OnlineMrApplicationErrorCode(StrEnum):
     AGENT_RAW_CONTRACT_INVALID = "ONLINE_MR_AGENT_RAW_CONTRACT_INVALID"
 
 
+class OnlineMrWebControlErrorCode(StrEnum):
+    CONTROL_DISABLED = "ONLINE_MR_WEB_CONTROL_DISABLED"
+    LOCAL_ONLY = "ONLINE_MR_WEB_LOCAL_ONLY"
+    AUTH_REQUIRED = "ONLINE_MR_WEB_AUTH_REQUIRED"
+    INVALID_REQUEST = "ONLINE_MR_WEB_INVALID_REQUEST"
+    DEVICE_NOT_FOUND = "ONLINE_MR_WEB_DEVICE_NOT_FOUND"
+    CREDENTIAL_UNAVAILABLE = "ONLINE_MR_WEB_CREDENTIAL_UNAVAILABLE"
+    ALREADY_RUNNING = "ONLINE_MR_ALREADY_RUNNING"
+    STOP_FAILED = "ONLINE_MR_STOP_FAILED"
+
+
 class OnlineMrQueryError(RuntimeError):
     def __init__(self, code: OnlineMrQueryErrorCode | str, message: str) -> None:
         safe_message = str(message or "Online MR 查询失败").strip()
@@ -76,9 +87,20 @@ class OnlineMrApplicationError(RuntimeError):
         return {"code": self.code, "message": self.message}
 
 
+class OnlineMrWebControlError(RuntimeError):
+    def __init__(self, code: OnlineMrWebControlErrorCode | str, message: str, *, status_code: int = 409) -> None:
+        safe_message = str(message or "Online MR Web 控制失败").strip()
+        super().__init__(safe_message)
+        self.code = str(code)
+        self.message = safe_message
+        self.status_code = int(status_code)
+
+
 __all__ = [
     "OnlineMrApplicationError",
     "OnlineMrApplicationErrorCode",
     "OnlineMrQueryError",
     "OnlineMrQueryErrorCode",
+    "OnlineMrWebControlError",
+    "OnlineMrWebControlErrorCode",
 ]

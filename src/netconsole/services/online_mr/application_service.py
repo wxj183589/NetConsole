@@ -166,8 +166,8 @@ class OnlineMrApplicationService:
                 duration_minutes=0.0,
                 stop_reason="task_start_failed",
                 error_code=code.value,
-                error_summary=self._safe_error(exc),
-                error_message=self._safe_error(exc),
+                error_summary=self._safe_error(exc, request.config.password),
+                error_message=self._safe_error(exc, request.config.password),
             )
             repository.save(failed)
             raise OnlineMrApplicationError(code, "Online MR 本地采集任务启动失败") from exc
@@ -760,8 +760,11 @@ class OnlineMrApplicationService:
         return str(value or "").strip()
 
     @staticmethod
-    def _safe_error(exc: BaseException) -> str:
-        return OnlineMrApplicationService._sanitize_error_text(exc or exc.__class__.__name__)
+    def _safe_error(exc: BaseException, *sensitive_values: str) -> str:
+        text = OnlineMrApplicationService._sanitize_error_text(exc or exc.__class__.__name__)
+        for sensitive in sorted({str(value) for value in sensitive_values if str(value)}, key=len, reverse=True):
+            text = text.replace(sensitive, "<redacted>")
+        return text
 
     @staticmethod
     def _sanitize_error_text(value: object) -> str:

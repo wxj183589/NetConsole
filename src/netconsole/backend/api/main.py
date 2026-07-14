@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import secrets
 from contextlib import asynccontextmanager
@@ -8,6 +9,8 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,7 +29,10 @@ from netconsole.services.agent.controller import AgentControllerError, AgentCont
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
+from netconsole.services.online_mr.application_service import OnlineMrApplicationService
+from netconsole.services.online_mr.errors import OnlineMrWebControlError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
@@ -57,12 +63,25 @@ class DesktopSessionMiddleware:
         cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
         supplied = cookie.get(DESKTOP_SESSION_COOKIE)
         if supplied is not None and secrets.compare_digest(supplied.value, self.token):
+            scope.setdefault("state", {})["desktop_session_authenticated"] = True
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 4401, "reason": "desktop session required"})
             return
-        response = JSONResponse(status_code=401, content={"detail": "desktop session required"})
+        content = (
+            {
+                "ok": False,
+                "error": {
+                    "code": "ONLINE_MR_WEB_AUTH_REQUIRED",
+                    "message": "当前请求缺少主程序短期 WebHost 会话",
+                    "details": {},
+                },
+            }
+            if str(scope.get("path") or "").startswith("/api/rail-transit/online-mr-control")
+            else {"detail": "desktop session required"}
+        )
+        response = JSONResponse(status_code=401, content=content)
         await response(scope, receive, send)
 
 
@@ -77,9 +96,19 @@ def create_app(
     frontend_dist: Path | None = None,
     desktop_session_token: str | None = None,
     rail_base_data_write_feature_enabled: bool | None = None,
+    online_mr_application_service: OnlineMrApplicationService | None = None,
+    online_mr_web_control_service: OnlineMrWebControlService | None = None,
+    online_mr_web_control_enabled: bool | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
+    if online_mr_web_control_enabled is None:
+        online_mr_web_control_enabled = os.environ.get("ONLINE_MR_WEB_CONTROL_ENABLED", "0") == "1"
+    online_mr_web_control_enabled = bool(
+        online_mr_web_control_enabled
+        and runtime_mode is RuntimeMode.DESKTOP
+        and desktop_session_token
+    )
     if task_service is None:
         task_service = TaskApplicationService(paths=paths, site_name=site_name)
     if agent_service is None:
@@ -93,6 +122,13 @@ def create_app(
         )
     if ac_mesh_link_refresh_service is None:
         ac_mesh_link_refresh_service = AcMeshLinkRefreshApplicationService(paths, task_service)
+    owns_online_mr_application_service = (
+        online_mr_application_service is None
+        and online_mr_web_control_service is None
+        and online_mr_web_control_enabled
+    )
+    if owns_online_mr_application_service:
+        online_mr_application_service = OnlineMrApplicationService(paths, site_name=site_name, task_service=task_service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -104,9 +140,13 @@ def create_app(
             await ac_mesh_link_refresh_service.stop()
             await traffic_service.stop()
             await agent_service.stop()
+            if owns_online_mr_application_service and online_mr_application_service is not None:
+                online_mr_application_service.close()
 
     app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION.removeprefix("v"), lifespan=lifespan)
     app.state.runtime_mode = runtime_mode
+    app.state.desktop_session_protected = bool(desktop_session_token)
+    app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.paths = paths
     app.state.task_service = task_service
     app.state.ac_management_query_service = AcManagementQueryService(paths)
@@ -117,6 +157,14 @@ def create_app(
     app.state.traffic_service = traffic_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
+    app.state.online_mr_application_service = online_mr_application_service
+    app.state.online_mr_web_control_service = online_mr_web_control_service or OnlineMrWebControlService(
+        paths,
+        online_mr_application_service,
+        app.state.rail_transit_base_data_query_service,
+        app.state.online_mr_query_service,
+        enabled=online_mr_web_control_enabled,
+    )
     app.state.train_communication_query_service = TrainCommunicationQueryService(
         paths,
         base_query=app.state.rail_transit_base_data_query_service,
@@ -188,6 +236,28 @@ def create_app(
     async def online_mr_query_error_handler(_: Request, exc: OnlineMrQueryError) -> JSONResponse:
         payload = ErrorResponse(error=ErrorDetail(code=exc.code, message=exc.message))
         return JSONResponse(status_code=_online_mr_query_error_status(exc.code), content=payload.model_dump(mode="json"))
+
+    @app.exception_handler(OnlineMrWebControlError)
+    async def online_mr_web_control_error_handler(_: Request, exc: OnlineMrWebControlError) -> JSONResponse:
+        payload = ErrorResponse(error=ErrorDetail(code=exc.code, message=_safe_error_message(exc.message)))
+        return JSONResponse(status_code=exc.status_code, content=payload.model_dump(mode="json"))
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if request.url.path.startswith("/api/rail-transit/online-mr-control"):
+            errors = [
+                {key: value for key, value in item.items() if key in {"type", "loc", "msg"}}
+                for item in exc.errors()
+            ]
+            payload = ErrorResponse(
+                error=ErrorDetail(
+                    code="ONLINE_MR_WEB_INVALID_REQUEST",
+                    message="Online MR Web 控制请求字段或参数无效",
+                    details={"errors": errors},
+                )
+            )
+            return JSONResponse(status_code=422, content=jsonable_encoder(payload))
+        return JSONResponse(status_code=422, content=jsonable_encoder({"detail": exc.errors()}))
 
     app.include_router(api_router)
     app.include_router(ws_router)
