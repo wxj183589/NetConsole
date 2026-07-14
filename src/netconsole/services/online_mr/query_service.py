@@ -71,6 +71,7 @@ class OnlineMrQueryService:
         "fping_samples": "raw/fping_v5_samples.jsonl",
         "fping_summary": "raw/fping_v5_final_summary.json",
         "fping_raw": "raw/fping_v5_raw.log",
+        "iperf_client": "raw/iperf_client_raw.log",
         "switch_history": "raw/switch_history_latest.log",
         "collector_output": "raw/collector_output_raw.log",
         "wireless_status": "raw/wireless_status_raw.log",

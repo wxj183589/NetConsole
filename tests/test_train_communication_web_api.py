@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from netconsole.backend.api.main import create_app
+from netconsole.backend.api.train_communication_router import router as train_communication_router
+from netconsole.core.paths import PathResolver
+from netconsole.models.api.train_communication import (
+    MrCommunicationDetailDTO,
+    MrCommunicationStatusDTO,
+    TrainCommunicationDetailDTO,
+    TrainCommunicationPageDTO,
+    TrainCommunicationRowDTO,
+    TrainCommunicationSummaryDTO,
+)
+
+
+class _ApiService:
+    row = TrainCommunicationRowDTO(train_id="01", train_no="01", train_name="01车")
+    mr = MrCommunicationStatusDTO(train_id="01", train_name="01车", mr_id="mr-1", mr_name="列车01-MR-CT")
+
+    @staticmethod
+    def current_site_id() -> str:
+        return "demo"
+
+    @classmethod
+    def get_summary(cls, site_id: str) -> TrainCommunicationSummaryDTO:
+        return TrainCommunicationSummaryDTO(site_id=site_id, registered_trains=1, registered_mrs=1)
+
+    @classmethod
+    def list_trains(cls, _site_id: str, **_kwargs) -> TrainCommunicationPageDTO:
+        return TrainCommunicationPageDTO(items=[cls.row], total=1)
+
+    @classmethod
+    def get_train_detail(cls, site_id: str, train_id: str):
+        return TrainCommunicationDetailDTO(train=cls.row, site_id=site_id) if train_id == "01" else None
+
+    @classmethod
+    def get_mr_detail(cls, _site_id: str, mr_id: str):
+        return MrCommunicationDetailDTO(mr=cls.mr) if mr_id == "mr-1" else None
+
+    @classmethod
+    def get_communication_preview(cls, _site_id: str, mr_id: str):
+        return cls.mr if mr_id == "mr-1" else None
+
+    @staticmethod
+    def get_raw_sources(*_args):
+        return []
+
+    @staticmethod
+    def get_related_tasks(*_args):
+        return []
+
+    @staticmethod
+    def get_related_packages(*_args):
+        return []
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_train_communication_api_is_get_only_and_does_not_touch_sources(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    app.state.train_communication_query_service = _ApiService()
+    protected = [tmp_path / name for name in ("devices.db", "tasks.db", "mesh.db", "session_meta.json")]
+    for index, path in enumerate(protected):
+        path.write_bytes(f"protected-{index}".encode())
+    before = [(path.stat().st_mtime_ns, _sha256(path)) for path in protected]
+
+    with TestClient(app) as client:
+        urls = [
+            "/api/rail-transit/train-communication/summary",
+            "/api/rail-transit/train-communication/trains",
+            "/api/rail-transit/train-communication/trains/01",
+            "/api/rail-transit/train-communication/mrs/mr-1",
+            "/api/rail-transit/train-communication/mrs/mr-1/preview",
+            "/api/rail-transit/train-communication/mrs/mr-1/raw-sources",
+            "/api/rail-transit/train-communication/mrs/mr-1/tasks",
+            "/api/rail-transit/train-communication/mrs/mr-1/packages",
+        ]
+        responses = [client.get(url) for url in urls]
+
+    assert all(response.status_code == 200 for response in responses)
+    assert "password" not in "".join(response.text for response in responses).casefold()
+    assert "token" not in "".join(response.text for response in responses).casefold()
+    assert before == [(path.stat().st_mtime_ns, _sha256(path)) for path in protected]
+    routes = [
+        route
+        for route in train_communication_router.routes
+        if getattr(route, "path", "").startswith("/rail-transit/train-communication")
+    ]
+    assert routes
+    assert all(route.methods == {"GET"} for route in routes)
+    assert not any(any(word in route.path for word in ("start", "stop", "delete", "import")) for route in routes)
+
+
+def test_missing_iperf_raw_tail_returns_chinese_empty_state(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    session = paths.online_mr_session_dir("demo", "MR-01", "session-1")
+    for name in ("raw", "parsed", "view", "logs", "outputs"):
+        (session / name).mkdir(parents=True, exist_ok=True)
+    (session / "session_meta.json").write_text(
+        json.dumps({"session_id": "session-1", "site": "demo", "mr_name": "MR-01", "status": "STOPPED"}),
+        encoding="utf-8",
+    )
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+
+    with TestClient(app) as client:
+        response = client.get("/api/online-mr/sessions/session-1/raw-tail?name=iperf_client")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["exists"] is False
+    assert response.json()["data"]["message"] == "文件不存在或尚未生成"

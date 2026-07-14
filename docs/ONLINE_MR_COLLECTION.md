@@ -347,8 +347,14 @@ Legacy Qt 的 Online MR 采集页操作栏增加 `online_mr.agent_packages` 入�
 
 Vue 路由 `/rail-transit/online-mr` 只展示当前局点的运行中或最近会话。FastAPI 的 `/api/online-mr/sessions/...` 仅提供 GET：当前/最近会话、详情、采集器状态、`view/*.json` 轻量预览、raw 白名单尾部和 raw 摘要。缺失或尚未生成的 raw 返回成功空结果，不创建文件、不回填 metadata，也不触发解析、打包或数据库迁移。
 
-raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`fping_summary`、`fping_raw`、`switch_history`、`collector_output` 和 `wireless_status`。响应只包含相对引用；`tasks.db` 使用 SQLite `mode=ro` 读取 Task/Mapping，不实例化会执行 schema 初始化的 Repository。
+raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`fping_summary`、`fping_raw`、`iperf_client`、`switch_history`、`collector_output` 和 `wireless_status`。响应只包含相对引用；`tasks.db` 使用 SQLite `mode=ro` 读取 Task/Mapping，不实例化会执行 schema 初始化的 Repository。
 
 页面状态和轻量预览每 2 秒刷新，最近会话、采集器与 raw 摘要每 5 秒刷新；原始日志只有展开后才每秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。终态会话若遗留 `view/live_mr_status.json` 的 `running` 采集器状态，查询层以 `session_meta.json` 终态校正为停止，事实文件本身保持不变。
 
 本阶段不提供 start/stop/force-stop/删除/解析/报告 API。Qt 仍是 LOCAL 启停和最终化入口；Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序保持第 3 节契约。`executor=AGENT`、Agent 远程 MR 控制、Go Agent 和 Agent Web 均未修改。
+
+## 18. 在线列车通信统一展示（5C-7A，只读）
+
+`/rail-transit/train-communication` 在 5C-2 查询边界上聚合正式列车/MR、AC Mesh-Link、活动或最近 Online MR Session、fping/iPerf、关联 Task 和采集包。Agent 已导入 Session 可以按 `executor=AGENT` 只读显示，但远程执行仍为 unsupported。
+
+聚合页不修改本节任何采集命令、raw、Traffic flush、最终化或打包契约，也不新增 Web start/stop。原始片段继续通过逻辑名称白名单读取 tail；详细优先级、状态和刷新规则见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。

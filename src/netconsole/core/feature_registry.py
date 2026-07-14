@@ -58,6 +58,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.agent_packages", "online_mr.agent_packages.entry", "rail.online_mr_collection", "action"),
     FeatureItem("web.online_mr_realtime", "车载 MR 实时展示", "rail.online_mr_collection", "page"),
     FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page"),
+    FeatureItem("web.train_communication_monitoring", "在线列车通信检测", "module.rail_transit", "page"),
     FeatureItem(
         "web.rail_transit_base_data_write",
         "轨道交通基础资料受控写入",

@@ -18,6 +18,12 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 
 轨道交通 FIT-AP 和 Mesh-Link Web 契约不提供客户端数量、终端数量或基于客户端数的筛选、汇总与判断。
 
+## 5C-7A 在线列车通信统一展示
+
+Web 入口 `/rail-transit/train-communication` 按列车分别展示 MR-CT 与 MR-TC，并只读聚合正式基础资料、AC Mesh-Link、Online MR Session、fping/iPerf 轻量状态、Job Center 和采集包。Peer 来源冲突显式返回 warning；位置只采用已精确关联的正式 AP 扩展资料或明确的 Session 上下文，不按 AP/MR 名称猜测。
+
+该页面不控制采集、不连接 AC/Agent、不创建 Task、不修改快照或 Session，也不承担正式 Mesh 日志分析与报告。详细契约见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
+
 ## 5C-6 基础资料边界
 
 Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增基础资料数据库。轨旁 AP 点位来自 `ap_extension_points`，列车和车载 MR 来自 `devices / device_groups`；FIT-AP、光衰、Mesh-Link 和 Online MR 只作为关联运行态，不写回基础资料。

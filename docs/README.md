@@ -26,6 +26,7 @@
 | [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md) | 本地/Agent 执行、Task 映射、Traffic 事件、数据与恢复边界 | 流量测试与阶段 4C 开发 | `services/traffic`、`TrafficRunRepository`、Traffic handlers | 执行端、状态、事件、存储、恢复或 Web 接入变化 |
 | [AC 管理](AC_MANAGEMENT.md) | Qt AC 写操作边界、Web 只读资源/光衰/配置查看和刷新策略 | AC/FIT-AP 与 Web 开发 | `src/netconsole/services/ac/query_service.py`、AC Repository、AC Web API/Vue | AC 查询字段、光衰关联、配置查看或 Web 写操作边界变化 |
 | [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md) | 轨旁 AP、AC Mesh-Link、Online MR 与离线分析的业务边界和匹配规则 | 轨道交通无线与 AC Mesh-Link 开发 | `src/netconsole/services/vehicle_mr_online.py`、Mesh-Link Query API/Vue | Mesh-Link 字段、匹配、时效性或采集/分析边界变化 |
+| [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md) | 列车、MR、Mesh-Link、fping/iPerf、任务和采集包的只读聚合 | 轨道交通在线通信监控开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 聚合优先级、状态、刷新或只读边界变化 |
 | [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 站点/区间派生、轨旁 AP、列车/MR、数据质量和导入预览只读边界 | 阶段 5C-6 基础资料 Web 开发 | `src/netconsole/services/rail_transit/base_data_query_service.py`、基础资料 API/Vue | 字段、校验、预览安全或写入边界变化 |
 | [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 
