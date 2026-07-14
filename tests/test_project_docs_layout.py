@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from urllib.parse import unquote
@@ -8,16 +9,56 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 FRONT_MATTER_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):\s*")
+IGNORED_MARKDOWN_DIRS = frozenset(
+    {
+        ".git",
+        ".local",
+        ".pytest_cache",
+        ".venv",
+        "__pycache__",
+        "artifacts",
+        "build",
+        "coverage",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "site-packages",
+        "tmp",
+        "venv",
+    }
+)
+
+
+def _markdown_under(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    markdown: list[Path] = []
+    for current, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in IGNORED_MARKDOWN_DIRS]
+        markdown.extend(Path(current) / name for name in filenames if name.endswith(".md"))
+    return markdown
 
 
 def _markdown_files() -> list[Path]:
     paths = [ROOT / "README.md", ROOT / "AGENTS.md"]
-    paths.extend((ROOT / "docs").rglob("*.md"))
-    paths.extend((ROOT / "apps").rglob("*.md"))
-    paths.extend((ROOT / ".agents" / "skills").rglob("*.md"))
-    paths.extend((ROOT / "tools").rglob("*.md"))
-    paths.extend((ROOT / "resources").rglob("*.md"))
+    for root in (ROOT / "docs", ROOT / "apps", ROOT / ".agents" / "skills", ROOT / "tools", ROOT / "resources"):
+        paths.extend(_markdown_under(root))
     return sorted(set(paths))
+
+
+def test_markdown_discovery_skips_generated_dependency_trees(tmp_path: Path) -> None:
+    source = tmp_path / "apps" / "web"
+    source.mkdir(parents=True)
+    expected = source / "README.md"
+    expected.write_text("source", encoding="utf-8")
+    dependency = source / "node_modules" / "package" / "README.md"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("dependency", encoding="utf-8")
+
+    discovered = _markdown_under(tmp_path)
+
+    assert expected in discovered
+    assert dependency not in discovered
 
 
 def test_markdown_relative_links_exist() -> None:

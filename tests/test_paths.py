@@ -1,8 +1,18 @@
+import os
 import sys
+from pathlib import Path
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import validate_runtime_write_path
+
+
+def test_pytest_data_root_is_isolated_from_project_local_data() -> None:
+    paths = PathResolver()
+    project_local = Path(__file__).resolve().parents[1] / ".local"
+
+    assert paths.data_root == Path(os.environ["NETCONSOLE_DATA_ROOT"]).resolve()
+    assert paths.data_root != project_local.resolve()
 
 
 def test_path_resolver_creates_site_dirs(tmp_path):

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import os
+import tempfile
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
+
+
+# conftest 会在测试模块收集前加载。这里先隔离数据根，避免模块级 app =
+# create_app() 在 fixture 生效前读取开发态 .local/data。
+_TEST_DATA_ROOT = tempfile.TemporaryDirectory(prefix="netconsole-pytest-")
+os.environ["NETCONSOLE_DATA_ROOT"] = _TEST_DATA_ROOT.name
 
 
 _QT_APPLICATION: QApplication | None = None

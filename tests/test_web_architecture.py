@@ -38,7 +38,7 @@ def test_runtime_mode_and_api_dtos_are_stable() -> None:
     assert AgentStatusDTO(agent_id="agent-1", name="测试 Agent", status="online").current_tasks == 0
 
 
-def test_fastapi_skeleton_exposes_health_and_openapi() -> None:
+def test_fastapi_app_exposes_registered_web_modules() -> None:
     app = create_app(RuntimeMode.SERVER)
     routes = set(app.openapi()["paths"])
     pending = list(app.routes)
@@ -53,11 +53,18 @@ def test_fastapi_skeleton_exposes_health_and_openapi() -> None:
 
     assert health().model_dump() == {"status": "ok", "version": "1.3.8"}
     assert app.state.runtime_mode is RuntimeMode.SERVER
-    assert "/api/health" in routes
-    assert "/docs" in routes
-    assert "/api/tasks" in routes
-    assert "/ws/tasks" in routes
-    assert not any(path.startswith("/api/devices") or path.startswith("/api/mr") or path.startswith("/api/ac") for path in routes)
+    assert {
+        "/api/health",
+        "/docs",
+        "/api/tasks",
+        "/ws/tasks",
+        "/api/ac-management/summary",
+        "/api/agents",
+        "/api/online-mr/sessions/current",
+        "/api/rail-transit/base-data/summary",
+        "/api/traffic/runs",
+    } <= routes
+    assert app.state.online_mr_web_control_enabled is False
 
 
 def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -> None:
