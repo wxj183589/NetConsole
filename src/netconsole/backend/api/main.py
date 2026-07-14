@@ -128,7 +128,12 @@ def create_app(
         and online_mr_web_control_enabled
     )
     if owns_online_mr_application_service:
-        online_mr_application_service = OnlineMrApplicationService(paths, site_name=site_name, task_service=task_service)
+        online_mr_application_service = OnlineMrApplicationService(
+            paths,
+            site_name=site_name,
+            task_service=task_service,
+            agent_profile_controller=agent_service,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

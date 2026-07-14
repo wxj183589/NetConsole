@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import uuid
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -30,6 +31,10 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.online_mr.collection_models import collection_config_to_payload
 from netconsole.services.online_mr.errors import OnlineMrApplicationError, OnlineMrApplicationErrorCode
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+
+if TYPE_CHECKING:
+    from netconsole.services.agent.controller import AgentControllerService
+    from netconsole.services.online_mr.agent_executor import OnlineMrAgentExecutor
 
 
 DeviceValidator = Callable[[str, int | str], bool]
@@ -68,6 +73,8 @@ class OnlineMrApplicationService:
         task_service: TaskApplicationService | None = None,
         process_adapter: LocalProcessAdapter | None = None,
         device_validator: DeviceValidator | None = None,
+        agent_executor: OnlineMrAgentExecutor | None = None,
+        agent_profile_controller: AgentControllerService | None = None,
     ) -> None:
         self.paths = paths
         self.site_name = str(site_name or "demo")
@@ -75,16 +82,30 @@ class OnlineMrApplicationService:
         self.process_adapter = process_adapter or LocalProcessAdapter(self.task_service)
         self.device_validator = device_validator or self._device_exists
         self._repositories: dict[str, OnlineMrTaskSessionRepository] = {}
+        self.agent_executor = agent_executor
+        if self.agent_executor is None and os.environ.get("ONLINE_MR_AGENT_EXECUTOR_ENABLED", "0") == "1":
+            from netconsole.services.agent.controller import AgentControllerService
+            from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
+            from netconsole.services.online_mr.agent_executor import OnlineMrAgentExecutor
+
+            profiles = agent_profile_controller or AgentControllerService(paths=paths, site_name=self.site_name)
+            self.agent_executor = OnlineMrAgentExecutor(
+                OnlineMrAgentControllerService(paths, profile_controller=profiles),
+                self.task_service,
+                self.repository,
+                self._site_ids,
+                self._device_identity_matches,
+            )
         self._unsubscribe = self.task_service.events.subscribe(self.reconcile_task_event)
 
     def prepare_start(self, request: OnlineMrStartRequest) -> OnlineMrStartRequest:
-        if request.executor_kind is not OnlineMrExecutorKind.LOCAL:
-            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
         site_id = self._safe_component(request.site_id)
         if not site_id or not self.paths.site_dir(site_id).is_dir():
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.SITE_NOT_FOUND, "Online MR 局点不存在")
-        if request.agent_id:
+        if request.executor_kind is OnlineMrExecutorKind.LOCAL and request.agent_id:
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "本地执行不能指定 Agent")
+        if request.executor_kind is OnlineMrExecutorKind.AGENT and not request.agent_id:
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "Agent 执行必须指定 Agent Profile")
         if request.device_id in (None, "") or not request.device_name.strip() or not request.mr_name.strip():
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "Online MR 设备和 MR 信息不完整")
         if not self.device_validator(site_id, request.device_id):
@@ -97,13 +118,26 @@ class OnlineMrApplicationService:
             or config.mr_name != request.mr_name
         ):
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.INVALID_START_REQUEST, "Online MR 启动配置与任务归属不一致")
+        active = self.repository(site_id).list_active(limit=1000)
+        if any(mapping.device_id == str(request.device_id) for mapping in active):
+            raise OnlineMrApplicationError(
+                OnlineMrApplicationErrorCode.MAPPING_CONFLICT,
+                "当前设备已有 Online MR 采集任务",
+            )
         return request
 
     def start_collection(self, request: OnlineMrStartRequest) -> OnlineMrOperationSnapshotDTO:
-        """统一 executor 入口；5B-6 保持 AGENT 为显式 unsupported stub。"""
-        if request.executor_kind is not OnlineMrExecutorKind.LOCAL:
-            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
-        return self.start_local_collection(request)
+        """统一 LOCAL/AGENT executor 入口。"""
+        request = self.prepare_start(request)
+        if request.executor_kind is OnlineMrExecutorKind.LOCAL:
+            return self.start_local_collection(request)
+        if self.agent_executor is None:
+            raise OnlineMrApplicationError(
+                OnlineMrApplicationErrorCode.AGENT_EXECUTOR_DISABLED,
+                "Online MR Agent 执行器未启用",
+            )
+        mapping = self.agent_executor.start(request)
+        return self._to_operation(mapping)
 
     def start_local_collection(self, request: OnlineMrStartRequest) -> OnlineMrOperationSnapshotDTO:
         request = self.prepare_start(request)
@@ -218,7 +252,13 @@ class OnlineMrApplicationService:
         if mapping.phase is OnlineMrPhase.TERMINAL:
             return self._to_operation(mapping)
         if mapping.executor_kind is not OnlineMrExecutorKind.LOCAL:
-            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
+            if self.agent_executor is None:
+                raise OnlineMrApplicationError(
+                    OnlineMrApplicationErrorCode.AGENT_EXECUTOR_DISABLED,
+                    "Online MR Agent 执行器未启用",
+                )
+            updated = self.agent_executor.stop(mapping, stop_reason=stop_reason)
+            return self._to_operation(updated)
         repository = self.repository(mapping.site_id)
         repository.mark_stopping(
             controller_task_id,
@@ -244,7 +284,7 @@ class OnlineMrApplicationService:
         if mapping.phase is OnlineMrPhase.TERMINAL:
             return self._to_operation(mapping)
         if mapping.executor_kind is not OnlineMrExecutorKind.LOCAL:
-            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Online MR Agent 执行端尚未接入")
+            raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED, "Agent 执行端不支持强制停止")
         repository = self.repository(mapping.site_id)
         repository.mark_stopping(
             controller_task_id,
@@ -421,6 +461,8 @@ class OnlineMrApplicationService:
 
     def recover_mappings(self, *, site_id: str | None = None) -> list[OnlineMrOperationSnapshotDTO]:
         changed: list[OnlineMrTaskSessionMapping] = []
+        if self.agent_executor is not None:
+            changed.extend(self.agent_executor.recover(site_id))
         for selected_site in ([site_id] if site_id else self._site_ids()):
             repository = self.repository(selected_site)
             task_repository = self.task_service.repository(selected_site)
@@ -543,6 +585,8 @@ class OnlineMrApplicationService:
 
     def close(self) -> None:
         self._unsubscribe()
+        if self.agent_executor is not None:
+            self.agent_executor.close()
 
     def _reconcile_progress(
         self,
@@ -629,6 +673,13 @@ class OnlineMrApplicationService:
             mr_name=mapping.mr_name,
             executor_kind=mapping.executor_kind,
             agent_id=mapping.agent_id,
+            agent_profile_id=mapping.agent_profile_id,
+            agent_task_id=mapping.agent_task_id,
+            remote_session_id=mapping.remote_session_id,
+            remote_package_id=mapping.remote_package_id,
+            last_remote_status=mapping.last_remote_status,
+            last_remote_seen_at=mapping.last_remote_seen_at,
+            deadline_at=mapping.deadline_at,
             task_status=task.status if task else None,
             phase=mapping.phase,
             created_at=mapping.created_at,
@@ -704,8 +755,22 @@ class OnlineMrApplicationService:
             return False
         try:
             return DeviceRepository(Database(db_path)).get(int(device_id)) is not None
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
             return False
+
+    def _device_identity_matches(self, request: OnlineMrStartRequest) -> bool:
+        try:
+            device = DeviceRepository(Database(self.paths.site_db_path(request.site_id))).get(
+                int(request.device_id)
+            )
+        except (KeyError, OSError, sqlite3.Error, TypeError, ValueError):
+            return False
+        hosts = {str(device.primary_address or "").strip(), str(device.backup_address or "").strip()}
+        return (
+            request.device_name == device.name
+            and request.config.device_name == device.name
+            and request.config.host.strip() in hosts
+        )
 
     def _abort_stale_session(self, session_dir: Path, meta: dict[str, object]) -> None:
         previous_status = str(meta.get("status") or "")

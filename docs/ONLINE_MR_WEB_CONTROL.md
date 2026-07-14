@@ -11,7 +11,7 @@
 - `GET /api/rail-transit/online-mr-control/status`；
 - `GET /api/rail-transit/online-mr-control/{operation_id}`。
 
-没有 force-stop、retry、Agent start/stop、command、delete、配置更新或路径访问路由。强制停止继续只使用已验收的 Qt/Service 安全入口，`executor=AGENT` 仍未开放。
+没有 force-stop、retry、Agent start/stop、command、delete、配置更新或路径访问路由。强制停止继续只使用已验收的 Qt/Service 安全入口。5B-13A 虽已在 Application Service 后增加默认关闭的 AGENT 执行器，但本 Web 控制契约仍固定为 LOCAL，不暴露 Agent Profile、Token、URL 或远端控制路由。
 
 ## 四重安全条件
 

@@ -16,6 +16,7 @@ from netconsole.models.online_mr_agent import (
     OnlineMrAgentDownloadResult,
     OnlineMrAgentPackageInfo,
     OnlineMrAgentPingResponse,
+    OnlineMrAgentStartRequest,
     OnlineMrAgentSystemStatus,
     OnlineMrAgentTaskStatusResponse,
     OnlineMrAgentToolsStatus,
@@ -51,7 +52,7 @@ class OnlineMrAgentClientError(RuntimeError):
 
 
 class OnlineMrAgentHttpClient(AgentHttpClient):
-    """Online MR Agent 只读状态与采集包下载客户端；不负责远程启动。"""
+    """固定路由的 Online MR Agent 客户端。"""
 
     def __init__(
         self,
@@ -99,6 +100,31 @@ class OnlineMrAgentHttpClient(AgentHttpClient):
         selected = self._safe_id(task_id, "task_id")
         payload = await self._json(
             f"/api/v1/tasks/{selected}",
+            not_found=OnlineMrApplicationErrorCode.AGENT_TASK_NOT_FOUND,
+        )
+        result = self._model(OnlineMrAgentTaskStatusResponse, payload)
+        if result.task_id != selected or result.task_type != "mr_realtime_collect":
+            self._invalid_response("Agent 返回的 Online MR Task 身份不一致")
+        return result
+
+    async def start_collection(
+        self, request: OnlineMrAgentStartRequest
+    ) -> OnlineMrAgentTaskStatusResponse:
+        payload = await self._json(
+            "/api/v1/mr/collect/start",
+            method="POST",
+            json_body=request.transport_payload(),
+        )
+        result = self._model(OnlineMrAgentTaskStatusResponse, payload)
+        if result.task_type != "mr_realtime_collect":
+            self._invalid_response("Agent 返回的 Online MR Task 类型不一致")
+        return result
+
+    async def stop_collection(self, task_id: str) -> OnlineMrAgentTaskStatusResponse:
+        selected = self._safe_id(task_id, "task_id")
+        payload = await self._json(
+            f"/api/v1/tasks/{selected}/stop",
+            method="POST",
             not_found=OnlineMrApplicationErrorCode.AGENT_TASK_NOT_FOUND,
         )
         result = self._model(OnlineMrAgentTaskStatusResponse, payload)
@@ -225,9 +251,16 @@ class OnlineMrAgentHttpClient(AgentHttpClient):
         self,
         path: str,
         *,
+        method: str = "GET",
+        json_body: dict[str, object] | None = None,
         not_found: OnlineMrApplicationErrorCode | None = None,
     ) -> dict[str, Any]:
-        payload = await self._payload(path, not_found=not_found)
+        payload = await self._payload(
+            path,
+            method=method,
+            json_body=json_body,
+            not_found=not_found,
+        )
         if not isinstance(payload, dict):
             self._invalid_response("Agent data 字段格式无效")
         return payload
@@ -236,14 +269,17 @@ class OnlineMrAgentHttpClient(AgentHttpClient):
         self,
         path: str,
         *,
+        method: str = "GET",
+        json_body: dict[str, object] | None = None,
         not_found: OnlineMrApplicationErrorCode | None = None,
     ) -> Any:
         try:
             return await self._call_payload(
-                "GET",
+                method,
                 self.config.base_url,
                 path,
                 self.config.token.get_secret_value() or None,
+                json_body=json_body,
             )
         except AgentClientError as exc:
             raise self._mapped_error(exc, not_found=not_found) from exc

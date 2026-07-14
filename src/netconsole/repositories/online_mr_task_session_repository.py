@@ -14,7 +14,7 @@ from netconsole.models.online_mr_application import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS online_mr_task_session_schema (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS online_mr_task_sessions (
     mr_name TEXT NOT NULL DEFAULT '',
     executor_kind TEXT NOT NULL,
     agent_id TEXT NOT NULL DEFAULT '',
+    agent_profile_id TEXT NOT NULL DEFAULT '',
+    agent_task_id TEXT NOT NULL DEFAULT '',
+    remote_session_id TEXT NOT NULL DEFAULT '',
+    remote_package_id TEXT NOT NULL DEFAULT '',
+    last_remote_status TEXT NOT NULL DEFAULT '',
+    last_remote_seen_at TEXT,
+    consecutive_status_failures INTEGER NOT NULL DEFAULT 0,
+    deadline_at TEXT,
     phase TEXT NOT NULL,
     mapping_state TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -73,6 +81,11 @@ class OnlineMrTaskSessionRepository:
                 conn.executescript(SCHEMA)
                 self._ensure_columns(conn)
                 conn.execute(
+                    """CREATE UNIQUE INDEX IF NOT EXISTS idx_online_mr_task_sessions_agent_task
+                    ON online_mr_task_sessions(agent_id, agent_task_id)
+                    WHERE agent_id <> '' AND agent_task_id <> ''"""
+                )
+                conn.execute(
                     "UPDATE online_mr_task_session_schema SET version = MAX(version, ?) WHERE singleton = 1",
                     (SCHEMA_VERSION,),
                 )
@@ -89,10 +102,12 @@ class OnlineMrTaskSessionRepository:
                     """
                     INSERT INTO online_mr_task_sessions (
                         controller_task_id, session_id, site_id, device_id, device_name, mr_id, mr_name,
-                        executor_kind, agent_id, phase, mapping_state, created_at, updated_at,
+                        executor_kind, agent_id, agent_profile_id, agent_task_id, remote_session_id, remote_package_id,
+                        last_remote_status, last_remote_seen_at, consecutive_status_failures, deadline_at,
+                        phase, mapping_state, created_at, updated_at,
                         started_at, ended_at, duration_minutes, stop_reason, force_stopped,
                         terminal_at, error_summary, error_code, error_message
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     self._values(mapping),
                 )
@@ -110,7 +125,9 @@ class OnlineMrTaskSessionRepository:
                     """
                     UPDATE online_mr_task_sessions SET
                         session_id = ?, device_id = ?, device_name = ?, mr_id = ?, mr_name = ?, executor_kind = ?,
-                        agent_id = ?, phase = ?, mapping_state = ?, updated_at = ?, terminal_at = ?,
+                        agent_id = ?, agent_profile_id = ?, agent_task_id = ?, remote_session_id = ?, remote_package_id = ?,
+                        last_remote_status = ?, last_remote_seen_at = ?, consecutive_status_failures = ?, deadline_at = ?,
+                        phase = ?, mapping_state = ?, updated_at = ?, terminal_at = ?,
                         started_at = ?, ended_at = ?, duration_minutes = ?, stop_reason = ?,
                         force_stopped = ?, error_summary = ?, error_code = ?, error_message = ?
                     WHERE controller_task_id = ? AND site_id = ?
@@ -123,6 +140,14 @@ class OnlineMrTaskSessionRepository:
                         mapping.mr_name,
                         mapping.executor_kind.value,
                         mapping.agent_id,
+                        mapping.agent_profile_id,
+                        mapping.agent_task_id,
+                        mapping.remote_session_id,
+                        mapping.remote_package_id,
+                        mapping.last_remote_status,
+                        mapping.last_remote_seen_at,
+                        mapping.consecutive_status_failures,
+                        mapping.deadline_at,
                         mapping.phase.value,
                         mapping.mapping_state.value,
                         mapping.updated_at,
@@ -349,6 +374,14 @@ class OnlineMrTaskSessionRepository:
             "stop_reason": "TEXT NOT NULL DEFAULT ''",
             "force_stopped": "INTEGER NOT NULL DEFAULT 0",
             "error_summary": "TEXT NOT NULL DEFAULT ''",
+            "agent_task_id": "TEXT NOT NULL DEFAULT ''",
+            "agent_profile_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_session_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_package_id": "TEXT NOT NULL DEFAULT ''",
+            "last_remote_status": "TEXT NOT NULL DEFAULT ''",
+            "last_remote_seen_at": "TEXT",
+            "consecutive_status_failures": "INTEGER NOT NULL DEFAULT 0",
+            "deadline_at": "TEXT",
         }.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE online_mr_task_sessions ADD COLUMN {name} {definition}")
@@ -369,6 +402,14 @@ class OnlineMrTaskSessionRepository:
             mapping.mr_name,
             mapping.executor_kind.value,
             mapping.agent_id,
+            mapping.agent_profile_id,
+            mapping.agent_task_id,
+            mapping.remote_session_id,
+            mapping.remote_package_id,
+            mapping.last_remote_status,
+            mapping.last_remote_seen_at,
+            mapping.consecutive_status_failures,
+            mapping.deadline_at,
             mapping.phase.value,
             mapping.mapping_state.value,
             mapping.created_at,
@@ -396,6 +437,18 @@ class OnlineMrTaskSessionRepository:
             mr_name=str(row.get("mr_name") or ""),
             executor_kind=OnlineMrExecutorKind(str(row["executor_kind"])),
             agent_id=str(row.get("agent_id") or ""),
+            agent_profile_id=str(row.get("agent_profile_id") or ""),
+            agent_task_id=str(row.get("agent_task_id") or ""),
+            remote_session_id=str(row.get("remote_session_id") or ""),
+            remote_package_id=str(row.get("remote_package_id") or ""),
+            last_remote_status=str(row.get("last_remote_status") or ""),
+            last_remote_seen_at=(
+                str(row["last_remote_seen_at"])
+                if row.get("last_remote_seen_at") not in (None, "")
+                else None
+            ),
+            consecutive_status_failures=int(row.get("consecutive_status_failures") or 0),
+            deadline_at=str(row["deadline_at"]) if row.get("deadline_at") not in (None, "") else None,
             phase=OnlineMrPhase(str(row["phase"])),
             mapping_state=OnlineMrMappingState(str(row["mapping_state"])),
             created_at=str(row["created_at"]),

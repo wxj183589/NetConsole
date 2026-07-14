@@ -104,15 +104,15 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 
 手工备注带毫秒时间。若选择了运行中设备，只写入所选会话；否则写入所有运行中会话。每个目标追加 UTF-8 的 `manual_notes.jsonl` 和 `manual_notes.txt`，页面表格最多保留 500 行。没有运行中会话时仅显示在当前 UI，不写伪会话文件。
 
-阶段 5B-1 新增纯 Python `OnlineMrQueryService`，只读复用 `OnlineMrSessionStore`、`OnlineMrCollectionPaths`、`session_meta.json` 和 `parsed/online_diagnosis.sqlite`。它提供会话摘要/详情、Artifact 白名单、日志字节游标分块、备注/时间轴、数据库摘要和既有指标查询；SQLite 使用独立 URI 只读连接，不执行 migration，不持有 Qt/FastAPI 对象。公共 DTO 只返回相对引用，不暴露服务端绝对路径。阶段 5C-2 在这个边界上增加 GET-only FastAPI Router 和 Vue 实时展示，现有 Qt 历史查询与离线视图仍未切换，Agent MR 远程执行仍未启用。
+阶段 5B-1 新增纯 Python `OnlineMrQueryService`，只读复用 `OnlineMrSessionStore`、`OnlineMrCollectionPaths`、`session_meta.json` 和 `parsed/online_diagnosis.sqlite`。它提供会话摘要/详情、Artifact 白名单、日志字节游标分块、备注/时间轴、数据库摘要和既有指标查询；SQLite 使用独立 URI 只读连接，不执行 migration，不持有 Qt/FastAPI 对象。公共 DTO 只返回相对引用，不暴露服务端绝对路径。阶段 5C-2 在这个边界上增加 GET-only FastAPI Router 和 Vue 实时展示，现有 Qt 历史查询与离线视图仍未切换。阶段 5B-13A 已在默认关闭的安全开关后接入 Agent MR 远程执行器，但未增加 Qt/Web 控制入口。
 
 阶段 5B-2A 新增纯 Python `OnlineMrApplicationService`。新入口先创建 Controller Task 和同局点 `tasks.db` 中的待关联记录，采集进程创建会话后通过 `online_mr_session_created` 结构化事件补齐 `controller_task_id -> session_id`；Task 快照显式保存顶层局点、设备和所有者摘要，不扫描嵌套配置，也不把密码、命令或绝对路径写入任务/映射 DTO。Online MR 业务阶段使用独立 `OnlineMrPhase`，不扩展 Job Center 七状态。
 
-初始连接在会话创建后失败时，会话 metadata 固定落为 `FAILED`，原始目录继续保留。显式 `recover_mappings()` 可核对已失去活动宿主的旧会话并标为 `ABORTED`，但不会自动解析、打包或删除 raw。当前执行端仅支持 `LOCAL`；`AGENT` 返回稳定的 `EXECUTOR_UNSUPPORTED`。阶段 5B-4 已让 Legacy Qt 页面接入该 Application Service，并让页面启动时的遗留会话核对复用同一恢复逻辑。
+初始连接在会话创建后失败时，会话 metadata 固定落为 `FAILED`，原始目录继续保留。显式 `recover_mappings()` 对 LOCAL 继续把失去活动宿主的旧会话标为 `ABORTED`，不自动解析、打包或删除 raw；对 AGENT 则从持久 Mapping 恢复远端状态、截止时间、正常停止和包导入。AGENT 默认关闭，关闭时返回 `ONLINE_MR_AGENT_EXECUTOR_DISABLED`。阶段 5B-4 已让 Legacy Qt 页面接入该 Application Service，并让页面启动时的遗留会话核对复用同一恢复逻辑。
 
 阶段 5B-3 为新 LOCAL 入口增加纯 Python `OnlineMrTrafficCoordinator`，由同一个 Background Worker 持有 fping/iPerf 与 SSH 采集生命周期。正常停止或达到显式 `duration_minutes` 上限时，先停止并 join Traffic，再停止 SSH collector、等待 writer/连接关闭、写最终 metadata，最后原子发布 ZIP；Worker 返回以后 Task 才进入终态。Traffic 工具缺失或运行失败写入 `traffic_summary/finalization_warnings`，不会让映射悬挂；无法确认 flush 时不发布正式 ZIP。
 
-`online_mr_task_sessions` schema v2 增加 `mr_id`、开始/结束时间、实际 `duration_minutes`、`stop_reason`、`force_stopped` 和 `error_summary`。实际时长统一使用 `max(0, ended_at - started_at) / 60` 并保留三位小数；配置的停止上限另存为 `configured_duration_minutes`。正常 `stop_operation()` 有界等待 Worker 完成完整收口；`force_stop_operation()` 先短暂协作停止，超时才终止进程树，并把会话标为 `FORCED_STOPPED`、`data_integrity=partial`、`finalization_complete=false`，保留 raw 且不发布新的正式 ZIP。遗留恢复仍只标记 `ABORTED`，不解析、不打包、不删除 raw。阶段 5B-5 已撤掉 Legacy Qt 页面对旧采集管理器的运行登记和二次取消；页面自管 fping/iPerf 方法仅保留为历史兼容代码，并由 `manages_traffic` guard 保证 ApplicationService 会话不会调用。AGENT、FastAPI/Vue 与离线解析接入不属于本阶段。
+`online_mr_task_sessions` schema v2 增加 LOCAL 生命周期字段；阶段 5B-13A 的 schema v3 再增加 Agent Profile、远端 Task/Session/Package、最近状态、连续失败次数和 Controller 截止时间，迁移不重建既有行。实际时长统一使用 `max(0, ended_at - started_at) / 60` 并保留三位小数。LOCAL 正常与强停契约保持不变；AGENT 只提供正常停止，远端终态必须先下载并安全导入 package，Controller Task 才能终态。详细见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)。
 
 ### 6.1 阶段 5B-3A 真实设备验收
 
@@ -158,7 +158,7 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 
 Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/live`、`/api/v1/mr/collect/raw-tail`、`/api/v1/mr/collect/raw-summary`。fping 与可选 iPerf Client 共享 MR 生命周期；独立 iPerf Server/Client 和 TCP fallback 仍在各自工具页运行。
 
-## 10. Agent Executor Contract（5B-6，尚未启用）
+## 10. Agent Executor Contract（5B-6 历史设计，5B-13A 已受控启用）
 
 阶段 5B-6 只固化 Controller 侧契约，不调用 Agent HTTP API、不创建远端任务、不下载或导入采集包。`OnlineMrApplicationService.start_collection()` 是 executor 分派入口；`LOCAL` 继续复用已验收的 `start_local_collection()`，`AGENT` 在创建 LOCAL Worker、Task/Session 映射或 TrafficCoordinator 之前稳定返回 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。已有 AGENT 映射也不会被 LOCAL stop/force stop、Task Event Hub 或本地遗留恢复误处理。
 
@@ -204,7 +204,7 @@ Terminal mapping 不得被后续轮询或本地 Task 事件改回 ACTIVE。带 w
 
 ### 10.4 错误码与包契约
 
-当前稳定错误仍是 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。Controller 已预留带 `ONLINE_MR_` 前缀的 Agent unreachable/auth/version/tool/collector/start/stop/status/package download/package invalid/session metadata/raw contract 错误码；5B-6 不触发这些远程错误。
+5B-6 当时的稳定错误为 `ONLINE_MR_EXECUTOR_UNSUPPORTED`；5B-13A 默认关闭时改为 `ONLINE_MR_AGENT_EXECUTOR_DISABLED`，开启后使用已预留的 unreachable/auth/version/tool/collector/start/stop/status/package/import 等稳定错误码。
 
 Agent ZIP 使用单一会话根目录，必须包含主程序需要的 `manifest.json`、`raw/` 十四类事实文件、`session_meta.json`、`task.json`、`stop_reason.json`、`agent_info.json` 和 `system_info.json`。逻辑会话目录还包括 `parsed/`、`view/`、`logs/`、`outputs/`；ZIP 不保证为空目录有独立 entry，importer 会在校验通过后创建缺失空目录。
 
@@ -240,9 +240,9 @@ Agent Web 的目标 ID/名称可以是现场临时值，不能直接作为 Contr
 
 导入后的源包保存为 Session 内 `outputs/<session_id>.zip`，Task 仅保存相对 artifact 引用。验收脚本支持 `executor=AGENT`：继续检查身份、raw、终态、ZIP 和 Mapping，但不套用 LOCAL 专属的 Traffic flush 与“Traffic 停止 < 本地打包 < Task 终态”事件顺序。Importer 本身不连接 Agent、不自动解析或生成报告；下载能力由下一节的独立客户端编排。
 
-## 12. Agent HTTP 下载客户端（5B-8，executor 仍未启用）
+## 12. Agent HTTP 客户端（5B-8 下载；5B-13A 增加固定启停路由）
 
-`OnlineMrAgentHttpClient` 复用现有异步 `AgentHttpClient` 的 URL、`X-Agent-Token`、统一响应、超时和禁止重定向逻辑，提供 `ping`、Agent/工具状态、Online MR Task、package 列表和 package 下载。兼容性以 `/api/v1` 路由和类型化响应字段判断，不把 `0.2.0-win-agent` 等 Agent 软件发布版本误当作 API 主版本。客户端只读取现有 Go Agent API，不发送远程 start/stop；配置中的 Token 使用 `SecretStr`，异常和下载结果不包含 Token、远端私有路径或响应原文。
+`OnlineMrAgentHttpClient` 复用现有异步 `AgentHttpClient` 的 URL、`X-Agent-Token`、统一响应、超时和禁止重定向逻辑，提供 `ping`、Agent/工具状态、Online MR Task、package 列表和 package 下载。5B-13A 只增加固定 `/api/v1/mr/collect/start` 与 `/api/v1/tasks/<id>/stop`，不接受调用方任意 URL。配置中的 Token 使用 `SecretStr`，异常和下载结果不包含 Token、远端私有路径或响应原文。
 
 下载固定使用 `/api/v1/packages/<package_id>/download`，不信任响应中的下载 URL。ZIP 流式写入所属局点 `files/imports/online_mr/downloads/*.zip.part`，同时计算 SHA-256，并受超时、取消和 `max_download_bytes` 限制；完成后关闭句柄并原子改名为 `.zip`。失败、取消或超限删除 `.part`，不删除远端 package。
 
@@ -252,7 +252,7 @@ Agent Web 的目标 ID/名称可以是现场临时值，不能直接作为 Contr
 
 ## 13. Controller 手工下载与导入（5B-9）
 
-`OnlineMrAgentControllerService` 是 5B-8 Client/DownloadService 的轻量门面，只提供 ping、Agent/工具状态、package 列表和指定 package 下载导入。它不依赖 `OnlineMrApplicationService`，不提供远程 start/stop，也不会改变 LOCAL 采集路径。
+`OnlineMrAgentControllerService` 是 Client/DownloadService 的轻量门面，5B-13A 增加按 Profile 的 start、Task status 与 normal stop；它仍不改变 LOCAL 采集路径，Token 只从共享的进程内凭据容器读取。
 
 维护脚本可先只列出 Agent 现有采集包：
 
@@ -355,7 +355,7 @@ raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`f
 
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 
-`/rail-transit/train-communication` 在 5C-2 查询边界上聚合正式列车/MR、AC Mesh-Link、活动或最近 Online MR Session、fping/iPerf、关联 Task 和采集包。Agent 已导入 Session 可以按 `executor=AGENT` 只读显示，但远程执行仍为 unsupported。
+`/rail-transit/train-communication` 在 5C-2 查询边界上聚合正式列车/MR、AC Mesh-Link、活动或最近 Online MR Session、fping/iPerf、关联 Task 和采集包。Agent 已导入 Session 和 5B-13A 远端执行结果都可按 `executor=AGENT` 只读显示；当前 Web 不提供 AGENT 控制入口。
 
 聚合页不修改本节任何采集命令、raw、Traffic flush、最终化或打包契约。5C-10A 只在 MR 详情增加受四重安全条件保护的 LOCAL start/normal stop；原始片段继续通过逻辑名称白名单读取 tail。详细控制边界见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)，聚合优先级、状态和刷新规则见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
 
@@ -363,4 +363,4 @@ raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`f
 
 Web 控制默认关闭，仅 `ONLINE_MR_WEB_CONTROL_ENABLED=1`、Desktop 模式、严格 `127.0.0.1` 和已认证 WebHost 短期 Cookie 同时满足时可用。启动 DTO 不接受凭据、命令、Agent URL 或路径；后端从正式 MR 资料和当前局点设备库补齐连接配置，并固定 `owner=web_local`、`executor=LOCAL`。
 
-启动和正常停止分别复用 `OnlineMrApplicationService.start_local_collection()` 与 `stop_operation()`。同 MR 重复启动返回现有活动 Mapping，重复停止沿用 ApplicationService 终态幂等；Web 不直接操作 fping/iPerf、SSH、metadata、ZIP 或 Task 数据库。Web 不提供强停，`executor=AGENT` 继续返回 unsupported。完整契约见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。
+启动和正常停止分别复用 `OnlineMrApplicationService.start_local_collection()` 与 `stop_operation()`。同 MR 重复启动返回现有活动 Mapping，重复停止沿用 ApplicationService 终态幂等；Web 不直接操作 fping/iPerf、SSH、metadata、ZIP 或 Task 数据库。Web 不提供强停，也不暴露 5B-13A 的 AGENT 执行入口。完整契约见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。

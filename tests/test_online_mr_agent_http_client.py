@@ -15,6 +15,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.online_mr_agent import (
     ONLINE_MR_AGENT_PACKAGE_REQUIRED_FILES,
     OnlineMrAgentConnectionConfig,
+    OnlineMrAgentStartRequest,
     OnlineMrAgentStatus,
 )
 from netconsole.services.online_mr.agent_download_service import (
@@ -119,6 +120,51 @@ def _paths(tmp_path: Path) -> PathResolver:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs(SITE)
     return paths
+
+
+def test_fixed_start_and_task_stop_routes_send_secret_only_in_start_body() -> None:
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        seen.append((request.url.path, body))
+        assert request.headers["x-agent-token"] == TOKEN
+        status = "running" if request.url.path.endswith("/start") else "stopping"
+        return _response(
+            {
+                "task_id": "agent-task-1",
+                "task_type": "mr_realtime_collect",
+                "status": status,
+            }
+        )
+
+    request = OnlineMrAgentStartRequest.model_validate(
+        {
+            "agent_id": "agent-a",
+            "site_id": SITE,
+            "device_id": 7,
+            "device_name": "MR-07",
+            "mr_name": "MR-07",
+            "target": {
+                "name": "MR-07",
+                "host": "192.0.2.7",
+                "username": "operator",
+                "password": "device-secret",
+            },
+            "items": {},
+            "intervals": {},
+            "radio": {},
+        }
+    )
+    client = _client(handler)
+    started = asyncio.run(client.start_collection(request))
+    stopped = asyncio.run(client.stop_collection(started.task_id))
+
+    assert started.status is OnlineMrAgentStatus.RUNNING
+    assert stopped.status is OnlineMrAgentStatus.STOPPING
+    assert seen[0][0] == "/api/v1/mr/collect/start"
+    assert dict(seen[0][1]["target"])["password"] == "device-secret"
+    assert seen[1] == ("/api/v1/tasks/agent-task-1/stop", {})
 
 
 def _import_kwargs() -> dict[str, object]:
@@ -465,6 +511,25 @@ def test_download_service_keeps_invalid_zip_without_polluting_session(
     assert result.error_code == OnlineMrApplicationErrorCode.AGENT_PACKAGE_INVALID
     assert result.downloaded_path is not None and result.downloaded_path.is_file()
     assert not paths.online_mr_root(SITE).exists()
+
+
+def test_download_service_reports_session_id_mismatch(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service = OnlineMrAgentDownloadService(
+        paths,
+        _client(lambda _request: httpx.Response(200, content=_package_bytes())),
+    )
+
+    result = asyncio.run(
+        service.download_and_import_package(
+            "package-1",
+            expected_session_id="different-session",
+            **_import_kwargs(),
+        )
+    )
+
+    assert not result.success
+    assert result.error_code == OnlineMrApplicationErrorCode.AGENT_SESSION_ID_MISMATCH
 
 
 def test_download_failure_does_not_call_importer(tmp_path: Path) -> None:

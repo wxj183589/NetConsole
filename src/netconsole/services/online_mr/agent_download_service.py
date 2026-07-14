@@ -115,6 +115,9 @@ class OnlineMrAgentDownloadService:
             source_package_id=source_package_id or package_id,
         )
         warnings = list(imported.warnings)
+        session_mismatch = any(
+            "session_id 与预期不一致" in error for error in imported.errors
+        )
         if imported.success and not keep_download_on_success:
             try:
                 downloaded.path.unlink(missing_ok=True)
@@ -134,6 +137,8 @@ class OnlineMrAgentDownloadService:
             error_code=(
                 str(OnlineMrApplicationErrorCode.AGENT_PACKAGE_CONFLICT)
                 if imported.conflict
+                else str(OnlineMrApplicationErrorCode.AGENT_SESSION_ID_MISMATCH)
+                if session_mismatch
                 else str(OnlineMrApplicationErrorCode.AGENT_PACKAGE_INVALID)
                 if not imported.success
                 else ""

@@ -217,6 +217,13 @@ class OnlineMrOperationSnapshotDTO(ApiModel):
     mr_name: str = ""
     executor_kind: OnlineMrExecutorKind
     agent_id: str = ""
+    agent_profile_id: str = ""
+    agent_task_id: str = ""
+    remote_session_id: str = ""
+    remote_package_id: str = ""
+    last_remote_status: str = ""
+    last_remote_seen_at: str | None = None
+    deadline_at: str | None = None
     task_status: TaskState | None = None
     phase: OnlineMrPhase
     created_at: str

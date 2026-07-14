@@ -17,6 +17,8 @@ from netconsole.models.online_mr_agent import (
     OnlineMrAgentPingResponse,
     OnlineMrAgentSyncedPackage,
     OnlineMrAgentSystemStatus,
+    OnlineMrAgentStartRequest,
+    OnlineMrAgentTaskStatusResponse,
     OnlineMrAgentToolsStatus,
 )
 from netconsole.services.agent.controller import AgentControllerService
@@ -39,7 +41,7 @@ from netconsole.services.online_mr.errors import (
 
 
 class OnlineMrAgentControllerService:
-    """Agent 只读同步和采集包导入门面；不提供远程任务控制。"""
+    """从已配置 Profile 建立 Online MR Agent 控制与包导入边界。"""
 
     def __init__(
         self,
@@ -84,6 +86,21 @@ class OnlineMrAgentControllerService:
 
     async def get_agent_tools(self, profile_id: str = "") -> OnlineMrAgentToolsStatus:
         return await self._client(profile_id).get_tools_status()
+
+    async def start_collection(
+        self, profile_id: str, request: OnlineMrAgentStartRequest
+    ) -> OnlineMrAgentTaskStatusResponse:
+        return await self._client(profile_id).start_collection(request)
+
+    async def get_task(
+        self, profile_id: str, task_id: str
+    ) -> OnlineMrAgentTaskStatusResponse:
+        return await self._client(profile_id).get_task(task_id)
+
+    async def stop_collection(
+        self, profile_id: str, task_id: str
+    ) -> OnlineMrAgentTaskStatusResponse:
+        return await self._client(profile_id).stop_collection(task_id)
 
     async def list_agent_packages(self, profile_id: str = "") -> tuple[OnlineMrAgentPackageInfo, ...]:
         return await self._client(profile_id).list_packages()

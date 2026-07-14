@@ -64,6 +64,14 @@ class OnlineMrTaskSessionMapping:
     updated_at: str
     session_id: str | None = None
     agent_id: str = ""
+    agent_profile_id: str = ""
+    agent_task_id: str = ""
+    remote_session_id: str = ""
+    remote_package_id: str = ""
+    last_remote_status: str = ""
+    last_remote_seen_at: str | None = None
+    consecutive_status_failures: int = 0
+    deadline_at: str | None = None
     terminal_at: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
