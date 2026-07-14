@@ -8,6 +8,7 @@ from netconsole.backend.api.agent_router import router as agent_router
 from netconsole.backend.api.agent_router import ws_router as agent_ws_router
 from netconsole.backend.api.health import router as health_router
 from netconsole.backend.api.job_center_router import router as job_center_router
+from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
 from netconsole.backend.api.online_mr_router import router as online_mr_router
 from netconsole.backend.api.rail_transit_base_data_router import router as rail_transit_base_data_router
 from netconsole.backend.api.task_router import router as task_router
@@ -28,6 +29,7 @@ api_router.include_router(traffic_router)
 api_router.include_router(online_mr_router)
 api_router.include_router(rail_transit_base_data_router)
 api_router.include_router(train_communication_router)
+api_router.include_router(mesh_analysis_router)
 ws_router.include_router(agent_ws_router)
 ws_router.include_router(traffic_ws_router)
 

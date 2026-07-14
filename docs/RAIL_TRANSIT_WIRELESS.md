@@ -24,6 +24,14 @@ Web 入口 `/rail-transit/train-communication` 按列车分别展示 MR-CT 与 M
 
 该页面不控制采集、不连接 AC/Agent、不创建 Task、不修改快照或 Session，也不承担正式 Mesh 日志分析与报告。详细契约见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
 
+## 5C-8 Mesh 原始日志分析结果 Web 化
+
+Web 入口 `/rail-transit/mesh-analysis` 只读展示既有离线 Mesh 结构化结果：来源会话、主/备链路、主链路区间、切换事件、RSSI、既有空口指标、短时建链、乒乓切换、AP 统计以及已生成报告。Feature key 为 `web.mesh_analysis`，详细契约见 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md)。
+
+Query Service 直接以 SQLite `mode=ro + query_only` 打开来源对应的 `parsed/*.mesh.sqlite`，不会实例化会初始化或升级 schema 的旧 Repository。短时建链、同 AP 双射频和乒乓判断继续复用当前正式纯分析函数及来源参数快照；前端不重算主备、切换或异常。RSSI 空值保持 `null`，已有数值 `0` 不被擅自改写。
+
+既有报告和原始来源通过不可逆 `artifact_id/source_id` 访问，不接受路径参数、不返回本机绝对路径。来源或报告缺失时明确显示，不自动重解析、不生成报告、不修改 raw、分析数据库或 Session metadata。
+
 ## 5C-6 基础资料边界
 
 Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增基础资料数据库。轨旁 AP 点位来自 `ap_extension_points`，列车和车载 MR 来自 `devices / device_groups`；FIT-AP、光衰、Mesh-Link 和 Online MR 只作为关联运行态，不写回基础资料。

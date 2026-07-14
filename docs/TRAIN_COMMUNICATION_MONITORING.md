@@ -61,4 +61,4 @@ GET /api/rail-transit/train-communication/mrs/{mr_id}/packages
 - LOCAL 启停仍由 Legacy Qt 入口负责；
 - Agent 导入 Session 只读展示，`executor=AGENT` 远程执行仍未开放；
 - Agent 包下载/导入仍在现有 Qt Agent 包入口或 Agent 控制中心完成；
-- 本页不做正式 Mesh 离线分析、报告、Excel 导出、删除或写操作。
+- 本页不做正式 Mesh 离线分析、报告、Excel 导出、删除或写操作；已有正式分析结果通过独立的 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md) 查看。

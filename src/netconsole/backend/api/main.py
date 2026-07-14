@@ -31,6 +31,7 @@ from netconsole.services.rail_transit.base_data_query_service import RailTransit
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
+from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
@@ -121,6 +122,11 @@ def create_app(
         mesh_query=app.state.ac_mesh_link_query_service,
         online_mr_query=app.state.online_mr_query_service,
         job_query=app.state.job_center_query_service,
+    )
+    app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
+        paths,
+        base_query=app.state.rail_transit_base_data_query_service,
+        online_mr_query=app.state.online_mr_query_service,
     )
     if rail_base_data_write_feature_enabled is None:
         rail_base_data_write_feature_enabled = FeatureGate(paths.app_root).is_enabled(WRITE_FEATURE_ID)
