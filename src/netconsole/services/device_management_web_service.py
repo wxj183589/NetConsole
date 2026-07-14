@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import uuid
+from threading import RLock
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -63,6 +64,7 @@ class DeviceManagementWebService:
         self.task_service = task_service
         self.site_name = site_name
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
+        self._start_lock = RLock()
 
     def current_site_id(self) -> str:
         site = self.site_name or SiteManager(self.paths).get_current_site()
@@ -174,40 +176,41 @@ class DeviceManagementWebService:
         device = self._require_device(device_repository, device_uuid)
         selected_protocol = protocol.strip().upper()
         self._validate_protocol_enabled(device, selected_protocol)
-        active = next(
-            (
-                task
-                for task in self.task_service.repository(site).list(statuses=ACTIVE_TASK_STATES, limit=1000)
-                if task.task_type == DEVICE_CONNECTION_TEST_TASK_TYPE
-                and task.device == device_uuid
-                and _protocol_from_task_id(task.task_id) == selected_protocol
-            ),
-            None,
-        )
-        if active is not None:
-            return self._connection_test_dto(active, device)
-        task_id = f"device-test-{selected_protocol.lower()}-{uuid.uuid4().hex}"
-        job = BackgroundJob(
-            job_id=task_id,
-            task_type=DEVICE_CONNECTION_TEST_TASK_TYPE,
-            params={
-                "site_name": site,
-                "device_uuid": device_uuid,
-                "protocol": selected_protocol,
-                "task_name": f"设备连接测试 · {device.name or device_uuid} · {selected_protocol}",
-                "owner": "web_device_management",
-                "device": device_uuid,
-                "app_root": str(self.paths.app_root),
-                "data_root": str(self.paths.data_root),
-                "_emit_log_events": True,
-                "_cancel_grace_ms": 1000,
-            },
-        )
-        self.process_adapter.start_job(job)
-        snapshot = self.task_service.repository(site).get(task_id)
-        if snapshot is None:
-            raise RuntimeError("连接测试任务创建后未写入任务中心")
-        return self._connection_test_dto(snapshot, device)
+        with self._start_lock:
+            active = next(
+                (
+                    task
+                    for task in self.task_service.repository(site).list(statuses=ACTIVE_TASK_STATES, limit=1000)
+                    if task.task_type == DEVICE_CONNECTION_TEST_TASK_TYPE
+                    and task.device == device_uuid
+                    and _protocol_from_task_id(task.task_id) == selected_protocol
+                ),
+                None,
+            )
+            if active is not None:
+                return self._connection_test_dto(active, device)
+            task_id = f"device-test-{selected_protocol.lower()}-{uuid.uuid4().hex}"
+            job = BackgroundJob(
+                job_id=task_id,
+                task_type=DEVICE_CONNECTION_TEST_TASK_TYPE,
+                params={
+                    "site_name": site,
+                    "device_uuid": device_uuid,
+                    "protocol": selected_protocol,
+                    "task_name": f"设备连接测试 · {device.name or device_uuid} · {selected_protocol}",
+                    "owner": "web_device_management",
+                    "device": device_uuid,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "_emit_log_events": True,
+                    "_cancel_grace_ms": 1000,
+                },
+            )
+            self.process_adapter.start_job(job)
+            snapshot = self.task_service.repository(site).get(task_id)
+            if snapshot is None:
+                raise RuntimeError("连接测试任务创建后未写入任务中心")
+            return self._connection_test_dto(snapshot, device)
 
     def get_connection_test(self, task_id: str) -> DeviceConnectionTestDTO:
         site = self.current_site_id()

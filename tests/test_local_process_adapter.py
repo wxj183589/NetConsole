@@ -455,6 +455,27 @@ def test_local_process_adapter_abandon_calls_completion_once(tmp_path: Path) -> 
     process.finish(-9)
 
 
+def test_local_process_adapter_shutdown_uses_one_total_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths, service = _service(tmp_path)
+    process = _UnstoppableProcess(auto_finish=False, terminate_exits=False)
+    adapter = LocalProcessAdapter(
+        service,
+        popen_factory=_PopenFactory(process),
+        process_tree_factory=lambda _process: _FakeProcessTree(),
+    )
+    adapter.start_job(_job(paths, "local-total-deadline", cancel_grace_ms=60000))
+    deadlines: list[float] = []
+    started = time.monotonic()
+
+    monkeypatch.setattr(adapter, "_wait_states", lambda _states, deadline: deadlines.append(deadline))
+    adapter.shutdown(timeout_seconds=0.1)
+
+    assert len(deadlines) == 3
+    assert max(deadlines) <= started + 0.11
+    assert process.terminate_called is True
+    assert process.kill_called is True
+
+
 def test_local_process_adapter_callback_failure_does_not_change_terminal_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

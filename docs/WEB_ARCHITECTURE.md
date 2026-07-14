@@ -147,7 +147,7 @@ flowchart TD
 - 复用 Config Lifecycle、Snapshot 和 Job 的配置采集、查看、比较与受控 Artifact 下载；不提供设备写入或删除；
 - 局点本地文件只读浏览和受控下载；设备远程文件与删除、上传、重命名继续延期。
 
-四个新页面及其受控动作同时由 Vue 和 FastAPI 的同一 Feature Gate 状态约束；禁用后导航/按钮隐藏且 API 返回 404。设备管理按请求读取当前局点，避免 Qt 切换局点后 WebHost 继续访问旧局点。设备、配置和文件 Web 任务共享一个 `LocalProcessAdapter`，同设备活动连接测试/配置采集会复用既有 Task；文件索引只接受受控目录与扩展名，明确排除解析数据库、运行文件和未知格式。
+四个新页面及其受控动作同时由 Vue 和 FastAPI 的同一 Feature Gate 状态约束；禁用后导航/按钮隐藏且 API 返回 404。设备管理按请求读取当前局点，避免 Qt 切换局点后 WebHost 继续访问旧局点。设备、配置和文件 Web 任务共享一个 `LocalProcessAdapter`；服务级锁保证同设备活动连接测试/配置采集在并发请求下也只创建一个 Task。文件索引只接受受控目录与后缀白名单，明确排除解析数据库、运行文件、未知 raw 和未知 imports 格式。宿主关闭时，协作取消、terminate、kill 共用单一总预算，并行停止本地 Adapter、AC 刷新和 Traffic，避免超过 WebHost 等待窗口。
 
 仍未实现：
 

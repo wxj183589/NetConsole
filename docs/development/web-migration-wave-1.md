@@ -38,6 +38,8 @@
 - 独立只读评审发现 3 项 P1、2 项 P2；已完成 Feature Gate 强制执行、设备动态局点、文件类型白名单、重复任务复用和共享进程适配器收口。
 - 评审修复定向后端测试：24 项通过；对应 Vue Feature/页面测试：7 个文件、16 项通过；前端生产构建和修改文件 Ruff 通过。
 - 第一批所有改动测试文件组合复跑：144 项通过。首次未设置源码路径时有 8 个 Worker 子进程导入失败；确认是工作树虚拟环境未 editable 安装，显式使用 `PYTHONPATH=src` 后全部通过。
+- 第二轮独立复核确认 P1 已全部关闭，指出 3 项 P2：并发幂等竞态、`raw/imports` 未知格式旁路、关闭总预算不一致；均已修复。
+- P2 修复专项测试：并发幂等、文件白名单、总关闭预算和并行 lifespan 共 40 项通过；Job Center、Traffic、AC Mesh-Link 与 WebHost 受影响回归 39 项通过。
 
 ## 当前安全与功能限制
 
@@ -47,6 +49,8 @@
 - 文件管理首版只浏览和下载局点本地文件；下载任务验证并审计原文件，不复制永久副本；`parsed/cache/tmp/runtime`、SQLite/DB/WAL/SHM/journal 和未知格式不进入索引。
 - 四个新 Web 页面及其受控动作同时在 Vue 导航/按钮和 FastAPI 路由执行 Feature Gate；后端禁用时直接返回 404，不能靠直连 URL 绕过。
 - 设备管理在每次请求时读取当前局点，Qt 切换局点后无需重启 WebHost；设备连接测试和配置采集对同设备活动任务幂等复用。
+- 活动任务的“查询并启动”由服务级锁形成原子临界区；并发请求只启动一个 Worker。`raw` 仅接受日志、结构化文本和抓包后缀，`imports` 仅接受已识别归档格式。
+- `LocalProcessAdapter.shutdown(timeout_seconds)` 的参数是包含协作取消、terminate、kill 的总预算；FastAPI lifespan 并行关闭本地 Adapter、AC 刷新和 Traffic，默认总预算不超过 WebHost 的等待窗口。
 
 ## 延期与取消
 

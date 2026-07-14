@@ -276,7 +276,7 @@ class LocalProcessAdapter:
         return True
 
     def shutdown(self, timeout_seconds: float = 5.0) -> None:
-        """停止所有本地 Worker；不会影响远端 Agent 任务。"""
+        """在总时间预算内停止所有本地 Worker；不会影响远端 Agent 任务。"""
 
         with self._state_lock:
             self._closing = True
@@ -284,16 +284,18 @@ class LocalProcessAdapter:
         for state in states:
             self.cancel_job(state.job_id)
 
-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-        self._wait_states(states, deadline)
+        started = time.monotonic()
+        timeout = max(0.0, float(timeout_seconds))
+        deadline = started + timeout
+        self._wait_states(states, started + timeout * 0.6)
         remaining = tuple(state for state in states if not state.done.is_set())
         for state in remaining:
             self._terminate_process(state)
-        self._wait_states(remaining, time.monotonic() + self._terminate_timeout_seconds)
+        self._wait_states(remaining, started + timeout * 0.8)
         remaining = tuple(state for state in remaining if not state.done.is_set())
         for state in remaining:
             self._kill_process(state)
-        self._wait_states(remaining, time.monotonic() + self._terminate_timeout_seconds)
+        self._wait_states(remaining, deadline)
         for state in remaining:
             if not state.done.is_set():
                 self._abandon(state)

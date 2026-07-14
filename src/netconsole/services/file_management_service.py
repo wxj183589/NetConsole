@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 FILE_REF_RE = re.compile(r"^fm1_[0-9a-f]{32}$")
 FILE_CATEGORIES = {"session", "raw", "package", "artifact"}
 ARTIFACT_SUFFIXES = {".csv", ".diff", ".html", ".json", ".md", ".pdf", ".png", ".txt", ".xls", ".xlsx"}
+PACKAGE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".zip.gz")
+RAW_SUFFIXES = {".csv", ".json", ".jsonl", ".log", ".pcap", ".pcapng", ".txt", ".yaml", ".yml"}
 SESSION_SUFFIXES = {".csv", ".json", ".jsonl", ".log", ".pcap", ".pcapng", ".txt", ".yaml", ".yml"}
 REMOTE_FILES_UNAVAILABLE = "Web 首版不连接设备，仅提供局点本地文件浏览与下载。"
 
@@ -292,11 +294,11 @@ def classify_file(relative_path: str) -> str | None:
         return None
     if name.endswith((".sqlite", ".sqlite3", ".db", "-wal", "-shm", "-journal")):
         return None
-    if "raw" in parts:
-        return "raw"
-    if name.endswith((".zip", ".tar.gz", ".zip.gz")) or ("imports" in parts and "online_mr" in parts):
+    if name.endswith(PACKAGE_SUFFIXES):
         return "package"
     suffix = Path(relative_path).suffix.casefold()
+    if "raw" in parts and suffix in RAW_SUFFIXES:
+        return "raw"
     if parts & {"outputs", "reports", "artifacts", "view"} and suffix in ARTIFACT_SUFFIXES:
         return "artifact"
     if "online_mr" in parts and "sessions" in parts and suffix in SESSION_SUFFIXES:

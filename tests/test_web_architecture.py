@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 
 from fastapi.testclient import TestClient
 
@@ -91,6 +92,49 @@ def test_disabled_web_feature_hides_state_and_blocks_backend_route(tmp_path: Pat
     assert state["visible"] is False
     assert state["enabled"] is False
     assert devices.status_code == 404
+
+
+def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypatch) -> None:
+    traffic_stop_entered = Event()
+    adapter_stop_entered = Event()
+
+    class BlockingAdapter:
+        def __init__(self, _task_service) -> None:
+            pass
+
+        def shutdown(self, timeout_seconds: float = 5.0) -> None:
+            adapter_stop_entered.set()
+            assert traffic_stop_entered.wait(1)
+
+    class AsyncService:
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            traffic_stop_entered.set()
+
+    class PassiveService(AsyncService):
+        async def stop(self) -> None:
+            pass
+
+    paths = PathResolver(tmp_path)
+    tasks = TaskApplicationService(paths=paths)
+    monkeypatch.setattr("netconsole.backend.api.main.LocalProcessAdapter", BlockingAdapter)
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        task_service=tasks,
+        agent_service=PassiveService(),  # type: ignore[arg-type]
+        traffic_service=AsyncService(),  # type: ignore[arg-type]
+        ac_mesh_link_refresh_service=PassiveService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app):
+        pass
+
+    assert adapter_stop_entered.is_set()
+    assert traffic_stop_entered.is_set()
 
 
 def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -> None:

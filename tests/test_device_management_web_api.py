@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -32,9 +34,18 @@ class _CapturingProcessAdapter:
     def __init__(self, tasks: TaskApplicationService) -> None:
         self.tasks = tasks
         self.jobs = []
+        self.block_start = False
+        self.start_entered = Event()
+        self.second_start_entered = Event()
+        self.release_start = Event()
 
     def start_job(self, job, **_kwargs) -> str:
         self.jobs.append(job)
+        if len(self.jobs) > 1:
+            self.second_start_entered.set()
+        if self.block_start:
+            self.start_entered.set()
+            assert self.release_start.wait(2)
         return self.tasks.prepare(job).job.job_id
 
     def shutdown(self) -> None:
@@ -228,6 +239,27 @@ def test_connection_test_reuses_active_task(tmp_path: Path) -> None:
 
     assert first.status_code == second.status_code == 202
     assert first.json()["task_id"] == second.json()["task_id"]
+    assert len(adapter.jobs) == 1
+
+
+def test_connection_test_reuses_active_task_under_concurrent_requests(tmp_path: Path) -> None:
+    _client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    adapter.block_start = True
+    barrier = Barrier(3)
+
+    def submit():
+        barrier.wait()
+        return service.start_connection_test(str(mr.device_uuid), "SSH")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(submit) for _ in range(2)]
+        barrier.wait()
+        assert adapter.start_entered.wait(1)
+        assert not adapter.second_start_entered.wait(0.1)
+        adapter.release_start.set()
+        results = [future.result(timeout=2) for future in futures]
+
+    assert results[0].task_id == results[1].task_id
     assert len(adapter.jobs) == 1
 
 

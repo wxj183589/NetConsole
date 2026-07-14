@@ -73,6 +73,8 @@ def test_local_file_index_excludes_databases_runtime_files_and_unknown_formats(t
         files_root / "parsed" / "online_diagnosis.sqlite",
         files_root / "outputs" / "active.db-wal",
         files_root / "outputs" / "unknown.bin",
+        files_root / "raw" / "private.key",
+        files_root / "rail_transit" / "online_mr" / "imports" / "unknown.bin",
     ]
     for path in blocked:
         path.parent.mkdir(parents=True, exist_ok=True)

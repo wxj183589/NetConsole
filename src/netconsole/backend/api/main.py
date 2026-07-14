@@ -181,9 +181,11 @@ def create_app(
         try:
             yield
         finally:
-            await asyncio.to_thread(web_process_adapter.shutdown)
-            await ac_mesh_link_refresh_service.stop()
-            await traffic_service.stop()
+            await asyncio.gather(
+                asyncio.to_thread(web_process_adapter.shutdown),
+                ac_mesh_link_refresh_service.stop(),
+                traffic_service.stop(),
+            )
             await agent_service.stop()
             if owns_online_mr_application_service and online_mr_application_service is not None:
                 online_mr_application_service.close()

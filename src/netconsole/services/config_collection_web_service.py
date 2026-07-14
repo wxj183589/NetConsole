@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from uuid import uuid4
 
@@ -69,6 +70,7 @@ class ConfigCollectionApplicationService:
         self.paths = paths
         self.task_service = task_service
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
+        self._start_lock = RLock()
 
     def close(self) -> None:
         self.process_adapter.shutdown()
@@ -230,25 +232,26 @@ class ConfigCollectionApplicationService:
 
     def _start_device_job(self, site_name: str, task_type: str, device: Device) -> ConfigTaskReferenceDTO:
         device_uuid = str(device.device_uuid or "")
-        active = next(
-            (
-                task
-                for task in self.task_service.repository(site_name).list(statuses=ACTIVE_TASK_STATES, limit=1000)
-                if task.task_type == task_type
-                and task.owner == CONFIG_WEB_OWNER
-                and task.device == device_uuid
-            ),
-            None,
-        )
-        if active is not None:
-            return self._task_dto(active)
-        return self._start_job(
-            site_name,
-            task_type,
-            {"device_uuid": device_uuid},
-            f"配置采集 · {device.name or device.device_uuid}",
-            device=device,
-        )
+        with self._start_lock:
+            active = next(
+                (
+                    task
+                    for task in self.task_service.repository(site_name).list(statuses=ACTIVE_TASK_STATES, limit=1000)
+                    if task.task_type == task_type
+                    and task.owner == CONFIG_WEB_OWNER
+                    and task.device == device_uuid
+                ),
+                None,
+            )
+            if active is not None:
+                return self._task_dto(active)
+            return self._start_job(
+                site_name,
+                task_type,
+                {"device_uuid": device_uuid},
+                f"配置采集 · {device.name or device.device_uuid}",
+                device=device,
+            )
 
     def _start_job(
         self,

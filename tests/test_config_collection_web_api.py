@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
 
@@ -33,9 +35,18 @@ class _FakeProcessAdapter:
     def __init__(self, task_service: TaskApplicationService) -> None:
         self.task_service = task_service
         self.jobs: list[JobSpec] = []
+        self.block_start = False
+        self.start_entered = Event()
+        self.second_start_entered = Event()
+        self.release_start = Event()
 
     def start_job(self, job: JobSpec, **_kwargs) -> str:
         self.jobs.append(job)
+        if len(self.jobs) > 1:
+            self.second_start_entered.set()
+        if self.block_start:
+            self.start_entered.set()
+            assert self.release_start.wait(2)
         launch = self.task_service.prepare(job)
         self.task_service.mark_running(launch.job.job_id)
         return launch.job.job_id
@@ -136,6 +147,28 @@ def test_config_collection_reuses_active_fetch_for_same_device(tmp_path: Path) -
     assert first.status_code == 202
     assert second.status_code == 202
     assert second.json()[0]["id"] == first.json()[0]["id"]
+    assert len(adapter.jobs) == 1
+
+
+def test_config_collection_reuses_active_fetch_under_concurrent_requests(tmp_path: Path) -> None:
+    app, _paths, device, _running, _saved, adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    adapter.block_start = True
+    barrier = Barrier(3)
+
+    def submit():
+        barrier.wait()
+        return service.submit_collection("demo", "fetch", [int(device.id)])[0]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(submit) for _ in range(2)]
+        barrier.wait()
+        assert adapter.start_entered.wait(1)
+        assert not adapter.second_start_entered.wait(0.1)
+        adapter.release_start.set()
+        results = [future.result(timeout=2) for future in futures]
+
+    assert results[0].id == results[1].id
     assert len(adapter.jobs) == 1
 
 
