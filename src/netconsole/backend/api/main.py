@@ -20,6 +20,7 @@ from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
@@ -92,6 +93,7 @@ def create_app(
     app.state.runtime_mode = runtime_mode
     app.state.paths = paths
     app.state.task_service = task_service
+    app.state.job_center_query_service = JobCenterQueryService(paths)
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)

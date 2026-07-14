@@ -206,6 +206,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.job_center": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "web.online_mr_realtime": {
       "visible": true,
       "enabled": true,

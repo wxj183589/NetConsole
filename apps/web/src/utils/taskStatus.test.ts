@@ -8,5 +8,7 @@ describe('task status helpers', () => {
     expect(taskStatusLabel('COMPLETED')).toBe('已完成')
     expect(taskStatusType('FAILED')).toBe('danger')
     expect(taskStatusType('STOPPING')).toBe('warning')
+    expect(taskStatusLabel('QUEUED')).toBe('排队中')
+    expect(taskStatusLabel('UNKNOWN')).toBe('未知')
   })
 })

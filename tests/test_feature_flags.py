@@ -45,6 +45,7 @@ def test_feature_registry_lists_expected_features() -> None:
     assert "online_mr.collect_config_once" not in feature_ids
     assert FEATURE_BY_ID["online_mr.agent_packages"].parent_id == "rail.online_mr_collection"
     assert FEATURE_BY_ID["web.online_mr_realtime"].parent_id == "rail.online_mr_collection"
+    assert FEATURE_BY_ID["web.job_center"].item_type == "page"
     assert FEATURE_BY_ID["system.web_console"].parent_id == "module.system_settings"
     assert FEATURE_BY_ID["module.feature_switch"].internal_only is True
     assert FEATURE_BY_ID["system.feature_flags"].internal_only is True

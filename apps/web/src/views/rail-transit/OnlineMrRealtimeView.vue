@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh } from '@element-plus/icons-vue'
 
@@ -7,6 +8,7 @@ import NcStatusTag from '../../components/NcStatusTag.vue'
 import { useOnlineMrStore } from '../../stores/onlineMr'
 
 const store = useOnlineMrStore()
+const route = useRoute()
 const expanded = ref('')
 const rawTab = ref('mesh_link')
 const fpingSource = ref('fping_summary')
@@ -86,8 +88,10 @@ function handleVisibility(): void {
   else store.startPolling()
 }
 
-onMounted(() => {
+onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibility)
+  const requestedSession = typeof route.query.session_id === 'string' ? route.query.session_id : ''
+  if (requestedSession) await store.selectSession(requestedSession)
   store.startPolling()
 })
 
