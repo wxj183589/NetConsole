@@ -2,14 +2,14 @@
 
 ## 当前状态
 
-阶段 5B-13A 已在 Python Controller 中实现单 Agent、单 MR 的远程执行闭环。能力默认关闭，只有设置 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1` 后，`OnlineMrApplicationService` 才允许 `executor=AGENT`；关闭时稳定返回 `ONLINE_MR_AGENT_EXECUTOR_DISABLED`。
+阶段 5B-13A 已在 Python Controller 中实现单 Agent、单 MR 的远程执行闭环；阶段 5B-13B 在 Desktop WebHost 中增加独立 AGENT 控制入口。能力默认关闭，只有设置 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1` 后，`OnlineMrApplicationService` 和 Web AGENT 页签才允许 `executor=AGENT`；关闭时 capability 返回 `agent_executor_enabled=false`，写接口稳定返回 `ONLINE_MR_AGENT_EXECUTOR_DISABLED`。
 
-本阶段只增加 Application Service 执行端，不在 Qt、FastAPI 或 Vue 中新增 Agent start/stop 控制入口，也不修改 Go Agent、MR 命令、LOCAL 生命周期、raw 文件名或报告逻辑。
+5B-13B 不修改 Go Agent、Agent 包契约、MR 命令、LOCAL 生命周期、raw 文件名或报告逻辑。Qt 页面仍不承载 Agent 业务；Vue 只收集白名单输入、调用 Application Service 并展示状态。
 
 ## 组件与依赖
 
 ```text
-Qt / API（后续入口）
+Vue AGENT 页签 → Desktop WebHost 安全校验
         │
 OnlineMrApplicationService
         ├─ LOCAL → LocalProcessAdapter → Online MR Worker
@@ -47,6 +47,20 @@ GET  /api/v1/packages/<package_id>/download
 
 不跟随 Agent 响应中的任意 URL，不接受调用方传入 Agent URL、任意命令、远端路径或 package 删除请求。
 
+Desktop WebHost 对外只开放独立前缀：
+
+```text
+GET  /api/rail-transit/online-mr-agent/capabilities
+GET  /api/rail-transit/online-mr-agent/profiles
+GET  /api/rail-transit/online-mr-agent/profiles/<profile_id>/readiness
+GET  /api/rail-transit/online-mr-agent/status
+GET  /api/rail-transit/online-mr-agent/<operation_id>
+POST /api/rail-transit/online-mr-agent/start
+POST /api/rail-transit/online-mr-agent/<operation_id>/stop
+```
+
+这些接口严格要求 Desktop 运行模式、请求主机名恰为 `127.0.0.1`、主程序签发的短期 HttpOnly/SameSite Cookie 和 Agent 环境开关。start DTO 使用 `extra=forbid`，仅接受局点、正式设备/MR、Profile、`executor=AGENT`、时长、采集项、间隔、Radio、fping 和 iPerf；没有 force、delete、retry、command、URL、路径或凭据字段。Profile 响应只返回脱敏地址 `scheme://***:port` 和安全状态。
+
 ## 凭据边界
 
 设备密码只存在于 `OnlineMrStartRequest` 和一次 start HTTP 请求正文的内存对象中。Agent Request 的公共副本会移除密码；Controller Mapping、Task、事件、日志和异常摘要不保存设备密码或 Agent Token。远端 Agent 继续使用脱敏任务参数和私有 sidecar 请求文件，最终 ZIP 禁止包含 `meta/request.private.json` 与 `stop.request`。
@@ -81,8 +95,10 @@ GET  /api/v1/packages/<package_id>/download
 
 - 仅单 Agent、单 MR；
 - 无 Agent 强停、多 Agent 编排、远端 package 删除、任意命令或 URL；
-- Qt/Web 暂未增加 AGENT 控制按钮或 API；
+- Qt 不增加 AGENT 控制按钮；Web 在列车通信 MR 详情中以独立 LOCAL/AGENT 页签接入，不共用隐藏字段表单；
 - 不自动解析、不生成报告；导入后沿用既有离线流程；
 - LOCAL 仍以 `raw/collector_output_raw.log` 和 `session_meta.json.stop_reason` 为正式契约；Agent 包继续使用 `raw/init_raw.log` 与 `stop_reason.json`，两类执行端不强行统一文件布局。
 
-自动化验证使用 fake Agent HTTP transport 和执行器替身覆盖固定 start/stop 路由、安全开关、身份字段、凭据不落盘、状态重试、正常停止、终态包导入、导入失败、Task 404、截止时间恢复、终态幂等与并发互斥。5C-10A-B Web 自动时长真实设备验收仍是独立现场事项，本阶段不自动连接真实设备。
+自动化验证除既有 Client/Executor 单元测试外，还在 `127.0.0.1` 随机端口启动真实 HTTP Fake Agent，使用固定测试 Token、pytest 临时目录和正式 package 契约，完整经过 Web Router、Application Service、Executor、正式 Client、DownloadService、Importer、Task/Session/Mapping。覆盖正常启停、重复请求、Controller 时钟到期、暂态恢复、服务重启、LOCAL/AGENT 互斥、无效包、Session 不匹配、哈希冲突、鉴权、字段白名单和响应脱敏，详见 [Fake 验收](ONLINE_MR_AGENT_FAKE_ACCEPTANCE.md)。
+
+列车下电期间冻结两项真实设备验收：5C-10A-B Web LOCAL 自动到期停止，以及 5B-13A-A Agent 远程执行真实 MR。Fake 结果不替代现场验收，也不授权连接生产 Agent、真实凭据或 `10.122.*` 设备。

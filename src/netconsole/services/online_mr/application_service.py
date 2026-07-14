@@ -679,6 +679,7 @@ class OnlineMrApplicationService:
             remote_package_id=mapping.remote_package_id,
             last_remote_status=mapping.last_remote_status,
             last_remote_seen_at=mapping.last_remote_seen_at,
+            consecutive_status_failures=mapping.consecutive_status_failures,
             deadline_at=mapping.deadline_at,
             task_status=task.status if task else None,
             phase=mapping.phase,

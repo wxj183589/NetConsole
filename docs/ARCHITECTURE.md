@@ -151,11 +151,13 @@ flowchart TD
 
 阶段 5B-3 的 Online MR LOCAL Application 入口复用现有 `online_mr_collection_start` Worker，不创建第二套 Core。Worker 内纯 Python `OnlineMrTrafficCoordinator` 持有 fping/iPerf 子线程：停止时先显式 stop/join Traffic，再关闭 SSH collector/writer，稳定 metadata 后原子打包，最后退出 Worker 让 Task Runtime 发布终态。强停由 Application Service 先有界协作等待，再通过 `LocalProcessAdapter` 终止进程树；无法确认 flush 时保留 raw、不发布新 ZIP，并把 Session/Mapping 收敛到带警告终态。阶段 5B-4 已让 Legacy Qt 页面通过 `OnlineMrCollectorWorker` 兼容 Adapter 使用该入口；Qt signals、实时 raw tail、快照和页面状态绑定继续保留，页面不再为这些会话重复启动自有 Traffic Worker。
 
-阶段 5B-7 增加纯 Python Agent package importer：只处理已下载 ZIP，在所属局点 staging 中校验路径、公共 JSON、raw 契约和哈希后原子落入 Online MR Session，并登记同局点终态 Task/Mapping；同哈希幂等、不同哈希冲突且不覆盖。该能力尚未接 Agent HTTP 下载或远程调度，`executor=AGENT` 仍保持 unsupported，也不改变 LOCAL 生命周期。
+阶段 5B-7 增加纯 Python Agent package importer：只处理已下载 ZIP，在所属局点 staging 中校验路径、公共 JSON、raw 契约和哈希后原子落入 Online MR Session，并登记同局点终态 Task/Mapping；同哈希幂等、不同哈希冲突且不覆盖。该能力现由 5B-13A/13B 的 Agent executor 在远端任务终态后调用，不改变 LOCAL 生命周期。
 
-阶段 5B-8 在现有 `AgentHttpClient` 统一响应和鉴权逻辑上增加 Online MR 类型化只读客户端，可查询 ping、Agent/工具状态、任务和包列表，并将受大小、超时和取消约束的 ZIP 流式下载到所属局点临时目录后交给 5B-7 importer。下载/导入不由 Qt 或 Application Service 自动触发，AGENT executor 与远程 start/stop 仍保持 unsupported。
+阶段 5B-8 在现有 `AgentHttpClient` 统一响应和鉴权逻辑上增加 Online MR 类型化客户端，可查询 ping、Agent/工具状态、任务和包列表，并将受大小、超时和取消约束的 ZIP 流式下载到所属局点临时目录后交给 5B-7 importer。固定 start/status/normal stop 路由现由 5B-13A executor 调用；不接受任意 URL、路径或命令。
 
 阶段 5B-11 在 Legacy Qt Online MR 页面增加 Agent 已有采集包同步/导入入口。网络查询、下载和导入通过 `online_mr_agent_packages_sync` / `online_mr_agent_package_import` Worker Process 执行；唯一 IP 候选才允许自动导入，`already_imported` 幂等跳过，`conflict` 不覆盖，无匹配或多匹配只允许经人工选择正式设备并二次确认。Token 只通过该 Worker 的临时环境传递，不进入 Job JSON、SQLite、日志或事件。该入口不开放远程 start/stop、`executor=AGENT` 或 Go Agent 修改，也不改变 LOCAL 生命周期。
+
+阶段 5B-13A/13B 在 `OnlineMrApplicationService` 下增加默认关闭的单 Agent executor 与 Desktop WebHost AGENT 适配层。Vue 只在列车通信 MR 详情的独立页签提交白名单 DTO；Router 严格校验 Desktop、`127.0.0.1` 和短期 Cookie，Service 只从 Agent Profile/会话凭据解析连接信息。远程轮询、时长、重启恢复、下载和导入都留在 Controller；Web 不提供强停、删除、任意命令或 URL。
 
 Online MR 会话生命周期：
 
@@ -188,4 +190,4 @@ stateDiagram-v2
 
 新增功能至少回答：运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
 
-打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，并已接入 Python 多 Agent 配置、健康检查、版本、能力以及 iPerf/fping 调度同步；Online MR、CentOS Agent、主动注册和上传仍未接入。边界见 [独立 Agent](AGENT.md)、[Agent Controller](AGENT_CONTROLLER.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。
+打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，并已接入 Python 多 Agent 配置、健康检查、版本、能力、iPerf/fping 调度和默认关闭的单 Agent Online MR 远程执行；CentOS Agent、主动注册、上传与多 Agent MR 编排仍未接入。边界见 [独立 Agent](AGENT.md)、[Agent Controller](AGENT_CONTROLLER.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。

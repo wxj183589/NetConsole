@@ -223,6 +223,7 @@ class OnlineMrOperationSnapshotDTO(ApiModel):
     remote_package_id: str = ""
     last_remote_status: str = ""
     last_remote_seen_at: str | None = None
+    consecutive_status_failures: int = 0
     deadline_at: str | None = None
     task_status: TaskState | None = None
     phase: OnlineMrPhase

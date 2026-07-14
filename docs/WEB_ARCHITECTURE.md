@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化。阶段 5B-2A 已建立 Online MR 纯 Python DTO、只读查询边界、LOCAL Application Service 与 Task/Session 持久映射，但尚未创建 Online MR API 或 Web 页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；阶段 3 已建立 Vue Web Shell、任务中心和 Agent 管理控制面，阶段 4C 已接入统一 Traffic REST API、独立 WebSocket 和 Vue 流量测试页面，阶段 4D 已完成 Qt Web Shell 生命周期与加载稳定化。Online MR 已建立纯 Python查询、LOCAL/AGENT Application Service、Task/Session 持久映射和独立 Web LOCAL/AGENT 受控入口；两种执行端继续共用服务而不是复制 Core。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
@@ -204,4 +204,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段按阶段 5B-3 继续收口 Online MR 生命周期，优先补齐 Traffic 子任务停止/flush 与最终化协调，再决定 `duration_minutes` 自动停止；不得绕过既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界，也不直接迁移大页面。SNMP Center 和无线勘测继续冻结，除非收到独立任务。
+后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测继续冻结，除非收到独立任务。

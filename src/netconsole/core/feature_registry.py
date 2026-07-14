@@ -66,6 +66,13 @@ FEATURES: tuple[FeatureItem, ...] = (
         "action",
         status=FeatureStatus.DEVELOPMENT,
     ),
+    FeatureItem(
+        "web.online_mr_agent_control",
+        "Web Agent Online MR 受控启停",
+        "web.train_communication_monitoring",
+        "action",
+        status=FeatureStatus.DEVELOPMENT,
+    ),
     FeatureItem("web.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "page"),
     FeatureItem("web.rail_transit_wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),
     FeatureItem(

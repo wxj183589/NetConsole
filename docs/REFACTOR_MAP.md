@@ -2,7 +2,7 @@
 
 ## 1. 当前结论
 
-截至 2026-07-15，NetConsole 已建立统一 Background Job 协议、独立 worker、进程适配器、Job Registry 和 11 个领域 handler 模块；Registry 当前注册 89 个任务类型。Traffic 的三个本地 handler、Online MR Agent 包同步/导入两个 handler 与 AC Mesh-Link 白名单刷新 handler 已直接调用正式 Service/Adapter，Online MR 5B-13A 已增加默认关闭的单 Agent 远端执行器；多数既有领域 handler 仍通过 `legacy_handler(...)` 调用 `src/netconsole/services/job_center/handlers/legacy_tasks.py`，因此总体状态仍是“入口与协议统一，领域实现迁移中”，不是“已完成”。
+截至 2026-07-15，NetConsole 已建立统一 Background Job 协议、独立 worker、进程适配器、Job Registry 和 11 个领域 handler 模块；Registry 当前注册 89 个任务类型。Traffic 的三个本地 handler、Online MR Agent 包同步/导入两个 handler 与 AC Mesh-Link 白名单刷新 handler 已直接调用正式 Service/Adapter，Online MR 5B-13A/13B 已增加默认关闭的单 Agent 远端执行器和 Desktop WebHost 控制入口；多数既有领域 handler 仍通过 `legacy_handler(...)` 调用 `src/netconsole/services/job_center/handlers/legacy_tasks.py`，因此总体状态仍是“入口与协议统一，领域实现迁移中”，不是“已完成”。
 
 ## 2. 状态定义
 
@@ -25,7 +25,7 @@
 | AP 扩展信息 | preview/commit/refresh/save Job | AC domain + identity adapter | 影子验证 | 旧业务已接管；identity 否 | 原写入 service + shadow metadata | 保持只读，等待观测结论 |
 | 轨旁 AP 业务 | 轨旁聚合/详情 Job 与导出 | rail transit handler +专用 export | 部分迁移/影子验证 | 业务部分；identity 否 | lookup、缓存、legacy 聚合/详情 | 不改变旧结果前提下逐项拆分 |
 | 轨道交通基础资料 | Qt AP 扩展/设备资料；Web 查询、问题治理、预览和受控导入审计 | Query/Preview/Import Service + Guard + 受控 API | 5C-6B 已增加运行态预览、人工决策、备份、事务、脱敏审计、幂等和冲突回滚 | 默认只读；副本可授权写入；真实局点未授权 | Qt 编辑仍保留；AP Identity 不接管；无删除/通用更新 | 先在副本持续验收，真实局点写入必须单独授权 |
-| 在线列车车地通信检测 | Web 按列车分别展示 MR-CT/MR-TC、Mesh-Link、Online MR、fping/iPerf、任务和包；MR 详情可受控 LOCAL 启停 | 只读聚合 Query Service + Web Control Service + Vue | 5C-7A 已增加展示；5C-10A 已增加默认关闭的 Desktop LOCAL start/normal stop | 聚合是；LOCAL 控制待真实验收 | Web 无强停；Agent 远程执行未开放；正式分析/报告未接入 | 先完成 5C-10A-A 真实 MR 冒烟再申请推送 |
+| 在线列车车地通信检测 | Web 按列车分别展示 MR-CT/MR-TC、Mesh-Link、Online MR、fping/iPerf、任务和包；MR 详情以独立页签受控 LOCAL/AGENT 启停 | 只读聚合 Query Service + LOCAL/AGENT Web Control Service + Vue | 5C-10A LOCAL 已接入；5B-13B AGENT Fake 全链路已通过 | 聚合与控制代码是；两项现场验收冻结 | Web 无强停/删除/命令；正式分析/报告未接入 | 列车上电后分别执行 5C-10A-B 与 5B-13A-A |
 | 轨道交通无线综合看板 | Web 聚合基础资料、FIT-AP/光衰、Mesh-Link、列车通信、Online MR、任务、Agent 缓存和 Mesh 分析 | `WirelessDashboardQueryService` + GET-only API + Vue | 5C-9 已增加只读总览、既有告警映射、数据时效和分层刷新 | 是，只读 | 详情和所有控制继续由原页面承担 | 保持无设备连接、无新阈值、无写入边界 |
 | 配置采集 | snapshot/compare/collect Job | config domain handlers | 部分迁移 | 部分 | 多个任务 thin legacy | 补 handler 单测后迁出 legacy |
 | 文件管理 | 页面后台导航/动作 | file domain handlers | 部分迁移 | 部分 | 导航与动作 legacy 适配 | 收敛路径与取消契约 |
@@ -33,18 +33,18 @@
 | SNMP MIB/产品数据 | 中心后台刷新/动作 | snmp domain handlers | 部分迁移 | 部分 | MIB/resource/product/data legacy | 分离资源库与请求采集后迁移 |
 | 无线扫描/勘测 | 页面提交 wifi survey Job | wifi domain handlers | 部分迁移 | 部分 | 扫描/勘测动作 legacy | 核对设备/平台边界后拆分 |
 | MR 原始日志分析 | Qt import/rebuild/profile Job；Web 只读查看既有结果 | mesh domain + parser/repository + GET-only Query API + Vue | 5C-8 已增加来源、主备链路、时间线、切换、RSSI、空口、异常、AP 统计和 artifact 受控访问 | Qt 分析部分；Web 查询是 | domain handler 仍有 legacy；Web 不重解析、不生成报告 | 保留单文件 parsed DB 和既有规则，控制面继续 Qt/Job |
-| Online MR 实时采集 | Legacy Qt 与 Desktop WebHost 调用 LOCAL Application Service；AGENT 由同一 Service 分派到独立 executor | collection Application Service + LOCAL/AGENT Executor + Web Control Service + Qt Adapter + Query API | 5C-10A-A LOCAL Web 已真实验收；5B-13A 已增加默认关闭的单 Agent start/status/normal stop/package import/recovery | LOCAL 生命周期是；Agent Service 闭环是；Web Agent 控制否 | Web 无强停/Agent 控制；Agent 无强停、多 Agent、自动解析/报告 | 先做独立真实 Agent 5B-13A 验收；5C-10A-B 自动时长验收不阻塞代码提交 |
+| Online MR 实时采集 | Legacy Qt 与 Desktop WebHost 调用同一 Application Service；LOCAL/AGENT 分派到隔离 executor | collection Application Service + LOCAL/AGENT Executor + 两个 Web Control Service + Qt Adapter + Query API | 5B-13B 已增加独立 AGENT 页签、固定安全 API 与回环 Fake 完整闭环 | LOCAL 生命周期、Agent Service 与 Web Agent 代码闭环是 | 无 Agent 强停、多 Agent、自动解析/报告；真实验收冻结 | 列车上电后执行 5C-10A-B 与 5B-13A-A，不用 Fake 代替 |
 | Online MR 离线解析 | `online_mr_parse` Job | online_mr domain handler/service | 已迁移但保留兼容层 | 是 | 映射/历史相关 legacy | 收口兼容入口，锁定 raw/parsed 契约 |
 | 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
 | Job Center | Qt/Python Adapter + TaskRuntime + TaskRepository + worker/registry；Web 使用独立只读 Query Service | 七状态、Event Hub、持久快照、REST/WebSocket、GET-only Web 监控、外部 Agent Task 与 11 个 domain modules | 5C-3 已完成只读 Web 列表/详情/日志 tail；领域仍部分迁移 | 任务中心是；Web 查询是；领域逻辑否 | 既有 `/api/tasks` 兼容接口、独立 daemon、`legacy_tasks.py` 兼容区 | Web 保持无 stop/delete/retry；legacy 只迁出 |
 | 统一 Traffic | `TrafficTestApplicationService` + Local/Agent Adapter + Supervisor | 本地/Agent iPerf/fping、任务映射、事件、运行索引、REST/专用 WebSocket/Vue 页面 | 阶段 4C 完成 | 是 | 原 Qt iPerf/Ping 页面、无独立 Controller daemon | 阶段 5 复用 Traffic 边界接 Online MR |
-| FastAPI / Web Shell | Vue Dashboard/任务/Agent/AC/Traffic/Online MR/轨道交通页面、对应 API、OpenAPI、`--web-shell`、托盘 Web 控制台 | Application/API、Desktop WebHost 与临时本地会话 | 5C-10A 增加严格 localhost/session/开关保护的 LOCAL Online MR start/normal stop | 查询、既有受控入口与 LOCAL 控制代码是 | Web 强停、Agent MR 控制、真实基础资料写入、其他 AC 写操作、统一用户登录 | 先完成 LOCAL 真实冒烟，不扩大到 Agent 或任意命令 |
+| FastAPI / Web Shell | Vue Dashboard/任务/Agent/AC/Traffic/Online MR/轨道交通页面、对应 API、OpenAPI、`--web-shell`、托盘 Web 控制台 | Application/API、Desktop WebHost 与临时本地会话 | 5B-13B 增加严格 Desktop/127.0.0.1/session/开关保护的 AGENT start/status/normal stop | 查询与 LOCAL/AGENT 受控入口代码是 | Web 强停、删除、任意命令、真实基础资料写入、其他 AC 写操作、统一用户登录 | 保持默认关闭，现场验收另行授权 |
 | Export Center | ExportJob + manager + worker | 27 通用 + 2 专用类型 | 已完成主路径 | 是 | 兼容直接导出入口 | 继续保证 tmp/原子替换/占用提示 |
 | AP Identity | Job/Export finished metadata | canonical resolver + adapters + ViewModel | 影子验证 | 禁止接管 | 旧 matcher/lookup/写入仍生产使用 | 真实局点观测与单宿主批准前 hold |
 | Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | SNMP/无线勘测保持 DISABLED；新增能力默认登记 |
 | 日志分页 | 日志页面/Repository 查询 | 现有分页入口 | 已完成当前需求 | 是 | 大日志策略需随数据量复核 | 保持查询分页，不回 UI 全量加载 |
 | 自动清理 | 延时 `AppCleanupService` | 白名单日志/缓存/临时目录 | 已完成受控范围 | 是 | 手工磁盘清理是另一入口 | 不扩大到业务数据和数据库 |
-| Go/CentOS/远程 Agent | Windows Go Agent + Python Agent Controller + Vue 只读控制中心 | 配置、健康、能力、Typed Client、远端状态/工具/任务/日志/采集包查询、Traffic Adapter/Supervisor、Online MR Agent Executor | 阶段 5B-12A localhost 自检通过；5B-13A 单 Agent MR 闭环已实现 | Agent 资源、只读监控、iPerf/fping 与单 Agent MR Service 闭环 | CentOS、主动注册、持久凭据、独立服务、多 Agent MR、Web Agent 控制 | 真实 Agent 验收仍需单独授权，不以 fake HTTP 或本机结果代替现场验收 |
+| Go/CentOS/远程 Agent | Windows Go Agent + Python Agent Controller + Vue 控制中心 | 配置、健康、能力、Typed Client、远端状态/工具/任务/日志/采集包查询、Traffic Adapter/Supervisor、Online MR Agent Executor/Web Adapter | 阶段 5B-13B 回环 Fake Agent 正式 HTTP/下载/导入闭环已通过 | Agent 资源、iPerf/fping 与单 Agent MR 代码闭环 | CentOS、主动注册、持久凭据、独立服务、多 Agent MR | 5B-13A-A 真实验收冻结；Fake 不替代现场验收 |
 
 ## 4. 当前非 Job Center 路径
 
@@ -84,4 +84,4 @@
 
 阶段 5C-5 复用既有 AC Mesh-Link parser 和 `vehicle_mr_online.sqlite`，增加快照、MR 状态、轨旁 AP 匹配、过期判定和 Vue 在线监控。阶段 5C-5A 增加唯一 `POST /api/ac-management/mesh-links/refresh`：Web 只创建 Task，Worker 从当前局点读取凭据并固定执行 `screen-length disable`、`display clock`、`display wlan mesh-link ap`，可选读取 switch-history；raw 经 staging 原子落盘，结构化快照事务提交，失败保留旧快照。阶段 5C-6 复用 `devices.db` 中 AP 扩展点位和设备资料，增加只读基础资料页面与质量检查。阶段 5C-6A 将正式资料、导入来源和运行态分层，增加实体问题分组、精确匹配和字段级合并计划。阶段 5C-6B 增加 15 分钟运行态预览、Feature/环境/目标范围 Guard、人工决策、数据库哈希乐观锁、SQLite 备份、单事务写入、脱敏审计、幂等和冲突保护回滚；副本可显式授权，真实局点仍未授权。阶段 5C-7A 再以 GET-only 聚合服务统一展示列车、CT/TC、Mesh-Link、Online MR、fping/iPerf、任务和采集包。阶段 5C-8 增加只读 Mesh 分析 Web 页面，阶段 5C-9 将既有只读结果聚合为无线综合看板。阶段 5C-10A 在列车通信 MR 详情中增加默认关闭的 LOCAL start/normal stop：严格要求 Desktop、`127.0.0.1`、短期 Cookie 和当前局点，复用 ApplicationService 全生命周期，不开放 Web 强停或 Agent 执行。真实设备尚未在本阶段自动连接，需 5C-10A-A 单独授权验收。
 
-阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 至 5B-11 固化 Agent 契约并接入已有包同步/导入；阶段 5C-0 至 5C-9 逐步建立 WebHost、Agent/任务/Traffic/Online MR/AC/轨道交通只读展示链。阶段 5C-10A 首次开放 Web LOCAL 受控启停，但默认关闭、不提供强停、不接 Agent、不接受命令或凭据字段，也不修改 MR 命令、Traffic flush、raw、Go Agent、AC、SNMP Center 或无线勘测。
+阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 至 5B-13A 固化 Agent 契约、包同步/导入和单 Agent executor；阶段 5B-13B 增加独立 Web AGENT 页签与回环 Fake 验收。阶段 5C-10A 的 LOCAL 与 5B-13B 的 AGENT 控制都默认关闭，只提供正常停止，不接受命令、URL、路径或凭据字段，也不修改 MR 命令、Traffic flush、raw、Go Agent、AC、SNMP Center 或无线勘测。

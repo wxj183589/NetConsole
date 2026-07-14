@@ -30,6 +30,8 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
+from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
+from netconsole.services.online_mr.agent_web_control_service import OnlineMrAgentWebControlService
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
@@ -78,7 +80,9 @@ class DesktopSessionMiddleware:
                     "details": {},
                 },
             }
-            if str(scope.get("path") or "").startswith("/api/rail-transit/online-mr-control")
+            if str(scope.get("path") or "").startswith(
+                ("/api/rail-transit/online-mr-control", "/api/rail-transit/online-mr-agent")
+            )
             else {"detail": "desktop session required"}
         )
         response = JSONResponse(status_code=401, content=content)
@@ -99,6 +103,8 @@ def create_app(
     online_mr_application_service: OnlineMrApplicationService | None = None,
     online_mr_web_control_service: OnlineMrWebControlService | None = None,
     online_mr_web_control_enabled: bool | None = None,
+    online_mr_agent_web_control_service: OnlineMrAgentWebControlService | None = None,
+    online_mr_agent_executor_enabled: bool | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
@@ -106,6 +112,15 @@ def create_app(
         online_mr_web_control_enabled = os.environ.get("ONLINE_MR_WEB_CONTROL_ENABLED", "0") == "1"
     online_mr_web_control_enabled = bool(
         online_mr_web_control_enabled
+        and runtime_mode is RuntimeMode.DESKTOP
+        and desktop_session_token
+    )
+    if online_mr_agent_executor_enabled is None:
+        online_mr_agent_executor_enabled = (
+            os.environ.get("ONLINE_MR_AGENT_EXECUTOR_ENABLED", "0") == "1"
+        )
+    online_mr_agent_executor_enabled = bool(
+        online_mr_agent_executor_enabled
         and runtime_mode is RuntimeMode.DESKTOP
         and desktop_session_token
     )
@@ -125,7 +140,8 @@ def create_app(
     owns_online_mr_application_service = (
         online_mr_application_service is None
         and online_mr_web_control_service is None
-        and online_mr_web_control_enabled
+        and online_mr_agent_web_control_service is None
+        and (online_mr_web_control_enabled or online_mr_agent_executor_enabled)
     )
     if owns_online_mr_application_service:
         online_mr_application_service = OnlineMrApplicationService(
@@ -152,6 +168,7 @@ def create_app(
     app.state.runtime_mode = runtime_mode
     app.state.desktop_session_protected = bool(desktop_session_token)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
+    app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.paths = paths
     app.state.task_service = task_service
     app.state.ac_management_query_service = AcManagementQueryService(paths)
@@ -169,6 +186,17 @@ def create_app(
         app.state.rail_transit_base_data_query_service,
         app.state.online_mr_query_service,
         enabled=online_mr_web_control_enabled,
+    )
+    app.state.online_mr_agent_web_control_service = (
+        online_mr_agent_web_control_service
+        or OnlineMrAgentWebControlService(
+            paths,
+            online_mr_application_service,
+            app.state.online_mr_web_control_service,
+            app.state.online_mr_query_service,
+            OnlineMrAgentControllerService(paths, profile_controller=agent_service),
+            enabled=online_mr_agent_executor_enabled,
+        )
     )
     app.state.train_communication_query_service = TrainCommunicationQueryService(
         paths,
@@ -249,7 +277,9 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        if request.url.path.startswith("/api/rail-transit/online-mr-control"):
+        if request.url.path.startswith(
+            ("/api/rail-transit/online-mr-control", "/api/rail-transit/online-mr-agent")
+        ):
             errors = [
                 {key: value for key, value in item.items() if key in {"type", "loc", "msg"}}
                 for item in exc.errors()

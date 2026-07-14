@@ -39,8 +39,11 @@ from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
-_ACTIVE_MAPPING_STATES = {OnlineMrMappingState.PENDING_SESSION, OnlineMrMappingState.LINKED}
-_START_LOCK = threading.RLock()
+ONLINE_MR_ACTIVE_MAPPING_STATES = {
+    OnlineMrMappingState.PENDING_SESSION,
+    OnlineMrMappingState.LINKED,
+}
+ONLINE_MR_WEB_START_LOCK = threading.RLock()
 
 
 class OnlineMrWebControlService:
@@ -105,11 +108,11 @@ class OnlineMrWebControlService:
                 "启动局点必须与主程序当前局点一致",
                 status_code=422,
             )
-        with _START_LOCK:
+        with ONLINE_MR_WEB_START_LOCK:
             existing = self._active_for_device(current_site_id, request.device_id)
             if existing is not None:
                 return self._operation_dto(existing)
-            start_request = self._build_start_request(request)
+            start_request = self.build_start_request(request)
             try:
                 return self._operation_dto(self.application_service.start_local_collection(start_request))
             except OnlineMrApplicationError as exc:
@@ -117,7 +120,7 @@ class OnlineMrWebControlService:
 
     def stop(self, operation_id: str, *, site_id: str) -> OnlineMrWebOperationDTO:
         self._require_enabled()
-        with _START_LOCK:
+        with ONLINE_MR_WEB_START_LOCK:
             try:
                 operation = self.application_service.stop_operation(
                     operation_id,
@@ -133,7 +136,14 @@ class OnlineMrWebControlService:
                 ) from exc
         return self._operation_dto(operation)
 
-    def _build_start_request(self, request: OnlineMrWebStartRequestDTO) -> OnlineMrStartRequest:
+    def build_start_request(
+        self,
+        request: OnlineMrWebStartRequestDTO,
+        *,
+        executor_kind: OnlineMrExecutorKind = OnlineMrExecutorKind.LOCAL,
+        agent_id: str = "",
+        owner: str = "web_local",
+    ) -> OnlineMrStartRequest:
         detail = self.base_query.get_mr(request.site_id, request.mr_id)
         if detail is None or detail.mr.device_id is None or str(detail.mr.device_id) != str(request.device_id):
             raise OnlineMrWebControlError(
@@ -218,14 +228,15 @@ class OnlineMrWebControlService:
             device_name=device.name,
             mr_name=detail.mr.name,
             config=config,
-            executor_kind=OnlineMrExecutorKind.LOCAL,
-            owner="web_local",
+            executor_kind=executor_kind,
+            agent_id=agent_id,
+            owner=owner,
         )
 
     def _active_for_device(self, site_id: str, device_id: int | str) -> OnlineMrOperationSnapshotDTO | None:
         rows = self.application_service.list_operations(
             site_id=site_id,
-            states=_ACTIVE_MAPPING_STATES,
+            states=ONLINE_MR_ACTIVE_MAPPING_STATES,
             device_id=device_id,
             limit=10,
         )

@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面；阶段 4D 已稳定 Qt Web Shell 的启动、失败提示、外链和退出生命周期；阶段 5C-0 让普通 Qt 主程序也可从托盘按需打开带临时本地会话保护的完整 Web 控制台，并将 Vue 产物纳入正式构建。Online MR 阶段 5B-4 已让旧 Qt 页面通过兼容 Adapter 使用新的 LOCAL Application Service 生命周期。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面；阶段 4D 已稳定 Qt Web Shell 的启动、失败提示、外链和退出生命周期；阶段 5C-0 让普通 Qt 主程序也可从托盘按需打开带临时本地会话保护的完整 Web 控制台，并将 Vue 产物纳入正式构建。Online MR 已由同一 Application Service 分派 LOCAL/AGENT；5B-13B 增加默认关闭的 Desktop WebHost AGENT 受控入口和回环 Fake 全链路验收。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -142,4 +142,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 已建立纯 Python LOCAL Application Service、同局点 Task/Session 映射、Traffic 收口和 Legacy Qt 兼容入口；阶段 5B-8 另具备 Agent 状态/任务/包查询、安全下载及调用本地 importer 的底层能力，但 AGENT executor、远程 start/stop、FastAPI Router、Vue 页面和离线分析接入仍未启用。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 兼容入口以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。

@@ -4,12 +4,14 @@ import { useRouter } from 'vue-router'
 
 import { useTrainCommunicationStore } from '../../stores/trainCommunication'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
+import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
 import type { CommunicationStatus, MrCommunicationStatus, TrainCommunicationRow } from '../../types/trainCommunication'
 
 const router = useRouter()
 const store = useTrainCommunicationStore()
 const drawerVisible = ref(false)
 const activeDetailTab = ref('overview')
+const activeExecutorTab = ref('local')
 const rawExpanded = ref<string[]>([])
 
 const summaryCards = computed(() => {
@@ -51,8 +53,8 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
 <template>
   <section class="communication-page">
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · MONITOR + LOCAL CONTROL</p><h1>在线列车车地通信检测</h1><p>主体保持只读聚合；本地主程序 WebHost 可在独立安全开关开启后受控启动或正常停止 LOCAL Online MR。</p></div>
-      <el-tag type="info">只读监控 + 本地受控入口</el-tag>
+      <div><p class="eyebrow">RAIL TRANSIT · MONITOR + CONTROL</p><h1>在线列车车地通信检测</h1><p>主体保持只读聚合；本地主程序 WebHost 按独立安全开关提供 LOCAL 与 AGENT Online MR 受控入口。</p></div>
+      <el-tag type="info">只读监控 + 受控执行入口</el-tag>
     </header>
 
     <el-alert v-if="store.error" :title="store.error" type="warning" show-icon :closable="false" />
@@ -113,7 +115,10 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
             </el-tab-pane>
             <el-tab-pane label="MR 采集详情" name="mr">
               <template v-if="store.selectedMr">
-                <OnlineMrLocalControl :site-id="store.summary?.site_id || ''" :mr="store.selectedMr.mr" />
+                <el-tabs v-model="activeExecutorTab" class="executor-tabs" type="border-card">
+                  <el-tab-pane label="LOCAL 本地执行" name="local"><OnlineMrLocalControl :site-id="store.summary?.site_id || ''" :mr="store.selectedMr.mr" /></el-tab-pane>
+                  <el-tab-pane label="AGENT 远程执行" name="agent"><OnlineMrAgentControlPanel :site-id="store.summary?.site_id || ''" :mr="store.selectedMr.mr" /></el-tab-pane>
+                </el-tabs>
                 <div class="detail-actions">
                   <el-button @click="router.push({ path: '/ac-management/mesh-links', query: { mr_name: store.selectedMr?.mr.mr_name } })">Mesh-Link 监控</el-button>
                   <el-button @click="router.push({ path: '/rail-transit/online-mr', query: { device_id: store.selectedMr?.mr.device_id } })">Online MR 展示</el-button>

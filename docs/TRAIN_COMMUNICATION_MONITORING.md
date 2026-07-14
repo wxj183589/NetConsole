@@ -2,9 +2,9 @@
 
 ## 定位
 
-阶段 5C-7A 在 `/rail-transit/train-communication` 增加统一展示页，Feature key 为 `web.train_communication_monitoring`。页面主体按正式列车分别只读展示 MR-CT 与 MR-TC，并聚合轨旁 AP、Mesh-Link、Online MR、fping、iPerf、任务与采集包；车载 MR 不是普通 WLAN 客户端。阶段 5C-10A 在 MR 详情中增加独立 `web.online_mr_local_control` 受控区，不改变其他聚合查询的只读边界。
+阶段 5C-7A 在 `/rail-transit/train-communication` 增加统一展示页，Feature key 为 `web.train_communication_monitoring`。页面主体按正式列车分别只读展示 MR-CT 与 MR-TC，并聚合轨旁 AP、Mesh-Link、Online MR、fping、iPerf、任务与采集包；车载 MR 不是普通 WLAN 客户端。阶段 5C-10A 增加 `web.online_mr_local_control`，阶段 5B-13B 增加 `web.online_mr_agent_control`；两者在 MR 详情中使用独立 LOCAL/AGENT 页签，不改变其他聚合查询的只读边界。
 
-本页只用于现场轻量监控和数据定位，不启动、停止或强停 Online MR，不连接 AC 或 Agent，不修改基础资料、快照、Session metadata/raw，不创建 Task，也不生成正式分析报告。
+本页主体只用于现场轻量监控和数据定位。只有 Desktop WebHost 安全条件与对应开关满足时，MR 详情的独立控制页签才可通过 Application Service 创建 Task、启动或正常停止 Online MR；页面不强停、不连接 AC、不修改基础资料、快照或既有 Session raw，也不生成正式分析报告。
 
 ## 数据来源和优先级
 
@@ -59,9 +59,9 @@ GET /api/rail-transit/train-communication/mrs/{mr_id}/packages
 ## 当前边界
 
 - LOCAL 启停可由 Legacy Qt 或默认关闭的 Desktop WebHost 受控入口调用同一个 `OnlineMrApplicationService`；Web 只提供正常停止，不提供强停；
-- Agent 导入 Session 和 5B-13A 远端执行结果只读展示；当前页面不开放 `executor=AGENT` 启停；
-- Agent 包下载/导入仍在现有 Qt Agent 包入口或 Agent 控制中心完成；
+- 5B-13B 的 AGENT 页签只允许选择已登记 Profile 和正式 MR，通过同一个 Application Service 进行 start/status/normal stop；包下载/导入由 Executor 自动收敛；
 - 本页不做正式 Mesh 离线分析、报告、Excel 导出、删除或写操作；已有正式分析结果通过独立的 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md) 查看。
 - 本页的列表和摘要可被 [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只读复用；综合看板继续保持 CT/TC 独立，不重新计算通信状态或阈值。
 - Web 控制只在 `ONLINE_MR_WEB_CONTROL_ENABLED=1`、Desktop、严格 `127.0.0.1` 和当前短期会话 Cookie 同时满足时可用；请求不接受凭据、命令、Agent URL 或路径，详见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。
 - 独立 Agent 执行器还要求 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1`，仅供 Application Service 使用；安全条件、恢复和 package 收敛见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)。
+- 5C-10A-B 与 5B-13A-A 真实设备验收在列车下电期间继续冻结；回环 Fake 验收见 [Online MR Agent Fake 验收](ONLINE_MR_AGENT_FAKE_ACCEPTANCE.md)。

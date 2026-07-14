@@ -4,6 +4,7 @@
 
 ### 本次修复
 
+- 完成 Online MR 阶段 5B-13B：在线列车通信 MR 详情新增独立 LOCAL/AGENT 页签，Desktop WebHost 以严格 `127.0.0.1`、短期会话、默认关闭开关和字段白名单接入单 Agent start/status/normal stop；远端 package 继续由正式下载器/Importer 收敛，不新增强停、删除、命令、URL 或 Go Agent 改动。新增随机回环端口 Fake Agent 全链路验收，5C-10A-B 与 5B-13A-A 真实设备验收在列车下电期间继续冻结。
 - 完成 Web 演进阶段 5B-2A：新增纯 Python `OnlineMrApplicationService`、LOCAL 执行入口和所属局点 `tasks.db` 中的 Task/Session 映射；任务快照显式记录局点/设备摘要，会话通过 `online_mr_session_created` 结构化事件幂等关联，业务阶段与 Job Center 七状态保持分离。
 - 统一 Online MR 启动失败与遗留会话状态：会话创建后的初始连接失败固定落为 `FAILED`，显式恢复核对将失去活动宿主的旧会话标为 `ABORTED`，均保留 raw 且不触发解析或打包；Legacy Qt、自动时长、Traffic/Agent、API/Vue 和正常停止/最终化顺序未修改。
 - 完成 Web 演进阶段 5B-1：新增 Online MR 会话/日志/指标/Artifact/备注 DTO 与纯 Python 只读 `OnlineMrQueryService`，兼容旧或不完整会话、缺表解析库、日志增长和安全相对引用；Qt Legacy 页面、采集启停、Traffic/Agent、FastAPI/Vue 与 schema 均未修改。

@@ -23,7 +23,6 @@ from netconsole.models.online_mr_application import (
     OnlineMrTaskSessionMapping,
     calculate_duration_minutes,
 )
-from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.online_mr_task_session_repository import (
     OnlineMrTaskSessionRepository,
@@ -77,6 +76,7 @@ class OnlineMrAgentExecutor:
         device_identity_validator: DeviceIdentityValidator,
         *,
         settings: OnlineMrAgentExecutorSettings | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.controller = controller
         self.task_service = task_service
@@ -84,6 +84,7 @@ class OnlineMrAgentExecutor:
         self.site_ids = site_ids
         self.device_identity_validator = device_identity_validator
         self.settings = settings or OnlineMrAgentExecutorSettings.from_environment()
+        self.clock = clock or (lambda: datetime.now(UTC))
         self._monitored: set[tuple[str, str]] = set()
         self._lock = threading.RLock()
         self._closed = threading.Event()
@@ -150,7 +151,7 @@ class OnlineMrAgentExecutor:
                 self._safe_error(exc, request.config.password),
             ) from exc
 
-        now = utc_now_iso()
+        now = self._now_iso()
         task_id = f"online_mr_agent_{uuid.uuid4().hex}"
         deadline = self._deadline(now, request.config.duration_minutes)
         state = map_online_mr_agent_status(remote.status)
@@ -222,7 +223,7 @@ class OnlineMrAgentExecutor:
             )
         repository = self.repository(mapping.site_id)
         current = repository.get_by_task(mapping.controller_task_id) or mapping
-        now = utc_now_iso()
+        now = self._now_iso()
         current = repository.save(
             replace(
                 current,
@@ -338,7 +339,7 @@ class OnlineMrAgentExecutor:
                 "Agent 返回了错误的 Task ID",
             )
         state = map_online_mr_agent_status(remote.status)
-        now = utc_now_iso()
+        now = self._now_iso()
         repository = self.repository(mapping.site_id)
         current = repository.get_by_task(mapping.controller_task_id) or mapping
         if current.mapping_state is OnlineMrMappingState.TERMINAL:
@@ -396,7 +397,7 @@ class OnlineMrAgentExecutor:
                 phase=OnlineMrPhase.FINALIZING,
                 remote_package_id=package_id,
                 remote_session_id=remote_session_id,
-                updated_at=utc_now_iso(),
+                updated_at=self._now_iso(),
             )
         )
         try:
@@ -432,8 +433,13 @@ class OnlineMrAgentExecutor:
                 return self._status_failure(updated, code, message)
             return self._terminal_failure(updated, code, message)
         final = repository.get_by_task(updated.controller_task_id) or updated
+        final_updates: dict[str, object] = {}
         if result.session_id and not final.remote_session_id:
-            final = repository.save(replace(final, remote_session_id=result.session_id))
+            final_updates["remote_session_id"] = result.session_id
+        if updated.stop_reason and final.stop_reason != updated.stop_reason:
+            final_updates["stop_reason"] = updated.stop_reason
+        if final_updates:
+            final = repository.save(replace(final, **final_updates))
         self._unmonitor(final)
         return final
 
@@ -465,7 +471,7 @@ class OnlineMrAgentExecutor:
         return repository.save(
             replace(
                 current,
-                updated_at=utc_now_iso(),
+                updated_at=self._now_iso(),
                 consecutive_status_failures=failures,
                 error_code=selected_code,
                 error_message=message,
@@ -480,7 +486,7 @@ class OnlineMrAgentExecutor:
         current = repository.get_by_task(mapping.controller_task_id) or mapping
         if current.mapping_state is OnlineMrMappingState.TERMINAL:
             return current
-        now = utc_now_iso()
+        now = self._now_iso()
         updated = repository.save(
             replace(
                 current,
@@ -576,17 +582,23 @@ class OnlineMrAgentExecutor:
             started = started.replace(tzinfo=UTC)
         return (started + timedelta(minutes=duration_minutes)).isoformat()
 
-    @staticmethod
-    def _deadline_due(mapping: OnlineMrTaskSessionMapping) -> bool:
+    def _deadline_due(self, mapping: OnlineMrTaskSessionMapping) -> bool:
         if not mapping.deadline_at:
             return False
         try:
             deadline = datetime.fromisoformat(mapping.deadline_at.replace("Z", "+00:00"))
             if deadline.tzinfo is None:
                 deadline = deadline.replace(tzinfo=UTC)
-            return datetime.now(UTC) >= deadline
+            return self._now() >= deadline
         except ValueError:
             return False
+
+    def _now(self) -> datetime:
+        value = self.clock()
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    def _now_iso(self) -> str:
+        return self._now().isoformat(timespec="milliseconds")
 
     @staticmethod
     def _remote_host(remote: OnlineMrAgentTaskStatusResponse) -> str:
