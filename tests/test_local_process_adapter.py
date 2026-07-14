@@ -148,6 +148,18 @@ class _PopenFactory:
         return self.processes.pop(0)
 
 
+class _BlockingPopenFactory(_PopenFactory):
+    def __init__(self, process: _FakeProcess) -> None:
+        super().__init__(process)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, *args, **kwargs):
+        self.entered.set()
+        assert self.release.wait(2)
+        return super().__call__(*args, **kwargs)
+
+
 def _service(tmp_path: Path) -> tuple[PathResolver, TaskApplicationService]:
     paths = PathResolver(tmp_path)
     return paths, TaskApplicationService(paths=paths, site_name="demo")
@@ -507,6 +519,38 @@ def test_local_process_adapter_shutdown_does_not_block_on_cancel_dispatch(
     assert process.terminate_called is True
     assert process.kill_called is True
     release_cancel.set()
+
+
+def test_local_process_adapter_shutdown_does_not_wait_for_blocked_process_start(tmp_path: Path) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-blocked-start"
+    process = _FakeProcess(auto_finish=False, terminate_exits=True)
+    factory = _BlockingPopenFactory(process)
+    adapter = LocalProcessAdapter(service, popen_factory=factory, process_tree_factory=lambda _process: None)
+    errors: list[Exception] = []
+
+    def start() -> None:
+        try:
+            adapter.start_job(_job(paths, job_id))
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=start)
+    thread.start()
+    assert factory.entered.wait(1)
+    started = time.monotonic()
+    adapter.shutdown(timeout_seconds=0.05)
+    elapsed = time.monotonic() - started
+    factory.release.set()
+    thread.join(timeout=2)
+
+    assert elapsed < 0.2
+    assert not thread.is_alive()
+    assert errors and "正在关闭" in str(errors[0])
+    assert process.terminate_called is True
+    assert process.poll() is not None
+    assert adapter.active_job_ids() == ()
+    assert service.get_task(job_id).status is TaskState.CANCELLED
 
 
 def test_local_process_adapter_callback_failure_does_not_change_terminal_state(

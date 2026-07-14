@@ -185,35 +185,57 @@ class LocalProcessAdapter:
         with self._state_lock:
             if self._closing:
                 raise RuntimeError("本地 Worker 进程宿主正在关闭")
+        with self._service_lock:
+            launch = self.task_service.prepare(job)
+        try:
+            process = self._start_process(launch)
+        except Exception as exc:
             with self._service_lock:
-                launch = self.task_service.prepare(job)
-            try:
-                process = self._start_process(launch)
-            except Exception as exc:
-                with self._service_lock:
-                    self.task_service.fail_start(launch.job.job_id, str(exc) or exc.__class__.__name__)
-                raise
+                self.task_service.fail_start(launch.job.job_id, str(exc) or exc.__class__.__name__)
+            raise
 
-            process_tree = self._bind_process_tree(process, launch.job.job_id)
-            state = _RunningLocalProcess(
-                launch=launch,
-                process=process,
-                process_tree=process_tree,
-                on_complete=on_complete,
-            )
-            self._states[state.job_id] = state
-            try:
-                with self._service_lock:
-                    self.task_service.mark_running(state.job_id)
-                self._start_threads(state)
-            except Exception as exc:
-                self._states.pop(state.job_id, None)
-                self._stop_process_now(process, process_tree)
-                with self._service_lock:
-                    self.task_service.fail_start(state.job_id, str(exc) or exc.__class__.__name__)
-                state.done.set()
-                raise
-            return state.job_id
+        process_tree = self._bind_process_tree(process, launch.job.job_id)
+        state = _RunningLocalProcess(
+            launch=launch,
+            process=process,
+            process_tree=process_tree,
+            on_complete=on_complete,
+        )
+        try:
+            with self._service_lock:
+                self.task_service.mark_running(state.job_id)
+        except Exception as exc:
+            self._stop_process_now(process, process_tree)
+            with self._service_lock:
+                self.task_service.fail_start(state.job_id, str(exc) or exc.__class__.__name__)
+            state.done.set()
+            raise
+
+        start_error: Exception | None = None
+        rejected_by_shutdown = False
+        with self._state_lock:
+            if self._closing:
+                rejected_by_shutdown = True
+            else:
+                self._states[state.job_id] = state
+                try:
+                    self._start_threads(state)
+                except Exception as exc:
+                    self._states.pop(state.job_id, None)
+                    start_error = exc
+        if rejected_by_shutdown or start_error is not None:
+            self._stop_process_now(process, process_tree)
+            message = "本地 Worker 进程宿主正在关闭" if rejected_by_shutdown else str(start_error or "Worker 监控线程启动失败")
+            with self._service_lock:
+                if rejected_by_shutdown:
+                    self.task_service.request_cancel(state.job_id)
+                self.task_service.fail_start(state.job_id, message)
+            state.done.set()
+            if rejected_by_shutdown:
+                raise RuntimeError(message)
+            assert start_error is not None
+            raise start_error
+        return state.job_id
 
     def cancel_job(self, job_id: str) -> bool:
         """请求协作取消；宽限期后 terminate，再超时则 kill。"""

@@ -41,6 +41,7 @@
 - 第二轮独立复核确认 P1 已全部关闭，指出 3 项 P2：并发幂等竞态、`raw/imports` 未知格式旁路、关闭总预算不一致；均已修复。
 - P2 修复专项测试：并发幂等、文件白名单、总关闭预算和并行 lifespan 共 40 项通过；Job Center、Traffic、AC Mesh-Link 与 WebHost 受影响回归 39 项通过。
 - 最终复核指出取消派发计时点仍在 deadline 之外；现已改为入口建 deadline、后台取消派发和受预算约束的最终收口，相关 LocalProcessAdapter、Job Center、Traffic 与 lifespan 回归 52 项通过。
+- 关闭边界复核进一步发现慢 `prepare/Popen` 持有状态锁；现已把阻塞启动步骤移出状态锁，关闭开始后完成的启动会被拒绝登记并立即回收，不遗留 Worker；相关关闭、Job Center、Traffic 与 lifespan 回归 53 项通过。
 
 ## 当前安全与功能限制
 
