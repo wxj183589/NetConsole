@@ -62,3 +62,4 @@ GET /api/rail-transit/train-communication/mrs/{mr_id}/packages
 - Agent 导入 Session 只读展示，`executor=AGENT` 远程执行仍未开放；
 - Agent 包下载/导入仍在现有 Qt Agent 包入口或 Agent 控制中心完成；
 - 本页不做正式 Mesh 离线分析、报告、Excel 导出、删除或写操作；已有正式分析结果通过独立的 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md) 查看。
+- 本页的列表和摘要可被 [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只读复用；综合看板继续保持 CT/TC 独立，不重新计算通信状态或阈值。

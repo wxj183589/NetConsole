@@ -51,7 +51,7 @@ cd ../..
 
 ## 当前边界
 
-- 当前 Web 页面包含 Dashboard、只读任务中心、Agent 管理、AC FIT-AP 资源、AC Mesh-Link 在线监控、Traffic、只读 Online MR 实时展示、轨道交通基础资料、在线列车通信检测和 Mesh 原始日志分析；任务中心通过 GET-only `/api/job-center` 查询任务快照、结构化事件和 Online MR 映射，不提供 stop、force-stop、delete 或 retry；Mesh-Link 页面可跳转查看其刷新任务；
+- 当前 Web 页面包含 Dashboard、只读任务中心、Agent 管理、AC FIT-AP 资源、AC Mesh-Link 在线监控、Traffic、只读 Online MR 实时展示、轨道交通基础资料、在线列车通信检测、Mesh 原始日志分析和轨道交通无线综合看板；任务中心通过 GET-only `/api/job-center` 查询任务快照、结构化事件和 Online MR 映射，不提供 stop、force-stop、delete 或 retry；Mesh-Link 页面可跳转查看其刷新任务；
 - 任务列表按运行状态动态使用 2 秒或 5 秒轮询，连续失败后降为 10 秒；详情每 2 秒刷新，日志展开后每秒读取最后 300 条，页面隐藏或关闭后停止全部轮询；
 - Job Center 查询以 SQLite `mode=ro` 和 `query_only` 打开当前局点 `tasks.db`，不初始化 schema、不修复状态，也不返回任务结果中的完整业务 payload；
 - Online MR 没有 Web 启停、强停、解析或报告 API；
@@ -61,6 +61,7 @@ cd ../..
 - 轨道交通基础资料通过 SQLite `mode=ro + query_only` 展示站点/区间派生视图、AP 点位、列车/MR、关联状态和按实体分组的质量问题；导入预览不保存上传原文件。5C-6B 的 apply/审计/rollback API 受 `web.rail_transit_base_data_write`、环境开关、局点范围、预览有效期和数据库哈希共同保护，默认配置不显示应用按钮，真实局点写入仍未授权；
 - 在线列车通信检测按列车分开显示 MR-CT/MR-TC，并聚合 Mesh-Link、Online MR、fping/iPerf、Task 和采集包；全部新接口为 GET，raw 只读受控 tail，页面隐藏或卸载时停止轮询，不提供采集控制；
 - Mesh 原始日志分析以 `mode=ro + query_only` 读取既有单来源分析数据库，后端分页链路、降采样 RSSI/空口、复用正式短时/乒乓规则并列出现有报告；不创建 Task、不调用 parser 写入模式、不生成或删除报告，文件访问不接受路径参数；
+- 轨道交通无线综合看板通过既有 Query Service 聚合基础设施、列车通信、任务、Agent 缓存和 Mesh 分析摘要；全部接口为 GET-only，告警不增加业务阈值，页面只跳转到已有详情入口；
 - Agent 远程 MR start/stop、`executor=AGENT`、远端包删除和 Agent 配置修改仍未开放；
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center 和无线勘测继续保持 `DISABLED`。

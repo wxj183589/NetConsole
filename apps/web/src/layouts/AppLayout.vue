@@ -13,6 +13,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
   if (route.path.startsWith('/rail-transit/online-mr')) return '/rail-transit/online-mr'
   if (route.path.startsWith('/rail-transit/base-data')) return '/rail-transit/base-data'
+  if (route.path.startsWith('/rail-transit/wireless-dashboard')) return '/rail-transit/wireless-dashboard'
   if (route.path.startsWith('/rail-transit/train-communication')) return '/rail-transit/train-communication'
   if (route.path.startsWith('/rail-transit/mesh-analysis')) return '/rail-transit/mesh-analysis'
   if (route.path.startsWith('/agents')) return '/agents'
@@ -70,6 +71,7 @@ onMounted(async () => {
             <span>轨道交通</span>
           </template>
           <el-menu-item index="/rail-transit/base-data">基础资料</el-menu-item>
+          <el-menu-item index="/rail-transit/wireless-dashboard">轨道交通无线看板</el-menu-item>
           <el-menu-item index="/rail-transit/train-communication">在线列车通信检测</el-menu-item>
           <el-menu-item index="/rail-transit/mesh-analysis">Mesh 原始日志分析</el-menu-item>
           <el-menu-item index="/rail-transit/online-mr">车载 MR 实时展示</el-menu-item>
