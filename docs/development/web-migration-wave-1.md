@@ -40,6 +40,7 @@
 - 第一批所有改动测试文件组合复跑：144 项通过。首次未设置源码路径时有 8 个 Worker 子进程导入失败；确认是工作树虚拟环境未 editable 安装，显式使用 `PYTHONPATH=src` 后全部通过。
 - 第二轮独立复核确认 P1 已全部关闭，指出 3 项 P2：并发幂等竞态、`raw/imports` 未知格式旁路、关闭总预算不一致；均已修复。
 - P2 修复专项测试：并发幂等、文件白名单、总关闭预算和并行 lifespan 共 40 项通过；Job Center、Traffic、AC Mesh-Link 与 WebHost 受影响回归 39 项通过。
+- 最终复核指出取消派发计时点仍在 deadline 之外；现已改为入口建 deadline、后台取消派发和受预算约束的最终收口，相关 LocalProcessAdapter、Job Center、Traffic 与 lifespan 回归 52 项通过。
 
 ## 当前安全与功能限制
 
@@ -50,7 +51,7 @@
 - 四个新 Web 页面及其受控动作同时在 Vue 导航/按钮和 FastAPI 路由执行 Feature Gate；后端禁用时直接返回 404，不能靠直连 URL 绕过。
 - 设备管理在每次请求时读取当前局点，Qt 切换局点后无需重启 WebHost；设备连接测试和配置采集对同设备活动任务幂等复用。
 - 活动任务的“查询并启动”由服务级锁形成原子临界区；并发请求只启动一个 Worker。`raw` 仅接受日志、结构化文本和抓包后缀，`imports` 仅接受已识别归档格式。
-- `LocalProcessAdapter.shutdown(timeout_seconds)` 的参数是包含协作取消、terminate、kill 的总预算；FastAPI lifespan 并行关闭本地 Adapter、AC 刷新和 Traffic，默认总预算不超过 WebHost 的等待窗口。
+- `LocalProcessAdapter.shutdown(timeout_seconds)` 的参数是包含取消派发、协作等待、terminate、kill 和最终状态收口的总预算；取消持久化使用受 deadline 约束的后台派发，FastAPI lifespan 并行关闭本地 Adapter、AC 刷新和 Traffic，默认总预算不超过 WebHost 的等待窗口。
 
 ## 延期与取消
 

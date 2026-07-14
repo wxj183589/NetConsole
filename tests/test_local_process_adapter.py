@@ -447,6 +447,7 @@ def test_local_process_adapter_abandon_calls_completion_once(tmp_path: Path) -> 
 
     adapter.shutdown(timeout_seconds=0.01)
 
+    _wait_until(lambda: len(completions) == 1)
     assert len(completions) == 1
     assert completions[0].cancelled is True
     assert completions[0].forced is True
@@ -474,6 +475,38 @@ def test_local_process_adapter_shutdown_uses_one_total_deadline(tmp_path: Path, 
     assert max(deadlines) <= started + 0.11
     assert process.terminate_called is True
     assert process.kill_called is True
+
+
+def test_local_process_adapter_shutdown_does_not_block_on_cancel_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, service = _service(tmp_path)
+    process = _UnstoppableProcess(auto_finish=False, terminate_exits=False)
+    adapter = LocalProcessAdapter(
+        service,
+        popen_factory=_PopenFactory(process),
+        process_tree_factory=lambda _process: _FakeProcessTree(),
+    )
+    adapter.start_job(_job(paths, "local-blocked-cancel", cancel_grace_ms=60000))
+    cancel_entered = threading.Event()
+    release_cancel = threading.Event()
+
+    def blocked_cancel(_job_id: str) -> bool:
+        cancel_entered.set()
+        release_cancel.wait(2)
+        return True
+
+    monkeypatch.setattr(adapter, "cancel_job", blocked_cancel)
+    started = time.monotonic()
+    adapter.shutdown(timeout_seconds=0.05)
+    elapsed = time.monotonic() - started
+
+    assert cancel_entered.is_set()
+    assert elapsed < 0.2
+    assert process.terminate_called is True
+    assert process.kill_called is True
+    release_cancel.set()
 
 
 def test_local_process_adapter_callback_failure_does_not_change_terminal_state(
@@ -520,6 +553,7 @@ def test_local_process_adapter_shutdown_cleans_active_process_and_closes_host(tm
 
     adapter.shutdown(timeout_seconds=0.01)
 
+    _wait_until(lambda: service.get_task(job_id).status is TaskState.CANCELLED)
     snapshot = service.get_task(job_id)
     assert snapshot is not None
     assert snapshot.status is TaskState.CANCELLED

@@ -278,27 +278,46 @@ class LocalProcessAdapter:
     def shutdown(self, timeout_seconds: float = 5.0) -> None:
         """在总时间预算内停止所有本地 Worker；不会影响远端 Agent 任务。"""
 
+        started = time.monotonic()
+        timeout = max(0.0, float(timeout_seconds))
+        deadline = started + timeout
         with self._state_lock:
             self._closing = True
             states = tuple(self._states.values())
         for state in states:
-            self.cancel_job(state.job_id)
+            thread = threading.Thread(
+                target=self.cancel_job,
+                args=(state.job_id,),
+                name=f"local-job-shutdown-cancel-{state.job_id}",
+                daemon=True,
+            )
+            thread.start()
 
-        started = time.monotonic()
-        timeout = max(0.0, float(timeout_seconds))
-        deadline = started + timeout
-        self._wait_states(states, started + timeout * 0.6)
+        self._wait_states(states, started + timeout * 0.4)
         remaining = tuple(state for state in states if not state.done.is_set())
         for state in remaining:
             self._terminate_process(state)
-        self._wait_states(remaining, started + timeout * 0.8)
+        self._wait_states(remaining, started + timeout * 0.6)
         remaining = tuple(state for state in remaining if not state.done.is_set())
         for state in remaining:
             self._kill_process(state)
-        self._wait_states(remaining, deadline)
+        self._wait_states(remaining, started + timeout * 0.7)
+        abandon_threads: list[threading.Thread] = []
         for state in remaining:
             if not state.done.is_set():
-                self._abandon(state)
+                thread = threading.Thread(
+                    target=self._abandon,
+                    args=(state,),
+                    name=f"local-job-shutdown-abandon-{state.job_id}",
+                    daemon=True,
+                )
+                abandon_threads.append(thread)
+                thread.start()
+        for thread in abandon_threads:
+            remaining_budget = deadline - time.monotonic()
+            if remaining_budget <= 0:
+                break
+            thread.join(remaining_budget)
 
     def _start_process(self, launch: TaskLaunch) -> subprocess.Popen[bytes]:
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
