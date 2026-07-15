@@ -24,4 +24,14 @@ describe('file management read-only view', () => {
     expect(source).toContain('clearTimeout')
     expect(source).not.toContain('absolute_path')
   })
+
+  it('covers controlled device sessions, mesh filtering and desktop-action dependencies', () => {
+    expect(source).toContain('connectDeviceFiles')
+    expect(source).toContain('listRemoteFiles')
+    expect(source).toContain('startRemoteFileDownload')
+    expect(source).toContain('Mesh 日志')
+    expect(source).toContain('requestWinScp')
+    expect(source).toContain('requestOpenResultDirectory')
+    expect(source).not.toMatch(/>\s*(上传|删除|重命名)\s*</)
+  })
 })

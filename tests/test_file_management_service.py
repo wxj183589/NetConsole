@@ -7,10 +7,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.file_management_router import router
+from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
+from netconsole.models.device import Device
 from netconsole.models.task_state import TaskState
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.file_transfer_service import FileTransferService, RemoteDeviceFile, file_sha256, normalize_remote_path
 from netconsole.services.file_management_service import (
     FileManagementApplicationService,
     FileReferenceNotFound,
@@ -154,3 +158,136 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         assert str(tmp_path) not in downloaded.headers.get("content-disposition", "")
         assert before_download == after_download
         assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"file_ref": "../outside"}).status_code == 422
+
+
+def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    device_a = repository.create(Device(name="MR-A", device_type="MR", primary_address="192.0.2.10"))
+    device_b = repository.create(Device(name="MR-B", device_type="MR", primary_address="192.0.2.11"))
+
+    class FakeTransfer:
+        payloads = {"flash:/diagfile/diag_a.tar.gz": b"remote artifact"}
+
+        def __init__(self, site_name, fake_paths):
+            self.site_name = site_name
+            self.paths = fake_paths
+            self.connected = False
+            self.root_path = "flash:/"
+
+        def connect(self, _device):
+            self.connected = True
+            return self.root_path
+
+        def disconnect(self):
+            self.connected = False
+
+        def list_directory(self, path):
+            current = normalize_remote_path(path, root_path=self.root_path)
+            if current == "flash:/":
+                return [RemoteDeviceFile("diagfile", "flash:/diagfile", None, None, "dir", is_dir=True, file_type="directory")]
+            return [RemoteDeviceFile("diag_a.tar.gz", "flash:/diagfile/diag_a.tar.gz", 15, "2026-07-15 10:00:00", "diag")]
+
+        def local_path_for(self, device, remote_file):
+            return FileTransferService(self.site_name, self.paths).local_path_for(device, remote_file)
+
+        def download(self, remote_path, local_path, progress_callback=None, cancel_token=None, **_kwargs):
+            if cancel_token is not None:
+                cancel_token.is_cancelled()
+            payload = self.payloads[normalize_remote_path(remote_path)]
+            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_path).write_bytes(payload)
+            if progress_callback is not None:
+                progress_callback(len(payload), len(payload))
+            return Path(local_path)
+
+    monkeypatch.setattr("netconsole.services.file_management_service.FileTransferService", FakeTransfer)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    captured: list[BackgroundJob] = []
+
+    class FakeProcessAdapter:
+        def start_job(self, job: BackgroundJob) -> str:
+            captured.append(job)
+            task_service.prepare(job)
+            return job.job_id
+
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=FakeProcessAdapter(),
+        transfer_factory=FakeTransfer,
+    )
+    with TestClient(_app(service)) as client:
+        connected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
+        assert connected.status_code == 201
+        connection_id = connected.json()["connection_id"]
+        assert "flash:/" not in connected.text
+
+        root = client.get(f"/api/file-management/connections/{connection_id}/entries", params={"site_id": "demo"})
+        assert root.status_code == 200
+        directory_id = root.json()["items"][0]["entry_id"]
+        nested = client.get(
+            f"/api/file-management/connections/{connection_id}/entries",
+            params={"site_id": "demo", "entry_id": directory_id},
+        )
+        assert nested.status_code == 200
+        remote_entry_id = nested.json()["items"][0]["entry_id"]
+
+        second = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_b.device_uuid})
+        assert second.status_code == 201
+        second_id = second.json()["connection_id"]
+        cross_device = client.get(
+            f"/api/file-management/connections/{second_id}/entries",
+            params={"site_id": "demo", "entry_id": remote_entry_id},
+        )
+        assert cross_device.status_code == 404
+
+        started = client.post(
+            "/api/file-management/downloads",
+            params={"site_id": "demo"},
+            json={"connection_id": connection_id, "remote_entry_id": remote_entry_id},
+        )
+        assert started.status_code == 202
+        task_id = started.json()["task_id"]
+        assert captured and captured[-1].params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
+        result = run_file_management_download(JobContext.from_job(captured[-1]))
+        assert result["sha256"] == file_sha256(paths.site_dir("demo") / result["relative_path"])
+        task_service.record_external_event(task_id, "finished", {"result": result}, site_name="demo")
+        queue = client.get("/api/file-management/downloads", params={"site_id": "demo"})
+        assert queue.status_code == 200
+        assert queue.json()[0]["result"]["artifact_id"].startswith("fa1_")
+        artifact = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
+        assert artifact.status_code == 200
+        assert artifact.content == b"remote artifact"
+        pending = client.post(
+            "/api/file-management/downloads",
+            params={"site_id": "demo"},
+            json={"connection_id": connection_id, "remote_entry_id": remote_entry_id},
+        )
+        assert pending.status_code == 202
+        pending_cancel = client.post(f"/api/file-management/downloads/{pending.json()['task_id']}/cancel", params={"site_id": "demo"})
+        assert pending_cancel.status_code == 200
+        cancelled = client.post(f"/api/file-management/downloads/{task_id}/cancel", params={"site_id": "demo"})
+        assert cancelled.status_code == 422
+        assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).json()["integration_required"]
+        assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"connection_id": connection_id, "remote_entry_id": "fe1_" + "0" * 32}).status_code == 404
+
+        unsafe_job = BackgroundJob(
+            job_id="unsafe-remote-download",
+            task_type="file_management_download",
+            params={
+                "site_name": "demo",
+                "device_id": device_a.device_uuid,
+                "remote_entry_id": remote_entry_id,
+                "remote_path": "flash:/diagfile/diag_a.tar.gz",
+                "remote_name": "diag_a.tar.gz",
+                "remote_category": "diag",
+                "target_relative_path": "file_manager/downloads/../outside.bin",
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+            },
+        )
+        with pytest.raises(FileReferenceNotFound):
+            run_file_management_download(JobContext.from_job(unsafe_job))
