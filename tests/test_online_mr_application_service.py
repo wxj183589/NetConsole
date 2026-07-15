@@ -19,8 +19,10 @@ from netconsole.models.online_mr_models import FpingConfig, OnlineMrConnectionCo
 from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.repositories.online_mr_task_session_repository import OnlineMrTaskSessionRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.errors import OnlineMrApplicationError, OnlineMrApplicationErrorCode
+from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
 
 
 class FakeProcessAdapter:
@@ -202,6 +204,62 @@ def test_operation_keeps_its_start_site_without_cross_site_scan_or_rebind(tmp_pa
     assert stopped.phase is OnlineMrPhase.TERMINAL
     assert adapter.cancelled_jobs == [operation.controller_task_id]
     assert not service.paths.site_tasks_db_path("site-b").exists()
+
+
+def test_recovery_restores_local_operation_site_binding_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    task_service = TaskApplicationService(paths, site_name="site-a")
+    first_adapter = FakeProcessAdapter(task_service)
+    first_service = OnlineMrApplicationService(
+        paths,
+        site_name="site-a",
+        task_service=task_service,
+        process_adapter=first_adapter,
+        device_validator=lambda _site, device_id: str(device_id) == "7",
+    )
+    operation = first_service.start_local_collection(_request("site-a"))
+    first_service.close()
+
+    paths.app_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text(json.dumps({"current_site": "site-b"}), encoding="utf-8")
+    second_adapter = FakeProcessAdapter(task_service)
+    second_adapter.active_jobs.add(operation.controller_task_id)
+    second_service = OnlineMrApplicationService(
+        paths,
+        site_name="site-b",
+        task_service=task_service,
+        process_adapter=second_adapter,
+        device_validator=lambda _site, device_id: str(device_id) == "7",
+    )
+    local_control = OnlineMrWebControlService(
+        paths,
+        second_service,
+        base_query=object(),
+        query_service=object(),
+        enabled=True,
+    )
+    facade = OnlineMrApiFacade(paths, object(), local_control, object())
+
+    assert second_service._operation_sites == {}
+    assert second_service._session_sites == {}
+    monkeypatch.setattr(second_service, "_site_ids", lambda: pytest.fail("不得扫描全部局点"))
+
+    assert facade.current_site_id() == "site-b"
+    assert second_service.recover_mappings(site_id="site-a") == []
+    assert second_service._operation_sites == {operation.controller_task_id: "site-a"}
+
+    detail = facade.local_operation(operation.controller_task_id)
+    stopped = facade.stop_local(operation.controller_task_id)
+
+    assert detail.site_id == "site-a"
+    assert stopped.site_id == "site-a"
+    assert stopped.phase == str(OnlineMrPhase.TERMINAL)
+    assert second_adapter.cancelled_jobs == [operation.controller_task_id]
+    assert not paths.site_tasks_db_path("site-b").exists()
+    second_service.close()
 
 
 def test_start_indexes_mapping_before_early_session_event(tmp_path: Path) -> None:
