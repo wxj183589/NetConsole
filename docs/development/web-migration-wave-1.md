@@ -25,6 +25,7 @@
 | 网络工具 Web | 已集成 | 提交 `267d5a1b`；复用 Traffic Run、fping/iPerf，补充本地/Agent TCP 端口测试 |
 | 配置采集中心 Web | 已集成 | 提交 `b480c8c4`；复用 Config Lifecycle、Snapshot、既有 diff/load Job 与受控 Artifact，仅新增一个只读 fetch 薄 handler |
 | 文件管理 Web | 已集成 | 提交 `8925b7ad`；局点本地文件分类与受控下载，不做设备远程文件、删除、上传或重命名 |
+| Web 双轨基础设施 | 已完成 | 提交 `588a941`；统一导航注册、正式路由归属、Feature Gate、响应式 Desktop WebHost、前后端构建身份和 Qt/Web 能力矩阵 |
 
 ## 已完成验证
 
@@ -47,6 +48,10 @@
 - 后端单进程全量两次分别在约 55% 和 58% 无 pytest 失败摘要退出，已完成用例均通过；退出前最后一项单独运行通过，判定为 Qt 长进程累计状态基线，不作为业务用例失败处理。
 - 后端按 8 个独立 pytest 进程覆盖全部 2187 项：2185 项通过、2 项按既有条件跳过。分片过程中发现 1 个 Qt 测试仍把 `OnlineMrCollectorWorker.start()` mock 为返回 `None`；按正式任务快照契约修正后，相关 2 项定向测试和所在分片 400 项均通过。
 - 全仓 Ruff 仍有 142 个既有错误，均位于本批次未修改的旧模块；本批次生产代码变更范围 Ruff 通过，未为清零旧基线扩大修改范围。
+- Web 双轨基础设施定向回归：受影响后端 64 项通过；前端 30 个文件、74 项通过；Vue 类型检查和生产构建通过。
+- Web 双轨基础设施独立只读评审发现 1 项 P1 和 1 项 P2：共享 Task API 误归属于 Job Center、Feature 状态加载失败时前端路由放行；均已修复并补回归测试，复核后无遗留 P1/P2 阻断项。
+- 本轮最终 Python 全量按 8 个独立进程加完整发布烟测执行：2207 项通过、2 项按既有条件跳过；真实 PyInstaller 构建、发布目录白名单、内嵌 Web metadata 与 EXE 启动烟测通过。
+- Agent `go test ./...` 全部通过；修改范围 Ruff、`compileall`、`git diff --check` 和文档结构检查通过。
 
 ## 当前安全与功能限制
 
