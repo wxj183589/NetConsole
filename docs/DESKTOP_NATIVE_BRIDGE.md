@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位于 `apps/desktop_electron/src/{main,preload,shared}`。它只用于验证桌面宿主能力，不表示 Artifact、终端、通知或完整业务导出已经迁移。普通 Browser/Server Mode 没有 `window.netconsoleDesktop`，仍不能调用本机选择器或打开路径。
+Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位于 `apps/desktop_electron/src/{main,preload,shared}`。除桌面选择器外，当前还提供受控的后端文件下载，用于文件管理、配置快照和 MESH Artifact；这不表示 Artifact、终端、通知或完整业务导出已经迁移。普通 Browser/Server Mode 没有 `window.netconsoleDesktop`，仍不能调用本机选择器或打开路径，但 Vue Platform Adapter 会用原生 `<a download>` 保持普通浏览器下载。
 
 总体运行方式和启动命令见 [Electron Desktop 基础架构](ELECTRON_DESKTOP.md)。
 
@@ -27,6 +27,7 @@ Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位
 | `selectFile` | 过滤器、是否多选 | 数量、名称、扩展名、未知字段白名单 | 原生选择器 |
 | `selectDirectory` | 无 | 原生目录选择器 | 原生选择器 |
 | `chooseSavePath` | 安全文件名、过滤器 | 不接受路径或命令作为文件名 | 只选择目标位置 |
+| `downloadBackendResource` | `/api/...` 相对路径、安全 Query、建议文件名、过滤器 | main 只访问当前受管动态回环后端，自行注入内存令牌并流式保存 | 文件、配置快照与 MESH Artifact 下载 |
 | `openPath` | 本轮对话框返回的路径 | 当前进程临时授权；仅目录或数据/报告扩展名白名单 | 打开已选择文件/目录 |
 | `showItemInFolder` | 本轮对话框返回的路径 | 当前进程临时授权 | 在资源管理器定位 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
@@ -35,20 +36,24 @@ Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位
 
 ## 路径授权模型
 
-Renderer 不能提交任意绝对路径。`selectFile`、`selectDirectory` 或 `chooseSavePath` 的 Electron 原生对话框返回值先由 main 规范化，再登记到当前进程内存授权表；后续 `openPath`/`showItemInFolder` 只接受与已登记项精确匹配的路径。退出时授权表清空，不持久化。
+Renderer 不能提交任意绝对路径。`selectFile`、`selectDirectory` 或 `chooseSavePath` 的 Electron 原生对话框返回值先由 main 规范化，再登记到当前进程内存授权表；`downloadBackendResource` 仅在流式下载和原子替换成功后登记最终路径。后续 `openPath`/`showItemInFolder` 只接受与已登记项精确匹配的路径。退出时授权表清空，不持久化。
 
 `openPath` 对文件使用允许列表，当前只接受常见文本、JSON/CSV、Markdown、PDF、Excel 和 ZIP；目录必须由目录选择器单独授予。`.exe`、`.py`、`.reg`、`.chm`、`.msc`、快捷方式、安装包和其他未知扩展名默认拒绝。此接口不是 `openArtifact` 的最终业务实现；后续 Artifact 必须通过 `artifact_id`、局点和受控路径解析。
 
 ## 文件导出边界
 
-`chooseSavePath` 只返回用户确认的目标路径。报告生成、Excel/ZIP/PDF 内容、临时文件、原子替换、取消和文件占用处理继续属于 Python Application Service 与 Export Process。Electron Main/Preload 不读取数据库、不生成报告、不复制 Artifact 内容。
+`chooseSavePath` 只返回用户确认的目标路径。报告生成及 Excel/ZIP/PDF 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 只能提交严格校验的 `/api/...` 相对路径和字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，成功后原子替换，取消或失败时不留下临时/伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+
+Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a download>`、Blob 或页面导航不能绕过该桥接。退出时先关闭新下载入口，取消并等待在途流清理后再停止受管 Python；Browser Platform Adapter 不受该 Electron 专用策略影响。
+
+下载清理完成后，Main 才向 Python 发送 `shutdown`；Python 在 Uvicorn 完全退出后回报 `shutdown_ack`，Main 再发送 `exit`。Electron 只在 Bridge 下载、Python 后端和会话路径授权等受管清理全部结束后退出，不把仍在写入的 `.part` 留给下一次启动。
 
 ## 永久禁止
 
 - 通用 `execute(command)`、任意 IPC channel 或完整 `ipcRenderer`；
 - PowerShell/cmd、shell 字符串、`shell: true` 或 Renderer 提供的参数数组；
 - Renderer 指定 Python/executable、环境变量、工作目录或 backend module；
-- 任意文件系统读写、数据库路径、URL 打开或未知程序启动；
+- 任意文件系统读写、数据库路径、任意 URL/Header/目标路径或未知程序启动；
 - 把 Agent Token、SSH/SNMP 凭据、密码或完整环境返回给 Renderer；
 - 通过路径选择接口绕过 Artifact/Application Service 权限。
 

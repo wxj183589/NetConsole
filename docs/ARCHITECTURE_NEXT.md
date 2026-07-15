@@ -95,10 +95,11 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 - `selectFile`
 - `selectDirectory`
 - `chooseSavePath`
+- `downloadBackendResource`：只允许受控 `/api/...` 描述，由 main 访问当前动态回环后端并流式落盘
 - 仅限当前原生对话框已授权路径的 `openPath`
 - 仅限当前原生对话框已授权路径的 `showItemInFolder`
 
-`openArtifact`、受控目录类型、终端和通知仍是后续能力。
+上述下载只搬运 Python Application Service 已授权的 HTTP 响应，不解释 Artifact，也不等同于按业务 ID 打开本机结果。`openArtifact`、受控目录类型、终端和通知仍是后续能力。
 
 禁止提供：
 
@@ -108,6 +109,8 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 - 可拼接 Shell、PowerShell 或批处理参数的通用执行接口。
 
 所有桥接调用必须验证路径归属、参数类型、允许的目标程序和审计信息。业务控制仍经过 FastAPI 和 Application Service。
+
+所有受管桌面能力必须加入同一退出屏障。当前顺序固定为：拒绝新下载、取消并等待在途写入清理；Main 请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`；Main 再发送 `exit`；会话路径授权清空后 Electron 才退出。该链路属于宿主 `FOUNDATION_READY`，没有启动 Online MR 完整操作闭环迁移，也不改变 Qt 的生产与回退入口地位。
 
 ## 冻结和排除范围
 

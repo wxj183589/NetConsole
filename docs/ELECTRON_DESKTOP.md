@@ -25,7 +25,10 @@ flowchart TD
     API --> AS["Application Service / Repository / Infrastructure"]
     EM --> PRE["sandboxed preload + contextBridge"]
     PRE --> VUE["apps/web Vue Renderer"]
-    VUE -->|"REST / WebSocket"| API
+    VUE -->|"Runtime Adapter: REST / WebSocket"| API
+    VUE -->|"安全下载 DTO"| PRE
+    PRE -->|"固定 IPC"| EM
+    EM -->|"动态 Origin + 内存令牌；流式响应"| API
     BROWSER["普通浏览器"] --> VUE
 ```
 
@@ -57,7 +60,9 @@ cd apps/desktop_electron
 pnpm dev
 ```
 
-`pnpm dev` 先检查并打包 Electron main/preload，再确认固定回环端口 `5173` 未被占用、启动 Vite dev server，最后启动 Electron；端口冲突时直接失败，不能误连其他 worktree 的 Vite。Electron 自己选择 Python 动态端口，因此 Vite 的 `5173` 与 FastAPI 端口没有绑定关系。独立 Git worktree 可通过开发机环境变量 `NETCONSOLE_PYTHON` 指向同一项目虚拟环境；该路径不会进入 Renderer、日志或版本化配置。
+`pnpm dev` 先检查并打包 Electron main/preload，再确认固定回环端口 `5173` 未被占用、启动 Vite dev server，最后启动 Electron；端口冲突时直接失败，不能误连其他 worktree 的 Vite。Electron 自己选择 Python 动态端口，因此 Vite 的 `5173` 与 FastAPI 端口没有绑定关系。Vite 中固定的 `/api`、`/ws` 代理只服务普通 Browser 开发；Electron 的 REST、WebSocket 和下载全部从 Runtime Config 读取受管动态 Origin，不经过固定 `127.0.0.1:8000`。独立 Git worktree 可通过开发机环境变量 `NETCONSOLE_PYTHON` 指向同一项目虚拟环境；该路径不会进入 Renderer、日志或版本化配置。
+
+Electron/Vue 的产品标题统一为 `NetConsole`，侧栏使用“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
 
 自动开发冒烟：
 
@@ -92,9 +97,12 @@ pnpm start
 4. 令牌只通过已持有子进程的 stdin 首行 JSON 传递；不进入参数、环境变量、URL 或配置。
 5. Electron 先校验受管子进程管道返回的 `127.0.0.1:<port>`，再使用临时请求头轮询真实 `/api/health`，成功后才加载正式 Vue 页面。
 6. stdout/stderr 按行写入 Electron 日志，先移除令牌和常见敏感字段。
-7. 正常退出通过同一 stdin 控制管道请求 Uvicorn 优雅退出；父进程异常导致管道 EOF 时，Python 同样退出。
-8. 只有优雅停止超时才对本管理器持有的子进程句柄发送终止信号；不按名称扫描或误杀其他 Python。
-9. 后端意外退出或强制终止后仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+7. 正常退出时 Main 通过同一 stdin 控制管道发送 `shutdown`，Python 控制线程据此请求 Uvicorn 优雅退出；父进程异常导致管道 EOF 时，Python 同样请求退出。
+8. Python 只在 `uvicorn.Server.run()` 完全返回后发送 `netconsole.electron_backend.shutdown_ack`，随后等待 Main 的 `exit`；Main 收到该确认后才发送 `exit` 并关闭控制管道。
+9. 只有优雅停止确认超时才对本管理器持有的子进程句柄发送终止信号；不按名称扫描或误杀其他 Python。
+10. 后端意外退出或强制终止后仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+
+桌面总退出是单一受管屏障：先等待 Desktop IPC 的下载清理，再完成上述 Python `shutdown_ack -> exit` 握手，最后清空会话路径授权；这些步骤结束后才销毁窗口、释放单实例锁并退出 Electron。Windows 下不依赖可能缺失的 child `exit/close` 事件来判定 Uvicorn 是否已经停止。
 
 ## 本地 API 安全模型
 
@@ -105,6 +113,7 @@ pnpm start
 - Vue 只在模块内存保存 `apiBaseUrl`、`apiToken` 和宿主类型；不写 `localStorage`、`sessionStorage`、URL 或 Pinia 持久化状态。
 - 临时令牌用于本机桌面会话，不替代 Agent Token、用户登录、角色权限或业务写操作审计。
 - Renderer 被完全攻陷时仍能使用其当前内存令牌，因此 CSP、导航限制、上下文隔离、preload 最小化和短生命周期必须共同成立。
+- Electron Runtime Config 初始化未完成或失败时，Vue 拒绝把 REST/WebSocket/下载静默降级为相对 `/api`；普通 Browser 模式才允许相对路径和 Vite 代理。
 
 ## Electron 安全默认值
 
@@ -123,11 +132,15 @@ partition: non-persistent in-memory session
 
 - preload 使用 esbuild 打成单文件，适配 sandboxed preload 的受限 `require` 环境；
 - 阻止所有新窗口和 `<webview>`；
-- 主窗口同时拦截普通导航和服务端重定向，只允许已登记的精确回环 Origin；
+- 主窗口同时拦截普通导航和服务端重定向，只允许已登记的精确 Renderer 回环 Origin，且同源 `/api`、`/ws` 与桌面会话路径也不得替换 Vue 页面；
 - 拒绝 Renderer 权限请求；
 - 生产 CSP 不包含 `unsafe-eval`，开发 CSP 只为 Vite 开放该项；
 - `object-src 'none'`、`frame-ancestors 'none'`，`connect-src` 只包含当前回环 Renderer/API/WebSocket Origin；
 - IPC 在 main 再次校验参数，并核对发送者必须是当前主窗口的 main frame，且 frame URL 仍属于已登记回环 Origin。
+- 所有新窗口继续拒绝；当前基础阶段不开放 Renderer 外部链接，后续如需开放只能以独立 URL 白名单交给系统浏览器。
+- Electron 内存 Session 一律拦截 Chromium `will-download`；合法文件只能走 `downloadBackendResource` 的原生保存确认与 main 流式链，不能用 `<a download>`、Blob 或页面导航绕过。
+- `did-start-loading`、`did-finish-load`、`did-fail-load`、`preload-error`、`render-process-gone`、`unresponsive/responsive`、`child-process-gone` 和后端状态变化均写入脱敏诊断；主框架失败显示可重试状态页，不保留永久黑屏。
+- 默认移除 Electron 应用菜单；仅开发服务器存在且显式设置 `NETCONSOLE_ELECTRON_DEV_MENU=1` 时显示开发菜单。
 
 ## preload / IPC 白名单
 
@@ -139,6 +152,7 @@ Renderer 当前只能调用：
 - `selectFile`
 - `selectDirectory`
 - `chooseSavePath`
+- `downloadBackendResource`
 - `openPath`
 - `showItemInFolder`
 - `onBackendStatusChanged`
@@ -153,6 +167,9 @@ Renderer 当前只能调用：
 - 对话框返回的绝对路径只在当前 Electron 进程内登记为临时授权；`openPath`/`showItemInFolder` 只能回传并使用这些已授权路径。
 - `openPath` 只允许原生对话框授予的目录或明确的数据/报告扩展名；程序、脚本、系统控制文件和未知扩展名默认拒绝，不能成为通用程序启动器。
 - `chooseSavePath` 只选择目标；Excel、ZIP、PDF、报告和 Artifact 内容继续由 Python Application Service/Export Process 生成。
+- `downloadBackendResource` 在 Browser 中使用普通下载，在 Electron 中只把安全相对 API 描述交给 main；main 使用当前动态后端和请求头令牌流式写同目录临时文件，成功后原子替换。Renderer 不接收完整文件、任意 URL、Header 或目标路径，令牌不进入 URL、Storage 或日志。
+- Browser Adapter 启动原生下载后返回 `started`；Electron 只有保存完成才返回 `saved`，原生保存对话框取消返回 `cancelled`，HTTP、网络、文件或退出中止返回 `failed` 并清理 `.part`。
+- Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 Uvicorn 退出后的 `shutdown_ack`，再发送 `exit`；全部受管清理结束后才退出 Electron。
 - 后续 `openArtifact` 必须使用受控 `artifact_id` 解析，不得把当前临时路径授权扩大为任意业务路径接口。
 
 ## Qt Legacy 策略
@@ -185,6 +202,8 @@ Renderer 当前只能调用：
 
 现有 SNMP Center 与无线勘测继续保持 `DISABLED / FUTURE_REBUILD`；第 9 项只能在独立重建设计批准后开始。
 
+本轮只加固 Electron 宿主、下载和退出链，没有启动上述第 1 项 Online MR 完整操作闭环迁移，也没有改变 Qt 的生产与回退入口地位。
+
 后续不能只迁移只读列表和详情页。每个模块必须按完整纵向业务闭环迁移，包括创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；在达到 `REPLACE_READY` 前不能隐藏 Qt 回退入口。
 
 ## 定向验证
@@ -206,4 +225,4 @@ pnpm test
 pnpm build
 ```
 
-完整 Windows 安装包、代码签名、升级、托盘和真实发布目录尚未验收，不能从上述源码冒烟推断为通过。
+完整 Windows 安装包、代码签名、升级、托盘和真实发布目录尚未验收；原生保存对话框与关闭后进程残留也仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。

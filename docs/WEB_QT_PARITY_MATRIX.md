@@ -6,7 +6,7 @@
 
 长期模块总览见 [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md)，最终桌面与业务分层目标见 [下一代架构](ARCHITECTURE_NEXT.md)。
 
-业务页面对等状态只使用：`NOT_STARTED`、`READ_ONLY`、`PREVIEW_ONLY`、`CONTROLLED_WRITE`、`FAKE_ACCEPTED`、`REAL_ACCEPTED`、`REPLACE_READY`、`EXCLUDED`。宿主与基础设施可在长期总览中单独使用 `FOUNDATION_READY`，该状态不表示任何业务页面达到替换条件。
+业务页面对等状态只使用：`NOT_STARTED`、`READ_ONLY`、`PREVIEW_ONLY`、`CONTROLLED_WRITE`、`FAKE_ACCEPTED`、`REAL_ACCEPTED`、`REPLACE_READY`、`EXCLUDED`。宿主与基础设施可在长期总览中单独使用 `FOUNDATION_READY`，该状态不表示任何业务页面达到替换条件。本轮 Electron 受管下载和 `shutdown_ack -> exit` 退出屏障仍属于宿主基础；Online MR 完整操作闭环迁移状态不变。
 
 - `FAKE_ACCEPTED` 不等于真实设备验收。
 - “写操作”包括创建/取消 Task、修改配置或数据、执行设备动作；受控下载不计为业务写入。
@@ -43,7 +43,7 @@
 | 轨道交通 | 车载 MR 实时收集 | LOCAL/AGENT 启动、状态、正常停止、Traffic、包与恢复 | `rail.online_mr_collection`、`online_mr.advanced_ping`、`online_mr.iperf_test` | 轨道交通 | `/rail-transit/online-mr` | `web.online_mr_realtime`、控制动作 Feature | `OnlineMrApplicationService`、Agent Controller、Traffic、Task/Session Mapping | `FAKE_ACCEPTED` | 是 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 无 Web 强停；Agent→真实 MR 与真实供电环境仍冻结。 |
 | 轨道交通 | 车载 MR 收集分析 | Session、链路明细、fping 汇总、图表、报告、导出 | `rail.online_mr_analysis` | 轨道交通 | `/rail-transit/online-mr-analysis` | `web.online_mr_analysis` | Online MR Query/Analysis、Export Process | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 不得用 MeshAnalysisView 代替。 |
 | 配置采集中心 | 运行中/已保存/差异 | 设备选择、批量采集、快照查看与比较 | `module.config_collection` | 配置采集中心 | `/config-center` | `web.config_collection`、`web.config_collection_fetch`、`web.config_collection_diff` | `ConfigCollectionApplicationService`、Config Lifecycle/Snapshot、Task | `CONTROLLED_WRITE` | 是 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 已复用正式采集/比较链，不重新实现采集器。 |
-| 配置采集中心 | 保存、下载与导出 | 保存配置、任意快照比较、多设备比较、批量导出、目录、删除历史 | `module.config_collection` | 配置采集中心 | `/config-center` | `web.config_collection_download` 及待登记动作 | Config Lifecycle、Export Process、Native Bridge（规划） | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 当前仅受控 Artifact 下载覆盖部分能力。 |
+| 配置采集中心 | 保存、下载与导出 | 保存配置、任意快照比较、多设备比较、批量导出、目录、删除历史 | `module.config_collection` | 配置采集中心 | `/config-center` | `web.config_collection_download` 及待登记动作 | Config Lifecycle、Export Process、Native Bridge 受控下载；`openArtifact` 规划 | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 当前仅受控 Artifact 下载覆盖部分能力。 |
 | 文件管理 | 本地文件 | 局点文件浏览、分类和下载 | `module.file_management` | 文件管理 | `/file-manager` | `web.file_management`、`web.file_management_download` | `FileManagementApplicationService` | `READ_ONLY` | 否 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 仅白名单本地文件；不是 Qt 双窗格完整对等。 |
 | 文件管理 | 设备文件/传输队列 | 连接、断开、导航、下载、进度、取消、Mesh 筛选 | `module.file_management`、`file.mesh_log_download` | 文件管理 | `/file-manager` | 待登记动作 Feature | 既有 SFTP/File Service、Task | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 第一版不新增 Qt 不具备的危险上传/删除。 |
 | 文件管理 | 外部 WinSCP | 启动已配置 WinSCP | `file.external_winscp` | 文件管理 | `/file-manager` | — | 不在初始 Native Bridge 白名单 | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 迁移期留在 Qt；未来需要单独安全立项。 |

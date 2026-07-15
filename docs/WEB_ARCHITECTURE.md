@@ -52,10 +52,12 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 | 模式 | 值 | 本机能力 |
 | --- | --- | --- |
-| Desktop Mode | `desktop` | Electron 已提供第一阶段文件/目录/另存为与临时授权路径 Bridge；Artifact、终端和通知仍待独立实现 |
+| Desktop Mode | `desktop` | Electron 已提供文件/目录/另存为、临时授权路径和受管后端下载 Bridge；按业务 ID 打开的 `openArtifact`、终端和通知仍待独立实现 |
 | Server Mode | `server` | 使用浏览器上传/下载；禁止假定可访问服务端桌面或本机外部程序 |
 
 RuntimeMode 仍由 Python Core 使用；Electron Native Bridge 位于独立 main/preload 边界，不向 Python Application Service 增加宿主依赖。当前白名单、宿主条件和永久禁止输入见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
+
+Electron Desktop 自己持有退出屏障：先拒绝新下载并取消、等待在途写入清理，再请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 回发 `exit`，最后 Electron 才退出。该宿主生命周期加固不提升任何业务页面的对等状态，Online MR 完整操作闭环仍未因本轮工作启动，Qt 继续作为生产与回退入口。
 
 ## 4. API 契约
 
@@ -127,7 +129,7 @@ flowchart TD
 - Qt 退出前先卸载 Vue 页面和 WebSocket，再停止 Uvicorn；正常关闭和 `Ctrl+C` 后均不残留 Web Shell Python、FastAPI 或 QtWebEngine 进程；
 - Vue 外部链接交给系统浏览器，JavaScript error/warning 写入应用日志；WebEngine 默认上下文菜单关闭；
 - Desktop Web Shell 与 Server Mode 均验证 `/`、`/tasks`、`/agents` 和 `/network-tools/traffic`；普通 Qt 启动继续不监听 FastAPI 端口；
-- 不新增 QWebChannel 业务桥接。文件选择、Artifact/受控目录、已登记终端和通知属于后续 Electron Native Bridge；WinSCP、IPOP 和其他通用外部程序不在初始白名单；
+- 不新增 QWebChannel 业务桥接。Electron 已实现文件选择与受管后端下载；按业务 ID 打开的 `openArtifact`、受控目录、已登记终端和通知仍属于后续 Native Bridge；WinSCP、IPOP 和其他通用外部程序不在初始白名单；
 - 离屏冒烟覆盖 100%/125%/150% 缩放和 1280×720、1920×1080、2560×1440。该验证确认路由、DOM、构建和关闭链路，不代替 Windows 实机上的字体、表格、图表和滚动人工观察。
 
 阶段 5B-1 已完成：

@@ -76,4 +76,5 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center 和无线勘测继续保持 `DISABLED`。
 - Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
-- Qt WebHost 不提供本机文件选择、目录、Artifact、外部终端或通知；Electron 已实现文件/目录/另存为和会话内授权路径基础，Artifact、终端与通知仍待后续。所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)，WinSCP、IPOP 和其他通用外部程序不在当前白名单，迁移期继续留在 Qt。
+- Qt WebHost 不提供本机文件选择、目录、Artifact、外部终端或通知；Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 则继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知仍待后续。所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)，WinSCP、IPOP 和其他通用外部程序不在当前白名单，迁移期继续留在 Qt。
+- Electron 不复用 Qt WebHost 的关闭链：它先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。该宿主差异不表示 Qt 已退出生产或回退入口。
