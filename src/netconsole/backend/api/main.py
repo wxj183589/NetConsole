@@ -66,6 +66,7 @@ from netconsole.services.traffic.web_application_service import TrafficWebApplic
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
 _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
+DESKTOP_SESSION_HEADER = "x-netconsole-session"
 
 
 class DesktopSessionMiddleware:
@@ -78,10 +79,19 @@ class DesktopSessionMiddleware:
             await self.app(scope, receive, send)
             return
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        supplied_header = headers.get(DESKTOP_SESSION_HEADER.encode("ascii"), b"").decode(
+            "ascii", errors="ignore"
+        )
         cookie = SimpleCookie()
         cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
         supplied = cookie.get(DESKTOP_SESSION_COOKIE)
-        if supplied is not None and secrets.compare_digest(supplied.value, self.token):
+        header_authenticated = bool(supplied_header) and secrets.compare_digest(
+            supplied_header, self.token
+        )
+        cookie_authenticated = supplied is not None and secrets.compare_digest(
+            supplied.value, self.token
+        )
+        if header_authenticated or cookie_authenticated:
             scope.setdefault("state", {})["desktop_session_authenticated"] = True
             await self.app(scope, receive, send)
             return
