@@ -6,9 +6,10 @@ import hashlib
 import hmac
 import secrets
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from PySide6.QtWidgets import QWidget
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QWidget
 
 from netconsole.core import app_logger
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem, FeatureStatus, children_of, list_features
@@ -193,7 +194,7 @@ class FeatureGate:
         self._session_override_operator = ""
         self.reload()
         app_logger.log_info("FEATURE_GATE_CUSTOMER_PREVIEW_ENABLED", f"reason={reason} feature_count={len(self.features)}")
-        _feature_switch_log(f"preview client mode: on")
+        _feature_switch_log("preview client mode: on")
 
     def disable_session_customer_preview(self, reason: str = "manual") -> None:
         if self._session_customer_preview_features is None:
@@ -202,7 +203,7 @@ class FeatureGate:
         self._session_override_reason = ""
         self.reload()
         app_logger.log_info("FEATURE_GATE_CUSTOMER_PREVIEW_DISABLED", f"reason={reason}")
-        _feature_switch_log(f"preview client mode: off")
+        _feature_switch_log("preview client mode: off")
 
     def is_session_override_active(self) -> bool:
         return self._session_override_profile is not None

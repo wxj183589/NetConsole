@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from time import perf_counter
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QWidget
 
@@ -13,6 +14,9 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.ui.main_window import MainWindow
 from netconsole.ui.shell.fluent_bridge import FLUENT_RUNTIME, fluent_available
 
+if TYPE_CHECKING:
+    from netconsole.ui.web_host.web_server import DesktopWebServer
+
 
 def create_app_window(
     *,
@@ -21,13 +25,14 @@ def create_app_window(
     i18n: I18n,
     paths: PathResolver,
     startup_started_at: float | None = None,
+    web_server: DesktopWebServer | None = None,
 ) -> QWidget:
     started_at = startup_started_at or perf_counter()
     if fluent_available():
         try:
             from netconsole.ui.app_fluent_window import AppFluentWindow
 
-            window = AppFluentWindow(site, repository, i18n, paths, started_at)
+            window = AppFluentWindow(site, repository, i18n, paths, started_at, web_server=web_server)
             app_logger.log_info("MAIN_WINDOW_CLASS", window.__class__.__name__)
             print(f"[NetConsole] MAIN_WINDOW_CLASS={window.__class__.__name__}", file=sys.stderr)
             return window
@@ -39,6 +44,13 @@ def create_app_window(
         detail = f"class=MainWindow reason=qfluentwidgets_unavailable:{FLUENT_RUNTIME.error}"
         app_logger.log_warning("FLUENT_WINDOW_FALLBACK", detail)
         print(f"[NetConsole] FLUENT_WINDOW_FALLBACK {detail}", file=sys.stderr)
-    window = MainWindow(site=site, repository=repository, i18n=i18n, paths=paths, startup_started_at=started_at)
+    window = MainWindow(
+        site=site,
+        repository=repository,
+        i18n=i18n,
+        paths=paths,
+        startup_started_at=started_at,
+        web_server=web_server,
+    )
     app_logger.log_info("MAIN_WINDOW_CLASS", window.__class__.__name__)
     return window

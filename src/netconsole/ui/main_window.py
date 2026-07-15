@@ -64,6 +64,8 @@ class MainWindow(AppFramelessMainWindow):
         i18n: I18n,
         paths: PathResolver,
         startup_started_at: float | None = None,
+        *,
+        web_server=None,
     ) -> None:
         super().__init__()
         self.startup_started_at = startup_started_at or perf_counter()
@@ -132,7 +134,7 @@ class MainWindow(AppFramelessMainWindow):
         self.data_disk_dialog = None
         self.shutdown_dialog: ShutdownProgressDialog | None = None
         self._force_close = False
-        self.web_console_host = WebConsoleHost(paths=self.paths, parent=self)
+        self.web_console_host = WebConsoleHost(paths=self.paths, server=web_server, parent=self)
 
         self.navigation.currentRowChanged.connect(self.open_current_page)
         self.device_page.groups_changed.connect(self.refresh_group_filters)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Event
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.health import health_response
@@ -139,6 +140,78 @@ def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypat
 
     assert adapter_stop_entered.is_set()
     assert traffic_stop_entered.is_set()
+
+
+def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> None:
+    class AgentService:
+        stopped = False
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    class TrafficService(AgentService):
+        async def start(self) -> None:
+            raise RuntimeError("traffic start failed")
+
+    class AcService(AgentService):
+        pass
+
+    agent = AgentService()
+    traffic = TrafficService()
+    ac = AcService()
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        task_service=TaskApplicationService(paths=PathResolver(tmp_path)),
+        agent_service=agent,  # type: ignore[arg-type]
+        traffic_service=traffic,  # type: ignore[arg-type]
+        ac_mesh_link_refresh_service=ac,  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with pytest.raises(RuntimeError, match="traffic start failed"), TestClient(app):
+        pass
+
+    assert agent.stopped is True
+    assert traffic.stopped is True
+    assert ac.stopped is True
+
+
+def test_web_lifespan_cleanup_failure_does_not_skip_agent_stop(tmp_path: Path) -> None:
+    class AgentService:
+        stopped = False
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    class FailingTrafficService(AgentService):
+        async def stop(self) -> None:
+            self.stopped = True
+            raise RuntimeError("traffic stop failed")
+
+    agent = AgentService()
+    traffic = FailingTrafficService()
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        task_service=TaskApplicationService(paths=PathResolver(tmp_path)),
+        agent_service=agent,  # type: ignore[arg-type]
+        traffic_service=traffic,  # type: ignore[arg-type]
+        ac_mesh_link_refresh_service=AgentService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app):
+        pass
+
+    assert traffic.stopped is True
+    assert agent.stopped is True
 
 
 def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -> None:

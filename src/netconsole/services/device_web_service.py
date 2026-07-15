@@ -3,9 +3,6 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
-
 
 HTTPS_PORT_PATTERN = re.compile(r"(?i)\bHTTPS\s+port\s*[:：]\s*(\d{1,5})\b")
 DEFAULT_HTTPS_PORT = 443
@@ -78,6 +75,9 @@ def open_https_url(host: object, port: object) -> bool:
     url = build_https_url(host, port)
     if not url:
         return False
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
     return bool(QDesktopServices.openUrl(QUrl(url)))
 
 

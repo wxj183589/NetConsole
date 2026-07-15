@@ -26,6 +26,7 @@
 | 配置采集中心 Web | 已集成 | 提交 `b480c8c4`；复用 Config Lifecycle、Snapshot、既有 diff/load Job 与受控 Artifact，仅新增一个只读 fetch 薄 handler |
 | 文件管理 Web | 已集成 | 提交 `8925b7ad`；局点本地文件分类与受控下载，不做设备远程文件、删除、上传或重命名 |
 | Web 双轨基础设施 | 已完成 | 提交 `588a941`；统一导航注册、正式路由归属、Feature Gate、响应式 Desktop WebHost、前后端构建身份和 Qt/Web 能力矩阵 |
+| Launcher / Core Runtime 第一阶段启动子项 | 已完成 | 四模式、隔离 Qt 能力探测、无 Qt Browser/Server、Core-owned WebHost、普通启动单实例；Server 仅允许回环绑定；Native Bridge、EmbeddedLayout 和 Qt 页面服务容器统一延期 |
 
 ## 已完成验证
 
@@ -52,6 +53,9 @@
 - Web 双轨基础设施独立只读评审发现 1 项 P1 和 1 项 P2：共享 Task API 误归属于 Job Center、Feature 状态加载失败时前端路由放行；均已修复并补回归测试，复核后无遗留 P1/P2 阻断项。
 - 本轮最终 Python 全量按 8 个独立进程加完整发布烟测执行：2207 项通过、2 项按既有条件跳过；真实 PyInstaller 构建、发布目录白名单、内嵌 Web metadata 与 EXE 启动烟测通过。
 - Agent `go test ./...` 全部通过；修改范围 Ruff、`compileall`、`git diff --check` 和文档结构检查通过。
+- Launcher/Core Runtime 组合定向回归：127 项通过；补充真实健康端点启动/停止、浏览器失败保持 Core、CLI 帮助和提权子进程兼容后，Launcher 专项通过；FastAPI 启停失败隔离专项 3 项通过。
+- Launcher/Core Runtime 最终合并门禁：当前 2240 项 Python 用例全部覆盖，2238 项通过、2 项按既有条件跳过；原生 Qt 文件采用独立 Python 进程隔离，真实 PyInstaller 构建、EXE smoke、源码/冻结包 Widgets 与 WebEngine probe 均通过。前端 30 个文件、74 项通过并完成生产构建，Agent `go test ./...` 通过。
+- Launcher/Core Runtime 独立只读评审发现非回环无鉴权绑定 P1 和 Qt probe 导入链污染 P2；现已限制 Server 仅绑定 loopback、拆出轻量 probe 并补发布 import graph 断言，复核后无遗留 P1/P2。修改范围 Ruff、全量 `compileall`、`git diff --check` 通过；全仓 Ruff 仍有 141 个既有错误，未扩大本阶段范围处理。
 
 ## 当前安全与功能限制
 

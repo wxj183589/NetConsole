@@ -94,6 +94,8 @@ class AppFluentWindow(SplitFluentWindow):
         i18n: I18n,
         paths: PathResolver,
         startup_started_at: float | None = None,
+        *,
+        web_server=None,
     ) -> None:
         super().__init__()
         self.startup_started_at = startup_started_at or perf_counter()
@@ -126,7 +128,7 @@ class AppFluentWindow(SplitFluentWindow):
         self.tray_notice_shown_this_session = False
         self._page_enter_serial = 0
         self._site_bar_sync_scheduled = False
-        self.web_console_host = WebConsoleHost(paths=self.paths, parent=self)
+        self.web_console_host = WebConsoleHost(paths=self.paths, server=web_server, parent=self)
 
         self.apply_app_theme(self.settings.theme, persist=False)
         self.setMicaEffectEnabled(False)

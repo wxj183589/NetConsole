@@ -5,6 +5,7 @@ import html
 import secrets
 import socket
 import threading
+from time import monotonic, sleep
 
 import uvicorn
 
@@ -45,28 +46,40 @@ def stop_server(server: uvicorn.Server, server_thread: threading.Thread) -> None
 
 
 class DesktopWebServer:
-    def __init__(self, *, paths: PathResolver, protect_session: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        paths: PathResolver,
+        runtime_mode: RuntimeMode = RuntimeMode.DESKTOP,
+        host: str = "127.0.0.1",
+        port: int | None = None,
+        protect_session: bool = True,
+    ) -> None:
         self.paths = paths
-        self.port = available_local_port()
-        self.base_url = f"http://127.0.0.1:{self.port}"
-        self.session_token = secrets.token_urlsafe(32) if protect_session else ""
-        app = create_app(
-            RuntimeMode.DESKTOP,
+        self.runtime_mode = runtime_mode
+        self.host = host
+        self.port = available_local_port() if port is None else int(port)
+        display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        url_host = f"[{display_host}]" if ":" in display_host else display_host
+        self.base_url = f"http://{url_host}:{self.port}"
+        self.session_token = secrets.token_urlsafe(32) if protect_session and runtime_mode is RuntimeMode.DESKTOP else ""
+        self.app = create_app(
+            runtime_mode,
             paths=paths,
             desktop_session_token=self.session_token or None,
         )
         app_logger.log_info(
             "DESKTOP_WEB_FRONTEND_RESOURCE",
             (
-                f"frontend_root={app.state.frontend_root} "
-                f"index={app.state.frontend_root / 'index.html'} "
-                f"frontend_build_id={app.state.frontend_build_id or 'missing'} "
-                f"backend_build_id={app.state.backend_build_id} "
-                f"frontend_source_type={app.state.frontend_source_type}"
+                f"frontend_root={self.app.state.frontend_root} "
+                f"index={self.app.state.frontend_root / 'index.html'} "
+                f"frontend_build_id={self.app.state.frontend_build_id or 'missing'} "
+                f"backend_build_id={self.app.state.backend_build_id} "
+                f"frontend_source_type={self.app.state.frontend_source_type}"
             ),
         )
         self.server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning", access_log=False)
+            uvicorn.Config(self.app, host=self.host, port=self.port, log_level="warning", access_log=False)
         )
         self.thread = threading.Thread(
             target=run_server,
@@ -86,6 +99,12 @@ class DesktopWebServer:
     def start(self) -> None:
         if not self.thread.is_alive() and not self.server.started:
             self.thread.start()
+
+    def wait_started(self, timeout_seconds: float = 8.0) -> bool:
+        deadline = monotonic() + max(float(timeout_seconds), 0.0)
+        while self.thread.is_alive() and not self.server.started and monotonic() < deadline:
+            sleep(0.05)
+        return self.started
 
     def stop(self) -> None:
         if self.thread.is_alive():

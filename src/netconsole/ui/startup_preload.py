@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtWidgets import QApplication
 
@@ -13,6 +13,9 @@ from netconsole.core.settings import SettingsStore
 from netconsole.ui.app_window_factory import create_app_window
 from netconsole.ui.main_window import MainWindow
 from netconsole.ui.widgets.startup_splash import StartupSplash
+
+if TYPE_CHECKING:
+    from netconsole.ui.web_host.web_server import DesktopWebServer
 
 
 @dataclass(frozen=True)
@@ -25,7 +28,13 @@ class StartupTask:
 
 
 class StartupPreloadManager:
-    def __init__(self, i18n: I18n, splash: StartupSplash, started_at: float | None = None) -> None:
+    def __init__(
+        self,
+        i18n: I18n,
+        splash: StartupSplash,
+        started_at: float | None = None,
+        web_server: DesktopWebServer | None = None,
+    ) -> None:
         self.i18n = i18n
         self.splash = splash
         self.started_at = started_at or perf_counter()
@@ -33,6 +42,7 @@ class StartupPreloadManager:
         self.window: MainWindow | None = None
         self.failed_tasks: dict[str, str] = {}
         self.settings: SettingsStore | None = None
+        self.web_server = web_server
 
     def run(self, mode: str = "preload_all") -> MainWindow:
         app_logger.log_info("STARTUP", f"mode={mode}")
@@ -98,6 +108,7 @@ class StartupPreloadManager:
                 i18n=self.i18n,
                 paths=self.context.paths,
                 startup_started_at=self.started_at,
+                web_server=self.web_server,
             )
         else:
             self.window = create_app_window(
@@ -106,6 +117,7 @@ class StartupPreloadManager:
                 i18n=self.i18n,
                 paths=self.context.paths,
                 startup_started_at=self.started_at,
+                web_server=self.web_server,
             )
 
     def _preload_page(self, page_id: str) -> None:

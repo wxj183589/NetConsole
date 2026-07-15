@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,8 +17,10 @@ if TYPE_CHECKING:
     from netconsole.ui.web_host.web_server import DesktopWebServer
 
 try:
+    if os.environ.get("NETCONSOLE_QT_WEBENGINE_AVAILABLE") == "0":
+        raise ImportError("Qt WebEngine capability probe failed")
     from PySide6.QtWebEngineWidgets import QWebEngineView
-except ImportError:  # pragma: no cover - depends on packaged Qt components
+except (ImportError, OSError):  # pragma: no cover - depends on packaged Qt components
     QWebEngineView = None  # type: ignore[assignment,misc]
 
 
@@ -135,10 +138,17 @@ class _BrowserHostWindow(QMainWindow):
 
 
 class WebConsoleHost(QObject):
-    def __init__(self, *, paths: PathResolver, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        paths: PathResolver,
+        server: DesktopWebServer | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self.paths = paths
-        self.server: DesktopWebServer | None = None
+        self.server = server
+        self._owns_server = server is None
         self.window: _BrowserHostWindow | None = None
 
     def open(self) -> None:
@@ -159,6 +169,6 @@ class WebConsoleHost(QObject):
             self.window.host_widget.shutdown()
             self.window.close()
             self.window = None
-        if self.server is not None:
+        if self.server is not None and self._owns_server:
             self.server.stop()
             self.server = None

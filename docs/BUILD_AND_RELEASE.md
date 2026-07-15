@@ -148,6 +148,8 @@ Nuitka：
 
 ## 验证
 
+源码和冻结包均需验证统一启动参数：`--mode auto|qt|web|server`。`web/server` 入口必须在未导入 PySide6 的条件下完成分派；`web` 浏览器启动失败只记录诊断并保持 Core Runtime，`server` 不得主动打开浏览器且只允许回环地址。Qt probe 必须保持轻量导入，不得依赖 FastAPI/Core 成功导入。真实 Qt platform plugin 与 WebEngine 能力仍需在 Windows 图形环境单独验证，不能用 offscreen 单测替代。
+
 常用验证：
 
 ```powershell

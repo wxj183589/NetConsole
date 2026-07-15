@@ -1,28 +1,24 @@
-# Qt WebHost
+# Desktop WebHost
 
 ## 当前状态
 
-阶段 5C-0 在普通 Qt 主程序中增加可复用 WebHost。它复用既有 FastAPI、Vue、Task Center、Agent Controller、Traffic Service、Online MR Query/Application Service，不建立第二套 Python Core，也不通过 QWebChannel 暴露业务方法。
+默认入口现由无 Qt 依赖 Launcher 完成轻量能力探测后创建唯一 FastAPI Core Runtime，再把同一个 Web 服务实例交给 Qt Shell、本机浏览器 Shell 或无 Shell Server。Qt WebConsoleHost 复用该实例，不再创建或停止 Launcher 所拥有的服务，也不通过 QWebChannel 暴露业务方法。
 
-主程序托盘和 Fluent 顶部“更多”菜单均可打开完整 Web 控制台。WebHost 按需启动，因此仅运行原生 Qt 页面时不会监听 HTTP 端口，也不会要求 FastAPI 服务提前启动。
+主程序托盘和 Fluent 顶部“更多”菜单仍可打开完整 Web 控制台。默认 `auto/qt` 启动下 Core Runtime 已在 Shell 前监听随机回环端口；直接调用旧 `netconsole.app.run()` 时仍保留按需创建 WebHost 的兼容行为。
 
 ## 运行结构
 
 ```text
-Qt Main Window / System Tray
+NetConsole Launcher
         |
         v
-WebConsoleHost
+Core Runtime / FastAPI / Uvicorn
         |
-        +-- QWebEngineView（可用时）
+        +-- Qt WebConsoleHost / QWebEngineView（可用时）
         |
-        +-- 系统默认浏览器（fallback）
+        +-- 本机系统浏览器
         |
-        v
-127.0.0.1 随机端口
-        |
-        v
-Existing FastAPI + Vue + Python Core
+        +-- Server Mode（无 Shell）
 ```
 
 本地服务只绑定 `127.0.0.1`。桌面 WebHost 每次进程启动生成新的临时会话令牌；令牌通过 `POST /__desktop_session` 建立 HttpOnly、SameSite Cookie，不进入 URL。HTTP 和 WebSocket 在会话建立前均拒绝访问。
@@ -31,11 +27,12 @@ Existing FastAPI + Vue + Python Core
 
 ## 生命周期
 
-- 第一次打开 Web 控制台时才创建 FastAPI 服务并启动 Uvicorn 线程；
+- 默认 Launcher 在选择 Shell 前创建一次 FastAPI 服务并启动 Uvicorn 线程；
 - 关闭 Web 窗口只关闭显示窗口，主程序和本地服务继续存活，可从托盘重新打开；
-- 主程序明确退出时先卸载 Web 页面，再停止 Uvicorn；
+- Launcher 进程退出时统一停止 Uvicorn 和 FastAPI lifespan；本机浏览器标签关闭不等于停止 Core Runtime；
 - QWebEngine 不可用时主程序仍可正常启动，并自动提供外部浏览器入口；
-- 普通 `python main.py` 不会在未打开 Web 控制台时监听端口。
+- `--mode web/server` 通用导入链不加载 PySide6；`server` 不主动打开浏览器；
+- 旧 `--web-shell` 与直接 `netconsole.app.run()` 继续作为兼容路径，不代表新 Launcher 生命周期。
 
 ## 构建
 
@@ -61,6 +58,8 @@ cd ../..
 WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导航在低于约 `1100px` 时折叠，低于约 `850px` 时切换为抽屉；折叠状态和展开分组保存在当前会话的 `sessionStorage`。
 
 ## 当前边界
+
+- 本阶段完成启动与 WebHost 生命周期解耦，但旧 Qt 页面内部的 Task/Application Service 尚未全部改为依赖注入；Native Bridge、EmbeddedLayout、模块 presentation、局点/主题同步均未实现；
 
 - 当前 Web 页面包含 Dashboard、只读任务中心、Agent 管理、AC FIT-AP 资源、AC Mesh-Link 在线监控、Traffic、只读 Online MR 实时展示、轨道交通基础资料、在线列车通信检测、Mesh 原始日志分析和轨道交通无线综合看板；任务中心通过 GET-only `/api/job-center` 查询任务快照、结构化事件和 Online MR 映射，不提供 stop、force-stop、delete 或 retry；Mesh-Link 页面可跳转查看其刷新任务；
 - 任务列表按运行状态动态使用 2 秒或 5 秒轮询，连续失败后降为 10 秒；详情每 2 秒刷新，日志展开后每秒读取最后 300 条，页面隐藏或关闭后停止全部轮询；

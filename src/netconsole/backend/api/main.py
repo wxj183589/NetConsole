@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from netconsole.backend.api.router import api_router, ws_router
+from netconsole.core import app_logger
 from netconsole.backend.web_build import (
     FRONTEND_MISMATCH_MESSAGE,
     backend_build_id,
@@ -184,19 +185,38 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        await agent_service.start()
-        await traffic_service.start()
         try:
+            await agent_service.start()
+            await traffic_service.start()
             yield
         finally:
-            await asyncio.gather(
+            cleanup = await asyncio.gather(
                 asyncio.to_thread(web_process_adapter.shutdown),
                 ac_mesh_link_refresh_service.stop(),
                 traffic_service.stop(),
+                return_exceptions=True,
             )
-            await agent_service.stop()
+            for component, result in zip(("local_process", "ac_mesh_link", "traffic"), cleanup, strict=True):
+                if isinstance(result, BaseException):
+                    app_logger.log_error(
+                        "WEB_LIFESPAN_STOP_FAILED",
+                        f"component={component} error={result.__class__.__name__}: {result}",
+                    )
+            try:
+                await agent_service.stop()
+            except Exception as exc:
+                app_logger.log_error(
+                    "WEB_LIFESPAN_STOP_FAILED",
+                    f"component=agent error={exc.__class__.__name__}: {exc}",
+                )
             if owns_online_mr_application_service and online_mr_application_service is not None:
-                online_mr_application_service.close()
+                try:
+                    online_mr_application_service.close()
+                except Exception as exc:
+                    app_logger.log_error(
+                        "WEB_LIFESPAN_STOP_FAILED",
+                        f"component=online_mr error={exc.__class__.__name__}: {exc}",
+                    )
 
     app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION.removeprefix("v"), lifespan=lifespan)
     app.state.runtime_mode = runtime_mode
@@ -472,10 +492,7 @@ def _online_mr_query_error_status(code: str) -> int:
     return 409
 
 
-app = create_app()
-
-
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("netconsole.backend.api.main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("netconsole.backend.api.main:create_app", factory=True, host="127.0.0.1", port=8000, reload=False)

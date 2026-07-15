@@ -2,11 +2,11 @@
 
 ## 1. 架构目标
 
-NetConsole 是 Windows Qt6 桌面应用。架构的首要目标是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
+NetConsole 是以 Python Core Runtime 为主体、Qt 与 Web 为可选前端的本地网络工程工具。架构的首要目标是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
 
 ## 2. 启动与运行形态
 
-`main.py` 是唯一程序入口。它先识别工作进程参数，再进入桌面应用：
+`main.py` 是唯一程序入口。它先识别工作进程、smoke 和旧 Qt Web Shell 参数，再由无 Qt 依赖 Launcher 创建 Core Runtime 并选择 Shell：
 
 ```mermaid
 flowchart TD
@@ -14,14 +14,22 @@ flowchart TD
     MODE -->|"--background-worker --job"| BJ["netconsole.background_worker"]
     MODE -->|"--export-worker / --export-worker-job"| EW["netconsole.export_worker"]
     MODE -->|"smoke 参数"| SMOKE["构建验证入口"]
-    MODE -->|"--web-shell"| WS["实验 Qt Web Shell + FastAPI"]
-    MODE -->|"普通启动"| APP["netconsole.app.run"]
-    APP --> QT["QApplication + Settings + PathResolver"]
-    QT --> SPLASH["启动页 / schema 检查"]
-    SPLASH --> WIN["主窗口与页面"]
+    MODE -->|"--web-shell"| LEGACY["兼容 Qt Web Shell"]
+    MODE -->|"普通启动"| LAUNCHER["无 Qt Launcher"]
+    LAUNCHER --> CORE["唯一 FastAPI Core Runtime"]
+    LAUNCHER -->|"auto / qt"| QT["Qt Shell"]
+    LAUNCHER -->|"web"| BROWSER["本机浏览器 Shell"]
+    LAUNCHER -->|"server"| NONE["无 Shell Server"]
+    CORE --> QT
+    CORE --> BROWSER
+    CORE --> NONE
 ```
 
-开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。`--web-shell` 加载 Vue 任务中心、Agent 管理和阶段 4C Traffic 页面，不替换普通启动。阶段 5C-0 起，普通 Qt 主程序也可从托盘按需打开完整 Web 控制台；发布脚本会构建并打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md) 和 [Qt WebHost](WEB_HOST.md)。
+`--mode auto` 为默认值：隔离子进程实际初始化 Qt Widgets/platform，成功后进入 Qt；能力探测失败时优先打开本机浏览器，无图形/浏览器能力时保持 Server Shell。`--mode web` 与 `--mode server` 的通用路径不导入 PySide6；前者固定使用 Desktop Runtime、随机回环端口和短期会话，后者使用 Server Runtime、默认 `127.0.0.1:8000` 且不主动打开浏览器。远程鉴权完成前，Launcher 只允许 `localhost` 或 IP loopback。Qt WebEngine 单独通过轻量子模块探测，不加载 FastAPI/Core 导入链，也不影响 Qt 原生页面启动。
+
+Launcher 对普通启动执行进程级文件锁；worker、smoke 和内部提权网络管理入口不参与该锁，避免破坏既有子进程协议。Core Runtime 先于 Shell 启动并统一停止 Uvicorn/FastAPI lifespan；Qt 的 WebConsoleHost 只消费该服务，不再拥有其生命周期。`--web-shell` 暂保留原 Qt WebEngine 语义作为兼容入口。当前尚未把所有旧 Qt 页面各自创建的 `BackgroundProcessManager/TaskApplicationService` 全面注入同一容器，不能将本阶段描述为页面级服务对象已经全部统一。
+
+开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。发布脚本会构建并打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md) 和 [Desktop WebHost](WEB_HOST.md)。
 
 ## 3. 分层与依赖方向
 

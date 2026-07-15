@@ -2,24 +2,28 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前 Qt 主程序继续作为正式生产入口；Vue Web Shell 已接入任务中心、Agent、Traffic、Online MR，以及第一批设备、网络工具、配置采集和文件管理页面。Qt 与 Web 继续共用 Application Service、Repository、Job、Task、Session、Mapping 和 Artifact；Web 验收完成前不删除或隐藏 Qt 页面。
+NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前默认入口由 Launcher 创建 Core Runtime，并在 Qt、本机浏览器和无 Shell Server 间选择；Qt 仍是具备能力机器上的稳定生产与回退界面。Vue Web Shell 已接入任务中心、Agent、Traffic、Online MR，以及第一批设备、网络工具、配置采集和文件管理页面。Web 验收完成前不删除或隐藏 Qt 页面。
 
 目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
 
 ## 2. 运行形态
 
-### 2.1 Desktop Mode
+### 2.1 Launcher 与 Desktop Mode
 
 ```mermaid
 flowchart TD
-    QS["Qt Desktop Shell"] --> WV["QWebEngineView"]
-    WV --> API["FastAPI Application Layer"]
+    L["No-Qt Launcher"] --> API["唯一 FastAPI Core Runtime"]
+    L --> QS["Qt Desktop Shell"]
+    L --> B["Local Browser Shell"]
+    QS --> WV["QWebEngineView / external fallback"]
+    WV --> API
+    B --> API
     API --> CORE["Existing Python Services"]
     CORE --> REPO["Existing Repositories / Parsers"]
     CORE --> JOB["Job Registry / Worker Process"]
 ```
 
-阶段 3 的 `python main.py --web-shell` 加载 Vue Dashboard、任务中心、Agent 管理、对应 API 和 OpenAPI，不替换当前 `python main.py` 的 Qt 主窗口。
+`python main.py` 等价 `--mode auto`；`--mode qt` 强制 Qt，`--mode web` 完全不导入 PySide6 并打开本机浏览器。两种 Desktop Shell 共用随机回环端口、短期 POST 会话和同一 Vue 资源。旧 `--web-shell` 仍保留 Qt WebEngine 兼容语义。
 
 ### 2.2 Server Mode
 
@@ -30,7 +34,7 @@ flowchart TD
     API --> CORE["Existing Python Core"]
 ```
 
-Server Mode 可通过 `python -m netconsole.backend.api.main` 启动，并提供同一套 Vue 任务中心。鉴权、正式部署、远程访问策略和业务 API 仍未实现，不得将其描述为可交付服务版。
+Server Mode 可通过 `python main.py --mode server` 或 `python -m netconsole.backend.api.main` 启动，并提供同一套 Vue 页面；前者纳入 Launcher 单实例和统一诊断。该模式不导入 Qt、不主动打开浏览器。当前 Launcher 只接受 `localhost` 或 IP loopback，明确拒绝非回环绑定；鉴权、正式部署和远程访问策略完成前，不得将其描述为可交付服务版。
 
 ### 2.3 Agent Mode
 
@@ -201,8 +205,13 @@ apps/web/src/views/network-tools/TrafficTestView.vue
 ## 8. 启动与验证
 
 ```powershell
-# 当前正式 Qt 桌面入口
+# 默认自动选择；Qt 可用时进入 Qt Shell
 .\.venv\Scripts\python.exe main.py
+
+# 显式 Shell
+.\.venv\Scripts\python.exe main.py --mode qt
+.\.venv\Scripts\python.exe main.py --mode web
+.\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
 
 # 构建 Vue（使用项目可用的 pnpm/Node 环境）
 cd apps/web
@@ -211,15 +220,15 @@ pnpm test
 pnpm build
 cd ..
 
-# Desktop Web Shell
+# 旧 Qt WebEngine Shell（兼容）
 .\.venv\Scripts\python.exe main.py --web-shell
 
 # FastAPI Server Mode
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 ```
 
-实验服务默认仅绑定 `127.0.0.1`。`apps/web/dist` 是忽略提交的构建产物；源码模式缺失时后端显示资源不可用页。阶段 5C-0 起，普通 Qt 主程序可通过托盘或 Fluent“更多”菜单按需打开同一套完整 Web 控制台，并使用进程级临时会话 Cookie 保护本地 HTTP/WebSocket。源码模式只使用当前 `apps/web/dist`，冻结模式只使用包内 `netconsole/assets/web`；发布脚本每次重新构建并校验 `web-build-meta.json` 后才打包。WebHost 生命周期、build id 和 fallback 见 [Qt WebHost](WEB_HOST.md)。
+本机模式固定绑定 `127.0.0.1`；Server 模式默认同样只绑定回环地址。`apps/web/dist` 是忽略提交的构建产物；源码模式缺失时后端显示资源不可用页。源码模式只使用当前 `apps/web/dist`，冻结模式只使用包内 `netconsole/assets/web`；发布脚本每次重新构建并校验 `web-build-meta.json` 后才打包。生命周期、build id 和 fallback 见 [Desktop WebHost](WEB_HOST.md)。
 
 ## 9. 下一阶段
 
-后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测继续冻结，除非收到独立任务。
+下一阶段才实现 EmbeddedLayout、WebModulePage、模块 presentation 配置、Native Bridge、局点/主题同步和旧 Qt 页面服务注入收口；当前不得把这些规划写成已完成。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测继续冻结，除非收到独立任务。

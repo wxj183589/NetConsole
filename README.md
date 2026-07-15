@@ -13,7 +13,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。阶段 3 已提供实验 Qt Web Shell、任务中心和 Agent 管理控制面；阶段 4C 已建立统一流量测试应用服务、本地/Agent 执行适配、任务映射、持久事件、远端恢复、Traffic REST/WebSocket 和 Vue 流量测试页面；阶段 4D 已稳定 Qt Web Shell 的启动、失败提示、外链和退出生命周期；阶段 5C-0 让普通 Qt 主程序也可从托盘按需打开带临时本地会话保护的完整 Web 控制台，并将 Vue 产物纳入正式构建。Online MR 已由同一 Application Service 分派 LOCAL/AGENT；5B-13B 增加默认关闭的 Desktop WebHost AGENT 受控入口和回环 Fake 全链路验收。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。无 Qt 依赖 Launcher 已支持 `auto/qt/web/server`：默认完成轻量能力探测后创建唯一 FastAPI Core Runtime，再启动 Qt、外部浏览器或无 Shell 服务模式；`web/server` 通用导入链不加载 PySide6。Qt 仍保留全部现有页面和故障回退能力，Web 功能对等继续按矩阵验收。Online MR 已由同一 Application Service 分派 LOCAL/AGENT；5B-13B 增加默认关闭的 Desktop WebHost AGENT 受控入口和回环 Fake 全链路验收。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
 
 ## 当前能力
 
@@ -54,9 +54,13 @@ Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/reso
 
 ```mermaid
 flowchart LR
+    L["Launcher\nauto / qt / web / server"] --> CORE["Core Runtime"]
+    L --> UI
+    L --> WS
     UI["Qt6 / PySide6 / QFluentWidgets UI"] --> SVC["Services"]
-    WS["Qt Web Shell / Browser"] --> VUE["Vue Task / Agent / Traffic"]
-    VUE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
+    WS["Local Browser / Server Web Shell"] --> VUE["Vue Task / Agent / Traffic"]
+    CORE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
+    VUE --> API
     API --> SVC
     SVC --> REPO["Repositories"]
     REPO --> DB["SQLite / 文件数据"]
@@ -102,6 +106,9 @@ flowchart LR
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe main.py --mode qt
+.\.venv\Scripts\python.exe main.py --mode web
+.\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
 .\.venv\Scripts\python.exe main.py --web-shell
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 .\.venv\Scripts\python.exe -m pytest
@@ -144,4 +151,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 兼容入口以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
 
-Web parity foundation 已固定源码/冻结前端资源边界、build id 校验、统一 Navigation Registry、模块归属和响应式深色菜单。未完成页面仅登记规划 Feature/对等状态，不注册占位业务路由；Qt 仍是稳定生产和回退入口。
+Web parity foundation 已固定源码/冻结前端资源边界、build id 校验、统一 Navigation Registry、模块归属和响应式深色菜单。Launcher 默认在 Qt 能力可用时选择 Qt Shell，Qt 仍是稳定生产和回退界面；未完成页面仅登记规划 Feature/对等状态，不注册占位业务路由。Native Bridge、EmbeddedLayout、模块 presentation 配置以及 Qt 页面级 Task/Application Service 全面收口尚未完成。

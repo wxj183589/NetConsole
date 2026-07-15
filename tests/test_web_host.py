@@ -96,3 +96,20 @@ def test_browser_host_window_keeps_operable_minimum_size(tmp_path: Path, monkeyp
     assert window.minimumHeight() == 680
     window.host_widget.shutdown()
     window.close()
+
+
+def test_web_console_host_does_not_stop_core_owned_server(tmp_path: Path) -> None:
+    from netconsole.ui.web_host.browser_host_widget import WebConsoleHost
+
+    class FakeServer:
+        stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    server = FakeServer()
+    host = WebConsoleHost(paths=PathResolver(tmp_path), server=server)  # type: ignore[arg-type]
+
+    host.stop()
+
+    assert server.stopped is False

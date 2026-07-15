@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from time import sleep
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
@@ -22,19 +23,34 @@ from netconsole.core.settings import SettingsStore
 from netconsole.core import version as version_info
 from netconsole.ui.widgets.startup_splash import StartupSplash
 
+if TYPE_CHECKING:
+    from netconsole.ui.main_window import MainWindow
+    from netconsole.ui.web_host.web_server import DesktopWebServer
+
 
 def _elapsed_detail(started_at: float) -> str:
     return f"elapsed_ms={int((perf_counter() - started_at) * 1000)}"
 
 
-def build_window(started_at: float | None = None) -> MainWindow:
+def build_window(
+    started_at: float | None = None,
+    *,
+    web_server: DesktopWebServer | None = None,
+) -> MainWindow:
     started_at = started_at or perf_counter()
     context = create_demo_context()
     app_logger.log_info("BOOT_DB_CORE_READY", f"site={context.site.name} {_elapsed_detail(started_at)}")
     i18n = I18n(SettingsStore(context.paths).language)
     from netconsole.ui.app_window_factory import create_app_window
 
-    return create_app_window(site=context.site, repository=context.repository, i18n=i18n, paths=context.paths, startup_started_at=started_at)
+    return create_app_window(
+        site=context.site,
+        repository=context.repository,
+        i18n=i18n,
+        paths=context.paths,
+        startup_started_at=started_at,
+        web_server=web_server,
+    )
 
 
 def open_admin_network_manager(window: MainWindow) -> None:
@@ -112,7 +128,7 @@ def _handle_schema_mismatch(exc: DatabaseSchemaMismatchError, paths: PathResolve
     return "cancel"
 
 
-def run() -> int:
+def run(*, web_server: DesktopWebServer | None = None) -> int:
     started_at = perf_counter()
     app = QApplication(sys.argv)
     app.setApplicationName(version_info.APP_NAME)
@@ -135,12 +151,15 @@ def run() -> int:
             if startup_mode == "preload_all":
                 from netconsole.ui.startup_preload import StartupPreloadManager
 
-                manager = StartupPreloadManager(i18n=i18n, splash=splash, started_at=started_at)
+                manager_kwargs = {"i18n": i18n, "splash": splash, "started_at": started_at}
+                if web_server is not None:
+                    manager_kwargs["web_server"] = web_server
+                manager = StartupPreloadManager(**manager_kwargs)
                 window = manager.run(startup_mode)
             else:
                 splash.show_message(i18n.t("startup.loading_current_site"))
                 splash.set_progress(25)
-                window = build_window(started_at)
+                window = build_window(started_at, web_server=web_server) if web_server is not None else build_window(started_at)
             break
         except DatabaseSchemaMismatchError as exc:
             splash.hide()

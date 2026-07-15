@@ -225,10 +225,42 @@ def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkey
     assert calls == [(["pnpm.cmd", "build"], web_dir)]
 
 
+def test_web_frontend_metadata_rejects_inconsistent_version_fields(tmp_path):
+    from scripts.build.web_frontend_meta import validate_web_frontend_meta
+
+    (tmp_path / "index.html").write_text("web", encoding="utf-8")
+    (tmp_path / "web-build-meta.json").write_text(
+        json.dumps(
+            {
+                "app_version": "v0.0.0",
+                "git_commit": GIT_COMMIT,
+                "build_time": "2026-07-15T00:00:00Z",
+                "navigation_schema_version": 1,
+                "build_id": f"{APP_VERSION}+{GIT_COMMIT}",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="构建身份与后端不一致"):
+        validate_web_frontend_meta(
+            tmp_path,
+            expected_version=APP_VERSION,
+            expected_commit=GIT_COMMIT,
+        )
+
+
 def test_clean_build_spec_scans_runtime_import_graph():
     imports = clean_build_spec.scan_import_graph()
 
-    assert "netconsole.app" in imports
+    assert {
+        "netconsole.app",
+        "netconsole.backend.api.main",
+        "netconsole.launcher.launcher",
+        "netconsole.launcher.qt_probe",
+        "netconsole.launcher.runtime_supervisor",
+        "netconsole.ui.web_host.web_server",
+    } <= set(imports)
     assert all(not item.startswith("tests") for item in imports)
     assert all(not item.startswith("project") for item in imports)
 
