@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -28,6 +29,11 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
 )
 from netconsole.services.network_tools.toolbox.ping_tools import run_batch_ping, run_single_ping, run_tcp_ping
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
+
+
+_CONTROLLED_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_ARTIFACT_SUFFIXES = {".csv", ".xlsx"}
+_INVALID_FILENAME_CHARS = set('<>:"|?*')
 
 
 class NetworkToolsApplicationService:
@@ -153,11 +159,11 @@ class NetworkToolsApplicationService:
         if task.status not in TERMINAL_TASK_STATES:
             raise ValueError("网络工具任务尚未完成")
         rows = self._task_rows(task)
-        if not task.result or "result_file" not in task.result and not rows:
+        if not task.result and not rows:
             raise ValueError("网络工具任务没有可导出的结果")
-        result_file = Path(str(task.result.get("result_file") or ""))
-        source_is_temporary = not result_file.is_file()
-        source_file = result_file if not source_is_temporary else self._write_result_rows(f"export_{task_id}", rows)
+        result_file = self._controlled_task_result_path(task.task_id)
+        source_is_temporary = result_file is None
+        source_file = result_file or self._write_result_rows(f"export_{task_id}", rows)
         return await self._export_process(
             source_file,
             self.paths.toolbox_outputs_dir(self.site_name),
@@ -168,14 +174,12 @@ class NetworkToolsApplicationService:
         )
 
     def resolve_artifact(self, artifact_id: str) -> Path | None:
-        value = str(artifact_id or "").strip()
-        if not value or Path(value).name != value or value in {".", ".."}:
-            return None
-        for root in (self.paths.toolbox_outputs_dir(self.site_name), self.paths.wireless_scan_export_dir(self.site_name)):
-            for path in root.glob(f"{value}.*"):
-                if path.is_file() and path.suffix.lower() in {".csv", ".xlsx"}:
-                    return path
-        return None
+        binding = self._resolve_artifact_binding(artifact_id)
+        return binding[0] if binding else None
+
+    def artifact_display_name(self, artifact_id: str) -> str:
+        binding = self._resolve_artifact_binding(artifact_id)
+        return binding[1] if binding else ""
 
     def list_wireless_adapters(self) -> list[dict[str, object]]:
         service = self._wireless()
@@ -211,6 +215,9 @@ class NetworkToolsApplicationService:
         self._write_projects(remaining)
 
     async def start_wireless_scan(self, *, adapter_name: str = "", adapter_guid: str = "", project_id: str = "") -> Any:
+        project_id = str(project_id or "").strip()
+        if project_id and not any(str(item.get("project_id") or "") == project_id for item in self.list_wireless_projects()):
+            raise ValueError("无线扫描项目不存在")
         task_service = self._ensure_task_service()
         task_id = uuid.uuid4().hex
         task_service.create_external_task(
@@ -228,7 +235,13 @@ class NetworkToolsApplicationService:
 
     def list_wireless_runs(self, *, offset: int = 0, limit: int = 100) -> list[dict[str, object]]:
         rows = self._wireless().repository.list_runs(limit=500)
-        return rows[max(0, int(offset)) : max(0, int(offset)) + max(1, min(int(limit), 500))]
+        safe_rows = []
+        for row in rows:
+            safe_row = dict(row)
+            scan_id = str(safe_row.get("scan_id") or "")
+            safe_row["raw_file"] = f"{scan_id}.txt" if scan_id else ""
+            safe_rows.append(safe_row)
+        return safe_rows[max(0, int(offset)) : max(0, int(offset)) + max(1, min(int(limit), 500))]
 
     def list_wireless_results(self, scan_id: str, *, offset: int = 0, limit: int = 500) -> list[dict[str, object]]:
         rows = self._wireless().repository.list_results(scan_id)
@@ -295,6 +308,17 @@ class NetworkToolsApplicationService:
                     return
             elif kind in {"batch_ping", "subnet_ping"}:
                 targets = self._targets_for_task(kind, params)
+                completed = 0
+
+                def on_progress(_result: object) -> None:
+                    nonlocal completed
+                    completed += 1
+                    self._record_event(
+                        task_id,
+                        "progress",
+                        {"current": completed, "total": len(targets), "message": f"已完成 {completed}/{len(targets)} 个目标"},
+                    )
+
                 results = await asyncio.to_thread(
                     run_batch_ping,
                     targets,
@@ -303,6 +327,7 @@ class NetworkToolsApplicationService:
                     timeout_ms=int(params["timeout_ms"]),
                     concurrency=int(params["concurrency"]),
                     source_ip=str(params["source_ip"]),
+                    progress=on_progress,
                     should_stop=stop_event.is_set,
                 )
                 rows = [asdict(result) for result in results]
@@ -314,8 +339,8 @@ class NetworkToolsApplicationService:
             if stop_event.is_set():
                 self._record_event(task_id, "cancelled", {"message": "网络工具任务已取消"})
                 return
-            result_file = self._write_result_rows(task_id, rows)
-            self._record_event(task_id, "finished", {"result": {"rows": rows, "row_count": len(rows), "result_file": str(result_file)}})
+            self._write_result_rows(task_id, rows)
+            self._record_event(task_id, "finished", {"result": {"rows": rows, "row_count": len(rows), "result_id": task_id}})
         except asyncio.CancelledError:
             self._record_event(task_id, "cancelled", {"message": "网络工具任务已取消"})
         except Exception as exc:
@@ -335,7 +360,7 @@ class NetworkToolsApplicationService:
             from netconsole.services.network_tools.wireless_scan_service import result_to_row
 
             rows = [result_to_row(item) for item in result.results]
-            result_file = self._write_result_rows(task_id, rows)
+            self._write_result_rows(task_id, rows)
             self._record_event(
                 task_id,
                 "progress",
@@ -346,11 +371,10 @@ class NetworkToolsApplicationService:
                 "finished",
                 {
                     "result": {
+                        "result_id": task_id,
                         "scan_id": result.scan_id,
                         "project_id": project_id,
                         "row_count": len(rows),
-                        "result_file": str(result_file),
-                        "raw_file": str(result.raw_file),
                     }
                 },
             )
@@ -388,7 +412,14 @@ class NetworkToolsApplicationService:
             if len(targets) > 4096:
                 raise ValueError("网段 Ping 最多支持 4096 个地址")
             return targets
-        targets = [str(item).strip() for item in params["targets"] if str(item).strip()]
+        raw_targets = params.get("targets")
+        if not isinstance(raw_targets, list):
+            raise ValueError("批量 Ping 目标格式无效")
+        if len(raw_targets) > 4096:
+            raise ValueError("批量 Ping 最多支持 4096 个地址")
+        targets = [str(item).strip() for item in raw_targets if str(item).strip()]
+        if any(len(item) > 255 for item in targets):
+            raise ValueError("单个 Ping 目标最多 255 个字符")
         if not targets:
             raise ValueError("请至少提供一个 Ping 目标")
         return targets
@@ -396,18 +427,41 @@ class NetworkToolsApplicationService:
     def _validate_network_task(self, kind: str, params: dict[str, object]) -> None:
         if kind not in {"single_ping", "continuous_ping", "batch_ping", "subnet_ping", "tcp_ping"}:
             raise ValueError("不支持的网络工具任务类型")
-        if kind in {"single_ping", "continuous_ping", "subnet_ping", "tcp_ping"} and not str(params["target"]):
+        target = str(params["target"]).strip()
+        if len(target) > 255:
+            raise ValueError("Ping 目标最多 255 个字符")
+        if kind in {"single_ping", "continuous_ping", "subnet_ping", "tcp_ping"} and not target:
             raise ValueError("请提供目标地址")
         if kind in {"batch_ping", "subnet_ping"}:
             self._targets_for_task(kind, params)
 
     def _task_rows(self, task: Any) -> list[dict[str, object]]:
         result = dict(task.result or {})
-        result_file = Path(str(result.get("result_file") or ""))
-        if result_file.is_file():
+        result_file = self._controlled_task_result_path(str(getattr(task, "task_id", "")))
+        if result_file is not None:
+            rows: list[dict[str, object]] = []
             with result_file.open("r", encoding="utf-8") as handle:
-                return [dict(json.loads(line)) for line in handle if line.strip()]
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(dict(row))
+            return rows
         return [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
+
+    def _controlled_task_result_path(self, task_id: str) -> Path | None:
+        value = str(task_id or "").strip()
+        if not _CONTROLLED_ID_RE.fullmatch(value):
+            return None
+        root = self.paths.toolbox_outputs_dir(self.site_name).resolve()
+        path = (root / f"{value}.jsonl").resolve()
+        if path.parent != root or not path.is_file():
+            return None
+        return path
 
     def _write_result_rows(self, task_id: str, rows: list[dict[str, object]]) -> Path:
         output_dir = self.paths.toolbox_outputs_dir(self.site_name)
@@ -431,14 +485,24 @@ class NetworkToolsApplicationService:
         headers: list[str] | None = None,
         cleanup_source: bool = False,
     ) -> dict[str, object]:
+        if file_format not in {"csv", "xlsx"}:
+            raise ValueError("导出格式不支持")
         suffix = ".csv" if file_format == "csv" else ".xlsx"
-        selected = Path(filename).name if filename else f"{artifact_id}{suffix}"
-        if selected != filename and filename:
+        selected = str(filename or "").strip() or f"{artifact_id}{suffix}"
+        if (
+            any(separator in selected for separator in ("/", "\\", "\x00"))
+            or selected != Path(selected).name
+            or any(character in _INVALID_FILENAME_CHARS for character in selected)
+        ):
             raise ValueError("导出文件名不允许包含路径")
         if selected in {"", ".", ".."} or Path(selected).suffix.lower() != suffix:
             selected = f"{Path(selected).stem or artifact_id}{suffix}"
         output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / selected
+        output_dir = output_dir.resolve()
+        artifact_id = uuid.uuid4().hex
+        path = output_dir / f"{artifact_id}{suffix}"
+        manifest_path = output_dir / f"{artifact_id}.json"
+        manifest_temp_path = output_dir / f".{artifact_id}.json.tmp"
         job_id = uuid.uuid4().hex
         job_dir = self.paths.runtime_cache_dir / "network_tool_exports"
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -470,20 +534,35 @@ class NetworkToolsApplicationService:
             python_path.append(environment["PYTHONPATH"])
         environment["PYTHONPATH"] = os.pathsep.join(python_path)
         arguments = ["--export-worker", "--job", str(job_path)] if getattr(sys, "frozen", False) else ["-m", "netconsole.export_worker", "--job", str(job_path)]
+        completed = False
         try:
             process = await asyncio.create_subprocess_exec(sys.executable, *arguments, cwd=str(source_root.parent), env=environment, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             _stdout, stderr = await process.communicate()
             if process.returncode != 0 or not path.is_file():
                 message = stderr.decode("utf-8", errors="replace").strip() or "导出进程失败"
                 raise RuntimeError(message)
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest, size = await asyncio.to_thread(_hash_file, path)
+            manifest_temp_path.write_text(
+                json.dumps(
+                    {
+                        "artifact_id": artifact_id,
+                        "physical_name": path.name,
+                        "filename": selected,
+                        "format": file_format,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            os.replace(manifest_temp_path, manifest_path)
+            completed = True
             return {
-                "artifact_id": path.stem,
-                "filename": path.name,
+                "artifact_id": artifact_id,
+                "filename": selected,
                 "format": file_format,
                 "sha256": digest,
-                "size": path.stat().st_size,
-                "download_url": f"/api/network-tools/artifacts/{path.stem}",
+                "size": size,
+                "download_url": f"/api/network-tools/artifacts/{artifact_id}",
             }
         finally:
             for temp_path in (job_path, cancel_path, tmp_path):
@@ -496,6 +575,46 @@ class NetworkToolsApplicationService:
                     source_file.unlink()
                 except OSError:
                     pass
+            if not completed:
+                for export_path in (path, manifest_path, manifest_temp_path):
+                    try:
+                        export_path.unlink()
+                    except OSError:
+                        pass
+
+    def _resolve_artifact_binding(self, artifact_id: str) -> tuple[Path, str] | None:
+        value = str(artifact_id or "").strip()
+        if not _CONTROLLED_ID_RE.fullmatch(value):
+            return None
+        bindings: list[tuple[Path, str]] = []
+        for root_path in (self.paths.toolbox_outputs_dir(self.site_name), self.paths.wireless_scan_export_dir(self.site_name)):
+            root = root_path.resolve()
+            manifest_path = (root / f"{value}.json").resolve()
+            if manifest_path.parent != root or not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(manifest, dict) or manifest.get("artifact_id") != value:
+                continue
+            suffix = "." + str(manifest.get("format") or "").lower()
+            physical_name = str(manifest.get("physical_name") or "")
+            display_name = str(manifest.get("filename") or "")
+            if suffix not in _ARTIFACT_SUFFIXES or physical_name != f"{value}{suffix}":
+                continue
+            if (
+                not display_name
+                or any(separator in display_name for separator in ("/", "\\", "\x00"))
+                or Path(display_name).name != display_name
+                or any(character in _INVALID_FILENAME_CHARS for character in display_name)
+            ):
+                continue
+            path = (root / physical_name).resolve()
+            if path.parent != root or not path.is_file():
+                continue
+            bindings.append((path, display_name))
+        return bindings[0] if len(bindings) == 1 else None
 
     @staticmethod
     def _write_jsonl_file(path: Path, rows: list[dict[str, object]]) -> Path:
@@ -547,6 +666,16 @@ def _jsonl_headers(path: Path) -> list[str]:
     except (OSError, json.JSONDecodeError):
         return []
     return []
+
+
+def _hash_file(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 __all__ = ["NetworkToolsApplicationService"]

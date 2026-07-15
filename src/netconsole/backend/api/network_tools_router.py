@@ -58,37 +58,37 @@ async def start_tcp_port_test(body: TcpPortTestStartRequest, request: Request) -
     return TrafficStartResponse(run=traffic_run_dto(run))
 
 
-@router.post("/toolbox/ipv4")
+@router.post("/toolbox/ipv4", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def calculate_ipv4(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).calculate_ipv4(body.text))
 
 
-@router.post("/toolbox/ipv6")
+@router.post("/toolbox/ipv6", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def calculate_ipv6(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).calculate_ipv6(body.text))
 
 
-@router.post("/toolbox/vlsm")
+@router.post("/toolbox/vlsm", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def calculate_vlsm(body: VlsmRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).plan_vlsm(body.parent, body.requests))
 
 
-@router.post("/toolbox/subnets")
+@router.post("/toolbox/subnets", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def calculate_subnets(body: SubnetSplitRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).split_subnets(body.parent, body.target_prefix, body.page, body.page_size))
 
 
-@router.post("/toolbox/summarize")
+@router.post("/toolbox/summarize", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def summarize_routes(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).summarize_routes(body.text))
 
 
-@router.post("/toolbox/wildcard")
+@router.post("/toolbox/wildcard", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def calculate_wildcard(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).wildcard_calculate(body.text))
 
 
-@router.post("/tasks", response_model=NetworkTaskResponse, status_code=202)
+@router.post("/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 async def start_network_task(body: NetworkTaskStartRequest, request: Request) -> NetworkTaskResponse:
     try:
         task = await network_tools_service(request).start_network_task(**body.model_dump())
@@ -97,12 +97,12 @@ async def start_network_task(body: NetworkTaskStartRequest, request: Request) ->
     return NetworkTaskResponse(task=network_task_dto(task))
 
 
-@router.get("/runs", response_model=list[TaskDTO])
+@router.get("/runs", response_model=list[TaskDTO], dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def list_network_tasks(request: Request, offset: int = 0, limit: int = 100) -> list[TaskDTO]:
     return [network_task_dto(task) for task in network_tools_service(request).list_network_tasks(offset=offset, limit=limit)]
 
 
-@router.get("/runs/{task_id}", response_model=TaskDTO)
+@router.get("/runs/{task_id}", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def get_network_task(task_id: str, request: Request) -> TaskDTO:
     task = network_tools_service(request).get_network_task(task_id)
     if task is None:
@@ -110,14 +110,17 @@ def get_network_task(task_id: str, request: Request) -> TaskDTO:
     return network_task_dto(task)
 
 
-@router.get("/runs/{task_id}/events")
+@router.get("/runs/{task_id}/events", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def get_network_task_events(task_id: str, request: Request, after_sequence: int = 0, limit: int = 500) -> list[dict[str, object]]:
     if network_tools_service(request).get_network_task(task_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具任务不存在")
-    return network_tools_service(request).list_network_task_events(task_id, after_sequence=after_sequence, limit=limit)
+    return [
+        {**event, "payload": _safe_task_event_payload(event.get("payload"))}
+        for event in network_tools_service(request).list_network_task_events(task_id, after_sequence=after_sequence, limit=limit)
+    ]
 
 
-@router.post("/runs/{task_id}/cancel", response_model=TaskDTO)
+@router.post("/runs/{task_id}/cancel", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def cancel_network_task(task_id: str, request: Request) -> TaskDTO:
     try:
         return network_task_dto(network_tools_service(request).cancel_network_task(task_id))
@@ -125,7 +128,7 @@ def cancel_network_task(task_id: str, request: Request) -> TaskDTO:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具任务不存在") from exc
 
 
-@router.post("/runs/{task_id}/export", response_model=NetworkToolArtifactResponse)
+@router.post("/runs/{task_id}/export", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 async def export_network_task(task_id: str, body: NetworkExportRequest, request: Request) -> NetworkToolArtifactResponse:
     try:
         result = await network_tools_service(request).export_network_task(task_id, body.format, body.filename)
@@ -136,12 +139,12 @@ async def export_network_task(task_id: str, body: NetworkExportRequest, request:
     return NetworkToolArtifactResponse(**result)
 
 
-@router.get("/artifacts/{artifact_id}")
+@router.get("/artifacts/{artifact_id}", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def download_network_artifact(artifact_id: str, request: Request) -> FileResponse:
     path = network_tools_service(request).resolve_artifact(artifact_id)
     if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出文件不存在")
-    return FileResponse(path, filename=path.name)
+    return FileResponse(path, filename=network_tools_service(request).artifact_display_name(artifact_id) or path.name)
 
 
 @router.get("/wireless-scan/adapters", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
@@ -218,12 +221,50 @@ def network_task_dto(snapshot: TaskSnapshot) -> TaskDTO:
         owner=snapshot.owner,
         device=snapshot.device,
         agent=snapshot.agent,
-        result_path=snapshot.result_path,
+        result_path="",
         error_message=snapshot.error_message,
-        result=snapshot.result,
+        result=_safe_task_result(snapshot.result),
         source=snapshot.source,
         cancellable=snapshot.status in {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
     )
+
+
+def _safe_task_result(result: object) -> dict[str, object]:
+    if not isinstance(result, dict):
+        return {}
+    safe: dict[str, object] = {}
+    rows = result.get("rows")
+    if isinstance(rows, list):
+        safe["rows"] = [
+            {
+                str(key): value
+                for key, value in row.items()
+                if not str(key).endswith(("_file", "_path")) and str(key) not in {"file", "path"}
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ]
+    row_count = result.get("row_count")
+    if isinstance(row_count, int) and not isinstance(row_count, bool):
+        safe["row_count"] = row_count
+    for key in ("result_id", "scan_id", "project_id"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            safe[key] = value
+    return safe
+
+
+def _safe_task_event_payload(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    safe = {
+        key: payload[key]
+        for key in ("state", "stage", "message", "error", "current", "total")
+        if key in payload and isinstance(payload[key], (str, int, float, bool))
+    }
+    if "result" in payload:
+        safe["result"] = _safe_task_result(payload["result"])
+    return safe
 
 
 def _table_response(result: object) -> dict[str, object]:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -37,7 +37,7 @@ class SubnetSplitRequest(ApiModel):
 class NetworkTaskStartRequest(ApiModel):
     kind: Literal["single_ping", "continuous_ping", "batch_ping", "subnet_ping", "tcp_ping"]
     target: str = Field(default="", max_length=255)
-    targets: list[str] = Field(default_factory=list, max_length=4096)
+    targets: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(default_factory=list, max_length=4096)
     port: int = Field(default=443, ge=1, le=65535)
     interval_ms: int = Field(default=1000, ge=1, le=60000)
     timeout_ms: int = Field(default=1500, ge=1, le=60000)
@@ -48,7 +48,6 @@ class NetworkTaskStartRequest(ApiModel):
 
 
 class NetworkExportRequest(ApiModel):
-    task_id: str = Field(min_length=1, max_length=128)
     format: Literal["csv", "xlsx"] = "xlsx"
     filename: str = Field(default="", max_length=100)
 

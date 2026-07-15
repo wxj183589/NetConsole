@@ -60,7 +60,7 @@ export function cancelNetworkTask(id: string): Promise<NetworkToolTask> {
 }
 
 export function exportNetworkTask(id: string, format: 'csv' | 'xlsx'): Promise<NetworkToolArtifact> {
-  return apiRequest<NetworkToolArtifact>(`/api/network-tools/runs/${encodeURIComponent(id)}/export`, { method: 'POST', body: JSON.stringify({ task_id: id, format }) })
+  return apiRequest<NetworkToolArtifact>(`/api/network-tools/runs/${encodeURIComponent(id)}/export`, { method: 'POST', body: JSON.stringify({ format }) })
 }
 
 export function listWirelessAdapters(): Promise<WirelessAdapter[]> {
