@@ -1,6 +1,15 @@
 export interface HealthResponse {
   status: string
   version: string
+  build_id: string
+}
+
+export interface WebBuildMeta {
+  app_version: string
+  git_commit: string
+  build_time: string
+  navigation_schema_version: number
+  build_id: string
 }
 
 const apiBase = import.meta.env.VITE_API_BASE || ''
@@ -31,4 +40,10 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 
 export function getHealth(): Promise<HealthResponse> {
   return apiRequest<HealthResponse>('/api/health')
+}
+
+export async function getWebBuildMeta(): Promise<WebBuildMeta> {
+  const response = await fetch('/web-build-meta.json', { cache: 'no-store' })
+  if (!response.ok) throw new Error(`前端构建元数据不可用 (${response.status})`)
+  return (await response.json()) as WebBuildMeta
 }

@@ -44,7 +44,11 @@ def test_desktop_web_rejects_websocket_without_session(tmp_path: Path) -> None:
     assert raised.value.code == 4401
 
 
-def test_desktop_web_server_is_loopback_only_and_keeps_token_out_of_url(tmp_path: Path) -> None:
+def test_desktop_web_server_logs_frontend_identity_without_session_token(tmp_path: Path, monkeypatch) -> None:
+    from netconsole.ui.web_host import web_server
+
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(web_server.app_logger, "log_info", lambda event, message: messages.append((event, message)))
     server = DesktopWebServer(paths=PathResolver(tmp_path))
     bootstrap = server.bootstrap_html()
 
@@ -54,6 +58,10 @@ def test_desktop_web_server_is_loopback_only_and_keeps_token_out_of_url(tmp_path
     assert 'method="post"' in bootstrap
     assert f'action="{server.base_url}/__desktop_session"' in bootstrap
     assert f'value="{server.session_token}"' in bootstrap
+    event, message = next(item for item in messages if item[0] == "DESKTOP_WEB_FRONTEND_RESOURCE")
+    assert event == "DESKTOP_WEB_FRONTEND_RESOURCE"
+    assert all(field in message for field in ("frontend_root=", "index=", "frontend_build_id=", "backend_build_id=", "frontend_source_type="))
+    assert server.session_token not in message
 
 
 def test_browser_host_falls_back_when_webengine_is_unavailable(tmp_path: Path, monkeypatch) -> None:
@@ -71,3 +79,20 @@ def test_browser_host_falls_back_when_webengine_is_unavailable(tmp_path: Path, m
     assert widget.external_button is not None
     assert widget.external_button.text() == "在浏览器中打开"
     widget.shutdown()
+
+
+def test_browser_host_window_keeps_operable_minimum_size(tmp_path: Path, monkeypatch) -> None:
+    from netconsole.ui.web_host import browser_host_widget
+
+    class FakeServer:
+        started = False
+        thread_alive = True
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(browser_host_widget, "QWebEngineView", None)
+    window = browser_host_widget._BrowserHostWindow(FakeServer(), PathResolver(tmp_path))  # type: ignore[arg-type]
+
+    assert window.minimumWidth() == 1024
+    assert window.minimumHeight() == 680
+    window.host_widget.shutdown()
+    window.close()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import re
 import secrets
@@ -16,9 +17,16 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from netconsole.backend.api.router import api_router, ws_router
+from netconsole.backend.web_build import (
+    FRONTEND_MISMATCH_MESSAGE,
+    backend_build_id,
+    frontend_build_id,
+    read_frontend_build_meta,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
+from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
@@ -196,6 +204,7 @@ def create_app(
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.paths = paths
+    app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
     app.state.feature_gate = feature_gate
     app.state.ac_management_query_service = AcManagementQueryService(paths)
@@ -328,17 +337,27 @@ def create_app(
     app.include_router(ws_router)
 
     dist = frontend_dist or _frontend_dist(paths)
+    app.state.frontend_root = dist
+    app.state.frontend_source_type = "override" if frontend_dist is not None else _frontend_source_type()
+    app.state.frontend_build_meta = read_frontend_build_meta(dist)
+    app.state.frontend_build_id = frontend_build_id(app.state.frontend_build_meta)
+    app.state.frontend_build_mismatch = (
+        app.state.frontend_build_id != app.state.backend_build_id
+    )
     if (dist / "index.html").is_file():
         assets = dist / "assets"
         if assets.is_dir():
             app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
 
-        @app.get("/{frontend_path:path}", include_in_schema=False, response_class=FileResponse)
-        def frontend(frontend_path: str) -> Path:
+        @app.get("/{frontend_path:path}", include_in_schema=False)
+        def frontend(frontend_path: str):
             candidate = (dist / frontend_path).resolve()
             if frontend_path and candidate.is_file() and dist.resolve() in candidate.parents:
-                return candidate
-            return dist / "index.html"
+                return FileResponse(candidate)
+            index = dist / "index.html"
+            if app.state.frontend_build_mismatch:
+                return HTMLResponse(_inject_frontend_mismatch_warning(index))
+            return FileResponse(index)
 
         return app
 
@@ -348,9 +367,9 @@ def create_app(
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{APP_NAME}</title></head>
 <body style="font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:48px;color:#202124">
-<h1>{APP_NAME} Web Shell</h1>
-<p>阶段 1 实验入口已运行，当前模式：{runtime_mode.value}。</p>
-<p>业务页面尚未迁移。可打开 <a href="/docs">OpenAPI 文档</a> 或访问 <a href="/api/health">健康检查</a>。</p>
+<h1>{APP_NAME} Web 前端资源不可用</h1>
+<p>当前 {app.state.frontend_source_type} 模式未找到完整 Web 构建资源，请重新构建或重新安装应用。</p>
+<p>可打开 <a href="/docs">OpenAPI 文档</a> 或访问 <a href="/api/health">健康检查</a>。</p>
 </body>
 </html>"""
 
@@ -365,9 +384,35 @@ def _current_site_name(paths: PathResolver) -> str:
 
 
 def _frontend_dist(paths: PathResolver) -> Path:
-    packaged = package_resource_path("assets", "web")
-    source = paths.app_root / "apps" / "web" / "dist"
-    return packaged if (packaged / "index.html").is_file() else source
+    if is_packaged_runtime():
+        return package_resource_path("assets", "web")
+    return paths.app_root / "apps" / "web" / "dist"
+
+
+def _frontend_source_type() -> str:
+    return "packaged" if is_packaged_runtime() else "source"
+
+
+def _inject_frontend_mismatch_warning(index: Path) -> str:
+    try:
+        content = index.read_text(encoding="utf-8")
+    except OSError:
+        return FRONTEND_MISMATCH_MESSAGE
+    warning = (
+        '<div role="alert" data-netconsole-build-warning="1" '
+        'style="padding:12px 18px;color:#7a2e00;background:#fff3cd;'
+        'border-bottom:1px solid #f0cf7b;font:14px Segoe UI,Microsoft YaHei,sans-serif">'
+        f"{html.escape(FRONTEND_MISMATCH_MESSAGE)}</div>"
+    )
+    if re.search(r"<body(?:\s[^>]*)?>", content, flags=re.IGNORECASE):
+        return re.sub(
+            r"<body(?:\s[^>]*)?>",
+            lambda match: f"{match.group(0)}{warning}",
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return warning + content
 
 
 def _traffic_error_status(code: str) -> int:

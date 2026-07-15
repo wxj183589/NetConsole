@@ -12,7 +12,9 @@ from scripts.build import clean_build_spec
 from scripts.build.build_config import BuildConfig, load_config
 from netconsole.core.feature_flags import FeatureGate, engineer_package_enabled, install_runtime_feature_files, load_profile, profiles_dir
 from netconsole.core.feature_registry import list_features
+from netconsole.core.version import GIT_COMMIT
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
+from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
 BACKENDS = ("pyinstaller", "nuitka")
@@ -117,9 +119,17 @@ def build_web_frontend(config: BuildConfig) -> None:
         raise BuildError("未找到 pnpm，无法构建桌面版 Web 页面；请先安装 Node.js/pnpm 并执行 pnpm install。")
     if not (config.web_dir / "node_modules").is_dir():
         raise BuildError("apps/web/node_modules 不存在；请先在 apps/web 执行 pnpm install --frozen-lockfile。")
-    run([pnpm, "build"], cwd=config.web_dir)
-    if not (config.web_dir / "dist" / "index.html").is_file():
-        raise BuildError("Vue 构建未生成 apps/web/dist/index.html。")
+    env = os.environ.copy()
+    env["NETCONSOLE_FRONTEND_GIT_COMMIT"] = GIT_COMMIT
+    run([pnpm, "build"], cwd=config.web_dir, env=env)
+    try:
+        validate_web_frontend_meta(
+            config.web_dir / "dist",
+            expected_version=config.app_version,
+            expected_commit=GIT_COMMIT,
+        )
+    except ValueError as exc:
+        raise BuildError(str(exc)) from exc
 
 
 def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) -> Path:

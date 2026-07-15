@@ -20,7 +20,7 @@ def web_feature_states(request: Request) -> WebFeatureStateListDTO:
                 enabled=gate.is_enabled(item.feature_id),
             )
             for item in list_features()
-            if item.feature_id.startswith("web.")
+            if item.feature_id.startswith("web.") or item.feature_id == "network_tools.traffic"
         ]
     )
 

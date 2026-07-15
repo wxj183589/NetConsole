@@ -25,6 +25,8 @@ from netconsole.build.clean_build_lock import (
     validate_project_safety,
 )
 from scripts.build.check_runtime_deps import check_runtime_deps
+from scripts.build.web_frontend_meta import validate_web_frontend_meta
+from netconsole.core.version import APP_VERSION, GIT_COMMIT
 
 CLEAN_BUILD = True
 ROOT = PROJECT_ROOT
@@ -208,17 +210,23 @@ def prepare_runtime() -> None:
 
 def ensure_web_frontend() -> None:
     dist_index = ROOT / "apps" / "web" / "dist" / "index.html"
-    if dist_index.is_file():
-        return
     pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
     if pnpm is None:
         raise CleanBuildLockError("未找到 pnpm，无法构建桌面版 Web 页面。")
     web_dir = ROOT / "apps" / "web"
     if not (web_dir / "node_modules").is_dir():
         raise CleanBuildLockError("apps/web/node_modules 不存在，请先执行 pnpm install --frozen-lockfile。")
-    subprocess.run([pnpm, "build"], cwd=web_dir, check=True)
-    if not dist_index.is_file():
-        raise CleanBuildLockError("Vue 构建未生成 apps/web/dist/index.html。")
+    env = os.environ.copy()
+    env["NETCONSOLE_FRONTEND_GIT_COMMIT"] = GIT_COMMIT
+    subprocess.run([pnpm, "build"], cwd=web_dir, check=True, env=env)
+    try:
+        validate_web_frontend_meta(
+            dist_index.parent,
+            expected_version=APP_VERSION,
+            expected_commit=GIT_COMMIT,
+        )
+    except ValueError as exc:
+        raise CleanBuildLockError(str(exc)) from exc
 
 
 def clean_tool_cache_artifacts() -> None:
@@ -323,11 +331,23 @@ def validate_dist() -> None:
     if not icon.exists():
         raise CleanBuildLockError("runtime icon is missing")
     check_packaged_tools(app_dist)
+    validate_packaged_web_frontend(app_dist)
     runtime_result = check_runtime_deps(app_dist)
     for message in runtime_result.messages:
         print(message)
     if not runtime_result.ok:
         raise CleanBuildLockError("packaged runtime dependency check failed")
+
+
+def validate_packaged_web_frontend(app_dist: Path) -> None:
+    try:
+        validate_web_frontend_meta(
+            app_dist / "_internal" / "netconsole" / "assets" / "web",
+            expected_version=APP_VERSION,
+            expected_commit=GIT_COMMIT,
+        )
+    except ValueError as exc:
+        raise CleanBuildLockError(str(exc)) from exc
 
 
 def validate_tool_sources() -> None:

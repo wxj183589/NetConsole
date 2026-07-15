@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
@@ -190,16 +191,30 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert "__pycache__" in clean_build_spec.EXCLUDE_DIRS
 
 
-def test_clean_build_prepares_missing_web_frontend(tmp_path, monkeypatch):
+def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkeypatch):
     web_dir = tmp_path / "apps" / "web"
     (web_dir / "node_modules").mkdir(parents=True)
+    (web_dir / "dist").mkdir()
+    (web_dir / "dist" / "index.html").write_text("stale", encoding="utf-8")
     calls: list[tuple[list[str], Path]] = []
 
-    def fake_run(command, *, cwd, check):
+    def fake_run(command, *, cwd, check, env):
         assert check is True
+        assert env["NETCONSOLE_FRONTEND_GIT_COMMIT"] == GIT_COMMIT
         calls.append((command, cwd))
-        (web_dir / "dist").mkdir()
         (web_dir / "dist" / "index.html").write_text("web", encoding="utf-8")
+        (web_dir / "dist" / "web-build-meta.json").write_text(
+            json.dumps(
+                {
+                    "app_version": APP_VERSION,
+                    "git_commit": GIT_COMMIT,
+                    "build_time": "2026-07-15T00:00:00Z",
+                    "navigation_schema_version": 1,
+                    "build_id": f"{APP_VERSION}+{GIT_COMMIT}",
+                }
+            ),
+            encoding="utf-8",
+        )
 
     monkeypatch.setattr(clean_build_spec, "ROOT", tmp_path)
     monkeypatch.setattr(clean_build_spec.shutil, "which", lambda _name: "pnpm.cmd")
@@ -582,8 +597,16 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     build_root = root / "dist" / "_build" / "pyinstaller" / "build"
     spec_root = root / "dist" / "_build" / "pyinstaller" / "spec"
     app_dist = dist_root / "NetConsole"
+    build_env = os.environ.copy()
+    existing_pythonpath = build_env.get("PYTHONPATH", "")
+    build_env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root / "src"), existing_pythonpath)))
 
-    subprocess.run([sys.executable, "-m", "scripts.build.clean_build_spec", "--prepare", "--write-spec"], cwd=root, check=True)
+    subprocess.run(
+        [sys.executable, "-m", "scripts.build.clean_build_spec", "--prepare", "--write-spec"],
+        cwd=root,
+        env=build_env,
+        check=True,
+    )
     subprocess.run(
         [
             sys.executable,
@@ -598,11 +621,17 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
             str(spec_root / "NetConsole.spec"),
         ],
         cwd=root,
+        env=build_env,
         check=True,
     )
     (app_dist / "data").mkdir(exist_ok=True)
     (app_dist / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
-    subprocess.run([sys.executable, "-m", "scripts.build.clean_build_spec", "--validate"], cwd=root, check=True)
+    subprocess.run(
+        [sys.executable, "-m", "scripts.build.clean_build_spec", "--validate"],
+        cwd=root,
+        env=build_env,
+        check=True,
+    )
 
     validate_dist_output(app_dist)
     assert not (app_dist / "docs").exists()

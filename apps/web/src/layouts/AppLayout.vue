@@ -1,34 +1,126 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Connection, DataBoard, Monitor, OfficeBuilding, Operation } from '@element-plus/icons-vue'
+import {
+  Connection,
+  DataBoard,
+  Files,
+  Fold,
+  Menu as MenuIcon,
+  Monitor,
+  OfficeBuilding,
+  Operation,
+  Setting,
+} from '@element-plus/icons-vue'
 
-import { getHealth } from '../api/client'
+import { getHealth, getWebBuildMeta } from '../api/client'
 import { isFeatureEnabled, isFeatureVisible, loadWebFeatures } from '../features'
+import {
+  findNavigation,
+  visibleNavigation,
+  type NavigationItem,
+} from '../navigation/registry'
+
+const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
+const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
+const BUILD_MISMATCH_MESSAGE = '当前 Web 前端资源与后端版本不一致，请重新构建 Web 资源。'
 
 const route = useRoute()
 const router = useRouter()
 const version = ref('')
+const backendBuildId = ref('')
+const frontendBuildId = ref('')
+const frontendMetaLoaded = ref(false)
 const backendOnline = ref(false)
-const activeMenu = computed(() => {
-  if (route.path.startsWith('/network/devices')) return '/network/devices'
-  if (route.path.startsWith('/network-tools/overview')) return '/network-tools/overview'
-  if (route.path.startsWith('/network-tools/traffic')) return '/network-tools/traffic'
-  if (route.path.startsWith('/config-center')) return '/config-center'
-  if (route.path.startsWith('/file-manager')) return '/file-manager'
-  if (route.path.startsWith('/rail-transit/online-mr')) return '/rail-transit/online-mr'
-  if (route.path.startsWith('/rail-transit/base-data')) return '/rail-transit/base-data'
-  if (route.path.startsWith('/rail-transit/wireless-dashboard')) return '/rail-transit/wireless-dashboard'
-  if (route.path.startsWith('/rail-transit/train-communication')) return '/rail-transit/train-communication'
-  if (route.path.startsWith('/rail-transit/mesh-analysis')) return '/rail-transit/mesh-analysis'
-  if (route.path.startsWith('/agents')) return '/agents'
-  if (route.path.startsWith('/ac-management/mesh-links')) return '/ac-management/mesh-links'
-  if (route.path.startsWith('/ac-management')) return '/ac-management'
-  if (route.path.startsWith('/tasks')) return '/tasks'
-  return '/'
-})
+const serverBuildWarningPresent = ref(Boolean(document.querySelector('[data-netconsole-build-warning]')))
+const viewportWidth = ref(window.innerWidth)
+const manualCollapsed = ref(sessionStorage.getItem(COLLAPSED_KEY) === '1')
+const drawerOpen = ref(false)
+const openGroups = ref<string[]>(loadOpenGroups())
+
+const iconComponents = {
+  dashboard: DataBoard,
+  devices: Monitor,
+  ac: OfficeBuilding,
+  rail: Monitor,
+  config: Operation,
+  files: Files,
+  network: Operation,
+  tasks: Operation,
+  agent: Connection,
+  system: Setting,
+}
+
+const mobile = computed(() => viewportWidth.value < 850)
+const sidebarCollapsed = computed(() => !mobile.value && (viewportWidth.value < 1100 || manualCollapsed.value))
+const navigationItems = computed(() => visibleNavigation(isFeatureVisible))
+const activeNavigation = computed(() => findNavigation(String(route.meta.navigationId || 'dashboard')))
+const activeMenu = computed(() => activeNavigation.value?.route_path || '/')
+const frontendMismatch = computed(() => (
+  !import.meta.env.DEV
+  && backendOnline.value
+  && !serverBuildWarningPresent.value
+  && (!frontendMetaLoaded.value || !frontendBuildId.value || frontendBuildId.value !== backendBuildId.value)
+))
+
+function loadOpenGroups(): string[] {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(OPEN_GROUPS_KEY) || '[]')
+    return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function persistOpenGroups(): void {
+  sessionStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(openGroups.value))
+}
+
+function iconFor(entry: NavigationItem) {
+  return iconComponents[entry.icon]
+}
+
+function toggleSidebar(): void {
+  if (mobile.value) {
+    drawerOpen.value = !drawerOpen.value
+    return
+  }
+  manualCollapsed.value = !manualCollapsed.value
+  sessionStorage.setItem(COLLAPSED_KEY, manualCollapsed.value ? '1' : '0')
+}
+
+function selectNavigation(path: string): void {
+  void router.push(path)
+  if (mobile.value) drawerOpen.value = false
+}
+
+function openGroup(groupId: string): void {
+  if (!openGroups.value.includes(groupId)) openGroups.value.push(groupId)
+  persistOpenGroups()
+}
+
+function closeGroup(groupId: string): void {
+  openGroups.value = openGroups.value.filter((item) => item !== groupId)
+  persistOpenGroups()
+}
+
+function updateViewport(): void {
+  viewportWidth.value = window.innerWidth
+  if (!mobile.value) drawerOpen.value = false
+}
+
+watch(
+  () => route.meta.navigationId,
+  () => {
+    const parentId = activeNavigation.value?.parent_id
+    if (parentId) openGroup(parentId)
+    if (mobile.value) drawerOpen.value = false
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
+  window.addEventListener('resize', updateViewport)
   try {
     await loadWebFeatures()
   } catch {
@@ -37,99 +129,82 @@ onMounted(async () => {
   try {
     const health = await getHealth()
     version.value = health.version
+    backendBuildId.value = health.build_id
     backendOnline.value = health.status === 'ok'
   } catch {
     backendOnline.value = false
   }
+  if (!import.meta.env.DEV) {
+    try {
+      const metadata = await getWebBuildMeta()
+      frontendBuildId.value = metadata.build_id
+      frontendMetaLoaded.value = true
+    } catch {
+      frontendMetaLoaded.value = false
+    }
+  }
 })
+
+onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
 </script>
 
 <template>
   <el-container class="app-shell">
-    <el-aside width="224px" class="app-sidebar">
+    <div v-if="mobile && drawerOpen" class="sidebar-overlay" @click="drawerOpen = false"></div>
+    <el-aside
+      :width="sidebarCollapsed ? '64px' : '224px'"
+      :class="['app-sidebar', { collapsed: sidebarCollapsed, mobile, open: drawerOpen }]"
+    >
       <div class="brand">
         <div class="brand-mark">NC</div>
-        <div>
+        <div v-if="!sidebarCollapsed" class="brand-copy">
           <strong>NetConsole</strong>
           <span>Web Console</span>
         </div>
       </div>
-      <el-menu :default-active="activeMenu" class="app-menu" @select="router.push">
-        <el-menu-item index="/">
-          <el-icon><DataBoard /></el-icon>
-          <span>Dashboard</span>
-        </el-menu-item>
-        <el-menu-item
-          v-if="isFeatureVisible('web.device_management')"
-          index="/network/devices"
-          :disabled="!isFeatureEnabled('web.device_management')"
-        >
-          <el-icon><Monitor /></el-icon>
-          <span>设备管理</span>
-        </el-menu-item>
-        <el-menu-item
-          v-if="isFeatureVisible('web.config_collection')"
-          index="/config-center"
-          :disabled="!isFeatureEnabled('web.config_collection')"
-        >
-          <el-icon><Operation /></el-icon>
-          <span>配置采集中心</span>
-        </el-menu-item>
-        <el-menu-item
-          v-if="isFeatureVisible('web.file_management')"
-          index="/file-manager"
-          :disabled="!isFeatureEnabled('web.file_management')"
-        >
-          <el-icon><OfficeBuilding /></el-icon>
-          <span>文件管理</span>
-        </el-menu-item>
-        <el-menu-item index="/tasks">
-          <el-icon><Operation /></el-icon>
-          <span>任务中心</span>
-        </el-menu-item>
-        <el-menu-item index="/agents">
-          <el-icon><Connection /></el-icon>
-          <span>Agent 管理</span>
-        </el-menu-item>
-        <el-sub-menu index="/ac-management">
-          <template #title>
-            <el-icon><OfficeBuilding /></el-icon>
-            <span>AC 管理</span>
-          </template>
-          <el-menu-item index="/ac-management">FIT-AP 资源</el-menu-item>
-          <el-menu-item index="/ac-management/mesh-links">Mesh-Link 在线监控</el-menu-item>
-        </el-sub-menu>
-        <el-sub-menu index="/rail-transit">
-          <template #title>
-            <el-icon><Monitor /></el-icon>
-            <span>轨道交通</span>
-          </template>
-          <el-menu-item index="/rail-transit/base-data">基础资料</el-menu-item>
-          <el-menu-item index="/rail-transit/wireless-dashboard">轨道交通无线看板</el-menu-item>
-          <el-menu-item index="/rail-transit/train-communication">在线列车通信检测</el-menu-item>
-          <el-menu-item index="/rail-transit/mesh-analysis">Mesh 原始日志分析</el-menu-item>
-          <el-menu-item index="/rail-transit/online-mr">车载 MR 实时展示</el-menu-item>
-        </el-sub-menu>
-        <el-sub-menu index="/network-tools">
-          <template #title>
-            <el-icon><Operation /></el-icon>
-            <span>网络工具</span>
-          </template>
+      <el-menu
+        :default-active="activeMenu"
+        :default-openeds="openGroups"
+        :collapse="sidebarCollapsed"
+        :collapse-transition="false"
+        class="app-menu"
+        @select="selectNavigation"
+        @open="openGroup"
+        @close="closeGroup"
+      >
+        <template v-for="entry in navigationItems" :key="entry.navigation_id">
+          <el-sub-menu v-if="entry.children.length" :index="entry.navigation_id">
+            <template #title>
+              <el-icon><component :is="iconFor(entry)" /></el-icon>
+              <span>{{ entry.title }}</span>
+            </template>
+            <el-menu-item
+              v-for="child in entry.children"
+              :key="child.navigation_id"
+              :index="child.route_path"
+              :disabled="Boolean(child.feature_id && !isFeatureEnabled(child.feature_id))"
+            >{{ child.title }}</el-menu-item>
+          </el-sub-menu>
           <el-menu-item
-            v-if="isFeatureVisible('web.network_tools')"
-            index="/network-tools/overview"
-            :disabled="!isFeatureEnabled('web.network_tools')"
-          >网络工具总览</el-menu-item>
-          <el-menu-item index="/network-tools/traffic">流量测试</el-menu-item>
-        </el-sub-menu>
+            v-else
+            :index="entry.route_path"
+            :disabled="Boolean(entry.feature_id && !isFeatureEnabled(entry.feature_id))"
+          >
+            <el-icon><component :is="iconFor(entry)" /></el-icon>
+            <span>{{ entry.title }}</span>
+          </el-menu-item>
+        </template>
       </el-menu>
-      <div class="sidebar-note">Qt + Web 双形态</div>
+      <div v-if="!sidebarCollapsed" class="sidebar-note">Qt + Web 双形态</div>
     </el-aside>
-    <el-container>
+    <el-container class="app-workspace">
       <el-header class="app-header">
-        <div>
-          <div class="header-title">{{ route.meta.title || (route.name === 'tasks' ? '任务中心' : 'Dashboard') }}</div>
-          <div class="header-subtitle">Qt 与 Web 共用设备、任务、配置、文件、Agent 和 Traffic 业务核心</div>
+        <div class="header-leading">
+          <el-button class="sidebar-toggle" text :icon="mobile ? MenuIcon : Fold" aria-label="切换导航" @click="toggleSidebar" />
+          <div>
+            <div class="header-title">{{ route.meta.title || 'Dashboard' }}</div>
+            <div class="header-subtitle">Qt 与 Web 共用设备、任务、配置、文件、Agent 和 Traffic 业务核心</div>
+          </div>
         </div>
         <div class="header-status">
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
@@ -139,6 +214,14 @@ onMounted(async () => {
         </div>
       </el-header>
       <el-main class="app-main">
+        <el-alert
+          v-if="frontendMismatch"
+          class="frontend-build-warning"
+          :title="BUILD_MISMATCH_MESSAGE"
+          type="warning"
+          show-icon
+          :closable="false"
+        />
         <RouterView />
       </el-main>
     </el-container>

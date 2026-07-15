@@ -47,7 +47,18 @@ pnpm install --frozen-lockfile
 cd ../..
 ```
 
-缺少 pnpm、`node_modules` 或 `dist/index.html` 时，发布构建明确失败，不生成缺少完整 Web 页面的桌面包。
+缺少 pnpm、`node_modules`、`dist/index.html` 或 `dist/web-build-meta.json` 时，发布构建明确失败，不生成缺少完整 Web 页面的桌面包。发布链每次都重新执行 Vue build，不再因旧 `index.html` 已存在而跳过；构建后同时校验应用版本、提交、build id、构建时间和导航 schema 版本。
+
+## 前端资源身份
+
+- 源码模式只加载当前项目的 `apps/web/dist`，不再按文件存在性优先选择虚拟环境、旧安装目录或 `src/netconsole/assets/web`；
+- PyInstaller/Nuitka 冻结模式只加载包内 `netconsole/assets/web`，不跨模式回退到源码目录；
+- Vite 生成 `web-build-meta.json`，包含 `app_version`、`git_commit`、`build_time`、`navigation_schema_version` 和 `build_id`；
+- `GET /api/health` 返回后端 `build_id`；新版 Vue 在前后端 build id 不一致时显示固定顶部警告；旧产物缺少 metadata 时 FastAPI 静态入口仍会注入相同警告；
+- Desktop WebHost 启动日志记录 `frontend_root`、`index`、`frontend_build_id`、`backend_build_id` 和 `frontend_source_type`，不记录短期会话令牌；
+- 所选模式缺少 `index.html` 时只显示资源不可用页，不静默加载另一运行模式的文件。
+
+WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导航在低于约 `1100px` 时折叠，低于约 `850px` 时切换为抽屉；折叠状态和展开分组保存在当前会话的 `sessionStorage`。
 
 ## 当前边界
 
@@ -65,3 +76,5 @@ cd ../..
 - WebHost 只在独立 AGENT 页签开放已登记 Profile 的远程 MR start/status/normal stop，不开放远端包删除、强停、任意命令、任意 URL 或 Agent 配置修改；Application Service 的单 Agent 执行闭环见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)；
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center 和无线勘测继续保持 `DISABLED`。
+- Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
+- 本机文件选择、目录、Artifact、外部终端/WinSCP/IPOP 和通知尚未实现；后续必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。

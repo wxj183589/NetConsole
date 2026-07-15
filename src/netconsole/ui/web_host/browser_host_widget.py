@@ -125,6 +125,7 @@ class _BrowserHostWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE_DISPLAY} - Web")
         self.resize(1360, 860)
+        self.setMinimumSize(1024, 680)
         self.host_widget = BrowserHostWidget(server, paths, self)
         self.setCentralWidget(self.host_widget)
 

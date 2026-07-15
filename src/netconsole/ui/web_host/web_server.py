@@ -9,6 +9,7 @@ import threading
 import uvicorn
 
 from netconsole.backend.api.main import create_app
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 
@@ -53,6 +54,16 @@ class DesktopWebServer:
             RuntimeMode.DESKTOP,
             paths=paths,
             desktop_session_token=self.session_token or None,
+        )
+        app_logger.log_info(
+            "DESKTOP_WEB_FRONTEND_RESOURCE",
+            (
+                f"frontend_root={app.state.frontend_root} "
+                f"index={app.state.frontend_root / 'index.html'} "
+                f"frontend_build_id={app.state.frontend_build_id or 'missing'} "
+                f"backend_build_id={app.state.backend_build_id} "
+                f"frontend_source_type={app.state.frontend_source_type}"
+            ),
         )
         self.server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning", access_log=False)

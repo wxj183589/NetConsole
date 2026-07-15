@@ -35,7 +35,9 @@ pnpm install --frozen-lockfile
 cd ../..
 ```
 
-构建机缺少 pnpm、`apps/web/node_modules` 或构建后缺少 `dist/index.html` 时会明确失败，避免发布只能显示占位页的桌面包。`apps/web/dist` 和 `node_modules` 仍不得提交仓库。
+构建机缺少 pnpm、`apps/web/node_modules`，或构建后缺少 `dist/index.html`/`dist/web-build-meta.json` 时会明确失败，避免发布只能显示占位页的桌面包。`apps/web/dist` 和 `node_modules` 仍不得提交仓库。
+
+两个发布入口都必须在打包前重新执行 Vue build，不能因为已有 `dist/index.html` 而接受旧产物。构建脚本向 Vite 传入 `src/netconsole/core/version.py` 的发布提交身份，并校验 metadata 中的 `app_version`、`git_commit`、`build_id`、`build_time` 和 `navigation_schema_version`；任一字段缺失、损坏或与后端身份不一致均停止打包。源码开发者直接执行 `pnpm build` 时，metadata 使用当前 Git checkout，并在存在未提交修改时添加 `-dirty`。
 
 ## Windows Go Agent
 
@@ -153,6 +155,8 @@ Nuitka：
 ```
 
 实际发布前还应执行脚本自带 smoke test；非交互构建可按脚本参数显式跳过，但需要说明原因。
+
+发布后还需确认 `_internal/netconsole/assets/web/` 中同时存在 `index.html` 和 `web-build-meta.json`，并通过启动日志核对 `frontend_source_type=packaged` 及前后端 build id 一致。
 
 还需验证冻结态内部入口：普通任务使用 `--background-worker --job`，导出使用 `--export-worker --job`；源码态分别使用 `python -m netconsole.background_worker` 和 `python -m netconsole.export_worker`。
 

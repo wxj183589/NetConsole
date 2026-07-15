@@ -31,3 +31,4 @@ class ErrorResponse(ApiModel):
 class HealthResponse(ApiModel):
     status: str = "ok"
     version: str
+    build_id: str

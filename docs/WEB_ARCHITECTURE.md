@@ -51,13 +51,13 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 | Desktop Mode | `desktop` | 后续可通过受控 Native Bridge 提供文件选择、打开目录和外部程序调用 |
 | Server Mode | `server` | 使用浏览器上传/下载；禁止假定可访问服务端桌面或本机外部程序 |
 
-当前枚举只建立契约，尚未新增 Native Bridge 或业务分支。
+当前枚举只建立契约，尚未新增 Native Bridge 或业务分支。后续白名单、宿主条件和永久禁止输入见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 
 ## 4. API 契约
 
 - API DTO 位于 `src/netconsole/models/api/`，使用 Pydantic，禁止在路由中散落无约束 dict。
 - FastAPI 路由位于 `src/netconsole/backend/api/`，只编排应用服务，不复制 Repository 或业务算法。
-- 当前提供 `GET /api/health`、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及设备管理、网络工具、配置采集、文件管理的模块化 API 和自动 OpenAPI `/docs`。
+- 当前提供 `GET /api/health`（含后端 build id）、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及设备管理、网络工具、配置采集、文件管理的模块化 API 和自动 OpenAPI `/docs`。
 - 版本来自 `src/netconsole/core/version.py`，API 不维护第二份版本号。
 - 后续前端使用统一生成或封装的 API Client；页面不得各自散写请求和错误协议。
 
@@ -149,6 +149,15 @@ flowchart TD
 
 四个新页面及其受控动作同时由 Vue 和 FastAPI 的同一 Feature Gate 状态约束；禁用后导航/按钮隐藏且 API 返回 404。设备管理按请求读取当前局点，避免 Qt 切换局点后 WebHost 继续访问旧局点。设备、配置和文件 Web 任务共享一个 `LocalProcessAdapter`；服务级锁保证同设备活动连接测试/配置采集在并发请求下也只创建一个 Task。文件索引只接受受控目录与后缀白名单，明确排除解析数据库、运行文件、未知 raw 和未知 imports 格式。宿主关闭时，协作取消、terminate、kill 共用单一总预算，并行停止本地 Adapter、AC 刷新和 Traffic，避免超过 WebHost 等待窗口。
 
+Web parity foundation 已建立：
+
+- `apps/web/src/navigation/registry.ts` 是 Web 菜单顺序、父子归属、Qt/Feature 映射与对等状态的单一导航来源；AppLayout 不再手工维护菜单或 `startsWith` 活动项链；
+- 固定顶级顺序为 Dashboard、设备、AC、轨道交通、配置、文件、网络工具、任务、Agent、命令、日志、设置、功能开关；当前只渲染已有真实路由，未完成页面登记为 `NOT_STARTED` 且不显示占位入口；
+- AC 轨旁 AP 规划和轨交轨旁 AP 业务保持分属两个模块；Online MR 收集/分析保持轨交归属；无线扫描保持网络工具归属；SNMP Center 和无线勘测不注册 Web 导航；
+- Router 的正式业务路由携带 `navigationId`、`featureId`、`moduleId`、`title` 和 `desktopOnly`，兼容 `/ac-management` 与 `/network-tools/overview` 重定向；已接入页面的 FastAPI Router 同步执行 Feature Gate，不能只靠 Vue 隐藏；
+- 深色子菜单覆盖标题、内嵌菜单、箭头、hover/active/disabled 状态；全局不再强制 `min-width: 960px`，侧栏支持折叠和窄屏抽屉；
+- 真实 Qt/Web 状态和替换条件以 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md) 为准，聚合展示不得升级为完整替代。
+
 仍未实现：
 
 - 设备正式编辑、AC 写操作、远程设备文件管理和统一登录/角色权限；
@@ -209,7 +218,7 @@ cd ..
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 ```
 
-实验服务默认仅绑定 `127.0.0.1`。`apps/web/dist` 是忽略提交的构建产物；缺失时后端保留阶段 1 占位页。阶段 5C-0 起，普通 Qt 主程序可通过托盘或 Fluent“更多”菜单按需打开同一套完整 Web 控制台，并使用进程级临时会话 Cookie 保护本地 HTTP/WebSocket。发布脚本会先执行 Vue 构建，再将产物作为 `netconsole/assets/web` 内部资源打包；构建机必须预先安装 pnpm 依赖。WebHost 生命周期和 fallback 见 [Qt WebHost](WEB_HOST.md)。
+实验服务默认仅绑定 `127.0.0.1`。`apps/web/dist` 是忽略提交的构建产物；源码模式缺失时后端显示资源不可用页。阶段 5C-0 起，普通 Qt 主程序可通过托盘或 Fluent“更多”菜单按需打开同一套完整 Web 控制台，并使用进程级临时会话 Cookie 保护本地 HTTP/WebSocket。源码模式只使用当前 `apps/web/dist`，冻结模式只使用包内 `netconsole/assets/web`；发布脚本每次重新构建并校验 `web-build-meta.json` 后才打包。WebHost 生命周期、build id 和 fallback 见 [Qt WebHost](WEB_HOST.md)。
 
 ## 9. 下一阶段
 

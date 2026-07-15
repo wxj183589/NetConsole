@@ -10,6 +10,8 @@
 | [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `src/netconsole/core`、`src/netconsole/services`、`src/netconsole/repositories`、`src/netconsole/ui` | 新增跨层依赖、后台执行模型或核心服务 |
 | [Web 演进架构](WEB_ARCHITECTURE.md) | Desktop/Server/Agent 模式、API、Web Shell、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
 | [Qt WebHost](WEB_HOST.md) | 普通主程序内嵌 Web、托盘、临时会话、fallback 和前端打包 | Desktop WebHost 开发 | `src/netconsole/ui/web_host`、FastAPI、Vue 构建 | WebHost 生命周期、认证、fallback 或打包变化 |
+| [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md) | Qt 页面/动作与 Web Route、Feature、验收和替换状态 | Web 迁移指挥与模块开发 | Qt 页面、Navigation Registry、Router、Feature Registry、测试 | Qt/Web 能力、归属、验收或替换状态变化 |
+| [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | 本机选择器、受控目录/Artifact、已登记工具与通知的安全边界 | Desktop WebHost 与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
 | [项目级 Codex Skills](CODEX_SKILLS.md) | Skill 清单、路由、组合和维护 | Codex/Skill 维护者 | `.agents/skills`、`AGENTS.md` | Skill 新增、升级、改名或边界变化 |
 | [Job Center](JOB_CENTER.md) | 普通后台任务协议、生命周期、取消和迁移规则 | 后台任务开发 | `job_models.py`、`job_runner.py`、`job_registry.py`、`background_*` | Job 协议、事件、handler 或 manager 变化 |

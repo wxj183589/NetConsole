@@ -5,7 +5,7 @@ from threading import Event
 
 from fastapi.testclient import TestClient
 
-from netconsole.backend.api.health import health
+from netconsole.backend.api.health import health_response
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
@@ -54,7 +54,11 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         if original_router is not None:
             pending.extend(original_router.routes)
 
-    assert health().model_dump() == {"status": "ok", "version": "1.3.8"}
+    assert health_response("v1.3.8+test").model_dump() == {
+        "status": "ok",
+        "version": "1.3.8",
+        "build_id": "v1.3.8+test",
+    }
     assert app.state.runtime_mode is RuntimeMode.SERVER
     assert {
         "/api/health",
