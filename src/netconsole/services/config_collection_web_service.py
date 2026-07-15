@@ -67,9 +67,11 @@ CONFIG_WEB_COMPARE_TASK_TYPES = frozenset(
         "config_compare_snapshot_pair",
     }
 )
+IRREVERSIBLE_CONFIG_TASK_TYPES = frozenset({"config_snapshot_delete_many", CONFIG_WEB_SAVE_TASK})
 _SNAPSHOT_ARTIFACT_RE = re.compile(r"snapshot-(\d+)")
 _DIFF_ARTIFACT_RE = re.compile(r"diff-([0-9A-Za-z_.-]+)")
 _EXPORT_ARTIFACT_RE = re.compile(r"export-[0-9a-f]{32}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
 _SECRET_VALUE_RE = re.compile(
     r"(?i)\b((?:x-agent-token|authorization|token|password|credential|secret|community)\s*[:=]\s*(?:bearer\s+)?)\S+"
@@ -299,6 +301,11 @@ class ConfigCollectionApplicationService:
             return None
         if task.status not in ACTIVE_TASK_STATES:
             return self._task_dto(task, site_name=site_name)
+        if task.task_type in IRREVERSIBLE_CONFIG_TASK_TYPES and task.status in {
+            TaskState.RUNNING,
+            TaskState.STOPPING,
+        }:
+            raise ValueError("任务已进入不可逆批次，不能再取消")
         cancel = getattr(self.process_adapter, "cancel_job", None)
         if callable(cancel):
             cancel(task.task_id)
@@ -571,19 +578,41 @@ class ConfigCollectionApplicationService:
             or task.result.get("artifact_id") != artifact_id
         ):
             raise FileNotFoundError("配置导出 Artifact 不存在")
+        try:
+            manifest_size = int(manifest.get("size_bytes"))
+            task_size = int(task.result.get("size"))
+        except (TypeError, ValueError) as exc:
+            raise FileNotFoundError("配置导出 Artifact 校验失败") from exc
+        task_hash = str(task.result.get("hash") or "")
+        task_display_name = str(task.result.get("display_name") or "")
+        if any(
+            (
+                manifest.get("task_type") != task.task_type,
+                manifest.get("sha256") != task_hash,
+                manifest_size != task_size,
+                manifest.get("display_name") != task_display_name,
+                _SHA256_RE.fullmatch(task_hash) is None,
+                task_size < 0,
+                not task_display_name,
+            )
+        ):
+            raise FileNotFoundError("配置导出 Artifact 校验失败")
         physical_name = str(manifest.get("physical_name") or "")
         path = root / physical_name
         resolved = path.resolve()
+        expected_suffix = ".diff" if task.task_type == CONFIG_WEB_EXPORT_DIFF_TASK else ".zip"
         if (
             path.name != physical_name
             or path.is_symlink()
             or root not in resolved.parents
             or not resolved.is_file()
-            or resolved.stat().st_size != int(manifest.get("size_bytes") or -1)
-            or _sha256_file(resolved) != str(manifest.get("sha256") or "")
+            or resolved.stem != artifact_id
+            or resolved.suffix != expected_suffix
+            or resolved.stat().st_size != manifest_size
+            or _sha256_file(resolved) != task_hash
         ):
             raise FileNotFoundError("配置导出 Artifact 校验失败")
-        return resolved, str(manifest.get("display_name") or f"{artifact_id}{resolved.suffix}")
+        return resolved, task_display_name
 
     def _device_context(self, site_name: str, device_id: int):
         database = self._database(site_name)

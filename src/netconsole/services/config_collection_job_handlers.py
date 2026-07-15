@@ -36,9 +36,9 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
     saved_snapshot_ids: list[int] = []
     failed_items: list[dict[str, str]] = []
     total = len(device_uuids)
+    context.check_cancelled()
     for index, device_uuid in enumerate(device_uuids, start=1):
-        context.check_cancelled()
-        context.progress("config_save_force", index - 1, total, f"正在保存设备配置 {index}/{total}")
+        context.progress("config_save_force_irreversible", index - 1, total, f"正在保存设备配置 {index}/{total}")
         device = devices.get_by_uuid(device_uuid)
         if device is None or str(device.device_vendor or "").upper() != "H3C":
             failed_items.append({"device_uuid": device_uuid, "error": "H3C 设备不存在"})
@@ -58,6 +58,7 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         "failed_items": failed_items,
         "snapshot_ids": saved_snapshot_ids,
         "partial_success": bool(failed_items),
+        "cancel_policy": "before_batch_only",
     }
 
 

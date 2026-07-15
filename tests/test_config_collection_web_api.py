@@ -114,7 +114,7 @@ def _enable_handoff_features(monkeypatch) -> None:
         )
 
 
-def _install_fake_connector(monkeypatch, *, fail: bool = False) -> list[str]:
+def _install_fake_connector(monkeypatch, *, fail: bool = False, after_command=None) -> list[str]:
     commands: list[str] = []
 
     def run_with_retry(_device, operation):
@@ -122,6 +122,8 @@ def _install_fake_connector(monkeypatch, *, fail: bool = False) -> list[str]:
 
     def send_command(_connection, command: str, **_kwargs):
         commands.append(command)
+        if after_command is not None:
+            after_command(command)
         if fail:
             raise RuntimeError("fake connector failure")
         if command == "display saved-configuration":
@@ -435,8 +437,8 @@ def test_config_collection_delete_requires_scoped_one_time_confirmation(
     assert deleted.json()["type"] == "config_snapshot_delete_many"
     assert adapter.jobs[-1].params["snapshot_ids"] == [running.id]
     assert replay.status_code == 422
-    assert cancelled.status_code == 200
-    assert cancelled.json()["id"] == deleted.json()["id"]
+    assert cancelled.status_code == 422
+    assert "不可逆批次" in cancelled.json()["detail"]
     assert foreign.status_code == 404
     assert directory.status_code == 200
     assert directory.json()["target_id"] == "config_exports:demo"
@@ -643,6 +645,22 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
         service.open_artifact("demo", str(zip_status.result["artifact_id"]))
     repository.save(persisted_zip_task)
 
+    manifest_path = zip_path.parent / f"{zip_status.result['artifact_id']}.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["display_name"] = "伪造配置快照.zip"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        service.open_artifact("demo", str(zip_status.result["artifact_id"]))
+
+    forged_content = b"synchronized-file-and-manifest-tamper"
+    zip_path.write_bytes(forged_content)
+    manifest["display_name"] = zip_status.result["display_name"]
+    manifest["size_bytes"] = len(forged_content)
+    manifest["sha256"] = hashlib.sha256(forged_content).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        service.open_artifact("demo", str(zip_status.result["artifact_id"]))
+
     delete_preview = service.issue_snapshot_delete("demo", [int(running.id), int(saved.id)])
     ConfigLifecycleService("demo", Database(paths.site_db_path("demo")), paths).delete_snapshot(
         ConfigSnapshotRepository(Database(paths.site_db_path("demo")), ensure_schema=False).get(int(running.id))
@@ -684,6 +702,100 @@ def test_config_snapshot_delete_all_failures_end_as_failed_task(tmp_path: Path) 
     assert status is not None
     assert status.status == TaskState.FAILED.value
     assert "删除全部失败" in status.error_message
+
+
+def test_config_delete_batch_keeps_results_when_cancel_arrives_after_first_delete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app, paths, _device, running, saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    executing = _ExecutingFakeProcessAdapter(service.task_service)
+    service.process_adapter = executing
+    original_delete = ConfigLifecycleService.delete_snapshot
+    deleted_calls = 0
+
+    def delete_then_cancel(self, snapshot):
+        nonlocal deleted_calls
+        result = original_delete(self, snapshot)
+        deleted_calls += 1
+        if deleted_calls == 1:
+            executing.cancel_next = True
+            service.task_service.request_cancel(executing.jobs[-1].job_id)
+        return result
+
+    monkeypatch.setattr(ConfigLifecycleService, "delete_snapshot", delete_then_cancel)
+    preview = service.issue_snapshot_delete("demo", [int(running.id), int(saved.id)])
+
+    task = service.confirm_snapshot_delete("demo", preview.confirmation_token, preview.digest)
+    status = service.get_task("demo", task.id)
+    refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
+    recovered = refreshed.get_task("demo", task.id)
+
+    assert status is not None and status.status == TaskState.COMPLETED.value
+    assert status.result["deleted"] == 2
+    assert status.result["failed"] == 0
+    assert status.result["cancel_policy"] == "before_batch_only"
+    assert recovered is not None and recovered.result["deleted"] == 2
+
+
+def test_config_save_force_batch_keeps_results_when_cancel_arrives_after_first_device(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app, paths, device, _running, _saved, _adapter = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    second = DeviceRepository(database).create(
+        Device(
+            name="SW-02",
+            device_uuid=Device.new_uuid(),
+            device_vendor="H3C",
+            device_type="SW",
+            ip_address="192.0.2.11",
+            ssh_username="operator",
+            ssh_password="secret-password",
+        )
+    )
+    service = app.state.config_collection_service
+    executing = _ExecutingFakeProcessAdapter(service.task_service)
+    service.process_adapter = executing
+    save_count = 0
+
+    def request_cancel_after_first_save(command: str) -> None:
+        nonlocal save_count
+        if command != "save force":
+            return
+        save_count += 1
+        if save_count == 1:
+            executing.cancel_next = True
+            service.task_service.request_cancel(executing.jobs[-1].job_id)
+
+    _install_fake_connector(monkeypatch, after_command=request_cancel_after_first_save)
+    preview = service.preview_save_force("demo", [int(device.id), int(second.id)])
+
+    task = service.confirm_save_force("demo", preview.confirmation_token, preview.digest)
+    status = service.get_task("demo", task.id)
+    refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
+    recovered = refreshed.get_task("demo", task.id)
+
+    assert status is not None and status.status == TaskState.COMPLETED.value
+    assert status.result["saved"] == 2
+    assert len(status.result["snapshot_ids"]) == 2
+    assert status.result["cancel_policy"] == "before_batch_only"
+    assert recovered is not None and recovered.result["saved"] == 2
+
+
+def test_config_running_irreversible_task_rejects_cancel(tmp_path: Path) -> None:
+    app, _paths, device, _running, _saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    preview = service.preview_save_force("demo", [int(device.id)])
+    task = service.confirm_save_force("demo", preview.confirmation_token, preview.digest)
+
+    with pytest.raises(ValueError, match="不可逆批次"):
+        service.cancel_task("demo", task.id)
+
+    status = service.get_task("demo", task.id)
+    assert status is not None and status.status == TaskState.RUNNING.value
 
 
 def test_config_export_forwards_progress_before_worker_finishes(
